@@ -2321,14 +2321,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 if dsn
                                 else _ObjectStore(db_path=_Path(db_path))
                             )
-                            for grp, ver, res in targets:
-                                try:
-                                    items = store.list(grp, ver, res, ns)
-                                except Exception:
-                                    continue
-                                for obj in items:
-                                    if store.delete(grp, ver, res, ns, obj.name):
-                                        removed_shim += 1
+                            try:
+                                for grp, ver, res in targets:
+                                    try:
+                                        items = store.list(grp, ver, res, ns)
+                                    except Exception:
+                                        continue
+                                    for obj in items:
+                                        if store.delete(grp, ver, res, ns, obj.name):
+                                            removed_shim += 1
+                            finally:
+                                close = getattr(store, "close", None)
+                                if callable(close):
+                                    try:
+                                        close()
+                                    except Exception:
+                                        pass
                             if removed_shim:
                                 logger.info(
                                     "labs reset removed %s shim objects in namespace %s",

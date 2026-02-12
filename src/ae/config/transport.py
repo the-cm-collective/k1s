@@ -46,6 +46,17 @@ def _parse_nats_endpoint(raw: str) -> tuple[str, int]:
     return host, port
 
 
+def parse_nats_explicit_port(raw: str) -> int | None:
+    """Return the explicit port from a NATS URL, or None when omitted."""
+
+    url = _normalize_nats_url(raw.strip())
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError("missing host")
+    return parsed.port
+
+
 def check_nats_connectivity(url: str, timeout_s: float = 1.5) -> tuple[bool, str]:
     try:
         host, port = _parse_nats_endpoint(url)

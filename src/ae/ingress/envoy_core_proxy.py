@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 
 @dataclass(frozen=True)
 class CoreProxyRoute:
@@ -145,30 +147,9 @@ def render_envoy_config(
     vhosts_http = _build_vhosts(redirect_https=True)
     vhosts_https = _build_vhosts(redirect_https=False)
 
-    def _yaml(obj, indent=0):  # minimal YAML emitter for nested dicts/lists
-        pad = " " * indent
-        if isinstance(obj, dict):
-            lines = []
-            for key, value in obj.items():
-                key_text = str(key)
-                if any(ch in key_text for ch in ["@", ":", "{", "}", "[", "]", ",", "&", "*", "#", "?", "|", "-", "<", ">", "=", "!", "%", "\\", "\"", "'"]) or key_text.strip() != key_text:
-                    key_text = f'"{key_text}"'
-                if isinstance(value, (dict, list)):
-                    lines.append(f"{pad}{key_text}:")
-                    lines.append(_yaml(value, indent + 2))
-                else:
-                    lines.append(f"{pad}{key_text}: {value}")
-            return "\n".join(lines)
-        if isinstance(obj, list):
-            lines = []
-            for item in obj:
-                if isinstance(item, (dict, list)):
-                    lines.append(f"{pad}-")
-                    lines.append(_yaml(item, indent + 2))
-                else:
-                    lines.append(f"{pad}- {item}")
-            return "\n".join(lines)
-        return f"{pad}{obj}"
+    class _NoAliasDumper(yaml.SafeDumper):
+        def ignore_aliases(self, _data):  # type: ignore[override]
+            return True
 
     cluster_defs = []
     for cluster in clusters:
@@ -347,7 +328,7 @@ def render_envoy_config(
             },
         },
     }
-    return _yaml(config_obj) + "\n"
+    return yaml.dump(config_obj, Dumper=_NoAliasDumper, sort_keys=False)
 
 
 def write_envoy_config(

@@ -138,19 +138,9 @@ for ctx in "${CONTEXTS[@]}"; do
   done
 done
 
-if command -v crictl >/dev/null 2>&1; then
+if [[ -x scripts/cri_teardown.sh ]]; then
   log "Stopping CRI pods/containers (k1s-managed)"
-  label="app.kubernetes.io/managed-by=k1s"
-  pods=$(crictl pods -q --label "$label" 2>/dev/null || true)
-  if [[ -n "${pods}" ]]; then
-    crictl stopp ${pods} >/dev/null 2>&1 || true
-    crictl rmp ${pods} >/dev/null 2>&1 || true
-  fi
-  containers=$(crictl ps -a -q --label "$label" 2>/dev/null || true)
-  if [[ -n "${containers}" ]]; then
-    crictl stop ${containers} >/dev/null 2>&1 || true
-    crictl rm ${containers} >/dev/null 2>&1 || true
-  fi
+  AE_CRI_APP_LABEL="app.kubernetes.io/managed-by" scripts/cri_teardown.sh >/dev/null 2>&1 || true
 fi
 
 log "Removing demo app containers (label=ae.app or name=ae-*)"

@@ -38,13 +38,12 @@ def render_rathole_server(config: RatholeServerConfig) -> str:
         f'bind_addr = "{config.bind_addr}"',
         f'default_token = "{config.default_token}"',
         "",
+        "[server.services]",
     ]
-    if config.services:
-        lines.append("[server.services]")
-        for svc in config.services:
-            lines.append(f'[server.services."{svc.name}"]')
-            lines.append(f'bind_addr = "{svc.bind_addr}"')
-            lines.append("")
+    for svc in config.services:
+        lines.append(f'[server.services."{svc.name}"]')
+        lines.append(f'bind_addr = "{svc.bind_addr}"')
+        lines.append("")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -54,13 +53,12 @@ def render_rathole_client(config: RatholeClientConfig) -> str:
         f'remote_addr = "{config.remote_addr}"',
         f'default_token = "{config.default_token}"',
         "",
+        "[client.services]",
     ]
-    if config.services:
-        lines.append("[client.services]")
-        for svc in config.services:
-            lines.append(f'[client.services."{svc.name}"]')
-            lines.append(f'local_addr = "{svc.local_addr}"')
-            lines.append("")
+    for svc in config.services:
+        lines.append(f'[client.services."{svc.name}"]')
+        lines.append(f'local_addr = "{svc.local_addr}"')
+        lines.append("")
     return "\n".join(lines).strip() + "\n"
 
 

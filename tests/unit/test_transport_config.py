@@ -1,8 +1,11 @@
+import pytest
+
 from ae.config.transport import (
     GatewayJetStreamConfig,
     TransportConfig,
     _parse_nats_endpoint,
     check_nats_connectivity,
+    parse_nats_explicit_port,
 )
 
 
@@ -35,6 +38,19 @@ def test_parse_nats_endpoint_with_port() -> None:
     host, port = _parse_nats_endpoint("nats://user:pass@127.0.0.1:4223")
     assert host == "127.0.0.1"
     assert port == 4223
+
+
+def test_parse_nats_explicit_port_with_port() -> None:
+    assert parse_nats_explicit_port("nats://gateway:dev@127.0.0.1:4224") == 4224
+
+
+def test_parse_nats_explicit_port_without_port() -> None:
+    assert parse_nats_explicit_port("nats://gateway:dev@127.0.0.1") is None
+
+
+def test_parse_nats_explicit_port_invalid_url() -> None:
+    with pytest.raises(ValueError, match="missing host"):
+        parse_nats_explicit_port("nats://")
 
 
 def test_check_nats_connectivity_invalid_url() -> None:

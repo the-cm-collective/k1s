@@ -2632,6 +2632,30 @@ def _extract_http_status(exc: Exception) -> int | None:
         return None
 
 
+def _looks_like_connection_refused(exc: Exception) -> bool:
+    text = str(exc).strip().lower()
+    return "connection refused" in text or "errno 111" in text
+
+
+def _is_local_apishim_server(server: str | None) -> bool:
+    if not server:
+        return False
+    candidate = server if "://" in server else f"https://{server}"
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _print_apishim_connection_refused_hint(server: str | None) -> None:
+    target = server or "AE_APISHIM_SERVER"
+    print(f"hint: apishim appears unreachable at {target} (connection refused).")
+    print("hint: verify apishim is listening (example: ss -ltn | rg ':8445').")
+    print("hint: check state/apishim.pid and state/profiles/k1s-core/apishim.log.")
+
+
 def _session_token_expiry(token: str) -> int | None:
     import base64
     import json
@@ -3917,6 +3941,53 @@ def _resolve_exec_target(
     return pod_name, container_name
 
 
+def _resolve_pod_via_apishim(
+    base: str, namespace: str, app_name: str, token: str | None = None
+) -> str | None:
+    try:
+        payload = _http_get_json(
+            _apishim_base_url(base), f"/api/v1/namespaces/{namespace}/pods", token
+        )
+    except Exception:
+        return None
+
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return None
+
+    _ns, short_name = split_app_key(app_name)
+    prefix = f"{short_name}-rev"
+    candidates: list[tuple[int, int, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        status = item.get("status") if isinstance(item.get("status"), dict) else {}
+        name = str(meta.get("name") or "")
+        if not name:
+            continue
+        labels = meta.get("labels") if isinstance(meta.get("labels"), dict) else {}
+        label_app = str(labels.get("app") or labels.get("app.kubernetes.io/name") or "")
+        if not (
+            name == short_name
+            or name.startswith(prefix)
+            or label_app == short_name
+        ):
+            continue
+        phase = str(status.get("phase") or "")
+        running = 1 if phase.lower() == "running" else 0
+        ready = 0
+        container_statuses = status.get("containerStatuses")
+        if isinstance(container_statuses, list) and container_statuses:
+            ready = 1 if all(bool(cs.get("ready")) for cs in container_statuses if isinstance(cs, dict)) else 0
+        candidates.append((ready, running, name))
+
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][2]
+
+
 def _exec_over_spdy(
     base: str,
     *,
@@ -4743,13 +4814,16 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
             if not cmd:
                 print("exec requires a command after -- (e.g., ae exec app -- sh -c 'echo hi')")
                 return 2
+            ns, _name = split_app_key(app_name)
             pod_name, container_name = _resolve_exec_target(
                 store, app_name, getattr(args, "container", None)
             )
             if pod_name is None:
+                lookup_token = explicit_token or _os.getenv("AE_APISHIM_READ_TOKEN") or generic_token
+                pod_name = _resolve_pod_via_apishim(apishim_base, ns, app_name, lookup_token)
+            if pod_name is None:
                 pod_name = app_name
                 print("warning: no local status; using app name as pod reference")
-            ns, _name = split_app_key(app_name)
             want_stdin = bool(getattr(args, "stdin", False))
             want_tty = bool(getattr(args, "tty", False))
             want_stderr = not want_tty
@@ -4911,6 +4985,8 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                                     exc2 = retry_ws_exc
                         print(f"websocket exec failed: {exc2}")
                         return 1
+                if _looks_like_connection_refused(exc) and _is_local_apishim_server(apishim_base):
+                    _print_apishim_connection_refused_hint(apishim_base)
                 print(f"spdy exec failed: {exc}")
                 return 1
         if gargs is not None and getattr(gargs, "server", None):
@@ -5058,13 +5134,16 @@ def handle_port_forward(
 
     app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
     pod_name = getattr(args, "pod", None)
+    ns, _name = split_app_key(app_name)
     if not pod_name:
         pod_name, _container = _resolve_exec_target(store, app_name, None)
+    if not pod_name:
+        lookup_token = explicit_token or _os.getenv("AE_APISHIM_READ_TOKEN") or generic_token
+        pod_name = _resolve_pod_via_apishim(apishim_base, ns, app_name, lookup_token)
     if not pod_name:
         pod_name = app_name
         print("warning: no local status; using app name as pod reference")
 
-    ns, _name = split_app_key(app_name)
     scope = _apishim_scope(ns, app_name, pod_name)
     token = _resolve_apishim_stream_token(
         base=apishim_base,
