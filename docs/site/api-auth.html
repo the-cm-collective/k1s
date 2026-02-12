@@ -721,8 +721,8 @@
       </svg>
     </button>
     <div class="container">
-    <h1>API Auth and Mutations</h1>
-<h2>Overview</h2>
+    <h1 id="api-auth-and-mutations">API Auth and Mutations</h1>
+<h2 id="overview">Overview</h2>
 <ul>
 <li>Read-only endpoints (/status, /events, /metrics, /logs, /health, /openapi.json) are available by default.</li>
 <li>If any token is configured, all GETs require at least the READ token.</li>
@@ -736,14 +736,14 @@
 </li>
 <li>Optional scoping/expiry: AE_API_ADMIN_SCOPE / AE_API_SCALER_SCOPE / AE_API_READ_SCOPE (glob patterns) and AE_API_*_TOKEN_EXPIRES (UTC ISO8601).</li>
 </ul>
-<h2>Enabling mutations (dev)</h2>
+<h2 id="enabling-mutations-dev">Enabling mutations (dev)</h2>
 <p>1) Generate tokens and enable mutations for the controller process:</p>
 <pre><code>ae api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 export AE_API_MUTATIONS=1</code></pre>
 <p>2) Start controller with --metrics-port and (optional) Caddy fronting the API.</p>
 <p>Tip: <code>ae auth remote -o .env.api</code> also emits apishim tokens and <code>AE_API_MUTATIONS=1</code>.</p>
-<h2>Remote CLI usage</h2>
+<h2 id="remote-cli-usage">Remote CLI usage</h2>
 <ul>
 <li>Scale:
 <ul>
@@ -761,13 +761,13 @@ export AE_API_MUTATIONS=1</code></pre>
 </ul>
 </li>
 </ul>
-<h2>Security notes</h2>
+<h2 id="security-notes">Security notes</h2>
 <ul>
 <li>For production, place the API behind TLS (Caddy) and use client auth or network ACLs.</li>
 <li>Prefer short-lived tokens and minimal roles for automation.</li>
 <li>Kubernetes API shim: set <code>AE_APISHIM_ENABLE=1</code> and <code>AE_APISHIM_TOKEN</code> for <code>python -m ae.apishim serve</code>; use <code>AE_APISHIM_ALLOW_ANON=1</code> only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a SubjectAccessReview-compatible endpoint.</li>
 </ul>
-<h2>Registry Auth (private images)</h2>
+<h2 id="registry-auth-private-images">Registry Auth (private images)</h2>
 <ul>
 <li>Credentials are stored at <code>~/.config/ae/registries.yaml</code> and used by the runtime before pulls.</li>
 <li>List configured hosts:
@@ -811,7 +811,7 @@ export AE_API_MUTATIONS=1</code></pre>
 </ul>
 </li>
 </ul>
-<h2>Refreshing short‑lived tokens</h2>
+<h2 id="refreshing-short-lived-tokens">Refreshing short‑lived tokens</h2>
 <ul>
 <li>Some providers issue short‑lived credentials (GCR/ECR). Refresh any saved hosts with:
 <ul>
@@ -828,7 +828,7 @@ export AE_API_MUTATIONS=1</code></pre>
 </ul>
 </li>
 </ul>
-<h2>Planner hint</h2>
+<h2 id="planner-hint">Planner hint</h2>
 <ul>
 <li>If the image host looks private (e.g., <code>ghcr.io</code>, <code>gcr.io</code>, <code>*.ecr.*.amazonaws.com</code>) and no entry exists in <code>registries.yaml</code>, <code>ae plan</code> emits a warning with the matching <code>ae registry login</code> command suggestion.</li>
 </ul>
@@ -839,7 +839,7 @@ export AE_API_MUTATIONS=1</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

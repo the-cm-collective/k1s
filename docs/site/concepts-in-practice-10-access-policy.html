@@ -721,14 +721,14 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 10 - Access &amp; Policy</h1>
-<h2>Concept</h2>
+    <h1 id="chapter-10-access-policy">Chapter 10 - Access &amp; Policy</h1>
+<h2 id="concept">Concept</h2>
 <p>An orchestration engine must enforce who can read, modify, or deploy workloads. Access controls and policy boundaries prevent accidental or malicious changes.</p>
-<h3>Theory</h3>
+<h3 id="theory">Theory</h3>
 <p>Access control is role-based: read, scale, and admin roles map to different verbs. Policy enforcement can be coarse (RBAC) or fine-grained (scoped patterns). Authentication and authorization must be consistent across API and CLI surfaces.</p>
-<h3>Design</h3>
+<h3 id="design">Design</h3>
 <p>k1s provides API token roles (read/scale/admin) and optional RBAC enforcement for HTTP API requests. Registry credentials are stored in a local config and injected into runtime logins. Node join tokens use HMAC signatures to prevent unauthorized agents. This maps directly to Kubernetes RBAC, admission, and image pull secrets.</p>
-<h3>Application</h3>
+<h3 id="application">Application</h3>
 <p>Enable RBAC in non-trivial environments, rotate tokens, and scope admin privileges. Keep registry credentials in the standard config path. Use join tokens for controlled node onboarding. These practices mirror production k8s policies and reduce operational risk.</p>
 <pre class="mermaid">sequenceDiagram
   participant Client
@@ -738,7 +738,7 @@
   API-&gt;&gt;Auth: Evaluate role
   Auth--&gt;&gt;API: Allow/Deny
   API--&gt;&gt;Client: Response</pre>
-<h3>Visuals (Mermaid)</h3>
+<h3 id="visuals-mermaid">Visuals (Mermaid)</h3>
 <pre class="mermaid">flowchart LR
   Request[HTTP request] --&gt; Auth[Bearer token]
   Auth --&gt; Role{Role?}
@@ -755,7 +755,7 @@
   HMAC --&gt; Agent[Agent join request]
   Agent --&gt; Verify[Token verify]
   Verify --&gt; Allow[Allow join]</pre>
-<h2>Key Terms and Acronyms</h2>
+<h2 id="key-terms-and-acronyms">Key Terms and Acronyms</h2>
 <ul>
 <li>RBAC - Role-based access control.</li>
 <li>AuthN/AuthZ - Authentication/authorization.</li>
@@ -767,7 +767,7 @@
 <li>Admission - Policy enforcement on create/update.</li>
 <li>Least privilege - Principle of minimal access.</li>
 </ul>
-<h2>Commands (copy/paste)</h2>
+<h2 id="commands-copy-paste">Commands (copy/paste)</h2>
 <pre><code># Start controller with RBAC tokens enabled
 AE_API_RBAC=1 \
 AE_API_READ_TOKEN=read-token \
@@ -781,7 +781,7 @@ curl -H &quot;Authorization: Bearer read-token&quot; http://127.0.0.1:9108/statu
 # Local CLI checks
 python -m ae.cli status --verbose
 python -m ae.cli registry list</code></pre>
-<h2>Docs references (source + site)</h2>
+<h2 id="docs-references-source-site">Docs references (source + site)</h2>
 <ul>
 <li>Source: <code>docs/reference/api-auth.md</code></li>
 <li>Source: <code>docs/reference/http-api.md</code></li>
@@ -789,7 +789,7 @@ python -m ae.cli registry list</code></pre>
 <li>Site: <code>docs/site/api-auth.html</code></li>
 <li>Site: <code>docs/site/http-api.html</code></li>
 </ul>
-<h2>Code references (walkthrough anchors)</h2>
+<h2 id="code-references-walkthrough-anchors">Code references (walkthrough anchors)</h2>
 <ul>
 <li>RBAC role enforcement in HTTP API: <code>src/ae/observability/http_api.py:608</code></li>
 </ul>
@@ -837,7 +837,7 @@ Tokens are HMAC-SHA256 over (node_id, expiry, random nonce) using a shared secre
 Format: base64url(node_id:exp_ts:nonce:signature)
 &quot;&quot;&quot;
 ...</code></pre>
-<h2>Chapter navigation</h2>
+<h2 id="chapter-navigation">Chapter navigation</h2>
 <ul>
 <li>Prev: <a href="concepts-in-practice-09-configuration-secrets.html">Chapter 09 - Config &amp; Secrets</a></li>
 </ul>
@@ -848,7 +848,7 @@ Format: base64url(node_id:exp_ts:nonce:signature)
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

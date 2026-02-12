@@ -5,18 +5,18 @@ This walkthrough is a manual test pattern for the core hub plus edge gateways. I
 ## Quick Navigation
 
 Podman / mixed-runtime patterns:
-- [Option A - LAN-only multi-node](#option-a--lan-only-multi-node-no-wireguard)
-- [Option B - Core + edge gateways (WireGuard + NATS)](#option-b--core--edge-gateways-wireguard--nats)
-- [Option C - Site-to-site NetFS storage](#option-c--site-to-site-netfs-storage-over-wireguardrosenpass)
-- [Option D - Canonical ingress modes](#option-d--canonical-ingress-modes-over-wireguardrosenpass)
+- [Option A - LAN-only multi-node](#option-a-lan-only)
+- [Option B - Core + edge gateways (WireGuard + NATS)](#option-b-core-edge-gateways)
+- [Option C - Site-to-site NetFS storage](#option-c-netfs)
+- [Option D - Canonical ingress modes](#option-d-ingress)
 
 CRI patterns:
-- [CRI Deployment (strict CRI)](#cri-deployment-strict-cri)
-- [Single-Host Dev Ops Patterns (CRI)](#single-host-dev-ops-patterns-cri)
-- [Same-Host Variant (hub + edge on one box)](#same-host-variant-hub--edge-on-one-box)
-- [CRI troubleshooting notes](#cri-troubleshooting-notes)
+- [CRI Deployment (strict CRI)](#cri-deployment)
+- [Single-Host Dev Ops Patterns (CRI)](#cri-single-host)
+- [Same-Host Variant (hub + edge on one box)](#cri-same-host-variant)
+- [CRI troubleshooting notes](#cri-troubleshooting)
 
-## CRI Deployment (strict CRI)
+## CRI Deployment (strict CRI) {#cri-deployment}
 
 Use this section when running core + edge in strict CRI mode with containerd.
 Existing Podman sections remain valid for homelab/dev; this section is additive.
@@ -144,14 +144,14 @@ bash scripts/dev/netfs_validate.sh \
   --mount-path /data
 ```
 
-### CRI Troubleshooting Notes
+### CRI Troubleshooting Notes {#cri-troubleshooting}
 
 - `spdy upgrade failed: 404` with repeated apishim warnings about CRI unavailable usually means apishim cannot reach the containerd socket; confirm `AE_CRI_ENDPOINT` and apishim runtime env/socket mount.
 - `error: registry endpoint responded unexpectedly at https://localhost:5001/v2/` means core registry is not healthy/reachable before edge CRI startup.
 - If `crictl` commands differ from examples, check your local `crictl` version/flags (`crictl pods` on some builds does not support `-a`).
 - In CRI, workload pod names typically include revision suffixes (for example `...-rev1-0`); avoid assuming Podman container naming patterns.
 
-## Single-Host Dev Ops Patterns (CRI)
+## Single-Host Dev Ops Patterns (CRI) {#cri-single-host}
 
 This is the fastest strict-CRI dev loop on one workstation:
 1. Start `k1s-core` with `AE_DEV_LOCAL=1`, CRI env, and apishim autostart.
@@ -165,7 +165,7 @@ Expected:
 - `ae status` workloads reach `ready`.
 - CRI pods are visible in `sudo crictl pods` for core/edge components.
 
-## Option A — LAN-only multi-node (no WireGuard)
+## Option A — LAN-only multi-node (no WireGuard) {#option-a-lan-only}
 
 Use this path when all nodes are on the same LAN and you want typical k8s-style
 cluster semantics without a WireGuard overlay.
@@ -216,7 +216,7 @@ ae plan -f specs/examples/echo-multinode.yaml --verbose
 python -m ae.cli apply -f specs/examples/echo-multinode.yaml
 ```
 
-## Option B — Core + edge gateways (WireGuard + NATS)
+## Option B — Core + edge gateways (WireGuard + NATS) {#option-b-core-edge-gateways}
 
 ### Topology
 - Site A (LAN): `k1s-core` + one gateway on `sfo-edge-01`.
@@ -431,7 +431,7 @@ Note
 - For strict site-to-site SPDY simulation, keep node-advertised endpoints on WG IPs (`AE_AGENT_ENDPOINT=http://<WG_IP>:<port>`). Do not switch to `host.containers.internal` in this test lane.
 - `ae auth local --strict` sets `AE_APISHIM_SERVER` to `https://127.0.0.1:8445`. On a remote host, override it to the hub, e.g. `export AE_APISHIM_SERVER=https://<HUB_IP>:8445`, then re-run strict auth in that shell.
 
-### Same-Host Variant (hub + edge on one box)
+### Same-Host Variant (hub + edge on one box) {#cri-same-host-variant}
 Use this when you want to simulate the remote site on the same host as the hub
 (like the workflows in `docs/ops/core-edge-manual-test.md` and
 `docs/ops/core-edge-wg-psk.md`). The key differences are:
@@ -627,7 +627,7 @@ Expected:
 - `leafz` shows one or more active leaf connections.
 - Work ledger transitions to `Succeeded` for the test work items.
 
-## Option C — Site-to-site NetFS storage over WireGuard/Rosenpass
+## Option C — Site-to-site NetFS storage over WireGuard/Rosenpass {#option-c-netfs}
 
 Use this option when you want persistent PVC-backed storage to work across sites
 over the WG/Rosenpass overlay from Option B.
@@ -982,7 +982,7 @@ kctl_rw delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-fou
 kctl_rw delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
 ```
 
-## Option D — Canonical ingress modes over WireGuard/Rosenpass
+## Option D — Canonical ingress modes over WireGuard/Rosenpass {#option-d-ingress}
 
 Treat these three ingress modes as canonical for core/edge deployments:
 - `core-proxy`

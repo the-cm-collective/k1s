@@ -721,7 +721,7 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Memory Overhead Benchmarks</h1>
+    <h1 id="memory-overhead-benchmarks">Memory Overhead Benchmarks</h1>
 <p>This guide describes how to profile and compare memory overhead for k1s versus k3s on a single host. It consolidates the k1s memory profiling and k3s comparison workflows in one place.</p>
 <p>Goals</p>
 <ul>
@@ -864,7 +864,7 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 <pre><code>make bench-k3s-down K3S_NAME=bench</code></pre>
 <p>End-to-end (k3s one-liner; cluster must be up)</p>
 <pre><code>make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></pre>
-<h2>Runbook: Successful Benchmark Runs</h2>
+<h2 id="runbook-successful-benchmark-runs">Runbook: Successful Benchmark Runs</h2>
 <ul>
 <li>Environment
 <ul>
@@ -943,7 +943,7 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 </li>
 <li>Docs page <code>benchmarks.html</code> auto-appends a “Latest Benchmarks (Auto)” section from <code>combined/combined.csv</code>.</li>
 </ul>
-<h2>Automated Prep/Teardown</h2>
+<h2 id="automated-prep-teardown">Automated Prep/Teardown</h2>
 <p>The helper scripts <code>scripts/bench/bench_env_prep.sh</code> and <code>scripts/bench/bench_env_teardown.sh</code> power both <code>make bench-mem-e2e-all</code> and <code>make bench-mem-e2e-minimal</code>:</p>
 <ul>
 <li>Prep copies <code>specs/</code> into <code>state/bench-env/specs/</code>, removes every Deployment manifest except the allowlist, and leaves shared configs/secrets intact so relative <code>configRefs</code> still work.</li>
@@ -953,7 +953,7 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 <li>If rootful Podman containers with the <code>ae.app</code> label are still running, prep lists them and asks whether to remove them (set <code>BENCH_AUTOCLEAN_PODMAN=1</code> to auto-approve in CI, or <code>=0</code> to refuse). This prevents stray demos from holding ports like 18080.</li>
 <li>Ingress writes are disabled by default for benches (<code>BENCH_DISABLE_INGRESS=1</code>). Set <code>BENCH_DISABLE_INGRESS=0</code> if a scenario actually needs Caddy updates; otherwise the sandbox exports <code>AE_DISABLE_INGRESS=1</code> and skips writing to <code>ops/dev/caddy/*</code>, avoiding permission chatter.</li>
 </ul>
-<h2>All-in-one Run (sudo once)</h2>
+<h2 id="all-in-one-run-sudo-once">All-in-one Run (sudo once)</h2>
 <p>Run k1s rootful, k1s rootless, and k1nd in one go and rebuild docs:</p>
 <pre><code>sudo make bench-mem-e2e-all DURATION=30 REPLICAS=1,5,10 ROLL_REPLICAS=5</code></pre>
 <p>Defaults: <code>OCI_RUNTIME=crun</code>, <code>AE_ENGINE_STRICT=1</code>, <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code>, <code>PRUNE_OLD=1</code>.</p>
@@ -1095,7 +1095,7 @@ sudo sysctl --system</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-11 08:31:27</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

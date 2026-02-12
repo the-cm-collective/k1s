@@ -721,8 +721,8 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 08 - Rollouts, Updates, &amp; Rollbacks</h1>
-<h2>Concept</h2>
+    <h1 id="chapter-08-rollouts-updates-rollbacks">Chapter 08 - Rollouts, Updates, &amp; Rollbacks</h1>
+<h2 id="concept">Concept</h2>
 <p>Rollouts are controlled transitions between revisions of a workload. They balance speed and safety by regulating how many replicas are updated at once, and they preserve the ability to revert.</p>
 <pre class="mermaid">flowchart LR
   RevN[Revision N] --&gt; Apply[Apply new spec]
@@ -731,7 +731,7 @@
   Rollout --&gt; Ready{Ready?}
   Ready -- yes --&gt; Cutover[Cutover + cleanup]
   Ready -- no --&gt; Progressing[Progressing]</pre>
-<h3>Theory</h3>
+<h3 id="theory">Theory</h3>
 <p>A rollout is an incremental convergence process. It constrains changes using maxSurge and maxUnavailable, and observes readiness before progressing. Rollbacks are possible because the system retains prior revision manifests.</p>
 <pre class="mermaid">flowchart TB
   Desired[Desired replicas] --&gt; Surge[maxSurge]
@@ -739,7 +739,7 @@
   Surge --&gt; Plan[Rollout plan]
   Unavail --&gt; Plan
   Plan --&gt; Update[Update replicas]</pre>
-<h3>Design</h3>
+<h3 id="design">Design</h3>
 <p>k1s stores each spec revision and reconciles to the newest one. During a rollout, it updates replicas, observes readiness, and removes old revisions when safe. It emits detailed events for progress and canary states. Rollback replays a stored revision through the reconciler.</p>
 <pre class="mermaid">sequenceDiagram
   participant O as Operator
@@ -751,7 +751,7 @@
   O-&gt;&gt;C: Rollback to prior revision
   C-&gt;&gt;S: Load stored manifest
   C-&gt;&gt;C: Reconcile to old revision</pre>
-<h3>Application</h3>
+<h3 id="application">Application</h3>
 <p>Engineers should treat revisions as immutable artifacts. When testing, make a spec change, observe events and readiness, and then practice rollback. This builds confidence and mirrors Deployment workflows in Kubernetes.</p>
 <pre class="mermaid">sequenceDiagram
   participant O as Operator
@@ -767,7 +767,7 @@
     C-&gt;&gt;S: Load old manifest
     C-&gt;&gt;R: Reconcile old revision
   end</pre>
-<h2>Key Terms and Acronyms</h2>
+<h2 id="key-terms-and-acronyms">Key Terms and Acronyms</h2>
 <ul>
 <li>Rollout - Controlled transition between revisions.</li>
 <li>Revision - Immutable spec snapshot.</li>
@@ -778,7 +778,7 @@
 <li>Rollout hook - Pre/post actions tied to rollout stages.</li>
 <li>Progressing - Status when not all replicas are ready.</li>
 </ul>
-<h2>Commands (copy/paste)</h2>
+<h2 id="commands-copy-paste">Commands (copy/paste)</h2>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108
 python -m ae.cli apply -f specs/examples/echo-rollout.yaml
 python -m ae.cli events echo-rollout --limit 50
@@ -786,13 +786,13 @@ python -m ae.cli revisions echo-rollout --limit 5
 python -m ae.cli rollout pause echo-rollout
 python -m ae.cli rollout resume echo-rollout
 python -m ae.cli rollback echo-rollout --to &lt;revision&gt;</code></pre>
-<h2>Docs references (source + site)</h2>
+<h2 id="docs-references-source-site">Docs references (source + site)</h2>
 <ul>
 <li>Source: <code>docs/reference/rollouts.md</code></li>
 <li>Source: <code>docs/getting-started/concepts.md</code> (Rollouts section)</li>
 <li>Site: <code>docs/site/rollouts.html</code></li>
 </ul>
-<h2>Code references (walkthrough anchors)</h2>
+<h2 id="code-references-walkthrough-anchors">Code references (walkthrough anchors)</h2>
 <ul>
 <li>Rollout status + canary events: <code>src/ae/controller/reconciler.py:466</code></li>
 </ul>
@@ -838,7 +838,7 @@ spec:
     manifest = store.get_revision_manifest(app_name, target_rev)
     report = reconciler.reconcile(manifest)
     print(f&quot;Rolled back ... to revision {report.revision} ({report.revision_status})&quot;)</code></pre>
-<h2>Chapter navigation</h2>
+<h2 id="chapter-navigation">Chapter navigation</h2>
 <ul>
 <li>Prev: <a href="concepts-in-practice-07-health-probes.html">Chapter 07 - Health Probes</a></li>
 <li>Next: <a href="concepts-in-practice-09-configuration-secrets.html">Chapter 09 - Configs &amp; Secrets</a></li>
@@ -850,7 +850,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

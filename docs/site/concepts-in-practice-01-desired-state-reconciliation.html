@@ -721,8 +721,8 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 01 - Desired State &amp; Reconciliation</h1>
-<h2>Concept</h2>
+    <h1 id="chapter-01-desired-state-reconciliation">Chapter 01 - Desired State &amp; Reconciliation</h1>
+<h2 id="concept">Concept</h2>
 <p>A modern orchestration engine is a continuous control system. You declare a target (the desired state), and the controller repeatedly compares that target to reality, then applies corrective actions until the two match. This is reconciliation. The key property is idempotence: running the loop repeatedly should converge to the same result without causing unintended changes.</p>
 <pre class="mermaid">flowchart LR
   Spec[Spec file] --&gt; Desired[Desired state]
@@ -734,7 +734,7 @@
   Actions --&gt; Runtime
   Diff -- no --&gt; Steady[Converged]
   Steady --&gt; Reconciler</pre>
-<h3>Theory</h3>
+<h3 id="theory">Theory</h3>
 <p>Reconciliation is built on control-loop theory: observe, compare, act, repeat. The controller stores the desired state (from specs) and measures actual state (from runtime and health signals). When it detects drift, it issues the minimal set of actions needed to converge. The loop must tolerate partial failure, retries, and transient errors, so actions are designed to be safe if repeated.</p>
 <pre class="mermaid">sequenceDiagram
   participant C as Controller
@@ -749,7 +749,7 @@
   else No drift
     C-&gt;&gt;S: Record heartbeat
   end</pre>
-<h3>Design</h3>
+<h3 id="design">Design</h3>
 <p>In k1s, the controller imports specs, computes a spec hash to detect changes, creates a revision, and drives the runtime to match that revision. Events are emitted at each stage (ApplyStarted, ApplyCompleted) so operators can see the loop&#x27;s decisions. This design separates the &quot;what&quot; (spec) from the &quot;how&quot; (runtime adapter), and makes the controller robust to restarts because revisions are persisted.</p>
 <pre class="mermaid">flowchart TB
   Specs[specs/ directory] --&gt; Controller[Controller loop]
@@ -758,7 +758,7 @@
   Runtime --&gt; Containers[Running containers]
   Controller --&gt; Events[Events + metrics]
   Events --&gt; CLI[ae cli metrics/events]</pre>
-<h3>Application</h3>
+<h3 id="application">Application</h3>
 <p>As a developer, you should treat specs as the single source of truth. To change behavior, update the spec and let the reconciler converge. If a manual change is overwritten, that is expected--the desired state wins. This mindset enables GitOps workflows and predictable rollouts.</p>
 <pre class="mermaid">sequenceDiagram
   participant O as Operator
@@ -771,7 +771,7 @@
   C-&gt;&gt;R: Converge changes
   C-&gt;&gt;S: Record events + revision
   O-&gt;&gt;C: Check events/metrics</pre>
-<h2>Key Terms and Acronyms</h2>
+<h2 id="key-terms-and-acronyms">Key Terms and Acronyms</h2>
 <ul>
 <li>Desired state - Spec-defined target configuration for an app.</li>
 <li>Actual state - Observed runtime containers, health, and endpoints.</li>
@@ -783,19 +783,19 @@
 <li>k1s - The application orchestration engine used in these demos.</li>
 <li>k8s - Kubernetes.</li>
 </ul>
-<h2>Commands (copy/paste)</h2>
+<h2 id="commands-copy-paste">Commands (copy/paste)</h2>
 <pre><code>python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108
 python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli events echo --limit 20
 python -m ae.cli metrics</code></pre>
-<h2>Docs references (source + site)</h2>
+<h2 id="docs-references-source-site">Docs references (source + site)</h2>
 <ul>
 <li>Source: <code>docs/getting-started/concepts.md</code> (reconcile, revisions, events)</li>
 <li>Source: <code>docs/reference/architecture.md</code></li>
 <li>Site: <code>docs/site/concepts.html</code></li>
 <li>Site: <code>docs/site/architecture.html</code></li>
 </ul>
-<h2>Code references (walkthrough anchors)</h2>
+<h2 id="code-references-walkthrough-anchors">Code references (walkthrough anchors)</h2>
 <ul>
 <li>Reconcile loop scheduling and spec import: <code>src/ae/controller/__main__.py:1511</code></li>
 </ul>
@@ -862,7 +862,7 @@ python -m ae.cli metrics</code></pre>
                 &quot;&quot;&quot;,
                 (...)
             )</code></pre>
-<h2>Chapter navigation</h2>
+<h2 id="chapter-navigation">Chapter navigation</h2>
 <ul>
 <li>Next: <a href="concepts-in-practice-02-declarative-apply.html">Chapter 02 - Declarative Specs &amp; Apply</a></li>
 </ul>
@@ -873,7 +873,7 @@ python -m ae.cli metrics</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

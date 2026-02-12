@@ -721,9 +721,9 @@
       </svg>
     </button>
     <div class="container">
-    <h2>Rollout Policy</h2>
+    <h2 id="rollout-policy">Rollout Policy</h2>
 <p>Apps can specify a rollout policy to influence how replicas are created and how old revisions are removed during an update.</p>
-<h3>Fields</h3>
+<h3 id="fields">Fields</h3>
 <pre><code>spec:
   rollout:
     strategy: ordered | parallel | canary   # default: parallel
@@ -733,7 +733,7 @@
     # canary options
     weight: 1                               # bias first upstream Nx in ingress (canary)
     auto: { start: 1, step: 2, intervalSeconds: 60, max: 10 }  # controller‑tracked ramp</code></pre>
-<h3>Semantics</h3>
+<h3 id="semantics">Semantics</h3>
 <ul>
 <li>strategy=ordered:
 <ul>
@@ -773,9 +773,9 @@
 </ul>
 </li>
 </ul>
-<h3>Routing Bias</h3>
+<h3 id="routing-bias">Routing Bias</h3>
 <p>Ingress uses a “prefer first” policy by default. The controller writes the new revision endpoints first, so traffic prefers the new revision as soon as it becomes ready; old replicas are removed once readiness satisfies the policy. For canary rollouts, use <code>rollout.weight</code> (and optional <code>rollout.auto</code>) to bias and ramp traffic.</p>
-<h3>Demo</h3>
+<h3 id="demo">Demo</h3>
 <p>Apply a two-step ordered rollout for <code>echo</code>:</p>
 <pre><code>./scripts/init_demo.sh --demo-rollout -y -d
 # or
@@ -791,7 +791,7 @@ ae rollout resume echo</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-10 19:25:45</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

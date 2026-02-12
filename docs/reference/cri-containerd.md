@@ -181,8 +181,41 @@ Kubernetes clusters.
 - `AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt` or `AE_CRI_REGISTRY_TRUST_INSECURE=1` (dev)
 - `AE_CRI_REGISTRY_TRUST_SCHEME=http` to override scheme (default `https`)
 - `AE_CRI_REGISTRY_TRUST_RESTART=1` to restart containerd after writing trust
+- `AE_CRI_REGISTRY=<host:port>` to rewrite strict-CRI managed image refs to a registry
+- `AE_CRI_REGISTRY_NAMESPACE=<prefix>` to prepend a registry path segment (for example `k1s`)
+- `AE_CRI_REGISTRY_MODE=managed|external|off`
+  - `managed`: k1s starts/health-checks a local strict-CRI registry (default endpoint `localhost:5001`)
+  - `external`: k1s validates external registry reachability and fails fast if unavailable
+  - `off`: disable strict-CRI registry rewrite/readiness checks
+- `AE_CRI_REGISTRY_PRESET=microk8s|local`
+  - `microk8s`: sets `AE_CRI_REGISTRY_MODE=external` + default `AE_CRI_REGISTRY=localhost:32000`
+  - `local`: sets `AE_CRI_REGISTRY_MODE=managed`
+- `AE_CRI_IMAGE_POLICY=prompt|pull|fail` for strict-CRI missing-image behavior
+  (`prompt` on interactive shells; `fail` in non-interactive/CI by default)
+  - in `prompt` mode, action `b` does:
+    - `k1s-core-apishim`: local build -> registry push -> CRI pull verify
+    - other strict-CRI managed images: local mirror (pull/tag/push) -> CRI pull verify
+- `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker` to pick strict-CRI local build backend for fallback action `b`
+- `AE_APISHIM_IMAGE=<image-ref>` to override strict-CRI apishim image
 - `AE_CRI_SOCKET_ACCESS=1` to grant temporary ACL access to the containerd socket (dev-only)
 - `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default)
+
+### Prepare example images for strict CRI
+
+For registry-first strict CRI lanes, prebuild/mirror example images into your
+registry before running docs/lab manifests:
+
+```
+scripts/dev/examples_registry_prepare.sh \
+  --registry "${AE_CRI_REGISTRY:-${AE_REGISTRY_HOST}}" \
+  --namespace "${AE_CRI_REGISTRY_NAMESPACE:-k1s}" \
+  --output-dir state/examples/registry \
+  --pull-cri
+```
+
+This writes registry-rewritten manifests under `state/examples/registry/` (for
+both `specs/examples` and `docs/site/examples`) so examples can be applied
+without relying on upstream registries during the lab flow.
 
 ### Temporary socket access (dev)
 
