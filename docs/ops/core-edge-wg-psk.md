@@ -8,6 +8,18 @@ Prereqs
 - WireGuard tools installed (`wg`, `wg-quick`) on hub and edge hosts.
 - Rosenpass installed on hub and edge hosts (Flow B only).
 - Hub host reachable from edge on UDP `51820` (or your chosen WG listen port).
+
+One-time non-root CLI setup (for `ae shell`/`ae port-forward` without sudo)
+```bash
+sudo groupadd -f aecli
+sudo usermod -aG aecli "$USER"
+newgrp aecli
+id -nG | tr ' ' '\n' | grep -x aecli
+```
+Expected
+- `aecli` appears in the current shell groups.
+- Core startup syncs `state/profiles/<profile>/apishim.cli.env` as `640 root:aecli` with `AE_APISHIM_SERVER`, `AE_APISHIM_MINT_TOKEN`, and `AE_APISHIM_CA_BUNDLE`.
+- `ae auth local --strict` infers the active profile and uses the shared CLI env by default (no `--apishim-env` needed).
 Notes
 - Run `make k1s-core` without `sudo`. The controller stack writes under `state/`; if it becomes root-owned, subsequent non-root runs will fail. If you already ran `make k1s-core` with `sudo`, fix ownership with `sudo chown -R $USER:$USER state`.
 - The node process needs elevated privileges to apply WireGuard configuration. Use `sudo -E make k1s-core-node` / `k1s-edge-node` and keep `AE_ROSENPASS_DIR` in a gitignored path (the defaults use `state/rosenpass`).
@@ -347,7 +359,7 @@ Expected
 - `rosenpass_pubkey` is present for each peer once both nodes have generated keys.
 - `errors` is empty or only reports missing `rp_pubkey` if Rosenpass keys were not created.
 Note
-- If `/system` returns `{"error": "unauthorized"}`, export tokens with `source <(ae auth local)` and pass the bearer token header as shown.
+- If `/system` returns `{"error": "unauthorized"}`, export tokens with `source <(ae auth local --strict)` and pass the bearer token header as shown.
 
 Step 6a (optional): Allow rootless controller to read WireGuard handshakes
 ```bash
@@ -396,9 +408,18 @@ If you see `Unable to access interface: No such device`
 - Ensure the node process is running with sudo and that WireGuard tools are installed.
 - Restart the node process; the WireGuard interface is created on first apply.
 
+Step 8a: Non-root CLI auth precheck (once per new shell)
+```bash
+test -r state/profiles/k1s-core/apishim.cli.env && echo "shared CLI env readable"
+test -r state/profiles/k1s-core/apishim.ca.crt && echo "shared CA bundle readable"
+grep -E '^AE_APISHIM_(SERVER|MINT_TOKEN|CA_BUNDLE)=' state/profiles/k1s-core/apishim.cli.env
+source <(ae auth local --strict)
+env | grep -E '^AE_APISHIM_(SERVER|MINT_TOKEN|CA_BUNDLE)='
+```
+
 Step 9: Deploy shell demo to the Sea site (SPDY shell + port-forward validation)
 ```bash
-source <(ae auth local)
+source <(ae auth local --strict)
 # If api.home.arpa does not resolve, bypass local DNS:
 export AE_APISHIM_SERVER=https://127.0.0.1:8445
 ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
@@ -432,6 +453,11 @@ Notes
 - The hub node (`k1s-core-node`, `role=hub`) is assignable and can run workloads. The core controller (`role=controller`, `profile=k1s-core`) is not a runtime node in this flow unless you explicitly run a workload-capable node there.
 - If you want to keep `api.home.arpa` instead of overriding `AE_APISHIM_SERVER`, add a hosts entry:
   - `127.0.0.1 api.home.arpa` (or map to the hub IP for remote use).
+- If dashboard modal shell works but CLI returns `spdy upgrade failed: 401`, verify:
+  - your shell is in group `aecli` (`id -nG | tr ' ' '\n' | grep -x aecli`);
+  - shared files are readable (`ls -l state/profiles/k1s-core/apishim.cli.env state/profiles/k1s-core/apishim.ca.crt`);
+  - strict auth exports mint+CA values (`source <(ae auth local --strict)` then `env | grep -E '^AE_APISHIM_(SERVER|MINT_TOKEN|CA_BUNDLE)='`).
+- Set `AE_CLI_LABS_MINT_FALLBACK=0` only when you need to debug shim-only token flow.
 
 Step 10: NetFS + CSI storage over the WG overlay
 Overview
@@ -458,7 +484,7 @@ export AE_STORAGE_NFS_PATH=/exports/k1s
 # SEA edge node (add to Step 5 env)
 sudo -E AE_ENABLE_NETFS=1 AE_APISHIM_DSN=postgres://... make k1s-edge-node
 
-source <(ae auth local)
+source <(ae auth local --strict)
 ae apply -f docs/site/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ```
@@ -468,7 +494,7 @@ Stage 2: Shared RWX validation (core + edge)
 - Example hub Postgres binding (WG IP `10.255.0.1`):
   - `POSTGRES_BIND_IP=10.255.0.1 POSTGRES_PORT=5432 make k1s-core`
 ```bash
-source <(ae auth local)
+source <(ae auth local --strict)
 ae apply -f specs/examples/echo-storage-node-hub.yaml --storage-class-name k1s-nfs --pvc-access-modes ReadWriteMany
 ae apply -f specs/examples/echo-storage-node-sea-edge-02-edge-1.yaml --storage-class-name k1s-nfs --pvc-access-modes ReadWriteMany
 ae status echo-storage-node-hub --wide --events
@@ -492,7 +518,7 @@ export AE_APISHIM_DSN=postgresql://shim:shim@10.255.0.1:5432/shim
 export AE_ENABLE_NETFS=1
 
 # Deploy and verify shared RWX
-source <(ae auth local)
+source <(ae auth local --strict)
 ae apply -f specs/examples/echo-storage-node-hub.yaml --storage-class-name k1s-nfs --pvc-access-modes ReadWriteMany
 ae apply -f specs/examples/echo-storage-node-sea-edge-02-edge-1.yaml --storage-class-name k1s-nfs --pvc-access-modes ReadWriteMany
 ae shell echo-storage-node-hub -- sh -c 'echo core-flag > /var/lib/echo/flag.txt'
@@ -508,7 +534,7 @@ Minimal CSI smoke (CephFS example)
 # Hub controller (before start)
 export AE_STORAGE_PROVISIONERS=/path/to/configs/storage-provisioners.yaml
 
-source <(ae auth local)
+source <(ae auth local --strict)
 ae apply -f specs/examples/echo-stateful.yaml --storage-class-name cephfs-rwx --pvc-access-modes ReadWriteMany
 ae status echo-stateful --wide --events
 ```
@@ -525,4 +551,5 @@ Security notes (production hardening)
 - Replace dev NATS credentials (`gateway:dev`, `site-<id>-uplink:dev`) with per-site creds (NKeys/JWT or creds files) and lock down subject permissions.
 - Keep the node agent API (`AE_AGENT_TOKEN`) reachable only over WG/LAN; do not expose it publicly.
 - Keep the API shim (exec/port-forward) behind TLS with scoped tokens; avoid sharing admin tokens across environments.
+- Do not rely on `AE_APISHIM_INSECURE=1` outside short-lived debugging; prefer the shared `AE_APISHIM_CA_BUNDLE` path.
 - Ensure `AE_ROSENPASS_DIR` permissions are restricted (root-owned, 0700/0600) and avoid writing keys under the repo when running nodes with sudo.

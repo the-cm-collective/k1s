@@ -15,6 +15,18 @@ Prereqs
 - Remote edge NATS can open outbound TCP to `HUB_PUBLIC:7422`.
 - Unique node ids (recommended format: `<site_id>--<node_id>`).
 
+One-time non-root CLI setup (for `ae shell`/`ae port-forward` without sudo)
+```bash
+sudo groupadd -f aecli
+sudo usermod -aG aecli "$USER"
+newgrp aecli
+id -nG | tr ' ' '\n' | grep -x aecli
+```
+Expected
+- `aecli` appears in the current shell groups.
+- Core startup syncs `state/profiles/<profile>/apishim.cli.env` as `640 root:aecli`.
+- `ae auth local --strict` infers the active profile and prefers `apishim.cli.env` automatically.
+
 Defaults and Notes
 - Transport backend is global per controller. Do not mix JetStream and work.pull in one hub.
 - Each gateway connects only to its local edge NATS.
@@ -217,7 +229,7 @@ Note
 - For split-host setups that require explicit `AE_AGENT_ENDPOINT`, follow `docs/ops/core-edge-wg-psk.md`.
 
 Workload placement smoke tests (manifests)
-Use the controller CLI context above (for example: `source <(ae auth local)`).
+Use the controller CLI context above (for example: `source <(ae auth local --strict)`).
 Node selectors use scoped node ids (`<site_id>--<node_id>`).
 Helper manifests:
 - `specs/examples/echo-gateway.yaml` targets gateway nodes and spreads across sites.
@@ -258,7 +270,7 @@ python -m ae.cli status echo-node-sea-edge-02-edge-2 --wide --events
 
 Port-forward smoke tests (shell demo, one per node):
 ```
-source <(ae auth local)
+source <(ae auth local --strict)
 ae apply -f docs/site/examples/shell-demo-node-sfo-edge-01-edge-1.yaml
 ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
 ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-2.yaml
@@ -271,7 +283,12 @@ ae port-forward shell-demo-node-sea-edge-02-edge-2 18083:8080
 ae port-forward shell-demo-node-hub 18084:8080
 ```
 Notes:
-- Port-forward uses the API shim; run `source <(ae auth local)` (or set `AE_APISHIM_SERVER` and `AE_APISHIM_PORTFORWARD_TOKEN`) before invoking `ae port-forward`.
+- Port-forward uses the API shim; run `source <(ae auth local --strict)` so CLI exports `AE_APISHIM_SERVER`, `AE_APISHIM_MINT_TOKEN`, and `AE_APISHIM_CA_BUNDLE` before invoking `ae port-forward`.
+- If `source <(ae auth local --strict)` reports `permission denied` for `apishim.cli.env`, refresh group membership (`newgrp aecli` or re-login) and re-run.
+- If dashboard modal shell works but CLI returns `spdy upgrade failed: 401`, verify:
+  - group membership: `id -nG | tr ' ' '\n' | grep -x aecli`;
+  - shared env readability: `ls -l state/profiles/k1s-core/apishim.cli.env state/profiles/k1s-core/apishim.ca.crt`;
+  - exported mint auth context: `env | grep -E '^AE_APISHIM_(SERVER|MINT_TOKEN|CA_BUNDLE)='`.
 
 Security notes (production hardening)
 - Replace dev NATS credentials (`gateway:dev`, `site-<id>-uplink:dev`) with per-site creds (NKeys/JWT or creds files) and lock down subject permissions.

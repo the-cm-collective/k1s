@@ -65,6 +65,19 @@ python -m ae.cli apply -f specs/examples/echo-multinode.yaml
 - Remote edge NATS can open outbound TCP to `HUB_PUBLIC:7422`.
 - Unique node ids (recommended format: `<site_id>--<node_id>`).
 
+### One-time non-root CLI setup (shell/port-forward)
+Run this once per workstation user:
+```bash
+sudo groupadd -f aecli
+sudo usermod -aG aecli "$USER"
+newgrp aecli
+id -nG | tr ' ' '\n' | grep -x aecli
+```
+Expected:
+- `aecli` appears in the current shell groups.
+- Core startup syncs `state/profiles/<profile>/apishim.cli.env` as `640 root:aecli`.
+- `ae auth local --strict` infers the active profile and prefers `apishim.cli.env` automatically (no `--apishim-env` argument needed).
+
 ### Start with clear state (recommended)
 ```
 make dev-state-clean CONFIRM=1
@@ -245,15 +258,15 @@ If `ae shell` / `ae port-forward` fails with `Connection refused`, ensure:
 - `AE_APISHIM_SERVER` points at the hub apishim (not localhost on the edge host).
 - The node advertises a reachable agent endpoint (`AE_AGENT_ENDPOINT` or `--advertise-endpoint`) from the apishim container/host.
 If `ae shell` fails with `spdy upgrade failed: 401` while dashboard shell still works:
-- Ensure non-root CLI group setup is complete once: `sudo groupadd -f aecli && sudo usermod -aG aecli $USER` (re-login/newgrp).
+- Ensure non-root CLI group setup is complete once: `sudo groupadd -f aecli && sudo usermod -aG aecli $USER`, then refresh shell groups (`newgrp aecli` or re-login).
 - Ensure core startup syncs `state/profiles/<profile>/apishim.cli.env` as `640 root:aecli` with `AE_APISHIM_SERVER`, `AE_APISHIM_MINT_TOKEN`, and `AE_APISHIM_CA_BUNDLE`.
 - Ensure `state/profiles/<profile>/apishim.ca.crt` is present/readable for group `aecli`.
 - Re-run `source <(ae auth local --strict)` to refresh exports.
-- Keep `AE_LABS_TOKEN` in the shell; CLI can mint a short-lived fallback session token through controller `/api/apishim/session`.
+- If `AE_LABS_TOKEN` is also available, CLI can mint a short-lived fallback session token through controller `/api/apishim/session`.
 - Set `AE_CLI_LABS_MINT_FALLBACK=0` only if you want to force shim-only token behavior for debugging.
 Note
 - `host.containers.internal` works when apishim runs in a container (podman default). If apishim runs on the host (`AE_APISHIM_MODE=host`), you can use `127.0.0.1` instead.
-- `ae auth local` sets `AE_APISHIM_SERVER` to `https://127.0.0.1:8445`. On a remote host, override it to the hub, e.g. `export AE_APISHIM_SERVER=https://<HUB_IP>:8445` (keep the same `AE_APISHIM_TOKEN` from `ae auth local`).
+- `ae auth local --strict` sets `AE_APISHIM_SERVER` to `https://127.0.0.1:8445`. On a remote host, override it to the hub, e.g. `export AE_APISHIM_SERVER=https://<HUB_IP>:8445`, then re-run strict auth in that shell.
 
 ### Same-Host Variant (hub + edge on one box)
 Use this when you want to simulate the remote site on the same host as the hub
@@ -369,9 +382,17 @@ ae nodes
 ```
 curl http://<siteb-wg-ip>:9109/readyz
 ```
-4. Test exec and port-forward against pods pinned to Site B.
+4a. Validate non-root auth exports (once per new shell).
+```bash
+test -r state/profiles/k1s-core/apishim.cli.env && echo "shared CLI env readable"
+test -r state/profiles/k1s-core/apishim.ca.crt && echo "shared CA bundle readable"
+grep -E '^AE_APISHIM_(SERVER|MINT_TOKEN|CA_BUNDLE)=' state/profiles/k1s-core/apishim.cli.env
+source <(ae auth local --strict)
+env | grep -E '^AE_APISHIM_(SERVER|MINT_TOKEN|CA_BUNDLE)='
 ```
-source <(ae auth local)
+4b. Test exec and port-forward against pods pinned to Site B.
+```
+source <(ae auth local --strict)
 ae apply -f docs/site/examples/shell-demo-node-sea-edge-02-edge-1.yaml
 ae status shell-demo-node-sea-edge-02-edge-1 --wide --events
 ae shell shell-demo-node-sea-edge-02-edge-1 -- /bin/sh
@@ -409,7 +430,7 @@ curl -sSf http://127.0.0.1:9112/readyz
 ```
 echo "$AE_APISHIM_SERVER"
 ```
-On a remote host, override with `export AE_APISHIM_SERVER=https://<HUB_IP>:8445` and keep the token from `ae auth local`.
+On a remote host, override with `export AE_APISHIM_SERVER=https://<HUB_IP>:8445`, then run `source <(ae auth local --strict)` again.
 
 ### Validation
 ```
@@ -504,7 +525,7 @@ make k1s-edge-node
 
 Step 3a: Prepare kubectl against apishim (for PVC objects)
 ```bash
-source <(ae auth local)
+source <(ae auth local --strict)
 export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
@@ -513,7 +534,8 @@ kctl_rw() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --tok
 Note:
 - In `zsh`, avoid `KCTL="kubectl ..."` followed by `$KCTL ...` because it can be
   parsed as a single command path. Use shell helpers (`kctl_ro` / `kctl_rw`).
-- When `k1s-core` is started with `sudo`, `ae auth local` can hold stale tokens from a prior run.
+- `ae auth local --strict` is enough for `ae shell`/`ae port-forward`, but this kubectl path still needs direct read/write apishim bearer tokens.
+- When `k1s-core` is started with `sudo`, `ae auth local --strict` can hold stale direct bearer tokens from a prior run.
   Refreshing from `state/profiles/k1s-core/apishim.env` avoids `missing/invalid bearer token`.
 
 Step 3b: Preflight checks (required before applying NetFS workloads)
@@ -579,7 +601,7 @@ If apishim returns `proto: cannot parse invalid wire-format data`, keep
 
 Step 5: Validate PVC, attachments, and workload health
 ```bash
-source <(ae auth local)
+source <(ae auth local --strict)
 export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
@@ -618,7 +640,7 @@ Step 2: Restart nodes with NetFS + shared DSN enabled
 
 Step 3: Run storage validation workload set
 ```bash
-source <(ae auth local)
+source <(ae auth local --strict)
 export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
@@ -691,7 +713,7 @@ make k1s-edge-node
 ```
 2. Confirm `k1s-nfs` exists:
 ```bash
-source <(ae auth local)
+source <(ae auth local --strict)
 export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
@@ -722,7 +744,7 @@ storage class or node labels and re-apply workloads.
 Use this when the writer is degraded and events show both `ScheduleWarning` and
 PVC/storageclass failures.
 ```bash
-source <(ae auth local)
+source <(ae auth local --strict)
 export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
 kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
