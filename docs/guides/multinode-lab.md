@@ -261,16 +261,27 @@ echo "$USER ALL=(root) NOPASSWD: ${WG_BIN} show wg-hub dump" | sudo tee /etc/sud
 sudo chmod 440 /etc/sudoers.d/k1s-wg-dump
 ```
 
-2. Start the hub controller with overlay dump support:
+2. Start the hub controller with overlay dump support (rootful validated sequence):
 ```bash
-WG_BIN=$(command -v wg) \
-AE_DEV_LOCAL=1 \
-AE_WG_INTERFACE=wg-hub \
-AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
-AE_STORAGE_NFS_SERVER=10.255.0.1 \
-AE_STORAGE_NFS_PATH=/exports/k1s \
-AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
-make k1s-core
+WG_BIN=$(command -v wg)
+sudo -E \
+  AE_DEV_LOCAL=1 \
+  AE_LABS=1 \
+  AE_APISHIM_AUTOSTART=1 \
+  AE_APISHIM_MODE=container \
+  APISHIM_CONTAINER_SOCKET=/run/podman/podman.sock \
+  APISHIM_CONTAINER_HOST=unix:///run/podman/podman.sock \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
+  AE_AGENT_API_PORT=9110 \
+  AE_AGENT_API_TOKEN=devtoken \
+  AE_ENABLE_NETFS=1 \
+  AE_STORAGE_SEED_DEFAULTS=1 \
+  AE_STORAGE_NFS_SERVER=10.255.0.1 \
+  AE_STORAGE_NFS_PATH=/exports/k1s \
+  AE_STORAGE_NFS_CLASS=k1s-nfs \
+  AE_APISHIM_ETCD_ENDPOINTS=http://etcd:2379 \
+  make k1s-core
 ```
 This seeds `k1s-nfs` in apishim for the NetFS single-host flow.
 
@@ -317,6 +328,7 @@ make k1s-edge-core
 5. Start the edge node (single-host routing adjustments):
 ```
 sudo -E \
+AE_NODE_ID=edge-1 \
 AE_WG_INTERFACE=wg-edge \
 AE_ROSENPASS_INTERFACE=wg-edge \
 AE_WG_ADDRESS=10.255.0.3/32 \
@@ -331,6 +343,8 @@ AE_CONTROLLER_URL=http://192.168.29.143:9110 \
 make k1s-edge-node
 ```
 Note:
+- `AE_NODE_ID=edge-1` keeps scheduler targeting aligned with
+  `specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml`.
 - `role=worker` is required for `specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml`.
 - `AE_ENABLE_NETFS=1` + `AE_APISHIM_DSN` are required for Option C PVC mounts.
 
@@ -361,12 +375,22 @@ Note
 
 #### Troubleshooting exec/port-forward
 If `spdy exec failed: [Errno 111] Connection refused` persists:
-1. Confirm the node endpoints are reachable from apishim.
+1. Confirm apishim is healthy and not crash-looping.
+```bash
+podman compose -f ops/dev/docker-compose.yaml ps --all | rg apishim
+podman logs dev-apishim-1 --tail 80
+```
+If logs show `etcd unreachable` with `127.0.0.1:2379` while apishim is
+containerized, restart core and set an apishim-specific etcd endpoint:
+```bash
+AE_APISHIM_ETCD_ENDPOINTS=http://etcd:2379 make k1s-core
+```
+2. Confirm the node endpoints are reachable from apishim.
 ```
 ae nodes
 ```
 If endpoints show `http://127.0.0.1:9111`/`9112` while apishim is in a container, restart the nodes with `AE_AGENT_ENDPOINT=http://10.255.0.1:9111` and `AE_AGENT_ENDPOINT=http://10.255.0.2:9112` (or `http://host.containers.internal:9111`/`9112` for same-host labs).
-2. From the apishim container, probe the node agent:
+3. From the apishim container, probe the node agent:
 ```
 podman exec -it dev-apishim-1 curl -sSf http://host.containers.internal:9112/readyz
 ```
@@ -374,7 +398,7 @@ If apishim runs on the host, use:
 ```
 curl -sSf http://127.0.0.1:9112/readyz
 ```
-3. Verify your CLI points to the correct apishim server:
+4. Verify your CLI points to the correct apishim server:
 ```
 echo "$AE_APISHIM_SERVER"
 ```
@@ -474,20 +498,21 @@ make k1s-edge-node
 Step 3a: Prepare kubectl against apishim (for PVC objects)
 ```bash
 source <(ae auth local)
-kctl() {
-  kubectl --server="${AE_APISHIM_SERVER}" \
-    --token="${AE_APISHIM_TOKEN}" \
-    --insecure-skip-tls-verify "$@"
-}
+export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_TOKEN}" --insecure-skip-tls-verify "$@"; }
 ```
 Note:
 - In `zsh`, avoid `KCTL="kubectl ..."` followed by `$KCTL ...` because it can be
-  parsed as a single command path. Use the `kctl()` helper above.
+  parsed as a single command path. Use shell helpers (`kctl_ro` / `kctl_rw`).
+- When `k1s-core` is started with `sudo`, `ae auth local` can hold stale tokens from a prior run.
+  Refreshing from `state/profiles/k1s-core/apishim.env` avoids `missing/invalid bearer token`.
 
 Step 3b: Preflight checks (required before applying NetFS workloads)
 ```bash
 ae nodes
-kctl get storageclass k1s-nfs
+kctl_ro get storageclass k1s-nfs
 python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose
 ```
 Required state:
@@ -497,7 +522,7 @@ Required state:
 - Storage class `k1s-nfs` exists in apishim.
 - Plan output shows at least one eligible edge node for
   `netfs-nfs-sea-edge-02-edge-1`.
-If `kctl get storageclass k1s-nfs` returns `NotFound`, restart core with NFS
+If `kctl_ro get storageclass k1s-nfs` returns `NotFound`, restart core with NFS
 seeding env and re-check:
 ```bash
 AE_DEV_LOCAL=1 \
@@ -508,7 +533,7 @@ AE_STORAGE_NFS_SERVER=<HUB_WG_OR_LAN_IP> \
 AE_STORAGE_NFS_PATH=/exports/k1s \
 AE_STORAGE_PROVISIONERS=/etc/ae/storage-provisioners.yaml \
 make k1s-core
-kctl get storageclass k1s-nfs
+kctl_ro get storageclass k1s-nfs
 ```
 If the edge node is missing `role=worker`, restart it with:
 ```bash
@@ -527,7 +552,7 @@ Step 4A: Primary lane (CSI CephFS)
   - `topologyKeys: ["site"]`
 - Apply CSI workload:
 ```bash
-kctl apply -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml
+kctl_rw apply -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml
 python -m ae.cli apply -f specs/examples/netfs-csi-sea-edge-02-edge-1.yaml
 ```
 
@@ -536,7 +561,7 @@ Step 4B: Fallback lane (NFS)
   `AE_STORAGE_NFS_SERVER` + `AE_STORAGE_NFS_PATH`.
 - Apply NFS workload:
 ```bash
-kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
+kctl_rw apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
 python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
 ```
@@ -548,13 +573,12 @@ If apishim returns `proto: cannot parse invalid wire-format data`, keep
 Step 5: Validate PVC, attachments, and workload health
 ```bash
 source <(ae auth local)
-kctl() {
-  kubectl --server="${AE_APISHIM_SERVER}" \
-    --token="${AE_APISHIM_TOKEN}" \
-    --insecure-skip-tls-verify "$@"
-}
+export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_TOKEN}" --insecure-skip-tls-verify "$@"; }
 ae nodes
-kctl get pvc sea-netfs-pvc -n default -o wide
+kctl_ro get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
 ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc "echo prod-$(date +%s) > /data/hello.txt && cat /data/hello.txt"
@@ -588,22 +612,33 @@ Step 2: Restart nodes with NetFS + shared DSN enabled
 Step 3: Run storage validation workload set
 ```bash
 source <(ae auth local)
-kctl() {
-  kubectl --server="${AE_APISHIM_SERVER}" \
-    --token="${AE_APISHIM_TOKEN}" \
-    --insecure-skip-tls-verify "$@"
-}
+export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_TOKEN}" --insecure-skip-tls-verify "$@"; }
 ae nodes
-kctl get storageclass k1s-nfs
+kctl_ro get storageclass k1s-nfs
 python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose
-kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
+kctl_rw apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
 python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
-kctl get pvc sea-netfs-pvc -n default -o wide
+kctl_ro get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
 ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc "echo lab-$(date +%s) > /data/hello.txt && cat /data/hello.txt"
 ae shell netfs-nfs-hub-reader -- cat /data/hello.txt
+```
+
+If `ae shell` times out but workloads are `ready`:
+- Treat storage validation as passed if direct runtime exec proves shared data:
+```bash
+sudo podman exec ae-netfs-nfs-sea-edge-02-edge-1-rev1-0 sh -lc 'echo direct-$(date +%s) > /data/hello.txt && cat /data/hello.txt'
+sudo podman exec ae-netfs-nfs-hub-reader-rev1-0 cat /data/hello.txt
+```
+- This indicates NetFS data path is healthy and the remaining issue is the shim exec proxy path.
+- Confirm by checking apishim logs for exec `501` responses:
+```bash
+sudo podman logs --since=5m dev-apishim-1 | rg -n 'pods/.*/exec| 501 '
 ```
 
 Step 4: Failure and recovery drill
@@ -650,28 +685,27 @@ make k1s-edge-node
 2. Confirm `k1s-nfs` exists:
 ```bash
 source <(ae auth local)
-kctl() {
-  kubectl --server="${AE_APISHIM_SERVER}" \
-    --token="${AE_APISHIM_TOKEN}" \
-    --insecure-skip-tls-verify "$@"
-}
-kctl get storageclass k1s-nfs
+export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_TOKEN}" --insecure-skip-tls-verify "$@"; }
+kctl_ro get storageclass k1s-nfs
 ```
 If it returns `NotFound`, restart core with `AE_STORAGE_NFS_SERVER` and
 `AE_STORAGE_NFS_PATH`, then re-check.
 3. Apply PVC with apishim-safe validation settings:
 ```bash
-kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
+kctl_rw apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
 ```
 If this still fails with wire-format validation issues, use REST `PUT` as shown
 in `scripts/netfs_smoke.sh`.
 4. Confirm PVC exists and is bound:
 ```bash
-kctl get pvc sea-netfs-pvc -n default -o wide
+kctl_ro get pvc sea-netfs-pvc -n default -o wide
 ```
 5. Confirm storage class topology is compatible with edge labels:
 ```bash
-kctl get storageclass k1s-nfs -o yaml
+kctl_ro get storageclass k1s-nfs -o yaml
 ```
 If `topologyKeys` or `allowedTopologies` exclude the edge labels, adjust the
 storage class or node labels and re-apply workloads.
@@ -682,29 +716,28 @@ Use this when the writer is degraded and events show both `ScheduleWarning` and
 PVC/storageclass failures.
 ```bash
 source <(ae auth local)
-kctl() {
-  kubectl --server="${AE_APISHIM_SERVER}" \
-    --token="${AE_APISHIM_TOKEN}" \
-    --insecure-skip-tls-verify "$@"
-}
+export AE_APISHIM_TOKEN=$(sudo awk -F= '/^AE_APISHIM_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+export AE_APISHIM_READ_TOKEN=$(sudo awk -F= '/^AE_APISHIM_READ_TOKEN=/{print $2}' state/profiles/k1s-core/apishim.env)
+kctl_ro() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_READ_TOKEN}" --insecure-skip-tls-verify "$@"; }
+kctl_rw() { kubectl --kubeconfig=/dev/null --server="${AE_APISHIM_SERVER}" --token="${AE_APISHIM_TOKEN}" --insecure-skip-tls-verify "$@"; }
 
 # 1) reset failed workloads and stale PVC
 python -m ae.cli delete netfs-nfs-sea-edge-02-edge-1 --purge
 python -m ae.cli delete netfs-nfs-hub-reader --purge
-kctl delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
+kctl_rw delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
 
 # 2) verify scheduler prerequisites
 ae nodes
 python -m ae.cli plan -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml --verbose
-kctl get storageclass k1s-nfs
+kctl_ro get storageclass k1s-nfs
 
 # 3) re-apply PVC and workloads
-kctl apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
+kctl_rw apply -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --validate=false
 python -m ae.cli apply -f specs/examples/netfs-nfs-sea-edge-02-edge-1.yaml
 python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
 
 # 4) verify ready + RWX behavior
-kctl get pvc sea-netfs-pvc -n default -o wide
+kctl_ro get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
 ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc "echo recover-$(date +%s) > /data/hello.txt && cat /data/hello.txt"
@@ -712,13 +745,13 @@ ae shell netfs-nfs-hub-reader -- cat /data/hello.txt
 ```
 
 ### Option C Cleanup
-Assumes `kctl` from Step 3a (or re-run the same `source <(ae auth local)` snippet).
+Assumes `kctl_ro`/`kctl_rw` from Step 3a (or re-run the same auth/token snippet).
 ```bash
 python -m ae.cli delete netfs-nfs-hub-reader --purge
 python -m ae.cli delete netfs-nfs-sea-edge-02-edge-1 --purge
 python -m ae.cli delete netfs-csi-sea-edge-02-edge-1 --purge
-kctl delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
-kctl delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
+kctl_rw delete -f specs/examples/netfs-nfs-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
+kctl_rw delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-found --validate=false
 ```
 
 ## Option D — Canonical ingress modes over WireGuard/Rosenpass

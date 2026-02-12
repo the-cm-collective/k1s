@@ -81,6 +81,9 @@ class NetFSManager:
         stage_root = os.getenv("AE_CSI_STAGE_ROOT") or "/var/lib/ae/csi"
         self._csi_stage_root = Path(stage_root)
         self._csi_timeout = float(os.getenv("AE_CSI_TIMEOUT_SECONDS", "10") or 10)
+        self._mount_timeout = float(
+            os.getenv("AE_NETFS_MOUNT_TIMEOUT_SECONDS", "20") or 20
+        )
         self._csi_clients: dict[str, CsiNodeClient] = {}
 
     def ensure_mount(
@@ -632,7 +635,17 @@ class NetFSManager:
             cmd.extend(["-o", ",".join(options)])
         cmd.extend([source, str(target)])
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)  # noqa: S603,S607
+            subprocess.run(  # noqa: S603,S607
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self._mount_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:  # pragma: no cover - integration path
+            raise RuntimeError(
+                f"mount timed out after {self._mount_timeout:.0f}s: {source} -> {target}"
+            ) from exc
         except subprocess.CalledProcessError as exc:  # pragma: no cover - integration path
             stderr = (exc.stderr or "").strip()
             raise RuntimeError(f"failed to mount {source} on {target}: {stderr}") from exc
@@ -640,8 +653,16 @@ class NetFSManager:
     def _unmount(self, target: Path) -> None:
         try:
             subprocess.run(
-                ["umount", str(target)], check=True, capture_output=True, text=True  # noqa: S603,S607
+                ["umount", str(target)],  # noqa: S603,S607
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self._mount_timeout,
             )
+        except subprocess.TimeoutExpired as exc:  # pragma: no cover - integration path
+            raise RuntimeError(
+                f"unmount timed out after {self._mount_timeout:.0f}s: {target}"
+            ) from exc
         except subprocess.CalledProcessError as exc:  # pragma: no cover - integration path
             stderr = (exc.stderr or "").strip()
             raise RuntimeError(f"failed to unmount {target}: {stderr}") from exc

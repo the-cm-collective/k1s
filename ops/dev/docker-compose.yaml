@@ -21,7 +21,7 @@ services:
       context: ../..
       dockerfile: ops/dev/apishim.Dockerfile
     working_dir: /workspace
-    command: bash -lc "python -m pip install -e . && AE_APISHIM_ENABLE=1 python -m ae.apishim serve --host 0.0.0.0 --port 8445 --tls"
+    command: bash -lc "AE_APISHIM_ENABLE=1 python -m ae.apishim serve --host 0.0.0.0 --port 8445 --tls"
     volumes:
       - ../..:/workspace
       - ${APISHIM_CONTAINER_SOCKET:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock
@@ -29,6 +29,7 @@ services:
       - ${APISHIM_ENV_FILE}
     environment:
       - AE_APISHIM_ENABLE=1
+      - PYTHONPATH=/workspace/src
       - AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-podman}
       - AE_APISHIM_ALLOW_ANON=0
       - AE_APISHIM_RBAC=1
@@ -47,7 +48,7 @@ services:
       - AE_STATE_BACKEND=${AE_STATE_BACKEND:-}
       - AE_STATE_DSN=${AE_STATE_DSN:-}
       - AE_STATE_DB=${AE_STATE_DB:-}
-      - AE_ETCD_ENDPOINTS=${AE_ETCD_ENDPOINTS:-}
+      - AE_ETCD_ENDPOINTS=${AE_APISHIM_ETCD_ENDPOINTS:-${AE_ETCD_ENDPOINTS:-}}
       - AE_ETCD_PREFIX=${AE_ETCD_PREFIX:-}
       - CONTAINER_HOST=${APISHIM_CONTAINER_HOST:-unix:///run/podman/podman.sock}
     ports:
