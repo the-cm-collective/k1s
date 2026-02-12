@@ -2,6 +2,169 @@
 
 This walkthrough is a manual test pattern for the core hub plus edge gateways. It focuses on a JetStream hub with lightweight edge sites and multiple gateways per site. For the ops-focused runbook, see `docs/ops/core-edge-manual-test.md`.
 
+## Quick Navigation
+
+Podman / mixed-runtime patterns:
+- [Option A - LAN-only multi-node](#option-a--lan-only-multi-node-no-wireguard)
+- [Option B - Core + edge gateways (WireGuard + NATS)](#option-b--core--edge-gateways-wireguard--nats)
+- [Option C - Site-to-site NetFS storage](#option-c--site-to-site-netfs-storage-over-wireguardrosenpass)
+- [Option D - Canonical ingress modes](#option-d--canonical-ingress-modes-over-wireguardrosenpass)
+
+CRI patterns:
+- [CRI Deployment (strict CRI)](#cri-deployment-strict-cri)
+- [Single-Host Dev Ops Patterns (CRI)](#single-host-dev-ops-patterns-cri)
+- [Same-Host Variant (hub + edge on one box)](#same-host-variant-hub--edge-on-one-box)
+- [CRI troubleshooting notes](#cri-troubleshooting-notes)
+
+## CRI Deployment (strict CRI)
+
+Use this section when running core + edge in strict CRI mode with containerd.
+Existing Podman sections remain valid for homelab/dev; this section is additive.
+
+### Prereqs (CRI)
+
+- containerd is running and reachable at `unix:///run/containerd/containerd.sock`.
+- BuildKit is installed and active (`buildkitd` + `buildctl`) for on-demand apishim image builds.
+- CRI registry mode is available (`localhost:5001` managed registry or equivalent external registry).
+- Use a venv-first sudo path for node commands:
+```bash
+VENV_BIN="/home/$USER/git/k1s/.venv/bin"
+SUDO_PATH="${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+```
+
+### Core stack (controller + infra + apishim)
+
+```bash
+WG_BIN=$(command -v wg)
+APISHIM_TAG="localhost:5001/k1s-apishim:dev-$(date +%s)"
+sudo -E \
+  AE_DEV_LOCAL=1 \
+  AE_RUNTIME_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_CRI_REGISTRY_INSECURE=1 \
+  AE_LABS=1 \
+  AE_APISHIM_AUTOSTART=1 \
+  AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE="${APISHIM_TAG}" \
+  AE_APISHIM_STARTUP_TIMEOUT=60 \
+  BENCH_MODE=0 \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
+  AE_AGENT_API_PORT=9110 \
+  AE_AGENT_API_TOKEN=devtoken \
+  AE_ENABLE_NETFS=1 \
+  AE_STORAGE_SEED_DEFAULTS=1 \
+  AE_STORAGE_NFS_SERVER=10.255.0.1 \
+  AE_STORAGE_NFS_PATH=/exports/k1s \
+  AE_STORAGE_NFS_CLASS=k1s-nfs \
+  AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
+  make k1s-core
+```
+
+Notes:
+- Keep `AE_DEV_LOCAL=1` enabled for local docs/playground/dashboard behavior in this lane.
+- Use a unique `AE_APISHIM_IMAGE` tag per run when iterating apishim changes to avoid stale image reuse.
+
+### Core node (hub)
+
+```bash
+sudo -E env PATH="$SUDO_PATH" \
+  AE_RUNTIME_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_NODE_ID=hub-1 \
+  AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=<HUB_PUBLIC_IP>:51820" \
+  AE_POD_CIDR=10.42.0.0/24 \
+  AE_ROSENPASS_ENABLED=1 \
+  AE_ROSENPASS_CONFIG=controller \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+  AE_ROSENPASS_INTERFACE=wg-hub \
+  AE_WG_LISTEN_PORT=51820 \
+  AE_WG_ADDRESS=10.255.0.1/32 \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+  AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
+  make k1s-core-node
+```
+
+### Edge site and edge core
+
+```bash
+sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+
+sudo -E env PATH="$SUDO_PATH" \
+  AE_SITE_ID=sea-edge-02 \
+  AE_NODE_ID=edge-1 \
+  AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri
+```
+
+### Edge node
+
+Verified command set:
+```bash
+sudo -E env PATH="$SUDO_PATH" \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_NODE_ID=edge-1 \
+  AE_POD_CIDR=10.42.1.0/24 \
+  AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+  AE_WG_INTERFACE=wg-edge \
+  AE_ROSENPASS_INTERFACE=wg-edge \
+  AE_WG_ADDRESS=10.255.0.3/32 \
+  AE_WG_TABLE=off \
+  AE_WG_LISTEN_PORT=51821 \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+  AE_AGENT_ENDPOINT=http://10.255.0.3:9112 \
+  make k1s-edge-node
+```
+
+### CRI Validation Checklist
+
+```bash
+sudo crictl pods
+ae nodes
+ae status
+bash scripts/dev/netfs_validate.sh \
+  --runtime auto \
+  --namespace default \
+  --writer-app netfs-nfs-sea-edge-02-edge-1 \
+  --reader-app netfs-nfs-hub-reader \
+  --mount-path /data
+```
+
+### CRI Troubleshooting Notes
+
+- `spdy upgrade failed: 404` with repeated apishim warnings about CRI unavailable usually means apishim cannot reach the containerd socket; confirm `AE_CRI_ENDPOINT` and apishim runtime env/socket mount.
+- `error: registry endpoint responded unexpectedly at https://localhost:5001/v2/` means core registry is not healthy/reachable before edge CRI startup.
+- If `crictl` commands differ from examples, check your local `crictl` version/flags (`crictl pods` on some builds does not support `-a`).
+- In CRI, workload pod names typically include revision suffixes (for example `...-rev1-0`); avoid assuming Podman container naming patterns.
+
+## Single-Host Dev Ops Patterns (CRI)
+
+This is the fastest strict-CRI dev loop on one workstation:
+1. Start `k1s-core` with `AE_DEV_LOCAL=1`, CRI env, and apishim autostart.
+2. Start `k1s-core-node` (hub node) with WG/Rosenpass and `AE_ENABLE_NETFS=1`.
+3. Start edge site + edge core with `make edge-site-cri` then `make k1s-edge-core-cri`.
+4. Start `k1s-edge-node` with the verified command block above.
+5. Run `ae auth local --strict`, `ae nodes`, `ae status`, and `scripts/dev/netfs_validate.sh`.
+
+Expected:
+- `ae nodes` shows controller, hub CRI node, edge CRI node, and edge gateway node as `Ready`.
+- `ae status` workloads reach `ready`.
+- CRI pods are visible in `sudo crictl pods` for core/edge components.
+
 ## Option A — LAN-only multi-node (no WireGuard)
 
 Use this path when all nodes are on the same LAN and you want typical k8s-style
@@ -285,12 +448,14 @@ sudo chmod 440 /etc/sudoers.d/k1s-wg-dump
 ```bash
 WG_BIN=$(command -v wg)
 sudo -E \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_DEV_LOCAL=1 \
   AE_LABS=1 \
   AE_APISHIM_AUTOSTART=1 \
-  AE_APISHIM_MODE=container \
-  APISHIM_CONTAINER_SOCKET=/run/podman/podman.sock \
-  APISHIM_CONTAINER_HOST=unix:///run/podman/podman.sock \
+  AE_APISHIM_MODE=cri \
   AE_WG_INTERFACE=wg-hub \
   AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
   AE_AGENT_API_PORT=9110 \
@@ -300,10 +465,15 @@ sudo -E \
   AE_STORAGE_NFS_SERVER=10.255.0.1 \
   AE_STORAGE_NFS_PATH=/exports/k1s \
   AE_STORAGE_NFS_CLASS=k1s-nfs \
-  AE_APISHIM_ETCD_ENDPOINTS=http://etcd:2379 \
+  AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
   make k1s-core
 ```
 This seeds `k1s-nfs` in apishim for the NetFS single-host flow.
+Strict CRI expectation for this lane:
+- core infra components appear in `sudo crictl pods`
+- root Podman does not run `dev-etcd-1`/`dev-nats-hub-1`/`dev-postgres-1` for this profile.
+- stack sandboxes use host-network CRI config without explicit hostname
+  (avoids runc UTS namespace errors).
 
 Note
 - Keep Rosenpass dirs under `/var/lib/ae/` (or another non-repo path) when running nodes with `sudo` to avoid root-owned files under `state/`.
@@ -311,6 +481,9 @@ Note
 3. Start the hub node:
 ```
 sudo -E \
+AE_RUNTIME_BACKEND=cri \
+AE_CRI_RUNTIME_HANDLER=runc \
+AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
 AE_NODE_ID=hub-1 \
 AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=192.168.29.143:51820" \
 AE_POD_CIDR=10.42.0.0/24 \
@@ -337,18 +510,23 @@ Expected (example):
 
 4. Register the edge site and start the edge gateway:
 ```
-make edge-site SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
 AE_LOG_LEVEL=debug \
-make k1s-edge-core
+make k1s-edge-core-cri
 ```
+Note:
+- Keep `AE_NATS_URL` aligned with the `EDGE_PORT` passed to `make edge-site-cri`. In strict CRI mode, `k1s-edge-core-cri` will derive the edge NATS listen port from `EDGE_PORT` or the explicit port in `AE_NATS_URL`.
 
 5. Start the edge node (single-host routing adjustments):
 ```
 sudo -E \
+AE_RUNTIME_BACKEND=cri \
+AE_CRI_RUNTIME_HANDLER=runc \
+AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
 AE_NODE_ID=edge-1 \
 AE_WG_INTERFACE=wg-edge \
 AE_ROSENPASS_INTERFACE=wg-edge \
@@ -380,17 +558,11 @@ sudo wg show wg-edge
 ```
 ae nodes
 ```
-3. Confirm the apishim container can reach node agents over WG endpoints.
+3. Confirm node agents are reachable over WG endpoints from the hub host
+   (strict-CRI apishim uses host networking).
 ```bash
-sudo podman exec dev-apishim-1 python3 - <<'PY'
-import urllib.request
-for url in (
-    "http://10.255.0.1:9111/readyz",
-    "http://10.255.0.3:9112/readyz",
-):
-    with urllib.request.urlopen(url, timeout=3) as r:
-        print(url, r.status)
-PY
+curl -sSf http://10.255.0.1:9111/readyz
+curl -sSf http://10.255.0.3:9112/readyz
 ```
 If either endpoint fails, stop and fix node endpoint advertisement/WG routing before continuing shell tests.
 4a. Validate non-root auth exports (once per new shell).
@@ -414,34 +586,24 @@ Note
 
 #### Troubleshooting exec/port-forward
 If `spdy exec failed: [Errno 111] Connection refused` persists:
-1. Confirm apishim is healthy and not crash-looping.
+1. Confirm apishim endpoint is listening and healthy (host-mode or CRI apishim).
 ```bash
-podman compose -f ops/dev/docker-compose.yaml ps --all | rg apishim
-podman logs dev-apishim-1 --tail 80
+ss -ltn | rg ':8445'
+sudo crictl pods | rg 'k1s-core-apishim|k1s-core-caddy' || true
+curl -sk -o /dev/null -w '%{http_code}\n' https://127.0.0.1:8445/healthz
+tail -n 80 state/profiles/k1s-core/apishim.log
 ```
-If logs show `etcd unreachable` with `127.0.0.1:2379` while apishim is
-containerized, restart core and set an apishim-specific etcd endpoint:
+If `:8445` is not listening or health is not `200`, restart core to recreate
+the apishim component:
 ```bash
-AE_APISHIM_ETCD_ENDPOINTS=http://etcd:2379 make k1s-core
+make k1s-core
 ```
 2. Confirm the node endpoints are reachable from apishim.
 ```
 ae nodes
 ```
 If endpoints show hostnames/loopback (for example `http://127.0.0.1:9111`, `http://127.0.0.1:9112`, or `http://h4ckt0p:9111`) in this strict WG lane, restart the nodes with explicit WG endpoints (single-host example: `AE_AGENT_ENDPOINT=http://10.255.0.1:9111` and `AE_AGENT_ENDPOINT=http://10.255.0.3:9112`).
-3. From the apishim container, probe the node agent:
-```
-sudo podman exec dev-apishim-1 python3 - <<'PY'
-import urllib.request
-for url in (
-    "http://10.255.0.1:9111/readyz",
-    "http://10.255.0.3:9112/readyz",
-):
-    with urllib.request.urlopen(url, timeout=3) as r:
-        print(url, r.status)
-PY
-```
-If apishim runs on the host, use:
+3. From the host, probe node agents over WG:
 ```
 curl -sSf http://10.255.0.1:9111/readyz
 curl -sSf http://10.255.0.3:9112/readyz
@@ -630,36 +792,15 @@ ae nodes
 kctl_ro get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
-stamp="prod-$(date +%s)"
-set +e
-writer_out="$(ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc "echo ${stamp} > /data/hello.txt && cat /data/hello.txt" 2>&1)"
-writer_rc=$?
-reader_out="$(ae shell netfs-nfs-hub-reader -- cat /data/hello.txt 2>&1)"
-reader_rc=$?
-set -e
-printf '%s\n' "$writer_out"
-printf '%s\n' "$reader_out"
-if printf '%s' "$reader_out" | grep -q "$stamp"; then
-  echo "PASS: netfs shared read/write via ae shell (${stamp})"
-elif command -v podman >/dev/null 2>&1; then
-  echo "ae shell stream path not clean; validating data path via podman runtime..."
-  sudo podman exec ae-netfs-nfs-sea-edge-02-edge-1-rev1-0 sh -lc "echo ${stamp} > /data/hello.txt && cat /data/hello.txt"
-  sudo podman exec ae-netfs-nfs-hub-reader-rev1-0 cat /data/hello.txt
-elif command -v crictl >/dev/null 2>&1; then
-  echo "ae shell stream path not clean; validating data path via CRI runtime..."
-  writer_cid="$(sudo crictl ps --name 'netfs-nfs-sea-edge-02-edge-1' -q | head -n1)"
-  reader_cid="$(sudo crictl ps --name 'netfs-nfs-hub-reader' -q | head -n1)"
-  sudo crictl exec "$writer_cid" sh -lc "echo ${stamp} > /data/hello.txt && cat /data/hello.txt"
-  sudo crictl exec "$reader_cid" cat /data/hello.txt
-else
-  echo "FAIL: ae shell failed and no supported runtime fallback (podman/crictl) found"
-  exit 1
-fi
-if [ "$writer_rc" -eq 0 ] && [ "$reader_rc" -eq 0 ]; then
-  echo "PASS: stream path clean (writer_rc=${writer_rc}, reader_rc=${reader_rc})"
-else
-  echo "PASS: data path validated; stream path has known teardown noise on some backends"
-fi
+bash scripts/dev/netfs_validate.sh \
+  --runtime auto \
+  --namespace default \
+  --writer-app netfs-nfs-sea-edge-02-edge-1 \
+  --reader-app netfs-nfs-hub-reader \
+  --mount-path /data
+
+# Optional: force CRI runtime fallback on CRI lanes
+bash scripts/dev/netfs_validate.sh --runtime cri
 ```
 
 Optional API checks for PVC/PV/VolumeAttachment:
@@ -702,55 +843,30 @@ python -m ae.cli apply -f specs/examples/netfs-nfs-hub-reader.yaml
 kctl_ro get pvc sea-netfs-pvc -n default -o wide
 ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events
-stamp="lab-$(date +%s)"
-set +e
-writer_out="$(ae shell netfs-nfs-sea-edge-02-edge-1 -- sh -lc "echo ${stamp} > /data/hello.txt && cat /data/hello.txt" 2>&1)"
-writer_rc=$?
-reader_out="$(ae shell netfs-nfs-hub-reader -- cat /data/hello.txt 2>&1)"
-reader_rc=$?
-set -e
-printf '%s\n' "$writer_out"
-printf '%s\n' "$reader_out"
-if printf '%s' "$reader_out" | grep -q "$stamp"; then
-  echo "PASS: netfs shared read/write via ae shell (${stamp})"
-elif command -v podman >/dev/null 2>&1; then
-  echo "ae shell stream path not clean; validating data path via podman runtime..."
-  sudo podman exec ae-netfs-nfs-sea-edge-02-edge-1-rev1-0 sh -lc "echo ${stamp} > /data/hello.txt && cat /data/hello.txt"
-  sudo podman exec ae-netfs-nfs-hub-reader-rev1-0 cat /data/hello.txt
-elif command -v crictl >/dev/null 2>&1; then
-  echo "ae shell stream path not clean; validating data path via CRI runtime..."
-  writer_cid="$(sudo crictl ps --name 'netfs-nfs-sea-edge-02-edge-1' -q | head -n1)"
-  reader_cid="$(sudo crictl ps --name 'netfs-nfs-hub-reader' -q | head -n1)"
-  sudo crictl exec "$writer_cid" sh -lc "echo ${stamp} > /data/hello.txt && cat /data/hello.txt"
-  sudo crictl exec "$reader_cid" cat /data/hello.txt
-else
-  echo "FAIL: ae shell failed and no supported runtime fallback (podman/crictl) found"
-  exit 1
-fi
-if [ "$writer_rc" -eq 0 ] && [ "$reader_rc" -eq 0 ]; then
-  echo "PASS: stream path clean (writer_rc=${writer_rc}, reader_rc=${reader_rc})"
-else
-  echo "PASS: data path validated; stream path has known teardown noise on some backends"
-fi
+bash scripts/dev/netfs_validate.sh \
+  --runtime auto \
+  --namespace default \
+  --writer-app netfs-nfs-sea-edge-02-edge-1 \
+  --reader-app netfs-nfs-hub-reader \
+  --mount-path /data
+
+# Optional: force CRI runtime fallback on CRI lanes
+bash scripts/dev/netfs_validate.sh --runtime cri
 ```
 
-If `ae shell` stream output is noisy but workloads are `ready`:
-- Treat storage validation as passed if direct runtime exec proves shared data:
+If storage validation output is noisy but workloads are `ready`:
+- Prefer the runtime-aware validator script (uses `ae exec` first, then runtime fallback):
 ```bash
-# Podman backend
-sudo podman exec ae-netfs-nfs-sea-edge-02-edge-1-rev1-0 sh -lc 'echo direct-$(date +%s) > /data/hello.txt && cat /data/hello.txt'
-sudo podman exec ae-netfs-nfs-hub-reader-rev1-0 cat /data/hello.txt
+bash scripts/dev/netfs_validate.sh --runtime auto
 
-# CRI backend
-WRITER_CID="$(sudo crictl ps --name 'netfs-nfs-sea-edge-02-edge-1' -q | head -n1)"
-READER_CID="$(sudo crictl ps --name 'netfs-nfs-hub-reader' -q | head -n1)"
-sudo crictl exec "$WRITER_CID" sh -lc 'echo direct-$(date +%s) > /data/hello.txt && cat /data/hello.txt'
-sudo crictl exec "$READER_CID" cat /data/hello.txt
+# For CRI lanes, force CRI fallback explicitly
+bash scripts/dev/netfs_validate.sh --runtime cri
 ```
-- This indicates NetFS data path is healthy and the remaining issue is the shell stream proxy path.
-- Confirm by checking apishim logs for exec `501` responses:
+- This indicates NetFS data path is healthy and the remaining issue is shell/stream plumbing.
+- On CRI lanes, do not run Podman fallback commands just because `podman` is installed.
+- Confirm by checking apishim logs for exec status lines:
 ```bash
-sudo podman logs --since=5m dev-apishim-1 | rg -n 'pods/.*/exec| 501 '
+tail -n 120 state/profiles/k1s-core/apishim.log | rg -n 'exec.start|exec.end|SPDY exec|WS exec'
 ```
 
 Step 4: Failure and recovery drill
