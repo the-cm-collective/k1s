@@ -265,7 +265,7 @@ If `ae shell` fails with `spdy upgrade failed: 401` while dashboard shell still 
 - If `AE_LABS_TOKEN` is also available, CLI can mint a short-lived fallback session token through controller `/api/apishim/session`.
 - Set `AE_CLI_LABS_MINT_FALLBACK=0` only if you want to force shim-only token behavior for debugging.
 Note
-- `host.containers.internal` works when apishim runs in a container (podman default). If apishim runs on the host (`AE_APISHIM_MODE=host`), you can use `127.0.0.1` instead.
+- For strict site-to-site SPDY simulation, keep node-advertised endpoints on WG IPs (`AE_AGENT_ENDPOINT=http://<WG_IP>:<port>`). Do not switch to `host.containers.internal` in this test lane.
 - `ae auth local --strict` sets `AE_APISHIM_SERVER` to `https://127.0.0.1:8445`. On a remote host, override it to the hub, e.g. `export AE_APISHIM_SERVER=https://<HUB_IP>:8445`, then re-run strict auth in that shell.
 
 ### Same-Host Variant (hub + edge on one box)
@@ -324,6 +324,7 @@ AE_ENABLE_NETFS=1 \
 AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
 AE_AGENT_TOKEN=devtoken \
 AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
 make k1s-core-node
 ```
 3a. Verify the WG interfaces have the expected IPs:
@@ -359,7 +360,8 @@ AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
 AE_ENABLE_NETFS=1 \
 AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
 AE_AGENT_TOKEN=devtoken \
-AE_CONTROLLER_URL=http://192.168.29.143:9110 \
+AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+AE_AGENT_ENDPOINT=http://10.255.0.3:9112 \
 make k1s-edge-node
 ```
 Note:
@@ -378,10 +380,19 @@ sudo wg show wg-edge
 ```
 ae nodes
 ```
-3. Confirm the hub can reach each node agent:
+3. Confirm the apishim container can reach node agents over WG endpoints.
+```bash
+sudo podman exec dev-apishim-1 python3 - <<'PY'
+import urllib.request
+for url in (
+    "http://10.255.0.1:9111/readyz",
+    "http://10.255.0.3:9112/readyz",
+):
+    with urllib.request.urlopen(url, timeout=3) as r:
+        print(url, r.status)
+PY
 ```
-curl http://<siteb-wg-ip>:9109/readyz
-```
+If either endpoint fails, stop and fix node endpoint advertisement/WG routing before continuing shell tests.
 4a. Validate non-root auth exports (once per new shell).
 ```bash
 test -r state/profiles/k1s-core/apishim.cli.env && echo "shared CLI env readable"
@@ -417,14 +428,23 @@ AE_APISHIM_ETCD_ENDPOINTS=http://etcd:2379 make k1s-core
 ```
 ae nodes
 ```
-If endpoints show `http://127.0.0.1:9111`/`9112` while apishim is in a container, restart the nodes with `AE_AGENT_ENDPOINT=http://10.255.0.1:9111` and `AE_AGENT_ENDPOINT=http://10.255.0.2:9112` (or `http://host.containers.internal:9111`/`9112` for same-host labs).
+If endpoints show hostnames/loopback (for example `http://127.0.0.1:9111`, `http://127.0.0.1:9112`, or `http://h4ckt0p:9111`) in this strict WG lane, restart the nodes with explicit WG endpoints (single-host example: `AE_AGENT_ENDPOINT=http://10.255.0.1:9111` and `AE_AGENT_ENDPOINT=http://10.255.0.3:9112`).
 3. From the apishim container, probe the node agent:
 ```
-podman exec -it dev-apishim-1 curl -sSf http://host.containers.internal:9112/readyz
+sudo podman exec dev-apishim-1 python3 - <<'PY'
+import urllib.request
+for url in (
+    "http://10.255.0.1:9111/readyz",
+    "http://10.255.0.3:9112/readyz",
+):
+    with urllib.request.urlopen(url, timeout=3) as r:
+        print(url, r.status)
+PY
 ```
 If apishim runs on the host, use:
 ```
-curl -sSf http://127.0.0.1:9112/readyz
+curl -sSf http://10.255.0.1:9111/readyz
+curl -sSf http://10.255.0.3:9112/readyz
 ```
 4. Verify your CLI points to the correct apishim server:
 ```
