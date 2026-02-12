@@ -748,7 +748,8 @@
 <li>Use a venv-first sudo path for node commands:</li>
 </ul>
 <pre><code>VENV_BIN=&quot;/home/$USER/git/k1s/.venv/bin&quot;
-SUDO_PATH=&quot;${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin&quot;</code></pre>
+SUDO_PATH=&quot;${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin&quot;
+sudo -E env PATH=&quot;$SUDO_PATH&quot; python -c &quot;import sys,grpc; print(sys.executable, grpc.__version__)&quot;</code></pre>
 <h3 id="core-stack-controller-infra-apishim">Core stack (controller + infra + apishim)</h3>
 <pre><code>WG_BIN=$(command -v wg)
 APISHIM_TAG=&quot;localhost:5001/k1s-apishim:dev-$(date +%s)&quot;
@@ -805,6 +806,11 @@ sudo -E \
 <pre><code>sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 
 sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_CRI_REGISTRY_INSECURE=1 \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
@@ -1097,15 +1103,20 @@ echo &quot;$USER ALL=(root) NOPASSWD: ${WG_BIN} show wg-hub dump&quot; | sudo te
 sudo chmod 440 /etc/sudoers.d/k1s-wg-dump</code></pre>
 <p>2. Start the hub controller with overlay dump support (rootful validated sequence):</p>
 <pre><code>WG_BIN=$(command -v wg)
+APISHIM_TAG=&quot;localhost:5001/k1s-apishim:dev-$(date +%s)&quot;
 sudo -E \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_CRI_REGISTRY_INSECURE=1 \
   AE_DEV_LOCAL=1 \
   AE_LABS=1 \
   AE_APISHIM_AUTOSTART=1 \
   AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE=&quot;${APISHIM_TAG}&quot; \
+  AE_APISHIM_STARTUP_TIMEOUT=60 \
   AE_WG_INTERFACE=wg-hub \
   AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
   AE_AGENT_API_PORT=9110 \
@@ -1128,7 +1139,7 @@ sudo -E \
 <li>Keep Rosenpass dirs under <code>/var/lib/ae/</code> (or another non-repo path) when running nodes with <code>sudo</code> to avoid root-owned files under <code>state/</code>.</li>
 </ul>
 <p>3. Start the hub node:</p>
-<pre><code>sudo -E \
+<pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
 AE_RUNTIME_BACKEND=cri \
 AE_CRI_RUNTIME_HANDLER=runc \
 AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
@@ -1155,23 +1166,31 @@ make k1s-core-node</code></pre>
 <li><code>wg-edge</code> has <code>10.255.0.3/32</code></li>
 </ul>
 <p>4. Register the edge site and start the edge gateway:</p>
-<pre><code>make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+<pre><code>sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 
-AE_SITE_ID=sea-edge-02 \
-AE_NODE_ID=edge-1 \
-AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
-AE_LOG_LEVEL=debug \
-make k1s-edge-core-cri</code></pre>
+sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_CRI_REGISTRY_INSECURE=1 \
+  AE_SITE_ID=sea-edge-02 \
+  AE_NODE_ID=edge-1 \
+  AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri</code></pre>
 <p>Note:</p>
 <ul>
 <li>Keep <code>AE_NATS_URL</code> aligned with the <code>EDGE_PORT</code> passed to <code>make edge-site-cri</code>. In strict CRI mode, <code>k1s-edge-core-cri</code> will derive the edge NATS listen port from <code>EDGE_PORT</code> or the explicit port in <code>AE_NATS_URL</code>.</li>
 </ul>
 <p>5. Start the edge node (single-host routing adjustments):</p>
-<pre><code>sudo -E \
+<pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
 AE_RUNTIME_BACKEND=cri \
+AE_INFRA_BACKEND=cri \
 AE_CRI_RUNTIME_HANDLER=runc \
 AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
 AE_NODE_ID=edge-1 \
+AE_POD_CIDR=10.42.1.0/24 \
 AE_WG_INTERFACE=wg-edge \
 AE_ROSENPASS_INTERFACE=wg-edge \
 AE_WG_ADDRESS=10.255.0.3/32 \
@@ -1703,7 +1722,7 @@ rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/ed
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 14:20:07</span>
+        <span>Built 2026-02-12 15:17:08</span>
       </div>
     </footer>
     <script>
