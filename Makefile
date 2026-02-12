@@ -1,5 +1,6 @@
 .PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track
 .PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
+.PHONY: k1s-core-cri k1s-edge-cri k1s-core-edge-cri k1s-edge-core-cri edge-site-cri
 .PHONY: edge-site
 .PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy dev-local
 .PHONY: shim-helm-demo
@@ -44,8 +45,29 @@ k1s-core:
 k1s-edge:
 	@./scripts/dev/run_profile.sh k1s-edge
 
+k1s-core-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  ./scripts/dev/run_profile.sh k1s-core
+
+k1s-edge-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  ./scripts/dev/run_profile.sh k1s-edge
+
+k1s-core-edge-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  AE_TRANSPORT_BACKEND=nats-core ./scripts/dev/run_profile.sh k1s-core
+
+k1s-edge-core-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  EDGE_PROFILE=k1s-core ./scripts/dev/run_profile.sh k1s-edge
+
 edge-site:
 	@SITE_ID=$${SITE_ID:?set SITE_ID} EDGE_PORT=$${EDGE_PORT:-4224} EDGE_HTTP_PORT=$${EDGE_HTTP_PORT:-8224} \
+	  ./scripts/dev/add_edge_site.sh
+
+edge-site-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  SITE_ID=$${SITE_ID:?set SITE_ID} EDGE_PORT=$${EDGE_PORT:-4224} EDGE_HTTP_PORT=$${EDGE_HTTP_PORT:-8224} \
 	  ./scripts/dev/add_edge_site.sh
 
 k1s-core-edge:
@@ -210,6 +232,8 @@ demo:
 	@PROFILE_DIR=$${PROFILE_DIR:-state/profiles/demo} \
 	  SPECS_DIR=$${SPECS_DIR:-state/profiles/demo/specs} \
 	  AE_ALLOW_PLAINTEXT_SECRETS=$${AE_ALLOW_PLAINTEXT_SECRETS:-1} \
+	  AE_RUNTIME_BACKEND=$${AE_RUNTIME_BACKEND:-podman} \
+	  AE_INFRA_BACKEND=$${AE_INFRA_BACKEND:-compose} \
 	  AE_DEMO_SEED=1 \
 	  AE_DEMO_SEED_WIPE=1 \
 	  AE_DEMO_MODE=1 \
@@ -260,8 +284,16 @@ demo-reset:
 	    rm -f "$$AE_STATE_DB" 2>/dev/null || true; \
 	  fi; \
 	fi; }
-	@echo "[demo-reset] removing shim DB (state/apishim.db)"
+	@echo "[demo-reset] removing shim DBs (profile + legacy)"
+	@rm -f state/profiles/demo/apishim.db 2>/dev/null || true
 	@rm -f state/apishim.db 2>/dev/null || true
+	@{ if [ -f state/env.sh ]; then \
+	  . state/env.sh >/dev/null 2>&1 || true; \
+	  if [ -n "$$AE_APISHIM_DB" ] && [ "$$AE_APISHIM_DB" != "state/profiles/demo/apishim.db" ] && [ "$$AE_APISHIM_DB" != "state/apishim.db" ]; then \
+	    echo "[demo-reset] removing shim DB ($$AE_APISHIM_DB)"; \
+	    rm -f "$$AE_APISHIM_DB" 2>/dev/null || true; \
+	  fi; \
+	fi; }
 	@echo "[demo-reset] pruning ae.app volumes (docker/podman)"
 	@{ command -v docker >/dev/null 2>&1 && docker volume ls -q --filter label=ae.app | xargs -r docker volume rm >/dev/null 2>&1; } || true
 	@{ command -v podman >/dev/null 2>&1 && podman volume ls -q --filter label=ae.app | xargs -r podman volume rm >/dev/null 2>&1; } || true
@@ -619,7 +651,7 @@ bench-mem-docs:
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@python docs/build_docs.py
 
-.PHONY: bench-fix-perms
+.PHONY: bench-fix-perms dev-fix-perms
 # Normalize ownership/permissions for result artifacts (useful after sudo runs)
 # - If run with sudo, uses SUDO_USER to assign back to the invoking user
 # - Always tries to set permissive read/execute for directories and read for files
@@ -636,6 +668,35 @@ bench-fix-perms:
 	   fi; \
 	 done; \
 	 echo "[bench-fix-perms] done"
+
+# Normalize ownership/permissions for local dev generated artifacts after rootful runs.
+# Usage:
+#   make dev-fix-perms
+#   make dev-fix-perms SUDO=1         # use sudo for reclaiming root-owned paths
+#   sudo make dev-fix-perms           # uses SUDO_USER as target owner when available
+#   make dev-fix-perms FIX_USER=<usr> # force target owner
+dev-fix-perms:
+	@OWN=$${FIX_USER:-$${SUDO_USER:-$$(id -un)}}; \
+	 GRP=$$(id -gn "$$OWN"); \
+	 RUN_AS=""; \
+	 if [ "$$(id -u)" -ne 0 ] && [ "$${SUDO:-0}" = "1" ]; then RUN_AS="sudo"; fi; \
+	 TARGETS="state docs/site docs/export docs/wiki"; \
+	 echo "[dev-fix-perms] target owner=$$OWN:$$GRP runner=$${RUN_AS:-direct}"; \
+	 for d in $$TARGETS; do \
+	   if [ -e "$$d" ]; then \
+	     echo "[dev-fix-perms] processing $$d"; \
+	     $$RUN_AS chown -R "$$OWN:$$GRP" "$$d" >/dev/null 2>&1 || true; \
+	     $$RUN_AS find "$$d" -type d -exec chmod u+rwx {} + >/dev/null 2>&1 || true; \
+	     $$RUN_AS find "$$d" -type f -exec chmod u+rw {} + >/dev/null 2>&1 || true; \
+	   fi; \
+	 done; \
+	 for f in ops/dev/nats-edge-*.conf; do \
+	   [ -e "$$f" ] || continue; \
+	   echo "[dev-fix-perms] processing $$f"; \
+	   $$RUN_AS chown "$$OWN:$$GRP" "$$f" >/dev/null 2>&1 || true; \
+	   $$RUN_AS chmod u+rw "$$f" >/dev/null 2>&1 || true; \
+	 done; \
+	 echo "[dev-fix-perms] done"
 
 .PHONY: bench-snapshots-clean bench-snapshots-clean-sudo
 # Remove invalid snapshots from the last N hours; optionally include quick-* labels.
