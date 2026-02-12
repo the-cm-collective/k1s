@@ -414,6 +414,13 @@ start_apishim() {
   export AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-$cert_file}"
   export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-$key_file}"
   export AE_APISHIM_SERVER="${AE_APISHIM_SERVER:-https://127.0.0.1:${port}}"
+  # In container mode, loopback etcd endpoints resolve inside the apishim
+  # container, not on the host. Default to the compose service endpoint.
+  if [[ "$mode" == "container" && "${AE_STATE_BACKEND:-}" == "etcd" && -z "${AE_APISHIM_ETCD_ENDPOINTS:-}" ]]; then
+    if [[ "${AE_ETCD_ENDPOINTS:-}" == *"127.0.0.1"* || "${AE_ETCD_ENDPOINTS:-}" == *"localhost"* ]]; then
+      export AE_APISHIM_ETCD_ENDPOINTS="http://etcd:2379"
+    fi
+  fi
   warn_apishim_dsn
   # Ensure controller can mint shim session tokens (dashboard exec/port-forward).
   if [[ -n "${AE_APISHIM_SESSION_SECRET:-}" ]]; then
@@ -443,9 +450,11 @@ start_apishim() {
       # storage seeding and state backend changes (for example AE_STORAGE_NFS_*
       # and AE_STATE_BACKEND=etcd) to take effect between profile restarts.
       if is_truthy "${AE_APISHIM_RECREATE_ON_START:-1}"; then
-        APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
+        if ! APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
           "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" \
-          up -d --force-recreate apishim >/dev/null 2>&1 || true
+          up -d --force-recreate apishim; then
+          echo "warning: failed to recreate apishim container" >&2
+        fi
       fi
     fi
     return 0
@@ -507,7 +516,7 @@ start_apishim() {
     "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
   APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
     "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" \
-    up -d apishim >/dev/null 2>&1 || true
+    up -d apishim || echo "warning: failed to start apishim container" >&2
   connect_apishim_network
 }
 
