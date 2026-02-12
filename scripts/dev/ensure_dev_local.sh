@@ -2,7 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SUDO="${SUDO:-sudo}"
+SKIP_PRIV=0
+if [[ "${EUID}" -eq 0 ]]; then
+  PRIV_PREFIX=()
+elif sudo -n true >/dev/null 2>&1; then
+  PRIV_PREFIX=(sudo -n)
+else
+  PRIV_PREFIX=()
+  SKIP_PRIV=1
+fi
 
 detect_engine() {
   if [[ -n "${AE_CONTAINER_CLI:-}" ]]; then
@@ -28,6 +36,17 @@ log() {
   printf '[dev-local] %s\n' "$1"
 }
 
+run_priv() {
+  if [[ "${SKIP_PRIV}" == "1" ]]; then
+    return 1
+  fi
+  if [[ ${#PRIV_PREFIX[@]} -eq 0 ]]; then
+    "$@"
+  else
+    "${PRIV_PREFIX[@]}" "$@"
+  fi
+}
+
 HOSTS_IP="${DEV_LOCAL_HOSTS_IP:-127.0.0.1}"
 DEFAULT_HOSTS="docs.home.arpa api.home.arpa dash.home.arpa echo.home.arpa"
 HOSTS_LIST="${DEV_LOCAL_HOSTS:-$DEFAULT_HOSTS}"
@@ -36,12 +55,16 @@ ensure_hosts() {
   if [[ -z "${HOSTS_LIST// }" ]]; then
     return 0
   fi
+  if [[ "${SKIP_PRIV}" == "1" ]]; then
+    log "sudo -n not available; skipping /etc/hosts and trust updates (run make dev-local as root to apply)"
+    return 0
+  fi
   for host in $HOSTS_LIST; do
     if grep -qE "[[:space:]]${host}$" /etc/hosts; then
       continue
     fi
     log "adding /etc/hosts entry for ${host}"
-    $SUDO sh -c "printf '%s %s\n' '${HOSTS_IP}' '${host}' >> /etc/hosts"
+    run_priv sh -c "printf '%s %s\n' '${HOSTS_IP}' '${host}' >> /etc/hosts"
   done
 }
 
@@ -52,9 +75,12 @@ install_ca() {
   if [[ ! -s "$src" ]]; then
     return 1
   fi
+  if [[ "${SKIP_PRIV}" == "1" ]]; then
+    return 1
+  fi
   log "installing ${label} into system trust"
-  $SUDO cp -f "$src" "$dst"
-  $SUDO update-ca-certificates >/dev/null 2>&1 || true
+  run_priv cp -f "$src" "$dst"
+  run_priv update-ca-certificates >/dev/null 2>&1 || true
   return 0
 }
 

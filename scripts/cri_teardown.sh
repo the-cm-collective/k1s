@@ -33,14 +33,14 @@ if [[ -z "${pods_json}" ]]; then
 fi
 
 pod_ids=$(
-  printf '%s' "$pods_json" | LABEL_KEY="$label_key" python - <<'PY'
+  LABEL_KEY="$label_key" PODS_JSON="$pods_json" python - <<'PY'
 import json
 import os
-import sys
 
 label_key = os.environ.get("LABEL_KEY", "ae.app")
+pods_json_raw = os.environ.get("PODS_JSON", "")
 try:
-    data = json.load(sys.stdin)
+    data = json.loads(pods_json_raw or "{}")
 except Exception:
     print("")
     raise SystemExit(0)

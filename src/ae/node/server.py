@@ -19,13 +19,32 @@ import requests
 LOGGER = logging.getLogger(__name__)
 
 
-def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict) -> None:
+def _is_client_disconnect(exc: BaseException) -> bool:
+    if isinstance(exc, BrokenPipeError | ConnectionResetError | ConnectionAbortedError):
+        return True
+    if isinstance(exc, OSError):
+        return exc.errno in {32, 103, 104}
+    return False
+
+
+def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict) -> bool:
     payload = json.dumps(body).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(payload)))
-    handler.end_headers()
-    handler.wfile.write(payload)
+    try:
+        handler.end_headers()
+        handler.wfile.write(payload)
+    except Exception as exc:  # noqa: BLE001
+        if _is_client_disconnect(exc):
+            LOGGER.debug(
+                "agent client disconnected during response write path=%s status=%s",
+                getattr(handler, "path", "<unknown>"),
+                status,
+            )
+            return False
+        raise
+    return True
 
 
 def _parse_manifest(payload: dict) -> AppManifest:
@@ -256,6 +275,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _json_response(self, 200, {"removed": removed})
                 return
         except Exception as exc:  # noqa: BLE001
+            if _is_client_disconnect(exc):
+                LOGGER.debug("agent client disconnected path=%s", self.path)
+                return
             LOGGER.exception("agent error on %s", self.path)
             _json_response(self, 500, {"error": str(exc)})
             return
@@ -293,6 +315,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _json_response(self, 200, {"volumes": vols})
                 return
         except Exception as exc:  # noqa: BLE001
+            if _is_client_disconnect(exc):
+                LOGGER.debug("agent client disconnected path=%s", self.path)
+                return
             LOGGER.exception("agent error on %s", self.path)
             _json_response(self, 500, {"error": str(exc)})
             return

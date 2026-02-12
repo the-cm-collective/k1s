@@ -211,3 +211,32 @@ def test_handle_exec_labs_fallback_disabled(monkeypatch, tmp_path):
     )
     rc = cli.handle_exec(args, store, DummyRuntime())
     assert rc == 1
+
+
+def test_handle_exec_connection_refused_prints_apishim_hint(monkeypatch, tmp_path, capsys):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    args = argparse.Namespace(
+        name="echo",
+        cmd=["--", "sh"],
+        apishim="https://127.0.0.1:8445",
+        stdin=False,
+        tty=False,
+        container=None,
+        ws_fallback=False,
+        timeout=None,
+    )
+    monkeypatch.setattr(
+        cli, "_resolve_exec_target", lambda _store, _app, _container: ("echo-rev1-0", None)
+    )
+    monkeypatch.setattr(cli, "_resolve_apishim_stream_token", lambda **_k: "exec-token")
+    monkeypatch.setattr(
+        cli,
+        "_exec_over_spdy",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("[Errno 111] Connection refused")),
+    )
+    rc = cli.handle_exec(args, store, DummyRuntime())
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "spdy exec failed:" in out
+    assert "apishim appears unreachable" in out
+    assert "state/apishim.pid" in out

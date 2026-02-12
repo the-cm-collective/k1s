@@ -1239,76 +1239,84 @@ def _snapshot_apishim_manifests(
                 return manifests, True
         return {}, False
 
-    class _NullReconciler:
-        _runtime = _StubRuntime()
-
-    helper = _AdapterWorker(shim_store, store, _NullReconciler())  # type: ignore[arg-type]
-    manifests: dict[str, AppManifest] = {}
-
-    reachable = False
     try:
-        services = shim_store.list_all("", "v1", "services")
-        reachable = True
-    except Exception:
-        services = []
-    for svc in services:
-        try:
-            result = helper._service_spec_for(svc)
-            if not result:
-                continue
-            dep_key, svc_spec = result
-            helper._service_specs[dep_key] = svc_spec
-            helper._service_name_map[(svc.namespace, svc.name)] = dep_key
-        except Exception:
-            continue
+        class _NullReconciler:
+            _runtime = _StubRuntime()
 
-    try:
-        ingresses = shim_store.list_all("networking.k8s.io", "v1", "ingresses")
-        reachable = True
-    except Exception:
-        ingresses = []
-    for ing in ingresses:
-        try:
-            result = helper._ingress_spec_for(ing)
-            if not result:
-                continue
-            dep_key, ing_spec = result
-            helper._ingress_specs[dep_key] = ing_spec
-            helper._ingress_owner_map[(ing.namespace, ing.name)] = dep_key
-        except Exception:
-            continue
+        helper = _AdapterWorker(shim_store, store, _NullReconciler())  # type: ignore[arg-type]
+        manifests: dict[str, AppManifest] = {}
 
-    workloads = [
-        ("apps", "v1", "deployments"),
-        ("apps", "v1", "statefulsets"),
-        ("apps", "v1", "daemonsets"),
-        ("batch", "v1", "jobs"),
-    ]
-    for grp, ver, res in workloads:
+        reachable = False
         try:
-            items = shim_store.list_all(grp, ver, res)
+            services = shim_store.list_all("", "v1", "services")
             reachable = True
         except Exception:
-            items = []
-        for obj in items:
+            services = []
+        for svc in services:
             try:
-                dep_key = (obj.namespace, obj.name)
-                svc_spec = helper._service_specs.get(dep_key)
-                ing_spec = helper._ingress_specs.get(dep_key)
-                manifest = _shim_manifest(obj, service_spec=svc_spec, ingress_spec=ing_spec)
-                manifests[app_key_for_manifest(manifest)] = manifest
+                result = helper._service_spec_for(svc)
+                if not result:
+                    continue
+                dep_key, svc_spec = result
+                helper._service_specs[dep_key] = svc_spec
+                helper._service_name_map[(svc.namespace, svc.name)] = dep_key
             except Exception:
                 continue
 
-    if reachable:
-        _set_apishim_mirror_mode("db", dsn or str(db_path))
-        return manifests, True
-    if base:
-        manifests, reachable = _snapshot_apishim_api_manifests(store, base)
+        try:
+            ingresses = shim_store.list_all("networking.k8s.io", "v1", "ingresses")
+            reachable = True
+        except Exception:
+            ingresses = []
+        for ing in ingresses:
+            try:
+                result = helper._ingress_spec_for(ing)
+                if not result:
+                    continue
+                dep_key, ing_spec = result
+                helper._ingress_specs[dep_key] = ing_spec
+                helper._ingress_owner_map[(ing.namespace, ing.name)] = dep_key
+            except Exception:
+                continue
+
+        workloads = [
+            ("apps", "v1", "deployments"),
+            ("apps", "v1", "statefulsets"),
+            ("apps", "v1", "daemonsets"),
+            ("batch", "v1", "jobs"),
+        ]
+        for grp, ver, res in workloads:
+            try:
+                items = shim_store.list_all(grp, ver, res)
+                reachable = True
+            except Exception:
+                items = []
+            for obj in items:
+                try:
+                    dep_key = (obj.namespace, obj.name)
+                    svc_spec = helper._service_specs.get(dep_key)
+                    ing_spec = helper._ingress_specs.get(dep_key)
+                    manifest = _shim_manifest(obj, service_spec=svc_spec, ingress_spec=ing_spec)
+                    manifests[app_key_for_manifest(manifest)] = manifest
+                except Exception:
+                    continue
+
         if reachable:
-            _set_apishim_mirror_mode("api", base or "api")
+            _set_apishim_mirror_mode("db", dsn or str(db_path))
             return manifests, True
-    return manifests, False
+        if base:
+            manifests, reachable = _snapshot_apishim_api_manifests(store, base)
+            if reachable:
+                _set_apishim_mirror_mode("api", base or "api")
+                return manifests, True
+        return manifests, False
+    finally:
+        close = getattr(shim_store, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
 
 
 def _purge_app_from_runtime(reconciler: Reconciler, store: SQLiteStateStore, app: str) -> None:
