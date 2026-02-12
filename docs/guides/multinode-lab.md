@@ -30,6 +30,7 @@ Existing Podman sections remain valid for homelab/dev; this section is additive.
 ```bash
 VENV_BIN="/home/$USER/git/k1s/.venv/bin"
 SUDO_PATH="${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+sudo -E env PATH="$SUDO_PATH" python -c "import sys,grpc; print(sys.executable, grpc.__version__)"
 ```
 
 ### Core stack (controller + infra + apishim)
@@ -97,6 +98,11 @@ sudo -E env PATH="$SUDO_PATH" \
 sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 
 sudo -E env PATH="$SUDO_PATH" \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_CRI_REGISTRY_INSECURE=1 \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
@@ -447,15 +453,20 @@ sudo chmod 440 /etc/sudoers.d/k1s-wg-dump
 2. Start the hub controller with overlay dump support (rootful validated sequence):
 ```bash
 WG_BIN=$(command -v wg)
+APISHIM_TAG="localhost:5001/k1s-apishim:dev-$(date +%s)"
 sudo -E \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_CRI_REGISTRY_INSECURE=1 \
   AE_DEV_LOCAL=1 \
   AE_LABS=1 \
   AE_APISHIM_AUTOSTART=1 \
   AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE="${APISHIM_TAG}" \
+  AE_APISHIM_STARTUP_TIMEOUT=60 \
   AE_WG_INTERFACE=wg-hub \
   AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
   AE_AGENT_API_PORT=9110 \
@@ -480,7 +491,7 @@ Note
 
 3. Start the hub node:
 ```
-sudo -E \
+sudo -E env PATH="$SUDO_PATH" \
 AE_RUNTIME_BACKEND=cri \
 AE_CRI_RUNTIME_HANDLER=runc \
 AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
@@ -510,24 +521,32 @@ Expected (example):
 
 4. Register the edge site and start the edge gateway:
 ```
-make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 
-AE_SITE_ID=sea-edge-02 \
-AE_NODE_ID=edge-1 \
-AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
-AE_LOG_LEVEL=debug \
-make k1s-edge-core-cri
+sudo -E env PATH="$SUDO_PATH" \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_CRI_REGISTRY_INSECURE=1 \
+  AE_SITE_ID=sea-edge-02 \
+  AE_NODE_ID=edge-1 \
+  AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri
 ```
 Note:
 - Keep `AE_NATS_URL` aligned with the `EDGE_PORT` passed to `make edge-site-cri`. In strict CRI mode, `k1s-edge-core-cri` will derive the edge NATS listen port from `EDGE_PORT` or the explicit port in `AE_NATS_URL`.
 
 5. Start the edge node (single-host routing adjustments):
 ```
-sudo -E \
+sudo -E env PATH="$SUDO_PATH" \
 AE_RUNTIME_BACKEND=cri \
+AE_INFRA_BACKEND=cri \
 AE_CRI_RUNTIME_HANDLER=runc \
 AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
 AE_NODE_ID=edge-1 \
+AE_POD_CIDR=10.42.1.0/24 \
 AE_WG_INTERFACE=wg-edge \
 AE_ROSENPASS_INTERFACE=wg-edge \
 AE_WG_ADDRESS=10.255.0.3/32 \
