@@ -3623,6 +3623,10 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
                 "error: strict mode requires AE_APISHIM_EXEC_TOKEN/AE_APISHIM_PORTFORWARD_TOKEN/AE_APISHIM_TOKEN/AE_APISHIM_MINT_TOKEN or AE_LABS_TOKEN",
                 file=sys.stderr,
             )
+            print(
+                f"hint: provide a readable shared CLI env at {shared_cli_env} containing AE_APISHIM_MINT_TOKEN",
+                file=sys.stderr,
+            )
             if root_only_profile_env:
                 group_name = os.getenv("AE_CLI_SHARED_GROUP", "aecli")
                 print(
