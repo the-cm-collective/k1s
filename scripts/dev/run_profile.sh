@@ -9,7 +9,9 @@ if [[ -z "$PROFILE" ]]; then
   exit 1
 fi
 
+RUNTIME_BACKEND_EXPLICIT=1
 if [[ -z "${AE_RUNTIME_BACKEND:-}" ]]; then
+  RUNTIME_BACKEND_EXPLICIT=0
   export AE_RUNTIME_BACKEND=podman
 fi
 
@@ -39,6 +41,494 @@ detect_engine() {
     return 0
   fi
   printf 'docker'
+}
+
+detect_running_core_cri() {
+  local endpoint="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
+  local crictl_bin="${CRICTL_BIN:-crictl}"
+  local pods_json
+  local py_bin="${PYTHON_BIN:-}"
+  if [[ -z "$py_bin" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+      py_bin="$(command -v python3)"
+    else
+      py_bin="python"
+    fi
+  fi
+  if ! command -v "$crictl_bin" >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! pods_json="$("$crictl_bin" --runtime-endpoint "$endpoint" pods -o json 2>/dev/null)"; then
+    return 1
+  fi
+  PODS_JSON="$pods_json" "$py_bin" - <<'PY'
+import json
+import os
+
+raw = os.environ.get("PODS_JSON", "")
+try:
+    payload = json.loads(raw or "{}")
+except Exception:
+    raise SystemExit(1)
+
+for item in payload.get("items") or []:
+    if not isinstance(item, dict):
+        continue
+    labels = item.get("labels") or {}
+    if not isinstance(labels, dict):
+        labels = {}
+    labels = {str(k): str(v) for k, v in labels.items()}
+    meta = item.get("metadata") or {}
+    if isinstance(meta, dict):
+        meta_labels = meta.get("labels") or {}
+        if isinstance(meta_labels, dict):
+            labels.update({str(k): str(v) for k, v in meta_labels.items()})
+        name = str(meta.get("name") or "")
+        namespace = str(meta.get("namespace") or "")
+        if name.startswith("k1s-core-") and namespace in {"", "k1s-dev"}:
+            raise SystemExit(0)
+    if labels.get("ae.stack.profile") != "k1s-core":
+        continue
+    if labels.get("ae.stack.backend") == "cri":
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+resolve_infra_backend() {
+  if [[ -n "${AE_INFRA_BACKEND:-}" ]]; then
+    printf '%s' "${AE_INFRA_BACKEND}"
+    return 0
+  fi
+  case "${AE_RUNTIME_BACKEND:-}" in
+    cri|containerd) printf 'cri'; return 0 ;;
+  esac
+  # Only auto-follow a running CRI core stack for k1s-* profiles.
+  # dev-min/dev-etcd stay on compose by default unless explicitly overridden.
+  case "${PROFILE:-}" in
+    k1s-*)
+      if detect_running_core_cri; then
+        printf 'cri'
+        return 0
+      fi
+      ;;
+  esac
+  printf 'compose'
+  return 0
+}
+
+is_strict_cri() {
+  [[ "${INFRA_BACKEND:-compose}" == "cri" ]]
+}
+
+acquire_profile_lock() {
+  local profile="$1"
+  local lock_dir="$ROOT_DIR/state/profiles/$profile"
+  local lock_file="$lock_dir/.profile.lock"
+  mkdir -p "$lock_dir"
+  if ! command -v flock >/dev/null 2>&1; then
+    return 0
+  fi
+  exec 9>"$lock_file"
+  if ! flock -n 9; then
+    echo "error: profile '$profile' is already running (lock: $lock_file)" >&2
+    exit 1
+  fi
+}
+
+guard_port_free() {
+  local port="$1"
+  local label="$2"
+  if ss -ltn "( sport = :$port )" 2>/dev/null | grep -q LISTEN; then
+    echo "error: required port ${port} is already in use (${label})" >&2
+    exit 1
+  fi
+}
+
+run_cri_stack() {
+  PYTHONPATH=src "$PYTHON_BIN" "$ROOT_DIR/scripts/dev/cri_stack.py" "$@"
+}
+
+ensure_cri_registry_defaults() {
+  if ! is_strict_cri; then
+    return 0
+  fi
+  local preset mode
+  preset="$(printf '%s' "${AE_CRI_REGISTRY_PRESET:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$preset" in
+    "" ) ;;
+    microk8s)
+      export AE_CRI_REGISTRY_MODE="${AE_CRI_REGISTRY_MODE:-external}"
+      export AE_CRI_REGISTRY="${AE_CRI_REGISTRY:-localhost:32000}"
+      export AE_CRI_REGISTRY_INSECURE="${AE_CRI_REGISTRY_INSECURE:-1}"
+      ;;
+    local)
+      export AE_CRI_REGISTRY_MODE="${AE_CRI_REGISTRY_MODE:-managed}"
+      ;;
+    *)
+      echo "warning: unsupported AE_CRI_REGISTRY_PRESET='${AE_CRI_REGISTRY_PRESET}' (supported: microk8s, local)" >&2
+      ;;
+  esac
+
+  mode="$(printf '%s' "${AE_CRI_REGISTRY_MODE:-}" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "$mode" ]]; then
+    if [[ -n "${AE_CRI_REGISTRY:-}" || -n "${AE_REGISTRY_HOST:-}" ]]; then
+      mode="external"
+    else
+      mode="managed"
+    fi
+  fi
+  case "$mode" in
+    managed|external|off) ;;
+    *)
+      echo "warning: invalid AE_CRI_REGISTRY_MODE='${AE_CRI_REGISTRY_MODE}'; defaulting by context." >&2
+      if [[ -n "${AE_CRI_REGISTRY:-}" || -n "${AE_REGISTRY_HOST:-}" ]]; then
+        mode="external"
+      else
+        mode="managed"
+      fi
+      ;;
+  esac
+  export AE_CRI_REGISTRY_MODE="$mode"
+
+  if [[ "$mode" == "off" ]]; then
+    echo "[cri] registry mode=off (no strict-CRI registry rewrite/readiness checks)" >&2
+    return 0
+  fi
+
+  if [[ "$mode" == "external" ]]; then
+    if [[ -z "${AE_CRI_REGISTRY:-}" && -n "${AE_REGISTRY_HOST:-}" ]]; then
+      export AE_CRI_REGISTRY="${AE_REGISTRY_HOST}"
+    fi
+    if [[ -z "${AE_CRI_REGISTRY:-}" ]]; then
+      echo "error: AE_CRI_REGISTRY_MODE=external requires AE_CRI_REGISTRY (or AE_REGISTRY_HOST)." >&2
+      exit 1
+    fi
+    echo "[cri] registry mode=external endpoint=${AE_CRI_REGISTRY}" >&2
+    return 0
+  fi
+
+  if [[ -z "${AE_CRI_REGISTRY:-}" ]]; then
+    export AE_CRI_REGISTRY="localhost:${AE_CRI_MANAGED_REGISTRY_PORT:-5001}"
+  fi
+  echo "[cri] registry mode=managed endpoint=${AE_CRI_REGISTRY}" >&2
+}
+
+_cri_registry_host_port() {
+  local raw="${1:-}"
+  local scheme="${2:-}"
+  raw="${raw#http://}"
+  raw="${raw#https://}"
+  raw="${raw%%/*}"
+  local host="${raw%:*}"
+  local port="${raw##*:}"
+  if [[ "$host" == "$port" ]]; then
+    host="$raw"
+    if [[ "$scheme" == "http" ]]; then
+      port="80"
+    else
+      port="443"
+    fi
+  fi
+  printf '%s|%s\n' "$host" "$port"
+}
+
+_cri_registry_scheme() {
+  local registry="${AE_CRI_REGISTRY:-}"
+  if [[ "$registry" == http://* ]]; then
+    printf 'http'
+    return 0
+  fi
+  if [[ "$registry" == https://* ]]; then
+    printf 'https'
+    return 0
+  fi
+  if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
+    printf 'http'
+    return 0
+  fi
+  printf 'https'
+}
+
+ensure_cri_registry_ready() {
+  if ! is_strict_cri; then
+    return 0
+  fi
+  local mode="${AE_CRI_REGISTRY_MODE:-managed}"
+  if [[ "$mode" == "off" ]]; then
+    return 0
+  fi
+  if [[ -z "${AE_CRI_REGISTRY:-}" ]]; then
+    echo "error: strict CRI registry mode '${mode}' requires AE_CRI_REGISTRY." >&2
+    exit 1
+  fi
+  local scheme host_port host port
+  scheme="$(_cri_registry_scheme)"
+  host_port="$(_cri_registry_host_port "${AE_CRI_REGISTRY}" "$scheme")"
+  IFS='|' read -r host port <<<"$host_port"
+  if [[ -z "$host" || -z "$port" ]]; then
+    echo "error: unable to parse AE_CRI_REGISTRY='${AE_CRI_REGISTRY}'." >&2
+    exit 1
+  fi
+
+  local probe_host="$host"
+  if [[ "$probe_host" == "0.0.0.0" ]]; then
+    probe_host="127.0.0.1"
+  fi
+
+  if [[ "$mode" == "managed" ]]; then
+    if ! [[ "$host" == "localhost" || "$host" == "127.0.0.1" || "$host" == "0.0.0.0" ]]; then
+      echo "error: AE_CRI_REGISTRY_MODE=managed expects a local registry host, got '${host}'." >&2
+      echo "error: use AE_CRI_REGISTRY_MODE=external for remote or microk8s registries." >&2
+      exit 1
+    fi
+    if ! port_open "$probe_host" "$port"; then
+      if ! run_cri_stack up-registry --profile "$PROFILE" --host "$probe_host" --port "$port"; then
+        echo "error: failed to start managed CRI registry at ${probe_host}:${port}" >&2
+        exit 1
+      fi
+    fi
+  fi
+
+  local timeout_s="${AE_CRI_REGISTRY_HEALTH_TIMEOUT:-10}"
+  if ! [[ "$timeout_s" =~ ^[0-9]+$ ]]; then
+    timeout_s=10
+  fi
+  local start_ts now_ts
+  start_ts="$(date +%s)"
+  while ! port_open "$probe_host" "$port"; do
+    now_ts="$(date +%s)"
+    if (( now_ts - start_ts >= timeout_s )); then
+      if [[ "$mode" == "external" ]]; then
+        echo "error: external strict-CRI registry is unreachable at ${probe_host}:${port}" >&2
+        if [[ "$probe_host" == "localhost" || "$probe_host" == "127.0.0.1" ]] && [[ "$port" == "32000" ]]; then
+          echo "hint: microk8s common path: ensure registry is enabled and reachable on localhost:32000." >&2
+          echo "hint: example: microk8s enable registry" >&2
+        fi
+      else
+        echo "error: managed strict-CRI registry did not become reachable at ${probe_host}:${port}" >&2
+      fi
+      exit 1
+    fi
+    sleep 0.2
+  done
+
+  if command -v curl >/dev/null 2>&1; then
+    local probe_url="${scheme}://${probe_host}:${port}/v2/"
+    local curl_args=(-sS -o /dev/null -w "%{http_code}" --connect-timeout 2 --max-time 3)
+    if [[ "$scheme" == "https" ]]; then
+      curl_args+=(-k)
+    fi
+    start_ts="$(date +%s)"
+    while true; do
+      local code
+      code="$(curl "${curl_args[@]}" "$probe_url" 2>/dev/null || true)"
+      if [[ "$code" == "200" || "$code" == "401" ]]; then
+        break
+      fi
+      now_ts="$(date +%s)"
+      if (( now_ts - start_ts >= timeout_s )); then
+        echo "error: registry endpoint responded unexpectedly at ${probe_url} (last_http=${code:-000})" >&2
+        exit 1
+      fi
+      sleep 0.2
+    done
+  fi
+}
+
+ensure_cri_registry_trust() {
+  if ! is_strict_cri; then
+    return 0
+  fi
+  if [[ "${AE_CRI_REGISTRY_MODE:-}" == "off" ]]; then
+    return 0
+  fi
+  if [[ -z "${AE_CRI_REGISTRY:-}" ]]; then
+    return 0
+  fi
+  if ! is_truthy "${AE_CRI_REGISTRY_TRUST:-0}" && ! is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
+    return 0
+  fi
+  local trust_script="$ROOT_DIR/scripts/containerd_registry_trust.sh"
+  if [[ ! -x "$trust_script" ]]; then
+    echo "error: missing registry trust helper: $trust_script" >&2
+    exit 1
+  fi
+  local registry_host="${AE_CRI_REGISTRY#http://}"
+  registry_host="${registry_host#https://}"
+  local scheme="${AE_CRI_REGISTRY_TRUST_SCHEME:-}"
+  if [[ -z "$scheme" ]]; then
+    if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
+      scheme="http"
+    else
+      scheme="https"
+    fi
+  fi
+  local trust_args=(--host "$registry_host" --scheme "$scheme")
+  if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}" || is_truthy "${AE_CRI_REGISTRY_TRUST_INSECURE:-0}"; then
+    trust_args+=(--insecure)
+  elif [[ -n "${AE_CRI_REGISTRY_TRUST_CA:-}" ]]; then
+    trust_args+=(--ca "${AE_CRI_REGISTRY_TRUST_CA}")
+  fi
+  if is_truthy "${AE_CRI_REGISTRY_TRUST_SYSTEM:-0}"; then
+    trust_args+=(--system-trust)
+  fi
+  if is_truthy "${AE_CRI_REGISTRY_TRUST_RESTART:-0}"; then
+    trust_args+=(--restart)
+  fi
+  "$trust_script" "${trust_args[@]}"
+}
+
+ensure_cri_preflight() {
+  if ! is_strict_cri; then
+    return 0
+  fi
+  if ! "$ROOT_DIR/scripts/cri_preflight.sh"; then
+    echo "error: strict CRI infra selected but preflight failed" >&2
+    exit 1
+  fi
+  if ! run_cri_stack preflight --profile "$PROFILE"; then
+    echo "error: strict CRI infra selected but CRI stack preflight failed" >&2
+    exit 1
+  fi
+}
+
+ensure_backend_not_mixed_with_core_cri() {
+  if is_strict_cri; then
+    return 0
+  fi
+  case "$PROFILE" in
+    k1s-core|k1s-edge) ;;
+    *) return 0 ;;
+  esac
+  if detect_running_core_cri; then
+    echo "error: core CRI stack detected while compose infra is selected." >&2
+    echo "error: use 'make k1s-core-cri', 'make k1s-edge-cri', or 'make k1s-edge-core-cri'." >&2
+    echo "error: alternatively set AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri." >&2
+    exit 1
+  fi
+}
+
+render_strict_caddy_sites() {
+  local https_port="${1:-8443}"
+  local target_dir="$ROOT_DIR/state/caddy-cri"
+  local src_dir="$ROOT_DIR/ops/dev/caddy/sites"
+  mkdir -p "$target_dir"
+  cp -f "$src_dir"/*.caddy "$target_dir"/
+  for file in "$target_dir"/*.caddy; do
+    [[ -f "$file" ]] || continue
+    sed -i "1 s/:443/:${https_port}/g" "$file" >/dev/null 2>&1 || true
+  done
+}
+
+write_dash_caddy_site() {
+  local host_alias="$1"
+  local out_file="$2"
+  local https_port="$3"
+  cat > "$out_file" <<EOF
+https://dash.home.arpa:${https_port} {
+    log {
+        output stdout
+        format console
+    }
+    header -Strict-Transport-Security
+    tls internal
+    @no_sse {
+        not path /dashboard/sse/* /logs/*/stream
+    }
+    encode @no_sse gzip zstd
+
+    @sse {
+        path /dashboard/sse/* /logs/*/stream
+    }
+    handle @sse {
+        reverse_proxy ${host_alias}:${METRICS_PORT:-9108} {
+            flush_interval -1
+            stream_close_delay 5m
+            stream_timeout 24h
+            header_down X-Accel-Buffering no
+            header_down Cache-Control no-cache
+        }
+    }
+
+    handle {
+        reverse_proxy ${host_alias}:${METRICS_PORT:-9108}
+    }
+}
+EOF
+}
+
+prepare_strict_edge_nats_config() {
+  local site_id="$1"
+  local edge_port="${2:-4224}"
+  local edge_http_port="${3:-8224}"
+  local src="$ROOT_DIR/ops/dev/nats-edge.conf"
+  local out="$ROOT_DIR/ops/dev/nats-edge-${site_id}.conf"
+  if [[ ! -f "$src" ]]; then
+    echo "error: missing nats edge template: $src" >&2
+    exit 1
+  fi
+  "$PYTHON_BIN" - <<PY "$src" "$out" "$site_id" "$edge_port" "$edge_http_port"
+from pathlib import Path
+import re
+import sys
+
+src, out, site, port, http_port = sys.argv[1:6]
+text = Path(src).read_text(encoding="utf-8")
+text = text.replace("sfo-edge-01", site)
+text = text.replace("edge-sfo-01", f"edge-{site}")
+text = re.sub(r'@nats-hub:7422"', '@127.0.0.1:7422"', text)
+text = re.sub(r"(?m)^port:\\s*\\d+\\s*$", f"port: {port}", text)
+text = re.sub(r"(?m)^http:\\s*\\d+\\s*$", f"http: {http_port}", text)
+Path(out).write_text(text, encoding="utf-8")
+print(out)
+PY
+}
+
+resolve_strict_edge_port() {
+  if [[ -n "${EDGE_PORT:-}" ]]; then
+    printf '%s' "${EDGE_PORT}"
+    return 0
+  fi
+  if [[ -n "${AE_NATS_URL:-}" ]]; then
+    local parsed_out
+    parsed_out="$(
+      PYTHONPATH=src "$PYTHON_BIN" - <<'PY' "${AE_NATS_URL}"
+from ae.config.transport import parse_nats_explicit_port
+import sys
+
+raw = sys.argv[1]
+try:
+    port = parse_nats_explicit_port(raw)
+except Exception:
+    print("INVALID")
+    raise SystemExit(0)
+
+if port is None:
+    print("NONE")
+else:
+    print(f"PORT={port}")
+PY
+    )"
+    case "$parsed_out" in
+      PORT=*)
+        printf '%s' "${parsed_out#PORT=}"
+        return 0
+        ;;
+      INVALID)
+        echo "warning: unable to parse AE_NATS_URL='${AE_NATS_URL}'; defaulting EDGE_PORT=4223." >&2
+        ;;
+    esac
+  fi
+  printf '4223'
+}
+
+resolve_strict_edge_http_port() {
+  if [[ -n "${EDGE_HTTP_PORT:-}" ]]; then
+    printf '%s' "${EDGE_HTTP_PORT}"
+    return 0
+  fi
+  printf '8223'
 }
 
 normalize_ingress_mode() {
@@ -324,8 +814,138 @@ finally:
 PY
 }
 
+apishim_health_code() {
+  local port="$1"
+  local token="${2:-}"
+  local path="${AE_APISHIM_HEALTH_PATH:-/healthz}"
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "000|curl-not-found"
+    return 0
+  fi
+  local url="https://127.0.0.1:${port}${path}"
+  local out
+  if [[ -n "$token" ]]; then
+    out="$(curl -sk -H "Authorization: Bearer ${token}" "${url}" -w "\n%{http_code}" 2>/dev/null || true)"
+  else
+    out="$(curl -sk "${url}" -w "\n%{http_code}" 2>/dev/null || true)"
+  fi
+  local code="${out##*$'\n'}"
+  local body="${out%$'\n'*}"
+  if [[ -z "$code" ]]; then
+    code="000"
+  fi
+  echo "${code}|${body}"
+}
+
+apishim_is_healthy_once() {
+  local port="$1"
+  local token="${2:-}"
+  local probe code
+  probe="$(apishim_health_code "$port" "$token")"
+  code="${probe%%|*}"
+  [[ "$code" == "200" ]]
+}
+
+apishim_wait_healthy() {
+  local port="$1"
+  local token="${2:-}"
+  local timeout_s="${3:-12}"
+  local start now probe code body
+  if ! [[ "$timeout_s" =~ ^[0-9]+$ ]]; then
+    timeout_s=12
+  fi
+  start="$(date +%s)"
+  while true; do
+    if ! command -v curl >/dev/null 2>&1; then
+      if port_open "127.0.0.1" "$port"; then
+        return 0
+      fi
+      code="000"
+      body="curl-not-found"
+    else
+      probe="$(apishim_health_code "$port" "$token")"
+      code="${probe%%|*}"
+      body="${probe#*|}"
+      if [[ "$code" == "200" ]]; then
+        return 0
+      fi
+      if [[ ("$code" == "401" || "$code" == "403") && -n "$token" ]] && \
+        grep -qi "missing/invalid bearer token" <<<"$body"; then
+        echo "error: apishim responded ${code}; AE_APISHIM_TOKEN does not match running server." >&2
+        return 1
+      fi
+    fi
+    now="$(date +%s)"
+    if (( now - start >= timeout_s )); then
+      echo "error: apishim did not become healthy on 127.0.0.1:${port} within ${timeout_s}s (last=${code})." >&2
+      if [[ -n "${body:-}" ]]; then
+        echo "error: apishim health response: ${body}" >&2
+      fi
+      return 1
+    fi
+    sleep 0.3
+  done
+}
+
+apishim_port_debug() {
+  local port="$1"
+  if ! command -v ss >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "debug: listeners on :${port}" >&2
+  ss -ltnp "( sport = :${port} )" 2>/dev/null >&2 || true
+}
+
+apishim_pid_alive() {
+  local pid_file="$1"
+  local pid
+  if [[ ! -f "$pid_file" ]]; then
+    return 1
+  fi
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ -z "$pid" ]]; then
+    return 1
+  fi
+  kill -0 "$pid" 2>/dev/null
+}
+
+read_env_var_file() {
+  local key="$1"
+  local file="$2"
+  if [[ ! -f "$file" ]]; then
+    return 1
+  fi
+  awk -F= -v k="$key" '
+    $1 ~ "^[[:space:]]*"k"[[:space:]]*$" {
+      sub(/^[[:space:]]*[^=]+[[:space:]]*=[[:space:]]*/, "", $0)
+      gsub(/^[[:space:]]*"/, "", $0)
+      gsub(/"[[:space:]]*$/, "", $0)
+      gsub(/^[[:space:]]*'\''/, "", $0)
+      gsub(/'\''[[:space:]]*$/, "", $0)
+      print $0
+      exit
+    }
+  ' "$file"
+}
+
+normalize_apishim_port() {
+  local candidate="${1:-}"
+  local postgres_port="${2:-5432}"
+  if ! [[ "$candidate" =~ ^[0-9]+$ ]]; then
+    candidate="8445"
+  fi
+  if [[ "$candidate" == "5432" || ( -n "$postgres_port" && "$candidate" == "$postgres_port" ) ]]; then
+    echo "8445"
+    return 0
+  fi
+  echo "$candidate"
+}
+
 warn_apishim_dsn() {
   local dsn="${AE_APISHIM_DSN:-}"
+  local scheme=""
+  local host=""
+  local dsn_port=""
   if [[ -z "$dsn" ]]; then
     return 0
   fi
@@ -347,19 +967,19 @@ if not scheme:
     sys.exit(0)
 print(f"{scheme}|{host}|{port}")
 PY
-)"
+  )"
   if [[ -z "$parsed" ]]; then
     return 0
   fi
-  IFS='|' read -r scheme host port <<<"$parsed"
+  IFS='|' read -r scheme host dsn_port <<<"$parsed"
   if [[ "$scheme" != "postgres" && "$scheme" != "postgresql" ]]; then
     return 0
   fi
   if [[ -z "$host" ]]; then
     return 0
   fi
-  if [[ -z "${port:-}" ]]; then
-    port=5432
+  if [[ -z "${dsn_port:-}" ]]; then
+    dsn_port=5432
   fi
   if [[ "$host" == "postgres" ]]; then
     if ! "$ENGINE_BIN" ps --format '{{.Names}}' 2>/dev/null | grep -q 'postgres'; then
@@ -367,44 +987,63 @@ PY
     fi
     return 0
   fi
-  if ! port_open "$host" "$port"; then
-    echo "warning: AE_APISHIM_DSN points to ${host}:${port}, but it is not reachable from the host; apishim may exit." >&2
+  if ! port_open "$host" "$dsn_port"; then
+    echo "warning: AE_APISHIM_DSN points to ${host}:${dsn_port}, but it is not reachable from the host; apishim may exit." >&2
   fi
 }
 
 start_apishim() {
   local profile_dir="$1"
   local host="${APISHIM_HOST:-127.0.0.1}"
-  local port="${APISHIM_PORT:-8445}"
+  local requested_port="${APISHIM_PORT:-8445}"
+  local port="$requested_port"
+  local postgres_port="${POSTGRES_PORT:-5432}"
   local pid_file="${APISHIM_PID_FILE:-$ROOT_DIR/state/apishim.pid}"
   local env_file="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
   local cli_env_file="${APISHIM_CLI_ENV_FILE:-$profile_dir/apishim.cli.env}"
   local cert_file="${APISHIM_CERT_FILE:-$profile_dir/apishim.crt}"
   local key_file="${APISHIM_KEY_FILE:-$profile_dir/apishim.key}"
   local mode="${AE_APISHIM_MODE:-container}"
+  local startup_timeout="${AE_APISHIM_STARTUP_TIMEOUT:-12}"
+  local health_token=""
   local already_running=0
   export AE_APISHIM_ENV_FILE="${AE_APISHIM_ENV_FILE:-$env_file}"
 
   if ! is_truthy "${AE_APISHIM_AUTOSTART:-1}"; then
     return 0
   fi
-  if [[ "$mode" == "container" && "$port" == "5432" ]]; then
-    echo "warning: APISHIM_PORT=5432 conflicts with Postgres; forcing APISHIM_PORT=8445 for apishim." >&2
-    port="8445"
-  fi
-  if port_open "$host" "$port"; then
-    already_running=1
+  if [[ -f "$pid_file" ]] && ! apishim_pid_alive "$pid_file"; then
+    rm -f "$pid_file" >/dev/null 2>&1 || true
   fi
 
   mkdir -p "$profile_dir"
   APISHIM_ENV_FILE="$env_file" APISHIM_CERT_FILE="$cert_file" APISHIM_KEY_FILE="$key_file" \
     "$ROOT_DIR/scripts/ensure_apishim_env.sh" >/dev/null 2>&1 || true
   if [[ -f "$env_file" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$env_file"
-    set +a
+    local env_apishim_token=""
+    local env_apishim_read_token=""
+    local env_apishim_session_secret=""
+    local env_apishim_mint_token=""
+    local env_api_admin_token=""
+    local env_labs_token=""
+    env_apishim_token="$(read_env_var_file "AE_APISHIM_TOKEN" "$env_file" || true)"
+    env_apishim_read_token="$(read_env_var_file "AE_APISHIM_READ_TOKEN" "$env_file" || true)"
+    env_apishim_session_secret="$(read_env_var_file "AE_APISHIM_SESSION_SECRET" "$env_file" || true)"
+    env_apishim_mint_token="$(read_env_var_file "AE_APISHIM_MINT_TOKEN" "$env_file" || true)"
+    env_api_admin_token="$(read_env_var_file "AE_API_ADMIN_TOKEN" "$env_file" || true)"
+    env_labs_token="$(read_env_var_file "AE_LABS_TOKEN" "$env_file" || true)"
+    [[ -n "$env_apishim_token" ]] && export AE_APISHIM_TOKEN="$env_apishim_token"
+    [[ -n "$env_apishim_read_token" ]] && export AE_APISHIM_READ_TOKEN="$env_apishim_read_token"
+    [[ -n "$env_apishim_session_secret" ]] && export AE_APISHIM_SESSION_SECRET="$env_apishim_session_secret"
+    [[ -n "$env_apishim_mint_token" ]] && export AE_APISHIM_MINT_TOKEN="$env_apishim_mint_token"
+    [[ -n "$env_api_admin_token" ]] && export AE_API_ADMIN_TOKEN="$env_api_admin_token"
+    [[ -n "$env_labs_token" ]] && export AE_LABS_TOKEN="$env_labs_token"
   fi
+  port="$(normalize_apishim_port "$requested_port" "$postgres_port")"
+  if [[ "$port" != "$requested_port" ]]; then
+    echo "warning: APISHIM_PORT=${requested_port} conflicts with POSTGRES_PORT=${postgres_port}; forcing APISHIM_PORT=${port}." >&2
+  fi
+  export APISHIM_PORT="$port"
 
   export AE_APISHIM_RUNTIME="${AE_APISHIM_RUNTIME:-${AE_RUNTIME_BACKEND:-docker}}"
   export AE_APISHIM_ENABLE=1
@@ -414,12 +1053,12 @@ start_apishim() {
   export AE_APISHIM_DB="${AE_APISHIM_DB:-$profile_dir/apishim.db}"
   export AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-$cert_file}"
   export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-$key_file}"
-  export AE_APISHIM_SERVER="${AE_APISHIM_SERVER:-https://127.0.0.1:${port}}"
+  export AE_APISHIM_SERVER="https://127.0.0.1:${port}"
   APISHIM_ENV_FILE="$env_file" APISHIM_CLI_ENV_FILE="$cli_env_file" APISHIM_CERT_FILE="$cert_file" \
     AE_APISHIM_SERVER="${AE_APISHIM_SERVER}" AE_CLI_SHARED_GROUP="${AE_CLI_SHARED_GROUP:-aecli}" \
     "$ROOT_DIR/scripts/ensure_apishim_cli_env.sh" >/dev/null 2>&1 || \
     echo "warning: failed to sync shared apishim CLI env" >&2
-  # In container mode, loopback etcd endpoints resolve inside the apishim
+  # In compose-container mode, loopback etcd endpoints resolve inside the apishim
   # container, not on the host. Default to the compose service endpoint.
   if [[ "$mode" == "container" && "${AE_STATE_BACKEND:-}" == "etcd" && -z "${AE_APISHIM_ETCD_ENDPOINTS:-}" ]]; then
     if [[ "${AE_ETCD_ENDPOINTS:-}" == *"127.0.0.1"* || "${AE_ETCD_ENDPOINTS:-}" == *"localhost"* ]]; then
@@ -427,6 +1066,14 @@ start_apishim() {
     fi
   fi
   warn_apishim_dsn
+  local renorm_port
+  renorm_port="$(normalize_apishim_port "$port" "$postgres_port")"
+  if [[ "$renorm_port" != "$port" ]]; then
+    echo "warning: apishim port drift detected (${port}); forcing APISHIM_PORT=${renorm_port}." >&2
+    port="$renorm_port"
+    export APISHIM_PORT="$port"
+    export AE_APISHIM_SERVER="https://127.0.0.1:${port}"
+  fi
   # Ensure controller can mint shim session tokens (dashboard exec/port-forward).
   if [[ -n "${AE_APISHIM_SESSION_SECRET:-}" ]]; then
     export AE_APISHIM_SESSION_SECRET
@@ -437,9 +1084,45 @@ start_apishim() {
   if [[ -n "${AE_API_ADMIN_TOKEN:-}" ]]; then
     export AE_API_ADMIN_TOKEN
   fi
+  echo "[apishim] mode=${mode} port=${port} postgres_port=${postgres_port} env_file=${env_file}" >&2
+  health_token="${AE_APISHIM_TOKEN:-}"
+
+  if port_open "127.0.0.1" "$port"; then
+    if apishim_is_healthy_once "$port" "$health_token"; then
+      already_running=1
+    elif [[ "$mode" == "container" || "$mode" == "cri" ]]; then
+      # Existing containerized apishim should be recreated to refresh env/tokens.
+      already_running=1
+    else
+      # Host mode: try to recover only if the tracked PID is ours; otherwise fail fast.
+      if apishim_pid_alive "$pid_file"; then
+        local existing_pid existing_cmd
+        existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
+        existing_cmd="$(ps -p "$existing_pid" -o cmd= 2>/dev/null || true)"
+        if [[ "$existing_cmd" == *"ae.apishim"* ]]; then
+          kill "$existing_pid" >/dev/null 2>&1 || true
+          sleep 0.2
+        fi
+        if [[ -n "$existing_pid" ]] && ! kill -0 "$existing_pid" 2>/dev/null; then
+          rm -f "$pid_file" >/dev/null 2>&1 || true
+        fi
+      fi
+      if port_open "127.0.0.1" "$port"; then
+        echo "error: apishim port ${port} is in use but health checks failed; refusing to continue." >&2
+        apishim_port_debug "$port"
+        return 1
+      fi
+    fi
+  fi
 
   if [[ "$already_running" -eq 1 ]]; then
-    if [[ "$mode" == "container" ]]; then
+    if [[ "$mode" == "cri" ]]; then
+      if is_truthy "${AE_APISHIM_RECREATE_ON_START:-1}"; then
+        run_cri_stack up-apishim --profile "$PROFILE" --host "$host" --port "$port" \
+          --env-file "$env_file" --cert-file "$cert_file" --key-file "$key_file" --recreate || \
+          echo "warning: failed to recreate apishim CRI component" >&2
+      fi
+    elif [[ "$mode" == "container" ]]; then
       local profile_rel="$profile_dir"
       if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
         profile_rel="${profile_dir#"$ROOT_DIR/"}"
@@ -462,6 +1145,13 @@ start_apishim() {
         fi
       fi
     fi
+    if ! apishim_wait_healthy "$port" "$health_token" "$startup_timeout"; then
+      echo "error: apishim appears unhealthy at https://127.0.0.1:${port}." >&2
+      if [[ -f "$profile_dir/apishim.log" ]]; then
+        tail -n 80 "$profile_dir/apishim.log" >&2 || true
+      fi
+      return 1
+    fi
     return 0
   fi
 
@@ -469,6 +1159,31 @@ start_apishim() {
     nohup "$PYTHON_BIN" -m ae.apishim serve --host "$host" --port "$port" --tls \
       >"$profile_dir/apishim.log" 2>&1 &
     echo $! > "$pid_file"
+    if ! apishim_wait_healthy "$port" "$health_token" "$startup_timeout"; then
+      echo "error: apishim failed to start in host mode on https://127.0.0.1:${port}." >&2
+      if [[ -f "$profile_dir/apishim.log" ]]; then
+        tail -n 80 "$profile_dir/apishim.log" >&2 || true
+      fi
+      return 1
+    fi
+    return 0
+  fi
+
+  if [[ "$mode" == "cri" ]]; then
+    local cri_recreate=()
+    if is_truthy "${AE_APISHIM_RECREATE_ON_START:-1}"; then
+      cri_recreate=(--recreate)
+    fi
+    run_cri_stack up-apishim --profile "$PROFILE" --host "$host" --port "$port" \
+      --env-file "$env_file" --cert-file "$cert_file" --key-file "$key_file" \
+      "${cri_recreate[@]}" || {
+      echo "error: failed to start apishim in strict CRI mode." >&2
+      return 1
+    }
+    if ! apishim_wait_healthy "$port" "$health_token" "$startup_timeout"; then
+      echo "error: apishim failed to become healthy in CRI mode on https://127.0.0.1:${port}." >&2
+      return 1
+    fi
     return 0
   fi
 
@@ -523,6 +1238,15 @@ start_apishim() {
     "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" \
     up -d apishim || echo "warning: failed to start apishim container" >&2
   connect_apishim_network
+  if ! apishim_wait_healthy "$port" "$health_token" "$startup_timeout"; then
+    echo "error: apishim failed to become healthy in container mode on https://127.0.0.1:${port}." >&2
+    local apishim_container
+    apishim_container="$("$ENGINE_BIN" ps --format '{{.Names}}' 2>/dev/null | awk '/apishim/ {print $1; exit}' || true)"
+    if [[ -n "$apishim_container" ]]; then
+      "$ENGINE_BIN" logs "$apishim_container" --tail 80 >&2 || true
+    fi
+    return 1
+  fi
 }
 
 ensure_dev_local() {
@@ -557,9 +1281,9 @@ build_docs_with_labs_token() {
   if [[ -z "$token" ]]; then
     return 0
   fi
-  DOCS_LABS_TOKEN="$token" python docs/build_docs.py || true
+  DOCS_LABS_TOKEN="$token" "$PYTHON_BIN" docs/build_docs.py || true
   if [[ -f "docs/site/playground.html" ]]; then
-    python - <<'PY' "$token" || true
+    "$PYTHON_BIN" - <<'PY' "$token" || true
 from pathlib import Path
 import sys
 
@@ -664,7 +1388,23 @@ start_rathole_client_container() {
 }
 
 PYTHON_BIN="$(detect_python)"
+INFRA_BACKEND="$(resolve_infra_backend)"
+export AE_INFRA_BACKEND="$INFRA_BACKEND"
+if is_strict_cri; then
+  if [[ "$RUNTIME_BACKEND_EXPLICIT" -eq 0 ]]; then
+    export AE_RUNTIME_BACKEND="cri"
+  fi
+  export AE_CRI_RUNTIME_HANDLER="${AE_CRI_RUNTIME_HANDLER:-runc}"
+  export AE_CRI_SET_HOSTNAME="${AE_CRI_SET_HOSTNAME:-0}"
+fi
 ENGINE_BIN="$(detect_engine)"
+
+acquire_profile_lock "$PROFILE"
+ensure_backend_not_mixed_with_core_cri
+ensure_cri_registry_defaults
+ensure_cri_registry_trust
+ensure_cri_preflight
+ensure_cri_registry_ready
 
 if [[ "${BENCH_MODE:-0}" == "1" ]]; then
   export AE_APISHIM_AUTOSTART="${AE_APISHIM_AUTOSTART:-0}"
@@ -675,7 +1415,11 @@ if [[ "${BENCH_MODE:-0}" == "1" ]]; then
 fi
 
 if [[ -z "${AE_APISHIM_MODE:-}" ]]; then
-  if [[ "$ENGINE_BIN" == "podman" ]]; then
+  if is_strict_cri && [[ "$PROFILE" == "k1s-core" ]]; then
+    AE_APISHIM_MODE="cri"
+  elif is_strict_cri; then
+    AE_APISHIM_MODE="host"
+  elif [[ "$ENGINE_BIN" == "podman" ]]; then
     AE_APISHIM_MODE="container"
   else
     AE_APISHIM_MODE="host"
@@ -692,6 +1436,17 @@ if [[ "$ENGINE_BIN" == "podman" ]]; then
   fi
   export APISHIM_CONTAINER_SOCKET
   export APISHIM_CONTAINER_HOST
+fi
+
+if is_strict_cri; then
+  if [[ "${AE_APISHIM_MODE:-host}" == "container" ]]; then
+    echo "error: strict CRI infra does not support AE_APISHIM_MODE=container; use AE_APISHIM_MODE=cri or host" >&2
+    exit 1
+  fi
+  if [[ "${AE_APISHIM_MODE:-host}" == "cri" && "$PROFILE" != "k1s-core" ]]; then
+    echo "error: AE_APISHIM_MODE=cri is currently supported only for k1s-core profile." >&2
+    exit 1
+  fi
 fi
 
 case "$PROFILE" in
@@ -765,14 +1520,18 @@ case "$PROFILE" in
       unset APISHIM_PORT
     fi
     if [[ -z "${AE_APISHIM_DSN:-}" ]]; then
-      if [[ "${AE_APISHIM_MODE:-container}" == "host" ]]; then
+      if [[ "${AE_APISHIM_MODE:-container}" == "host" || "${AE_APISHIM_MODE:-container}" == "cri" ]]; then
         AE_APISHIM_DSN="postgresql://shim:shim@${POSTGRES_BIND_IP}:${POSTGRES_PORT}/shim"
       else
         AE_APISHIM_DSN="postgresql://shim:shim@postgres:5432/shim"
       fi
     fi
     export AE_APISHIM_DSN
-    compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d etcd nats-hub postgres
+    if is_strict_cri; then
+      run_cri_stack up-core-base --profile k1s-core
+    else
+      compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d etcd nats-hub postgres
+    fi
     PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/k1s-core}")"
     SPECS_DIR="$(abs_path "${SPECS_DIR:-$PROFILE_DIR/specs}")"
     ensure_specs_dir "$SPECS_DIR"
@@ -818,12 +1577,23 @@ case "$PROFILE" in
       ENVOY_CONTAINER="${ENVOY_CONTAINER:-k1s-core-envoy}"
       RATHOLE_SERVER_CONTAINER="${RATHOLE_SERVER_CONTAINER:-k1s-core-rathole}"
       if [[ "$INGRESS_MODE" == "core-proxy" ]]; then
-        export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$ENGINE_BIN restart $ENVOY_CONTAINER $RATHOLE_SERVER_CONTAINER}"
-        start_envoy_container "$ENVOY_CONTAINER" "$EDGE_ENVOY_CONFIG"
-        start_rathole_server_container "$RATHOLE_SERVER_CONTAINER" "$EDGE_RATHOLE_SERVER"
+        if is_strict_cri; then
+          export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-core --config $EDGE_ENVOY_CONFIG --recreate && $PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-rathole-server --profile k1s-core --config $EDGE_RATHOLE_SERVER --recreate}"
+          run_cri_stack up-envoy --profile k1s-core --config "$EDGE_ENVOY_CONFIG" --recreate
+          run_cri_stack up-rathole-server --profile k1s-core --config "$EDGE_RATHOLE_SERVER" --recreate
+        else
+          export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$ENGINE_BIN restart $ENVOY_CONTAINER $RATHOLE_SERVER_CONTAINER}"
+          start_envoy_container "$ENVOY_CONTAINER" "$EDGE_ENVOY_CONFIG"
+          start_rathole_server_container "$RATHOLE_SERVER_CONTAINER" "$EDGE_RATHOLE_SERVER"
+        fi
       elif [[ "$INGRESS_MODE" == "core-to-edge-public" ]]; then
-        export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$ENGINE_BIN restart $ENVOY_CONTAINER}"
-        start_envoy_container "$ENVOY_CONTAINER" "$EDGE_ENVOY_CONFIG"
+        if is_strict_cri; then
+          export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-core --config $EDGE_ENVOY_CONFIG --recreate}"
+          run_cri_stack up-envoy --profile k1s-core --config "$EDGE_ENVOY_CONFIG" --recreate
+        else
+          export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$ENGINE_BIN restart $ENVOY_CONTAINER}"
+          start_envoy_container "$ENVOY_CONTAINER" "$EDGE_ENVOY_CONFIG"
+        fi
       fi
     fi
     METRICS_PORT="${METRICS_PORT:-9108}"
@@ -838,16 +1608,25 @@ case "$PROFILE" in
       APISHIM_HOST_PORT="8445"
       export APISHIM_HOST_PORT
     fi
+    start_apishim "$PROFILE_DIR"
     if [[ "${AE_LABS:-0}" == "1" ]]; then
-      start_apishim "$PROFILE_DIR"
       build_docs_with_labs_token
     fi
     if [[ "${CORE_CADDY:-0}" == "1" ]]; then
-      export AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}"
-      export AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-$ENGINE_BIN}"
-      export AE_CADDY_FILE="${AE_CADDY_FILE:-/etc/caddy/Caddyfile}"
-      export AE_CADDY_SITES="${AE_CADDY_SITES:-$ROOT_DIR/state/caddy}"
-      start_caddy
+      if is_strict_cri; then
+        caddy_https_port="${CADDY_HTTPS_PORT:-8443}"
+        caddy_sites="$ROOT_DIR/state/caddy"
+        mkdir -p "$caddy_sites"
+        render_strict_caddy_sites "$caddy_https_port"
+        write_dash_caddy_site "127.0.0.1" "${caddy_sites}/dash.caddy" "$caddy_https_port"
+        run_cri_stack up-caddy --profile k1s-core --metrics-port "$METRICS_PORT" --apishim-port "${APISHIM_PORT:-8445}" --recreate
+      else
+        export AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}"
+        export AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-$ENGINE_BIN}"
+        export AE_CADDY_FILE="${AE_CADDY_FILE:-/etc/caddy/Caddyfile}"
+        export AE_CADDY_SITES="${AE_CADDY_SITES:-$ROOT_DIR/state/caddy}"
+        start_caddy
+      fi
     fi
     if [[ "${CORE_DOCS:-0}" == "1" ]]; then
       start_docs_server
@@ -857,16 +1636,30 @@ case "$PROFILE" in
     ;;
   k1s-edge)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
+    export AE_SITE_ID="${AE_SITE_ID:-sfo-edge-01}"
+    export AE_NODE_ID="${AE_NODE_ID:-edge-node-1}"
     EDGE_START_NATS="${EDGE_START_NATS:-1}"
     if [[ "$EDGE_START_NATS" == "1" ]]; then
-      compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d nats-edge
+      if is_strict_cri; then
+        strict_edge_port="$(resolve_strict_edge_port)"
+        strict_edge_http_port="$(resolve_strict_edge_http_port)"
+        strict_edge_conf="$(prepare_strict_edge_nats_config "$AE_SITE_ID" "$strict_edge_port" "$strict_edge_http_port")"
+        run_cri_stack up-edge-nats --profile "${EDGE_PROFILE:-k1s-edge}" --site-id "$AE_SITE_ID" --config "$strict_edge_conf" --recreate
+      else
+        compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d nats-edge
+      fi
     fi
     EDGE_START_POSTGRES="${EDGE_START_POSTGRES:-0}"
     if [[ "$EDGE_START_POSTGRES" == "1" ]]; then
       POSTGRES_BIND_IP="${POSTGRES_BIND_IP:-127.0.0.1}"
       POSTGRES_PORT="${POSTGRES_PORT:-5432}"
       export POSTGRES_BIND_IP POSTGRES_PORT
-      compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d postgres
+      if is_strict_cri; then
+        echo "error: EDGE_START_POSTGRES=1 is not supported in strict CRI profile mode" >&2
+        exit 1
+      else
+        compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d postgres
+      fi
     fi
     EDGE_PROFILE="${EDGE_PROFILE:-k1s-edge}"
     PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/$EDGE_PROFILE}")"
@@ -881,13 +1674,15 @@ case "$PROFILE" in
     fi
     EDGE_TRANSPORT_BACKEND="${EDGE_TRANSPORT_BACKEND:-$DEFAULT_EDGE_BACKEND}"
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-$EDGE_TRANSPORT_BACKEND}"
-    export AE_SITE_ID="${AE_SITE_ID:-sfo-edge-01}"
-    export AE_NODE_ID="${AE_NODE_ID:-edge-node-1}"
     if [[ -z "${AE_NODE_LABELS:-}" ]]; then
       export AE_NODE_LABELS="role=gateway,profile=${EDGE_PROFILE}"
     fi
     EDGE_RATHOLE_CLIENT="${EDGE_RATHOLE_CLIENT:-$EDGE_INGRESS_DIR/rathole-client-${AE_SITE_ID}.toml}"
-    export AE_NATS_URL="${AE_NATS_URL:-nats://gateway:dev@127.0.0.1:4223}"
+    edge_nats_port_default="4223"
+    if is_strict_cri; then
+      edge_nats_port_default="$(resolve_strict_edge_port)"
+    fi
+    export AE_NATS_URL="${AE_NATS_URL:-nats://gateway:dev@127.0.0.1:${edge_nats_port_default}}"
     export AE_JS_DOMAIN="${AE_JS_DOMAIN:-K1S}"
     export AE_GATEWAY_SPOOL_PATH="${AE_GATEWAY_SPOOL_PATH:-$PROFILE_DIR/gateway-${AE_SITE_ID}-${AE_NODE_ID}.db}"
     export AE_EDGE_INGRESS_LOCAL_ADDR="${AE_EDGE_INGRESS_LOCAL_ADDR:-127.0.0.1:18081}"
@@ -899,7 +1694,11 @@ case "$PROFILE" in
     if [[ "$INGRESS_MODE" == "core-proxy" && "$EDGE_INGRESS_START" == "1" ]]; then
       write_rathole_client_config "$EDGE_RATHOLE_CLIENT" "$AE_RATHOLE_SERVER_ADDR" "$AE_RATHOLE_DEFAULT_TOKEN" "$AE_SITE_ID" "$AE_EDGE_INGRESS_LOCAL_ADDR"
       RATHOLE_CLIENT_CONTAINER="${RATHOLE_CLIENT_CONTAINER:-k1s-edge-${AE_SITE_ID}-${AE_NODE_ID}-rathole}"
-      start_rathole_client_container "$RATHOLE_CLIENT_CONTAINER" "$EDGE_RATHOLE_CLIENT"
+      if is_strict_cri; then
+        run_cri_stack up-rathole-client --profile "$EDGE_PROFILE" --site-id "$AE_SITE_ID" --node-id "$AE_NODE_ID" --config "$EDGE_RATHOLE_CLIENT" --recreate
+      else
+        start_rathole_client_container "$RATHOLE_CLIENT_CONTAINER" "$EDGE_RATHOLE_CLIENT"
+      fi
     fi
     EDGE_START_WORKER="${EDGE_START_WORKER:-1}"
     if [[ "$EDGE_START_WORKER" == "1" ]]; then
