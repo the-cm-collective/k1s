@@ -1,6 +1,32 @@
 import os
 
+import pytest
+
 from ae.cli import __main__ as cli
+
+
+AUTH_ENV_KEYS = (
+    "AE_APISHIM_TOKEN",
+    "AE_APISHIM_READ_TOKEN",
+    "AE_APISHIM_EXEC_TOKEN",
+    "AE_APISHIM_PORTFORWARD_TOKEN",
+    "AE_APISHIM_SESSION_SECRET",
+    "AE_APISHIM_MINT_TOKEN",
+    "AE_LABS_TOKEN",
+    "AE_APISHIM_CA_BUNDLE",
+    "AE_APISHIM_CA",
+    "AE_APISHIM_TLS_CA",
+    "AE_APISHIM_SERVER",
+    "CONTROLLER_ENV_FILE",
+    "DEV_ENV_FILE",
+    "APISHIM_PID_FILE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_auth_env(monkeypatch):
+    for key in AUTH_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
 
 
 def test_auth_local_strict_fails_without_stream_tokens(tmp_path, capsys):
