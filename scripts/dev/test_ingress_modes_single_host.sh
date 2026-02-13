@@ -13,6 +13,7 @@ KEEP_SPECS=0
 SITE_ID="${SITE_ID:-sea-edge-02}"
 APP_NAME="${APP_NAME:-app-svc}"
 APP_MANIFEST="${APP_MANIFEST:-$ROOT_DIR/specs/examples/app-svc-node-sea-edge-02-edge-1.yaml}"
+POLICY_MANIFEST="${POLICY_MANIFEST:-}"
 
 CORE_SPECS_DIR="${CORE_SPECS_DIR:-$ROOT_DIR/state/profiles/k1s-core/specs}"
 CORE_ENVOY_CONFIG="${CORE_ENVOY_CONFIG:-$ROOT_DIR/state/profiles/k1s-core/edge-ingress/envoy.yaml}"
@@ -64,6 +65,7 @@ Options:
   --site-id <site>                 Site id (default: sea-edge-02)
   --app-name <name>                Workload app name (default: app-svc)
   --app-manifest <path>            Workload manifest path
+  --policy-manifest <path>         Optional EdgeIngressPolicy manifest to apply before checks
 
   --core-specs-dir <path>          Active core specs dir
   --core-envoy-config <path>       Rendered core Envoy config path
@@ -568,6 +570,13 @@ EOF_ENDPOINT
 
 apply_workload_and_wait() {
   [[ -f "$APP_MANIFEST" ]] || die "workload manifest not found: $APP_MANIFEST"
+  if [[ -n "$POLICY_MANIFEST" ]]; then
+    [[ -f "$POLICY_MANIFEST" ]] || die "policy manifest not found: $POLICY_MANIFEST"
+    local policy_dst
+    policy_dst="$CORE_SPECS_DIR/$(basename "$POLICY_MANIFEST")"
+    log "staging policy manifest: $POLICY_MANIFEST -> $policy_dst"
+    stage_file "$POLICY_MANIFEST" "$policy_dst"
+  fi
   log "planning workload manifest: $APP_MANIFEST"
   run_ae plan -f "$APP_MANIFEST" --verbose || true
 
@@ -915,6 +924,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --app-manifest)
       APP_MANIFEST="${2:-}"
+      shift 2
+      ;;
+    --policy-manifest)
+      POLICY_MANIFEST="${2:-}"
       shift 2
       ;;
     --core-specs-dir)

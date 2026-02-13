@@ -86,6 +86,41 @@ scripts/dev/test_ingress_matrix_single_host.sh \
   --tier tier2
 ```
 
+Deep validation profile (core-proxy proof lane):
+
+```bash
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy \
+  --archetypes ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 \
+  --validation-profile deep
+```
+
+Deep + performance sample profile:
+
+```bash
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy \
+  --archetypes ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 \
+  --validation-profile deep+perf \
+  --perf-profile sample
+```
+
+Deep + performance full-threshold profile (optional gate):
+
+```bash
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy \
+  --archetypes ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 \
+  --validation-profile deep+perf \
+  --perf-profile full \
+  --perf-min-rps 25 \
+  --perf-max-p95-ms 250 \
+  --perf-max-error-rate 0.01
+```
+
 Notes:
 - For `edge-local`, Tier 2 uses `--edge-local-listener-url` when provided.
 - If not provided in single-host lanes, the checker defaults to

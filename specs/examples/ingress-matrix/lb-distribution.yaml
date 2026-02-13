@@ -1,0 +1,193 @@
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: ingress-matrix-lb
+spec:
+  image: docker.io/python:3.12-slim
+  replicas: 3
+  command: ["sh", "-lc"]
+  args:
+    - |
+      cat >/tmp/deep_ingress_backend.py <<'PY'
+      import base64
+      import hashlib
+      import json
+      import os
+      import socket
+      import struct
+      from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+      WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+      def _recv_exact(conn, length):
+          data = b""
+          while len(data) < length:
+              chunk = conn.recv(length - len(data))
+              if not chunk:
+                  raise ConnectionError("unexpected EOF")
+              data += chunk
+          return data
+
+
+      def _ws_read_frame(conn):
+          b0, b1 = _recv_exact(conn, 2)
+          opcode = b0 & 0x0F
+          masked = (b1 & 0x80) != 0
+          length = b1 & 0x7F
+          if length == 126:
+              length = struct.unpack("!H", _recv_exact(conn, 2))[0]
+          elif length == 127:
+              length = struct.unpack("!Q", _recv_exact(conn, 8))[0]
+          mask_key = b""
+          if masked:
+              mask_key = _recv_exact(conn, 4)
+          payload = _recv_exact(conn, length)
+          if masked:
+              payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+          return opcode, payload
+
+
+      def _ws_write_frame(conn, opcode, payload):
+          payload = payload or b""
+          b0 = 0x80 | (opcode & 0x0F)
+          length = len(payload)
+          if length < 126:
+              hdr = bytes([b0, length])
+          elif length <= 0xFFFF:
+              hdr = bytes([b0, 126]) + struct.pack("!H", length)
+          else:
+              hdr = bytes([b0, 127]) + struct.pack("!Q", length)
+          conn.sendall(hdr + payload)
+
+
+      def _backend_id():
+          candidates = []
+          host = os.getenv("HOSTNAME", "").strip()
+          if host:
+              candidates.append(host)
+          try:
+              candidates.append(socket.gethostname().strip())
+          except Exception:
+              pass
+          try:
+              with open("/proc/self/cgroup", "r", encoding="utf-8") as fh:
+                  for line in fh:
+                      part = line.strip().split("/")[-1]
+                      if part:
+                          candidates.append(part[-12:])
+                          break
+          except Exception:
+              pass
+          candidates.append(str(os.getpid()))
+          for item in candidates:
+              if item:
+                  return item
+          return "unknown"
+
+
+      BACKEND_ID = _backend_id()
+
+
+      class Handler(BaseHTTPRequestHandler):
+          protocol_version = "HTTP/1.1"
+
+          def _write_json(self, status, payload):
+              body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+              self.send_response(status)
+              self.send_header("Content-Type", "application/json")
+              self.send_header("Content-Length", str(len(body)))
+              self.end_headers()
+              self.wfile.write(body)
+
+          def do_GET(self):
+              if self.path.startswith("/healthz"):
+                  self._write_json(200, {"ok": True, "backend_id": BACKEND_ID})
+                  return
+
+              upgrade = (self.headers.get("Upgrade") or "").lower()
+              if self.path.startswith("/ws") and upgrade == "websocket":
+                  key = self.headers.get("Sec-WebSocket-Key", "")
+                  if not key:
+                      self.send_error(400, "missing Sec-WebSocket-Key")
+                      return
+                  accept = base64.b64encode(
+                      hashlib.sha1((key + WS_GUID).encode("utf-8")).digest()
+                  ).decode("ascii")
+                  self.send_response(101, "Switching Protocols")
+                  self.send_header("Upgrade", "websocket")
+                  self.send_header("Connection", "Upgrade")
+                  self.send_header("Sec-WebSocket-Accept", accept)
+                  self.end_headers()
+                  self.close_connection = False
+                  self.connection.settimeout(30.0)
+                  try:
+                      while True:
+                          opcode, payload = _ws_read_frame(self.connection)
+                          if opcode == 0x8:
+                              _ws_write_frame(self.connection, 0x8, payload)
+                              break
+                          if opcode == 0x9:
+                              _ws_write_frame(self.connection, 0xA, payload)
+                              continue
+                          if opcode in (0x1, 0x2):
+                              _ws_write_frame(self.connection, opcode, payload)
+                  except Exception:
+                      pass
+                  return
+
+              self._write_json(
+                  200,
+                  {
+                      "backend_id": BACKEND_ID,
+                      "path": self.path,
+                      "hostname": socket.gethostname(),
+                      "pid": os.getpid(),
+                  },
+              )
+
+          def log_message(self, format, *args):
+              return
+
+
+      class Server(ThreadingHTTPServer):
+          daemon_threads = True
+
+
+      port = int(os.getenv("PORT", "8080"))
+      srv = Server(("0.0.0.0", port), Handler)
+      srv.serve_forever()
+      PY
+      exec python -u /tmp/deep_ingress_backend.py
+  ports:
+    - name: http
+      containerPort: 8080
+  service:
+    port: 18119
+    targetPort: 8080
+  nodeSelector:
+    role: worker
+    site: sea-edge-02
+  health:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 1
+      timeoutSeconds: 1
+      periodSeconds: 5
+      successThreshold: 1
+      failureThreshold: 3
+    liveness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 3
+      timeoutSeconds: 1
+      periodSeconds: 10
+      successThreshold: 1
+      failureThreshold: 3
+  resources:
+    requests:
+      cpu: 0.05
+      memory: 128Mi

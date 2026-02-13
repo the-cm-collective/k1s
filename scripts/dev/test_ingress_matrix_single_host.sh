@@ -9,6 +9,8 @@ TIER="${TIER:-tier1}"
 STRICT=0
 KEEP_SPECS=0
 FAIL_FAST=0
+VALIDATION_PROFILE="${VALIDATION_PROFILE:-standard}"
+PERF_PROFILE="${PERF_PROFILE:-off}"
 
 SITE_ID="${SITE_ID:-sea-edge-02}"
 NODE_ID="${NODE_ID:-edge-1}"
@@ -31,12 +33,27 @@ STABILITY_REQUESTS="${STABILITY_REQUESTS:-30}"
 LARGE_PAYLOAD_PATH="${LARGE_PAYLOAD_PATH:-/}"
 LARGE_PAYLOAD_MIN_BYTES="${LARGE_PAYLOAD_MIN_BYTES:-65536}"
 HTTP2_ENFORCE_DOWNSTREAM_H2="${HTTP2_ENFORCE_DOWNSTREAM_H2:-0}"
+WS_DURATION_SECONDS="${WS_DURATION_SECONDS:-600}"
+WS_CONNECTIONS="${WS_CONNECTIONS:-50}"
+WS_HEARTBEAT_SECONDS="${WS_HEARTBEAT_SECONDS:-5}"
+LB_SAMPLE_REQUESTS="${LB_SAMPLE_REQUESTS:-5000}"
+STICKY_REQUESTS_PER_CLIENT="${STICKY_REQUESTS_PER_CLIENT:-100}"
+PERF_DURATION_SECONDS="${PERF_DURATION_SECONDS:-180}"
+PERF_CONCURRENCY="${PERF_CONCURRENCY:-50}"
+PERF_RPS_TARGET="${PERF_RPS_TARGET:-0}"
+PERF_WARMUP_SECONDS="${PERF_WARMUP_SECONDS:-20}"
+PERF_MIN_RPS="${PERF_MIN_RPS:-0}"
+PERF_MAX_P95_MS="${PERF_MAX_P95_MS:-0}"
+PERF_MAX_ERROR_RATE="${PERF_MAX_ERROR_RATE:-1}"
 
 RESULTS_DIR="${RESULTS_DIR:-$ROOT_DIR/state/test-results}"
 RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 RESULT_JSON="${RESULT_JSON:-$RESULTS_DIR/ingress-matrix-${RUN_STAMP}.json}"
 RESULT_TSV=""
 FAILURES_DIR=""
+DEEP_PROBE_SCRIPT="${DEEP_PROBE_SCRIPT:-$ROOT_DIR/scripts/dev/ingress_deep_probe.py}"
+POSTCHECK_EVIDENCE_JSON="{}"
+POSTCHECK_PERF_JSON="{}"
 
 usage() {
   cat <<'USAGE'
@@ -52,6 +69,8 @@ Options:
   --strict                         Pass --strict to single-mode checker
   --keep-specs                     Keep staged specs after each row
   --fail-fast                      Stop on first failed row
+  --validation-profile <profile>   standard|deep|deep+perf (default: standard)
+  --perf-profile <profile>         off|sample|full (default: off; deep+perf defaults to sample)
 
   --site-id <id>                   Site id placement (default: sea-edge-02)
   --node-id <id>                   Node id label for report context (default: edge-1)
@@ -73,6 +92,18 @@ Options:
   --large-payload-path <path>      Path used for large-payload assertion (default: /)
   --large-payload-min-bytes <n>    Minimum bytes expected for large-payload assertion (default: 65536)
   --http2-enforce-downstream-h2    Require HTTP/2 in postcheck for all modes (default: off)
+  --ws-duration-seconds <n>        WebSocket soak duration for deep checks (default: 600)
+  --ws-connections <n>             WebSocket connection count for deep checks (default: 50)
+  --ws-heartbeat-seconds <n>       WebSocket heartbeat period (default: 5)
+  --lb-sample-requests <n>         Requests used for lb distribution probe (default: 5000)
+  --sticky-requests-per-client <n> Requests per sticky client (default: 100)
+  --perf-duration-seconds <n>      Perf probe duration (default: 180)
+  --perf-concurrency <n>           Perf probe concurrency (default: 50)
+  --perf-rps-target <n>            Reserved perf target knob (default: 0 = unlimited)
+  --perf-warmup-seconds <n>        Perf warmup duration before sampling (default: 20)
+  --perf-min-rps <n>               Full-profile minimum requests/sec threshold (default: 0 disabled)
+  --perf-max-p95-ms <n>            Full-profile maximum p95 latency threshold in ms (default: 0 disabled)
+  --perf-max-error-rate <n>        Full-profile maximum error rate (0..1, default: 1)
 
   --results-dir <path>             Output directory for matrix artifacts
   --result-json <path>             Result JSON path
@@ -109,7 +140,7 @@ validate_mode() {
 
 validate_archetype() {
   case "$1" in
-    http-static|http-path-routing|http-multi-replica|http-multiport|http-redirect|http-large-payload|http2-unary) ;;
+    http-static|http-path-routing|http-multi-replica|http-multiport|http-redirect|http-large-payload|http2-unary|ws-echo|lb-distribution|sticky-cookie) ;;
     *) die "invalid archetype '$1'" ;;
   esac
 }
@@ -136,6 +167,9 @@ archetype_manifest() {
     http-redirect) printf '%s/specs/examples/ingress-matrix/http-redirect.yaml' "$ROOT_DIR" ;;
     http-large-payload) printf '%s/specs/examples/ingress-matrix/http-large-payload.yaml' "$ROOT_DIR" ;;
     http2-unary) printf '%s/specs/examples/ingress-matrix/http2-unary.yaml' "$ROOT_DIR" ;;
+    ws-echo) printf '%s/specs/examples/ingress-matrix/ws-echo.yaml' "$ROOT_DIR" ;;
+    lb-distribution) printf '%s/specs/examples/ingress-matrix/lb-distribution.yaml' "$ROOT_DIR" ;;
+    sticky-cookie) printf '%s/specs/examples/ingress-matrix/sticky-cookie.yaml' "$ROOT_DIR" ;;
   esac
 }
 
@@ -148,6 +182,9 @@ archetype_app_name() {
     http-redirect) printf 'ingress-matrix-redirect' ;;
     http-large-payload) printf 'ingress-matrix-large' ;;
     http2-unary) printf 'ingress-matrix-http2' ;;
+    ws-echo) printf 'ingress-matrix-ws' ;;
+    lb-distribution) printf 'ingress-matrix-lb' ;;
+    sticky-cookie) printf 'ingress-matrix-sticky' ;;
   esac
 }
 
@@ -160,6 +197,9 @@ archetype_backend_port() {
     http-redirect) printf '18115' ;;
     http-large-payload) printf '18116' ;;
     http2-unary) printf '18117' ;;
+    ws-echo) printf '18118' ;;
+    lb-distribution) printf '18119' ;;
+    sticky-cookie) printf '18120' ;;
   esac
 }
 
@@ -173,6 +213,9 @@ archetype_assertion_profile() {
     http-redirect) printf 'redirect' ;;
     http-large-payload) printf 'large-payload' ;;
     http2-unary) printf 'http2' ;;
+    ws-echo) printf 'ws' ;;
+    lb-distribution) printf 'lb' ;;
+    sticky-cookie) printf 'sticky' ;;
     *) printf 'baseline' ;;
   esac
 }
@@ -194,6 +237,27 @@ route_name_for_row() {
   printf 'ingress-%s-%s' "$archetype" "$mode_slug"
 }
 
+policy_name_for_archetype() {
+  case "$1" in
+    ws-echo) printf 'ingress-matrix-ws-policy' ;;
+    lb-distribution) printf 'ingress-matrix-lb-policy' ;;
+    sticky-cookie) printf 'ingress-matrix-sticky-policy' ;;
+    *) printf '' ;;
+  esac
+}
+
+policy_manifest_for_archetype() {
+  local archetype="$1"
+  local variant="${2:-base}"
+  case "$archetype:$variant" in
+    ws-echo:base) printf '%s/specs/examples/ingress-matrix/policies/ws-enabled.yaml' "$ROOT_DIR" ;;
+    lb-distribution:base) printf '%s/specs/examples/ingress-matrix/policies/lb-round-robin.yaml' "$ROOT_DIR" ;;
+    lb-distribution:least_request) printf '%s/specs/examples/ingress-matrix/policies/lb-least-request.yaml' "$ROOT_DIR" ;;
+    sticky-cookie:base) printf '%s/specs/examples/ingress-matrix/policies/sticky-cookie.yaml' "$ROOT_DIR" ;;
+    *) printf '' ;;
+  esac
+}
+
 render_route_file() {
   local mode="$1"
   local archetype="$2"
@@ -202,8 +266,10 @@ render_route_file() {
   local out="$5"
   local route_name
   local service_port
+  local policy_name
   route_name="$(route_name_for_row "$mode" "$archetype")"
   service_port="$(archetype_service_port "$archetype")"
+  policy_name="$(policy_name_for_archetype "$archetype")"
 
   {
     cat <<EOF
@@ -248,6 +314,13 @@ EOF
       terminateCore:
         redirectHttpToHttps: true
 EOF
+    if [[ -n "$policy_name" ]]; then
+      cat <<EOF
+  policyRef:
+    name: ${policy_name}
+    namespace: default
+EOF
+    fi
   } > "$out"
 }
 
@@ -371,12 +444,74 @@ stability_check() {
   return 0
 }
 
+json_merge_objects() {
+  local left="${1:-{}}"
+  local right="${2:-{}}"
+  python - "$left" "$right" <<'PY'
+import json
+import sys
+
+def as_dict(raw: str):
+    try:
+        value = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+left = as_dict(sys.argv[1])
+right = as_dict(sys.argv[2])
+for key, value in right.items():
+    if key in left and isinstance(left[key], dict) and isinstance(value, dict):
+        left[key].update(value)
+    else:
+        left[key] = value
+print(json.dumps(left, separators=(",", ":"), sort_keys=True))
+PY
+}
+
+run_deep_probe() {
+  local row_log="$1"
+  shift
+  python "$DEEP_PROBE_SCRIPT" "$@" 2>>"$row_log"
+}
+
+perf_full_verdict() {
+  local perf_json="$1"
+  local min_rps="$2"
+  local max_p95="$3"
+  local max_error_rate="$4"
+  python - "$perf_json" "$min_rps" "$max_p95" "$max_error_rate" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1] or "{}")
+min_rps = float(sys.argv[2])
+max_p95 = float(sys.argv[3])
+max_error_rate = float(sys.argv[4])
+rps = float(payload.get("rps", 0.0))
+p95 = float((payload.get("latency") or {}).get("p95_ms", 0.0))
+error_rate = float(payload.get("error_rate", 1.0))
+ok = True
+if min_rps > 0:
+    ok = ok and rps >= min_rps
+if max_p95 > 0:
+    ok = ok and p95 <= max_p95
+if max_error_rate >= 0:
+    ok = ok and error_rate <= max_error_rate
+print("1" if ok else "0")
+PY
+}
+
 postcheck_archetype() {
   local mode="$1"
   local archetype="$2"
   local host="$3"
+  local row_tmp_dir="${4:-}"
+  local row_log="${5:-/dev/null}"
   local profile
   profile="$(archetype_assertion_profile "$archetype")"
+  POSTCHECK_EVIDENCE_JSON="{}"
+  POSTCHECK_PERF_JSON="{}"
 
   if [[ "$mode" == "edge-local" && -z "$EDGE_LOCAL_LISTENER_URL" ]]; then
     [[ -f "$EDGE_LOCAL_CADDY_FILE" ]] || return 1
@@ -467,10 +602,123 @@ postcheck_archetype() {
         fi
       fi
       ;;
+    ws)
+      local ws_probe_base
+      ws_probe_base="$(mode_tls_url "$mode")"
+      [[ -n "$ws_probe_base" ]] || ws_probe_base="$base_url"
+      assert_code_2xx_or_3xx "${ws_probe_base%/}/healthz" "$host" || return 1
+      ;;
+    lb|sticky)
+      local deep_probe_base
+      deep_probe_base="$(mode_tls_url "$mode")"
+      [[ -n "$deep_probe_base" ]] || deep_probe_base="$base_url"
+      assert_code_2xx_or_3xx "${deep_probe_base%/}/id" "$host" || return 1
+      ;;
     *)
       return 1
       ;;
   esac
+
+  if [[ "$VALIDATION_PROFILE" != "standard" ]]; then
+    local probe_base_url probe_tls_url
+    probe_base_url="$(mode_base_url "$mode")"
+    probe_tls_url="$(mode_tls_url "$mode")"
+    local probe_url="${probe_tls_url:-$probe_base_url}"
+
+    case "$profile" in
+      ws)
+        local ws_json
+        ws_json="$(run_deep_probe "$row_log" ws_soak \
+          --url "${probe_url%/}/ws" \
+          --host "$host" \
+          --duration-seconds "$WS_DURATION_SECONDS" \
+          --connections "$WS_CONNECTIONS" \
+          --heartbeat-seconds "$WS_HEARTBEAT_SECONDS")" || return 1
+        POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "{\"ws\":$ws_json}")"
+        ;;
+      lb)
+        local lb_rr_json
+        lb_rr_json="$(run_deep_probe "$row_log" lb_sample \
+          --url "${probe_url%/}/id" \
+          --host "$host" \
+          --strategy round_robin \
+          --requests "$LB_SAMPLE_REQUESTS" \
+          --require-distribution)" || return 1
+        local lb_wrap
+        lb_wrap="$(python - "$lb_rr_json" <<'PY'
+import json
+import sys
+print(json.dumps({"lb": {"round_robin": json.loads(sys.argv[1])}}, separators=(",", ":"), sort_keys=True))
+PY
+)"
+        POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "$lb_wrap")"
+
+        if [[ "$mode" == "core-proxy" ]]; then
+          local base_manifest
+          local least_manifest
+          base_manifest="$(policy_manifest_for_archetype "$archetype" base)"
+          least_manifest="$(policy_manifest_for_archetype "$archetype" least_request)"
+          if [[ -n "$least_manifest" && -f "$least_manifest" && -n "$base_manifest" && -f "$base_manifest" ]]; then
+            local policy_dst
+            policy_dst="$CORE_SPECS_DIR/$(basename "$base_manifest")"
+            log "deep lb check: staging least_request policy -> $policy_dst"
+            cp "$least_manifest" "$policy_dst"
+            wait_for_pattern "$CORE_ENVOY_CONFIG" "lb_policy: LEAST_REQUEST" "$WAIT_TIMEOUT_S" present
+            local lb_least_json
+            local lb_least_rc=0
+            lb_least_json="$(run_deep_probe "$row_log" lb_sample \
+              --url "${probe_url%/}/id" \
+              --host "$host" \
+              --strategy least_request \
+              --requests "$LB_SAMPLE_REQUESTS")" || lb_least_rc=$?
+            if [[ "$lb_least_rc" -eq 0 ]]; then
+              local lb_merge
+              lb_merge="$(python - "$lb_least_json" <<'PY'
+import json
+import sys
+print(json.dumps({"lb": {"least_request": json.loads(sys.argv[1])}}, separators=(",", ":"), sort_keys=True))
+PY
+)"
+              POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "$lb_merge")"
+            fi
+            cp "$base_manifest" "$policy_dst" || true
+            if [[ "$lb_least_rc" -ne 0 ]]; then
+              return 1
+            fi
+          fi
+        fi
+        ;;
+      sticky)
+        local sticky_json
+        sticky_json="$(run_deep_probe "$row_log" sticky_probe \
+          --url "${probe_url%/}/id" \
+          --host "$host" \
+          --requests-per-client "$STICKY_REQUESTS_PER_CLIENT")" || return 1
+        POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "{\"sticky\":$sticky_json}")"
+        ;;
+    esac
+  fi
+
+  if [[ "$VALIDATION_PROFILE" == "deep+perf" && "$PERF_PROFILE" != "off" ]]; then
+    local perf_probe_url perf_json
+    perf_probe_url="$(mode_tls_url "$mode")"
+    [[ -n "$perf_probe_url" ]] || perf_probe_url="$(mode_base_url "$mode")"
+    perf_json="$(run_deep_probe "$row_log" http_bench \
+      --url "${perf_probe_url%/}/id" \
+      --host "$host" \
+      --duration-seconds "$PERF_DURATION_SECONDS" \
+      --warmup-seconds "$PERF_WARMUP_SECONDS" \
+      --concurrency "$PERF_CONCURRENCY")" || return 1
+    if [[ "$PERF_PROFILE" == "full" ]]; then
+      local perf_ok
+      perf_ok="$(perf_full_verdict "$perf_json" "$PERF_MIN_RPS" "$PERF_MAX_P95_MS" "$PERF_MAX_ERROR_RATE")"
+      if [[ "$perf_ok" != "1" ]]; then
+        log "perf full-profile threshold check failed host=$host mode=$mode archetype=$archetype"
+        return 1
+      fi
+    fi
+    POSTCHECK_PERF_JSON="$(json_merge_objects "$POSTCHECK_PERF_JSON" "{\"http\":$perf_json}")"
+  fi
 
   return 0
 }
@@ -481,6 +729,7 @@ collect_failure_diagnostics() {
   local host="$3"
   local row_dir="$4"
   local row_log="$5"
+  local row_tmp_dir="$6"
 
   mkdir -p "$row_dir"
   cp "$row_log" "$row_dir/row.log"
@@ -508,6 +757,9 @@ collect_failure_diagnostics() {
 
   [[ -f "$CORE_ENVOY_CONFIG" ]] && cp "$CORE_ENVOY_CONFIG" "$row_dir/envoy.yaml" || true
   [[ -f "$EDGE_LOCAL_CADDY_FILE" ]] && cp "$EDGE_LOCAL_CADDY_FILE" "$row_dir/edge-local.caddy" || true
+  if [[ -n "$row_tmp_dir" && -d "$row_tmp_dir" ]]; then
+    cp -a "$row_tmp_dir/." "$row_dir/" 2>/dev/null || true
+  fi
 
   local log_file
   for log_file in \
@@ -530,8 +782,10 @@ append_result_row() {
   local status="$7"
   local duration_s="$8"
   local note="$9"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$mode" "$archetype" "$app_name" "$manifest" "$host" "$backend_port" "$status" "$duration_s" "$note" \
+  local evidence_json="${10:-{}}"
+  local perf_json="${11:-{}}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$mode" "$archetype" "$app_name" "$manifest" "$host" "$backend_port" "$status" "$duration_s" "$note" "$evidence_json" "$perf_json" \
     >> "$RESULT_TSV"
 }
 
@@ -550,25 +804,42 @@ rows = []
 for raw in in_path.read_text(encoding="utf-8").splitlines():
     if not raw.strip():
         continue
-    mode, archetype, app_name, manifest, host, backend_port, status, duration_s, note = raw.split("\t")
-    rows.append(
-        {
-            "mode": mode,
-            "archetype": archetype,
-            "app_name": app_name,
-            "manifest": manifest,
-            "host": host,
-            "backend_port": int(backend_port),
-            "status": status,
-            "duration_s": float(duration_s),
-            "note": note,
-        }
-    )
+    parts = raw.split("\t")
+    if len(parts) < 11:
+        raise SystemExit(f"invalid result row (expected 11 columns): {raw!r}")
+    mode, archetype, app_name, manifest, host, backend_port, status, duration_s, note, evidence_json, perf_json = parts[:11]
+    row = {
+        "mode": mode,
+        "archetype": archetype,
+        "app_name": app_name,
+        "manifest": manifest,
+        "host": host,
+        "backend_port": int(backend_port),
+        "status": status,
+        "duration_s": float(duration_s),
+        "note": note,
+    }
+    try:
+        evidence = json.loads(evidence_json or "{}")
+    except Exception:
+        evidence = {}
+    if isinstance(evidence, dict) and evidence:
+        row["evidence"] = evidence
+    try:
+        perf = json.loads(perf_json or "{}")
+    except Exception:
+        perf = {}
+    if isinstance(perf, dict) and perf:
+        row["perf"] = perf
+    rows.append(row)
 
 summary = {
     "total_rows": len(rows),
     "passed_rows": sum(1 for row in rows if row["status"] == "pass"),
     "failed_rows": sum(1 for row in rows if row["status"] == "fail"),
+    "deep_checks_passed": all(row.get("status") == "pass" for row in rows),
+    "perf_collected": any("perf" in row for row in rows),
+    "perf_passed": all((row.get("status") == "pass") for row in rows if "perf" in row),
 }
 
 payload = {"summary": summary, "rows": rows}
@@ -586,9 +857,13 @@ run_row() {
   local host="$6"
   local row_tmp_dir="$7"
   local row_log="$8"
+  POSTCHECK_EVIDENCE_JSON="{}"
+  POSTCHECK_PERF_JSON="{}"
 
   local route_src="$row_tmp_dir/route-${mode}-${archetype}.yaml"
   render_route_file "$mode" "$archetype" "$app_name" "$host" "$route_src"
+  local policy_manifest
+  policy_manifest="$(policy_manifest_for_archetype "$archetype" base)"
 
   local manifest_for_row="$manifest"
   local effective_backend_port="$backend_port"
@@ -625,6 +900,10 @@ run_row() {
     --wait-timeout "$WAIT_TIMEOUT_S"
     --ready-timeout "$READY_TIMEOUT_S"
   )
+  if [[ -n "$policy_manifest" ]]; then
+    [[ -f "$policy_manifest" ]] || die "missing policy manifest: $policy_manifest"
+    cmd+=(--policy-manifest "$policy_manifest")
+  fi
 
   case "$mode" in
     core-proxy)
@@ -654,7 +933,7 @@ run_row() {
     log "core-proxy row normalized service port from $backend_port to fixed local target $effective_backend_port"
   fi
   if "${cmd[@]}" 2>&1 | tee "$row_log"; then
-    if postcheck_archetype "$mode" "$archetype" "$host"; then
+    if postcheck_archetype "$mode" "$archetype" "$host" "$row_tmp_dir" "$row_log"; then
       log "row pass mode=$mode archetype=$archetype"
       return 0
     fi
@@ -689,6 +968,14 @@ while [[ $# -gt 0 ]]; do
     --fail-fast)
       FAIL_FAST=1
       shift
+      ;;
+    --validation-profile)
+      VALIDATION_PROFILE="${2:-}"
+      shift 2
+      ;;
+    --perf-profile)
+      PERF_PROFILE="${2:-}"
+      shift 2
       ;;
     --site-id)
       SITE_ID="${2:-}"
@@ -762,6 +1049,54 @@ while [[ $# -gt 0 ]]; do
       HTTP2_ENFORCE_DOWNSTREAM_H2=1
       shift
       ;;
+    --ws-duration-seconds)
+      WS_DURATION_SECONDS="${2:-}"
+      shift 2
+      ;;
+    --ws-connections)
+      WS_CONNECTIONS="${2:-}"
+      shift 2
+      ;;
+    --ws-heartbeat-seconds)
+      WS_HEARTBEAT_SECONDS="${2:-}"
+      shift 2
+      ;;
+    --lb-sample-requests)
+      LB_SAMPLE_REQUESTS="${2:-}"
+      shift 2
+      ;;
+    --sticky-requests-per-client)
+      STICKY_REQUESTS_PER_CLIENT="${2:-}"
+      shift 2
+      ;;
+    --perf-duration-seconds)
+      PERF_DURATION_SECONDS="${2:-}"
+      shift 2
+      ;;
+    --perf-concurrency)
+      PERF_CONCURRENCY="${2:-}"
+      shift 2
+      ;;
+    --perf-rps-target)
+      PERF_RPS_TARGET="${2:-}"
+      shift 2
+      ;;
+    --perf-warmup-seconds)
+      PERF_WARMUP_SECONDS="${2:-}"
+      shift 2
+      ;;
+    --perf-min-rps)
+      PERF_MIN_RPS="${2:-}"
+      shift 2
+      ;;
+    --perf-max-p95-ms)
+      PERF_MAX_P95_MS="${2:-}"
+      shift 2
+      ;;
+    --perf-max-error-rate)
+      PERF_MAX_ERROR_RATE="${2:-}"
+      shift 2
+      ;;
     --results-dir)
       RESULTS_DIR="${2:-}"
       shift 2
@@ -790,12 +1125,55 @@ case "$EDGE_BACKEND_SCHEME" in
   *) die "--edge-backend-scheme must be http or https" ;;
 esac
 
+case "$VALIDATION_PROFILE" in
+  standard|deep|deep+perf) ;;
+  *) die "--validation-profile must be one of: standard|deep|deep+perf" ;;
+esac
+
+case "$PERF_PROFILE" in
+  off|sample|full) ;;
+  *) die "--perf-profile must be one of: off|sample|full" ;;
+esac
+
+if [[ "$VALIDATION_PROFILE" == "deep+perf" && "$PERF_PROFILE" == "off" ]]; then
+  PERF_PROFILE="sample"
+fi
+
 [[ "$LARGE_PAYLOAD_MIN_BYTES" =~ ^[0-9]+$ ]] || die "--large-payload-min-bytes must be an integer"
 [[ "$HTTP2_ENFORCE_DOWNSTREAM_H2" =~ ^[01]$ ]] || die "HTTP2_ENFORCE_DOWNSTREAM_H2 must be 0 or 1"
+[[ "$WS_DURATION_SECONDS" =~ ^[0-9]+$ ]] || die "--ws-duration-seconds must be an integer"
+[[ "$WS_CONNECTIONS" =~ ^[0-9]+$ ]] || die "--ws-connections must be an integer"
+[[ "$LB_SAMPLE_REQUESTS" =~ ^[0-9]+$ ]] || die "--lb-sample-requests must be an integer"
+[[ "$STICKY_REQUESTS_PER_CLIENT" =~ ^[0-9]+$ ]] || die "--sticky-requests-per-client must be an integer"
+[[ "$PERF_DURATION_SECONDS" =~ ^[0-9]+$ ]] || die "--perf-duration-seconds must be an integer"
+[[ "$PERF_CONCURRENCY" =~ ^[0-9]+$ ]] || die "--perf-concurrency must be an integer"
+[[ "$PERF_RPS_TARGET" =~ ^[0-9]+$ ]] || die "--perf-rps-target must be an integer"
+[[ "$PERF_WARMUP_SECONDS" =~ ^[0-9]+$ ]] || die "--perf-warmup-seconds must be an integer"
+[[ "$PERF_MIN_RPS" =~ ^[0-9]+$ ]] || die "--perf-min-rps must be an integer"
+[[ "$PERF_MAX_P95_MS" =~ ^[0-9]+$ ]] || die "--perf-max-p95-ms must be an integer"
+(( WS_DURATION_SECONDS > 0 )) || die "--ws-duration-seconds must be > 0"
+(( WS_CONNECTIONS > 0 )) || die "--ws-connections must be > 0"
+(( LB_SAMPLE_REQUESTS > 0 )) || die "--lb-sample-requests must be > 0"
+(( STICKY_REQUESTS_PER_CLIENT > 0 )) || die "--sticky-requests-per-client must be > 0"
+(( PERF_DURATION_SECONDS > 0 )) || die "--perf-duration-seconds must be > 0"
+(( PERF_CONCURRENCY > 0 )) || die "--perf-concurrency must be > 0"
+
+python - "$WS_HEARTBEAT_SECONDS" "$PERF_MAX_ERROR_RATE" <<'PY'
+import sys
+heartbeat = float(sys.argv[1])
+max_error = float(sys.argv[2])
+if heartbeat <= 0:
+    raise SystemExit("--ws-heartbeat-seconds must be > 0")
+if not (0.0 <= max_error <= 1.0):
+    raise SystemExit("--perf-max-error-rate must be between 0 and 1")
+PY
 
 need_cmd rg
 need_cmd curl
 need_cmd python
+if [[ "$VALIDATION_PROFILE" != "standard" || "$PERF_PROFILE" != "off" ]]; then
+  [[ -f "$DEEP_PROBE_SCRIPT" ]] || die "missing deep probe script: $DEEP_PROBE_SCRIPT"
+fi
 
 mkdir -p "$RESULTS_DIR"
 RESULT_TSV="$(mktemp)"
@@ -823,6 +1201,10 @@ log "tier=$TIER site_id=$SITE_ID node_id=$NODE_ID"
 log "core_ingress_url=$CORE_INGRESS_URL core_public_ingress_url=$CORE_PUBLIC_INGRESS_URL core_ingress_tls_url=$CORE_INGRESS_TLS_URL"
 log "edge_backend=${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:<dynamic-port>"
 log "core_proxy_local_addr=$CORE_PROXY_LOCAL_ADDR"
+log "validation_profile=$VALIDATION_PROFILE perf_profile=$PERF_PROFILE"
+log "ws_duration_seconds=$WS_DURATION_SECONDS ws_connections=$WS_CONNECTIONS ws_heartbeat_seconds=$WS_HEARTBEAT_SECONDS"
+log "lb_sample_requests=$LB_SAMPLE_REQUESTS sticky_requests_per_client=$STICKY_REQUESTS_PER_CLIENT"
+log "perf_duration_seconds=$PERF_DURATION_SECONDS perf_concurrency=$PERF_CONCURRENCY perf_warmup_seconds=$PERF_WARMUP_SECONDS"
 log "http2_enforce_downstream_h2=$HTTP2_ENFORCE_DOWNSTREAM_H2"
 log "results_json=$RESULT_JSON"
 
@@ -850,11 +1232,11 @@ for mode in "${MODES[@]}"; do
       row_note="see failure artifacts"
       failed_rows=$((failed_rows + 1))
       row_failure_dir="$FAILURES_DIR/${mode}/${archetype}"
-      collect_failure_diagnostics "$mode" "$archetype" "$host" "$row_failure_dir" "$row_log"
+      collect_failure_diagnostics "$mode" "$archetype" "$host" "$row_failure_dir" "$row_log" "$row_tmp_dir"
       if (( FAIL_FAST == 1 )); then
         row_finished="$(date +%s)"
         row_duration=$((row_finished - row_started))
-        append_result_row "$mode" "$archetype" "$app_name" "$manifest" "$host" "$backend_port" "$row_status" "$row_duration" "$row_note"
+        append_result_row "$mode" "$archetype" "$app_name" "$manifest" "$host" "$backend_port" "$row_status" "$row_duration" "$row_note" "$POSTCHECK_EVIDENCE_JSON" "$POSTCHECK_PERF_JSON"
         rm -rf "$row_tmp_dir"
         break 2
       fi
@@ -862,7 +1244,7 @@ for mode in "${MODES[@]}"; do
 
     row_finished="$(date +%s)"
     row_duration=$((row_finished - row_started))
-    append_result_row "$mode" "$archetype" "$app_name" "$manifest" "$host" "$backend_port" "$row_status" "$row_duration" "$row_note"
+    append_result_row "$mode" "$archetype" "$app_name" "$manifest" "$host" "$backend_port" "$row_status" "$row_duration" "$row_note" "$POSTCHECK_EVIDENCE_JSON" "$POSTCHECK_PERF_JSON"
     rm -rf "$row_tmp_dir"
   done
 done
