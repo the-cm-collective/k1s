@@ -24,6 +24,7 @@ EDGE_BACKEND_URL="${EDGE_BACKEND_URL:-http://127.0.0.1:18081/}"
 EDGE_LOCAL_LISTENER_URL="${EDGE_LOCAL_LISTENER_URL:-}"
 CORE_PROXY_HTTP_PATH="${CORE_PROXY_HTTP_PATH:-/}"
 CORE_PROXY_TLS_PATH="${CORE_PROXY_TLS_PATH:-$CORE_PROXY_HTTP_PATH}"
+CORE_PUBLIC_HTTP_PATH="${CORE_PUBLIC_HTTP_PATH:-/}"
 
 CORE_PROXY_ROUTE_SRC="${CORE_PROXY_ROUTE_SRC:-$ROOT_DIR/specs/examples/edge-ingress-route-core-proxy.yaml}"
 CORE_TO_EDGE_PUBLIC_ROUTE_SRC="${CORE_TO_EDGE_PUBLIC_ROUTE_SRC:-$ROOT_DIR/specs/examples/edge-ingress-route-core-to-edge-public.yaml}"
@@ -76,6 +77,7 @@ Options:
   --edge-local-listener-url <url>  Tier2 edge-local ingress URL (required for tier2/both)
   --core-proxy-http-path <path>    Path probed on core HTTP listener (default: /)
   --core-proxy-tls-path <path>     Path probed on core TLS listener (default: core-proxy-http-path)
+  --core-public-http-path <path>   Path probed for core-to-edge-public mode (default: /)
   --core-proxy-route-src <path>    EdgeIngressRoute source file for core-proxy mode
   --core-to-edge-public-route-src <path>
                                   EdgeIngressRoute source file for core-to-edge-public mode
@@ -613,8 +615,13 @@ run_core_to_edge_public() {
   local route_src="$CORE_TO_EDGE_PUBLIC_ROUTE_SRC"
   local route_host
   local endpoint_dst="$CORE_SPECS_DIR/site-ingress-endpoint-${SITE_ID}-public.yaml"
+  local public_path
+  local public_url
   local endpoint_good
   endpoint_good="$(mktemp)"
+
+  public_path="$(normalize_http_path "$CORE_PUBLIC_HTTP_PATH")"
+  public_url="${CORE_INGRESS_URL%/}${public_path}"
 
   render_public_endpoint "$PUBLIC_GOOD_URL" "$endpoint_good"
   stage_file "$endpoint_good" "$endpoint_dst"
@@ -623,7 +630,7 @@ run_core_to_edge_public() {
   [[ -n "$route_host" ]] || die "core-to-edge-public route file missing spec.host: $route_dst"
 
   wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
-  assert_http_2xx "$CORE_INGRESS_URL" "$route_host"
+  assert_http_2xx "$public_url" "$route_host"
 
   if [[ "$STRICT" -eq 1 ]]; then
     local endpoint_bad
@@ -633,11 +640,11 @@ run_core_to_edge_public() {
     log "strict check: staging broken public endpoint URL"
     stage_file "$endpoint_bad" "$endpoint_dst"
     sleep 5
-    assert_http_5xx_or_000 "$CORE_INGRESS_URL" "$route_host"
+    assert_http_5xx_or_000 "$public_url" "$route_host"
 
     stage_file "$endpoint_good" "$endpoint_dst"
     sleep 5
-    assert_http_2xx "$CORE_INGRESS_URL" "$route_host"
+    assert_http_2xx "$public_url" "$route_host"
 
     rm -f "$endpoint_bad"
   fi
@@ -791,6 +798,10 @@ while [[ $# -gt 0 ]]; do
       CORE_PROXY_TLS_PATH="${2:-}"
       shift 2
       ;;
+    --core-public-http-path)
+      CORE_PUBLIC_HTTP_PATH="${2:-}"
+      shift 2
+      ;;
     --core-proxy-route-src)
       CORE_PROXY_ROUTE_SRC="${2:-}"
       shift 2
@@ -837,6 +848,7 @@ need_cmd python
 
 CORE_PROXY_HTTP_PATH="$(normalize_http_path "$CORE_PROXY_HTTP_PATH")"
 CORE_PROXY_TLS_PATH="$(normalize_http_path "$CORE_PROXY_TLS_PATH")"
+CORE_PUBLIC_HTTP_PATH="$(normalize_http_path "$CORE_PUBLIC_HTTP_PATH")"
 
 if ! mkdir -p "$CORE_SPECS_DIR"; then
   die "failed to create core specs dir: $CORE_SPECS_DIR (fix ownership/permissions)"
@@ -847,6 +859,8 @@ log "mode=$MODE tier=$TIER strict=$STRICT site_id=$SITE_ID"
 log "core_specs_dir=$CORE_SPECS_DIR"
 if [[ "$MODE" == "core-proxy" ]]; then
   log "core_proxy_http_path=$CORE_PROXY_HTTP_PATH core_proxy_tls_path=$CORE_PROXY_TLS_PATH"
+elif [[ "$MODE" == "core-to-edge-public" ]]; then
+  log "core_public_http_path=$CORE_PUBLIC_HTTP_PATH"
 fi
 
 apply_workload_and_wait

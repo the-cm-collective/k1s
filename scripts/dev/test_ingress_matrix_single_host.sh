@@ -603,9 +603,11 @@ run_row() {
   local backend_url="${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:${effective_backend_port}/"
   local core_proxy_http_path="/"
   local core_proxy_tls_path="/"
+  local core_public_http_path="/"
   if [[ "$archetype" == "http-path-routing" ]]; then
     core_proxy_http_path="/api"
     core_proxy_tls_path="/api"
+    core_public_http_path="/api"
   fi
   local -a cmd=(
     "$ROOT_DIR/scripts/dev/test_ingress_modes_single_host.sh"
@@ -633,6 +635,7 @@ run_row() {
     core-to-edge-public)
       cmd+=(--core-ingress-url "$CORE_PUBLIC_INGRESS_URL")
       cmd+=(--core-to-edge-public-route-src "$route_src")
+      cmd+=(--core-public-http-path "$core_public_http_path")
       cmd+=(--public-good-url "$backend_url")
       ;;
     edge-local)
