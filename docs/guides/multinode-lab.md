@@ -1213,7 +1213,7 @@ keeping Tier 1 as the mandatory day-to-day gate.
 ```bash
 scripts/dev/test_ingress_matrix_single_host.sh \
   --modes core-proxy,core-to-edge-public,edge-local \
-  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
   --tier tier1
 ```
 Notes:
@@ -1231,6 +1231,49 @@ sudo find "$CORE_SPECS" -type d -exec chmod 2775 {} \;
   `state/test-results/ingress-matrix-<timestamp>.json`
 - On failure, diagnostics are collected under:
   `state/test-results/failures/ingress-matrix-<timestamp>/`
+
+9. Capability test track 1 (multi-host CRI topology):
+```bash
+scripts/dev/test_ingress_matrix_cri.sh \
+  --topology multi-host \
+  --core-host <core-host-ip> \
+  --edge-host <edge-host-ip> \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier1
+```
+
+10. Capability test tracks 3 and 4 (fault cycles + repeatability):
+```bash
+scripts/dev/test_ingress_matrix_repeat.sh \
+  --iterations 10 \
+  --topology multi-host \
+  --include-faults \
+  --faults specs-permission-drift,backend-unavailable,nats-route-bundle-permission \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier1
+```
+Outputs:
+- Per-run matrix JSON: `state/test-results/ingress-matrix-<timestamp>-iterN.json`
+- Per-run logs: `state/test-results/ingress-matrix-<timestamp>-iterN.log`
+- Aggregate summary: `state/test-results/ingress-matrix-summary-<timestamp>.json`
+
+11. Run individual fault injection/recovery scenarios when debugging:
+```bash
+# simulate specs-dir permission drift and recover
+scripts/dev/ingress_fault_injection.sh --fault specs-permission-drift --action cycle
+
+# simulate backend removal and restore
+scripts/dev/ingress_fault_injection.sh --fault backend-unavailable --action cycle \
+  --app-name ingress-matrix-static \
+  --app-manifest specs/examples/ingress-matrix/http-static.yaml
+
+# temporarily remove route-bundle publish permission and restore
+scripts/dev/ingress_fault_injection.sh --fault nats-route-bundle-permission --action cycle \
+  --route-bundle-config ops/dev/nats-hub.conf \
+  --nats-reload-cmd "make k1s-core"
+```
 
 ### Mode 1 — `core-proxy` (default, NAT-friendly)
 
