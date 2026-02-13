@@ -1049,56 +1049,85 @@ class EtcdStateStore(SQLiteStateStore):
             payload["created_at"] = existing.get("created_at")
         self._put_json(self._k("ingress", "sites", site_id), payload)
 
-    def upsert_edge_ingress_route(self, record: EdgeIngressRouteRecord) -> None:
+    def upsert_edge_ingress_route(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        site_id: str,
+        policy_name: str | None,
+        policy_namespace: str | None,
+        document: dict,
+        status: dict | None = None,
+    ) -> None:
         now_iso = _now_iso()
         payload = {
-            "name": record.name,
-            "namespace": record.namespace,
-            "site_id": record.site_id,
-            "policy_name": record.policy_name,
-            "policy_namespace": record.policy_namespace,
-            "spec": record.spec,
-            "status": record.status,
-            "created_at": record.created_at.isoformat() if record.created_at else now_iso,
+            "name": name,
+            "namespace": namespace,
+            "site_id": site_id,
+            "policy_name": policy_name,
+            "policy_namespace": policy_namespace,
+            "spec": document,
+            "status": status,
+            "created_at": now_iso,
             "updated_at": now_iso,
         }
-        key = self._k("ingress", "routes", record.namespace, record.name)
+        key = self._k("ingress", "routes", namespace, name)
         existing, _ = self._get_json(key)
         if existing and existing.get("created_at"):
             payload["created_at"] = existing.get("created_at")
         self._put_json(key, payload)
 
-    def upsert_edge_ingress_policy(self, record: EdgeIngressPolicyRecord) -> None:
+    def upsert_edge_ingress_policy(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        document: dict,
+        status: dict | None = None,
+    ) -> None:
         now_iso = _now_iso()
         payload = {
-            "name": record.name,
-            "namespace": record.namespace,
-            "spec": record.spec,
-            "status": record.status,
-            "created_at": record.created_at.isoformat() if record.created_at else now_iso,
+            "name": name,
+            "namespace": namespace,
+            "spec": document,
+            "status": status,
+            "created_at": now_iso,
             "updated_at": now_iso,
         }
-        key = self._k("ingress", "policies", record.namespace, record.name)
+        key = self._k("ingress", "policies", namespace, name)
         existing, _ = self._get_json(key)
         if existing and existing.get("created_at"):
             payload["created_at"] = existing.get("created_at")
         self._put_json(key, payload)
 
-    def update_edge_ingress_route_status(self, record: EdgeIngressRouteRecord) -> None:
-        key = self._k("ingress", "routes", record.namespace, record.name)
+    def update_edge_ingress_route_status(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        status: dict,
+    ) -> None:
+        key = self._k("ingress", "routes", namespace, name)
         existing, _ = self._get_json(key)
         if not existing:
             return
-        existing["status"] = record.status
+        existing["status"] = status
         existing["updated_at"] = _now_iso()
         self._put_json(key, existing)
 
-    def update_edge_ingress_policy_status(self, record: EdgeIngressPolicyRecord) -> None:
-        key = self._k("ingress", "policies", record.namespace, record.name)
+    def update_edge_ingress_policy_status(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        status: dict,
+    ) -> None:
+        key = self._k("ingress", "policies", namespace, name)
         existing, _ = self._get_json(key)
         if not existing:
             return
-        existing["status"] = record.status
+        existing["status"] = status
         existing["updated_at"] = _now_iso()
         self._put_json(key, existing)
 
