@@ -734,8 +734,8 @@ def _edge_local_policy_unsupported(spec: dict) -> list[str]:
         elif "basic" in waf:
             unsupported.append("waf.basic")
 
-    stickiness = spec.get("stickiness") if isinstance(spec.get("stickiness"), dict) else {}
-    if stickiness and stickiness.get("mode") not in {None, "none", "None"}:
+    stickiness_mode, _stickiness_cookie = _policy_stickiness(spec)
+    if stickiness_mode and stickiness_mode != "none":
         unsupported.append("stickiness")
 
     # websockets, timeouts, headers are allowed as-is
@@ -822,6 +822,23 @@ def _core_policy_errors(
         if multiple_forward_auth and primary_forward_auth_url:
             if normalized != primary_forward_auth_url:
                 errors.append("forward_auth_url_mismatch")
+
+    lb_strategy = _policy_lb_strategy(policy)
+    if lb_strategy and lb_strategy not in {"round_robin", "least_request"}:
+        errors.append(f"unsupported_load_balancing_strategy:{lb_strategy}")
+
+    stickiness_mode, stickiness_cookie = _policy_stickiness(policy)
+    if stickiness_mode and stickiness_mode not in {"none", "cookie"}:
+        errors.append(f"unsupported_stickiness_mode:{stickiness_mode}")
+    if stickiness_mode == "cookie":
+        cookie_name = str(stickiness_cookie.get("name") or "").strip()
+        if not cookie_name:
+            errors.append("stickiness_cookie_missing_name")
+        ttl_seconds = stickiness_cookie.get("ttlSeconds")
+        if ttl_seconds is not None and _coerce_positive_int(ttl_seconds) is None:
+            errors.append("stickiness_cookie_invalid_ttl")
+        if lb_strategy == "least_request":
+            errors.append("stickiness_incompatible_with_least_request")
     return errors
 
 
@@ -834,6 +851,37 @@ def _policy_forward_auth_raw(policy: dict) -> str:
     auth = policy.get("auth") if isinstance(policy.get("auth"), dict) else {}
     forward = auth.get("forwardAuth") if isinstance(auth.get("forwardAuth"), dict) else {}
     return str(forward.get("url") or "").strip()
+
+
+def _policy_lb_strategy(policy: dict) -> str:
+    load_balancing = (
+        policy.get("loadBalancing") if isinstance(policy.get("loadBalancing"), dict) else {}
+    )
+    token = str(load_balancing.get("strategy") or "").strip().lower().replace("-", "_")
+    if token == "roundrobin":
+        return "round_robin"
+    if token in {"leastrequest", "least_req", "leastreq"}:
+        return "least_request"
+    return token
+
+
+def _policy_stickiness(policy: dict) -> tuple[str, dict]:
+    stickiness = policy.get("stickiness") if isinstance(policy.get("stickiness"), dict) else {}
+    mode = str(stickiness.get("mode") or "").strip().lower()
+    cookie = stickiness.get("cookie") if isinstance(stickiness.get("cookie"), dict) else {}
+    if not mode and cookie:
+        mode = "cookie"
+    return mode, cookie
+
+
+def _coerce_positive_int(value) -> int | None:
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
 
 
 def _normalize_forward_auth_url(raw_url: str) -> str | None:

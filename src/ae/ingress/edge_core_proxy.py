@@ -33,6 +33,7 @@ from ae.ingress.rathole import (
 )
 
 LOGGER = logging.getLogger(__name__)
+_ALLOWED_CLUSTER_LB_POLICIES = {"ROUND_ROBIN", "LEAST_REQUEST", "RING_HASH"}
 
 @dataclass(frozen=True)
 class EdgeCoreProxyConfig:
@@ -258,6 +259,8 @@ def _build_routes_and_clusters(
         policy_spec = _policy_for_route(record, store, policy_cache)
         route_opts = _policy_route_options(policy_spec) if policy_spec else {}
         local_rate_limit = route_opts.get("local_rate_limit")
+        cluster_lb_policy = _route_lb_policy(route_opts)
+        sticky_cookie_name, sticky_cookie_ttl_seconds = _route_sticky_cookie(route_opts)
         if local_rate_limit:
             enable_local_ratelimit = True
         ext_authz_enabled = False
@@ -275,13 +278,14 @@ def _build_routes_and_clusters(
             ep = endpoint_map.get(site_id)
             if ep is None or ep.core_proxy_port is None:
                 continue
-            cluster_name = f"site_{site_id}"
+            cluster_name = _cluster_name_with_lb_policy(f"site_{site_id}", route_opts)
             clusters.setdefault(
                 cluster_name,
-                    CoreProxyCluster(
-                        name=cluster_name,
-                        endpoints=[("127.0.0.1", int(ep.core_proxy_port))],
-                    ),
+                CoreProxyCluster(
+                    name=cluster_name,
+                    endpoints=[("127.0.0.1", int(ep.core_proxy_port))],
+                    lb_policy=cluster_lb_policy,
+                ),
             )
             for entry in _route_path_entries(spec):
                 routes.append(
@@ -298,6 +302,8 @@ def _build_routes_and_clusters(
                         idle_timeout_ms=route_opts.get("idle_timeout_ms"),
                         ext_authz_enabled=ext_authz_enabled,
                         local_rate_limit=local_rate_limit,
+                        sticky_cookie_name=sticky_cookie_name,
+                        sticky_cookie_ttl_seconds=sticky_cookie_ttl_seconds,
                     )
                 )
         elif mode == "core-to-edge-public":
@@ -307,13 +313,14 @@ def _build_routes_and_clusters(
             public = _public_endpoint(ep.public_urls if ep else [])
             if public is None:
                 continue
-            cluster_name = f"public_{site_id}"
+            cluster_name = _cluster_name_with_lb_policy(f"public_{site_id}", route_opts)
             clusters.setdefault(
                 cluster_name,
                 CoreProxyCluster(
                     name=cluster_name,
                     endpoints=[(public["host"], public["port"])],
                     cluster_type="STRICT_DNS",
+                    lb_policy=cluster_lb_policy,
                     use_tls=public["use_tls"],
                     sni=public["sni"],
                     ca_cert_path=public.get("ca_bundle_path"),
@@ -335,6 +342,8 @@ def _build_routes_and_clusters(
                         idle_timeout_ms=route_opts.get("idle_timeout_ms"),
                         ext_authz_enabled=ext_authz_enabled,
                         local_rate_limit=local_rate_limit,
+                        sticky_cookie_name=sticky_cookie_name,
+                        sticky_cookie_ttl_seconds=sticky_cookie_ttl_seconds,
                     )
                 )
         elif mode in {"core-local", "core"}:
@@ -345,12 +354,16 @@ def _build_routes_and_clusters(
                 )
                 if not endpoints:
                     continue
-                cluster_name = _core_local_cluster_name(svc_ref, record.namespace, entry.get("port"))
+                cluster_name = _cluster_name_with_lb_policy(
+                    _core_local_cluster_name(svc_ref, record.namespace, entry.get("port")),
+                    route_opts,
+                )
                 clusters.setdefault(
                     cluster_name,
                     CoreProxyCluster(
                         name=cluster_name,
                         endpoints=endpoints,
+                        lb_policy=cluster_lb_policy,
                     ),
                 )
                 routes.append(
@@ -367,6 +380,8 @@ def _build_routes_and_clusters(
                         idle_timeout_ms=route_opts.get("idle_timeout_ms"),
                         ext_authz_enabled=ext_authz_enabled,
                         local_rate_limit=local_rate_limit,
+                        sticky_cookie_name=sticky_cookie_name,
+                        sticky_cookie_ttl_seconds=sticky_cookie_ttl_seconds,
                     )
                 )
 
@@ -721,10 +736,69 @@ def _policy_route_options(policy: dict) -> dict:
         opts["timeout_ms"] = timeout_ms
     if idle_timeout_ms:
         opts["idle_timeout_ms"] = idle_timeout_ms
+
+    load_balancing = (
+        policy.get("loadBalancing") if isinstance(policy.get("loadBalancing"), dict) else {}
+    )
+    lb_policy = _normalize_lb_strategy(load_balancing.get("strategy"))
+    if lb_policy:
+        opts["lb_policy"] = lb_policy
+
+    stickiness = policy.get("stickiness") if isinstance(policy.get("stickiness"), dict) else {}
+    sticky_mode = str(stickiness.get("mode") or "").strip().lower()
+    cookie = stickiness.get("cookie") if isinstance(stickiness.get("cookie"), dict) else {}
+    if not sticky_mode and cookie:
+        sticky_mode = "cookie"
+    if sticky_mode == "cookie":
+        cookie_name = str(cookie.get("name") or "").strip()
+        if cookie_name:
+            opts["sticky_cookie_name"] = cookie_name
+            cookie_ttl = _coerce_int(cookie.get("ttlSeconds"))
+            if cookie_ttl is not None and cookie_ttl > 0:
+                opts["sticky_cookie_ttl_seconds"] = cookie_ttl
+            # Envoy cookie-based session hashing requires ring-hash balancing.
+            opts["lb_policy"] = "RING_HASH"
+
     local_rate_limit = _policy_rate_limit(policy)
     if local_rate_limit:
         opts["local_rate_limit"] = local_rate_limit
     return opts
+
+
+def _normalize_lb_strategy(raw_value) -> str | None:
+    token = str(raw_value or "").strip().lower().replace("-", "_")
+    if token in {"", "round_robin", "roundrobin", "rr"}:
+        return "ROUND_ROBIN"
+    if token in {"least_request", "leastrequest", "least_req", "leastreq"}:
+        return "LEAST_REQUEST"
+    return None
+
+
+def _route_lb_policy(route_opts: dict) -> str:
+    token = str(route_opts.get("lb_policy") or "").strip().upper()
+    if token in _ALLOWED_CLUSTER_LB_POLICIES:
+        return token
+    return "ROUND_ROBIN"
+
+
+def _route_sticky_cookie(route_opts: dict) -> tuple[str | None, int | None]:
+    cookie_name = str(route_opts.get("sticky_cookie_name") or "").strip()
+    if not cookie_name:
+        return None, None
+    cookie_ttl = _coerce_int(route_opts.get("sticky_cookie_ttl_seconds"))
+    if cookie_ttl is not None and cookie_ttl <= 0:
+        cookie_ttl = None
+    return cookie_name, cookie_ttl
+
+
+def _cluster_name_with_lb_policy(base_name: str, route_opts: dict) -> str:
+    lb_policy = _route_lb_policy(route_opts)
+    cookie_name, cookie_ttl = _route_sticky_cookie(route_opts)
+    if lb_policy == "ROUND_ROBIN" and not cookie_name:
+        return base_name
+    digest_source = f"{lb_policy}|{cookie_name or ''}|{cookie_ttl or ''}"
+    digest = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()[:10]
+    return f"{base_name}_{digest}"
 
 
 def _select_forward_auth_url(

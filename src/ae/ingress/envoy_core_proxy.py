@@ -22,6 +22,8 @@ class CoreProxyRoute:
     idle_timeout_ms: int | None = None
     ext_authz_enabled: bool = False
     local_rate_limit: dict | None = None
+    sticky_cookie_name: str | None = None
+    sticky_cookie_ttl_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,7 @@ class CoreProxyCluster:
     name: str
     endpoints: list[tuple[str, int]] = field(default_factory=list)
     cluster_type: str = "STATIC"
+    lb_policy: str = "ROUND_ROBIN"
     use_tls: bool = False
     sni: str | None = None
     ca_cert_path: str | None = None
@@ -93,6 +96,20 @@ def render_envoy_config(
                 route_entry["route"]["timeout"] = f"{route.timeout_ms/1000:.3f}s"
             if route.idle_timeout_ms:
                 route_entry["route"]["idle_timeout"] = f"{route.idle_timeout_ms/1000:.3f}s"
+            sticky_cookie_name = str(route.sticky_cookie_name or "").strip()
+            if sticky_cookie_name:
+                cookie_cfg: dict[str, object] = {
+                    "name": sticky_cookie_name,
+                    "path": "/",
+                }
+                if (
+                    route.sticky_cookie_ttl_seconds is not None
+                    and int(route.sticky_cookie_ttl_seconds) > 0
+                ):
+                    cookie_cfg["ttl"] = f"{int(route.sticky_cookie_ttl_seconds)}s"
+                route_entry["route"]["hash_policy"] = [
+                    {"cookie": cookie_cfg, "terminal": True}
+                ]
             per_filter: dict[str, dict] = {}
             if ext_authz_config is not None:
                 per_filter["envoy.filters.http.ext_authz"] = {
@@ -155,6 +172,9 @@ def render_envoy_config(
     for cluster in clusters:
         if not cluster.endpoints:
             continue
+        lb_policy = str(cluster.lb_policy or "ROUND_ROBIN").strip().upper()
+        if lb_policy not in {"ROUND_ROBIN", "LEAST_REQUEST", "RING_HASH"}:
+            lb_policy = "ROUND_ROBIN"
         endpoints = [
             {
                 "endpoint": {
@@ -169,7 +189,7 @@ def render_envoy_config(
             "name": cluster.name,
             "connect_timeout": "1s",
             "type": cluster.cluster_type or "STATIC",
-            "lb_policy": "ROUND_ROBIN",
+            "lb_policy": lb_policy,
             "load_assignment": {
                 "cluster_name": cluster.name,
                 "endpoints": [{"lb_endpoints": endpoints}],
