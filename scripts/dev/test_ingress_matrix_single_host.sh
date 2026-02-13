@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 MODES_CSV="${MODES_CSV:-core-proxy,core-to-edge-public,edge-local}"
-ARCHETYPES_CSV="${ARCHETYPES_CSV:-http-static,http-path-routing,http-multi-replica,http-multiport}"
+ARCHETYPES_CSV="${ARCHETYPES_CSV:-http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary}"
 TIER="${TIER:-tier1}"
 STRICT=0
 KEEP_SPECS=0
@@ -19,11 +19,16 @@ EDGE_LOCAL_CADDY_FILE="${EDGE_LOCAL_CADDY_FILE:-$ROOT_DIR/state/profiles/k1s-cor
 
 CORE_INGRESS_URL="${CORE_INGRESS_URL:-http://127.0.0.1:10080/}"
 CORE_INGRESS_TLS_URL="${CORE_INGRESS_TLS_URL:-https://127.0.0.1:10443/}"
+CORE_PUBLIC_INGRESS_URL="${CORE_PUBLIC_INGRESS_URL:-$CORE_INGRESS_TLS_URL}"
 EDGE_LOCAL_LISTENER_URL="${EDGE_LOCAL_LISTENER_URL:-}"
+EDGE_BACKEND_HOST="${EDGE_BACKEND_HOST:-127.0.0.1}"
+EDGE_BACKEND_SCHEME="${EDGE_BACKEND_SCHEME:-http}"
 
 WAIT_TIMEOUT_S="${WAIT_TIMEOUT_S:-90}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-180}"
 STABILITY_REQUESTS="${STABILITY_REQUESTS:-30}"
+LARGE_PAYLOAD_PATH="${LARGE_PAYLOAD_PATH:-/}"
+LARGE_PAYLOAD_MIN_BYTES="${LARGE_PAYLOAD_MIN_BYTES:-65536}"
 
 RESULTS_DIR="${RESULTS_DIR:-$ROOT_DIR/state/test-results}"
 RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -40,7 +45,7 @@ multisite CRI ops patterns.
 
 Options:
   --modes <csv>                    Modes to run (default: core-proxy,core-to-edge-public,edge-local)
-  --archetypes <csv>               Archetypes to run (default: http-static,http-path-routing,http-multi-replica,http-multiport)
+  --archetypes <csv>               Archetypes to run (default includes protocol variants)
   --tier <tier>                    tier1|tier2|both (default: tier1)
   --strict                         Pass --strict to single-mode checker
   --keep-specs                     Keep staged specs after each row
@@ -54,11 +59,16 @@ Options:
 
   --core-ingress-url <url>         Core ingress URL (HTTP)
   --core-ingress-tls-url <url>     Core ingress TLS URL
+  --core-public-ingress-url <url>  Core ingress URL for core-to-edge-public (default: core ingress TLS URL)
   --edge-local-listener-url <url>  Optional edge-local listener URL for HTTP checks
+  --edge-backend-host <host>       Backend host used for direct edge probes (default: 127.0.0.1)
+  --edge-backend-scheme <scheme>   Backend URL scheme (default: http)
 
   --wait-timeout <seconds>         Reconcile wait timeout per row (default: 90)
   --ready-timeout <seconds>        Workload ready timeout per row (default: 180)
   --stability-requests <n>         Requests for stability check (default: 30)
+  --large-payload-path <path>      Path used for large-payload assertion (default: /)
+  --large-payload-min-bytes <n>    Minimum bytes expected for large-payload assertion (default: 65536)
 
   --results-dir <path>             Output directory for matrix artifacts
   --result-json <path>             Result JSON path
@@ -95,7 +105,7 @@ validate_mode() {
 
 validate_archetype() {
   case "$1" in
-    http-static|http-path-routing|http-multi-replica|http-multiport) ;;
+    http-static|http-path-routing|http-multi-replica|http-multiport|http-redirect|http-large-payload|http2-unary) ;;
     *) die "invalid archetype '$1'" ;;
   esac
 }
@@ -119,6 +129,9 @@ archetype_manifest() {
     http-path-routing) printf '%s/specs/examples/ingress-matrix/http-path-routing.yaml' "$ROOT_DIR" ;;
     http-multi-replica) printf '%s/specs/examples/ingress-matrix/http-multi-replica.yaml' "$ROOT_DIR" ;;
     http-multiport) printf '%s/specs/examples/ingress-matrix/http-multiport.yaml' "$ROOT_DIR" ;;
+    http-redirect) printf '%s/specs/examples/ingress-matrix/http-redirect.yaml' "$ROOT_DIR" ;;
+    http-large-payload) printf '%s/specs/examples/ingress-matrix/http-large-payload.yaml' "$ROOT_DIR" ;;
+    http2-unary) printf '%s/specs/examples/ingress-matrix/http2-unary.yaml' "$ROOT_DIR" ;;
   esac
 }
 
@@ -128,6 +141,9 @@ archetype_app_name() {
     http-path-routing) printf 'ingress-matrix-path' ;;
     http-multi-replica) printf 'ingress-matrix-replicas' ;;
     http-multiport) printf 'ingress-matrix-multiport' ;;
+    http-redirect) printf 'ingress-matrix-redirect' ;;
+    http-large-payload) printf 'ingress-matrix-large' ;;
+    http2-unary) printf 'ingress-matrix-http2' ;;
   esac
 }
 
@@ -137,6 +153,23 @@ archetype_backend_port() {
     http-path-routing) printf '18112' ;;
     http-multi-replica) printf '18113' ;;
     http-multiport) printf '18114' ;;
+    http-redirect) printf '18115' ;;
+    http-large-payload) printf '18116' ;;
+    http2-unary) printf '18117' ;;
+  esac
+}
+
+archetype_service_port() {
+  printf '8080'
+}
+
+archetype_assertion_profile() {
+  case "$1" in
+    http-path-routing) printf 'path' ;;
+    http-redirect) printf 'redirect' ;;
+    http-large-payload) printf 'large-payload' ;;
+    http2-unary) printf 'http2' ;;
+    *) printf 'baseline' ;;
   esac
 }
 
@@ -164,7 +197,9 @@ render_route_file() {
   local host="$4"
   local out="$5"
   local route_name
+  local service_port
   route_name="$(route_name_for_row "$mode" "$archetype")"
+  service_port="$(archetype_service_port "$archetype")"
 
   {
     cat <<EOF
@@ -183,12 +218,12 @@ EOF
       serviceRef:
         namespace: default
         name: ${app_name}
-        port: 8080
+        port: ${service_port}
     - path: /healthz
       serviceRef:
         namespace: default
         name: ${app_name}
-        port: 8080
+        port: ${service_port}
 EOF
     else
       cat <<EOF
@@ -196,7 +231,7 @@ EOF
       serviceRef:
         namespace: default
         name: ${app_name}
-        port: 8080
+        port: ${service_port}
 EOF
     fi
     cat <<EOF
@@ -222,6 +257,25 @@ fetch_code() {
     code="000"
   fi
   printf '%s\n' "$code"
+}
+
+mode_base_url() {
+  local mode="$1"
+  case "$mode" in
+    core-proxy) printf '%s' "$CORE_INGRESS_URL" ;;
+    core-to-edge-public) printf '%s' "$CORE_PUBLIC_INGRESS_URL" ;;
+    edge-local) printf '%s' "$EDGE_LOCAL_LISTENER_URL" ;;
+    *) printf '' ;;
+  esac
+}
+
+mode_tls_url() {
+  local mode="$1"
+  case "$mode" in
+    core-proxy|core-to-edge-public) printf '%s' "$CORE_INGRESS_TLS_URL" ;;
+    edge-local) printf '%s' "$EDGE_LOCAL_LISTENER_URL" ;;
+    *) printf '' ;;
+  esac
 }
 
 assert_code_2xx_or_3xx() {
@@ -255,11 +309,13 @@ postcheck_archetype() {
   local mode="$1"
   local archetype="$2"
   local host="$3"
+  local profile
+  profile="$(archetype_assertion_profile "$archetype")"
 
   if [[ "$mode" == "edge-local" && -z "$EDGE_LOCAL_LISTENER_URL" ]]; then
     [[ -f "$EDGE_LOCAL_CADDY_FILE" ]] || return 1
     rg -n --fixed-strings --quiet "$host" "$EDGE_LOCAL_CADDY_FILE" || return 1
-    if [[ "$archetype" == "http-path-routing" ]]; then
+    if [[ "$profile" == "path" ]]; then
       rg -n --fixed-strings --quiet "/api" "$EDGE_LOCAL_CADDY_FILE" || return 1
       rg -n --fixed-strings --quiet "/healthz" "$EDGE_LOCAL_CADDY_FILE" || return 1
     fi
@@ -267,27 +323,70 @@ postcheck_archetype() {
   fi
 
   local base_url
-  case "$mode" in
-    core-proxy) base_url="$CORE_INGRESS_URL" ;;
-    core-to-edge-public) base_url="$CORE_INGRESS_URL" ;;
-    edge-local) base_url="$EDGE_LOCAL_LISTENER_URL" ;;
-    *) return 1 ;;
-  esac
+  base_url="$(mode_base_url "$mode")"
 
   [[ -n "$base_url" ]] || return 1
 
-  if ! stability_check "$base_url" "$host" "$STABILITY_REQUESTS"; then
-    return 1
-  fi
-
-  if [[ "$archetype" == "http-path-routing" ]]; then
-    local path
-    for path in "/api" "/healthz"; do
-      if ! assert_code_2xx_or_3xx "${base_url%/}${path}" "$host"; then
+  case "$profile" in
+    baseline)
+      stability_check "$base_url" "$host" "$STABILITY_REQUESTS" || return 1
+      ;;
+    path)
+      stability_check "$base_url" "$host" "$STABILITY_REQUESTS" || return 1
+      local path
+      for path in "/api" "/healthz"; do
+        assert_code_2xx_or_3xx "${base_url%/}${path}" "$host" || return 1
+      done
+      ;;
+    redirect)
+      local code redirect_url
+      redirect_url="$base_url"
+      if [[ "$mode" != "edge-local" ]]; then
+        redirect_url="$CORE_INGRESS_URL"
+      fi
+      code="$(fetch_code "$redirect_url" "$host")"
+      [[ "$code" =~ ^3[0-9][0-9]$ ]] || return 1
+      ;;
+    large-payload)
+      local payload_url tls_url size
+      tls_url="$(mode_tls_url "$mode")"
+      payload_url="${tls_url:-$base_url}"
+      local body_seed
+      body_seed="$(mktemp)"
+      head -c 131072 /dev/zero | tr '\0' 'A' > "$body_seed"
+      local tmp_payload
+      tmp_payload="$(mktemp)"
+      if ! curl -sS -k --connect-timeout 2 --max-time 20 -X POST \
+        -H "Host: $host" \
+        --data-binary "@$body_seed" \
+        "${payload_url%/}${LARGE_PAYLOAD_PATH}" \
+        -o "$tmp_payload" >/dev/null 2>&1; then
+        rm -f "$body_seed"
+        rm -f "$tmp_payload"
         return 1
       fi
-    done
-  fi
+      rm -f "$body_seed"
+      size="$(wc -c < "$tmp_payload" | tr -d ' ')"
+      rm -f "$tmp_payload"
+      [[ "$size" =~ ^[0-9]+$ ]] || return 1
+      (( size >= LARGE_PAYLOAD_MIN_BYTES )) || return 1
+      ;;
+    http2)
+      local tls_url
+      tls_url="$(mode_tls_url "$mode")"
+      [[ -n "$tls_url" ]] || return 1
+      local meta code version
+      meta="$(curl -sS -k --http2 --connect-timeout 2 --max-time 10 -o /dev/null -w '%{http_code} %{http_version}' -H "Host: $host" "$tls_url" 2>/dev/null || true)"
+      [[ -n "$meta" ]] || return 1
+      code="$(awk '{print $1}' <<<"$meta")"
+      version="$(awk '{print $2}' <<<"$meta")"
+      [[ "$code" =~ ^[23][0-9][0-9]$ ]] || return 1
+      [[ "$version" == "2" ]] || return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 
   return 0
 }
@@ -407,7 +506,7 @@ run_row() {
   local route_src="$row_tmp_dir/route-${mode}-${archetype}.yaml"
   render_route_file "$mode" "$archetype" "$app_name" "$host" "$route_src"
 
-  local backend_url="http://127.0.0.1:${backend_port}/"
+  local backend_url="${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:${backend_port}/"
   local -a cmd=(
     "$ROOT_DIR/scripts/dev/test_ingress_modes_single_host.sh"
     --mode "$mode"
@@ -430,6 +529,7 @@ run_row() {
       cmd+=(--core-proxy-route-src "$route_src")
       ;;
     core-to-edge-public)
+      cmd+=(--core-ingress-url "$CORE_PUBLIC_INGRESS_URL")
       cmd+=(--core-to-edge-public-route-src "$route_src")
       cmd+=(--public-good-url "$backend_url")
       ;;
@@ -510,8 +610,20 @@ while [[ $# -gt 0 ]]; do
       CORE_INGRESS_TLS_URL="${2:-}"
       shift 2
       ;;
+    --core-public-ingress-url)
+      CORE_PUBLIC_INGRESS_URL="${2:-}"
+      shift 2
+      ;;
     --edge-local-listener-url)
       EDGE_LOCAL_LISTENER_URL="${2:-}"
+      shift 2
+      ;;
+    --edge-backend-host)
+      EDGE_BACKEND_HOST="${2:-}"
+      shift 2
+      ;;
+    --edge-backend-scheme)
+      EDGE_BACKEND_SCHEME="${2:-}"
       shift 2
       ;;
     --wait-timeout)
@@ -524,6 +636,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --stability-requests)
       STABILITY_REQUESTS="${2:-}"
+      shift 2
+      ;;
+    --large-payload-path)
+      LARGE_PAYLOAD_PATH="${2:-}"
+      shift 2
+      ;;
+    --large-payload-min-bytes)
+      LARGE_PAYLOAD_MIN_BYTES="${2:-}"
       shift 2
       ;;
     --results-dir)
@@ -548,6 +668,13 @@ case "$TIER" in
   tier1|tier2|both) ;;
   *) die "--tier must be one of: tier1|tier2|both" ;;
 esac
+
+case "$EDGE_BACKEND_SCHEME" in
+  http|https) ;;
+  *) die "--edge-backend-scheme must be http or https" ;;
+esac
+
+[[ "$LARGE_PAYLOAD_MIN_BYTES" =~ ^[0-9]+$ ]] || die "--large-payload-min-bytes must be an integer"
 
 need_cmd rg
 need_cmd curl
@@ -576,6 +703,8 @@ done
 log "modes=${MODES[*]}"
 log "archetypes=${ARCHETYPES[*]}"
 log "tier=$TIER site_id=$SITE_ID node_id=$NODE_ID"
+log "core_ingress_url=$CORE_INGRESS_URL core_public_ingress_url=$CORE_PUBLIC_INGRESS_URL core_ingress_tls_url=$CORE_INGRESS_TLS_URL"
+log "edge_backend=${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:<dynamic-port>"
 log "results_json=$RESULT_JSON"
 
 total_rows=0
