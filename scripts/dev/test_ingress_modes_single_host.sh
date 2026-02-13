@@ -32,6 +32,7 @@ PUBLIC_BAD_URL="${PUBLIC_BAD_URL:-http://127.0.0.1:19081/}"
 
 WAIT_TIMEOUT_S="${WAIT_TIMEOUT_S:-90}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-180}"
+HTTP_ASSERT_TIMEOUT_S="${HTTP_ASSERT_TIMEOUT_S:-20}"
 
 declare -A STAGED_BACKUPS=()
 declare -a STAGED_FILES=()
@@ -415,28 +416,49 @@ fetch_code() {
   printf '%s\n' "$code"
 }
 
+wait_for_http_code_match() {
+  local url="$1"
+  local host="$2"
+  local regex="$3"
+  local timeout="$4"
+
+  local deadline=$((SECONDS + timeout))
+  local code="000"
+  while (( SECONDS < deadline )); do
+    code="$(fetch_code "$url" "$host")"
+    if [[ "$code" =~ $regex ]]; then
+      printf '%s\n' "$code"
+      return 0
+    fi
+    sleep 1
+  done
+
+  printf '%s\n' "$code"
+  return 1
+}
+
 assert_http_2xx() {
   local url="$1"
   local host="$2"
   local code
-  code="$(fetch_code "$url" "$host")"
+  code="$(wait_for_http_code_match "$url" "$host" '^2[0-9][0-9]$' "$HTTP_ASSERT_TIMEOUT_S" || true)"
   if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
     log "HTTP OK host=$host url=$url code=$code"
     return
   fi
-  die "expected 2xx for host=$host url=$url, got $code"
+  die "expected 2xx for host=$host url=$url within ${HTTP_ASSERT_TIMEOUT_S}s, got $code"
 }
 
 assert_http_2xx_or_3xx() {
   local url="$1"
   local host="$2"
   local code
-  code="$(fetch_code "$url" "$host")"
+  code="$(wait_for_http_code_match "$url" "$host" '^[23][0-9][0-9]$' "$HTTP_ASSERT_TIMEOUT_S" || true)"
   if [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
     log "HTTP OK (2xx/3xx) host=$host url=$url code=$code"
     return
   fi
-  die "expected 2xx/3xx for host=$host url=$url, got $code"
+  die "expected 2xx/3xx for host=$host url=$url within ${HTTP_ASSERT_TIMEOUT_S}s, got $code"
 }
 
 assert_http_non_2xx() {
