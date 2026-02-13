@@ -79,5 +79,78 @@ def test_etcd_state_store_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     nodes = store.list_nodes()
     assert any(node.node_id == "node-1" for node, _ in nodes)
 
+    store.upsert_site_ingress_endpoint(
+        site_id="sea-edge-02",
+        mode="core-proxy",
+        core_proxy_port=2333,
+    )
+    endpoints = store.list_site_ingress_endpoints()
+    assert any(
+        item.site_id == "sea-edge-02"
+        and item.mode == "core-proxy"
+        and item.core_proxy_port == 2333
+        for item in endpoints
+    )
+
+    route_doc = {
+        "apiVersion": "k1s.io/v1",
+        "kind": "EdgeIngressRoute",
+        "metadata": {"name": "app-core-proxy", "namespace": "default"},
+        "spec": {
+            "host": "app-core-proxy.home.arpa",
+            "paths": [
+                {
+                    "path": "/",
+                    "serviceRef": {"name": "etcd-demo", "namespace": "default", "port": 8080},
+                }
+            ],
+            "exposure": {
+                "mode": "core-proxy",
+                "placement": {"site": "sea-edge-02"},
+            },
+        },
+    }
+    store.upsert_edge_ingress_route(
+        name="app-core-proxy",
+        namespace="default",
+        site_id="sea-edge-02",
+        policy_name=None,
+        policy_namespace=None,
+        document=route_doc,
+    )
+    route = store.get_edge_ingress_route(name="app-core-proxy", namespace="default")
+    assert route is not None
+    assert route.site_id == "sea-edge-02"
+    assert route.spec == route_doc
+    store.update_edge_ingress_route_status(
+        name="app-core-proxy",
+        namespace="default",
+        status={"valid": True, "errors": []},
+    )
+    route = store.get_edge_ingress_route(name="app-core-proxy", namespace="default")
+    assert route is not None and route.status == {"valid": True, "errors": []}
+
+    policy_doc = {
+        "apiVersion": "k1s.io/v1",
+        "kind": "EdgeIngressPolicy",
+        "metadata": {"name": "allow-basic", "namespace": "default"},
+        "spec": {"timeouts": {"requestMs": 1000}},
+    }
+    store.upsert_edge_ingress_policy(
+        name="allow-basic",
+        namespace="default",
+        document=policy_doc,
+    )
+    policy = store.get_edge_ingress_policy(name="allow-basic", namespace="default")
+    assert policy is not None
+    assert policy.spec == policy_doc
+    store.update_edge_ingress_policy_status(
+        name="allow-basic",
+        namespace="default",
+        status={"valid": True},
+    )
+    policy = store.get_edge_ingress_policy(name="allow-basic", namespace="default")
+    assert policy is not None and policy.status == {"valid": True}
+
     store.delete_app_state("etcd-demo", purge_history=True)
     assert store.get_status("etcd-demo") is None
