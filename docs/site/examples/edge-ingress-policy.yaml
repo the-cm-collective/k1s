@@ -27,6 +27,8 @@ spec:
     requestHeadersMs: 10000
     requestBodyMs: 30000
     idleMs: 60000
+  loadBalancing:
+    strategy: round_robin
   websockets:
     enabled: true
   stickiness:
