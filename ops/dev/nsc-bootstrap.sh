@@ -82,6 +82,7 @@ echo "Creating users (permissions are dev-focused; tighten for production)."
 
 "$NSC_BIN" add user --name hub-controller --account "$ACCOUNT" "${DIR_ARGS[@]}" \
   "$PUB_FLAG" "k1s.v1.work.site.>" \
+  "$PUB_FLAG" "k1s.v1.site.*.routes.bundle" \
   "$PUB_FLAG" "\$JS.API.STREAM.>" \
   "$PUB_FLAG" "\$JS.API.CONSUMER.>" \
   "$PUB_FLAG" "\$JS.K1S.API.>" \
