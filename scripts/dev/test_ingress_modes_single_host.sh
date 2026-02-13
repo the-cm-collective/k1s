@@ -74,7 +74,7 @@ Options:
   --edge-backend-url <url>         Edge backend URL (default: http://127.0.0.1:18081/)
   --public-good-url <url>          Public endpoint URL for mode 2 (default: edge backend URL)
   --public-bad-url <url>           Broken public endpoint URL for strict mode 2
-  --edge-local-listener-url <url>  Tier2 edge-local ingress URL (required for tier2/both)
+  --edge-local-listener-url <url>  Tier2 edge-local ingress URL (optional; defaults to https://127.0.0.1:${CADDY_HTTPS_PORT:-8443}/)
   --core-proxy-http-path <path>    Path probed on core HTTP listener (default: /)
   --core-proxy-tls-path <path>     Path probed on core TLS listener (default: core-proxy-http-path)
   --core-public-http-path <path>   Path probed for core-to-edge-public mode (default: /)
@@ -91,6 +91,7 @@ Examples:
   scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy
   scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --strict
   scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1
+  scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier2
   scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier2 \
     --edge-local-listener-url https://127.0.0.1:11443/
 USAGE
@@ -429,6 +430,16 @@ normalize_http_path() {
   printf '%s\n' "$path"
 }
 
+resolve_edge_local_listener_url() {
+  if [[ -n "$EDGE_LOCAL_LISTENER_URL" ]]; then
+    printf '%s\n' "$EDGE_LOCAL_LISTENER_URL"
+    return
+  fi
+
+  local https_port="${CADDY_HTTPS_PORT:-8443}"
+  printf 'https://127.0.0.1:%s/\n' "$https_port"
+}
+
 is_workload_ready_from_status_snapshot() {
   local status_file="$1"
   python - "$status_file" <<'PY'
@@ -496,12 +507,16 @@ assert_http_non_2xx() {
   local url="$1"
   local host="$2"
   local code
-  code="$(fetch_code "$url" "$host")"
-  if [[ ! "$code" =~ ^2[0-9][0-9]$ ]]; then
-    log "HTTP non-2xx as expected host=$host url=$url code=$code"
-    return
-  fi
-  die "expected non-2xx for host=$host url=$url, got $code"
+  local deadline=$((SECONDS + HTTP_ASSERT_TIMEOUT_S))
+  while (( SECONDS < deadline )); do
+    code="$(fetch_code "$url" "$host")"
+    if [[ ! "$code" =~ ^2[0-9][0-9]$ ]]; then
+      log "HTTP non-2xx as expected host=$host url=$url code=$code"
+      return
+    fi
+    sleep 1
+  done
+  die "expected non-2xx for host=$host url=$url within ${HTTP_ASSERT_TIMEOUT_S}s, got $code"
 }
 
 assert_http_5xx_or_000() {
@@ -514,6 +529,22 @@ assert_http_5xx_or_000() {
     return
   fi
   die "expected 5xx/000 for host=$host url=$url, got $code"
+}
+
+assert_http_2xx_with_hint() {
+  local url="$1"
+  local host="$2"
+  local hint_context="${3:-listener}"
+  local code
+  code="$(wait_for_http_code_match "$url" "$host" '^2[0-9][0-9]$' "$HTTP_ASSERT_TIMEOUT_S" || true)"
+  if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
+    log "HTTP OK host=$host url=$url code=$code"
+    return
+  fi
+  if [[ "$code" == "000" ]]; then
+    die "${hint_context}: expected 2xx for host=$host url=$url within ${HTTP_ASSERT_TIMEOUT_S}s, got 000 (connect/TLS failure). Verify listener URL/port and Caddy bind (common mismatch: 11443 vs ${CADDY_HTTPS_PORT:-8443})."
+  fi
+  die "${hint_context}: expected 2xx for host=$host url=$url within ${HTTP_ASSERT_TIMEOUT_S}s, got $code"
 }
 
 render_public_endpoint() {
@@ -574,7 +605,48 @@ apply_workload_and_wait() {
   [[ "$code" =~ ^2[0-9][0-9]$ ]] || die "edge backend not healthy at $EDGE_BACKEND_URL (code=$code)"
 }
 
-run_core_proxy() {
+run_core_proxy_strict_mutation_check() {
+  local route_src="$1"
+  local route_dst="$2"
+  local route_host="$3"
+  local http_url="$4"
+  local tls_url="$5"
+
+  local route_host_base alt_host mutated
+  route_host_base="${route_host%.home.arpa}"
+  if [[ "$route_host_base" == "$route_host" ]]; then
+    route_host_base="$route_host"
+  fi
+  alt_host="${route_host_base}-alt-${RANDOM}.home.arpa"
+  mutated="$(mktemp)"
+  python - "$route_src" "$alt_host" > "$mutated" <<'PY'
+import re
+import sys
+path = sys.argv[1]
+alt_host = sys.argv[2]
+text = open(path, encoding="utf-8").read()
+updated, count = re.subn(r"(?m)^([ \t]*host:[ \t]*)([^\s#]+)(.*)$", rf"\1{alt_host}\3", text, count=1)
+if count != 1:
+    raise SystemExit("failed to rewrite core-proxy route host for strict check")
+sys.stdout.write(updated)
+PY
+
+  log "strict check: mutating core-proxy host to $alt_host"
+  stage_file "$mutated" "$route_dst"
+  wait_for_pattern "$CORE_ENVOY_CONFIG" "$alt_host" "$WAIT_TIMEOUT_S" present
+  assert_http_non_2xx "$http_url" "$route_host"
+  assert_http_non_2xx "$tls_url" "$route_host"
+  assert_http_2xx_or_3xx "$http_url" "$alt_host"
+  assert_http_2xx "$tls_url" "$alt_host"
+
+  stage_file "$route_src" "$route_dst"
+  wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
+  assert_http_2xx_or_3xx "$http_url" "$route_host"
+  assert_http_2xx "$tls_url" "$route_host"
+  rm -f "$mutated"
+}
+
+run_core_proxy_tier1() {
   local route_dst="$CORE_SPECS_DIR/edge-ingress-route-core-proxy.yaml"
   local route_src="$CORE_PROXY_ROUTE_SRC"
   local route_host
@@ -598,19 +670,42 @@ run_core_proxy() {
   assert_http_2xx "$tls_url" "$route_host"
 
   if [[ "$STRICT" -eq 1 ]]; then
-    log "strict check: removing route to verify non-2xx"
-    rm -f "$route_dst"
-    wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" absent
-    assert_http_non_2xx "$http_url" "$route_host"
-
-    stage_file "$route_src" "$route_dst"
-    wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
-    assert_http_2xx_or_3xx "$http_url" "$route_host"
-    assert_http_2xx "$tls_url" "$route_host"
+    run_core_proxy_strict_mutation_check "$route_src" "$route_dst" "$route_host" "$http_url" "$tls_url"
   fi
+
+  log "core-proxy tier1 checks passed"
 }
 
-run_core_to_edge_public() {
+run_core_proxy_tier2() {
+  local route_dst="$CORE_SPECS_DIR/edge-ingress-route-core-proxy.yaml"
+  local route_src="$CORE_PROXY_ROUTE_SRC"
+  local route_host
+  local http_path
+  local tls_path
+  local http_url
+  local tls_url
+
+  stage_file "$route_src" "$route_dst"
+  route_host="$(extract_route_host_from_file "$route_dst")"
+  [[ -n "$route_host" ]] || die "core-proxy route file missing spec.host: $route_dst"
+
+  http_path="$(normalize_http_path "$CORE_PROXY_HTTP_PATH")"
+  tls_path="$(normalize_http_path "$CORE_PROXY_TLS_PATH")"
+  http_url="${CORE_INGRESS_URL%/}${http_path}"
+  tls_url="${CORE_INGRESS_TLS_URL%/}${tls_path}"
+
+  wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
+  assert_http_2xx_or_3xx "$http_url" "$route_host"
+  assert_http_2xx "$tls_url" "$route_host"
+
+  if [[ "${STRICT_FOR_TIER2:-$STRICT}" -eq 1 ]]; then
+    run_core_proxy_strict_mutation_check "$route_src" "$route_dst" "$route_host" "$http_url" "$tls_url"
+  fi
+
+  log "core-proxy tier2 checks passed"
+}
+
+run_core_to_edge_public_tier1() {
   local route_dst="$CORE_SPECS_DIR/edge-ingress-route-core-to-edge-public.yaml"
   local route_src="$CORE_TO_EDGE_PUBLIC_ROUTE_SRC"
   local route_host
@@ -650,6 +745,92 @@ run_core_to_edge_public() {
   fi
 
   rm -f "$endpoint_good"
+  log "core-to-edge-public tier1 checks passed"
+}
+
+run_core_to_edge_public_tier2() {
+  local route_dst="$CORE_SPECS_DIR/edge-ingress-route-core-to-edge-public.yaml"
+  local route_src="$CORE_TO_EDGE_PUBLIC_ROUTE_SRC"
+  local route_host
+  local endpoint_dst="$CORE_SPECS_DIR/site-ingress-endpoint-${SITE_ID}-public.yaml"
+  local public_path
+  local public_url
+  local endpoint_good
+  endpoint_good="$(mktemp)"
+
+  public_path="$(normalize_http_path "$CORE_PUBLIC_HTTP_PATH")"
+  public_url="${CORE_INGRESS_URL%/}${public_path}"
+
+  render_public_endpoint "$PUBLIC_GOOD_URL" "$endpoint_good"
+  stage_file "$endpoint_good" "$endpoint_dst"
+  stage_file "$route_src" "$route_dst"
+  route_host="$(extract_route_host_from_file "$route_dst")"
+  [[ -n "$route_host" ]] || die "core-to-edge-public route file missing spec.host: $route_dst"
+
+  wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
+  assert_http_2xx "$public_url" "$route_host"
+
+  if [[ "${STRICT_FOR_TIER2:-$STRICT}" -eq 1 ]]; then
+    local endpoint_bad
+    endpoint_bad="$(mktemp)"
+    render_public_endpoint "$PUBLIC_BAD_URL" "$endpoint_bad"
+
+    log "strict check: staging broken public endpoint URL"
+    stage_file "$endpoint_bad" "$endpoint_dst"
+    sleep 5
+    assert_http_5xx_or_000 "$public_url" "$route_host"
+
+    stage_file "$endpoint_good" "$endpoint_dst"
+    sleep 5
+    assert_http_2xx "$public_url" "$route_host"
+
+    rm -f "$endpoint_bad"
+  fi
+
+  rm -f "$endpoint_good"
+  log "core-to-edge-public tier2 checks passed"
+}
+
+run_edge_local_strict_mutation_check() {
+  local route_src="$1"
+  local route_dst="$2"
+  local route_host="$3"
+
+  local alt_host
+  local mutated
+  local route_host_base
+  route_host_base="${route_host%.home.arpa}"
+  if [[ "$route_host_base" == "$route_host" ]]; then
+    route_host_base="$route_host"
+  fi
+  alt_host="${route_host_base}-alt-${RANDOM}.home.arpa"
+  mutated="$(mktemp)"
+  python - "$route_src" "$alt_host" > "$mutated" <<'PY'
+import re
+import sys
+path = sys.argv[1]
+alt_host = sys.argv[2]
+text = open(path, encoding="utf-8").read()
+updated, count = re.subn(r"(?m)^([ \t]*host:[ \t]*)([^\s#]+)(.*)$", rf"\1{alt_host}\3", text, count=1)
+if count != 1:
+    raise SystemExit("failed to rewrite route host for strict edge-local check")
+sys.stdout.write(updated)
+PY
+
+  log "strict check: mutating edge-local host to $alt_host"
+  stage_file "$mutated" "$route_dst"
+
+  if [[ "$EXPECT_BUNDLE_DISABLED" -eq 1 ]]; then
+    wait_for_pattern "$EDGE_LOCAL_CADDY_FILE" "$alt_host" 20 absent
+    log "bundle-disabled expectation satisfied (no edge-local config update)"
+  else
+    wait_for_pattern "$EDGE_LOCAL_CADDY_FILE" "$alt_host" "$WAIT_TIMEOUT_S" present
+    log "bundle update observed for mutated host"
+  fi
+
+  stage_file "$route_src" "$route_dst"
+  wait_for_pattern "$EDGE_LOCAL_CADDY_FILE" "$route_host" "$WAIT_TIMEOUT_S" present
+  rm -f "$mutated"
 }
 
 run_edge_local_tier1() {
@@ -672,48 +853,30 @@ run_edge_local_tier1() {
   log "edge-local tier1 checks passed"
 
   if [[ "$STRICT" -eq 1 ]]; then
-    local alt_host
-    local mutated
-    local route_host_base
-    route_host_base="${route_host%.home.arpa}"
-    if [[ "$route_host_base" == "$route_host" ]]; then
-      route_host_base="$route_host"
-    fi
-    alt_host="${route_host_base}-alt-${RANDOM}.home.arpa"
-    mutated="$(mktemp)"
-    python - "$route_src" "$alt_host" > "$mutated" <<'PY'
-import re
-import sys
-path = sys.argv[1]
-alt_host = sys.argv[2]
-text = open(path, encoding="utf-8").read()
-updated, count = re.subn(r"(?m)^([ \t]*host:[ \t]*)([^\s#]+)(.*)$", rf"\1{alt_host}\3", text, count=1)
-if count != 1:
-    raise SystemExit("failed to rewrite route host for strict edge-local check")
-sys.stdout.write(updated)
-PY
-
-    log "strict check: mutating edge-local host to $alt_host"
-    stage_file "$mutated" "$route_dst"
-
-    if [[ "$EXPECT_BUNDLE_DISABLED" -eq 1 ]]; then
-      wait_for_pattern "$EDGE_LOCAL_CADDY_FILE" "$alt_host" 20 absent
-      log "bundle-disabled expectation satisfied (no edge-local config update)"
-    else
-      wait_for_pattern "$EDGE_LOCAL_CADDY_FILE" "$alt_host" "$WAIT_TIMEOUT_S" present
-      log "bundle update observed for mutated host"
-    fi
-
-    stage_file "$route_src" "$route_dst"
-    wait_for_pattern "$EDGE_LOCAL_CADDY_FILE" "$route_host" "$WAIT_TIMEOUT_S" present
-    rm -f "$mutated"
+    run_edge_local_strict_mutation_check "$route_src" "$route_dst" "$route_host"
   fi
 }
 
 run_edge_local_tier2() {
-  [[ -n "$EDGE_LOCAL_LISTENER_URL" ]] || die "--edge-local-listener-url is required for tier2"
-  assert_http_2xx "$EDGE_LOCAL_LISTENER_URL" "app-edge-local.home.arpa"
-  log "edge-local tier2 passed"
+  local route_dst="$CORE_SPECS_DIR/edge-ingress-route-edge-local.yaml"
+  local route_src="$EDGE_LOCAL_ROUTE_SRC"
+  local route_host
+  local listener_url
+
+  preflight_edge_local_runtime
+  stage_file "$route_src" "$route_dst"
+  verify_edge_local_route_site "$route_dst"
+  route_host="$(extract_route_host_from_file "$route_dst")"
+  [[ -n "$route_host" ]] || die_edge_local_preflight "edge-local preflight failed: staged route missing spec.host in $route_dst"
+
+  wait_for_edge_local_render "$route_host" "$EDGE_LOCAL_CADDY_FILE" "$WAIT_TIMEOUT_S"
+  listener_url="$(resolve_edge_local_listener_url)"
+  assert_http_2xx_with_hint "$listener_url" "$route_host" "edge-local tier2"
+  log "edge-local tier2 passed listener_url=$listener_url host=$route_host"
+
+  if [[ "${STRICT_FOR_TIER2:-$STRICT}" -eq 1 ]]; then
+    run_edge_local_strict_mutation_check "$route_src" "$route_dst" "$route_host"
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -850,6 +1013,12 @@ CORE_PROXY_HTTP_PATH="$(normalize_http_path "$CORE_PROXY_HTTP_PATH")"
 CORE_PROXY_TLS_PATH="$(normalize_http_path "$CORE_PROXY_TLS_PATH")"
 CORE_PUBLIC_HTTP_PATH="$(normalize_http_path "$CORE_PUBLIC_HTTP_PATH")"
 
+STRICT_FOR_TIER2="$STRICT"
+if [[ "$TIER" == "both" ]]; then
+  # Avoid running strict mutation/negative checks twice in combined runs.
+  STRICT_FOR_TIER2=0
+fi
+
 if ! mkdir -p "$CORE_SPECS_DIR"; then
   die "failed to create core specs dir: $CORE_SPECS_DIR (fix ownership/permissions)"
 fi
@@ -861,16 +1030,28 @@ if [[ "$MODE" == "core-proxy" ]]; then
   log "core_proxy_http_path=$CORE_PROXY_HTTP_PATH core_proxy_tls_path=$CORE_PROXY_TLS_PATH"
 elif [[ "$MODE" == "core-to-edge-public" ]]; then
   log "core_public_http_path=$CORE_PUBLIC_HTTP_PATH"
+elif [[ "$MODE" == "edge-local" && ( "$TIER" == "tier2" || "$TIER" == "both" ) ]]; then
+  log "edge_local_listener_url=$(resolve_edge_local_listener_url)"
 fi
 
 apply_workload_and_wait
 
 case "$MODE" in
   core-proxy)
-    run_core_proxy
+    if [[ "$TIER" == "tier1" || "$TIER" == "both" ]]; then
+      run_core_proxy_tier1
+    fi
+    if [[ "$TIER" == "tier2" || "$TIER" == "both" ]]; then
+      run_core_proxy_tier2
+    fi
     ;;
   core-to-edge-public)
-    run_core_to_edge_public
+    if [[ "$TIER" == "tier1" || "$TIER" == "both" ]]; then
+      run_core_to_edge_public_tier1
+    fi
+    if [[ "$TIER" == "tier2" || "$TIER" == "both" ]]; then
+      run_core_to_edge_public_tier2
+    fi
     ;;
   edge-local)
     if [[ "$TIER" == "tier1" || "$TIER" == "both" ]]; then
