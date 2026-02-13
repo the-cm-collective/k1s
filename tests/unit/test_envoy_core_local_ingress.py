@@ -91,6 +91,10 @@ def test_envoy_core_local_ingress_renders_tls(tmp_path: Path) -> None:
     assert "demo.local" in text
     assert "core_default_demo_8080" in text
     assert "edge_listener_tls" in text
+    assert "codec_type: AUTO" in text
+    assert "alpn_protocols" in text
+    assert "- h2" in text
+    assert "- http/1.1" in text
     assert str(cert_path) in text
 
 

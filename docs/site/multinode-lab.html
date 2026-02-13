@@ -755,6 +755,8 @@ sudo -E env PATH=&quot;$SUDO_PATH&quot; python -c &quot;import sys,grpc; print(s
 APISHIM_TAG=&quot;localhost:5001/k1s-apishim:dev-$(date +%s)&quot;
 sudo -E \
   AE_DEV_LOCAL=1 \
+  EDGE_INGRESS_MODE=edge-local \
+  AE_ROUTE_BUNDLE_ENABLED=1 \
   AE_RUNTIME_BACKEND=cri \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_INFRA_BACKEND=cri \
@@ -808,14 +810,49 @@ sudo -E \
 sudo -E env PATH=&quot;$SUDO_PATH&quot; \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
+  EDGE_INGRESS_MODE=edge-local \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_REGISTRY_MODE=managed \
   AE_CRI_REGISTRY_INSECURE=1 \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
   AE_LOG_LEVEL=debug \
   make k1s-edge-core-cri</code></pre>
+<p>Edge-local preflight (root-safe):</p>
+<pre><code>cpid=$(pgrep -f &quot;python -m ae.controller&quot; | head -n1)
+gpid=$(pgrep -f &quot;python -m ae.gateway&quot; | head -n1)
+test -n &quot;$cpid&quot; &amp;&amp; test -n &quot;$gpid&quot;
+
+sudo cat &quot;/proc/$cpid/environ&quot; | tr &#x27;\0&#x27; &#x27;\n&#x27; | rg &#x27;EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED|AE_TRANSPORT_BACKEND|AE_NATS_URL&#x27;
+sudo cat &quot;/proc/$gpid/environ&quot; | tr &#x27;\0&#x27; &#x27;\n&#x27; | rg &#x27;EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL&#x27;
+
+ls -ld state/profiles/k1s-core/edge-local
+ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true
+curl -sS -o /dev/null -w &#x27;%{http_code}\n&#x27; http://127.0.0.1:18081/ || true
+
+# hub-controller must be allowed to publish route bundles
+rg -n &#x27;user: &quot;hub-controller&quot;|k1s.v1.site.\*.routes.bundle&#x27; ops/dev/nats-hub.conf</code></pre>
+<p>Expected:</p>
+<ul>
+<li>controller env includes <code>EDGE_INGRESS_MODE=edge-local</code> and <code>AE_ROUTE_BUNDLE_ENABLED=1</code></li>
+<li>gateway env includes <code>EDGE_INGRESS_MODE=edge-local</code> and <code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=.../state/profiles/k1s-core/edge-local</code></li>
+<li>controller and gateway both include <code>AE_TRANSPORT_BACKEND=nats-core</code> or <code>nats-js</code>, and <code>AE_NATS_URL</code> is set</li>
+<li><code>state/profiles/k1s-core/edge-local</code> exists before tier checks run</li>
+<li>backend probe should become <code>2xx</code> once app workload is ready (for tier checks)</li>
+<li><code>ops/dev/nats-hub.conf</code> includes <code>k1s.v1.site.*.routes.bundle</code> in <code>hub-controller</code> publish permissions</li>
+</ul>
+<p>Bundle behavior note:</p>
+<ul>
+<li>Edge-local route bundles publish for site IDs discovered from node leases and <code>EdgeIngressRoute</code> placement sites. A missing lease does not block publish if routes exist for that site.</li>
+</ul>
+<p>Run this preflight before invoking: <code>scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1</code>.</p>
+<p>If tier checks still time out after route staging:</p>
+<pre><code>rg -n &quot;route bundle&quot; state/profiles/k1s-core/controller.log || true
+rg -n &quot;route bundle|edge-local&quot; state/profiles/k1s-core/gateway-sea-edge-02-edge-1.log || true
+rg -n &quot;route bundle|edge-local&quot; state/profiles/k1s-edge/gateway-sea-edge-02-edge-1.log || true
+ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true</code></pre>
 <h3 id="edge-node">Edge node</h3>
 <p>Verified command set:</p>
 <pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
@@ -1109,6 +1146,8 @@ sudo -E \
   AE_INFRA_BACKEND=cri \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  EDGE_INGRESS_MODE=edge-local \
+  AE_ROUTE_BUNDLE_ENABLED=1 \
   AE_CRI_REGISTRY_MODE=managed \
   AE_CRI_REGISTRY_INSECURE=1 \
   AE_DEV_LOCAL=1 \
@@ -1171,17 +1210,47 @@ make k1s-core-node</code></pre>
 sudo -E env PATH=&quot;$SUDO_PATH&quot; \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
+  EDGE_INGRESS_MODE=edge-local \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_REGISTRY_MODE=managed \
   AE_CRI_REGISTRY_INSECURE=1 \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
   AE_LOG_LEVEL=debug \
   make k1s-edge-core-cri</code></pre>
 <p>Note:</p>
 <ul>
 <li>Keep <code>AE_NATS_URL</code> aligned with the <code>EDGE_PORT</code> passed to <code>make edge-site-cri</code>. In strict CRI mode, <code>k1s-edge-core-cri</code> will derive the edge NATS listen port from <code>EDGE_PORT</code> or the explicit port in <code>AE_NATS_URL</code>.</li>
+</ul>
+<p>4a. Validate edge-local preconditions (root-safe):</p>
+<pre><code>cpid=$(pgrep -f &quot;python -m ae.controller&quot; | head -n1)
+gpid=$(pgrep -f &quot;python -m ae.gateway&quot; | head -n1)
+test -n &quot;$cpid&quot; &amp;&amp; test -n &quot;$gpid&quot;
+
+sudo cat &quot;/proc/$cpid/environ&quot; | tr &#x27;\0&#x27; &#x27;\n&#x27; | rg &#x27;EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED|AE_TRANSPORT_BACKEND|AE_NATS_URL&#x27;
+sudo cat &quot;/proc/$gpid/environ&quot; | tr &#x27;\0&#x27; &#x27;\n&#x27; | rg &#x27;EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL&#x27;
+
+ls -ld state/profiles/k1s-core/edge-local
+ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true
+curl -sS -o /dev/null -w &#x27;%{http_code}\n&#x27; http://127.0.0.1:18081/ || true
+
+# hub-controller must be allowed to publish route bundles
+rg -n &#x27;user: &quot;hub-controller&quot;|k1s.v1.site.\*.routes.bundle&#x27; ops/dev/nats-hub.conf</code></pre>
+<p>Expected:</p>
+<ul>
+<li>core and gateway both report <code>EDGE_INGRESS_MODE=edge-local</code>.</li>
+<li>core reports <code>AE_ROUTE_BUNDLE_ENABLED=1</code>.</li>
+<li>core and gateway both report <code>AE_TRANSPORT_BACKEND=nats-core</code> or <code>nats-js</code>, and <code>AE_NATS_URL</code> is set.</li>
+<li>gateway reports <code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=.../state/profiles/k1s-core/edge-local</code>.</li>
+<li>backend probe should become <code>2xx</code> once app workload is ready (for tier checks).</li>
+<li><code>ops/dev/nats-hub.conf</code> includes <code>k1s.v1.site.*.routes.bundle</code> in <code>hub-controller</code> publish permissions.</li>
+</ul>
+<p>If you updated <code>ops/dev/nats-hub.conf</code>, recreate/restart hub NATS before re-running edge-local checks.</p>
+<p>Bundle behavior note:</p>
+<ul>
+<li>Edge-local route bundles publish for site IDs discovered from node leases and <code>EdgeIngressRoute</code> placement sites. A missing lease does not block publish if routes exist for that site.</li>
 </ul>
 <p>5. Start the edge node (single-host routing adjustments):</p>
 <pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
@@ -1561,14 +1630,24 @@ kctl_rw delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-fou
 <li><code>core-to-edge-public</code></li>
 <li><code>edge-local</code></li>
 </ul>
-<p>This option layers ingress validation on top of Option B (WG/Rosenpass + hub/edge transport). Use <code>core-to-edge-public</code> as the canonical name in docs/config.</p>
+<p>This option layers ingress validation on top of Option B (WG/Rosenpass + hub/edge transport). Use <code>core-to-edge-public</code> as the canonical name in docs/config. For the full capability sequence (single-host, multi-host, faults, repeatability), see <code>docs/guides/ingress-capability-test-sequence.md</code>.</p>
 <p>Shared setup:</p>
 <ul>
 <li>Complete Option B first (hub + edge gateways + node agents).</li>
 <li>Use the active core specs directory so the controller can import <code>EdgeIngressRoute</code>/<code>SiteIngressEndpoint</code> resources.</li>
 </ul>
 <pre><code>CORE_SPECS=${CORE_SPECS:-state/profiles/k1s-core/specs}
-mkdir -p &quot;$CORE_SPECS&quot;</code></pre>
+mkdir -p &quot;$CORE_SPECS&quot;
+
+# Normalize ownership after any prior sudo-driven runs.
+CORE_SPECS_GROUP=&quot;$(id -gn)&quot;
+if getent group aecli &gt;/dev/null 2&gt;&amp;1; then
+  CORE_SPECS_GROUP=&quot;aecli&quot;
+fi
+sudo chown -R &quot;$USER:$CORE_SPECS_GROUP&quot; &quot;$CORE_SPECS&quot;
+sudo chmod -R g+rwX &quot;$CORE_SPECS&quot;
+sudo find &quot;$CORE_SPECS&quot; -type d -exec chmod 2775 {} \;
+test -w &quot;$CORE_SPECS&quot; &amp;&amp; echo &quot;core specs writable: $CORE_SPECS&quot;</code></pre>
 <h3 id="deterministic-single-host-sequence-cri-two-tier-gate">Deterministic single-host sequence (CRI, two-tier gate)</h3>
 <p>Use this lane when you want repeatable functional ingress checks on one host. Run the long-lived <code>make</code> targets in separate terminals.</p>
 <p>1. Bring up Option B (same-host CRI) first so hub + edge nodes are Ready. 2. Deploy a pinned edge workload used by all three ingress modes:</p>
@@ -1582,7 +1661,20 @@ AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core
 AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-1 EDGE_INGRESS_MODE=core-proxy make k1s-edge-core
 
 # terminal C (checks)
-scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier1</code></pre>
+scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier1 --keep-specs</code></pre>
+<p>Expected:</p>
+<ul>
+<li><code>HTTP OK (2xx/3xx)</code> on <code>http://127.0.0.1:10080/</code> (commonly <code>301</code> when redirect is enabled).</li>
+<li><code>HTTP OK</code> on <code>https://127.0.0.1:10443/</code> (commonly <code>200</code>).</li>
+<li>Final line <code>PASS mode=core-proxy tier=tier1</code>.</li>
+</ul>
+<p>Optional direct probe without redirect-follow (avoids DNS ambiguity from <code>curl -L</code>):</p>
+<pre><code>curl -sS -k -o /dev/null -w &#x27;http:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-core-proxy.home.arpa&#x27; \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w &#x27;https:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-core-proxy.home.arpa&#x27; \
+  https://127.0.0.1:10443/</code></pre>
 <p>4. Validate <code>core-to-edge-public</code>:</p>
 <pre><code># terminal A (restart core in public mode)
 AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-to-edge-public make k1s-core
@@ -1591,10 +1683,16 @@ AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-to-edge-public make k1s-core
 AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-1 EDGE_INGRESS_MODE=core-proxy make k1s-edge-core
 
 # terminal C (checks)
-scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier1</code></pre>
+scripts/dev/test_ingress_modes_single_host.sh \
+  --mode core-to-edge-public \
+  --tier tier1 \
+  --core-ingress-url https://127.0.0.1:10443/</code></pre>
 <p>5. Validate <code>edge-local</code> Tier 1 (required baseline gate):</p>
 <pre><code># terminal A (restart core with bundle publisher enabled)
 AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=edge-local AE_ROUTE_BUNDLE_ENABLED=1 make k1s-core
+
+# verify hub-controller publish permission includes route bundles
+rg -n &#x27;user: &quot;hub-controller&quot;|k1s.v1.site.\*.routes.bundle&#x27; ops/dev/nats-hub.conf
 
 # terminal B (restart gateway in edge-local mode)
 AE_SITE_ID=sea-edge-02 \
@@ -1608,7 +1706,11 @@ scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1</co
 <p>6. Optional stricter gates (run after Tier 1 baseline is green):</p>
 <pre><code># stricter negatives for core-proxy and core-to-edge-public
 scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier1 --strict
-scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier1 --strict
+scripts/dev/test_ingress_modes_single_host.sh \
+  --mode core-to-edge-public \
+  --tier tier1 \
+  --strict \
+  --core-ingress-url https://127.0.0.1:10443/
 
 # edge-local strict mutation check (bundle enabled)
 scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1 --strict
@@ -1626,6 +1728,61 @@ scripts/dev/test_ingress_modes_single_host.sh \
   --tier tier2 \
   --edge-local-listener-url https://127.0.0.1:11443/</code></pre>
 <p>Tier 2 is intentionally optional in this lane; track failures separately while keeping Tier 1 as the mandatory day-to-day gate.</p>
+<p>8. Run the workload-variation ingress matrix across all canonical modes:</p>
+<pre><code>scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier1</code></pre>
+<p>Notes:</p>
+<ul>
+<li>Archetype manifests live under <code>specs/examples/ingress-matrix/</code>.</li>
+<li>The matrix script generates per-row <code>EdgeIngressRoute</code> fixtures and calls <code>scripts/dev/test_ingress_modes_single_host.sh</code> for each mode/archetype pair.</li>
+<li>If <code>state/profiles/k1s-core/specs</code> ownership drifts after sudo runs, re-apply:</li>
+</ul>
+<pre><code>CORE_SPECS=state/profiles/k1s-core/specs
+sudo chown -R &quot;$USER:$(id -gn)&quot; &quot;$CORE_SPECS&quot;
+sudo chmod -R g+rwX &quot;$CORE_SPECS&quot;
+sudo find &quot;$CORE_SPECS&quot; -type d -exec chmod 2775 {} \;</code></pre>
+<ul>
+<li>Matrix results are written to: <code>state/test-results/ingress-matrix-&lt;timestamp&gt;.json</code></li>
+<li>On failure, diagnostics are collected under: <code>state/test-results/failures/ingress-matrix-&lt;timestamp&gt;/</code></li>
+</ul>
+<p>9. Capability test track 1 (multi-host CRI topology):</p>
+<pre><code>scripts/dev/test_ingress_matrix_cri.sh \
+  --topology multi-host \
+  --core-host &lt;core-host-ip&gt; \
+  --edge-host &lt;edge-host-ip&gt; \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier1</code></pre>
+<p>10. Capability test tracks 3 and 4 (fault cycles + repeatability):</p>
+<pre><code>scripts/dev/test_ingress_matrix_repeat.sh \
+  --iterations 10 \
+  --topology multi-host \
+  --include-faults \
+  --faults specs-permission-drift,backend-unavailable,nats-route-bundle-permission \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier1</code></pre>
+<p>Outputs:</p>
+<ul>
+<li>Per-run matrix JSON: <code>state/test-results/ingress-matrix-&lt;timestamp&gt;-iterN.json</code></li>
+<li>Per-run logs: <code>state/test-results/ingress-matrix-&lt;timestamp&gt;-iterN.log</code></li>
+<li>Aggregate summary: <code>state/test-results/ingress-matrix-summary-&lt;timestamp&gt;.json</code></li>
+</ul>
+<p>11. Run individual fault injection/recovery scenarios when debugging:</p>
+<pre><code># simulate specs-dir permission drift and recover
+scripts/dev/ingress_fault_injection.sh --fault specs-permission-drift --action cycle
+
+# simulate backend removal and restore
+scripts/dev/ingress_fault_injection.sh --fault backend-unavailable --action cycle \
+  --app-name ingress-matrix-static \
+  --app-manifest specs/examples/ingress-matrix/http-static.yaml
+
+# temporarily remove route-bundle publish permission and restore
+scripts/dev/ingress_fault_injection.sh --fault nats-route-bundle-permission --action cycle \
+  --route-bundle-config ops/dev/nats-hub.conf \
+  --nats-reload-cmd &quot;make k1s-core&quot;</code></pre>
 <h3 id="mode-1-core-proxy-default-nat-friendly">Mode 1 — <code>core-proxy</code> (default, NAT-friendly)</h3>
 <h4 id="production-pattern-split-hosts">Production pattern (split hosts)</h4>
 <p>1. Start core with core-proxy mode:</p>
@@ -1650,12 +1807,19 @@ python -m ae.cli status app-svc --watch 2 --timeout 180 --events</code></pre>
 </ul>
 <h4 id="validation-2">Validation</h4>
 <pre><code>rg -n &quot;app-core-proxy.home.arpa|sea-edge-02.edge.local&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml
-curl -sS -k -L -H &#x27;Host: app-core-proxy.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20</code></pre>
+curl -sS -k -o /dev/null -w &#x27;http:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-core-proxy.home.arpa&#x27; \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w &#x27;https:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-core-proxy.home.arpa&#x27; \
+  https://127.0.0.1:10443/</code></pre>
 <p>Expected:</p>
 <ul>
 <li>Envoy config includes <code>app-core-proxy.home.arpa</code>.</li>
-<li>If an edge listener is reachable via the tunnel path, final response returns <code>2xx</code>.</li>
-<li>If tunnel/upstream is down, core returns <code>5xx</code> (route exists but upstream failed).</li>
+<li>HTTP listener returns <code>2xx/3xx</code> (most commonly <code>301</code> when redirect is enabled).</li>
+<li>HTTPS listener returns <code>2xx</code> when tunnel/upstream is healthy.</li>
+<li><code>5xx</code> indicates route exists but upstream/tunnel failed.</li>
+<li><code>000</code> indicates probe/client path failure; do not use <code>-L</code> for this check.</li>
 </ul>
 <h4 id="cleanup">Cleanup</h4>
 <pre><code>rm -f &quot;$CORE_SPECS/edge-ingress-route-core-proxy.yaml&quot;</code></pre>
@@ -1695,11 +1859,17 @@ EOF</code></pre>
 </ul>
 <h4 id="validation-3">Validation</h4>
 <pre><code>rg -n &quot;app-public.home.arpa|pop-sea-edge-02.home.arpa&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml
-curl -sS -k -L -H &#x27;Host: app-public.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20</code></pre>
+curl -sS -k -o /dev/null -w &#x27;http:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-public.home.arpa&#x27; \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w &#x27;https:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-public.home.arpa&#x27; \
+  https://127.0.0.1:10443/</code></pre>
 <p>Expected:</p>
 <ul>
 <li>Envoy config includes <code>app-public.home.arpa</code> and a DNS cluster for the POP.</li>
-<li>Reachable POP returns <code>2xx</code>.</li>
+<li>HTTP listener returns <code>2xx/3xx</code> (often <code>301</code> when redirect is enabled).</li>
+<li>Reachable POP returns <code>2xx</code> on HTTPS.</li>
 <li>Unreachable POP returns <code>5xx</code>.</li>
 </ul>
 <h4 id="cleanup-1">Cleanup</h4>
@@ -1712,14 +1882,16 @@ rm -f &quot;$CORE_SPECS/edge-ingress-route-core-to-edge-public.yaml&quot;</code>
 EDGE_INGRESS_MODE=edge-local \
 AE_ROUTE_BUNDLE_ENABLED=1 \
 make k1s-core</code></pre>
+<p>1a. Ensure hub-controller can publish route bundles:</p>
+<pre><code>rg -n &#x27;user: &quot;hub-controller&quot;|k1s.v1.site.\*.routes.bundle&#x27; ops/dev/nats-hub.conf</code></pre>
 <p>2. Start edge gateway in edge-local mode:</p>
 <pre><code>AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
 EDGE_INGRESS_MODE=edge-local \
 AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
 make k1s-edge-core</code></pre>
-<p>3. Add the edge-local route resource:</p>
-<pre><code>cp specs/examples/edge-ingress-route-edge-local.yaml &quot;$CORE_SPECS&quot;/</code></pre>
+<p>3. Run the Tier 1 edge-local gate (the script stages <code>edge-ingress-route-edge-local.yaml</code> automatically):</p>
+<pre><code>scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1</code></pre>
 <h4 id="single-host-lab-pattern-2">Single-host lab pattern</h4>
 <p>Use a local-only edge hostname:</p>
 <pre><code>127.0.0.1 app-edge-local.home.arpa</code></pre>
@@ -1732,7 +1904,16 @@ make k1s-edge-core</code></pre>
 <li>If core is unavailable after bundles are applied, edge can continue serving existing routes until a config change is needed.</li>
 </ul>
 <h4 id="validation-4">Validation</h4>
-<p>Tier 1 (required baseline gate):</p>
+<p>Tier 1 (required baseline gate, script-driven):</p>
+<pre><code>scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1</code></pre>
+<p>Expected:</p>
+<ul>
+<li><code>edge-local preflight OK ...</code></li>
+<li><code>edge-local route site OK ...</code></li>
+<li><code>edge-local tier1 checks passed</code></li>
+<li>final line <code>PASS mode=edge-local tier=tier1</code></li>
+</ul>
+<p>Optional manual spot-checks after Tier 1 passes:</p>
 <pre><code>ls state/profiles/k1s-core/edge-local/edge-local.caddy
 rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/edge-local.caddy
 rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml || true
@@ -1756,8 +1937,18 @@ curl -sS -o /dev/null -w &#x27;%{http_code}\n&#x27; http://127.0.0.1:18081/</cod
 <pre><code>ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events</code></pre>
 <p>2. Validate each ingress mode endpoint behavior:</p>
-<pre><code>curl -sS -k -L -H &#x27;Host: app-core-proxy.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20
-curl -sS -k -L -H &#x27;Host: app-public.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20
+<pre><code>curl -sS -k -o /dev/null -w &#x27;core-proxy:http:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-core-proxy.home.arpa&#x27; \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w &#x27;core-proxy:https:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-core-proxy.home.arpa&#x27; \
+  https://127.0.0.1:10443/
+curl -sS -k -o /dev/null -w &#x27;core-to-edge-public:http:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-public.home.arpa&#x27; \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w &#x27;core-to-edge-public:https:%{http_code}\n&#x27; \
+  --header &#x27;Host: app-public.home.arpa&#x27; \
+  https://127.0.0.1:10443/
 rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/edge-local.caddy</code></pre>
 <p>Expected:</p>
 <ul>
@@ -1797,7 +1988,7 @@ rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/ed
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 16:55:28</span>
+        <span>Built 2026-02-13 07:28:54</span>
       </div>
     </footer>
     <script>

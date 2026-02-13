@@ -445,14 +445,26 @@ postcheck_archetype() {
       [[ -n "$tls_url" ]] || return 1
       local meta code version
       meta="$(curl -sS -k --http2 --connect-timeout 2 --max-time 10 -o /dev/null -w '%{http_code} %{http_version}' -H "Host: $host" "$tls_url" 2>/dev/null || true)"
-      [[ -n "$meta" ]] || return 1
+      if [[ -z "$meta" ]]; then
+        log "http2 postcheck probe failed host=$host mode=$mode url=$tls_url (empty curl metadata)"
+        return 1
+      fi
       code="$(awk '{print $1}' <<<"$meta")"
       version="$(awk '{print $2}' <<<"$meta")"
-      [[ "$code" =~ ^[23][0-9][0-9]$ ]] || return 1
+      if [[ ! "$code" =~ ^[23][0-9][0-9]$ ]]; then
+        log "http2 postcheck failed host=$host mode=$mode url=$tls_url code=$code version=${version:-unknown} expected=2xx/3xx"
+        return 1
+      fi
       if [[ "$mode" == "core-proxy" && "$HTTP2_ENFORCE_DOWNSTREAM_H2" -ne 1 ]]; then
-        [[ "$version" == "2" || "$version" == "1.1" ]] || return 1
+        if [[ "$version" != "2" && "$version" != "1.1" ]]; then
+          log "http2 postcheck failed host=$host mode=$mode url=$tls_url code=$code version=${version:-unknown} expected=2|1.1 enforce_downstream_h2=$HTTP2_ENFORCE_DOWNSTREAM_H2"
+          return 1
+        fi
       else
-        [[ "$version" == "2" ]] || return 1
+        if [[ "$version" != "2" ]]; then
+          log "http2 postcheck failed host=$host mode=$mode url=$tls_url code=$code version=${version:-unknown} expected=2 enforce_downstream_h2=$HTTP2_ENFORCE_DOWNSTREAM_H2"
+          return 1
+        fi
       fi
       ;;
     *)

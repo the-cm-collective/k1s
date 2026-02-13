@@ -1089,6 +1089,8 @@ Treat these three ingress modes as canonical for core/edge deployments:
 
 This option layers ingress validation on top of Option B (WG/Rosenpass + hub/edge
 transport). Use `core-to-edge-public` as the canonical name in docs/config.
+For the full capability sequence (single-host, multi-host, faults, repeatability),
+see `docs/guides/ingress-capability-test-sequence.md`.
 
 Shared setup:
 - Complete Option B first (hub + edge gateways + node agents).
