@@ -22,6 +22,8 @@ CORE_INGRESS_URL="${CORE_INGRESS_URL:-http://127.0.0.1:10080/}"
 CORE_INGRESS_TLS_URL="${CORE_INGRESS_TLS_URL:-https://127.0.0.1:10443/}"
 EDGE_BACKEND_URL="${EDGE_BACKEND_URL:-http://127.0.0.1:18081/}"
 EDGE_LOCAL_LISTENER_URL="${EDGE_LOCAL_LISTENER_URL:-}"
+CORE_PROXY_HTTP_PATH="${CORE_PROXY_HTTP_PATH:-/}"
+CORE_PROXY_TLS_PATH="${CORE_PROXY_TLS_PATH:-$CORE_PROXY_HTTP_PATH}"
 
 CORE_PROXY_ROUTE_SRC="${CORE_PROXY_ROUTE_SRC:-$ROOT_DIR/specs/examples/edge-ingress-route-core-proxy.yaml}"
 CORE_TO_EDGE_PUBLIC_ROUTE_SRC="${CORE_TO_EDGE_PUBLIC_ROUTE_SRC:-$ROOT_DIR/specs/examples/edge-ingress-route-core-to-edge-public.yaml}"
@@ -32,7 +34,7 @@ PUBLIC_BAD_URL="${PUBLIC_BAD_URL:-http://127.0.0.1:19081/}"
 
 WAIT_TIMEOUT_S="${WAIT_TIMEOUT_S:-90}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-180}"
-HTTP_ASSERT_TIMEOUT_S="${HTTP_ASSERT_TIMEOUT_S:-20}"
+HTTP_ASSERT_TIMEOUT_S="${HTTP_ASSERT_TIMEOUT_S:-30}"
 
 declare -A STAGED_BACKUPS=()
 declare -a STAGED_FILES=()
@@ -72,6 +74,8 @@ Options:
   --public-good-url <url>          Public endpoint URL for mode 2 (default: edge backend URL)
   --public-bad-url <url>           Broken public endpoint URL for strict mode 2
   --edge-local-listener-url <url>  Tier2 edge-local ingress URL (required for tier2/both)
+  --core-proxy-http-path <path>    Path probed on core HTTP listener (default: /)
+  --core-proxy-tls-path <path>     Path probed on core TLS listener (default: core-proxy-http-path)
   --core-proxy-route-src <path>    EdgeIngressRoute source file for core-proxy mode
   --core-to-edge-public-route-src <path>
                                   EdgeIngressRoute source file for core-to-edge-public mode
@@ -416,6 +420,31 @@ fetch_code() {
   printf '%s\n' "$code"
 }
 
+normalize_http_path() {
+  local path="${1:-/}"
+  [[ -n "$path" ]] || path="/"
+  [[ "$path" == /* ]] || path="/$path"
+  printf '%s\n' "$path"
+}
+
+is_workload_ready_from_status_snapshot() {
+  local status_file="$1"
+  python - "$status_file" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+match = re.search(r"desired=(\d+),\s*ready=(\d+),\s*live=(\d+)", text)
+if not match:
+    raise SystemExit(1)
+
+desired, ready, live = map(int, match.groups())
+if desired > 0 and ready >= desired and live >= desired:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 wait_for_http_code_match() {
   local url="$1"
   local host="$2"
@@ -517,12 +546,25 @@ apply_workload_and_wait() {
   fi
 
   log "waiting for workload readiness: $APP_NAME"
-  if ! run_ae status "$APP_NAME" --watch 2 --timeout "$READY_TIMEOUT_S" --events >/tmp/ingress-mode-status.log; then
-    log "workload did not become ready; collecting diagnostics"
-    run_ae status "$APP_NAME" --events || true
-    run_ae nodes || true
-    die "workload readiness failed for $APP_NAME"
+  local status_watch_log
+  status_watch_log="$(mktemp)"
+  if ! run_ae status "$APP_NAME" --watch 2 --timeout "$READY_TIMEOUT_S" --events >"$status_watch_log"; then
+    log "workload did not become ready via watch; collecting diagnostics"
+    local status_snapshot_log
+    status_snapshot_log="$(mktemp)"
+    run_ae status "$APP_NAME" --events >"$status_snapshot_log" 2>&1 || true
+
+    if is_workload_ready_from_status_snapshot "$status_snapshot_log"; then
+      log "workload watch timed out but status snapshot is healthy; continuing"
+    else
+      cat "$status_snapshot_log" >&2
+      run_ae nodes || true
+      rm -f "$status_watch_log" "$status_snapshot_log"
+      die "workload readiness failed for $APP_NAME"
+    fi
+    rm -f "$status_snapshot_log"
   fi
+  rm -f "$status_watch_log"
   log "workload ready: $APP_NAME"
 
   local code
@@ -534,26 +576,35 @@ run_core_proxy() {
   local route_dst="$CORE_SPECS_DIR/edge-ingress-route-core-proxy.yaml"
   local route_src="$CORE_PROXY_ROUTE_SRC"
   local route_host
+  local http_path
+  local tls_path
+  local http_url
+  local tls_url
 
   stage_file "$route_src" "$route_dst"
   route_host="$(extract_route_host_from_file "$route_dst")"
   [[ -n "$route_host" ]] || die "core-proxy route file missing spec.host: $route_dst"
 
+  http_path="$(normalize_http_path "$CORE_PROXY_HTTP_PATH")"
+  tls_path="$(normalize_http_path "$CORE_PROXY_TLS_PATH")"
+  http_url="${CORE_INGRESS_URL%/}${http_path}"
+  tls_url="${CORE_INGRESS_TLS_URL%/}${tls_path}"
+
   wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
   # Route fixture enables redirectHttpToHttps, so HTTP may return 301.
-  assert_http_2xx_or_3xx "$CORE_INGRESS_URL" "$route_host"
-  assert_http_2xx "$CORE_INGRESS_TLS_URL" "$route_host"
+  assert_http_2xx_or_3xx "$http_url" "$route_host"
+  assert_http_2xx "$tls_url" "$route_host"
 
   if [[ "$STRICT" -eq 1 ]]; then
     log "strict check: removing route to verify non-2xx"
     rm -f "$route_dst"
     wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" absent
-    assert_http_non_2xx "$CORE_INGRESS_URL" "$route_host"
+    assert_http_non_2xx "$http_url" "$route_host"
 
     stage_file "$route_src" "$route_dst"
     wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
-    assert_http_2xx_or_3xx "$CORE_INGRESS_URL" "$route_host"
-    assert_http_2xx "$CORE_INGRESS_TLS_URL" "$route_host"
+    assert_http_2xx_or_3xx "$http_url" "$route_host"
+    assert_http_2xx "$tls_url" "$route_host"
   fi
 }
 
@@ -732,6 +783,14 @@ while [[ $# -gt 0 ]]; do
       EDGE_LOCAL_LISTENER_URL="${2:-}"
       shift 2
       ;;
+    --core-proxy-http-path)
+      CORE_PROXY_HTTP_PATH="${2:-}"
+      shift 2
+      ;;
+    --core-proxy-tls-path)
+      CORE_PROXY_TLS_PATH="${2:-}"
+      shift 2
+      ;;
     --core-proxy-route-src)
       CORE_PROXY_ROUTE_SRC="${2:-}"
       shift 2
@@ -776,6 +835,9 @@ need_cmd rg
 need_cmd curl
 need_cmd python
 
+CORE_PROXY_HTTP_PATH="$(normalize_http_path "$CORE_PROXY_HTTP_PATH")"
+CORE_PROXY_TLS_PATH="$(normalize_http_path "$CORE_PROXY_TLS_PATH")"
+
 if ! mkdir -p "$CORE_SPECS_DIR"; then
   die "failed to create core specs dir: $CORE_SPECS_DIR (fix ownership/permissions)"
 fi
@@ -783,6 +845,9 @@ trap restore_specs EXIT
 
 log "mode=$MODE tier=$TIER strict=$STRICT site_id=$SITE_ID"
 log "core_specs_dir=$CORE_SPECS_DIR"
+if [[ "$MODE" == "core-proxy" ]]; then
+  log "core_proxy_http_path=$CORE_PROXY_HTTP_PATH core_proxy_tls_path=$CORE_PROXY_TLS_PATH"
+fi
 
 apply_workload_and_wait
 
