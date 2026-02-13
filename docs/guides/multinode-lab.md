@@ -120,25 +120,30 @@ cpid=$(pgrep -f "python -m ae.controller" | head -n1)
 gpid=$(pgrep -f "python -m ae.gateway" | head -n1)
 test -n "$cpid" && test -n "$gpid"
 
-sudo cat "/proc/$cpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED'
-sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID'
+sudo cat "/proc/$cpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED|AE_TRANSPORT_BACKEND|AE_NATS_URL'
+sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL'
 
 ls -ld state/profiles/k1s-core/edge-local
 ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true
 curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18081/ || true
+
+# hub-controller must be allowed to publish route bundles
+rg -n 'user: "hub-controller"|k1s.v1.site.\*.routes.bundle' ops/dev/nats-hub.conf
 ```
 Expected:
 - controller env includes `EDGE_INGRESS_MODE=edge-local` and `AE_ROUTE_BUNDLE_ENABLED=1`
 - gateway env includes `EDGE_INGRESS_MODE=edge-local` and `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=.../state/profiles/k1s-core/edge-local`
+- controller and gateway both include `AE_TRANSPORT_BACKEND=nats-core` or `nats-js`, and `AE_NATS_URL` is set
 - `state/profiles/k1s-core/edge-local` exists before tier checks run
 - backend probe should become `2xx` once app workload is ready (for tier checks)
+- `ops/dev/nats-hub.conf` includes `k1s.v1.site.*.routes.bundle` in `hub-controller` publish permissions
 
 Bundle behavior note:
 - Edge-local route bundles publish for site IDs discovered from node leases and
   `EdgeIngressRoute` placement sites. A missing lease does not block publish if
   routes exist for that site.
 
-Run this preflight before manually copying `edge-ingress-route-edge-local.yaml` or invoking:
+Run this preflight before invoking:
 `scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1`.
 
 If tier checks still time out after route staging:
@@ -587,8 +592,8 @@ cpid=$(pgrep -f "python -m ae.controller" | head -n1)
 gpid=$(pgrep -f "python -m ae.gateway" | head -n1)
 test -n "$cpid" && test -n "$gpid"
 
-sudo cat "/proc/$cpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED'
-sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID'
+sudo cat "/proc/$cpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED|AE_TRANSPORT_BACKEND|AE_NATS_URL'
+sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL'
 
 ls -ld state/profiles/k1s-core/edge-local
 ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true
@@ -1349,9 +1354,9 @@ EDGE_INGRESS_MODE=edge-local \
 AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
 make k1s-edge-core
 ```
-3. Add the edge-local route resource:
+3. Run the Tier 1 edge-local gate (the script stages `edge-ingress-route-edge-local.yaml` automatically):
 ```bash
-cp specs/examples/edge-ingress-route-edge-local.yaml "$CORE_SPECS"/
+scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1
 ```
 
 #### Single-host lab pattern
@@ -1369,7 +1374,17 @@ Keep this hostname unadvertised publicly; test from the edge network/host only.
   existing routes until a config change is needed.
 
 #### Validation
-Tier 1 (required baseline gate):
+Tier 1 (required baseline gate, script-driven):
+```bash
+scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1
+```
+Expected:
+- `edge-local preflight OK ...`
+- `edge-local route site OK ...`
+- `edge-local tier1 checks passed`
+- final line `PASS mode=edge-local tier=tier1`
+
+Optional manual spot-checks after Tier 1 passes:
 ```bash
 ls state/profiles/k1s-core/edge-local/edge-local.caddy
 rg -n "app-edge-local.home.arpa" state/profiles/k1s-core/edge-local/edge-local.caddy
