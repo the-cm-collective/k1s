@@ -23,6 +23,10 @@ CORE_INGRESS_TLS_URL="${CORE_INGRESS_TLS_URL:-https://127.0.0.1:10443/}"
 EDGE_BACKEND_URL="${EDGE_BACKEND_URL:-http://127.0.0.1:18081/}"
 EDGE_LOCAL_LISTENER_URL="${EDGE_LOCAL_LISTENER_URL:-}"
 
+CORE_PROXY_ROUTE_SRC="${CORE_PROXY_ROUTE_SRC:-$ROOT_DIR/specs/examples/edge-ingress-route-core-proxy.yaml}"
+CORE_TO_EDGE_PUBLIC_ROUTE_SRC="${CORE_TO_EDGE_PUBLIC_ROUTE_SRC:-$ROOT_DIR/specs/examples/edge-ingress-route-core-to-edge-public.yaml}"
+EDGE_LOCAL_ROUTE_SRC="${EDGE_LOCAL_ROUTE_SRC:-$ROOT_DIR/specs/examples/edge-ingress-route-edge-local.yaml}"
+
 PUBLIC_GOOD_URL="${PUBLIC_GOOD_URL:-$EDGE_BACKEND_URL}"
 PUBLIC_BAD_URL="${PUBLIC_BAD_URL:-http://127.0.0.1:19081/}"
 
@@ -67,6 +71,10 @@ Options:
   --public-good-url <url>          Public endpoint URL for mode 2 (default: edge backend URL)
   --public-bad-url <url>           Broken public endpoint URL for strict mode 2
   --edge-local-listener-url <url>  Tier2 edge-local ingress URL (required for tier2/both)
+  --core-proxy-route-src <path>    EdgeIngressRoute source file for core-proxy mode
+  --core-to-edge-public-route-src <path>
+                                  EdgeIngressRoute source file for core-to-edge-public mode
+  --edge-local-route-src <path>    EdgeIngressRoute source file for edge-local mode
 
   --wait-timeout <seconds>         Reconcile wait timeout (default: 90)
   --ready-timeout <seconds>        Workload readiness timeout (default: 180)
@@ -346,6 +354,22 @@ print(match.group(1) if match else "")
 PY
 }
 
+extract_route_host_from_file() {
+  local route_file="$1"
+  python - "$route_file" <<'PY'
+import re
+import sys
+path = sys.argv[1]
+try:
+    text = open(path, encoding="utf-8").read()
+except Exception:
+    print("")
+    raise SystemExit(0)
+match = re.search(r"(?m)^[ \t]*host:[ \t]*([^\s#]+)", text)
+print(match.group(1) if match else "")
+PY
+}
+
 verify_edge_local_route_site() {
   local route_file="$1"
   local site_id
@@ -486,31 +510,35 @@ apply_workload_and_wait() {
 
 run_core_proxy() {
   local route_dst="$CORE_SPECS_DIR/edge-ingress-route-core-proxy.yaml"
-  local route_src="$ROOT_DIR/specs/examples/edge-ingress-route-core-proxy.yaml"
+  local route_src="$CORE_PROXY_ROUTE_SRC"
+  local route_host
 
   stage_file "$route_src" "$route_dst"
+  route_host="$(extract_route_host_from_file "$route_dst")"
+  [[ -n "$route_host" ]] || die "core-proxy route file missing spec.host: $route_dst"
 
-  wait_for_pattern "$CORE_ENVOY_CONFIG" "app-core-proxy.home.arpa" "$WAIT_TIMEOUT_S" present
+  wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
   # Route fixture enables redirectHttpToHttps, so HTTP may return 301.
-  assert_http_2xx_or_3xx "$CORE_INGRESS_URL" "app-core-proxy.home.arpa"
-  assert_http_2xx "$CORE_INGRESS_TLS_URL" "app-core-proxy.home.arpa"
+  assert_http_2xx_or_3xx "$CORE_INGRESS_URL" "$route_host"
+  assert_http_2xx "$CORE_INGRESS_TLS_URL" "$route_host"
 
   if [[ "$STRICT" -eq 1 ]]; then
     log "strict check: removing route to verify non-2xx"
     rm -f "$route_dst"
-    wait_for_pattern "$CORE_ENVOY_CONFIG" "app-core-proxy.home.arpa" "$WAIT_TIMEOUT_S" absent
-    assert_http_non_2xx "$CORE_INGRESS_URL" "app-core-proxy.home.arpa"
+    wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" absent
+    assert_http_non_2xx "$CORE_INGRESS_URL" "$route_host"
 
     stage_file "$route_src" "$route_dst"
-    wait_for_pattern "$CORE_ENVOY_CONFIG" "app-core-proxy.home.arpa" "$WAIT_TIMEOUT_S" present
-    assert_http_2xx_or_3xx "$CORE_INGRESS_URL" "app-core-proxy.home.arpa"
-    assert_http_2xx "$CORE_INGRESS_TLS_URL" "app-core-proxy.home.arpa"
+    wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
+    assert_http_2xx_or_3xx "$CORE_INGRESS_URL" "$route_host"
+    assert_http_2xx "$CORE_INGRESS_TLS_URL" "$route_host"
   fi
 }
 
 run_core_to_edge_public() {
   local route_dst="$CORE_SPECS_DIR/edge-ingress-route-core-to-edge-public.yaml"
-  local route_src="$ROOT_DIR/specs/examples/edge-ingress-route-core-to-edge-public.yaml"
+  local route_src="$CORE_TO_EDGE_PUBLIC_ROUTE_SRC"
+  local route_host
   local endpoint_dst="$CORE_SPECS_DIR/site-ingress-endpoint-${SITE_ID}-public.yaml"
   local endpoint_good
   endpoint_good="$(mktemp)"
@@ -518,9 +546,11 @@ run_core_to_edge_public() {
   render_public_endpoint "$PUBLIC_GOOD_URL" "$endpoint_good"
   stage_file "$endpoint_good" "$endpoint_dst"
   stage_file "$route_src" "$route_dst"
+  route_host="$(extract_route_host_from_file "$route_dst")"
+  [[ -n "$route_host" ]] || die "core-to-edge-public route file missing spec.host: $route_dst"
 
-  wait_for_pattern "$CORE_ENVOY_CONFIG" "app-public.home.arpa" "$WAIT_TIMEOUT_S" present
-  assert_http_2xx "$CORE_INGRESS_URL" "app-public.home.arpa"
+  wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
+  assert_http_2xx "$CORE_INGRESS_URL" "$route_host"
 
   if [[ "$STRICT" -eq 1 ]]; then
     local endpoint_bad
@@ -530,11 +560,11 @@ run_core_to_edge_public() {
     log "strict check: staging broken public endpoint URL"
     stage_file "$endpoint_bad" "$endpoint_dst"
     sleep 5
-    assert_http_5xx_or_000 "$CORE_INGRESS_URL" "app-public.home.arpa"
+    assert_http_5xx_or_000 "$CORE_INGRESS_URL" "$route_host"
 
     stage_file "$endpoint_good" "$endpoint_dst"
     sleep 5
-    assert_http_2xx "$CORE_INGRESS_URL" "app-public.home.arpa"
+    assert_http_2xx "$CORE_INGRESS_URL" "$route_host"
 
     rm -f "$endpoint_bad"
   fi
@@ -544,25 +574,44 @@ run_core_to_edge_public() {
 
 run_edge_local_tier1() {
   local route_dst="$CORE_SPECS_DIR/edge-ingress-route-edge-local.yaml"
-  local route_src="$ROOT_DIR/specs/examples/edge-ingress-route-edge-local.yaml"
+  local route_src="$EDGE_LOCAL_ROUTE_SRC"
+  local route_host
   local code
 
   preflight_edge_local_runtime
   stage_file "$route_src" "$route_dst"
   verify_edge_local_route_site "$route_dst"
+  route_host="$(extract_route_host_from_file "$route_dst")"
+  [[ -n "$route_host" ]] || die_edge_local_preflight "edge-local preflight failed: staged route missing spec.host in $route_dst"
 
-  wait_for_edge_local_render "app-edge-local.home.arpa" "$EDGE_LOCAL_CADDY_FILE" "$WAIT_TIMEOUT_S"
-  wait_for_pattern "$CORE_ENVOY_CONFIG" "app-edge-local.home.arpa" 10 absent
+  wait_for_edge_local_render "$route_host" "$EDGE_LOCAL_CADDY_FILE" "$WAIT_TIMEOUT_S"
+  wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" 10 absent
 
   code="$(curl -sS -o /dev/null -w '%{http_code}' "$EDGE_BACKEND_URL" || true)"
   [[ "$code" =~ ^2[0-9][0-9]$ ]] || die "edge backend check failed at $EDGE_BACKEND_URL (code=$code)"
   log "edge-local tier1 checks passed"
 
   if [[ "$STRICT" -eq 1 ]]; then
-    local alt_host="app-edge-local-alt-${RANDOM}.home.arpa"
+    local alt_host
     local mutated
+    local route_host_base
+    route_host_base="${route_host%.home.arpa}"
+    if [[ "$route_host_base" == "$route_host" ]]; then
+      route_host_base="$route_host"
+    fi
+    alt_host="${route_host_base}-alt-${RANDOM}.home.arpa"
     mutated="$(mktemp)"
-    sed "s/app-edge-local.home.arpa/${alt_host}/g" "$route_src" > "$mutated"
+    python - "$route_src" "$alt_host" > "$mutated" <<'PY'
+import re
+import sys
+path = sys.argv[1]
+alt_host = sys.argv[2]
+text = open(path, encoding="utf-8").read()
+updated, count = re.subn(r"(?m)^([ \t]*host:[ \t]*)([^\s#]+)(.*)$", rf"\1{alt_host}\3", text, count=1)
+if count != 1:
+    raise SystemExit("failed to rewrite route host for strict edge-local check")
+sys.stdout.write(updated)
+PY
 
     log "strict check: mutating edge-local host to $alt_host"
     stage_file "$mutated" "$route_dst"
@@ -576,7 +625,7 @@ run_edge_local_tier1() {
     fi
 
     stage_file "$route_src" "$route_dst"
-    wait_for_pattern "$EDGE_LOCAL_CADDY_FILE" "app-edge-local.home.arpa" "$WAIT_TIMEOUT_S" present
+    wait_for_pattern "$EDGE_LOCAL_CADDY_FILE" "$route_host" "$WAIT_TIMEOUT_S" present
     rm -f "$mutated"
   fi
 }
@@ -659,6 +708,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --edge-local-listener-url)
       EDGE_LOCAL_LISTENER_URL="${2:-}"
+      shift 2
+      ;;
+    --core-proxy-route-src)
+      CORE_PROXY_ROUTE_SRC="${2:-}"
+      shift 2
+      ;;
+    --core-to-edge-public-route-src)
+      CORE_TO_EDGE_PUBLIC_ROUTE_SRC="${2:-}"
+      shift 2
+      ;;
+    --edge-local-route-src)
+      EDGE_LOCAL_ROUTE_SRC="${2:-}"
       shift 2
       ;;
     --wait-timeout)
