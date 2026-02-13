@@ -30,6 +30,7 @@ READY_TIMEOUT_S="${READY_TIMEOUT_S:-180}"
 STABILITY_REQUESTS="${STABILITY_REQUESTS:-30}"
 LARGE_PAYLOAD_PATH="${LARGE_PAYLOAD_PATH:-/}"
 LARGE_PAYLOAD_MIN_BYTES="${LARGE_PAYLOAD_MIN_BYTES:-65536}"
+HTTP2_ENFORCE_DOWNSTREAM_H2="${HTTP2_ENFORCE_DOWNSTREAM_H2:-0}"
 
 RESULTS_DIR="${RESULTS_DIR:-$ROOT_DIR/state/test-results}"
 RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -71,6 +72,7 @@ Options:
   --stability-requests <n>         Requests for stability check (default: 30)
   --large-payload-path <path>      Path used for large-payload assertion (default: /)
   --large-payload-min-bytes <n>    Minimum bytes expected for large-payload assertion (default: 65536)
+  --http2-enforce-downstream-h2    Require HTTP/2 in postcheck for all modes (default: off)
 
   --results-dir <path>             Output directory for matrix artifacts
   --result-json <path>             Result JSON path
@@ -396,7 +398,9 @@ postcheck_archetype() {
       stability_check "$base_url" "$host" "$STABILITY_REQUESTS" || return 1
       ;;
     path)
-      stability_check "$base_url" "$host" "$STABILITY_REQUESTS" || return 1
+      local api_url
+      api_url="${base_url%/}/api"
+      stability_check "$api_url" "$host" "$STABILITY_REQUESTS" || return 1
       local path
       for path in "/api" "/healthz"; do
         assert_code_2xx_or_3xx "${base_url%/}${path}" "$host" || return 1
@@ -445,7 +449,11 @@ postcheck_archetype() {
       code="$(awk '{print $1}' <<<"$meta")"
       version="$(awk '{print $2}' <<<"$meta")"
       [[ "$code" =~ ^[23][0-9][0-9]$ ]] || return 1
-      [[ "$version" == "2" ]] || return 1
+      if [[ "$mode" == "core-proxy" && "$HTTP2_ENFORCE_DOWNSTREAM_H2" -ne 1 ]]; then
+        [[ "$version" == "2" || "$version" == "1.1" ]] || return 1
+      else
+        [[ "$version" == "2" ]] || return 1
+      fi
       ;;
     *)
       return 1
@@ -581,6 +589,12 @@ run_row() {
   fi
 
   local backend_url="${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:${effective_backend_port}/"
+  local core_proxy_http_path="/"
+  local core_proxy_tls_path="/"
+  if [[ "$archetype" == "http-path-routing" ]]; then
+    core_proxy_http_path="/api"
+    core_proxy_tls_path="/api"
+  fi
   local -a cmd=(
     "$ROOT_DIR/scripts/dev/test_ingress_modes_single_host.sh"
     --mode "$mode"
@@ -601,6 +615,8 @@ run_row() {
   case "$mode" in
     core-proxy)
       cmd+=(--core-proxy-route-src "$route_src")
+      cmd+=(--core-proxy-http-path "$core_proxy_http_path")
+      cmd+=(--core-proxy-tls-path "$core_proxy_tls_path")
       ;;
     core-to-edge-public)
       cmd+=(--core-ingress-url "$CORE_PUBLIC_INGRESS_URL")
@@ -727,6 +743,10 @@ while [[ $# -gt 0 ]]; do
       LARGE_PAYLOAD_MIN_BYTES="${2:-}"
       shift 2
       ;;
+    --http2-enforce-downstream-h2)
+      HTTP2_ENFORCE_DOWNSTREAM_H2=1
+      shift
+      ;;
     --results-dir)
       RESULTS_DIR="${2:-}"
       shift 2
@@ -756,6 +776,7 @@ case "$EDGE_BACKEND_SCHEME" in
 esac
 
 [[ "$LARGE_PAYLOAD_MIN_BYTES" =~ ^[0-9]+$ ]] || die "--large-payload-min-bytes must be an integer"
+[[ "$HTTP2_ENFORCE_DOWNSTREAM_H2" =~ ^[01]$ ]] || die "HTTP2_ENFORCE_DOWNSTREAM_H2 must be 0 or 1"
 
 need_cmd rg
 need_cmd curl
@@ -787,6 +808,7 @@ log "tier=$TIER site_id=$SITE_ID node_id=$NODE_ID"
 log "core_ingress_url=$CORE_INGRESS_URL core_public_ingress_url=$CORE_PUBLIC_INGRESS_URL core_ingress_tls_url=$CORE_INGRESS_TLS_URL"
 log "edge_backend=${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:<dynamic-port>"
 log "core_proxy_local_addr=$CORE_PROXY_LOCAL_ADDR"
+log "http2_enforce_downstream_h2=$HTTP2_ENFORCE_DOWNSTREAM_H2"
 log "results_json=$RESULT_JSON"
 
 total_rows=0
