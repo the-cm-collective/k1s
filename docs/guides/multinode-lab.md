@@ -1076,7 +1076,10 @@ AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-to-edge-public make k1s-core
 AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-1 EDGE_INGRESS_MODE=core-proxy make k1s-edge-core
 
 # terminal C (checks)
-scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier1
+scripts/dev/test_ingress_modes_single_host.sh \
+  --mode core-to-edge-public \
+  --tier tier1 \
+  --core-ingress-url https://127.0.0.1:10443/
 ```
 5. Validate `edge-local` Tier 1 (required baseline gate):
 ```bash
@@ -1097,7 +1100,11 @@ scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1
 ```bash
 # stricter negatives for core-proxy and core-to-edge-public
 scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier1 --strict
-scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier1 --strict
+scripts/dev/test_ingress_modes_single_host.sh \
+  --mode core-to-edge-public \
+  --tier tier1 \
+  --strict \
+  --core-ingress-url https://127.0.0.1:10443/
 
 # edge-local strict mutation check (bundle enabled)
 scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1 --strict
