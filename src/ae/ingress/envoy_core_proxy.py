@@ -275,6 +275,7 @@ def render_envoy_config(
                 "typed_config": {
                     "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
                     "stat_prefix": "edge_ingress_tls",
+                    "codec_type": "AUTO",
                     "route_config": {
                         "name": "edge_routes_tls",
                         "virtual_hosts": vhosts_https,
@@ -293,6 +294,7 @@ def render_envoy_config(
                 "typed_config": {
                     "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext",
                     "common_tls_context": {
+                        "alpn_protocols": ["h2", "http/1.1"],
                         "tls_certificates": [
                             {
                                 "certificate_chain": {"filename": cert.cert_chain},
