@@ -1209,6 +1209,29 @@ scripts/dev/test_ingress_modes_single_host.sh \
 Tier 2 is intentionally optional in this lane; track failures separately while
 keeping Tier 1 as the mandatory day-to-day gate.
 
+8. Run the workload-variation ingress matrix across all canonical modes:
+```bash
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport \
+  --tier tier1
+```
+Notes:
+- Archetype manifests live under `specs/examples/ingress-matrix/`.
+- The matrix script generates per-row `EdgeIngressRoute` fixtures and calls
+  `scripts/dev/test_ingress_modes_single_host.sh` for each mode/archetype pair.
+- If `state/profiles/k1s-core/specs` ownership drifts after sudo runs, re-apply:
+```bash
+CORE_SPECS=state/profiles/k1s-core/specs
+sudo chown -R "$USER:$(id -gn)" "$CORE_SPECS"
+sudo chmod -R g+rwX "$CORE_SPECS"
+sudo find "$CORE_SPECS" -type d -exec chmod 2775 {} \;
+```
+- Matrix results are written to:
+  `state/test-results/ingress-matrix-<timestamp>.json`
+- On failure, diagnostics are collected under:
+  `state/test-results/failures/ingress-matrix-<timestamp>/`
+
 ### Mode 1 — `core-proxy` (default, NAT-friendly)
 
 #### Production pattern (split hosts)
