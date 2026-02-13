@@ -2,7 +2,11 @@ from pathlib import Path
 
 from ae.controller.spec import app_key
 from ae.controller.state import ServiceEndpoint, SQLiteStateStore
-from ae.ingress.edge_core_proxy import EdgeCoreProxyConfig, EdgeCoreProxyRenderer
+from ae.ingress.edge_core_proxy import (
+    EdgeCoreProxyConfig,
+    EdgeCoreProxyRenderer,
+    build_core_proxy_config,
+)
 
 
 def test_envoy_core_local_ingress_renders_tls(tmp_path: Path) -> None:
@@ -88,3 +92,20 @@ def test_envoy_core_local_ingress_renders_tls(tmp_path: Path) -> None:
     assert "core_default_demo_8080" in text
     assert "edge_listener_tls" in text
     assert str(cert_path) in text
+
+
+def test_build_core_proxy_config_normalizes_relative_tls_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_dir = tmp_path / "edge-ingress"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AE_EDGE_INGRESS_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("AE_TLS_DIR", "state/tls")
+    monkeypatch.delenv("AE_EDGE_INGRESS_ENVOY_CONFIG", raising=False)
+    monkeypatch.delenv("AE_RATHOLE_SERVER_CONFIG", raising=False)
+
+    config = build_core_proxy_config()
+
+    assert config is not None
+    assert config.tls_root == (tmp_path / "state" / "tls").resolve()

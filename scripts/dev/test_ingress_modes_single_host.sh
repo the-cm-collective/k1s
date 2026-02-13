@@ -19,6 +19,7 @@ CORE_ENVOY_CONFIG="${CORE_ENVOY_CONFIG:-$ROOT_DIR/state/profiles/k1s-core/edge-i
 EDGE_LOCAL_CADDY_FILE="${EDGE_LOCAL_CADDY_FILE:-$ROOT_DIR/state/profiles/k1s-core/edge-local/edge-local.caddy}"
 
 CORE_INGRESS_URL="${CORE_INGRESS_URL:-http://127.0.0.1:10080/}"
+CORE_INGRESS_TLS_URL="${CORE_INGRESS_TLS_URL:-https://127.0.0.1:10443/}"
 EDGE_BACKEND_URL="${EDGE_BACKEND_URL:-http://127.0.0.1:18081/}"
 EDGE_LOCAL_LISTENER_URL="${EDGE_LOCAL_LISTENER_URL:-}"
 
@@ -61,6 +62,7 @@ Options:
   --edge-local-caddy-file <path>   Rendered edge-local Caddy file path
 
   --core-ingress-url <url>         Core ingress URL (default: http://127.0.0.1:10080/)
+  --core-ingress-tls-url <url>     Core ingress TLS URL (default: https://127.0.0.1:10443/)
   --edge-backend-url <url>         Edge backend URL (default: http://127.0.0.1:18081/)
   --public-good-url <url>          Public endpoint URL for mode 2 (default: edge backend URL)
   --public-bad-url <url>           Broken public endpoint URL for strict mode 2
@@ -184,7 +186,7 @@ fetch_code() {
   out="$(mktemp)"
   local code="000"
 
-  if code="$(curl -sS -k -L -o "$out" -w '%{http_code}' -H "Host: $host" "$url" 2>/dev/null)"; then
+  if code="$(curl -sS -k --connect-timeout 2 --max-time 5 -o "$out" -w '%{http_code}' -H "Host: $host" "$url" 2>/dev/null)"; then
     :
   else
     code="000"
@@ -204,6 +206,18 @@ assert_http_2xx() {
     return
   fi
   die "expected 2xx for host=$host url=$url, got $code"
+}
+
+assert_http_2xx_or_3xx() {
+  local url="$1"
+  local host="$2"
+  local code
+  code="$(fetch_code "$url" "$host")"
+  if [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
+    log "HTTP OK (2xx/3xx) host=$host url=$url code=$code"
+    return
+  fi
+  die "expected 2xx/3xx for host=$host url=$url, got $code"
 }
 
 assert_http_non_2xx() {
@@ -282,7 +296,9 @@ run_core_proxy() {
   stage_file "$route_src" "$route_dst"
 
   wait_for_pattern "$CORE_ENVOY_CONFIG" "app-core-proxy.home.arpa" "$WAIT_TIMEOUT_S" present
-  assert_http_2xx "$CORE_INGRESS_URL" "app-core-proxy.home.arpa"
+  # Route fixture enables redirectHttpToHttps, so HTTP may return 301.
+  assert_http_2xx_or_3xx "$CORE_INGRESS_URL" "app-core-proxy.home.arpa"
+  assert_http_2xx "$CORE_INGRESS_TLS_URL" "app-core-proxy.home.arpa"
 
   if [[ "$STRICT" -eq 1 ]]; then
     log "strict check: removing route to verify non-2xx"
@@ -292,7 +308,8 @@ run_core_proxy() {
 
     stage_file "$route_src" "$route_dst"
     wait_for_pattern "$CORE_ENVOY_CONFIG" "app-core-proxy.home.arpa" "$WAIT_TIMEOUT_S" present
-    assert_http_2xx "$CORE_INGRESS_URL" "app-core-proxy.home.arpa"
+    assert_http_2xx_or_3xx "$CORE_INGRESS_URL" "app-core-proxy.home.arpa"
+    assert_http_2xx "$CORE_INGRESS_TLS_URL" "app-core-proxy.home.arpa"
   fi
 }
 
@@ -425,6 +442,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --core-ingress-url)
       CORE_INGRESS_URL="${2:-}"
+      shift 2
+      ;;
+    --core-ingress-tls-url)
+      CORE_INGRESS_TLS_URL="${2:-}"
       shift 2
       ;;
     --edge-backend-url)
