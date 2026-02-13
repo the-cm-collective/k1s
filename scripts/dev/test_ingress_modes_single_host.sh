@@ -179,6 +179,201 @@ wait_for_pattern() {
   die "timed out waiting for pattern '$pattern' to disappear from $file"
 }
 
+edge_local_recovery_hint() {
+  cat >&2 <<EOF
+[ingress-modes] recovery:
+  1) restart core with:
+     AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=edge-local AE_ROUTE_BUNDLE_ENABLED=1 make k1s-core
+  2) restart edge gateway with:
+     AE_SITE_ID=$SITE_ID AE_NODE_ID=edge-1 EDGE_INGRESS_MODE=edge-local AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=$(dirname "$EDGE_LOCAL_CADDY_FILE") make k1s-edge-core
+  3) ensure specs dir is writable:
+     CORE_SPECS=state/profiles/k1s-core/specs
+     sudo chown -R \$USER:\$(id -gn) "\$CORE_SPECS" && sudo chmod -R g+rwX "\$CORE_SPECS" && sudo find "\$CORE_SPECS" -type d -exec chmod 2775 {} \;
+EOF
+}
+
+die_edge_local_preflight() {
+  local msg="$1"
+  printf '[ingress-modes] ERROR: %s\n' "$msg" >&2
+  edge_local_recovery_hint
+  exit 1
+}
+
+read_proc_environ_lines() {
+  local pid="$1"
+  local proc_env="/proc/$pid/environ"
+
+  if [[ -r "$proc_env" ]]; then
+    tr '\0' '\n' < "$proc_env"
+    return 0
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    if sudo -n cat "$proc_env" >/dev/null 2>&1; then
+      sudo -n cat "$proc_env" | tr '\0' '\n'
+      return 0
+    fi
+    if sudo cat "$proc_env" >/dev/null 2>&1; then
+      sudo cat "$proc_env" | tr '\0' '\n'
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+require_pid_for_pattern() {
+  local pattern="$1"
+  local name="$2"
+  local pid
+  pid="$(pgrep -f "$pattern" | head -n1 || true)"
+  [[ -n "$pid" ]] || die_edge_local_preflight "edge-local preflight failed: $name process not found (pattern: $pattern)"
+  printf '%s\n' "$pid"
+}
+
+require_env_value() {
+  local env_lines="$1"
+  local key="$2"
+  local expected="$3"
+  local process_name="$4"
+  local match="${key}=${expected}"
+  if ! printf '%s\n' "$env_lines" | rg -n --fixed-strings --quiet "$match"; then
+    die_edge_local_preflight "edge-local preflight failed: expected $process_name env $match"
+  fi
+}
+
+extract_env_value() {
+  local env_lines="$1"
+  local key="$2"
+  awk -F= -v k="$key" '$1==k {print substr($0, index($0, "=")+1); exit}' <<<"$env_lines"
+}
+
+preflight_core_specs_writable() {
+  if [[ ! -d "$CORE_SPECS_DIR" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: missing core specs dir $CORE_SPECS_DIR"
+  fi
+  if [[ ! -w "$CORE_SPECS_DIR" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: core specs dir is not writable: $CORE_SPECS_DIR"
+  fi
+}
+
+preflight_edge_local_render_path() {
+  local caddy_file="$1"
+  local caddy_dir
+  caddy_dir="$(dirname "$caddy_file")"
+
+  if [[ ! -d "$caddy_dir" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: missing $caddy_dir (restart edge gateway with EDGE_INGRESS_MODE=edge-local and AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=$caddy_dir)"
+  fi
+  if [[ ! -r "$caddy_dir" || ! -x "$caddy_dir" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: cannot read $caddy_dir as user $(id -un); fix ownership/permissions or run checks with sudo"
+  fi
+  if [[ -f "$caddy_file" && ! -r "$caddy_file" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: cannot read $caddy_file as user $(id -un); fix ownership/permissions or run checks with sudo"
+  fi
+
+  log "edge-local preflight OK render_path=$caddy_file"
+}
+
+preflight_edge_local_runtime() {
+  local caddy_dir
+  local controller_pid
+  local gateway_pid
+  local controller_env
+  local gateway_env
+  local controller_transport
+  local controller_nats_url
+  local gateway_transport
+  local gateway_nats_url
+  local edge_code
+
+  need_cmd pgrep
+  caddy_dir="$(dirname "$EDGE_LOCAL_CADDY_FILE")"
+  preflight_core_specs_writable
+
+  controller_pid="$(require_pid_for_pattern "python -m ae.controller" "controller")"
+  if ! controller_env="$(read_proc_environ_lines "$controller_pid")"; then
+    die_edge_local_preflight "edge-local preflight failed: cannot read controller env from /proc/$controller_pid/environ (try sudo and verify process is running)"
+  fi
+  require_env_value "$controller_env" "EDGE_INGRESS_MODE" "edge-local" "controller"
+  require_env_value "$controller_env" "AE_ROUTE_BUNDLE_ENABLED" "1" "controller"
+  controller_transport="$(extract_env_value "$controller_env" "AE_TRANSPORT_BACKEND")"
+  if [[ "$controller_transport" != "nats-core" && "$controller_transport" != "nats-js" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: controller AE_TRANSPORT_BACKEND must be nats-core or nats-js (found: ${controller_transport:-<unset>})"
+  fi
+  controller_nats_url="$(extract_env_value "$controller_env" "AE_NATS_URL")"
+  if [[ -z "$controller_nats_url" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: controller AE_NATS_URL is unset"
+  fi
+
+  gateway_pid="$(require_pid_for_pattern "python -m ae.gateway" "gateway")"
+  if ! gateway_env="$(read_proc_environ_lines "$gateway_pid")"; then
+    die_edge_local_preflight "edge-local preflight failed: cannot read gateway env from /proc/$gateway_pid/environ (try sudo and verify process is running)"
+  fi
+  require_env_value "$gateway_env" "EDGE_INGRESS_MODE" "edge-local" "gateway"
+  require_env_value "$gateway_env" "AE_EDGE_LOCAL_INGRESS_CONFIG_DIR" "$caddy_dir" "gateway"
+  gateway_transport="$(extract_env_value "$gateway_env" "AE_TRANSPORT_BACKEND")"
+  if [[ "$gateway_transport" != "nats-core" && "$gateway_transport" != "nats-js" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: gateway AE_TRANSPORT_BACKEND must be nats-core or nats-js (found: ${gateway_transport:-<unset>})"
+  fi
+  gateway_nats_url="$(extract_env_value "$gateway_env" "AE_NATS_URL")"
+  if [[ -z "$gateway_nats_url" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: gateway AE_NATS_URL is unset"
+  fi
+
+  preflight_edge_local_render_path "$EDGE_LOCAL_CADDY_FILE"
+
+  edge_code="$(curl -sS -o /dev/null -w '%{http_code}' "$EDGE_BACKEND_URL" || true)"
+  if [[ ! "$edge_code" =~ ^2[0-9][0-9]$ ]]; then
+    die_edge_local_preflight "edge-local preflight failed: expected 2xx from edge backend $EDGE_BACKEND_URL, got $edge_code"
+  fi
+  log "edge-local preflight OK controller_pid=$controller_pid gateway_pid=$gateway_pid edge_backend_code=$edge_code"
+}
+
+extract_route_site_from_file() {
+  local route_file="$1"
+  python - "$route_file" <<'PY'
+import re
+import sys
+path = sys.argv[1]
+try:
+    text = open(path, encoding="utf-8").read()
+except Exception:
+    print("")
+    raise SystemExit(0)
+match = re.search(r"(?m)^[ \t]*site:[ \t]*([^\s#]+)", text)
+print(match.group(1) if match else "")
+PY
+}
+
+verify_edge_local_route_site() {
+  local route_file="$1"
+  local site_id
+  site_id="$(extract_route_site_from_file "$route_file")"
+  if [[ -z "$site_id" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: staged route missing exposure.placement.site in $route_file"
+  fi
+  if [[ "$site_id" != "$SITE_ID" ]]; then
+    die_edge_local_preflight "edge-local preflight failed: staged route site '$site_id' does not match requested site '$SITE_ID'"
+  fi
+  log "edge-local route site OK site_id=$site_id route=$route_file"
+}
+
+wait_for_edge_local_render() {
+  local pattern="$1"
+  local file="$2"
+  local timeout="$3"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    if [[ -f "$file" ]] && rg -n --fixed-strings --quiet "$pattern" "$file"; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  die_edge_local_preflight "timed out waiting for '$pattern' in $file (site=$SITE_ID). check controller logs for route bundle publish and gateway logs for route bundle apply acknowledgements."
+}
+
 fetch_code() {
   local url="$1"
   local host="$2"
@@ -350,13 +545,15 @@ run_core_to_edge_public() {
 run_edge_local_tier1() {
   local route_dst="$CORE_SPECS_DIR/edge-ingress-route-edge-local.yaml"
   local route_src="$ROOT_DIR/specs/examples/edge-ingress-route-edge-local.yaml"
+  local code
 
+  preflight_edge_local_runtime
   stage_file "$route_src" "$route_dst"
+  verify_edge_local_route_site "$route_dst"
 
-  wait_for_pattern "$EDGE_LOCAL_CADDY_FILE" "app-edge-local.home.arpa" "$WAIT_TIMEOUT_S" present
+  wait_for_edge_local_render "app-edge-local.home.arpa" "$EDGE_LOCAL_CADDY_FILE" "$WAIT_TIMEOUT_S"
   wait_for_pattern "$CORE_ENVOY_CONFIG" "app-edge-local.home.arpa" 10 absent
 
-  local code
   code="$(curl -sS -o /dev/null -w '%{http_code}' "$EDGE_BACKEND_URL" || true)"
   [[ "$code" =~ ^2[0-9][0-9]$ ]] || die "edge backend check failed at $EDGE_BACKEND_URL (code=$code)"
   log "edge-local tier1 checks passed"
@@ -496,7 +693,9 @@ need_cmd rg
 need_cmd curl
 need_cmd python
 
-mkdir -p "$CORE_SPECS_DIR"
+if ! mkdir -p "$CORE_SPECS_DIR"; then
+  die "failed to create core specs dir: $CORE_SPECS_DIR (fix ownership/permissions)"
+fi
 trap restore_specs EXIT
 
 log "mode=$MODE tier=$TIER strict=$STRICT site_id=$SITE_ID"

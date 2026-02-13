@@ -40,6 +40,8 @@ WG_BIN=$(command -v wg)
 APISHIM_TAG="localhost:5001/k1s-apishim:dev-$(date +%s)"
 sudo -E \
   AE_DEV_LOCAL=1 \
+  EDGE_INGRESS_MODE=edge-local \
+  AE_ROUTE_BUNDLE_ENABLED=1 \
   AE_RUNTIME_BACKEND=cri \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_INFRA_BACKEND=cri \
@@ -100,14 +102,51 @@ sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=822
 sudo -E env PATH="$SUDO_PATH" \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
+  EDGE_INGRESS_MODE=edge-local \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_REGISTRY_MODE=managed \
   AE_CRI_REGISTRY_INSECURE=1 \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
   AE_LOG_LEVEL=debug \
   make k1s-edge-core-cri
+```
+
+Edge-local preflight (root-safe):
+```bash
+cpid=$(pgrep -f "python -m ae.controller" | head -n1)
+gpid=$(pgrep -f "python -m ae.gateway" | head -n1)
+test -n "$cpid" && test -n "$gpid"
+
+sudo cat "/proc/$cpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED'
+sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID'
+
+ls -ld state/profiles/k1s-core/edge-local
+ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18081/ || true
+```
+Expected:
+- controller env includes `EDGE_INGRESS_MODE=edge-local` and `AE_ROUTE_BUNDLE_ENABLED=1`
+- gateway env includes `EDGE_INGRESS_MODE=edge-local` and `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=.../state/profiles/k1s-core/edge-local`
+- `state/profiles/k1s-core/edge-local` exists before tier checks run
+- backend probe should become `2xx` once app workload is ready (for tier checks)
+
+Bundle behavior note:
+- Edge-local route bundles publish for site IDs discovered from node leases and
+  `EdgeIngressRoute` placement sites. A missing lease does not block publish if
+  routes exist for that site.
+
+Run this preflight before manually copying `edge-ingress-route-edge-local.yaml` or invoking:
+`scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1`.
+
+If tier checks still time out after route staging:
+```bash
+rg -n "route bundle" state/profiles/k1s-core/controller.log || true
+rg -n "route bundle|edge-local" state/profiles/k1s-core/gateway-sea-edge-02-edge-1.log || true
+rg -n "route bundle|edge-local" state/profiles/k1s-edge/gateway-sea-edge-02-edge-1.log || true
+ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true
 ```
 
 ### Edge node
@@ -459,6 +498,8 @@ sudo -E \
   AE_INFRA_BACKEND=cri \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  EDGE_INGRESS_MODE=edge-local \
+  AE_ROUTE_BUNDLE_ENABLED=1 \
   AE_CRI_REGISTRY_MODE=managed \
   AE_CRI_REGISTRY_INSECURE=1 \
   AE_DEV_LOCAL=1 \
@@ -526,17 +567,50 @@ sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=822
 sudo -E env PATH="$SUDO_PATH" \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
+  EDGE_INGRESS_MODE=edge-local \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_REGISTRY_MODE=managed \
   AE_CRI_REGISTRY_INSECURE=1 \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
   AE_LOG_LEVEL=debug \
   make k1s-edge-core-cri
 ```
 Note:
 - Keep `AE_NATS_URL` aligned with the `EDGE_PORT` passed to `make edge-site-cri`. In strict CRI mode, `k1s-edge-core-cri` will derive the edge NATS listen port from `EDGE_PORT` or the explicit port in `AE_NATS_URL`.
+
+4a. Validate edge-local preconditions (root-safe):
+```bash
+cpid=$(pgrep -f "python -m ae.controller" | head -n1)
+gpid=$(pgrep -f "python -m ae.gateway" | head -n1)
+test -n "$cpid" && test -n "$gpid"
+
+sudo cat "/proc/$cpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED'
+sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID'
+
+ls -ld state/profiles/k1s-core/edge-local
+ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18081/ || true
+
+# hub-controller must be allowed to publish route bundles
+rg -n 'user: "hub-controller"|k1s.v1.site.\*.routes.bundle' ops/dev/nats-hub.conf
+```
+Expected:
+- core and gateway both report `EDGE_INGRESS_MODE=edge-local`.
+- core reports `AE_ROUTE_BUNDLE_ENABLED=1`.
+- core and gateway both report `AE_TRANSPORT_BACKEND=nats-core` or `nats-js`, and `AE_NATS_URL` is set.
+- gateway reports `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=.../state/profiles/k1s-core/edge-local`.
+- backend probe should become `2xx` once app workload is ready (for tier checks).
+- `ops/dev/nats-hub.conf` includes `k1s.v1.site.*.routes.bundle` in `hub-controller` publish permissions.
+
+If you updated `ops/dev/nats-hub.conf`, recreate/restart hub NATS before re-running edge-local checks.
+
+Bundle behavior note:
+- Edge-local route bundles publish for site IDs discovered from node leases and
+  `EdgeIngressRoute` placement sites. A missing lease does not block publish if
+  routes exist for that site.
 
 5. Start the edge node (single-host routing adjustments):
 ```
@@ -1086,6 +1160,9 @@ scripts/dev/test_ingress_modes_single_host.sh \
 # terminal A (restart core with bundle publisher enabled)
 AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=edge-local AE_ROUTE_BUNDLE_ENABLED=1 make k1s-core
 
+# verify hub-controller publish permission includes route bundles
+rg -n 'user: "hub-controller"|k1s.v1.site.\*.routes.bundle' ops/dev/nats-hub.conf
+
 # terminal B (restart gateway in edge-local mode)
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
@@ -1259,6 +1336,10 @@ AE_DEV_LOCAL=1 \
 EDGE_INGRESS_MODE=edge-local \
 AE_ROUTE_BUNDLE_ENABLED=1 \
 make k1s-core
+```
+1a. Ensure hub-controller can publish route bundles:
+```bash
+rg -n 'user: "hub-controller"|k1s.v1.site.\*.routes.bundle' ops/dev/nats-hub.conf
 ```
 2. Start edge gateway in edge-local mode:
 ```bash

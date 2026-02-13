@@ -1825,6 +1825,33 @@ class SQLiteStateStore:
             ).fetchall()
         return [str(row[0]) for row in rows if row and row[0]]
 
+    def list_route_bundle_site_ids(self) -> list[str]:
+        """Return site IDs eligible for route bundle publish.
+
+        Includes sites from active node leases plus any sites explicitly
+        referenced by EdgeIngressRoute placement.
+        """
+        sites: set[str] = set()
+        with self._connect() as conn:
+            lease_rows = conn.execute(
+                "SELECT DISTINCT site_id FROM node_leases ORDER BY site_id"
+            ).fetchall()
+            for row in lease_rows:
+                if row and row[0]:
+                    site = str(row[0]).strip()
+                    if site:
+                        sites.add(site)
+
+            route_rows = conn.execute(
+                "SELECT DISTINCT site_id FROM edge_ingress_routes WHERE site_id IS NOT NULL"
+            ).fetchall()
+            for row in route_rows:
+                if row and row[0]:
+                    site = str(row[0]).strip()
+                    if site:
+                        sites.add(site)
+        return sorted(sites)
+
     def mark_work_done(self, work_id: str, attempt: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
