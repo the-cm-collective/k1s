@@ -1689,7 +1689,16 @@ case "$PROFILE" in
     export AE_RATHOLE_DEFAULT_TOKEN="${AE_RATHOLE_DEFAULT_TOKEN:-dev}"
     export AE_RATHOLE_SERVER_ADDR="${AE_RATHOLE_SERVER_ADDR:-127.0.0.1:2333}"
     if [[ "$INGRESS_MODE" == "edge-local" ]]; then
-      export AE_EDGE_LOCAL_INGRESS_CONFIG_DIR="${AE_EDGE_LOCAL_INGRESS_CONFIG_DIR:-$PROFILE_DIR/edge-local}"
+      edge_local_config_dir="${AE_EDGE_LOCAL_INGRESS_CONFIG_DIR:-$PROFILE_DIR/edge-local}"
+      edge_local_config_dir="$(abs_path "$edge_local_config_dir")"
+      export AE_EDGE_LOCAL_INGRESS_CONFIG_DIR="$edge_local_config_dir"
+      mkdir -p "$AE_EDGE_LOCAL_INGRESS_CONFIG_DIR"
+      if [[ ! -w "$AE_EDGE_LOCAL_INGRESS_CONFIG_DIR" ]]; then
+        echo "error: AE_EDGE_LOCAL_INGRESS_CONFIG_DIR is not writable: $AE_EDGE_LOCAL_INGRESS_CONFIG_DIR" >&2
+        echo "hint: set AE_EDGE_LOCAL_INGRESS_CONFIG_DIR to a writable path (for example state/profiles/k1s-core/edge-local)." >&2
+        exit 1
+      fi
+      echo "edge-local ingress config dir: $AE_EDGE_LOCAL_INGRESS_CONFIG_DIR"
     fi
     if [[ "$INGRESS_MODE" == "core-proxy" && "$EDGE_INGRESS_START" == "1" ]]; then
       write_rathole_client_config "$EDGE_RATHOLE_CLIENT" "$AE_RATHOLE_SERVER_ADDR" "$AE_RATHOLE_DEFAULT_TOKEN" "$AE_SITE_ID" "$AE_EDGE_INGRESS_LOCAL_ADDR"

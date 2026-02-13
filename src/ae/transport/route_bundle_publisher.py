@@ -77,7 +77,8 @@ class RouteBundlePublisher:
             time.sleep(self._config.interval_s)
 
     def run_once(self) -> None:
-        site_ids = self._store.list_site_ids()
+        site_ids = self._store.list_route_bundle_site_ids()
+        LOGGER.debug("route bundle discovered sites=%s", site_ids)
         now = time.monotonic()
         for site_id in site_ids:
             state = self._state.setdefault(site_id, _BundleState())

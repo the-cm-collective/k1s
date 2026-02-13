@@ -1217,6 +1217,14 @@ class EtcdStateStore(SQLiteStateStore):
         sites = {str(rec.get("site_id")) for _key, rec, _rev in rows if rec.get("site_id")}
         return sorted(sites)
 
+    def list_route_bundle_site_ids(self) -> list[str]:
+        sites = {site.strip() for site in self.list_site_ids() if site and site.strip()}
+        for route in self.list_edge_ingress_routes():
+            site_id = str(route.site_id or "").strip()
+            if site_id:
+                sites.add(site_id)
+        return sorted(sites)
+
     def mark_work_done(self, work_id: str, attempt: int) -> None:
         rows = self._list_prefix(self._k("work_queue"))
         for key, rec, _rev in rows:
