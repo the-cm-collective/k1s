@@ -77,6 +77,20 @@ scripts/dev/test_ingress_matrix_single_host.sh \
   --strict
 ```
 
+Optional Tier 2 listener-path variant:
+
+```bash
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier2
+```
+
+Notes:
+- For `edge-local`, Tier 2 uses `--edge-local-listener-url` when provided.
+- If not provided in single-host lanes, the checker defaults to
+  `https://127.0.0.1:${CADDY_HTTPS_PORT:-8443}/`.
+
 Expected success:
 
 - Final output includes `PASS ingress matrix`.

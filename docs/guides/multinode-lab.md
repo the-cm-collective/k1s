@@ -1201,8 +1201,20 @@ scripts/dev/test_ingress_modes_single_host.sh \
   --strict \
   --expect-bundle-disabled
 ```
-7. Optional `edge-local` Tier 2 strict check (full data path):
+7. Optional Tier 2 data-plane checks (all modes):
 ```bash
+# core-proxy tier2
+scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier2
+
+# core-to-edge-public tier2
+scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier2
+
+# edge-local tier2 (default listener: https://127.0.0.1:${CADDY_HTTPS_PORT:-8443}/)
+scripts/dev/test_ingress_modes_single_host.sh \
+  --mode edge-local \
+  --tier tier2
+
+# edge-local tier2 (explicit listener override)
 scripts/dev/test_ingress_modes_single_host.sh \
   --mode edge-local \
   --tier tier2 \
@@ -1464,14 +1476,26 @@ Expected:
 - Core Envoy config does not need a route for this host.
 - If `AE_ROUTE_BUNDLE_ENABLED` is unset/0, edge-local config will not update.
 
-Tier 2 (optional strict gate, full edge-local data path):
+Tier 2 (optional strict gate, full listener data path):
 ```bash
+# core-proxy
+scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier2
+
+# core-to-edge-public
+scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier2
+
+# edge-local (default listener uses CADDY_HTTPS_PORT, fallback 8443)
+scripts/dev/test_ingress_modes_single_host.sh \
+  --mode edge-local \
+  --tier tier2
+
+# edge-local explicit listener override
 scripts/dev/test_ingress_modes_single_host.sh \
   --mode edge-local \
   --tier tier2 \
   --edge-local-listener-url https://127.0.0.1:11443/
 ```
-Use Tier 2 when you need release-level confidence in edge-local serving. Keep
+Use Tier 2 when you need release-level confidence in ingress serving. Keep
 Tier 1 mandatory for routine dev/CI loops.
 
 #### Cleanup
