@@ -23,6 +23,7 @@ CORE_PUBLIC_INGRESS_URL="${CORE_PUBLIC_INGRESS_URL:-$CORE_INGRESS_TLS_URL}"
 EDGE_LOCAL_LISTENER_URL="${EDGE_LOCAL_LISTENER_URL:-}"
 EDGE_BACKEND_HOST="${EDGE_BACKEND_HOST:-127.0.0.1}"
 EDGE_BACKEND_SCHEME="${EDGE_BACKEND_SCHEME:-http}"
+CORE_PROXY_LOCAL_ADDR="${CORE_PROXY_LOCAL_ADDR:-${AE_EDGE_INGRESS_LOCAL_ADDR:-127.0.0.1:18081}}"
 
 WAIT_TIMEOUT_S="${WAIT_TIMEOUT_S:-90}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-180}"
@@ -63,6 +64,7 @@ Options:
   --edge-local-listener-url <url>  Optional edge-local listener URL for HTTP checks
   --edge-backend-host <host>       Backend host used for direct edge probes (default: 127.0.0.1)
   --edge-backend-scheme <scheme>   Backend URL scheme (default: http)
+  --core-proxy-local-addr <addr>   Core-proxy fixed tunnel local target (default: ${AE_EDGE_INGRESS_LOCAL_ADDR:-127.0.0.1:18081})
 
   --wait-timeout <seconds>         Reconcile wait timeout per row (default: 90)
   --ready-timeout <seconds>        Workload ready timeout per row (default: 180)
@@ -245,6 +247,68 @@ EOF
         redirectHttpToHttps: true
 EOF
   } > "$out"
+}
+
+core_proxy_target_port() {
+  local addr="$1"
+  local port="${addr##*:}"
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  (( port >= 1 && port <= 65535 )) || return 1
+  printf '%s\n' "$port"
+}
+
+rewrite_manifest_for_core_proxy() {
+  local input_manifest="$1"
+  local output_manifest="$2"
+  local target_port="$3"
+  python - "$input_manifest" "$output_manifest" "$target_port" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+in_path = Path(sys.argv[1])
+out_path = Path(sys.argv[2])
+target_port = int(sys.argv[3])
+
+doc = yaml.safe_load(in_path.read_text(encoding="utf-8")) or {}
+spec = doc.get("spec")
+if not isinstance(spec, dict):
+    raise SystemExit(f"manifest missing spec: {in_path}")
+service = spec.get("service")
+if not isinstance(service, dict):
+    raise SystemExit(f"manifest missing spec.service: {in_path}")
+
+if isinstance(service.get("port"), int):
+    service["port"] = target_port
+elif isinstance(service.get("ports"), list):
+    ports = service["ports"]
+    updated = False
+    for item in ports:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip().lower()
+        if name in {"http", "web", ""}:
+            item["port"] = target_port
+            updated = True
+            break
+    if not updated:
+        for item in ports:
+            if isinstance(item, dict):
+                item["port"] = target_port
+                updated = True
+                break
+    if not updated:
+        raise SystemExit(f"manifest spec.service.ports is empty/unusable: {in_path}")
+else:
+    raise SystemExit(f"manifest has unsupported spec.service shape: {in_path}")
+
+out_path.parent.mkdir(parents=True, exist_ok=True)
+out_path.write_text(
+    yaml.safe_dump(doc, sort_keys=False),
+    encoding="utf-8",
+)
+PY
 }
 
 fetch_code() {
@@ -506,14 +570,24 @@ run_row() {
   local route_src="$row_tmp_dir/route-${mode}-${archetype}.yaml"
   render_route_file "$mode" "$archetype" "$app_name" "$host" "$route_src"
 
-  local backend_url="${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:${backend_port}/"
+  local manifest_for_row="$manifest"
+  local effective_backend_port="$backend_port"
+  if [[ "$mode" == "core-proxy" ]]; then
+    local target_port
+    target_port="$(core_proxy_target_port "$CORE_PROXY_LOCAL_ADDR")" || die "invalid --core-proxy-local-addr '$CORE_PROXY_LOCAL_ADDR' (expected host:port)"
+    manifest_for_row="$row_tmp_dir/workload-${mode}-${archetype}.yaml"
+    rewrite_manifest_for_core_proxy "$manifest" "$manifest_for_row" "$target_port"
+    effective_backend_port="$target_port"
+  fi
+
+  local backend_url="${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:${effective_backend_port}/"
   local -a cmd=(
     "$ROOT_DIR/scripts/dev/test_ingress_modes_single_host.sh"
     --mode "$mode"
     --tier "$TIER"
     --site-id "$SITE_ID"
     --app-name "$app_name"
-    --app-manifest "$manifest"
+    --app-manifest "$manifest_for_row"
     --core-specs-dir "$CORE_SPECS_DIR"
     --core-envoy-config "$CORE_ENVOY_CONFIG"
     --edge-local-caddy-file "$EDGE_LOCAL_CADDY_FILE"
@@ -544,7 +618,10 @@ run_row() {
   (( STRICT == 1 )) && cmd+=(--strict)
   (( KEEP_SPECS == 1 )) && cmd+=(--keep-specs)
 
-  log "row start mode=$mode archetype=$archetype host=$host backend_port=$backend_port"
+  log "row start mode=$mode archetype=$archetype host=$host backend_port=$effective_backend_port"
+  if [[ "$mode" == "core-proxy" && "$effective_backend_port" != "$backend_port" ]]; then
+    log "core-proxy row normalized service port from $backend_port to fixed local target $effective_backend_port"
+  fi
   if "${cmd[@]}" 2>&1 | tee "$row_log"; then
     if postcheck_archetype "$mode" "$archetype" "$host"; then
       log "row pass mode=$mode archetype=$archetype"
@@ -626,6 +703,10 @@ while [[ $# -gt 0 ]]; do
       EDGE_BACKEND_SCHEME="${2:-}"
       shift 2
       ;;
+    --core-proxy-local-addr)
+      CORE_PROXY_LOCAL_ADDR="${2:-}"
+      shift 2
+      ;;
     --wait-timeout)
       WAIT_TIMEOUT_S="${2:-}"
       shift 2
@@ -705,6 +786,7 @@ log "archetypes=${ARCHETYPES[*]}"
 log "tier=$TIER site_id=$SITE_ID node_id=$NODE_ID"
 log "core_ingress_url=$CORE_INGRESS_URL core_public_ingress_url=$CORE_PUBLIC_INGRESS_URL core_ingress_tls_url=$CORE_INGRESS_TLS_URL"
 log "edge_backend=${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:<dynamic-port>"
+log "core_proxy_local_addr=$CORE_PROXY_LOCAL_ADDR"
 log "results_json=$RESULT_JSON"
 
 total_rows=0
