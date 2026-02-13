@@ -145,7 +145,11 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
     rathole_server_addr = os.getenv("AE_RATHOLE_SERVER_ADDR", "127.0.0.1:2333")
     edge_local_addr = os.getenv("AE_EDGE_INGRESS_LOCAL_ADDR", "127.0.0.1:18081")
     reload_cmd = os.getenv("AE_EDGE_INGRESS_RELOAD_CMD")
-    tls_root = Path(os.getenv("AE_TLS_DIR", "state/tls"))
+    tls_root = Path(os.getenv("AE_TLS_DIR", "state/tls")).expanduser()
+    if not tls_root.is_absolute():
+        tls_root = (Path.cwd() / tls_root).resolve()
+    else:
+        tls_root = tls_root.resolve()
     tls_default_secret = os.getenv("AE_EDGE_INGRESS_TLS_DEFAULT_SECRET") or None
     tls_fallback = str(os.getenv("AE_EDGE_INGRESS_TLS_FALLBACK", "1") or "1").lower() in {
         "1",

@@ -704,13 +704,40 @@ def _start_envoy(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
+    state_dir = (ROOT / "state").resolve()
+    mounts: list[dict[str, object]] = [
+        _mount(config, "/etc/envoy/envoy.yaml", readonly=True),
+        # Relative cert paths like state/tls/* resolve to /state/* in the container.
+        _mount(state_dir, "/state", readonly=True),
+        # Absolute host paths written into config must also exist in-container.
+        _mount(state_dir, str(state_dir), readonly=True),
+    ]
+    tls_root_raw = str(os.getenv("AE_TLS_DIR", "")).strip()
+    if tls_root_raw:
+        tls_root = Path(tls_root_raw).expanduser()
+        if not tls_root.is_absolute():
+            tls_root = (Path.cwd() / tls_root).resolve()
+        else:
+            tls_root = tls_root.resolve()
+        if tls_root != state_dir and state_dir not in tls_root.parents:
+            mounts.append(_mount(tls_root, str(tls_root), readonly=True))
+
+    deduped_mounts: list[dict[str, object]] = []
+    seen_mounts: set[tuple[str, str]] = set()
+    for mount in mounts:
+        key = (str(mount.get("host_path") or ""), str(mount.get("container_path") or ""))
+        if key in seen_mounts:
+            continue
+        seen_mounts.add(key)
+        deduped_mounts.append(mount)
+
     _start_component(
         profile=profile,
         component="k1s-core-envoy",
         image=os.getenv("AE_ENVOY_IMAGE", "docker.io/envoyproxy/envoy:v1.29-latest"),
         runtime_handler=runtime_handler,
         command=["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"],
-        mounts=[_mount(config, "/etc/envoy/envoy.yaml", readonly=True)],
+        mounts=deduped_mounts,
         recreate=recreate,
     )
 

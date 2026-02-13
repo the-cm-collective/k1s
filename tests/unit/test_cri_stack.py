@@ -78,6 +78,51 @@ def test_start_rathole_client_uses_image_entrypoint_args(monkeypatch) -> None:
     assert captured["args"] == ["--client", "/etc/rathole/client.toml"]
 
 
+def test_start_envoy_mounts_state_paths_for_tls_resolution(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_start_component(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+    monkeypatch.delenv("AE_TLS_DIR", raising=False)
+    cfg = tmp_path / "envoy.yaml"
+    cfg.write_text("static_resources: {}", encoding="utf-8")
+
+    cri_stack._start_envoy("k1s-core", cfg, runtime_handler="runc")
+
+    mounts = captured["mounts"]
+    assert isinstance(mounts, list)
+    state_dir = str((cri_stack.ROOT / "state").resolve())
+    assert {"host_path": str(cfg), "container_path": "/etc/envoy/envoy.yaml", "readonly": True} in mounts
+    assert {"host_path": state_dir, "container_path": "/state", "readonly": True} in mounts
+    assert {"host_path": state_dir, "container_path": state_dir, "readonly": True} in mounts
+
+
+def test_start_envoy_mounts_external_absolute_tls_dir(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_start_component(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+    external_tls = (tmp_path / "tls-outside").resolve()
+    external_tls.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AE_TLS_DIR", str(external_tls))
+    cfg = tmp_path / "envoy.yaml"
+    cfg.write_text("static_resources: {}", encoding="utf-8")
+
+    cri_stack._start_envoy("k1s-core", cfg, runtime_handler="runc")
+
+    mounts = captured["mounts"]
+    assert isinstance(mounts, list)
+    assert {
+        "host_path": str(external_tls),
+        "container_path": str(external_tls),
+        "readonly": True,
+    } in mounts
+
+
 def test_component_running_container_ignores_non_component_containers(monkeypatch) -> None:
     def fake_list_containers():
         return [

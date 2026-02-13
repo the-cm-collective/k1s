@@ -1569,6 +1569,63 @@ kctl_rw delete -f specs/examples/netfs-csi-sea-edge-02-pvc.yaml --ignore-not-fou
 </ul>
 <pre><code>CORE_SPECS=${CORE_SPECS:-state/profiles/k1s-core/specs}
 mkdir -p &quot;$CORE_SPECS&quot;</code></pre>
+<h3 id="deterministic-single-host-sequence-cri-two-tier-gate">Deterministic single-host sequence (CRI, two-tier gate)</h3>
+<p>Use this lane when you want repeatable functional ingress checks on one host. Run the long-lived <code>make</code> targets in separate terminals.</p>
+<p>1. Bring up Option B (same-host CRI) first so hub + edge nodes are Ready. 2. Deploy a pinned edge workload used by all three ingress modes:</p>
+<pre><code>python -m ae.cli apply -f specs/examples/app-svc-node-sea-edge-02-edge-1.yaml
+python -m ae.cli status app-svc --watch 2 --timeout 180 --events</code></pre>
+<p>3. Validate <code>core-proxy</code>:</p>
+<pre><code># terminal A (core)
+AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core
+
+# terminal B (edge gateway)
+AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-1 EDGE_INGRESS_MODE=core-proxy make k1s-edge-core
+
+# terminal C (checks)
+scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier1</code></pre>
+<p>4. Validate <code>core-to-edge-public</code>:</p>
+<pre><code># terminal A (restart core in public mode)
+AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-to-edge-public make k1s-core
+
+# terminal B (gateway can remain running; restart if needed)
+AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-1 EDGE_INGRESS_MODE=core-proxy make k1s-edge-core
+
+# terminal C (checks)
+scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier1</code></pre>
+<p>5. Validate <code>edge-local</code> Tier 1 (required baseline gate):</p>
+<pre><code># terminal A (restart core with bundle publisher enabled)
+AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=edge-local AE_ROUTE_BUNDLE_ENABLED=1 make k1s-core
+
+# terminal B (restart gateway in edge-local mode)
+AE_SITE_ID=sea-edge-02 \
+AE_NODE_ID=edge-1 \
+EDGE_INGRESS_MODE=edge-local \
+AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
+make k1s-edge-core
+
+# terminal C (checks)
+scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1</code></pre>
+<p>6. Optional stricter gates (run after Tier 1 baseline is green):</p>
+<pre><code># stricter negatives for core-proxy and core-to-edge-public
+scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier1 --strict
+scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier1 --strict
+
+# edge-local strict mutation check (bundle enabled)
+scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1 --strict
+
+# edge-local strict negative (bundle disabled):
+# restart core with AE_ROUTE_BUNDLE_ENABLED=0, then run:
+scripts/dev/test_ingress_modes_single_host.sh \
+  --mode edge-local \
+  --tier tier1 \
+  --strict \
+  --expect-bundle-disabled</code></pre>
+<p>7. Optional <code>edge-local</code> Tier 2 strict check (full data path):</p>
+<pre><code>scripts/dev/test_ingress_modes_single_host.sh \
+  --mode edge-local \
+  --tier tier2 \
+  --edge-local-listener-url https://127.0.0.1:11443/</code></pre>
+<p>Tier 2 is intentionally optional in this lane; track failures separately while keeping Tier 1 as the mandatory day-to-day gate.</p>
 <h3 id="mode-1-core-proxy-default-nat-friendly">Mode 1 — <code>core-proxy</code> (default, NAT-friendly)</h3>
 <h4 id="production-pattern-split-hosts">Production pattern (split hosts)</h4>
 <p>1. Start core with core-proxy mode:</p>
@@ -1581,8 +1638,9 @@ make k1s-core</code></pre>
 <p>Use hostnames that target core ingress and per-site fallback host:</p>
 <pre><code>127.0.0.1 app-core-proxy.home.arpa
 127.0.0.1 sea-edge-02.edge.local</code></pre>
-<p>Optional local responder for the edge side tunnel target:</p>
-<pre><code>python -m http.server 18081</code></pre>
+<p>Deploy the pinned edge workload (preferred over a throwaway local responder):</p>
+<pre><code>python -m ae.cli apply -f specs/examples/app-svc-node-sea-edge-02-edge-1.yaml
+python -m ae.cli status app-svc --watch 2 --timeout 180 --events</code></pre>
 <h4 id="routing-and-behavior">Routing and behavior</h4>
 <ul>
 <li>Client request hits core Envoy for <code>app-core-proxy.home.arpa</code>.</li>
@@ -1592,11 +1650,11 @@ make k1s-core</code></pre>
 </ul>
 <h4 id="validation-2">Validation</h4>
 <pre><code>rg -n &quot;app-core-proxy.home.arpa|sea-edge-02.edge.local&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml
-curl -sS -H &#x27;Host: app-core-proxy.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20</code></pre>
+curl -sS -k -L -H &#x27;Host: app-core-proxy.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20</code></pre>
 <p>Expected:</p>
 <ul>
 <li>Envoy config includes <code>app-core-proxy.home.arpa</code>.</li>
-<li>If an edge listener is reachable via the tunnel path, request returns <code>200</code>.</li>
+<li>If an edge listener is reachable via the tunnel path, final response returns <code>2xx</code>.</li>
 <li>If tunnel/upstream is down, core returns <code>5xx</code> (route exists but upstream failed).</li>
 </ul>
 <h4 id="cleanup">Cleanup</h4>
@@ -1614,11 +1672,20 @@ cp specs/examples/edge-ingress-route-core-to-edge-public.yaml &quot;$CORE_SPECS&
 <p>Use hostnames for core ingress host + simulated edge POP host:</p>
 <pre><code>127.0.0.1 app-public.home.arpa
 127.0.0.1 pop-sea-edge-02.home.arpa</code></pre>
-<p>Simple non-TLS lab endpoint (replace HTTPS URL with HTTP for local smoke):</p>
-<pre><code>python -m http.server 11080
-sed &#x27;s#https://pop-sea-edge-02.home.arpa:11443#http://pop-sea-edge-02.home.arpa:11080#&#x27; \
-  specs/examples/site-ingress-endpoint-sea-edge-02-public.yaml \
-  &gt; &quot;$CORE_SPECS/site-ingress-endpoint-sea-edge-02-public.yaml&quot;</code></pre>
+<p>Use the pinned edge workload host port as the local POP endpoint:</p>
+<pre><code>cat &gt; &quot;$CORE_SPECS/site-ingress-endpoint-sea-edge-02-public.yaml&quot; &lt;&lt;&#x27;EOF&#x27;
+apiVersion: k1s.io/v1
+kind: SiteIngressEndpoint
+metadata:
+  name: sea-edge-02
+spec:
+  mode: core-to-edge-public
+  public:
+    urls:
+      - url: http://127.0.0.1:18081
+        expectedSANs:
+          - pop-sea-edge-02.home.arpa
+EOF</code></pre>
 <h4 id="routing-and-behavior-1">Routing and behavior</h4>
 <ul>
 <li>Client request hits core Envoy for <code>app-public.home.arpa</code>.</li>
@@ -1628,11 +1695,11 @@ sed &#x27;s#https://pop-sea-edge-02.home.arpa:11443#http://pop-sea-edge-02.home.
 </ul>
 <h4 id="validation-3">Validation</h4>
 <pre><code>rg -n &quot;app-public.home.arpa|pop-sea-edge-02.home.arpa&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml
-curl -sS -H &#x27;Host: app-public.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20</code></pre>
+curl -sS -k -L -H &#x27;Host: app-public.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20</code></pre>
 <p>Expected:</p>
 <ul>
 <li>Envoy config includes <code>app-public.home.arpa</code> and a DNS cluster for the POP.</li>
-<li>Reachable POP returns app response.</li>
+<li>Reachable POP returns <code>2xx</code>.</li>
 <li>Unreachable POP returns <code>5xx</code>.</li>
 </ul>
 <h4 id="cleanup-1">Cleanup</h4>
@@ -1665,15 +1732,23 @@ make k1s-edge-core</code></pre>
 <li>If core is unavailable after bundles are applied, edge can continue serving existing routes until a config change is needed.</li>
 </ul>
 <h4 id="validation-4">Validation</h4>
+<p>Tier 1 (required baseline gate):</p>
 <pre><code>ls state/profiles/k1s-core/edge-local/edge-local.caddy
 rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/edge-local.caddy
-rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml || true</code></pre>
+rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-ingress/envoy.yaml || true
+curl -sS -o /dev/null -w &#x27;%{http_code}\n&#x27; http://127.0.0.1:18081/</code></pre>
 <p>Expected:</p>
 <ul>
 <li>Edge-local Caddyfile is rendered with <code>app-edge-local.home.arpa</code>.</li>
 <li>Core Envoy config does not need a route for this host.</li>
 <li>If <code>AE_ROUTE_BUNDLE_ENABLED</code> is unset/0, edge-local config will not update.</li>
 </ul>
+<p>Tier 2 (optional strict gate, full edge-local data path):</p>
+<pre><code>scripts/dev/test_ingress_modes_single_host.sh \
+  --mode edge-local \
+  --tier tier2 \
+  --edge-local-listener-url https://127.0.0.1:11443/</code></pre>
+<p>Use Tier 2 when you need release-level confidence in edge-local serving. Keep Tier 1 mandatory for routine dev/CI loops.</p>
 <h4 id="cleanup-2">Cleanup</h4>
 <pre><code>rm -f &quot;$CORE_SPECS/edge-ingress-route-edge-local.yaml&quot;</code></pre>
 <h3 id="post-storage-ingress-regression-check-all-canonical-modes">Post-storage ingress regression check (all canonical modes)</h3>
@@ -1681,8 +1756,8 @@ rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-ingress/
 <pre><code>ae status netfs-nfs-sea-edge-02-edge-1 --wide --events
 ae status netfs-nfs-hub-reader --wide --events</code></pre>
 <p>2. Validate each ingress mode endpoint behavior:</p>
-<pre><code>curl -sS -H &#x27;Host: app-core-proxy.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20
-curl -sS -H &#x27;Host: app-public.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20
+<pre><code>curl -sS -k -L -H &#x27;Host: app-core-proxy.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20
+curl -sS -k -L -H &#x27;Host: app-public.home.arpa&#x27; http://127.0.0.1:10080/ -i | head -n 20
 rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/edge-local.caddy</code></pre>
 <p>Expected:</p>
 <ul>
@@ -1722,7 +1797,7 @@ rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/ed
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 15:17:08</span>
+        <span>Built 2026-02-12 16:55:28</span>
       </div>
     </footer>
     <script>

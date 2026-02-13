@@ -1019,6 +1019,16 @@ Shared setup:
 ```bash
 CORE_SPECS=${CORE_SPECS:-state/profiles/k1s-core/specs}
 mkdir -p "$CORE_SPECS"
+
+# Normalize ownership after any prior sudo-driven runs.
+CORE_SPECS_GROUP="$(id -gn)"
+if getent group aecli >/dev/null 2>&1; then
+  CORE_SPECS_GROUP="aecli"
+fi
+sudo chown -R "$USER:$CORE_SPECS_GROUP" "$CORE_SPECS"
+sudo chmod -R g+rwX "$CORE_SPECS"
+sudo find "$CORE_SPECS" -type d -exec chmod 2775 {} \;
+test -w "$CORE_SPECS" && echo "core specs writable: $CORE_SPECS"
 ```
 
 ### Deterministic single-host sequence (CRI, two-tier gate)
@@ -1041,7 +1051,21 @@ AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core
 AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-1 EDGE_INGRESS_MODE=core-proxy make k1s-edge-core
 
 # terminal C (checks)
-scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier1
+scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier1 --keep-specs
+```
+Expected:
+- `HTTP OK (2xx/3xx)` on `http://127.0.0.1:10080/` (commonly `301` when redirect is enabled).
+- `HTTP OK` on `https://127.0.0.1:10443/` (commonly `200`).
+- Final line `PASS mode=core-proxy tier=tier1`.
+
+Optional direct probe without redirect-follow (avoids DNS ambiguity from `curl -L`):
+```bash
+curl -sS -k -o /dev/null -w 'http:%{http_code}\n' \
+  --header 'Host: app-core-proxy.home.arpa' \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w 'https:%{http_code}\n' \
+  --header 'Host: app-core-proxy.home.arpa' \
+  https://127.0.0.1:10443/
 ```
 4. Validate `core-to-edge-public`:
 ```bash
@@ -1132,12 +1156,19 @@ python -m ae.cli status app-svc --watch 2 --timeout 180 --events
 #### Validation
 ```bash
 rg -n "app-core-proxy.home.arpa|sea-edge-02.edge.local" state/profiles/k1s-core/edge-ingress/envoy.yaml
-curl -sS -k -L -H 'Host: app-core-proxy.home.arpa' http://127.0.0.1:10080/ -i | head -n 20
+curl -sS -k -o /dev/null -w 'http:%{http_code}\n' \
+  --header 'Host: app-core-proxy.home.arpa' \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w 'https:%{http_code}\n' \
+  --header 'Host: app-core-proxy.home.arpa' \
+  https://127.0.0.1:10443/
 ```
 Expected:
 - Envoy config includes `app-core-proxy.home.arpa`.
-- If an edge listener is reachable via the tunnel path, final response returns `2xx`.
-- If tunnel/upstream is down, core returns `5xx` (route exists but upstream failed).
+- HTTP listener returns `2xx/3xx` (most commonly `301` when redirect is enabled).
+- HTTPS listener returns `2xx` when tunnel/upstream is healthy.
+- `5xx` indicates route exists but upstream/tunnel failed.
+- `000` indicates probe/client path failure; do not use `-L` for this check.
 
 #### Cleanup
 ```bash
@@ -1193,11 +1224,17 @@ EOF
 #### Validation
 ```bash
 rg -n "app-public.home.arpa|pop-sea-edge-02.home.arpa" state/profiles/k1s-core/edge-ingress/envoy.yaml
-curl -sS -k -L -H 'Host: app-public.home.arpa' http://127.0.0.1:10080/ -i | head -n 20
+curl -sS -k -o /dev/null -w 'http:%{http_code}\n' \
+  --header 'Host: app-public.home.arpa' \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w 'https:%{http_code}\n' \
+  --header 'Host: app-public.home.arpa' \
+  https://127.0.0.1:10443/
 ```
 Expected:
 - Envoy config includes `app-public.home.arpa` and a DNS cluster for the POP.
-- Reachable POP returns `2xx`.
+- HTTP listener returns `2xx/3xx` (often `301` when redirect is enabled).
+- Reachable POP returns `2xx` on HTTPS.
 - Unreachable POP returns `5xx`.
 
 #### Cleanup
@@ -1281,8 +1318,18 @@ ae status netfs-nfs-hub-reader --wide --events
 ```
 2. Validate each ingress mode endpoint behavior:
 ```bash
-curl -sS -k -L -H 'Host: app-core-proxy.home.arpa' http://127.0.0.1:10080/ -i | head -n 20
-curl -sS -k -L -H 'Host: app-public.home.arpa' http://127.0.0.1:10080/ -i | head -n 20
+curl -sS -k -o /dev/null -w 'core-proxy:http:%{http_code}\n' \
+  --header 'Host: app-core-proxy.home.arpa' \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w 'core-proxy:https:%{http_code}\n' \
+  --header 'Host: app-core-proxy.home.arpa' \
+  https://127.0.0.1:10443/
+curl -sS -k -o /dev/null -w 'core-to-edge-public:http:%{http_code}\n' \
+  --header 'Host: app-public.home.arpa' \
+  http://127.0.0.1:10080/
+curl -sS -k -o /dev/null -w 'core-to-edge-public:https:%{http_code}\n' \
+  --header 'Host: app-public.home.arpa' \
+  https://127.0.0.1:10443/
 rg -n "app-edge-local.home.arpa" state/profiles/k1s-core/edge-local/edge-local.caddy
 ```
 Expected:
