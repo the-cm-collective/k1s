@@ -8,9 +8,10 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 LOGGER = logging.getLogger(__name__)
+_UPSTREAM_MODES = {"auto", "bundle-endpoints", "dns"}
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class EdgeLocalIngressConfig:
     reload_cmd: str | None
     service_domain: str | None
     service_port_fallback: int
+    upstream_mode: str = "auto"
 
 
 class EdgeLocalIngressRenderer:
@@ -33,7 +35,14 @@ class EdgeLocalIngressRenderer:
             policies = (
                 bundle.get("policies") if isinstance(bundle.get("policies"), list) else []
             )
-            content = render_edge_local_caddy(routes, policies, self._config)
+            service_endpoints = (
+                bundle.get("service_endpoints")
+                if isinstance(bundle.get("service_endpoints"), dict)
+                else {}
+            )
+            content = render_edge_local_caddy(
+                routes, policies, self._config, service_endpoints=service_endpoints
+            )
         except Exception as exc:  # noqa: BLE001
             return False, f"render_failed:{exc}"
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -67,6 +76,14 @@ def build_edge_local_renderer() -> EdgeLocalIngressRenderer | None:
         port_fallback = int(os.getenv("AE_EDGE_LOCAL_SERVICE_PORT_FALLBACK", "80") or 80)
     except Exception:
         port_fallback = 80
+    upstream_mode = str(os.getenv("AE_EDGE_LOCAL_UPSTREAM_MODE", "auto")).strip().lower()
+    if upstream_mode not in _UPSTREAM_MODES:
+        LOGGER.warning(
+            "edge-local invalid AE_EDGE_LOCAL_UPSTREAM_MODE=%s (expected one of %s); using auto",
+            upstream_mode,
+            sorted(_UPSTREAM_MODES),
+        )
+        upstream_mode = "auto"
     return EdgeLocalIngressRenderer(
         EdgeLocalIngressConfig(
             config_dir=config_dir,
@@ -74,6 +91,7 @@ def build_edge_local_renderer() -> EdgeLocalIngressRenderer | None:
             reload_cmd=reload_cmd,
             service_domain=service_domain,
             service_port_fallback=port_fallback,
+            upstream_mode=upstream_mode,
         )
     )
 
@@ -82,7 +100,9 @@ def render_edge_local_caddy(
     routes: Iterable[dict],
     policies: Iterable[dict],
     config: EdgeLocalIngressConfig,
+    service_endpoints: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
+    service_endpoints = service_endpoints if isinstance(service_endpoints, dict) else {}
     policy_map = {}
     for policy_doc in policies:
         if not isinstance(policy_doc, dict):
@@ -113,12 +133,14 @@ def render_edge_local_caddy(
         paths = spec.get("paths") if isinstance(spec.get("paths"), list) else []
         if not paths:
             service_ref = spec.get("serviceRef") if isinstance(spec.get("serviceRef"), dict) else {}
-            upstream = _upstream_for_service(service_ref, namespace, config)
-            if upstream:
+            upstreams = _upstreams_for_service(
+                service_ref, namespace, config, service_endpoints
+            )
+            if upstreams:
                 host_map.setdefault(host, []).append(
                     {
                         "path": "/",
-                        "upstream": upstream,
+                        "upstreams": upstreams,
                         "policy": policy_spec,
                     }
                 )
@@ -132,13 +154,15 @@ def render_edge_local_caddy(
             service_ref = (
                 entry.get("serviceRef") if isinstance(entry.get("serviceRef"), dict) else {}
             )
-            upstream = _upstream_for_service(service_ref, namespace, config)
-            if not upstream:
+            upstreams = _upstreams_for_service(
+                service_ref, namespace, config, service_endpoints
+            )
+            if not upstreams:
                 continue
             host_map.setdefault(host, []).append(
                 {
                     "path": path,
-                    "upstream": upstream,
+                    "upstreams": upstreams,
                     "policy": policy_spec,
                 }
             )
@@ -147,7 +171,9 @@ def render_edge_local_caddy(
     for host, entries in sorted(host_map.items()):
         blocks.append(_render_site_block(host, entries))
     if not blocks:
-        blocks.append("{\n    respond 503\n}\n")
+        # Keep output syntactically valid for Caddy even when there are no
+        # routable edge-local hosts yet, without capturing real traffic.
+        blocks.append("https://edge-local-unconfigured.invalid {\n    respond 503\n}\n")
     return "\n\n".join(blocks) + "\n"
 
 
@@ -166,11 +192,11 @@ def _render_site_block(host: str, entries: list[dict]) -> str:
 
     for entry in sorted(entries, key=_path_key, reverse=True):
         path = entry.get("path") or "/"
-        upstream = entry.get("upstream")
+        upstreams = entry.get("upstreams")
         policy = entry.get("policy") if isinstance(entry.get("policy"), dict) else None
-        if not upstream:
+        if not isinstance(upstreams, list) or not upstreams:
             continue
-        block_lines = _render_route_block(path, upstream, policy)
+        block_lines = _render_route_block(path, upstreams, policy)
         lines.extend(["        " + line for line in block_lines])
 
     lines.append("    }")
@@ -178,7 +204,7 @@ def _render_site_block(host: str, entries: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _render_route_block(path: str, upstream: str, policy: dict | None) -> list[str]:
+def _render_route_block(path: str, upstreams: list[str], policy: dict | None) -> list[str]:
     is_root = path == "/"
     prefix = "handle" if is_root else f"handle_path {path}*"
     lines = [f"{prefix} {{"]
@@ -200,7 +226,7 @@ def _render_route_block(path: str, upstream: str, policy: dict | None) -> list[s
                     lines.append(f"        +{key} {value}")
             lines.append("    }")
 
-    lines.append(f"    reverse_proxy {upstream} {{")
+    lines.append(f"    reverse_proxy {' '.join(upstreams)} {{")
     if policy:
         request_headers = _header_kv(policy, "request")
         for key, value in request_headers:
@@ -275,7 +301,78 @@ def _header_kv(policy: dict, section: str) -> list[tuple[str, str | None]]:
     return out
 
 
-def _upstream_for_service(
+def _upstreams_for_service(
+    service_ref: dict,
+    namespace: str,
+    config: EdgeLocalIngressConfig,
+    service_endpoints: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    service_name = str(service_ref.get("name") or "").strip()
+    if not service_name:
+        return []
+    service_ns = str(service_ref.get("namespace") or namespace).strip() or namespace
+    service_key = f"{service_ns}/{service_name}"
+    port_hint = _coerce_int(service_ref.get("port"))
+
+    mode = config.upstream_mode if config.upstream_mode in _UPSTREAM_MODES else "auto"
+    if mode in {"auto", "bundle-endpoints"}:
+        bundle_upstreams = _bundle_upstreams_for_service(
+            service_endpoints, service_key, port_hint
+        )
+        if bundle_upstreams:
+            return bundle_upstreams
+        if mode == "bundle-endpoints":
+            LOGGER.warning(
+                "edge-local route skipped: missing bundle endpoints service=%s port_hint=%s",
+                service_key,
+                port_hint,
+            )
+            return []
+        LOGGER.debug(
+            "edge-local falling back to DNS upstream service=%s port_hint=%s",
+            service_key,
+            port_hint,
+        )
+
+    fallback = _dns_upstream_for_service(service_ref, namespace, config)
+    return [fallback] if fallback else []
+
+
+def _bundle_upstreams_for_service(
+    service_endpoints: dict[str, list[dict[str, Any]]],
+    service_key: str,
+    port_hint: int | None,
+) -> list[str]:
+    entries = service_endpoints.get(service_key)
+    if not isinstance(entries, list):
+        return []
+
+    matched: list[str] = []
+    all_candidates: list[str] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        ready = item.get("ready")
+        if ready is False:
+            continue
+        ip = str(item.get("ip") or "").strip()
+        target_port = _coerce_int(item.get("target_port"))
+        service_port = _coerce_int(item.get("service_port") or item.get("port"))
+        if not ip or target_port is None:
+            continue
+        upstream = f"{ip}:{target_port}"
+        all_candidates.append(upstream)
+        if port_hint is not None and (
+            (service_port is not None and service_port == port_hint) or target_port == port_hint
+        ):
+            matched.append(upstream)
+
+    if port_hint is not None and matched:
+        return _dedupe_preserving_order(matched)
+    return _dedupe_preserving_order(all_candidates)
+
+
+def _dns_upstream_for_service(
     service_ref: dict, namespace: str, config: EdgeLocalIngressConfig
 ) -> str | None:
     name = str(service_ref.get("name") or "").strip()
@@ -291,6 +388,17 @@ def _upstream_for_service(
         if suffix:
             host = f"{host}.{suffix}"
     return f"{host}:{port}"
+
+
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
 
 
 def _coerce_int(value) -> int | None:
