@@ -18,6 +18,7 @@ spec:
       from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
       WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+      INSTANCE_TOKEN = base64.urlsafe_b64encode(os.urandom(6)).decode("ascii").rstrip("=")
 
 
       def _recv_exact(conn, length):
@@ -62,28 +63,25 @@ spec:
 
 
       def _backend_id():
-          candidates = []
-          host = os.getenv("HOSTNAME", "").strip()
-          if host:
-              candidates.append(host)
-          try:
-              candidates.append(socket.gethostname().strip())
-          except Exception:
-              pass
           try:
               with open("/proc/self/cgroup", "r", encoding="utf-8") as fh:
                   for line in fh:
                       part = line.strip().split("/")[-1]
-                      if part:
-                          candidates.append(part[-12:])
-                          break
+                      if not part:
+                          continue
+                      token = part.split(".scope")[0][-12:]
+                      if token:
+                          return token
           except Exception:
               pass
-          candidates.append(str(os.getpid()))
-          for item in candidates:
-              if item:
-                  return item
-          return "unknown"
+
+          host = os.getenv("HOSTNAME", "").strip()
+          if not host:
+              try:
+                  host = socket.gethostname().strip()
+              except Exception:
+                  host = "unknown"
+          return f"{host}-{INSTANCE_TOKEN}"
 
 
       BACKEND_ID = _backend_id()

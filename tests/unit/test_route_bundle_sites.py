@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ae.controller.etcd_state import EtcdStateStore
-from ae.controller.state import EdgeIngressRouteRecord, SQLiteStateStore
+from ae.controller.state import EdgeIngressRouteRecord, SQLiteStateStore, ServiceEndpoint
 from ae.transport.route_bundle_publisher import RouteBundlePublisher
 from ae.transport.subjects import hub_route_bundle_subject
 
@@ -119,6 +119,25 @@ def test_route_bundle_publisher_uses_route_bundle_site_ids(monkeypatch) -> None:
         def get_edge_ingress_policy(self, *, name: str, namespace: str):
             return None
 
+        def list_service_endpoints(self, app_name: str):
+            assert app_name == "app-svc"
+            return [
+                ServiceEndpoint(
+                    app_name="app-svc",
+                    port=18119,
+                    ip="10.88.0.11",
+                    target_port=8080,
+                    ready=True,
+                ),
+                ServiceEndpoint(
+                    app_name="app-svc",
+                    port=18119,
+                    ip="10.88.0.12",
+                    target_port=8080,
+                    ready=True,
+                ),
+            ]
+
     monkeypatch.setattr("ae.transport.route_bundle_publisher.NatsClient", FakeNatsClient)
 
     publisher = RouteBundlePublisher(FakeStore(), nats_url="nats://127.0.0.1:4222")
@@ -129,3 +148,84 @@ def test_route_bundle_publisher_uses_route_bundle_site_ids(monkeypatch) -> None:
     assert subject == hub_route_bundle_subject("sea-edge-02")
     assert payload.get("site_id") == "sea-edge-02"
     assert payload.get("routes")
+    assert payload.get("service_endpoints") == {
+        "default/app-svc": [
+            {
+                "ip": "10.88.0.11",
+                "service_port": 18119,
+                "target_port": 8080,
+                "ready": True,
+            },
+            {
+                "ip": "10.88.0.12",
+                "service_port": 18119,
+                "target_port": 8080,
+                "ready": True,
+            },
+        ]
+    }
+
+
+def test_route_bundle_publisher_hash_changes_when_endpoints_change(monkeypatch) -> None:
+    class FakeNatsClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.published = []
+
+        def connect(self) -> None:
+            return None
+
+        def subscribe(self, subject, callback) -> None:
+            return None
+
+        def publish_json(self, subject, payload) -> None:
+            self.published.append((subject, payload))
+
+        def close(self) -> None:
+            return None
+
+    class FakeStore:
+        endpoint_ip = "10.88.0.11"
+
+        def list_route_bundle_site_ids(self):
+            return ["sea-edge-02"]
+
+        def list_edge_ingress_routes_for_site(self, site_id: str):
+            assert site_id == "sea-edge-02"
+            return [_edge_local_route_record(site_id)]
+
+        def get_edge_ingress_policy(self, *, name: str, namespace: str):
+            return None
+
+        def list_service_endpoints(self, app_name: str):
+            assert app_name == "app-svc"
+            return [
+                ServiceEndpoint(
+                    app_name="app-svc",
+                    port=18119,
+                    ip=self.endpoint_ip,
+                    target_port=8080,
+                    ready=True,
+                )
+            ]
+
+    monkeypatch.setattr("ae.transport.route_bundle_publisher.NatsClient", FakeNatsClient)
+
+    store = FakeStore()
+    publisher = RouteBundlePublisher(store, nats_url="nats://127.0.0.1:4222")
+    publisher.run_once()
+
+    state = publisher._state["sea-edge-02"]  # type: ignore[attr-defined]
+    state.acked_rev = state.rev
+    first_hash = state.hash
+    first_rev = state.rev
+
+    store.endpoint_ip = "10.88.0.21"
+    publisher.run_once()
+
+    state = publisher._state["sea-edge-02"]  # type: ignore[attr-defined]
+    second_hash = state.hash
+    second_rev = state.rev
+
+    assert second_hash != first_hash
+    assert second_rev == first_rev + 1
+    assert len(publisher._client.published) == 2  # type: ignore[attr-defined]

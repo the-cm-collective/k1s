@@ -24,6 +24,9 @@ class CoreProxyRoute:
     local_rate_limit: dict | None = None
     sticky_cookie_name: str | None = None
     sticky_cookie_ttl_seconds: int | None = None
+    websocket_enabled: bool | None = None
+    websocket_idle_timeout_ms: int | None = None
+    websocket_max_connection_duration_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,9 @@ def render_envoy_config(
     listener_port = config.listen_port
     admin_addr = config.admin_address
     admin_port = config.admin_port
+    websocket_upgrade_enabled = any(
+        route.websocket_enabled is not False for route in routes
+    )
 
     def _build_vhosts(redirect_https: bool) -> list[dict]:
         vhost_list: list[dict] = []
@@ -96,6 +102,16 @@ def render_envoy_config(
                 route_entry["route"]["timeout"] = f"{route.timeout_ms/1000:.3f}s"
             if route.idle_timeout_ms:
                 route_entry["route"]["idle_timeout"] = f"{route.idle_timeout_ms/1000:.3f}s"
+            if route.websocket_idle_timeout_ms:
+                route_entry["route"]["idle_timeout"] = (
+                    f"{route.websocket_idle_timeout_ms/1000:.3f}s"
+                )
+            if route.websocket_max_connection_duration_ms:
+                route_entry["route"]["max_stream_duration"] = {
+                    "max_stream_duration": (
+                        f"{route.websocket_max_connection_duration_ms/1000:.3f}s"
+                    )
+                }
             sticky_cookie_name = str(route.sticky_cookie_name or "").strip()
             if sticky_cookie_name:
                 cookie_cfg: dict[str, object] = {
@@ -109,6 +125,10 @@ def render_envoy_config(
                     cookie_cfg["ttl"] = f"{int(route.sticky_cookie_ttl_seconds)}s"
                 route_entry["route"]["hash_policy"] = [
                     {"cookie": cookie_cfg, "terminal": True}
+                ]
+            if route.websocket_enabled is False:
+                route_entry["route"]["upgrade_configs"] = [
+                    {"upgrade_type": "websocket", "enabled": False}
                 ]
             per_filter: dict[str, dict] = {}
             if ext_authz_config is not None:
@@ -271,6 +291,11 @@ def render_envoy_config(
                             "typed_config": {
                                 "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
                                 "stat_prefix": "edge_ingress",
+                                "upgrade_configs": (
+                                    [{"upgrade_type": "websocket"}]
+                                    if websocket_upgrade_enabled
+                                    else []
+                                ),
                                 "route_config": {
                                     "name": "edge_routes_http",
                                     "virtual_hosts": vhosts_http,
@@ -296,6 +321,11 @@ def render_envoy_config(
                     "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
                     "stat_prefix": "edge_ingress_tls",
                     "codec_type": "AUTO",
+                    "upgrade_configs": (
+                        [{"upgrade_type": "websocket"}]
+                        if websocket_upgrade_enabled
+                        else []
+                    ),
                     "route_config": {
                         "name": "edge_routes_tls",
                         "virtual_hosts": vhosts_https,

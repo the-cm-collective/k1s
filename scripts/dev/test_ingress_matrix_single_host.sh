@@ -37,6 +37,9 @@ WS_DURATION_SECONDS="${WS_DURATION_SECONDS:-600}"
 WS_CONNECTIONS="${WS_CONNECTIONS:-50}"
 WS_HEARTBEAT_SECONDS="${WS_HEARTBEAT_SECONDS:-5}"
 LB_SAMPLE_REQUESTS="${LB_SAMPLE_REQUESTS:-5000}"
+LB_MIN_BACKENDS="${LB_MIN_BACKENDS:-2}"
+LB_MAX_SKEW_RATIO="${LB_MAX_SKEW_RATIO:-0.35}"
+LB_PROOF_SCOPE="${LB_PROOF_SCOPE:-auto}"
 STICKY_REQUESTS_PER_CLIENT="${STICKY_REQUESTS_PER_CLIENT:-100}"
 PERF_DURATION_SECONDS="${PERF_DURATION_SECONDS:-180}"
 PERF_CONCURRENCY="${PERF_CONCURRENCY:-50}"
@@ -96,6 +99,9 @@ Options:
   --ws-connections <n>             WebSocket connection count for deep checks (default: 50)
   --ws-heartbeat-seconds <n>       WebSocket heartbeat period (default: 5)
   --lb-sample-requests <n>         Requests used for lb distribution probe (default: 5000)
+  --lb-min-backends <n>            Minimum distinct backends for lb probe (default: 2)
+  --lb-max-skew-ratio <ratio>      Max allowed lb skew ratio (default: 0.35)
+  --lb-proof-scope <scope>         LB distribution enforcement scope: auto|strict-all|edge-only|off (default: auto)
   --sticky-requests-per-client <n> Requests per sticky client (default: 100)
   --perf-duration-seconds <n>      Perf probe duration (default: 180)
   --perf-concurrency <n>           Perf probe concurrency (default: 50)
@@ -444,9 +450,123 @@ stability_check() {
   return 0
 }
 
+wait_for_pattern() {
+  local file="$1"
+  local pattern="$2"
+  local timeout="$3"
+  local expect="${4:-present}"
+
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    local found=0
+    if [[ -f "$file" ]] && rg -n --fixed-strings --quiet "$pattern" "$file"; then
+      found=1
+    fi
+    if [[ "$expect" == "present" && "$found" -eq 1 ]]; then
+      return 0
+    fi
+    if [[ "$expect" == "absent" && "$found" -eq 0 ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+lb_distribution_required() {
+  local mode="$1"
+  case "$LB_PROOF_SCOPE" in
+    strict-all)
+      return 0
+      ;;
+    off)
+      return 1
+      ;;
+    edge-only|auto)
+      if [[ "$mode" == "edge-local" ]]; then
+        return 0
+      fi
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+lb_effective_endpoint_count() {
+  local mode="$1"
+  local host="$2"
+  if [[ "$mode" != "core-proxy" || ! -f "$CORE_ENVOY_CONFIG" ]]; then
+    printf '0\n'
+    return 0
+  fi
+  python - "$CORE_ENVOY_CONFIG" "$host" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+cfg_path = Path(sys.argv[1])
+host = sys.argv[2]
+
+try:
+    data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+except Exception:
+    print("0")
+    raise SystemExit(0)
+
+listeners = (data.get("static_resources") or {}).get("listeners") or []
+cluster_name = ""
+
+for listener in listeners:
+    for chain in listener.get("filter_chains") or []:
+        for flt in chain.get("filters") or []:
+            tc = flt.get("typed_config") or {}
+            rc = tc.get("route_config") or {}
+            for vh in rc.get("virtual_hosts") or []:
+                domains = vh.get("domains") or []
+                if host not in domains and "*" not in domains:
+                    continue
+                for route in vh.get("routes") or []:
+                    r = route.get("route") or {}
+                    name = str(r.get("cluster") or "").strip()
+                    if name:
+                        cluster_name = name
+                        break
+                if cluster_name:
+                    break
+            if cluster_name:
+                break
+        if cluster_name:
+            break
+    if cluster_name:
+        break
+
+if not cluster_name:
+    print("0")
+    raise SystemExit(0)
+
+clusters = (data.get("static_resources") or {}).get("clusters") or []
+for cluster in clusters:
+    if str(cluster.get("name") or "").strip() != cluster_name:
+        continue
+    endpoints = (
+        (cluster.get("load_assignment") or {})
+        .get("endpoints", [{}])[0]
+        .get("lb_endpoints", [])
+    )
+    print(str(len(endpoints)))
+    raise SystemExit(0)
+
+print("0")
+PY
+}
+
 json_merge_objects() {
-  local left="${1:-{}}"
-  local right="${2:-{}}"
+  local left="${1-}"
+  local right="${2-}"
+  [[ -n "$left" ]] || left="{}"
+  [[ -n "$right" ]] || right="{}"
   python - "$left" "$right" <<'PY'
 import json
 import sys
@@ -467,6 +587,15 @@ for key, value in right.items():
         left[key] = value
 print(json.dumps(left, separators=(",", ":"), sort_keys=True))
 PY
+}
+
+write_postcheck_outputs() {
+  local row_tmp_dir="${1:-}"
+  if [[ -z "$row_tmp_dir" || ! -d "$row_tmp_dir" ]]; then
+    return 0
+  fi
+  printf '%s' "$POSTCHECK_EVIDENCE_JSON" > "$row_tmp_dir/postcheck-evidence.json"
+  printf '%s' "$POSTCHECK_PERF_JSON" > "$row_tmp_dir/postcheck-perf.json"
 }
 
 run_deep_probe() {
@@ -512,6 +641,7 @@ postcheck_archetype() {
   profile="$(archetype_assertion_profile "$archetype")"
   POSTCHECK_EVIDENCE_JSON="{}"
   POSTCHECK_PERF_JSON="{}"
+  write_postcheck_outputs "$row_tmp_dir"
 
   if [[ "$mode" == "edge-local" && -z "$EDGE_LOCAL_LISTENER_URL" ]]; then
     [[ -f "$EDGE_LOCAL_CADDY_FILE" ]] || return 1
@@ -627,31 +757,94 @@ postcheck_archetype() {
 
     case "$profile" in
       ws)
-        local ws_json
+        local ws_json ws_rc=0
         ws_json="$(run_deep_probe "$row_log" ws_soak \
           --url "${probe_url%/}/ws" \
           --host "$host" \
           --duration-seconds "$WS_DURATION_SECONDS" \
           --connections "$WS_CONNECTIONS" \
-          --heartbeat-seconds "$WS_HEARTBEAT_SECONDS")" || return 1
-        POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "{\"ws\":$ws_json}")"
+          --heartbeat-seconds "$WS_HEARTBEAT_SECONDS")" || ws_rc=$?
+        if [[ -n "$ws_json" ]]; then
+          POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "{\"ws\":$ws_json}")"
+          write_postcheck_outputs "$row_tmp_dir"
+        fi
+        if [[ "$ws_rc" -ne 0 ]]; then
+          log "deep ws probe failed host=$host mode=$mode output=${ws_json:-<empty>}"
+          return 1
+        fi
         ;;
       lb)
+        local strict_distribution_required=0
+        if lb_distribution_required "$mode"; then
+          strict_distribution_required=1
+        fi
+        local effective_endpoint_count
+        effective_endpoint_count="$(lb_effective_endpoint_count "$mode" "$host" | tr -d '[:space:]')"
+        [[ "$effective_endpoint_count" =~ ^[0-9]+$ ]] || effective_endpoint_count="0"
+        local lb_meta_json
+        lb_meta_json="$(python - "$LB_PROOF_SCOPE" "$strict_distribution_required" "$effective_endpoint_count" "$mode" <<'PY'
+import json
+import sys
+scope = sys.argv[1]
+required = bool(int(sys.argv[2]))
+endpoint_count = int(sys.argv[3])
+mode = sys.argv[4]
+print(
+    json.dumps(
+        {
+            "lb": {
+                "proof_scope": scope,
+                "strict_distribution_required": required,
+                "effective_endpoint_count": endpoint_count,
+                "mode": mode,
+            }
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+)
+PY
+)"
+        POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "$lb_meta_json")"
+        write_postcheck_outputs "$row_tmp_dir"
+
+        local rr_min_backends="$LB_MIN_BACKENDS"
+        local rr_require_distribution=0
+        if [[ "$strict_distribution_required" -eq 0 ]]; then
+          rr_min_backends=1
+        else
+          rr_require_distribution=1
+        fi
         local lb_rr_json
-        lb_rr_json="$(run_deep_probe "$row_log" lb_sample \
-          --url "${probe_url%/}/id" \
-          --host "$host" \
-          --strategy round_robin \
-          --requests "$LB_SAMPLE_REQUESTS" \
-          --require-distribution)" || return 1
-        local lb_wrap
-        lb_wrap="$(python - "$lb_rr_json" <<'PY'
+        local lb_rr_rc=0
+        local -a rr_probe_args=(
+          lb_sample
+          --url "${probe_url%/}/id"
+          --host "$host"
+          --strategy round_robin
+          --requests "$LB_SAMPLE_REQUESTS"
+          --min-backends "$rr_min_backends"
+          --max-skew-ratio "$LB_MAX_SKEW_RATIO"
+        )
+        if [[ "$rr_require_distribution" -eq 1 ]]; then
+          rr_probe_args+=(--require-distribution)
+        fi
+        lb_rr_json="$(run_deep_probe "$row_log" "${rr_probe_args[@]}")" || lb_rr_rc=$?
+        local lb_wrap=""
+        if [[ -n "$lb_rr_json" ]]; then
+          lb_wrap="$(python - "$lb_rr_json" <<'PY'
 import json
 import sys
 print(json.dumps({"lb": {"round_robin": json.loads(sys.argv[1])}}, separators=(",", ":"), sort_keys=True))
 PY
 )"
-        POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "$lb_wrap")"
+          POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "$lb_wrap")"
+          write_postcheck_outputs "$row_tmp_dir"
+        fi
+        if [[ "$lb_rr_rc" -ne 0 ]]; then
+          log "deep lb round_robin probe failed host=$host mode=$mode output=${lb_rr_json:-<empty>}"
+          return 1
+        fi
 
         if [[ "$mode" == "core-proxy" ]]; then
           local base_manifest
@@ -663,15 +856,45 @@ PY
             policy_dst="$CORE_SPECS_DIR/$(basename "$base_manifest")"
             log "deep lb check: staging least_request policy -> $policy_dst"
             cp "$least_manifest" "$policy_dst"
-            wait_for_pattern "$CORE_ENVOY_CONFIG" "lb_policy: LEAST_REQUEST" "$WAIT_TIMEOUT_S" present
-            local lb_least_json
+            if ! wait_for_pattern "$CORE_ENVOY_CONFIG" "lb_policy: LEAST_REQUEST" "$WAIT_TIMEOUT_S" present; then
+              POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "{\"lb\":{\"policy_render_check\":{\"least_request\":false}}}")"
+              write_postcheck_outputs "$row_tmp_dir"
+              log "deep lb check: timed out waiting for LEAST_REQUEST policy in $CORE_ENVOY_CONFIG"
+              cp "$base_manifest" "$policy_dst" || true
+              return 1
+            fi
+            POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "{\"lb\":{\"policy_render_check\":{\"least_request\":true}}}")"
+            write_postcheck_outputs "$row_tmp_dir"
+            local lb_least_json=""
             local lb_least_rc=0
-            lb_least_json="$(run_deep_probe "$row_log" lb_sample \
-              --url "${probe_url%/}/id" \
-              --host "$host" \
-              --strategy least_request \
-              --requests "$LB_SAMPLE_REQUESTS")" || lb_least_rc=$?
-            if [[ "$lb_least_rc" -eq 0 ]]; then
+            if [[ "$strict_distribution_required" -eq 1 ]]; then
+              local -a least_probe_args=(
+                lb_sample
+                --url "${probe_url%/}/id"
+                --host "$host"
+                --strategy least_request
+                --requests "$LB_SAMPLE_REQUESTS"
+                --min-backends "$rr_min_backends"
+                --max-skew-ratio "$LB_MAX_SKEW_RATIO"
+              )
+              if [[ "$rr_require_distribution" -eq 1 ]]; then
+                least_probe_args+=(--require-distribution)
+              fi
+              lb_least_json="$(run_deep_probe "$row_log" "${least_probe_args[@]}")" || lb_least_rc=$?
+            else
+              lb_least_json="$(python <<'PY'
+import json
+print(json.dumps({
+    "probe": "lb_sample",
+    "strategy": "least_request",
+    "probe_skipped": True,
+    "reason": "strict_distribution_not_required",
+    "pass": True,
+}, separators=(",", ":"), sort_keys=True))
+PY
+)"
+            fi
+            if [[ -n "$lb_least_json" ]]; then
               local lb_merge
               lb_merge="$(python - "$lb_least_json" <<'PY'
 import json
@@ -680,21 +903,57 @@ print(json.dumps({"lb": {"least_request": json.loads(sys.argv[1])}}, separators=
 PY
 )"
               POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "$lb_merge")"
+              write_postcheck_outputs "$row_tmp_dir"
             fi
             cp "$base_manifest" "$policy_dst" || true
+            wait_for_pattern "$CORE_ENVOY_CONFIG" "lb_policy: ROUND_ROBIN" "$WAIT_TIMEOUT_S" present || true
             if [[ "$lb_least_rc" -ne 0 ]]; then
+              log "deep lb least_request probe failed host=$host mode=$mode output=${lb_least_json:-<empty>}"
               return 1
             fi
+            local lb_compare_json
+            lb_compare_json="$(python - "$lb_rr_json" "$lb_least_json" "$strict_distribution_required" <<'PY'
+import json
+import sys
+rr = json.loads(sys.argv[1] or "{}")
+lr = json.loads(sys.argv[2] or "{}")
+strict_required = bool(int(sys.argv[3]))
+payload = {
+    "lb": {
+        "policy_switch": {
+            "strict_distribution_required": strict_required,
+            "round_robin_backend_count": int(rr.get("backend_count") or 0),
+            "least_request_backend_count": int(lr.get("backend_count") or 0),
+            "round_robin_distribution_ok": bool(rr.get("distribution_ok")),
+            "least_request_distribution_ok": bool(lr.get("distribution_ok")),
+            "round_robin_max_skew_ratio": float(rr.get("max_skew_ratio") or 0.0),
+            "least_request_max_skew_ratio": float(lr.get("max_skew_ratio") or 0.0),
+            "pass": bool(rr.get("pass")) and bool(lr.get("pass")) if strict_required else bool(rr.get("pass")),
+        }
+    }
+}
+print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+PY
+)"
+            POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "$lb_compare_json")"
+            write_postcheck_outputs "$row_tmp_dir"
           fi
         fi
         ;;
       sticky)
-        local sticky_json
+        local sticky_json sticky_rc=0
         sticky_json="$(run_deep_probe "$row_log" sticky_probe \
           --url "${probe_url%/}/id" \
           --host "$host" \
-          --requests-per-client "$STICKY_REQUESTS_PER_CLIENT")" || return 1
-        POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "{\"sticky\":$sticky_json}")"
+          --requests-per-client "$STICKY_REQUESTS_PER_CLIENT")" || sticky_rc=$?
+        if [[ -n "$sticky_json" ]]; then
+          POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "{\"sticky\":$sticky_json}")"
+          write_postcheck_outputs "$row_tmp_dir"
+        fi
+        if [[ "$sticky_rc" -ne 0 ]]; then
+          log "deep sticky probe failed host=$host mode=$mode output=${sticky_json:-<empty>}"
+          return 1
+        fi
         ;;
     esac
   fi
@@ -703,12 +962,17 @@ PY
     local perf_probe_url perf_json
     perf_probe_url="$(mode_tls_url "$mode")"
     [[ -n "$perf_probe_url" ]] || perf_probe_url="$(mode_base_url "$mode")"
+    local perf_rc=0
     perf_json="$(run_deep_probe "$row_log" http_bench \
       --url "${perf_probe_url%/}/id" \
       --host "$host" \
       --duration-seconds "$PERF_DURATION_SECONDS" \
       --warmup-seconds "$PERF_WARMUP_SECONDS" \
-      --concurrency "$PERF_CONCURRENCY")" || return 1
+      --concurrency "$PERF_CONCURRENCY")" || perf_rc=$?
+    if [[ "$perf_rc" -ne 0 ]]; then
+      log "deep perf probe failed host=$host mode=$mode output=${perf_json:-<empty>}"
+      return 1
+    fi
     if [[ "$PERF_PROFILE" == "full" ]]; then
       local perf_ok
       perf_ok="$(perf_full_verdict "$perf_json" "$PERF_MIN_RPS" "$PERF_MAX_P95_MS" "$PERF_MAX_ERROR_RATE")"
@@ -718,6 +982,7 @@ PY
       fi
     fi
     POSTCHECK_PERF_JSON="$(json_merge_objects "$POSTCHECK_PERF_JSON" "{\"http\":$perf_json}")"
+    write_postcheck_outputs "$row_tmp_dir"
   fi
 
   return 0
@@ -782,10 +1047,27 @@ append_result_row() {
   local status="$7"
   local duration_s="$8"
   local note="$9"
-  local evidence_json="${10:-{}}"
-  local perf_json="${11:-{}}"
+  local evidence_json="${10-}"
+  local perf_json="${11-}"
+  [[ -n "$evidence_json" ]] || evidence_json="{}"
+  [[ -n "$perf_json" ]] || perf_json="{}"
+  local evidence_b64 perf_b64
+  evidence_b64="$(python - "$evidence_json" <<'PY'
+import base64
+import sys
+raw = sys.argv[1] if len(sys.argv) > 1 else "{}"
+print(base64.b64encode(raw.encode("utf-8")).decode("ascii"))
+PY
+)"
+  perf_b64="$(python - "$perf_json" <<'PY'
+import base64
+import sys
+raw = sys.argv[1] if len(sys.argv) > 1 else "{}"
+print(base64.b64encode(raw.encode("utf-8")).decode("ascii"))
+PY
+)"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$mode" "$archetype" "$app_name" "$manifest" "$host" "$backend_port" "$status" "$duration_s" "$note" "$evidence_json" "$perf_json" \
+    "$mode" "$archetype" "$app_name" "$manifest" "$host" "$backend_port" "$status" "$duration_s" "$note" "$evidence_b64" "$perf_b64" \
     >> "$RESULT_TSV"
 }
 
@@ -795,6 +1077,7 @@ write_json_result() {
   python - "$in_tsv" "$out_json" <<'PY'
 import json
 import sys
+import base64
 from pathlib import Path
 
 in_path = Path(sys.argv[1])
@@ -807,7 +1090,7 @@ for raw in in_path.read_text(encoding="utf-8").splitlines():
     parts = raw.split("\t")
     if len(parts) < 11:
         raise SystemExit(f"invalid result row (expected 11 columns): {raw!r}")
-    mode, archetype, app_name, manifest, host, backend_port, status, duration_s, note, evidence_json, perf_json = parts[:11]
+    mode, archetype, app_name, manifest, host, backend_port, status, duration_s, note, evidence_b64, perf_b64 = parts[:11]
     row = {
         "mode": mode,
         "archetype": archetype,
@@ -820,11 +1103,19 @@ for raw in in_path.read_text(encoding="utf-8").splitlines():
         "note": note,
     }
     try:
+        evidence_json = base64.b64decode((evidence_b64 or "").encode("ascii"), validate=False).decode("utf-8")
+    except Exception:
+        evidence_json = "{}"
+    try:
         evidence = json.loads(evidence_json or "{}")
     except Exception:
         evidence = {}
     if isinstance(evidence, dict) and evidence:
         row["evidence"] = evidence
+    try:
+        perf_json = base64.b64decode((perf_b64 or "").encode("ascii"), validate=False).decode("utf-8")
+    except Exception:
+        perf_json = "{}"
     try:
         perf = json.loads(perf_json or "{}")
     except Exception:
@@ -933,7 +1224,15 @@ run_row() {
     log "core-proxy row normalized service port from $backend_port to fixed local target $effective_backend_port"
   fi
   if "${cmd[@]}" 2>&1 | tee "$row_log"; then
-    if postcheck_archetype "$mode" "$archetype" "$host" "$row_tmp_dir" "$row_log"; then
+    local postcheck_rc=0
+    postcheck_archetype "$mode" "$archetype" "$host" "$row_tmp_dir" "$row_log" || postcheck_rc=$?
+    if [[ -f "$row_tmp_dir/postcheck-evidence.json" ]]; then
+      POSTCHECK_EVIDENCE_JSON="$(cat "$row_tmp_dir/postcheck-evidence.json")"
+    fi
+    if [[ -f "$row_tmp_dir/postcheck-perf.json" ]]; then
+      POSTCHECK_PERF_JSON="$(cat "$row_tmp_dir/postcheck-perf.json")"
+    fi
+    if [[ "$postcheck_rc" -eq 0 ]]; then
       log "row pass mode=$mode archetype=$archetype"
       return 0
     fi
@@ -1065,6 +1364,18 @@ while [[ $# -gt 0 ]]; do
       LB_SAMPLE_REQUESTS="${2:-}"
       shift 2
       ;;
+    --lb-min-backends)
+      LB_MIN_BACKENDS="${2:-}"
+      shift 2
+      ;;
+    --lb-max-skew-ratio)
+      LB_MAX_SKEW_RATIO="${2:-}"
+      shift 2
+      ;;
+    --lb-proof-scope)
+      LB_PROOF_SCOPE="${2:-}"
+      shift 2
+      ;;
     --sticky-requests-per-client)
       STICKY_REQUESTS_PER_CLIENT="${2:-}"
       shift 2
@@ -1135,6 +1446,11 @@ case "$PERF_PROFILE" in
   *) die "--perf-profile must be one of: off|sample|full" ;;
 esac
 
+case "$LB_PROOF_SCOPE" in
+  auto|strict-all|edge-only|off) ;;
+  *) die "--lb-proof-scope must be one of: auto|strict-all|edge-only|off" ;;
+esac
+
 if [[ "$VALIDATION_PROFILE" == "deep+perf" && "$PERF_PROFILE" == "off" ]]; then
   PERF_PROFILE="sample"
 fi
@@ -1144,6 +1460,7 @@ fi
 [[ "$WS_DURATION_SECONDS" =~ ^[0-9]+$ ]] || die "--ws-duration-seconds must be an integer"
 [[ "$WS_CONNECTIONS" =~ ^[0-9]+$ ]] || die "--ws-connections must be an integer"
 [[ "$LB_SAMPLE_REQUESTS" =~ ^[0-9]+$ ]] || die "--lb-sample-requests must be an integer"
+[[ "$LB_MIN_BACKENDS" =~ ^[0-9]+$ ]] || die "--lb-min-backends must be an integer"
 [[ "$STICKY_REQUESTS_PER_CLIENT" =~ ^[0-9]+$ ]] || die "--sticky-requests-per-client must be an integer"
 [[ "$PERF_DURATION_SECONDS" =~ ^[0-9]+$ ]] || die "--perf-duration-seconds must be an integer"
 [[ "$PERF_CONCURRENCY" =~ ^[0-9]+$ ]] || die "--perf-concurrency must be an integer"
@@ -1154,18 +1471,22 @@ fi
 (( WS_DURATION_SECONDS > 0 )) || die "--ws-duration-seconds must be > 0"
 (( WS_CONNECTIONS > 0 )) || die "--ws-connections must be > 0"
 (( LB_SAMPLE_REQUESTS > 0 )) || die "--lb-sample-requests must be > 0"
+(( LB_MIN_BACKENDS > 0 )) || die "--lb-min-backends must be > 0"
 (( STICKY_REQUESTS_PER_CLIENT > 0 )) || die "--sticky-requests-per-client must be > 0"
 (( PERF_DURATION_SECONDS > 0 )) || die "--perf-duration-seconds must be > 0"
 (( PERF_CONCURRENCY > 0 )) || die "--perf-concurrency must be > 0"
 
-python - "$WS_HEARTBEAT_SECONDS" "$PERF_MAX_ERROR_RATE" <<'PY'
+python - "$WS_HEARTBEAT_SECONDS" "$PERF_MAX_ERROR_RATE" "$LB_MAX_SKEW_RATIO" <<'PY'
 import sys
 heartbeat = float(sys.argv[1])
 max_error = float(sys.argv[2])
+lb_max_skew = float(sys.argv[3])
 if heartbeat <= 0:
     raise SystemExit("--ws-heartbeat-seconds must be > 0")
 if not (0.0 <= max_error <= 1.0):
     raise SystemExit("--perf-max-error-rate must be between 0 and 1")
+if lb_max_skew < 0:
+    raise SystemExit("--lb-max-skew-ratio must be >= 0")
 PY
 
 need_cmd rg
@@ -1203,7 +1524,7 @@ log "edge_backend=${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:<dynamic-port>"
 log "core_proxy_local_addr=$CORE_PROXY_LOCAL_ADDR"
 log "validation_profile=$VALIDATION_PROFILE perf_profile=$PERF_PROFILE"
 log "ws_duration_seconds=$WS_DURATION_SECONDS ws_connections=$WS_CONNECTIONS ws_heartbeat_seconds=$WS_HEARTBEAT_SECONDS"
-log "lb_sample_requests=$LB_SAMPLE_REQUESTS sticky_requests_per_client=$STICKY_REQUESTS_PER_CLIENT"
+log "lb_sample_requests=$LB_SAMPLE_REQUESTS lb_min_backends=$LB_MIN_BACKENDS lb_max_skew_ratio=$LB_MAX_SKEW_RATIO lb_proof_scope=$LB_PROOF_SCOPE sticky_requests_per_client=$STICKY_REQUESTS_PER_CLIENT"
 log "perf_duration_seconds=$PERF_DURATION_SECONDS perf_concurrency=$PERF_CONCURRENCY perf_warmup_seconds=$PERF_WARMUP_SECONDS"
 log "http2_enforce_downstream_h2=$HTTP2_ENFORCE_DOWNSTREAM_H2"
 log "results_json=$RESULT_JSON"

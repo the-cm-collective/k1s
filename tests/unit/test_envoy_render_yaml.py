@@ -71,3 +71,59 @@ def test_render_envoy_sticky_cookie_adds_hash_policy() -> None:
     hash_policy = routes[0]["route"]["hash_policy"]
     assert hash_policy[0]["cookie"]["name"] == "k1s_route"
     assert hash_policy[0]["cookie"]["ttl"] == "3600s"
+
+
+def test_render_envoy_enables_websocket_upgrade_when_route_allows_it() -> None:
+    text = render_envoy_config(
+        [
+            CoreProxyRoute(
+                host="app.example.test",
+                path_prefix="/ws",
+                cluster="site_a",
+                websocket_enabled=True,
+            )
+        ],
+        [
+            CoreProxyCluster(
+                name="site_a",
+                endpoints=[("127.0.0.1", 18081)],
+            )
+        ],
+        EnvoyRenderConfig(),
+    )
+    payload = yaml.safe_load(text)
+    hcm = (
+        payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+            "typed_config"
+        ]
+    )
+    assert hcm["upgrade_configs"] == [{"upgrade_type": "websocket"}]
+
+
+def test_render_envoy_route_can_disable_websocket_upgrade() -> None:
+    text = render_envoy_config(
+        [
+            CoreProxyRoute(
+                host="app.example.test",
+                path_prefix="/ws",
+                cluster="site_a",
+                websocket_enabled=False,
+            )
+        ],
+        [
+            CoreProxyCluster(
+                name="site_a",
+                endpoints=[("127.0.0.1", 18081)],
+            )
+        ],
+        EnvoyRenderConfig(),
+    )
+    payload = yaml.safe_load(text)
+    routes = (
+        payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+            "typed_config"
+        ]["route_config"]["virtual_hosts"][0]["routes"]
+    )
+    assert routes[0]["route"]["upgrade_configs"] == [
+        {"upgrade_type": "websocket", "enabled": False}
+    ]

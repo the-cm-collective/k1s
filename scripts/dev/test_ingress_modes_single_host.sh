@@ -303,7 +303,6 @@ preflight_edge_local_runtime() {
   local controller_nats_url
   local gateway_transport
   local gateway_nats_url
-  local edge_code
 
   need_cmd pgrep
   caddy_dir="$(dirname "$EDGE_LOCAL_CADDY_FILE")"
@@ -341,11 +340,8 @@ preflight_edge_local_runtime() {
 
   preflight_edge_local_render_path "$EDGE_LOCAL_CADDY_FILE"
 
-  edge_code="$(curl -sS -o /dev/null -w '%{http_code}' "$EDGE_BACKEND_URL" || true)"
-  if [[ ! "$edge_code" =~ ^2[0-9][0-9]$ ]]; then
-    die_edge_local_preflight "edge-local preflight failed: expected 2xx from edge backend $EDGE_BACKEND_URL, got $edge_code"
-  fi
-  log "edge-local preflight OK controller_pid=$controller_pid gateway_pid=$gateway_pid edge_backend_code=$edge_code"
+  check_edge_backend_health_or_skip "$MODE" "edge-local preflight failed" 1
+  log "edge-local preflight OK controller_pid=$controller_pid gateway_pid=$gateway_pid"
 }
 
 extract_route_site_from_file() {
@@ -430,6 +426,68 @@ normalize_http_path() {
   [[ -n "$path" ]] || path="/"
   [[ "$path" == /* ]] || path="/$path"
   printf '%s\n' "$path"
+}
+
+manifest_replicas() {
+  local manifest_path="$1"
+  python - "$manifest_path" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+try:
+    text = open(path, encoding="utf-8").read()
+except Exception:
+    print("1")
+    raise SystemExit(0)
+
+match = re.search(r"(?m)^[ \t]*replicas:[ \t]*([0-9]+)[ \t]*$", text)
+if not match:
+    print("1")
+    raise SystemExit(0)
+
+try:
+    replicas = int(match.group(1))
+except Exception:
+    print("1")
+    raise SystemExit(0)
+
+if replicas < 1:
+    replicas = 1
+print(str(replicas))
+PY
+}
+
+edge_backend_direct_check_required() {
+  local mode="${1:-$MODE}"
+  local replicas
+  if [[ "$mode" != "edge-local" ]]; then
+    return 0
+  fi
+  replicas="$(manifest_replicas "$APP_MANIFEST")"
+  [[ "$replicas" =~ ^[0-9]+$ ]] || replicas=1
+  (( replicas <= 1 ))
+}
+
+check_edge_backend_health_or_skip() {
+  local mode="${1:-$MODE}"
+  local failure_context="${2:-edge backend not healthy}"
+  local preflight_error="${3:-0}"
+  local code replicas
+
+  if edge_backend_direct_check_required "$mode"; then
+    code="$(curl -sS -o /dev/null -w '%{http_code}' "$EDGE_BACKEND_URL" || true)"
+    if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
+      return 0
+    fi
+    if [[ "$preflight_error" -eq 1 ]]; then
+      die_edge_local_preflight "$failure_context: expected 2xx from edge backend $EDGE_BACKEND_URL, got $code"
+    fi
+    die "$failure_context at $EDGE_BACKEND_URL (code=$code)"
+  fi
+
+  replicas="$(manifest_replicas "$APP_MANIFEST")"
+  log "skipping direct edge backend health check for mode=$mode replicas=$replicas (service.port is not stable for replicas>1); relying on ingress dataplane checks"
 }
 
 resolve_edge_local_listener_url() {
@@ -609,9 +667,7 @@ apply_workload_and_wait() {
   rm -f "$status_watch_log"
   log "workload ready: $APP_NAME"
 
-  local code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' "$EDGE_BACKEND_URL" || true)"
-  [[ "$code" =~ ^2[0-9][0-9]$ ]] || die "edge backend not healthy at $EDGE_BACKEND_URL (code=$code)"
+  check_edge_backend_health_or_skip "$MODE" "edge backend not healthy" 0
 }
 
 run_core_proxy_strict_mutation_check() {
@@ -846,7 +902,6 @@ run_edge_local_tier1() {
   local route_dst="$CORE_SPECS_DIR/edge-ingress-route-edge-local.yaml"
   local route_src="$EDGE_LOCAL_ROUTE_SRC"
   local route_host
-  local code
 
   preflight_edge_local_runtime
   stage_file "$route_src" "$route_dst"
@@ -857,8 +912,7 @@ run_edge_local_tier1() {
   wait_for_edge_local_render "$route_host" "$EDGE_LOCAL_CADDY_FILE" "$WAIT_TIMEOUT_S"
   wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" 10 absent
 
-  code="$(curl -sS -o /dev/null -w '%{http_code}' "$EDGE_BACKEND_URL" || true)"
-  [[ "$code" =~ ^2[0-9][0-9]$ ]] || die "edge backend check failed at $EDGE_BACKEND_URL (code=$code)"
+  check_edge_backend_health_or_skip "$MODE" "edge backend check failed" 0
   log "edge-local tier1 checks passed"
 
   if [[ "$STRICT" -eq 1 ]]; then

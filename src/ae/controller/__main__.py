@@ -839,6 +839,20 @@ def _core_policy_errors(
             errors.append("stickiness_cookie_invalid_ttl")
         if lb_strategy == "least_request":
             errors.append("stickiness_incompatible_with_least_request")
+
+    websockets = policy.get("websockets") if isinstance(policy.get("websockets"), dict) else {}
+    ws_enabled = websockets.get("enabled")
+    if ws_enabled is not None and _coerce_bool(ws_enabled) is None:
+        errors.append("websockets_invalid_enabled")
+    ws_idle_ms = websockets.get("idleMs")
+    if ws_idle_ms is not None and _coerce_positive_int(ws_idle_ms) is None:
+        errors.append("websockets_invalid_idle_timeout")
+    ws_max_connection_duration_ms = websockets.get("maxConnectionDurationMs")
+    if (
+        ws_max_connection_duration_ms is not None
+        and _coerce_positive_int(ws_max_connection_duration_ms) is None
+    ):
+        errors.append("websockets_invalid_max_connection_duration")
     return errors
 
 
@@ -882,6 +896,24 @@ def _coerce_positive_int(value) -> int | None:
     if parsed <= 0:
         return None
     return parsed
+
+
+def _coerce_bool(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if int(value) == 1:
+            return True
+        if int(value) == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return True
+        if token in {"0", "false", "no", "off"}:
+            return False
+    return None
 
 
 def _normalize_forward_auth_url(raw_url: str) -> str | None:
