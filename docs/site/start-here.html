@@ -789,7 +789,14 @@ python -m pip install -e .[watch]</code></pre>
 <p>3) Run the controller with API + file watch:</p>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch</code></pre>
 <ul>
-<li>For CRI/containerd: <code>AE_RUNTIME_BACKEND=cri</code> and follow the CRI section in <code>docs/ops/runbook.md</code> for CNI init + smoke checks.</li>
+<li>Strict CRI/containerd (recommended): use profile targets instead of manually wiring all CRI env vars:</li>
+</ul>
+<pre><code>make k1s-core-cri
+# optional pairings:
+make k1s-edge-cri
+make k1s-edge-core-cri</code></pre>
+<ul>
+<li>Profile and CRI details: <code>docs/guides/runtime-profiles.md</code>, <code>docs/reference/cri-containerd.md</code>, <code>docs/guides/multinode-lab.md</code>.</li>
 </ul>
 <p>4) Apply and inspect a sample workload (Deployment):</p>
 <pre><code>python -m ae.cli apply -f specs/examples/echo.yaml
@@ -827,6 +834,8 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make loop</code>: controller reconcile loop (watch mode).</li>
 <li><code>make run</code>: single reconcile pass.</li>
 <li><code>make dev-min</code> / <code>make dev-etcd</code> / <code>make k1s-core</code> / <code>make k1s-edge</code>: runtime profiles with empty specs (no default apps).</li>
+<li><code>make k1s-core-cri</code> / <code>make k1s-edge-cri</code> / <code>make k1s-core-edge-cri</code> / <code>make k1s-edge-core-cri</code>: strict CRI profile aliases.</li>
+<li><code>make edge-site-cri SITE_ID=&lt;site&gt; EDGE_PORT=&lt;port&gt; EDGE_HTTP_PORT=&lt;port&gt;</code>: strict CRI multi-site edge helper.</li>
 <li><code>make dev-min-caddy</code> / <code>make dev-etcd-caddy</code> / <code>make k1s-core-caddy</code>: same profiles with TLS hostnames for docs/api/dashboard.</li>
 <li><code>make apply-sample</code>: apply <code>specs/examples/echo.yaml</code>.</li>
 <li><code>make status-sample</code>: status for <code>echo</code>.</li>
@@ -1010,7 +1019,7 @@ ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status<
 <li>Teardown demo: <code>./scripts/init_demo.sh --down -y</code> or <code>make demo-down</code>.</li>
 <li>Reset demo state: <code>./scripts/init_demo.sh --reset</code> or <code>make demo-reset</code>.</li>
 </ul>
-<p>Happy shipping! Want a stricter baseline? Try the hardened demo (non‑root, read‑only, startup/liveness, PDB, PSA labels, NP default‑deny):</p>
+<p>Want a stricter baseline? Try the hardened demo (non‑root, read‑only, startup/liveness, PDB, PSA labels, NP default‑deny):</p>
 <pre><code>./scripts/init_demo.sh --demo-hardened -y -d
 # or
 make demo-hardened</code></pre>
@@ -1021,7 +1030,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 14:20:07</span>
+        <span>Built 2026-02-13 19:11:07</span>
       </div>
     </footer>
     <script>

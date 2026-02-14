@@ -4,6 +4,19 @@ k1s ships lightweight runtime profiles so you can run the control plane without 
 
 ## Quickstart
 
+Strict CRI (recommended path for containerd lanes)
+```
+make k1s-core-cri
+make k1s-edge-cri
+make k1s-core-edge-cri
+make k1s-edge-core-cri
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+```
+Notes:
+- These aliases set `AE_RUNTIME_BACKEND=cri` and `AE_INFRA_BACKEND=cri`.
+- Use `sudo -E` when your containerd environment requires elevated privileges.
+- See `docs/reference/cri-containerd.md` for registry-first image prep and trust setup.
+
 `dev-min` (SQLite + HTTP, local loop)
 ```
 make dev-min

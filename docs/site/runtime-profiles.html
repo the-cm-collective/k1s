@@ -724,6 +724,18 @@
     <h1 id="runtime-profiles">Runtime Profiles</h1>
 <p>k1s ships lightweight runtime profiles so you can run the control plane without the demo apps. Each profile uses an empty specs directory under <code>state/profiles/&lt;profile&gt;/specs</code>, so nothing is reconciled until you apply a manifest.</p>
 <h2 id="quickstart">Quickstart</h2>
+<p>Strict CRI (recommended path for containerd lanes)</p>
+<pre><code>make k1s-core-cri
+make k1s-edge-cri
+make k1s-core-edge-cri
+make k1s-edge-core-cri
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></pre>
+<p>Notes:</p>
+<ul>
+<li>These aliases set <code>AE_RUNTIME_BACKEND=cri</code> and <code>AE_INFRA_BACKEND=cri</code>.</li>
+<li>Use <code>sudo -E</code> when your containerd environment requires elevated privileges.</li>
+<li>See <code>docs/reference/cri-containerd.md</code> for registry-first image prep and trust setup.</li>
+</ul>
 <p><code>dev-min</code> (SQLite + HTTP, local loop)</p>
 <pre><code>make dev-min</code></pre>
 <p><code>dev-etcd</code> (etcd + HTTP; auto-starts etcd)</p>
@@ -921,7 +933,7 @@ make k1s-edge-core-cri</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 14:20:07</span>
+        <span>Built 2026-02-13 19:11:07</span>
       </div>
     </footer>
     <script>
