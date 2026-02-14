@@ -725,7 +725,7 @@
 <p>This page summarizes our current Kubernetes spec compliance for exported manifests.</p>
 <p>How it works</p>
 <ul>
-<li>We export K8s YAML from representative Deployment manifests using <code>ae cli export-k8s</code> (preset: web-hardened).</li>
+<li>We export K8s YAML from representative Deployment manifests using <code>ae export-k8s</code> (preset: web-hardened).</li>
 <li>We run offline structural validation, optional <code>kubeconform -strict</code> schema checks, optional <code>kubectl apply --dry-run=server</code>, and our <code>k8s-check --policy strict</code>.</li>
 <li>A weighted score is computed per sample; the overall score is the average across samples.</li>
 </ul>
@@ -752,7 +752,7 @@
 <li>This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.</li>
 </ul>
 <p>The compliance status and per-sample details render below when a report is present.</p>
-<h2 id="current-coverage-summary-2026-01-16">Current Coverage Summary (2026-01-16)</h2>
+<h2 id="current-coverage-summary-2026-02-14">Current Coverage Summary (2026-02-14)</h2>
 <ul>
 <li>Workloads: Deployment full support; StatefulSet/DaemonSet/Job/CronJob are stored with best-effort status but emulated as Deployment-like apps (no real completion, scheduling, or per-node placement).</li>
 <li>Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.</li>
@@ -846,7 +846,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 14:20:07</span>
+        <span>Built 2026-02-13 19:11:07</span>
       </div>
     </footer>
     <script>

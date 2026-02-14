@@ -1,38 +1,39 @@
 # Changelog
 
-## Unreleased (2026-02-02)
+## Unreleased
 
 ### Added
-- Benchmark tooling: CRI (`crictl`) container snapshot/inspect capture plus make targets and env pass-through for CRI matrix/rollout runs.
-- Project metadata now includes a version codename in `pyproject.toml` (Snow Moon).
+- No user-facing additions yet.
 
 ### Changed
-- Docs refresh: Start Here, Overview, Examples, and Concepts updated for dashboard URLs, API shim enablement, and CLI guidance.
-- Reference docs updated for HTTP API, API auth, ingress, architecture env vars, CRI containerd, multi-node lab, and benchmarks.
-- Benchmark docs and charts refreshed with the new CRI scenario column and coverage annotations.
+- No user-facing changes yet.
 
 ### Fixed
-- Benchmark snapshots now honor the selected container engine when running CRI captures to avoid cross-engine contamination.
-- Demo Caddy config now redirects API-host `/dashboard` and `/playground` hits to the dedicated dashboard host to avoid 404s.
-- Demo now reloads Caddy after writing base sites so `dash.home.arpa` is available without a manual reload.
-- Demo reset now stops CRI pods/containers to prevent stale workloads after cleanup.
-- Playground log tail now prefers the current revision and ready pods to avoid attaching to terminating containers.
-- Playground log streaming now reselects a live pod after scale/rollout and skips replica shutdown noise so logs keep flowing across changes.
-- Playground ingress checks now retry after transient failures, show auth-required states, and render the curl hint as a multiline command.
-- Playground ingress checks now surface ingress-disabled states when `AE_DISABLE_INGRESS=1`.
-- Playground now disables ingress checks for apps without ingress mappings instead of surfacing 502 errors.
-- Playground log streaming now falls back to polling when SSE fails.
-- Playground events stream now rearms after apply, and the apply banner stays in sync with the selected example.
-- Labs apply now returns the applied app name to keep clients in sync.
-- Demo down/reset now clears controller state even when a bench DB path leaked into the demo environment, preventing stale session apps.
-- Playground remote shell defaults to `sh` for minimal images.
-- Dashboard exec/port-forward token minting now prefers the labs token to avoid read-only auth failures.
-- Service proxy ingestion now commits services and endpoints together, preventing transient empty endpoint reads.
-- Demo apishim autostart now restarts on runtime mismatches to keep exec/port-forward working with Podman or Docker.
-- Local auth now exports `AE_STATE_DB`, and demo env exports the state DB path, so CLI status matches controller state.
-- Labs ingress reachability checks no longer fail on missing `os` imports, restoring consistent "Last check" status.
-- Bench automation now clears rootful Podman before k1nd, hardens CRI waits, and isolates bench specs/guards to reduce flakiness.
-- Corrected demo host/endpoints (dashboard + multiport), CRI list formatting, and k1nd benchmark notes.
+- No user-facing fixes yet.
+
+## 0.1.3 - 2026-02-14
+
+### Added
+- Strict CRI profile orchestration for dev lanes, including `k1s-core-cri`, `k1s-edge-cri`, `k1s-core-edge-cri`, `k1s-edge-core-cri`, and `edge-site-cri`, with registry mode, image policy, and local build fallback handling.
+- Ingress capability validation expansion for CRI: single-host and multisite matrix suites, deeper capability probes, and perf-oriented ingress validation harnesses with new ingress matrix scenarios.
+- Core-proxy ingress policy controls for load balancing and cookie stickiness.
+- Benchmark tooling now captures CRI (`crictl`) container snapshot/inspect data in matrix/rollout workflows.
+- Project metadata now includes the `version_codename` field (`Snow Moon`) in `pyproject.toml`.
+
+### Changed
+- Docs server pages and README were refreshed to align CRI guidance around `k1s-*` profile targets, with updated Start Here, Overview, Runtime Profiles, CRI reference, Multi-node lab, and related reference pages.
+- Ingress runbooks and examples were tightened around canonical mode validation flows and reproducible single-host strict CRI execution paths.
+- Runtime profile behavior now auto-detects strict CRI core stacks more explicitly and fails fast on incompatible compose profile pairings.
+- Benchmark docs/charts were refreshed with CRI scenario coverage annotations.
+
+### Fixed
+- Edge-local route bundle publish permissions and preflight handling were hardened, including controller/etcd edge-ingress state alignment and safer route bundle publishing behavior.
+- Core-proxy ingress reliability improved across startup/readiness checks, downstream HTTP/2 strictness, path-aware validations, and tunnel target normalization.
+- CRI ingress startup sequencing and lab reproducibility issues were fixed for strict CRI multi-site lanes.
+- Demo/labs reliability fixes: Caddy dashboard/playground redirects, automatic Caddy reload, CRI cleanup on reset, and stale state cleanup when bench DB paths leak into demo env.
+- Playground/dashboard behavior fixes: resilient log/event streaming and re-arming, better ingress status handling, minimal-image shell defaults (`sh`), and improved token selection for exec/port-forward workflows.
+- Local auth/export improvements now ensure state DB paths are exported consistently so CLI status matches controller state.
+- Bench automation now clears rootful Podman before k1nd and hardens CRI waits/spec isolation to reduce flakiness.
 
 ## 0.1.2 - 2026-01-30
 

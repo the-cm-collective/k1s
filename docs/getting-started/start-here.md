@@ -119,7 +119,14 @@ docker compose -f ops/dev/docker-compose.yaml up -d
 ```
 python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 ```
-   - For CRI/containerd: `AE_RUNTIME_BACKEND=cri` and follow the CRI section in `docs/ops/runbook.md` for CNI init + smoke checks.
+   - Strict CRI/containerd (recommended): use profile targets instead of manually wiring all CRI env vars:
+```
+make k1s-core-cri
+# optional pairings:
+make k1s-edge-cri
+make k1s-edge-core-cri
+```
+   - Profile and CRI details: `docs/guides/runtime-profiles.md`, `docs/reference/cri-containerd.md`, `docs/guides/multinode-lab.md`.
 
 4) Apply and inspect a sample workload (Deployment):
 ```
@@ -166,6 +173,8 @@ Local dev and samples
 - `make loop`: controller reconcile loop (watch mode).
 - `make run`: single reconcile pass.
 - `make dev-min` / `make dev-etcd` / `make k1s-core` / `make k1s-edge`: runtime profiles with empty specs (no default apps).
+- `make k1s-core-cri` / `make k1s-edge-cri` / `make k1s-core-edge-cri` / `make k1s-edge-core-cri`: strict CRI profile aliases.
+- `make edge-site-cri SITE_ID=<site> EDGE_PORT=<port> EDGE_HTTP_PORT=<port>`: strict CRI multi-site edge helper.
 - `make dev-min-caddy` / `make dev-etcd-caddy` / `make k1s-core-caddy`: same profiles with TLS hostnames for docs/api/dashboard.
 - `make apply-sample`: apply `specs/examples/echo.yaml`.
 - `make status-sample`: status for `echo`.
@@ -357,7 +366,6 @@ Details: `README.md:67` and token management in `docs/ops/runbook.md:1`.
 - Teardown demo: `./scripts/init_demo.sh --down -y` or `make demo-down`.
 - Reset demo state: `./scripts/init_demo.sh --reset` or `make demo-reset`.
 
-Happy shipping!
 Want a stricter baseline? Try the hardened demo (non‑root, read‑only, startup/liveness, PDB, PSA labels, NP default‑deny):
 ```
 ./scripts/init_demo.sh --demo-hardened -y -d

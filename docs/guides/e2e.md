@@ -27,7 +27,10 @@ CRI Quickstart (containerd)
 - Ensure containerd + CNI + `crictl` are installed (see `docs/ops/runbook.md`).
 - Initialize CNI configs if missing:
   - `./scripts/cni_init.sh` (or `AE_CNI_FORCE=1 AE_CNI_VERSION=1.0.0 ./scripts/cni_init.sh`)
-- Export runtime env:
+- Start strict CRI profile lanes (recommended):
+  - `make k1s-core-cri`
+  - Optional edge pairings: `make k1s-edge-cri` / `make k1s-edge-core-cri`
+- Advanced/manual env override path:
   - `export AE_RUNTIME_BACKEND=cri`
   - `export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock`
   - `export AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9`

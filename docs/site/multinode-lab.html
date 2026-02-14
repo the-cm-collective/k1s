@@ -739,7 +739,7 @@
 <li><a href="#cri-troubleshooting">CRI troubleshooting notes</a></li>
 </ul>
 <h2 id="cri-deployment">CRI Deployment (strict CRI)</h2>
-<p>Use this section when running core + edge in strict CRI mode with containerd. Existing Podman sections remain valid for homelab/dev; this section is additive.</p>
+<p>Use this section when running core + edge in strict CRI mode with containerd. Existing Podman sections remain valid for homelab/dev; this section is additive. Use the <code>k1s-*-cri</code> targets as the primary entrypoints; env-heavy blocks below show validated override sets for reproducible multi-site and NetFS lanes.</p>
 <h3 id="prereqs-cri">Prereqs (CRI)</h3>
 <ul>
 <li>containerd is running and reachable at <code>unix:///run/containerd/containerd.sock</code>.</li>
@@ -779,11 +779,12 @@ sudo -E \
   AE_STORAGE_NFS_PATH=/exports/k1s \
   AE_STORAGE_NFS_CLASS=k1s-nfs \
   AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
-  make k1s-core</code></pre>
+  make k1s-core-cri</code></pre>
 <p>Notes:</p>
 <ul>
 <li>Keep <code>AE_DEV_LOCAL=1</code> enabled for local docs/playground/dashboard behavior in this lane.</li>
 <li>Use a unique <code>AE_APISHIM_IMAGE</code> tag per run when iterating apishim changes to avoid stale image reuse.</li>
+<li>For ingress baseline validation, keep service proxy disabled unless explicitly testing it. Enabling <code>AE_ENABLE_SERVICE_PROXY=1</code> with <code>AE_SERVICE_PROVIDER=iptables</code> can alter local docs/dashboard routing behavior and should be validated in a separate lane.</li>
 </ul>
 <h3 id="core-node-hub">Core node (hub)</h3>
 <pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
@@ -805,7 +806,13 @@ sudo -E \
   AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
   make k1s-core-node</code></pre>
 <h3 id="edge-site-and-edge-core">Edge site and edge core</h3>
-<pre><code>sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+<pre><code>ROOT=&quot;/home/$USER/git/k1s&quot;
+VENV_BIN=&quot;$ROOT/.venv/bin&quot;
+SUDO_PATH=&quot;${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin&quot;
+EDGE_LOCAL_DIR=&quot;$ROOT/state/profiles/k1s-core/edge-local&quot;
+RELOAD_CMD=&quot;/usr/bin/install -D -m 0644 $EDGE_LOCAL_DIR/edge-local.caddy $ROOT/state/caddy/edge-local.caddy &amp;&amp; $VENV_BIN/python $ROOT/scripts/dev/cri_stack.py up-caddy --profile k1s-core --metrics-port 9108 --apishim-port 8445 --recreate&quot;
+
+sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 
 sudo -E env PATH=&quot;$SUDO_PATH&quot; \
   AE_RUNTIME_BACKEND=cri \
@@ -817,7 +824,10 @@ sudo -E env PATH=&quot;$SUDO_PATH&quot; \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
-  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=&quot;$EDGE_LOCAL_DIR&quot; \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_FILE=&quot;$EDGE_LOCAL_DIR/edge-local.caddy&quot; \
+  AE_EDGE_LOCAL_INGRESS_RELOAD_CMD=&quot;$RELOAD_CMD&quot; \
+  AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints \
   AE_LOG_LEVEL=debug \
   make k1s-edge-core-cri</code></pre>
 <p>Edge-local preflight (root-safe):</p>
@@ -838,6 +848,7 @@ rg -n &#x27;user: &quot;hub-controller&quot;|k1s.v1.site.\*.routes.bundle&#x27; 
 <ul>
 <li>controller env includes <code>EDGE_INGRESS_MODE=edge-local</code> and <code>AE_ROUTE_BUNDLE_ENABLED=1</code></li>
 <li>gateway env includes <code>EDGE_INGRESS_MODE=edge-local</code> and <code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=.../state/profiles/k1s-core/edge-local</code></li>
+<li>gateway env includes <code>AE_EDGE_LOCAL_INGRESS_CONFIG_FILE</code>, <code>AE_EDGE_LOCAL_INGRESS_RELOAD_CMD</code>, and <code>AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints</code></li>
 <li>controller and gateway both include <code>AE_TRANSPORT_BACKEND=nats-core</code> or <code>nats-js</code>, and <code>AE_NATS_URL</code> is set</li>
 <li><code>state/profiles/k1s-core/edge-local</code> exists before tier checks run</li>
 <li>backend probe should become <code>2xx</code> once app workload is ready (for tier checks)</li>
@@ -893,7 +904,7 @@ bash scripts/dev/netfs_validate.sh \
 <li>In CRI, workload pod names typically include revision suffixes (for example <code>...-rev1-0</code>); avoid assuming Podman container naming patterns.</li>
 </ul>
 <h2 id="cri-single-host">Single-Host Dev Ops Patterns (CRI)</h2>
-<p>This is the fastest strict-CRI dev loop on one workstation: 1. Start <code>k1s-core</code> with <code>AE_DEV_LOCAL=1</code>, CRI env, and apishim autostart. 2. Start <code>k1s-core-node</code> (hub node) with WG/Rosenpass and <code>AE_ENABLE_NETFS=1</code>. 3. Start edge site + edge core with <code>make edge-site-cri</code> then <code>make k1s-edge-core-cri</code>. 4. Start <code>k1s-edge-node</code> with the verified command block above. 5. Run <code>ae auth local --strict</code>, <code>ae nodes</code>, <code>ae status</code>, and <code>scripts/dev/netfs_validate.sh</code>.</p>
+<p>This is the fastest strict-CRI dev loop on one workstation: 1. Start the strict CRI core profile (<code>make k1s-core-cri</code>), typically with <code>AE_DEV_LOCAL=1</code>. 2. Start <code>k1s-core-node</code> (hub node) with WG/Rosenpass and <code>AE_ENABLE_NETFS=1</code>. 3. Start edge site + edge core with <code>make edge-site-cri</code> then <code>make k1s-edge-core-cri</code>. 4. Start <code>k1s-edge-node</code> with the verified command block above. 5. Run <code>ae auth local --strict</code>, <code>ae nodes</code>, <code>ae status</code>, and <code>scripts/dev/netfs_validate.sh</code>.</p>
 <p>Expected:</p>
 <ul>
 <li><code>ae nodes</code> shows controller, hub CRI node, edge CRI node, and edge gateway node as <code>Ready</code>.</li>
@@ -1166,7 +1177,7 @@ sudo -E \
   AE_STORAGE_NFS_PATH=/exports/k1s \
   AE_STORAGE_NFS_CLASS=k1s-nfs \
   AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
-  make k1s-core</code></pre>
+  make k1s-core-cri</code></pre>
 <p>This seeds <code>k1s-nfs</code> in apishim for the NetFS single-host flow. Strict CRI expectation for this lane:</p>
 <ul>
 <li>core infra components appear in <code>sudo crictl pods</code></li>
@@ -1745,6 +1756,17 @@ scripts/dev/test_ingress_modes_single_host.sh \
   --modes core-proxy,core-to-edge-public,edge-local \
   --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
   --tier tier1</code></pre>
+<p>Known-good edge-local deep proof pattern:</p>
+<pre><code>scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes edge-local \
+  --archetypes lb-distribution \
+  --tier tier2 \
+  --validation-profile deep \
+  --lb-proof-scope edge-only \
+  --lb-sample-requests 5000 \
+  --lb-min-backends 2 \
+  --lb-max-skew-ratio 0.35 \
+  --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/</code></pre>
 <p>Notes:</p>
 <ul>
 <li>Archetype manifests live under <code>specs/examples/ingress-matrix/</code>.</li>
@@ -1754,7 +1776,8 @@ scripts/dev/test_ingress_modes_single_host.sh \
 <pre><code>CORE_SPECS=state/profiles/k1s-core/specs
 sudo chown -R &quot;$USER:$(id -gn)&quot; &quot;$CORE_SPECS&quot;
 sudo chmod -R g+rwX &quot;$CORE_SPECS&quot;
-sudo find &quot;$CORE_SPECS&quot; -type d -exec chmod 2775 {} \;</code></pre>
+sudo find &quot;$CORE_SPECS&quot; -type d -exec chmod 2775 {} \;
+test -w &quot;$CORE_SPECS&quot; &amp;&amp; echo &quot;core specs writable: $CORE_SPECS&quot;</code></pre>
 <ul>
 <li>Matrix results are written to: <code>state/test-results/ingress-matrix-&lt;timestamp&gt;.json</code></li>
 <li>On failure, diagnostics are collected under: <code>state/test-results/failures/ingress-matrix-&lt;timestamp&gt;/</code></li>
@@ -2012,7 +2035,7 @@ rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/ed
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-13 10:21:31</span>
+        <span>Built 2026-02-13 19:11:07</span>
       </div>
     </footer>
     <script>

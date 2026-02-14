@@ -7,15 +7,15 @@ Status: k1s is under very active development and has not reached a fully stable 
 - Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.
 - Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.
 
-## Current State (Jan 2026)
+## Current State (Feb 2026)
 
 - Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects `nodeSelector`, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.
 - Networking/Ingress: Service CIDR + overlay provider (`AE_SERVICE_PROVIDER=overlay`) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.
 - State: SQLite by default; Postgres supported for shim HA and multi‑node durability (`AE_STATE_DSN` / `AE_APISHIM_DSN`).
-- Runtime backends: Podman (default), Docker fallback, and CRI/containerd (`AE_RUNTIME_BACKEND=cri`) for CRI‑native nodes.
+- Runtime backends: Podman (default), Docker fallback, and CRI/containerd for CRI-native nodes (recommended via `make k1s-core-cri` and related `k1s-*-cri` profile targets).
 - API surface: native HTTP API plus the Kubernetes API shim (`AE_APISHIM_ENABLE=1 python -m ae.apishim serve`) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see `docs/reference/apishim-compatibility-matrix.md`).
 - Tooling: `k1s` kubectl‑style wrapper, `ae nodes` for inventory/cordon, `ae plan` for placement hints, `export-k8s` and `k8s-report` for parity/compliance, dashboard at `/dashboard` (direct on `:9108`, or `https://dash.home.arpa:8443/dashboard` in demos), and `/nodes` + enriched `/metrics` for node/service visibility.
-- Footprint: recent Jan 2026 idle benchmarks show ~85–90 MiB PSS for controller+API on Podman+crun rootless, and ~170–180 MiB PSS for k1nd (Docker + Caddy). See `docs/benchmarks/memory.md` for the latest numbers.
+- Footprint: recent Feb 2026 idle benchmarks continue to show ~85-90 MiB PSS for controller+API on Podman+crun rootless, and ~170-180 MiB PSS for k1nd (Docker + Caddy). See `docs/benchmarks/memory.md` for the latest numbers.
 
 ## Features (High‑Level)
 
@@ -70,6 +70,7 @@ flowchart LR
 
 - Polling only: `python -m ae.controller --loop --specs specs/ --metrics-port 9108`
 - With file watch (if `watchdog` installed): `python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108`
+- Strict CRI profile (containerd): `make k1s-core-cri` (and pair with `make k1s-edge-cri` / `make k1s-edge-core-cri` as needed)
 
 Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/dev/multinode-lab.sh -h` for flags. Ensure `AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay` on the controller and start `ae.node` on each worker with `--ensure-pod-net`.
 

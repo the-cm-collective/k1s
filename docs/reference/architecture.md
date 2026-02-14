@@ -299,7 +299,7 @@ Revision status
 
 ## Performance & Footprint
 
-- Controller + API + metrics: ~85–90 MiB PSS in recent Podman+crun rootless idle snapshots (Jan 2026).
+- Controller + API + metrics: ~85-90 MiB PSS in recent Podman+crun rootless idle snapshots (Feb 2026).
 - Caddy: ~40–50 MiB PSS in k1nd (Docker + Caddy) idle runs; runtime daemon footprint varies by engine.
 - See `docs/benchmarks/memory.md` for updated measurements and charts.
 - Suitable for 1–3 small services with sane limits on a 2 GB VPS.

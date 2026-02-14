@@ -20,6 +20,8 @@ CRI patterns:
 
 Use this section when running core + edge in strict CRI mode with containerd.
 Existing Podman sections remain valid for homelab/dev; this section is additive.
+Use the `k1s-*-cri` targets as the primary entrypoints; env-heavy blocks below
+show validated override sets for reproducible multi-site and NetFS lanes.
 
 ### Prereqs (CRI)
 
@@ -64,7 +66,7 @@ sudo -E \
   AE_STORAGE_NFS_PATH=/exports/k1s \
   AE_STORAGE_NFS_CLASS=k1s-nfs \
   AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
-  make k1s-core
+  make k1s-core-cri
 ```
 
 Notes:
@@ -218,7 +220,7 @@ bash scripts/dev/netfs_validate.sh \
 ## Single-Host Dev Ops Patterns (CRI) {#cri-single-host}
 
 This is the fastest strict-CRI dev loop on one workstation:
-1. Start `k1s-core` with `AE_DEV_LOCAL=1`, CRI env, and apishim autostart.
+1. Start the strict CRI core profile (`make k1s-core-cri`), typically with `AE_DEV_LOCAL=1`.
 2. Start `k1s-core-node` (hub node) with WG/Rosenpass and `AE_ENABLE_NETFS=1`.
 3. Start edge site + edge core with `make edge-site-cri` then `make k1s-edge-core-cri`.
 4. Start `k1s-edge-node` with the verified command block above.
@@ -537,7 +539,7 @@ sudo -E \
   AE_STORAGE_NFS_PATH=/exports/k1s \
   AE_STORAGE_NFS_CLASS=k1s-nfs \
   AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
-  make k1s-core
+  make k1s-core-cri
 ```
 This seeds `k1s-nfs` in apishim for the NetFS single-host flow.
 Strict CRI expectation for this lane:

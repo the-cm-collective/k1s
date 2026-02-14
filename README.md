@@ -19,6 +19,8 @@ k1s is under very active development and has not reached a fully stable release.
 ## Documentation
 
 - Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`
+- Runtime profile targets (including strict CRI aliases): `docs/guides/runtime-profiles.md`
+- CRI/containerd reference (registry-first + trust/image prep): `docs/reference/cri-containerd.md`
 - API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
 - Operations runbook: see `docs/ops/runbook.md`
 - Ingress/TLS details: see `docs/reference/ingress.md`
@@ -30,7 +32,7 @@ Legend: Green = aligned/supported; Yellow = partial/best-effort; Red = out-of-sc
 
 Columns: Runtime = k1s engine behavior; Shim = Kubernetes API shim (kubectl/helm); Export = `ae export-k8s` YAML.
 
-Matrix updated: 2026-01-16 (see `docs/site/k8s_status.json`).
+Matrix updated: 2026-02-14 (see `docs/site/k8s_status.json`).
 
 | Area | Capability | Runtime | Shim | Export | Operator notes |
 | --- | --- | --- | --- | --- | --- |
@@ -104,6 +106,15 @@ Podman registry cache note (demo helpers): if you use Podman with the local pull
 python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 ```
 
+Strict CRI quickstart (recommended for containerd lanes):
+
+```
+make k1s-core-cri
+# optional pairings:
+make k1s-edge-cri
+make k1s-edge-core-cri
+```
+
 4) Apply a sample app and inspect:
 
 ```
@@ -121,7 +132,7 @@ ae apply -n demo --force-namespace -f specs/examples/echo.yaml
 AE_NAMESPACE=demo ae status echo
 ae shell demo/echo
 ```
-Note: `ae shell` defaults to `bash`; use `-- sh` for minimal images.
+Note: `ae shell` defaults to `sh`; use `-- bash` only when the image includes it.
 
 Kubectl-like aliases via `k1s`:
 
@@ -148,7 +159,7 @@ Multi-node lab (controller + agents + overlay Service VIPs):
 
 Kubernetes API shim (kubectl/helm):
 - Start shim (Postgres or SQLite): `AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445`
-- Point kubectl: `kubectl --server=https://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods`
+- Point kubectl: `kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods`
 - Port-forward and apply work for Deployments/Services/Ingress/HPA/StatefulSet/DaemonSet/Job/CronJob.
 - Compatibility matrix and open gaps: `docs/reference/apishim-compatibility-matrix.md`, `docs/wip/conformance.md`.
 
@@ -165,8 +176,12 @@ Setup and quality:
 
 Local dev and samples:
 - `make dev-up` / `make dev-down`: start/stop dev Docker Compose stack.
+- `make down`: stop all dev/demo stacks (best-effort).
 - `make loop`: controller reconcile loop (watch mode).
 - `make run`: single reconcile pass.
+- `make dev-min` / `make dev-etcd` / `make k1s-core` / `make k1s-edge`: runtime profiles with empty specs.
+- `make k1s-core-cri` / `make k1s-edge-cri` / `make k1s-core-edge-cri` / `make k1s-edge-core-cri`: strict CRI profile aliases.
+- `make edge-site-cri SITE_ID=<site> EDGE_PORT=<port> EDGE_HTTP_PORT=<port>`: strict CRI multi-site edge helper.
 - `make apply-sample`: apply `specs/examples/echo.yaml`.
 - `make status-sample`: status for `echo`.
 - `make logs-sample`: logs for `echo`.
@@ -180,12 +195,15 @@ Local dev and samples:
 
 Docs, labs, and playground:
 - `make docs`: combine snapshots (if present), regenerate charts, build docs.
+- `make docs-export`: build non-interactive HTML into `docs/export` (`DOCS_OUT_DIR=` override).
+- `make docs-wiki-export`: export wiki-friendly HTML into `docs/wiki` (`WIKI_OUT=` override).
 - `make docs-watch`: rebuild docs when `combined/combined.csv` changes.
 - `make docs-local-ignore`: locally hide `docs/site` changes from git status.
 - `make docs-local-track`: re-enable tracking for `docs/site` updates before committing.
 - `make labs-up` / `make labs-down`: dev labs stack (docs + controller via compose).
 - `make labs-aio-up` / `make labs-aio-down`: all-in-one labs stack.
 - `make labs-k3d-up` / `make labs-k3d-down`: bring up/down local k3d cluster for labs.
+- `make labs-apishim-env`: print apishim tokens from `state/profiles/dev-etcd/apishim.env`.
 - `make apishim-smoke`: quick API shim health check on port 8445.
 - `make shim-helm-demo`: run the helm shim demo helper.
 
@@ -193,6 +211,7 @@ Demo workflows:
 - `make demo`: run the playground labs demo (`--labs --labs-token`; podman backend, plaintext secrets allowed).
 - `make demo-help`: show demo script help.
 - `make demo-down`: tear down demo stacks.
+- `make reg-cache-reset`: clear local registry cache used by demos.
 - `make demo-hardened`: run hardened demo flow.
 - `make demo-reset`: reset demo/labs state and prune volumes.
 - `make dashboard-reload`: reload controller under the dashboard supervisor.
@@ -205,6 +224,7 @@ Integration and e2e:
 Benchmarks (memory + runtime tooling):
 - `make bench-mem-k1s`: snapshot k1s memory.
 - `make bench-mem-k3s`: snapshot k3s memory.
+- `make bench-mem-debug`: quick debug benchmark pass.
 - `make bench-mem-agg`: aggregate latest snapshot under a label.
 - `make bench-mem-matrix-k1s`: run k1s replica matrix snapshots.
 - `make bench-mem-combine`: combine snapshots into `combined/*`.
@@ -231,6 +251,8 @@ Benchmarks (memory + runtime tooling):
 - `make bench-fix-perms`: normalize artifact permissions.
 - `make bench-mem-backfill`: backfill missing summary.json + rebuild docs.
 - `make bench-engines-clear`: stop/remove all containers (dangerous).
+- `make bench-state-clean`: remove benchmark-only state (`state/bench-*`).
+- `make dev-state-clean`: wipe full `state/` (requires `CONFIRM=1`).
 - `make bench-mem-backfill-oci`: add OCI runtime metadata and recompute charts.
 - `make bench-mem-backfill-oci-latest`: backfill OCI metadata for latest label only.
 - `make bench-mem-finalize-sudo`: finalize benchmarks and normalize perms (sudo).
@@ -260,6 +282,8 @@ Images and containers:
 
 - Start here onboarding: `docs/getting-started/start-here.md`
 - High-level overview and getting started: `docs/getting-started/overview.md`
+- Runtime profiles (including strict CRI aliases): `docs/guides/runtime-profiles.md`
+- CRI/containerd workflows and registry-first image prep: `docs/reference/cri-containerd.md`
 - Technical architecture and reference: `docs/reference/architecture.md`
 - HTTP API reference and UI docs: `docs/reference/http-api.md`
 - Configs & Secrets: `docs/reference/configs-secrets.md`
