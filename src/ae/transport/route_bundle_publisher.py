@@ -9,8 +9,10 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from ae.controller.state import SQLiteStateStore
+from ae.controller.spec import app_key
 from ae.ingress.edge_docs import normalize_policy_doc, normalize_route_doc
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 from ae.transport.subjects import hub_route_ack_subject, hub_route_bundle_subject
@@ -82,8 +84,10 @@ class RouteBundlePublisher:
         now = time.monotonic()
         for site_id in site_ids:
             state = self._state.setdefault(site_id, _BundleState())
-            routes, policies = _collect_bundle_payload(self._store, site_id)
-            bundle_hash = _bundle_hash(site_id, routes, policies)
+            routes, policies, service_endpoints = _collect_bundle_payload(
+                self._store, site_id
+            )
+            bundle_hash = _bundle_hash(site_id, routes, policies, service_endpoints)
             if bundle_hash != state.hash:
                 state.rev += 1
                 state.hash = bundle_hash
@@ -93,7 +97,9 @@ class RouteBundlePublisher:
                 continue
             if now < state.next_send_at:
                 continue
-            bundle = _build_bundle(site_id, state.rev, state.hash, routes, policies)
+            bundle = _build_bundle(
+                site_id, state.rev, state.hash, routes, policies, service_endpoints
+            )
             self._publish(site_id, bundle)
             state.backoff_s = _next_backoff(state.backoff_s)
             state.next_send_at = now + state.backoff_s
@@ -124,7 +130,12 @@ class RouteBundlePublisher:
 
 
 def _build_bundle(
-    site_id: str, rev: int, bundle_hash: str, routes: list[dict], policies: list[dict]
+    site_id: str,
+    rev: int,
+    bundle_hash: str,
+    routes: list[dict],
+    policies: list[dict],
+    service_endpoints: dict[str, list[dict[str, Any]]],
 ) -> dict:
     bundle = {
         "site_id": site_id,
@@ -132,6 +143,7 @@ def _build_bundle(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "routes": routes,
         "policies": policies,
+        "service_endpoints": service_endpoints,
     }
     bundle["hash"] = bundle_hash
     return bundle
@@ -139,15 +151,18 @@ def _build_bundle(
 
 def _collect_bundle_payload(
     store: SQLiteStateStore, site_id: str
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], dict[str, list[dict[str, Any]]]]:
     routes: list[dict] = []
     policies: list[dict] = []
     policy_keys: set[tuple[str, str]] = set()
+    service_map: dict[str, str] = {}
     for record in store.list_edge_ingress_routes_for_site(site_id):
         doc = normalize_route_doc(record)
         if not _route_is_edge_local(doc):
             continue
         routes.append(doc)
+        for service_key, app_name in _route_service_refs(doc):
+            service_map.setdefault(service_key, app_name)
         if record.policy_name:
             policy_ns = record.policy_namespace or record.namespace
             policy_keys.add((record.policy_name, policy_ns))
@@ -161,7 +176,8 @@ def _collect_bundle_payload(
             )
     routes = _sorted_docs(routes)
     policies = _sorted_docs(policies)
-    return routes, policies
+    service_endpoints = _collect_service_endpoints(store, service_map)
+    return routes, policies, service_endpoints
 
 
 def _route_is_edge_local(doc: dict) -> bool:
@@ -178,14 +194,114 @@ def _sorted_docs(docs: list[dict]) -> list[dict]:
     )
 
 
-def _bundle_hash(site_id: str, routes: list[dict], policies: list[dict]) -> str:
+def _bundle_hash(
+    site_id: str,
+    routes: list[dict],
+    policies: list[dict],
+    service_endpoints: dict[str, list[dict[str, Any]]],
+) -> str:
     payload = json.dumps(
-        {"site_id": site_id, "routes": routes, "policies": policies},
+        {
+            "site_id": site_id,
+            "routes": routes,
+            "policies": policies,
+            "service_endpoints": service_endpoints,
+        },
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
     digest = hashlib.sha256(payload).hexdigest()
     return f"sha256:{digest}"
+
+
+def _route_service_refs(doc: dict) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    spec = doc.get("spec") if isinstance(doc.get("spec"), dict) else {}
+    meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+    route_ns = str(meta.get("namespace") or "default").strip() or "default"
+    paths = spec.get("paths") if isinstance(spec.get("paths"), list) else []
+    if not paths:
+        service_ref = spec.get("serviceRef") if isinstance(spec.get("serviceRef"), dict) else {}
+        pair = _service_ref_pair(service_ref, route_ns)
+        if pair:
+            out.append(pair)
+        return out
+    for entry in paths:
+        if not isinstance(entry, dict):
+            continue
+        service_ref = (
+            entry.get("serviceRef") if isinstance(entry.get("serviceRef"), dict) else {}
+        )
+        pair = _service_ref_pair(service_ref, route_ns)
+        if pair:
+            out.append(pair)
+    return out
+
+
+def _service_ref_pair(service_ref: dict, route_ns: str) -> tuple[str, str] | None:
+    name = str(service_ref.get("name") or "").strip()
+    if not name:
+        return None
+    namespace = str(service_ref.get("namespace") or route_ns).strip() or route_ns
+    service_key = f"{namespace}/{name}"
+    return service_key, app_key(name, namespace)
+
+
+def _collect_service_endpoints(
+    store: SQLiteStateStore, service_map: dict[str, str]
+) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for service_key, app_name in sorted(service_map.items()):
+        try:
+            endpoints = store.list_service_endpoints(app_name)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug(
+                "route bundle failed to read service endpoints service=%s app=%s: %s",
+                service_key,
+                app_name,
+                exc,
+            )
+            endpoints = []
+
+        dedup: set[tuple[str, int, int, bool]] = set()
+        rows: list[dict[str, Any]] = []
+        for ep in endpoints:
+            ip = str(getattr(ep, "ip", "") or "").strip()
+            target_port = _coerce_int(getattr(ep, "target_port", None))
+            service_port = _coerce_int(getattr(ep, "port", None))
+            ready = bool(getattr(ep, "ready", False))
+            if not ip or target_port is None or service_port is None or not ready:
+                continue
+            row = (ip, service_port, target_port, ready)
+            if row in dedup:
+                continue
+            dedup.add(row)
+            rows.append(
+                {
+                    "ip": ip,
+                    "service_port": service_port,
+                    "target_port": target_port,
+                    "ready": ready,
+                }
+            )
+        rows.sort(
+            key=lambda item: (
+                int(item["service_port"]),
+                int(item["target_port"]),
+                str(item["ip"]),
+            )
+        )
+        out[service_key] = rows
+    return out
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
 
 
 def _next_backoff(value: float) -> float:

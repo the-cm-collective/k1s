@@ -261,6 +261,11 @@ def _build_routes_and_clusters(
         local_rate_limit = route_opts.get("local_rate_limit")
         cluster_lb_policy = _route_lb_policy(route_opts)
         sticky_cookie_name, sticky_cookie_ttl_seconds = _route_sticky_cookie(route_opts)
+        websocket_enabled = route_opts.get("websocket_enabled")
+        websocket_idle_timeout_ms = route_opts.get("websocket_idle_timeout_ms")
+        websocket_max_connection_duration_ms = route_opts.get(
+            "websocket_max_connection_duration_ms"
+        )
         if local_rate_limit:
             enable_local_ratelimit = True
         ext_authz_enabled = False
@@ -304,6 +309,9 @@ def _build_routes_and_clusters(
                         local_rate_limit=local_rate_limit,
                         sticky_cookie_name=sticky_cookie_name,
                         sticky_cookie_ttl_seconds=sticky_cookie_ttl_seconds,
+                        websocket_enabled=websocket_enabled,
+                        websocket_idle_timeout_ms=websocket_idle_timeout_ms,
+                        websocket_max_connection_duration_ms=websocket_max_connection_duration_ms,
                     )
                 )
         elif mode == "core-to-edge-public":
@@ -344,6 +352,9 @@ def _build_routes_and_clusters(
                         local_rate_limit=local_rate_limit,
                         sticky_cookie_name=sticky_cookie_name,
                         sticky_cookie_ttl_seconds=sticky_cookie_ttl_seconds,
+                        websocket_enabled=websocket_enabled,
+                        websocket_idle_timeout_ms=websocket_idle_timeout_ms,
+                        websocket_max_connection_duration_ms=websocket_max_connection_duration_ms,
                     )
                 )
         elif mode in {"core-local", "core"}:
@@ -382,6 +393,9 @@ def _build_routes_and_clusters(
                         local_rate_limit=local_rate_limit,
                         sticky_cookie_name=sticky_cookie_name,
                         sticky_cookie_ttl_seconds=sticky_cookie_ttl_seconds,
+                        websocket_enabled=websocket_enabled,
+                        websocket_idle_timeout_ms=websocket_idle_timeout_ms,
+                        websocket_max_connection_duration_ms=websocket_max_connection_duration_ms,
                     )
                 )
 
@@ -736,6 +750,18 @@ def _policy_route_options(policy: dict) -> dict:
         opts["timeout_ms"] = timeout_ms
     if idle_timeout_ms:
         opts["idle_timeout_ms"] = idle_timeout_ms
+    websockets = (
+        policy.get("websockets") if isinstance(policy.get("websockets"), dict) else {}
+    )
+    ws_enabled = _coerce_bool(websockets.get("enabled"))
+    if ws_enabled is not None:
+        opts["websocket_enabled"] = ws_enabled
+    ws_idle_timeout_ms = _coerce_int(websockets.get("idleMs"))
+    if ws_idle_timeout_ms:
+        opts["websocket_idle_timeout_ms"] = ws_idle_timeout_ms
+    ws_max_connection_duration_ms = _coerce_int(websockets.get("maxConnectionDurationMs"))
+    if ws_max_connection_duration_ms:
+        opts["websocket_max_connection_duration_ms"] = ws_max_connection_duration_ms
 
     load_balancing = (
         policy.get("loadBalancing") if isinstance(policy.get("loadBalancing"), dict) else {}
@@ -953,6 +979,24 @@ def _coerce_int(value) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def _coerce_bool(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if int(value) == 1:
+            return True
+        if int(value) == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return True
+        if token in {"0", "false", "no", "off"}:
+            return False
+    return None
 
 
 def _run_reload(cmd: str) -> None:

@@ -70,6 +70,10 @@ sudo -E \
 Notes:
 - Keep `AE_DEV_LOCAL=1` enabled for local docs/playground/dashboard behavior in this lane.
 - Use a unique `AE_APISHIM_IMAGE` tag per run when iterating apishim changes to avoid stale image reuse.
+- For ingress baseline validation, keep service proxy disabled unless explicitly testing it.
+  Enabling `AE_ENABLE_SERVICE_PROXY=1` with `AE_SERVICE_PROVIDER=iptables` can
+  alter local docs/dashboard routing behavior and should be validated in a
+  separate lane.
 
 ### Core node (hub)
 
@@ -97,6 +101,12 @@ sudo -E env PATH="$SUDO_PATH" \
 ### Edge site and edge core
 
 ```bash
+ROOT="/home/$USER/git/k1s"
+VENV_BIN="$ROOT/.venv/bin"
+SUDO_PATH="${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EDGE_LOCAL_DIR="$ROOT/state/profiles/k1s-core/edge-local"
+RELOAD_CMD="/usr/bin/install -D -m 0644 $EDGE_LOCAL_DIR/edge-local.caddy $ROOT/state/caddy/edge-local.caddy && $VENV_BIN/python $ROOT/scripts/dev/cri_stack.py up-caddy --profile k1s-core --metrics-port 9108 --apishim-port 8445 --recreate"
+
 sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 
 sudo -E env PATH="$SUDO_PATH" \
@@ -109,7 +119,10 @@ sudo -E env PATH="$SUDO_PATH" \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
-  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR="$EDGE_LOCAL_DIR" \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_FILE="$EDGE_LOCAL_DIR/edge-local.caddy" \
+  AE_EDGE_LOCAL_INGRESS_RELOAD_CMD="$RELOAD_CMD" \
+  AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints \
   AE_LOG_LEVEL=debug \
   make k1s-edge-core-cri
 ```
@@ -133,6 +146,7 @@ rg -n 'user: "hub-controller"|k1s.v1.site.\*.routes.bundle' ops/dev/nats-hub.con
 Expected:
 - controller env includes `EDGE_INGRESS_MODE=edge-local` and `AE_ROUTE_BUNDLE_ENABLED=1`
 - gateway env includes `EDGE_INGRESS_MODE=edge-local` and `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=.../state/profiles/k1s-core/edge-local`
+- gateway env includes `AE_EDGE_LOCAL_INGRESS_CONFIG_FILE`, `AE_EDGE_LOCAL_INGRESS_RELOAD_CMD`, and `AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints`
 - controller and gateway both include `AE_TRANSPORT_BACKEND=nats-core` or `nats-js`, and `AE_NATS_URL` is set
 - `state/profiles/k1s-core/edge-local` exists before tier checks run
 - backend probe should become `2xx` once app workload is ready (for tier checks)
@@ -1230,6 +1244,19 @@ scripts/dev/test_ingress_matrix_single_host.sh \
   --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
   --tier tier1
 ```
+Known-good edge-local deep proof pattern:
+```bash
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes edge-local \
+  --archetypes lb-distribution \
+  --tier tier2 \
+  --validation-profile deep \
+  --lb-proof-scope edge-only \
+  --lb-sample-requests 5000 \
+  --lb-min-backends 2 \
+  --lb-max-skew-ratio 0.35 \
+  --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/
+```
 Notes:
 - Archetype manifests live under `specs/examples/ingress-matrix/`.
 - The matrix script generates per-row `EdgeIngressRoute` fixtures and calls
@@ -1240,6 +1267,7 @@ CORE_SPECS=state/profiles/k1s-core/specs
 sudo chown -R "$USER:$(id -gn)" "$CORE_SPECS"
 sudo chmod -R g+rwX "$CORE_SPECS"
 sudo find "$CORE_SPECS" -type d -exec chmod 2775 {} \;
+test -w "$CORE_SPECS" && echo "core specs writable: $CORE_SPECS"
 ```
 - Matrix results are written to:
   `state/test-results/ingress-matrix-<timestamp>.json`
