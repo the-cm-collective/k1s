@@ -4,6 +4,8 @@ import base64
 import hashlib
 import json
 import os
+import random
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -119,6 +121,12 @@ class EtcdHttpClient:
             self._api_prefixes.extend(["v3", "v3alpha"])
         self._active_prefix: str | None = None
         self._timeout_s = float(timeout_s)
+        self._retry_max = max(1, int(os.getenv("AE_ETCD_RETRY_MAX", "3") or "3"))
+        self._retry_backoff_s = _parse_duration_seconds(
+            os.getenv("AE_ETCD_RETRY_BACKOFF", "100ms"),
+            0.1,
+        )
+        self._retry_jitter = max(0.0, min(1.0, float(os.getenv("AE_ETCD_RETRY_JITTER", "0.2") or "0.2")))
         self._verify: bool | str = True
         if ca_cert:
             self._verify = ca_cert
@@ -145,6 +153,27 @@ class EtcdHttpClient:
             raise RuntimeError("etcd auth failed: missing token")
         self._token = str(token)
 
+    def _retry_sleep(self, attempt: int) -> None:
+        base = max(0.0, self._retry_backoff_s)
+        if base <= 0:
+            return
+        delay = base * (2**max(0, attempt - 1))
+        if self._retry_jitter > 0:
+            jitter = (random.random() * 2 - 1) * self._retry_jitter
+            delay *= max(0.0, 1.0 + jitter)
+        time.sleep(max(0.0, delay))
+
+    @staticmethod
+    def _is_transient_status(status_code: int) -> bool:
+        return status_code in {408, 425, 429, 500, 502, 503, 504}
+
+    @staticmethod
+    def _response_summary(resp: requests.Response) -> str:
+        text = (resp.text or "").strip().replace("\n", " ")
+        if len(text) > 160:
+            text = text[:157] + "..."
+        return text
+
     def _post(
         self,
         path: str,
@@ -153,25 +182,24 @@ class EtcdHttpClient:
         timeout_s: float | None = None,
         allow_auth: bool = True,
     ) -> dict[str, Any]:
-        last_exc: Exception | None = None
+        last_non_404_exc: Exception | None = None
+        last_404_exc: Exception | None = None
         prefixes: list[str] = []
         if self._active_prefix:
             prefixes.append(self._active_prefix)
         prefixes.extend([p for p in self._api_prefixes if p not in prefixes])
         for endpoint in self._endpoints:
+            endpoint_non_404_exc: Exception | None = None
+            endpoint_404_exc: Exception | None = None
             for prefix in prefixes:
+                # Fallback probing is only for API discovery. If we already saw a
+                # non-404 error on this endpoint, keep that signal and avoid
+                # masking it with prefix fallback noise.
+                if endpoint_non_404_exc is not None and prefix != self._active_prefix:
+                    continue
                 url = f"{endpoint}/{prefix}{path}"
-                try:
-                    resp = requests.post(
-                        url,
-                        json=payload,
-                        timeout=timeout_s or self._timeout_s,
-                        verify=self._verify,
-                        cert=self._cert,
-                        headers=self._headers(),
-                    )
-                    if resp.status_code in {401, 403} and allow_auth and self._user:
-                        self._authenticate()
+                for attempt in range(1, self._retry_max + 1):
+                    try:
                         resp = requests.post(
                             url,
                             json=payload,
@@ -180,20 +208,54 @@ class EtcdHttpClient:
                             cert=self._cert,
                             headers=self._headers(),
                         )
-                    if resp.status_code == 404 and prefix != self._active_prefix:
-                        last_exc = RuntimeError(f"etcd api not found at {url}")
-                        continue
-                    resp.raise_for_status()
-                    try:
-                        data = resp.json()
-                    except ValueError as exc:
-                        raise RuntimeError(f"etcd non-json response from {url}") from exc
-                    self._active_prefix = prefix
-                    return data
-                except Exception as exc:  # noqa: BLE001
-                    last_exc = exc
-                    continue
-        raise RuntimeError(f"etcd request failed: {last_exc}")
+                        if resp.status_code in {401, 403} and allow_auth and self._user:
+                            self._authenticate()
+                            resp = requests.post(
+                                url,
+                                json=payload,
+                                timeout=timeout_s or self._timeout_s,
+                                verify=self._verify,
+                                cert=self._cert,
+                                headers=self._headers(),
+                            )
+                        if resp.status_code == 404 and prefix != self._active_prefix:
+                            endpoint_404_exc = RuntimeError(f"etcd api not found at {url}")
+                            break
+                        if self._is_transient_status(resp.status_code):
+                            err = RuntimeError(
+                                f"etcd status {resp.status_code} from {url}: {self._response_summary(resp)}"
+                            )
+                            if attempt < self._retry_max:
+                                self._retry_sleep(attempt)
+                                continue
+                            endpoint_non_404_exc = err
+                            break
+                        resp.raise_for_status()
+                        try:
+                            data = resp.json()
+                        except ValueError as exc:
+                            raise RuntimeError(f"etcd non-json response from {url}") from exc
+                        self._active_prefix = prefix
+                        return data
+                    except (requests.Timeout, requests.ConnectionError) as exc:
+                        if attempt < self._retry_max:
+                            self._retry_sleep(attempt)
+                            continue
+                        endpoint_non_404_exc = exc
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        endpoint_non_404_exc = exc
+                        break
+                if endpoint_non_404_exc is not None:
+                    break
+            if endpoint_non_404_exc is not None:
+                last_non_404_exc = endpoint_non_404_exc
+                continue
+            if endpoint_404_exc is not None:
+                last_404_exc = endpoint_404_exc
+                continue
+        final_exc = last_non_404_exc or last_404_exc or RuntimeError("unknown etcd error")
+        raise RuntimeError(f"etcd request failed: {final_exc}")
 
     def range(
         self,
