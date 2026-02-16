@@ -36,6 +36,9 @@ HTTP2_ENFORCE_DOWNSTREAM_H2="${HTTP2_ENFORCE_DOWNSTREAM_H2:-0}"
 WS_DURATION_SECONDS="${WS_DURATION_SECONDS:-600}"
 WS_CONNECTIONS="${WS_CONNECTIONS:-50}"
 WS_HEARTBEAT_SECONDS="${WS_HEARTBEAT_SECONDS:-5}"
+WS_MIN_CONNECTED_RATIO="${WS_MIN_CONNECTED_RATIO:-1}"
+WS_MAX_CONNECT_FAILURE_RATE="${WS_MAX_CONNECT_FAILURE_RATE:-0}"
+WS_MAX_MESSAGE_LOSS="${WS_MAX_MESSAGE_LOSS:-0}"
 LB_SAMPLE_REQUESTS="${LB_SAMPLE_REQUESTS:-5000}"
 LB_MIN_BACKENDS="${LB_MIN_BACKENDS:-2}"
 LB_MAX_SKEW_RATIO="${LB_MAX_SKEW_RATIO:-0.35}"
@@ -47,6 +50,7 @@ PERF_RPS_TARGET="${PERF_RPS_TARGET:-0}"
 PERF_WARMUP_SECONDS="${PERF_WARMUP_SECONDS:-20}"
 PERF_MIN_RPS="${PERF_MIN_RPS:-0}"
 PERF_MAX_P95_MS="${PERF_MAX_P95_MS:-0}"
+PERF_MAX_P99_MS="${PERF_MAX_P99_MS:-0}"
 PERF_MAX_ERROR_RATE="${PERF_MAX_ERROR_RATE:-1}"
 
 RESULTS_DIR="${RESULTS_DIR:-$ROOT_DIR/state/test-results}"
@@ -98,6 +102,9 @@ Options:
   --ws-duration-seconds <n>        WebSocket soak duration for deep checks (default: 600)
   --ws-connections <n>             WebSocket connection count for deep checks (default: 50)
   --ws-heartbeat-seconds <n>       WebSocket heartbeat period (default: 5)
+  --ws-min-connected-ratio <f>     Minimum connected_ratio for ws soak (0..1, default: 1)
+  --ws-max-connect-failure-rate <f> Maximum connect failure rate for ws soak (0..1, default: 0)
+  --ws-max-message-loss <n>        Maximum websocket message_loss (default: 0)
   --lb-sample-requests <n>         Requests used for lb distribution probe (default: 5000)
   --lb-min-backends <n>            Minimum distinct backends for lb probe (default: 2)
   --lb-max-skew-ratio <ratio>      Max allowed lb skew ratio (default: 0.35)
@@ -109,6 +116,7 @@ Options:
   --perf-warmup-seconds <n>        Perf warmup duration before sampling (default: 20)
   --perf-min-rps <n>               Full-profile minimum requests/sec threshold (default: 0 disabled)
   --perf-max-p95-ms <n>            Full-profile maximum p95 latency threshold in ms (default: 0 disabled)
+  --perf-max-p99-ms <n>            Full-profile maximum p99 latency threshold in ms (default: 0 disabled)
   --perf-max-error-rate <n>        Full-profile maximum error rate (0..1, default: 1)
 
   --results-dir <path>             Output directory for matrix artifacts
@@ -608,25 +616,58 @@ perf_full_verdict() {
   local perf_json="$1"
   local min_rps="$2"
   local max_p95="$3"
-  local max_error_rate="$4"
-  python - "$perf_json" "$min_rps" "$max_p95" "$max_error_rate" <<'PY'
+  local max_p99="$4"
+  local max_error_rate="$5"
+  python - "$perf_json" "$min_rps" "$max_p95" "$max_p99" "$max_error_rate" <<'PY'
 import json
 import sys
 
 payload = json.loads(sys.argv[1] or "{}")
 min_rps = float(sys.argv[2])
 max_p95 = float(sys.argv[3])
-max_error_rate = float(sys.argv[4])
+max_p99 = float(sys.argv[4])
+max_error_rate = float(sys.argv[5])
 rps = float(payload.get("rps", 0.0))
 p95 = float((payload.get("latency") or {}).get("p95_ms", 0.0))
+p99 = float((payload.get("latency") or {}).get("p99_ms", 0.0))
 error_rate = float(payload.get("error_rate", 1.0))
 ok = True
 if min_rps > 0:
     ok = ok and rps >= min_rps
 if max_p95 > 0:
     ok = ok and p95 <= max_p95
+if max_p99 > 0:
+    ok = ok and p99 <= max_p99
 if max_error_rate >= 0:
     ok = ok and error_rate <= max_error_rate
+print("1" if ok else "0")
+PY
+}
+
+ws_deep_verdict() {
+  local ws_json="$1"
+  local min_connected_ratio="$2"
+  local max_connect_failure_rate="$3"
+  local max_message_loss="$4"
+  python - "$ws_json" "$min_connected_ratio" "$max_connect_failure_rate" "$max_message_loss" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1] or "{}")
+min_connected_ratio = float(sys.argv[2])
+max_connect_failure_rate = float(sys.argv[3])
+max_message_loss = int(float(sys.argv[4]))
+
+attempted = int(payload.get("attempted_connections") or 0)
+failures = int(payload.get("connect_failures") or 0)
+connected_ratio = float(payload.get("connected_ratio") or 0.0)
+message_loss = int(payload.get("message_loss") or 0)
+failure_rate = (float(failures) / float(attempted)) if attempted > 0 else 1.0
+
+ok = True
+ok = ok and connected_ratio >= min_connected_ratio
+ok = ok and failure_rate <= max_connect_failure_rate
+ok = ok and message_loss <= max_message_loss
 print("1" if ok else "0")
 PY
 }
@@ -772,6 +813,12 @@ postcheck_archetype() {
           log "deep ws probe failed host=$host mode=$mode output=${ws_json:-<empty>}"
           return 1
         fi
+        local ws_ok
+        ws_ok="$(ws_deep_verdict "$ws_json" "$WS_MIN_CONNECTED_RATIO" "$WS_MAX_CONNECT_FAILURE_RATE" "$WS_MAX_MESSAGE_LOSS")"
+        if [[ "$ws_ok" != "1" ]]; then
+          log "deep ws threshold check failed host=$host mode=$mode min_connected_ratio=$WS_MIN_CONNECTED_RATIO max_connect_failure_rate=$WS_MAX_CONNECT_FAILURE_RATE max_message_loss=$WS_MAX_MESSAGE_LOSS output=${ws_json:-<empty>}"
+          return 1
+        fi
         ;;
       lb)
         local strict_distribution_required=0
@@ -789,6 +836,7 @@ scope = sys.argv[1]
 required = bool(int(sys.argv[2]))
 endpoint_count = int(sys.argv[3])
 mode = sys.argv[4]
+assertion_level = "strict_distribution" if required else "policy_switch_only"
 print(
     json.dumps(
         {
@@ -797,6 +845,13 @@ print(
                 "strict_distribution_required": required,
                 "effective_endpoint_count": endpoint_count,
                 "mode": mode,
+                "assertion_level": assertion_level,
+                "observed_via_core": mode == "core-proxy",
+                "observed_backend_count_from_core": 0,
+                "observed_distribution_ok_from_core": False,
+                "observed_backend_identity_header_hits": 0,
+                "observed_backend_identity_body_hits": 0,
+                "observed_from_header": False,
             }
         },
         separators=(",", ":"),
@@ -839,6 +894,38 @@ print(json.dumps({"lb": {"round_robin": json.loads(sys.argv[1])}}, separators=("
 PY
 )"
           POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "$lb_wrap")"
+          local lb_observability_json=""
+          lb_observability_json="$(python - "$lb_rr_json" "$mode" <<'PY'
+import json
+import sys
+rr = json.loads(sys.argv[1] or "{}")
+mode = str(sys.argv[2] or "")
+identity = rr.get("backend_identity")
+header_hits = 0
+body_hits = 0
+if isinstance(identity, dict):
+    try:
+        header_hits = int(identity.get("header_hits") or 0)
+    except Exception:
+        header_hits = 0
+    try:
+        body_hits = int(identity.get("body_hits") or 0)
+    except Exception:
+        body_hits = 0
+payload = {
+    "lb": {
+        "observed_via_core": mode == "core-proxy",
+        "observed_backend_count_from_core": int(rr.get("backend_count") or 0) if mode == "core-proxy" else 0,
+        "observed_distribution_ok_from_core": bool(rr.get("distribution_ok")) if mode == "core-proxy" else False,
+        "observed_backend_identity_header_hits": header_hits if mode == "core-proxy" else 0,
+        "observed_backend_identity_body_hits": body_hits if mode == "core-proxy" else 0,
+        "observed_from_header": (header_hits > 0) if mode == "core-proxy" else False,
+    }
+}
+print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+PY
+)"
+          POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "$lb_observability_json")"
           write_postcheck_outputs "$row_tmp_dir"
         fi
         if [[ "$lb_rr_rc" -ne 0 ]]; then
@@ -973,16 +1060,16 @@ PY
       log "deep perf probe failed host=$host mode=$mode output=${perf_json:-<empty>}"
       return 1
     fi
+    POSTCHECK_PERF_JSON="$(json_merge_objects "$POSTCHECK_PERF_JSON" "{\"http\":$perf_json}")"
+    write_postcheck_outputs "$row_tmp_dir"
     if [[ "$PERF_PROFILE" == "full" ]]; then
       local perf_ok
-      perf_ok="$(perf_full_verdict "$perf_json" "$PERF_MIN_RPS" "$PERF_MAX_P95_MS" "$PERF_MAX_ERROR_RATE")"
+      perf_ok="$(perf_full_verdict "$perf_json" "$PERF_MIN_RPS" "$PERF_MAX_P95_MS" "$PERF_MAX_P99_MS" "$PERF_MAX_ERROR_RATE")"
       if [[ "$perf_ok" != "1" ]]; then
         log "perf full-profile threshold check failed host=$host mode=$mode archetype=$archetype"
         return 1
       fi
     fi
-    POSTCHECK_PERF_JSON="$(json_merge_objects "$POSTCHECK_PERF_JSON" "{\"http\":$perf_json}")"
-    write_postcheck_outputs "$row_tmp_dir"
   fi
 
   return 0
@@ -1124,6 +1211,41 @@ for raw in in_path.read_text(encoding="utf-8").splitlines():
         row["perf"] = perf
     rows.append(row)
 
+def lb_evidence(row: dict) -> dict:
+    evidence = row.get("evidence")
+    if not isinstance(evidence, dict):
+        return {}
+    lb = evidence.get("lb")
+    if not isinstance(lb, dict):
+        return {}
+    return lb
+
+
+lb_rows = [row for row in rows if row.get("archetype") == "lb-distribution"]
+lb_policy_rows = [
+    row for row in lb_rows if str(lb_evidence(row).get("assertion_level") or "") == "policy_switch_only"
+]
+lb_strict_rows = [
+    row for row in lb_rows if str(lb_evidence(row).get("assertion_level") or "") == "strict_distribution"
+]
+lb_core_observability_rows = [
+    row for row in lb_rows if str(lb_evidence(row).get("mode") or "") == "core-proxy"
+]
+
+
+def _core_lb_observable(row: dict) -> bool:
+    if row.get("status") != "pass":
+        return False
+    lb = lb_evidence(row)
+    if not bool(lb.get("observed_via_core")):
+        return False
+    try:
+        backend_count = int(lb.get("observed_backend_count_from_core") or 0)
+    except Exception:
+        backend_count = 0
+    return backend_count >= 1
+
+
 summary = {
     "total_rows": len(rows),
     "passed_rows": sum(1 for row in rows if row["status"] == "pass"),
@@ -1131,6 +1253,15 @@ summary = {
     "deep_checks_passed": all(row.get("status") == "pass" for row in rows),
     "perf_collected": any("perf" in row for row in rows),
     "perf_passed": all((row.get("status") == "pass") for row in rows if "perf" in row),
+    "lb_policy_rows": len(lb_policy_rows),
+    "lb_policy_passed": all(row.get("status") == "pass" for row in lb_policy_rows),
+    "lb_strict_rows": len(lb_strict_rows),
+    "lb_strict_proof_passed": (
+        bool(lb_strict_rows)
+        and all(row.get("status") == "pass" for row in lb_strict_rows)
+    ),
+    "lb_observability_rows": len(lb_core_observability_rows),
+    "lb_observability_passed": all(_core_lb_observable(row) for row in lb_core_observability_rows),
 }
 
 payload = {"summary": summary, "rows": rows}
@@ -1360,6 +1491,18 @@ while [[ $# -gt 0 ]]; do
       WS_HEARTBEAT_SECONDS="${2:-}"
       shift 2
       ;;
+    --ws-min-connected-ratio)
+      WS_MIN_CONNECTED_RATIO="${2:-}"
+      shift 2
+      ;;
+    --ws-max-connect-failure-rate)
+      WS_MAX_CONNECT_FAILURE_RATE="${2:-}"
+      shift 2
+      ;;
+    --ws-max-message-loss)
+      WS_MAX_MESSAGE_LOSS="${2:-}"
+      shift 2
+      ;;
     --lb-sample-requests)
       LB_SAMPLE_REQUESTS="${2:-}"
       shift 2
@@ -1402,6 +1545,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --perf-max-p95-ms)
       PERF_MAX_P95_MS="${2:-}"
+      shift 2
+      ;;
+    --perf-max-p99-ms)
+      PERF_MAX_P99_MS="${2:-}"
       shift 2
       ;;
     --perf-max-error-rate)
@@ -1468,6 +1615,8 @@ fi
 [[ "$PERF_WARMUP_SECONDS" =~ ^[0-9]+$ ]] || die "--perf-warmup-seconds must be an integer"
 [[ "$PERF_MIN_RPS" =~ ^[0-9]+$ ]] || die "--perf-min-rps must be an integer"
 [[ "$PERF_MAX_P95_MS" =~ ^[0-9]+$ ]] || die "--perf-max-p95-ms must be an integer"
+[[ "$PERF_MAX_P99_MS" =~ ^[0-9]+$ ]] || die "--perf-max-p99-ms must be an integer"
+[[ "$WS_MAX_MESSAGE_LOSS" =~ ^[0-9]+$ ]] || die "--ws-max-message-loss must be an integer"
 (( WS_DURATION_SECONDS > 0 )) || die "--ws-duration-seconds must be > 0"
 (( WS_CONNECTIONS > 0 )) || die "--ws-connections must be > 0"
 (( LB_SAMPLE_REQUESTS > 0 )) || die "--lb-sample-requests must be > 0"
@@ -1476,17 +1625,23 @@ fi
 (( PERF_DURATION_SECONDS > 0 )) || die "--perf-duration-seconds must be > 0"
 (( PERF_CONCURRENCY > 0 )) || die "--perf-concurrency must be > 0"
 
-python - "$WS_HEARTBEAT_SECONDS" "$PERF_MAX_ERROR_RATE" "$LB_MAX_SKEW_RATIO" <<'PY'
+python - "$WS_HEARTBEAT_SECONDS" "$PERF_MAX_ERROR_RATE" "$LB_MAX_SKEW_RATIO" "$WS_MIN_CONNECTED_RATIO" "$WS_MAX_CONNECT_FAILURE_RATE" <<'PY'
 import sys
 heartbeat = float(sys.argv[1])
 max_error = float(sys.argv[2])
 lb_max_skew = float(sys.argv[3])
+ws_min_connected_ratio = float(sys.argv[4])
+ws_max_connect_failure_rate = float(sys.argv[5])
 if heartbeat <= 0:
     raise SystemExit("--ws-heartbeat-seconds must be > 0")
 if not (0.0 <= max_error <= 1.0):
     raise SystemExit("--perf-max-error-rate must be between 0 and 1")
 if lb_max_skew < 0:
     raise SystemExit("--lb-max-skew-ratio must be >= 0")
+if not (0.0 <= ws_min_connected_ratio <= 1.0):
+    raise SystemExit("--ws-min-connected-ratio must be between 0 and 1")
+if not (0.0 <= ws_max_connect_failure_rate <= 1.0):
+    raise SystemExit("--ws-max-connect-failure-rate must be between 0 and 1")
 PY
 
 need_cmd rg
@@ -1523,9 +1678,9 @@ log "core_ingress_url=$CORE_INGRESS_URL core_public_ingress_url=$CORE_PUBLIC_ING
 log "edge_backend=${EDGE_BACKEND_SCHEME}://${EDGE_BACKEND_HOST}:<dynamic-port>"
 log "core_proxy_local_addr=$CORE_PROXY_LOCAL_ADDR"
 log "validation_profile=$VALIDATION_PROFILE perf_profile=$PERF_PROFILE"
-log "ws_duration_seconds=$WS_DURATION_SECONDS ws_connections=$WS_CONNECTIONS ws_heartbeat_seconds=$WS_HEARTBEAT_SECONDS"
+log "ws_duration_seconds=$WS_DURATION_SECONDS ws_connections=$WS_CONNECTIONS ws_heartbeat_seconds=$WS_HEARTBEAT_SECONDS ws_min_connected_ratio=$WS_MIN_CONNECTED_RATIO ws_max_connect_failure_rate=$WS_MAX_CONNECT_FAILURE_RATE ws_max_message_loss=$WS_MAX_MESSAGE_LOSS"
 log "lb_sample_requests=$LB_SAMPLE_REQUESTS lb_min_backends=$LB_MIN_BACKENDS lb_max_skew_ratio=$LB_MAX_SKEW_RATIO lb_proof_scope=$LB_PROOF_SCOPE sticky_requests_per_client=$STICKY_REQUESTS_PER_CLIENT"
-log "perf_duration_seconds=$PERF_DURATION_SECONDS perf_concurrency=$PERF_CONCURRENCY perf_warmup_seconds=$PERF_WARMUP_SECONDS"
+log "perf_duration_seconds=$PERF_DURATION_SECONDS perf_concurrency=$PERF_CONCURRENCY perf_warmup_seconds=$PERF_WARMUP_SECONDS perf_min_rps=$PERF_MIN_RPS perf_max_p95_ms=$PERF_MAX_P95_MS perf_max_p99_ms=$PERF_MAX_P99_MS perf_max_error_rate=$PERF_MAX_ERROR_RATE"
 log "http2_enforce_downstream_h2=$HTTP2_ENFORCE_DOWNSTREAM_H2"
 log "results_json=$RESULT_JSON"
 
