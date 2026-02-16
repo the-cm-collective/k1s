@@ -106,8 +106,8 @@ for i in "${!RESULT_JSONS[@]}"; do
       ((if ($rows|length) > 0 then (($rows | map(.perf.http.error_rate // 0) | add) / ($rows|length)) else 0 end) | tostring),
       (([ $rows[] | select(.archetype=="ws-echo") | .evidence.ws.connected_ratio // 0 ][0] // 0) | tostring),
       (([ $rows[] | select(.archetype=="ws-echo") | ((.evidence.ws.connect_failures // 0) / ((.evidence.ws.attempted_connections // 0) | if . > 0 then . else 1 end)) ][0] // 0) | tostring),
-      $ARGS.positional[0],
-      $ARGS.positional[1]
+      $ARGS.named.result_json,
+      $ARGS.named.lane_status
     ] | @tsv
   ' "$result_json" --args "$lane_status" |
   awk -F'\t' '{ printf "%-4s | %-9s | %-5s | %-5s | %-8.2f | %-8.2f | %-8.2f | %-8.4f | %-8.3f | %-8.3f | %s\n", $1,$11,$2,$3,$4,$5,$6,$7,$8,$9,$10 }'
