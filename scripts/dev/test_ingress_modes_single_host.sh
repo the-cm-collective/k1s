@@ -76,7 +76,7 @@ Options:
   --edge-backend-url <url>         Edge backend URL (default: http://127.0.0.1:18081/)
   --public-good-url <url>          Public endpoint URL for mode 2 (default: edge backend URL)
   --public-bad-url <url>           Broken public endpoint URL for strict mode 2
-  --edge-local-listener-url <url>  Tier2 edge-local ingress URL (optional; defaults to https://127.0.0.1:${CADDY_HTTPS_PORT:-8443}/)
+  --edge-local-listener-url <url>  Tier2 edge-local ingress URL (optional; defaults to https://<route-host>/)
   --core-proxy-http-path <path>    Path probed on core HTTP listener (default: /)
   --core-proxy-tls-path <path>     Path probed on core TLS listener (default: core-proxy-http-path)
   --core-public-http-path <path>   Path probed for core-to-edge-public mode (default: /)
@@ -95,7 +95,7 @@ Examples:
   scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier1
   scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier2
   scripts/dev/test_ingress_modes_single_host.sh --mode edge-local --tier tier2 \
-    --edge-local-listener-url https://127.0.0.1:11443/
+    --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/
 USAGE
 }
 
@@ -196,6 +196,145 @@ wait_for_pattern() {
   fi
   die "timed out waiting for pattern '$pattern' to disappear from $file"
 }
+listener_present() {
+  local port="$1"
+  ss -ltn 2>/dev/null | rg -q ":${port}\\b"
+}
+
+wait_for_listener_port() {
+  local port="$1"
+  local timeout="$2"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    if listener_present "$port"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+require_controller_running_for_core_proxy() {
+  local pid
+  pid="$(pgrep -f "python -m ae.controller" | head -n1 || true)"
+  [[ -n "$pid" ]] || die "core-proxy preflight failed: controller loop is not running (start with make k1s-core)"
+}
+
+core_proxy_route_requires_tls() {
+  local route_file="$1"
+  rg -n --quiet "mode:[[:space:]]*terminate-core" "$route_file"
+}
+
+core_proxy_site_port_from_rathole_server() {
+  local site_id="$1"
+  local cfg="${2:-$ROOT_DIR/state/profiles/k1s-core/edge-ingress/rathole-server.toml}"
+  python - "$site_id" "$cfg" <<'PY'
+import re
+import sys
+
+site = sys.argv[1]
+path = sys.argv[2]
+try:
+    text = open(path, encoding="utf-8").read()
+except Exception:
+    print("")
+    raise SystemExit(0)
+pat = rf'\[server\.services\."{re.escape(site)}"\][^\[]*?bind_addr\s*=\s*"[^"]*:(\d+)"'
+m = re.search(pat, text, flags=re.S)
+print(m.group(1) if m else "")
+PY
+}
+
+core_proxy_restart_rathole_server() {
+  [[ "${CORE_PROXY_FORCE_RATHOLE_RESTART:-0}" == "1" ]] || return 0
+
+  local cfg="${CORE_RATHOLE_SERVER_CONFIG:-$ROOT_DIR/state/profiles/k1s-core/edge-ingress/rathole-server.toml}"
+  [[ -f "$cfg" ]] || die "core-proxy transport preflight failed: missing rathole server config: $cfg"
+
+  local py_bin="${PYTHON_BIN:-}"
+  if [[ -z "$py_bin" || ! -x "$py_bin" ]]; then
+    if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+      py_bin="${VIRTUAL_ENV}/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+      py_bin="$(command -v python3)"
+    elif command -v python >/dev/null 2>&1; then
+      py_bin="$(command -v python)"
+    else
+      die "core-proxy transport preflight failed: python interpreter not found for cri_stack reload"
+    fi
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -E env PATH="$PATH" "$py_bin" "$ROOT_DIR/scripts/dev/cri_stack.py" up-rathole-server \
+      --profile k1s-core \
+      --config "$cfg" >/dev/null || die "core-proxy transport preflight failed: unable to restart core rathole server"
+  else
+    "$py_bin" "$ROOT_DIR/scripts/dev/cri_stack.py" up-rathole-server \
+      --profile k1s-core \
+      --config "$cfg" >/dev/null || die "core-proxy transport preflight failed: unable to restart core rathole server"
+  fi
+}
+
+
+wait_for_core_proxy_site_port_from_rathole_server() {
+  local site_id="$1"
+  local cfg="$2"
+  local timeout="$3"
+  local deadline=$((SECONDS + timeout))
+  local port=""
+
+  while (( SECONDS < deadline )); do
+    port="$(core_proxy_site_port_from_rathole_server "$site_id" "$cfg")"
+    if [[ -n "$port" ]]; then
+      printf '%s\n' "$port"
+      return 0
+    fi
+    sleep 1
+  done
+
+  return 1
+}
+
+core_proxy_transport_post_stage_check() {
+  local route_file="$1"
+  local route_host="$2"
+  local site_port tls_required rathole_cfg
+
+  need_cmd ss
+  need_cmd pgrep
+  require_controller_running_for_core_proxy
+
+  wait_for_listener_port "10080" 5 || die "core-proxy transport preflight failed: missing listener 10080"
+
+  tls_required=0
+  if core_proxy_route_requires_tls "$route_file"; then
+    tls_required=1
+    wait_for_listener_port "10443" "$HTTP_ASSERT_TIMEOUT_S" || die "core-proxy transport preflight failed: route host=$route_host rendered but TLS listener 10443 is missing (edge_listener_tls not active)"
+  fi
+
+  if [[ "$MODE" == "core-proxy" ]]; then
+    if [[ "${CORE_PROXY_FORCE_RATHOLE_RESTART:-0}" == "1" ]]; then
+      core_proxy_restart_rathole_server
+    fi
+
+    rathole_cfg="${CORE_RATHOLE_SERVER_CONFIG:-$ROOT_DIR/state/profiles/k1s-core/edge-ingress/rathole-server.toml}"
+    [[ -f "$rathole_cfg" ]] || die "core-proxy transport preflight failed: missing rathole server config: $rathole_cfg"
+
+    if ! site_port="$(wait_for_core_proxy_site_port_from_rathole_server "$SITE_ID" "$rathole_cfg" "$HTTP_ASSERT_TIMEOUT_S")"; then
+      die "core-proxy transport preflight failed: site '$SITE_ID' service stanza not rendered in rathole server config: $rathole_cfg"
+    fi
+
+    wait_for_listener_port "2333" "$HTTP_ASSERT_TIMEOUT_S" || die "core-proxy transport preflight failed: rathole server listener 2333 is missing"
+    wait_for_listener_port "$site_port" "$HTTP_ASSERT_TIMEOUT_S" || die "core-proxy transport preflight failed: expected site tunnel listener $site_port is missing for site=$SITE_ID"
+  fi
+
+  if [[ "$tls_required" -eq 1 ]]; then
+    log "core-proxy transport preflight passed listeners=10080,10443,2333"
+  else
+    log "core-proxy transport preflight passed listeners=10080,2333"
+  fi
+}
+
 
 edge_local_recovery_hint() {
   cat >&2 <<EOF
@@ -491,8 +630,14 @@ check_edge_backend_health_or_skip() {
 }
 
 resolve_edge_local_listener_url() {
+  local host="${1:-}"
   if [[ -n "$EDGE_LOCAL_LISTENER_URL" ]]; then
     printf '%s\n' "$EDGE_LOCAL_LISTENER_URL"
+    return
+  fi
+
+  if [[ -n "$host" ]]; then
+    printf 'https://%s/\n' "$host"
     return
   fi
 
@@ -602,7 +747,7 @@ assert_http_2xx_with_hint() {
     return
   fi
   if [[ "$code" == "000" ]]; then
-    die "${hint_context}: expected 2xx for host=$host url=$url within ${HTTP_ASSERT_TIMEOUT_S}s, got 000 (connect/TLS failure). Verify listener URL/port and Caddy bind (common mismatch: 11443 vs ${CADDY_HTTPS_PORT:-8443})."
+    die "${hint_context}: expected 2xx for host=$host url=$url within ${HTTP_ASSERT_TIMEOUT_S}s, got 000 (connect/TLS failure). Verify listener URL/port and Caddy bind; for edge-local prefer a host URL such as https://<route-host>/"
   fi
   die "${hint_context}: expected 2xx for host=$host url=$url within ${HTTP_ASSERT_TIMEOUT_S}s, got $code"
 }
@@ -706,6 +851,7 @@ PY
 
   stage_file "$route_src" "$route_dst"
   wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
+  core_proxy_transport_post_stage_check "$route_dst" "$route_host"
   assert_http_2xx_or_3xx "$http_url" "$route_host"
   assert_http_2xx "$tls_url" "$route_host"
   rm -f "$mutated"
@@ -730,6 +876,7 @@ run_core_proxy_tier1() {
   tls_url="${CORE_INGRESS_TLS_URL%/}${tls_path}"
 
   wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
+  core_proxy_transport_post_stage_check "$route_dst" "$route_host"
   # Route fixture enables redirectHttpToHttps, so HTTP may return 301.
   assert_http_2xx_or_3xx "$http_url" "$route_host"
   assert_http_2xx "$tls_url" "$route_host"
@@ -760,6 +907,7 @@ run_core_proxy_tier2() {
   tls_url="${CORE_INGRESS_TLS_URL%/}${tls_path}"
 
   wait_for_pattern "$CORE_ENVOY_CONFIG" "$route_host" "$WAIT_TIMEOUT_S" present
+  core_proxy_transport_post_stage_check "$route_dst" "$route_host"
   assert_http_2xx_or_3xx "$http_url" "$route_host"
   assert_http_2xx "$tls_url" "$route_host"
 
@@ -933,7 +1081,7 @@ run_edge_local_tier2() {
   [[ -n "$route_host" ]] || die_edge_local_preflight "edge-local preflight failed: staged route missing spec.host in $route_dst"
 
   wait_for_edge_local_render "$route_host" "$EDGE_LOCAL_CADDY_FILE" "$WAIT_TIMEOUT_S"
-  listener_url="$(resolve_edge_local_listener_url)"
+  listener_url="$(resolve_edge_local_listener_url "$route_host")"
   assert_http_2xx_with_hint "$listener_url" "$route_host" "edge-local tier2"
   log "edge-local tier2 passed listener_url=$listener_url host=$route_host"
 
@@ -1098,7 +1246,11 @@ if [[ "$MODE" == "core-proxy" ]]; then
 elif [[ "$MODE" == "core-to-edge-public" ]]; then
   log "core_public_http_path=$CORE_PUBLIC_HTTP_PATH"
 elif [[ "$MODE" == "edge-local" && ( "$TIER" == "tier2" || "$TIER" == "both" ) ]]; then
-  log "edge_local_listener_url=$(resolve_edge_local_listener_url)"
+  if [[ -n "$EDGE_LOCAL_LISTENER_URL" ]]; then
+    log "edge_local_listener_url=$EDGE_LOCAL_LISTENER_URL"
+  else
+    log "edge_local_listener_url=auto (https://<route-host>/)"
+  fi
 fi
 
 apply_workload_and_wait

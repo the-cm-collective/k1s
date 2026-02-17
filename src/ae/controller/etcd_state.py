@@ -255,7 +255,14 @@ class EtcdHttpClient:
                 last_404_exc = endpoint_404_exc
                 continue
         final_exc = last_non_404_exc or last_404_exc or RuntimeError("unknown etcd error")
-        raise RuntimeError(f"etcd request failed: {final_exc}")
+        final_msg = f"etcd request failed: {final_exc}"
+        if "mvcc: database space exceeded" in str(final_exc).lower():
+            final_msg = (
+                f"{final_msg}. etcd quota is exhausted; run "
+                "scripts/dev/etcd_maintenance.sh compact-defrag "
+                "or reset dev state (make dev-state-clean CONFIRM=1)."
+            )
+        raise RuntimeError(final_msg)
 
     def range(
         self,

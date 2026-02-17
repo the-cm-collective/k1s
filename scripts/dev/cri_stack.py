@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
+import fcntl
 import json
 import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -141,16 +145,37 @@ def _container_pod_id(item: dict) -> str:
 def _component_running_container(pod_id: str, component: str) -> bool:
     if not pod_id:
         return False
+    pod_has_running = False
     for c in _list_containers():
         if _container_pod_id(c) != pod_id:
             continue
+        state = str(c.get("state") or "").upper()
+        if state == "CONTAINER_RUNNING":
+            pod_has_running = True
         labels = _labels(c)
         if labels.get("ae.stack.component") != component:
             continue
-        state = str(c.get("state") or "").upper()
         if state == "CONTAINER_RUNNING":
             return True
-    return False
+    # Fallback for transient label/list races: if the pod has a running container,
+    # treat the component as running to avoid false container-not-running churn.
+    return pod_has_running
+
+
+def _component_running_elsewhere(profile: str, component: str, exclude_pod_id: str = "") -> str | None:
+    for c in _list_containers():
+        labels = _labels(c)
+        if labels.get("ae.stack.profile") != profile:
+            continue
+        if labels.get("ae.stack.component") != component:
+            continue
+        pod = _container_pod_id(c)
+        if exclude_pod_id and pod == exclude_pod_id:
+            continue
+        state = str(c.get("state") or "").upper()
+        if state == "CONTAINER_RUNNING":
+            return pod or "unknown"
+    return None
 
 
 def _remove_pod(pod_id: str) -> None:
@@ -158,6 +183,154 @@ def _remove_pod(pod_id: str) -> None:
         return
     _crictl(["stopp", pod_id], check=False)
     _crictl(["rmp", pod_id], check=False)
+
+
+def _events_log_path(profile: str) -> Path:
+    return ROOT / "state" / "profiles" / profile / "cri" / "events.log"
+
+
+def _record_event(profile: str, component: str, action: str, reason: str, details: str = "") -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    line = f"{ts} component={component} action={action} reason={reason}"
+    if details:
+        line = f"{line} {details}"
+    path = _events_log_path(profile)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
+def _stable_hash(parts: list[str]) -> str:
+    digest = hashlib.sha256()
+    for part in parts:
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()[:16]
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(64 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _rathole_server_has_services(config_path: Path) -> bool:
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[server.services."):
+            return True
+    return False
+
+
+def _read_int_file(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return None
+        return int(raw)
+    except Exception:
+        return None
+
+
+def _write_int_file(path: Path, value: int) -> bool:
+    try:
+        path.write_text(f"{int(value)}\n", encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def _count_inotify_watches(top_n: int = 3) -> tuple[int, list[tuple[int, int, str]]]:
+    per_pid: dict[int, int] = {}
+    proc_root = Path("/proc")
+    try:
+        proc_entries = list(proc_root.iterdir())
+    except Exception:
+        return 0, []
+
+    for proc_entry in proc_entries:
+        name = proc_entry.name
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        fdinfo_dir = proc_entry / "fdinfo"
+        if not fdinfo_dir.is_dir():
+            continue
+        pid_count = 0
+        try:
+            fd_entries = list(fdinfo_dir.iterdir())
+        except Exception:
+            continue
+        for fdinfo in fd_entries:
+            try:
+                with fdinfo.open("r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        if line.startswith("inotify"):
+                            pid_count += 1
+            except Exception:
+                continue
+        if pid_count > 0:
+            per_pid[pid] = pid_count
+
+    total = sum(per_pid.values())
+    top: list[tuple[int, int, str]] = []
+    for pid, count in sorted(per_pid.items(), key=lambda item: item[1], reverse=True)[:top_n]:
+        cmd = ""
+        try:
+            cmd_raw = (Path(f"/proc/{pid}/cmdline")).read_bytes()
+            cmd = cmd_raw.replace(b"\x00", b" ").decode("utf-8", "ignore").strip()
+        except Exception:
+            cmd = ""
+        top.append((pid, count, cmd))
+    return total, top
+
+
+def _rathole_inotify_mitigate(component: str) -> str | None:
+    warn_pct = int(os.getenv("AE_RATHOLE_INOTIFY_WARN_PCT", "95") or "95")
+    auto_tune = _truthy(os.getenv("AE_RATHOLE_INOTIFY_AUTOTUNE", "1"))
+    max_cap = int(os.getenv("AE_RATHOLE_INOTIFY_MAX_WATCHES", "4194304") or "4194304")
+
+    max_path = Path("/proc/sys/fs/inotify/max_user_watches")
+    max_watches = _read_int_file(max_path)
+    if max_watches is None or max_watches <= 0:
+        return None
+
+    used, top = _count_inotify_watches(top_n=3)
+    pct = int((used * 100) / max_watches) if max_watches > 0 else 0
+    if pct < warn_pct:
+        return None
+
+    top_summary = ", ".join(
+        f"{pid}:{count}:{(cmd[:60] + '...') if len(cmd) > 60 else cmd}"
+        for pid, count, cmd in top
+    )
+
+    if auto_tune and os.geteuid() == 0:
+        target = max(max_watches * 2, used + 131072)
+        target = min(target, max_cap)
+        if target > max_watches and _write_int_file(max_path, target):
+            return (
+                f"{component}: high inotify usage detected ({used}/{max_watches}, {pct}%). "
+                f"Raised fs.inotify.max_user_watches to {target}. "
+                f"top={top_summary or '-'}"
+            )
+
+    return (
+        f"{component}: high inotify usage detected ({used}/{max_watches}, {pct}%). "
+        "Rathole may exit immediately with state=Completed. Free watches "
+        "(for example close heavy file-watchers) or raise "
+        "fs.inotify.max_user_watches. "
+        f"top={top_summary or '-'}"
+    )
 
 
 def _resolve_registry_host() -> str:
@@ -378,6 +551,24 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+
+
+def _component_lock_path(profile: str, component: str) -> Path:
+    return ROOT / "state" / "profiles" / profile / "cri" / ".locks" / f"{component}.lock"
+
+
+@contextlib.contextmanager
+def _component_lock(profile: str, component: str):
+    path = _component_lock_path(profile, component)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def _start_component(
     *,
     profile: str,
@@ -390,14 +581,70 @@ def _start_component(
     mounts: list[dict[str, object]] | None = None,
     recreate: bool = False,
     resolve_image: bool = True,
+    rollout_key: str | None = None,
+    stable_seconds: int = 0,
+) -> None:
+    with _component_lock(profile, component):
+        _start_component_unlocked(
+            profile=profile,
+            component=component,
+            image=image,
+            runtime_handler=runtime_handler,
+            command=command,
+            args=args,
+            env=env,
+            mounts=mounts,
+            recreate=recreate,
+            resolve_image=resolve_image,
+            rollout_key=rollout_key,
+            stable_seconds=stable_seconds,
+        )
+
+def _start_component_unlocked(
+    *,
+    profile: str,
+    component: str,
+    image: str,
+    runtime_handler: str | None = None,
+    command: list[str] | None = None,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    mounts: list[dict[str, object]] | None = None,
+    recreate: bool = False,
+    resolve_image: bool = True,
+    rollout_key: str | None = None,
+    stable_seconds: int = 0,
 ) -> None:
     labels = _component_labels(profile, component)
+    if rollout_key:
+        labels["ae.stack.rollout"] = rollout_key
     existing = _find_pod(profile, component)
     if existing is not None:
+        existing_labels = _labels(existing)
         pod_id = _pod_id(existing)
-        if _component_running_container(pod_id, component) and not recreate:
-            print(f"[cri-stack] {component}: already running")
-            return
+        running = _component_running_container(pod_id, component)
+        if running and not recreate:
+            if rollout_key:
+                current_key = existing_labels.get("ae.stack.rollout", "")
+                if current_key == rollout_key:
+                    print(f"[cri-stack] {component}: already running")
+                    _record_event(profile, component, "reuse", "rollout-match", f"pod={pod_id}")
+                    return
+                reason = "rollout-changed" if current_key else "rollout-missing"
+                _record_event(
+                    profile,
+                    component,
+                    "recreate",
+                    reason,
+                    f"pod={pod_id} old={current_key or '-'} new={rollout_key}",
+                )
+            else:
+                print(f"[cri-stack] {component}: already running")
+                _record_event(profile, component, "reuse", "already-running", f"pod={pod_id}")
+                return
+        else:
+            reason = "explicit-recreate" if recreate else "container-not-running"
+            _record_event(profile, component, "recreate", reason, f"pod={pod_id}")
         _remove_pod(pod_id)
 
     resolved_image = _resolve_image_ref(image) if resolve_image else image
@@ -438,10 +685,72 @@ def _start_component(
 
     for _ in range(30):
         if _component_running_container(pod_id, component):
+            if stable_seconds > 0:
+                stable_deadline = time.monotonic() + float(stable_seconds)
+                while time.monotonic() < stable_deadline:
+                    if not _component_running_container(pod_id, component):
+                        # Debounce transient CRI/list races before treating as unstable.
+                        time.sleep(0.5)
+                        if _component_running_container(pod_id, component):
+                            continue
+
+                        inspect_state = ""
+                        inspect_reason = ""
+                        inspect_message = ""
+                        inspect_exit = None
+                        try:
+                            inspect_proc = _crictl(["inspect", container_id], check=False)
+                            if inspect_proc.returncode == 0 and inspect_proc.stdout.strip():
+                                payload = json.loads(inspect_proc.stdout)
+                                status = payload.get("status") or {}
+                                inspect_state = str(status.get("state") or "")
+                                inspect_reason = str(status.get("reason") or "")
+                                inspect_message = str(status.get("message") or "")
+                                inspect_exit = status.get("exitCode")
+                        except Exception:
+                            inspect_state = "INSPECT_FAILED"
+
+                        # If direct inspect still shows running/starting, keep waiting.
+                        if inspect_state in {"CONTAINER_RUNNING", "CONTAINER_CREATED", ""}:
+                            time.sleep(0.2)
+                            continue
+
+                        handoff_pod = _component_running_elsewhere(profile, component, exclude_pod_id=pod_id)
+                        if handoff_pod:
+                            _record_event(
+                                profile,
+                                component,
+                                "start",
+                                "running-handoff",
+                                f"from={pod_id} to={handoff_pod} container={container_id}",
+                            )
+                            print(f"[cri-stack] {component}: running (handoff)")
+                            return
+
+                        inspect_summary = (
+                            f"state={inspect_state or '-'} "
+                            f"exit={inspect_exit if inspect_exit is not None else '-'} "
+                            f"reason={inspect_reason or '-'} "
+                            f"message={inspect_message or '-'}"
+                        )
+                        _remove_pod(pod_id)
+                        _record_event(
+                            profile,
+                            component,
+                            "start",
+                            "failed-unstable",
+                            f"pod={pod_id} container={container_id} {inspect_summary}".strip(),
+                        )
+                        raise RuntimeError(
+                            f"component exited before stability window ({stable_seconds}s): {component}"
+                        )
+                    time.sleep(0.2)
             print(f"[cri-stack] {component}: running")
+            _record_event(profile, component, "start", "running", f"pod={pod_id} container={container_id}")
             return
         time.sleep(0.2)
     _remove_pod(pod_id)
+    _record_event(profile, component, "start", "failed-not-running", f"pod={pod_id} container={container_id}")
     raise RuntimeError(f"component did not reach running state: {component}")
 
 
@@ -704,6 +1013,15 @@ def _start_envoy(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
+    cfg_hash = _file_sha256(config)
+    rollout_key = _stable_hash(
+        [
+            "envoy",
+            str(_resolve_runtime_handler(runtime_handler) or ""),
+            str(os.getenv("AE_ENVOY_IMAGE", "docker.io/envoyproxy/envoy:v1.29-latest")),
+            cfg_hash,
+        ]
+    )
     state_dir = (ROOT / "state").resolve()
     mounts: list[dict[str, object]] = [
         _mount(config, "/etc/envoy/envoy.yaml", readonly=True),
@@ -739,6 +1057,7 @@ def _start_envoy(
         command=["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"],
         mounts=deduped_mounts,
         recreate=recreate,
+        rollout_key=rollout_key,
     )
 
 
@@ -749,15 +1068,48 @@ def _start_rathole_server(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
-    _start_component(
-        profile=profile,
-        component="k1s-core-rathole",
-        image=os.getenv("AE_RATHOLE_IMAGE", "docker.io/rapiz1/rathole:v0.5.0"),
-        runtime_handler=runtime_handler,
-        args=["--server", "/etc/rathole/server.toml"],
-        mounts=[_mount(config, "/etc/rathole/server.toml", readonly=True)],
-        recreate=recreate,
+    cfg_hash = _file_sha256(config)
+    rollout_key = _stable_hash(
+        [
+            "rathole-server",
+            str(_resolve_runtime_handler(runtime_handler) or ""),
+            str(os.getenv("AE_RATHOLE_IMAGE", "docker.io/rapiz1/rathole:v0.5.0")),
+            cfg_hash,
+        ]
     )
+    stable_seconds = 2 if _rathole_server_has_services(config) else 0
+    try:
+        _start_component(
+            profile=profile,
+            component="k1s-core-rathole",
+            image=os.getenv("AE_RATHOLE_IMAGE", "docker.io/rapiz1/rathole:v0.5.0"),
+            runtime_handler=runtime_handler,
+            args=["--server", "/etc/rathole/server.toml"],
+            mounts=[_mount(config, "/etc/rathole/server.toml", readonly=True)],
+            recreate=recreate,
+            rollout_key=rollout_key,
+            stable_seconds=stable_seconds,
+        )
+    except RuntimeError as exc:
+        if "stability window" not in str(exc):
+            raise
+        note = _rathole_inotify_mitigate("k1s-core-rathole")
+        if note:
+            print(f"[cri-stack] WARNING: {note}")
+            _record_event(profile, "k1s-core-rathole", "diagnose", "inotify-pressure", note)
+        _record_event(profile, "k1s-core-rathole", "retry", "unstable-first-start")
+        time.sleep(1)
+        _start_component(
+            profile=profile,
+            component="k1s-core-rathole",
+            image=os.getenv("AE_RATHOLE_IMAGE", "docker.io/rapiz1/rathole:v0.5.0"),
+            runtime_handler=runtime_handler,
+            args=["--server", "/etc/rathole/server.toml"],
+            mounts=[_mount(config, "/etc/rathole/server.toml", readonly=True)],
+            recreate=True,
+            rollout_key=rollout_key,
+            stable_seconds=stable_seconds,
+        )
 
 
 def _start_edge_nats(
@@ -788,15 +1140,60 @@ def _start_rathole_client(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
-    _start_component(
-        profile=profile,
-        component=f"k1s-edge-rathole-{site_id}-{node_id}",
-        image=os.getenv("AE_RATHOLE_IMAGE", "docker.io/rapiz1/rathole:v0.5.0"),
-        runtime_handler=runtime_handler,
-        args=["--client", "/etc/rathole/client.toml"],
-        mounts=[_mount(config, "/etc/rathole/client.toml", readonly=True)],
-        recreate=recreate,
+    cfg_hash = _file_sha256(config)
+    rollout_key = _stable_hash(
+        [
+            "rathole-client",
+            site_id,
+            node_id,
+            str(_resolve_runtime_handler(runtime_handler) or ""),
+            str(os.getenv("AE_RATHOLE_IMAGE", "docker.io/rapiz1/rathole:v0.5.0")),
+            cfg_hash,
+        ]
     )
+    try:
+        stable_seconds_raw = os.getenv("AE_RATHOLE_CLIENT_STABLE_SECONDS", "0").strip()
+        try:
+            stable_seconds = max(0, int(stable_seconds_raw or "0"))
+        except Exception:
+            stable_seconds = 0
+        _start_component(
+            profile=profile,
+            component=f"k1s-edge-rathole-{site_id}-{node_id}",
+            image=os.getenv("AE_RATHOLE_IMAGE", "docker.io/rapiz1/rathole:v0.5.0"),
+            runtime_handler=runtime_handler,
+            args=["--client", "/etc/rathole/client.toml"],
+            mounts=[_mount(config, "/etc/rathole/client.toml", readonly=True)],
+            recreate=recreate,
+            rollout_key=rollout_key,
+            stable_seconds=stable_seconds,
+        )
+    except RuntimeError as exc:
+        if "stability window" not in str(exc):
+            raise
+        note = _rathole_inotify_mitigate(f"k1s-edge-rathole-{site_id}-{node_id}")
+        if note:
+            print(f"[cri-stack] WARNING: {note}")
+            _record_event(
+                profile,
+                f"k1s-edge-rathole-{site_id}-{node_id}",
+                "diagnose",
+                "inotify-pressure",
+                note,
+            )
+        _record_event(profile, f"k1s-edge-rathole-{site_id}-{node_id}", "retry", "unstable-first-start")
+        time.sleep(1)
+        _start_component(
+            profile=profile,
+            component=f"k1s-edge-rathole-{site_id}-{node_id}",
+            image=os.getenv("AE_RATHOLE_IMAGE", "docker.io/rapiz1/rathole:v0.5.0"),
+            runtime_handler=runtime_handler,
+            args=["--client", "/etc/rathole/client.toml"],
+            mounts=[_mount(config, "/etc/rathole/client.toml", readonly=True)],
+            recreate=True,
+            rollout_key=rollout_key,
+            stable_seconds=stable_seconds,
+        )
 
 
 def _down_profile(profile: str) -> None:

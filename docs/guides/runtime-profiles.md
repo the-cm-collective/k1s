@@ -104,6 +104,11 @@ Mode behavior:
 - `edge-local`: no core ingress; the gateway renders an edge-local Caddyfile if enabled.
 - For canonical WG/Rosenpass multi-site patterns (production + single-host), see Option D in `docs/guides/multinode-lab.md`.
 
+Ingress deep validation defaults (CRI lanes):
+- Primary lane: `core-proxy` deep/deep+perf (`lb-proof-scope=auto`) for policy + observability checks.
+- Strict LB proof lane: `edge-local` deep (`lb-proof-scope=edge-only`) for distribution proof.
+- Canonical command sequence: `docs/guides/ingress-capability-test-sequence.md`.
+
 ## Core + Edge pairings
 
 JetStream path (k1s-core + edge running JetStream work queue):

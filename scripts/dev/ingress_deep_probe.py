@@ -116,23 +116,41 @@ def _http_request(
             pass
 
 
-def _extract_backend_id(body: bytes) -> str:
+def _extract_backend_id_with_source(
+    body: bytes,
+    headers: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    header_map = headers or {}
+    for key in (
+        "x-k1s-edge-backend",
+        "x-k1s-backend-id",
+        "x-backend-id",
+    ):
+        value = str(header_map.get(key) or "").strip()
+        if value:
+            return value, "header"
+
     text = body.decode("utf-8", "replace").strip()
     if not text:
-        return "empty"
+        return "empty", "body"
     try:
         payload = json.loads(text)
     except Exception:
-        return f"raw:{hashlib.sha1(body).hexdigest()[:12]}"  # noqa: S324
+        return f"raw:{hashlib.sha1(body).hexdigest()[:12]}", "body"  # noqa: S324
 
     for key in ("backend_id", "backend", "id", "hostname"):
         value = payload.get(key)
         if value:
-            return str(value)
+            return str(value), "body"
     os_obj = payload.get("os")
     if isinstance(os_obj, dict) and os_obj.get("hostname"):
-        return str(os_obj["hostname"])
-    return f"json:{hashlib.sha1(text.encode('utf-8')).hexdigest()[:12]}"  # noqa: S324
+        return str(os_obj["hostname"]), "body"
+    return f"json:{hashlib.sha1(text.encode('utf-8')).hexdigest()[:12]}", "body"  # noqa: S324
+
+
+def _extract_backend_id(body: bytes, headers: dict[str, str] | None = None) -> str:
+    backend_id, _source = _extract_backend_id_with_source(body, headers=headers)
+    return backend_id
 
 
 def _ws_connect(endpoint: Endpoint, host_header: str, timeout: float) -> socket.socket:
@@ -331,6 +349,8 @@ def run_lb_sample(args: argparse.Namespace) -> int:
     backends: Counter[str] = Counter()
     codes: Counter[int] = Counter()
     errors = 0
+    backend_header_hits = 0
+    backend_body_hits = 0
     started = time.perf_counter()
 
     for _ in range(requests):
@@ -339,7 +359,12 @@ def run_lb_sample(args: argparse.Namespace) -> int:
             codes[code] += 1
             latencies.append(elapsed_ms)
             if 200 <= code < 400:
-                backends[_extract_backend_id(body)] += 1
+                backend_id, source = _extract_backend_id_with_source(body, headers=_headers)
+                if source == "header":
+                    backend_header_hits += 1
+                else:
+                    backend_body_hits += 1
+                backends[backend_id] += 1
             else:
                 errors += 1
         except Exception:
@@ -368,6 +393,11 @@ def run_lb_sample(args: argparse.Namespace) -> int:
         "backend_count": len(backend_counts),
         "distribution_ok": distribution_ok,
         "max_skew_ratio": max_skew,
+        "backend_identity": {
+            "header_name": "x-k1s-edge-backend",
+            "header_hits": backend_header_hits,
+            "body_hits": backend_body_hits,
+        },
         "latency": _latency_summary(latencies),
         "rps": float(requests) / elapsed_s,
     }

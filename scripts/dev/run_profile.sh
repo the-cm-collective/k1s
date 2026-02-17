@@ -1261,6 +1261,24 @@ ensure_dev_local() {
       "$ROOT_DIR/scripts/dev/ensure_dev_local.sh" || true
   fi
 }
+run_etcd_maintenance_cmd() {
+  local action="$1"
+  local script="$ROOT_DIR/scripts/dev/etcd_maintenance.sh"
+  if [[ ! -x "$script" ]]; then
+    echo "warning: etcd maintenance helper not found: $script" >&2
+    return 0
+  fi
+  "$script" "$action"
+}
+
+ensure_etcd_maintenance() {
+  if ! is_truthy "${AE_ETCD_MAINTENANCE_ENABLE:-1}"; then
+    return 0
+  fi
+  run_etcd_maintenance_cmd status >/dev/null || echo "warning: etcd maintenance status check failed" >&2
+  run_etcd_maintenance_cmd watchdog >/dev/null || echo "warning: etcd maintenance watchdog failed" >&2
+}
+
 
 build_docs_with_labs_token() {
   if [[ "${AE_LABS:-0}" != "1" ]]; then
@@ -1333,6 +1351,55 @@ write_rathole_server(
     RatholeServerConfig(bind_addr="${bind_addr}", default_token="${token}", services=[]),
 )
 PY
+}
+
+require_envoy_core_proxy_config() {
+  local cfg="$1"
+  [[ -f "$cfg" ]] || {
+    echo "error: missing Envoy config: $cfg" >&2
+    return 1
+  }
+  rg -q 'edge_listener_http' "$cfg" || {
+    echo "error: Envoy bootstrap missing HTTP listener (edge_listener_http): $cfg" >&2
+    return 1
+  }
+  rg -q 'port_value:[[:space:]]*10080' "$cfg" || {
+    echo "error: Envoy bootstrap missing HTTP port 10080: $cfg" >&2
+    return 1
+  }
+}
+
+wait_for_listener_port() {
+  local port="$1"
+  local timeout_s="${2:-30}"
+  local deadline=$((SECONDS + timeout_s))
+  while (( SECONDS < deadline )); do
+    if ss -ltn 2>/dev/null | rg -q ":${port}\\b"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+ensure_core_proxy_transport_ready() {
+  local envoy_cfg="$1"
+  local timeout_s="${2:-30}"
+
+  require_envoy_core_proxy_config "$envoy_cfg" || return 1
+
+  local missing=()
+  local p
+  for p in 10080 10443 2333 18080; do
+    if ! wait_for_listener_port "$p" "$timeout_s"; then
+      missing+=("$p")
+    fi
+  done
+
+  if (( ${#missing[@]} > 0 )); then
+    echo "error: core-proxy transport not ready; missing listener(s): ${missing[*]}" >&2
+    return 1
+  fi
 }
 
 write_rathole_client_config() {
@@ -1493,6 +1560,9 @@ case "$PROFILE" in
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-etcd}"
     export AE_ETCD_ENDPOINTS="${AE_ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
     export AE_ETCD_PREFIX="${AE_ETCD_PREFIX:-k1s/profiles/dev-etcd}"
+    export AE_ETCD_MAINTENANCE_ENABLE="${AE_ETCD_MAINTENANCE_ENABLE:-1}"
+    export AE_ETCD_MAINTENANCE_THRESHOLD_PCT="${AE_ETCD_MAINTENANCE_THRESHOLD_PCT:-80}"
+    ensure_etcd_maintenance
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-http}"
     export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
     export AE_LABS="${AE_LABS:-1}"
@@ -1541,6 +1611,9 @@ case "$PROFILE" in
     export AE_STATE_BACKEND="${AE_STATE_BACKEND:-etcd}"
     export AE_ETCD_ENDPOINTS="${AE_ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
     export AE_ETCD_PREFIX="${AE_ETCD_PREFIX:-k1s/profiles/k1s-core}"
+    export AE_ETCD_MAINTENANCE_ENABLE="${AE_ETCD_MAINTENANCE_ENABLE:-1}"
+    export AE_ETCD_MAINTENANCE_THRESHOLD_PCT="${AE_ETCD_MAINTENANCE_THRESHOLD_PCT:-80}"
+    ensure_etcd_maintenance
     export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-nats-js}"
     export AE_NATS_URL="${AE_NATS_URL:-nats://hub-controller:dev@127.0.0.1:4222}"
     export AE_JS_DOMAIN="${AE_JS_DOMAIN:-K1S}"
@@ -1568,8 +1641,13 @@ case "$PROFILE" in
     if [[ "$INGRESS_MODE" == "core-proxy" ]]; then
       export AE_EDGE_INGRESS_CORE_PROXY=1
       export AE_RATHOLE_CLIENT_DIR="${AE_RATHOLE_CLIENT_DIR:-$EDGE_INGRESS_DIR/clients}"
+      export AE_EDGE_INGRESS_RATHOLE_RELOAD="${AE_EDGE_INGRESS_RATHOLE_RELOAD:-1}"
+      export AE_RATHOLE_INOTIFY_AUTOTUNE="${AE_RATHOLE_INOTIFY_AUTOTUNE:-1}"
+      export AE_RATHOLE_INOTIFY_WARN_PCT="${AE_RATHOLE_INOTIFY_WARN_PCT:-95}"
+      export AE_RATHOLE_INOTIFY_MAX_WATCHES="${AE_RATHOLE_INOTIFY_MAX_WATCHES:-4194304}"
     else
       export AE_EDGE_INGRESS_CORE_PROXY=0
+      unset AE_EDGE_INGRESS_RATHOLE_RELOAD
     fi
     if [[ "$EDGE_INGRESS_START" == "1" ]]; then
       write_envoy_bootstrap "$EDGE_ENVOY_CONFIG"
@@ -1578,20 +1656,24 @@ case "$PROFILE" in
       RATHOLE_SERVER_CONTAINER="${RATHOLE_SERVER_CONTAINER:-k1s-core-rathole}"
       if [[ "$INGRESS_MODE" == "core-proxy" ]]; then
         if is_strict_cri; then
-          export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-core --config $EDGE_ENVOY_CONFIG --recreate && $PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-rathole-server --profile k1s-core --config $EDGE_RATHOLE_SERVER --recreate}"
-          run_cri_stack up-envoy --profile k1s-core --config "$EDGE_ENVOY_CONFIG" --recreate
-          run_cri_stack up-rathole-server --profile k1s-core --config "$EDGE_RATHOLE_SERVER" --recreate
+          export AE_EDGE_INGRESS_RELOAD_CMD="$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-core --config $EDGE_ENVOY_CONFIG"
+          export AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD="$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-rathole-server --profile k1s-core --config $EDGE_RATHOLE_SERVER"
+          run_cri_stack up-envoy --profile k1s-core --config "$EDGE_ENVOY_CONFIG"
+          run_cri_stack up-rathole-server --profile k1s-core --config "$EDGE_RATHOLE_SERVER"
         else
-          export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$ENGINE_BIN restart $ENVOY_CONTAINER $RATHOLE_SERVER_CONTAINER}"
+          export AE_EDGE_INGRESS_RELOAD_CMD="$ENGINE_BIN restart $ENVOY_CONTAINER"
+          export AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD="$ENGINE_BIN restart $RATHOLE_SERVER_CONTAINER"
           start_envoy_container "$ENVOY_CONTAINER" "$EDGE_ENVOY_CONFIG"
           start_rathole_server_container "$RATHOLE_SERVER_CONTAINER" "$EDGE_RATHOLE_SERVER"
         fi
       elif [[ "$INGRESS_MODE" == "core-to-edge-public" ]]; then
         if is_strict_cri; then
-          export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-core --config $EDGE_ENVOY_CONFIG --recreate}"
-          run_cri_stack up-envoy --profile k1s-core --config "$EDGE_ENVOY_CONFIG" --recreate
+          export AE_EDGE_INGRESS_RELOAD_CMD="$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-core --config $EDGE_ENVOY_CONFIG"
+          unset AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD
+          run_cri_stack up-envoy --profile k1s-core --config "$EDGE_ENVOY_CONFIG"
         else
-          export AE_EDGE_INGRESS_RELOAD_CMD="${AE_EDGE_INGRESS_RELOAD_CMD:-$ENGINE_BIN restart $ENVOY_CONTAINER}"
+          export AE_EDGE_INGRESS_RELOAD_CMD="$ENGINE_BIN restart $ENVOY_CONTAINER"
+          unset AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD
           start_envoy_container "$ENVOY_CONTAINER" "$EDGE_ENVOY_CONFIG"
         fi
       fi
@@ -1704,7 +1786,7 @@ case "$PROFILE" in
       write_rathole_client_config "$EDGE_RATHOLE_CLIENT" "$AE_RATHOLE_SERVER_ADDR" "$AE_RATHOLE_DEFAULT_TOKEN" "$AE_SITE_ID" "$AE_EDGE_INGRESS_LOCAL_ADDR"
       RATHOLE_CLIENT_CONTAINER="${RATHOLE_CLIENT_CONTAINER:-k1s-edge-${AE_SITE_ID}-${AE_NODE_ID}-rathole}"
       if is_strict_cri; then
-        run_cri_stack up-rathole-client --profile "$EDGE_PROFILE" --site-id "$AE_SITE_ID" --node-id "$AE_NODE_ID" --config "$EDGE_RATHOLE_CLIENT" --recreate
+        run_cri_stack up-rathole-client --profile "$EDGE_PROFILE" --site-id "$AE_SITE_ID" --node-id "$AE_NODE_ID" --config "$EDGE_RATHOLE_CLIENT"
       else
         start_rathole_client_container "$RATHOLE_CLIENT_CONTAINER" "$EDGE_RATHOLE_CLIENT"
       fi

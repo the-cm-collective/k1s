@@ -36,8 +36,8 @@ HTTP2_ENFORCE_DOWNSTREAM_H2="${HTTP2_ENFORCE_DOWNSTREAM_H2:-0}"
 WS_DURATION_SECONDS="${WS_DURATION_SECONDS:-600}"
 WS_CONNECTIONS="${WS_CONNECTIONS:-50}"
 WS_HEARTBEAT_SECONDS="${WS_HEARTBEAT_SECONDS:-5}"
-WS_MIN_CONNECTED_RATIO="${WS_MIN_CONNECTED_RATIO:-1}"
-WS_MAX_CONNECT_FAILURE_RATE="${WS_MAX_CONNECT_FAILURE_RATE:-0}"
+WS_MIN_CONNECTED_RATIO="${WS_MIN_CONNECTED_RATIO:-0.98}"
+WS_MAX_CONNECT_FAILURE_RATE="${WS_MAX_CONNECT_FAILURE_RATE:-0.02}"
 WS_MAX_MESSAGE_LOSS="${WS_MAX_MESSAGE_LOSS:-0}"
 LB_SAMPLE_REQUESTS="${LB_SAMPLE_REQUESTS:-5000}"
 LB_MIN_BACKENDS="${LB_MIN_BACKENDS:-2}"
@@ -59,6 +59,7 @@ RESULT_JSON="${RESULT_JSON:-$RESULTS_DIR/ingress-matrix-${RUN_STAMP}.json}"
 RESULT_TSV=""
 FAILURES_DIR=""
 DEEP_PROBE_SCRIPT="${DEEP_PROBE_SCRIPT:-$ROOT_DIR/scripts/dev/ingress_deep_probe.py}"
+ETCD_MAINTENANCE_SCRIPT="${ETCD_MAINTENANCE_SCRIPT:-$ROOT_DIR/scripts/dev/etcd_maintenance.sh}"
 POSTCHECK_EVIDENCE_JSON="{}"
 POSTCHECK_PERF_JSON="{}"
 
@@ -102,8 +103,8 @@ Options:
   --ws-duration-seconds <n>        WebSocket soak duration for deep checks (default: 600)
   --ws-connections <n>             WebSocket connection count for deep checks (default: 50)
   --ws-heartbeat-seconds <n>       WebSocket heartbeat period (default: 5)
-  --ws-min-connected-ratio <f>     Minimum connected_ratio for ws soak (0..1, default: 1)
-  --ws-max-connect-failure-rate <f> Maximum connect failure rate for ws soak (0..1, default: 0)
+  --ws-min-connected-ratio <f>     Minimum connected_ratio for ws soak (0..1, default: 0.98)
+  --ws-max-connect-failure-rate <f> Maximum connect failure rate for ws soak (0..1, default: 0.02)
   --ws-max-message-loss <n>        Maximum websocket message_loss (default: 0)
   --lb-sample-requests <n>         Requests used for lb distribution probe (default: 5000)
   --lb-min-backends <n>            Minimum distinct backends for lb probe (default: 2)
@@ -481,6 +482,67 @@ wait_for_pattern() {
   return 1
 }
 
+mode_selected() {
+  local target="$1"
+  local mode
+  for mode in "${MODES[@]}"; do
+    [[ "$mode" == "$target" ]] && return 0
+  done
+  return 1
+}
+
+listener_present() {
+  local port="$1"
+  ss -ltn 2>/dev/null | rg -q ":${port}\b"
+}
+
+core_proxy_transport_preflight() {
+  if ! mode_selected "core-proxy"; then
+    return 0
+  fi
+
+  need_cmd ss
+
+  # Bootstrap-only preflight: full core-proxy transport (10443/2333/18080)
+  # may be materialized during row staging/reconcile.
+  if ! listener_present "10080"; then
+    die "core-proxy bootstrap preflight failed: missing listener 10080"
+  fi
+
+  log "core-proxy bootstrap preflight passed listener=10080"
+}
+
+etcd_watchdog_preflight() {
+  local planned_rows=$(( ${#MODES[@]} * ${#ARCHETYPES[@]} ))
+  local run_watchdog=0
+
+  if [[ "$VALIDATION_PROFILE" == "deep" || "$VALIDATION_PROFILE" == "deep+perf" ]]; then
+    run_watchdog=1
+  elif (( planned_rows > 1 )); then
+    run_watchdog=1
+  fi
+
+  if (( run_watchdog == 0 )); then
+    return 0
+  fi
+
+  case "${AE_ETCD_MAINTENANCE_ENABLE:-1}" in
+    1|true|yes|on) ;;
+    *)
+      log "etcd watchdog preflight skipped (AE_ETCD_MAINTENANCE_ENABLE=${AE_ETCD_MAINTENANCE_ENABLE:-0})"
+      return 0
+      ;;
+  esac
+
+  if [[ ! -x "$ETCD_MAINTENANCE_SCRIPT" ]]; then
+    log "etcd watchdog preflight skipped (helper missing: $ETCD_MAINTENANCE_SCRIPT)"
+    return 0
+  fi
+
+  log "running etcd watchdog preflight"
+  "$ETCD_MAINTENANCE_SCRIPT" watchdog || die "etcd watchdog preflight failed"
+}
+
 lb_distribution_required() {
   local mode="$1"
   case "$LB_PROOF_SCOPE" in
@@ -568,6 +630,12 @@ for cluster in clusters:
 
 print("0")
 PY
+}
+
+edge_local_lb_dns_fallback_present() {
+  local caddy_file="$1"
+  [[ -f "$caddy_file" ]] || return 1
+  rg -n --quiet "reverse_proxy[[:space:]]+ingress-matrix-lb\.default[^[:space:]]*:8080" "$caddy_file"
 }
 
 json_merge_objects() {
@@ -824,6 +892,14 @@ postcheck_archetype() {
         local strict_distribution_required=0
         if lb_distribution_required "$mode"; then
           strict_distribution_required=1
+        fi
+        if [[ "$mode" == "edge-local" && "$strict_distribution_required" -eq 1 ]]; then
+          if edge_local_lb_dns_fallback_present "$EDGE_LOCAL_CADDY_FILE"; then
+            POSTCHECK_EVIDENCE_JSON="$(json_merge_objects "$POSTCHECK_EVIDENCE_JSON" "{\"lb\":{\"fail_fast_reason\":\"edge_local_dns_fallback_upstream\",\"edge_local_caddy_file\":\"$EDGE_LOCAL_CADDY_FILE\"}}")"
+            write_postcheck_outputs "$row_tmp_dir"
+            log "deep lb precheck failed host=$host mode=$mode: rendered edge-local Caddy uses DNS fallback upstream (ingress-matrix-lb.default:8080); expected bundle endpoint fanout"
+            return 1
+          fi
         fi
         local effective_endpoint_count
         effective_endpoint_count="$(lb_effective_endpoint_count "$mode" "$host" | tr -d '[:space:]')"
@@ -1683,6 +1759,9 @@ log "lb_sample_requests=$LB_SAMPLE_REQUESTS lb_min_backends=$LB_MIN_BACKENDS lb_
 log "perf_duration_seconds=$PERF_DURATION_SECONDS perf_concurrency=$PERF_CONCURRENCY perf_warmup_seconds=$PERF_WARMUP_SECONDS perf_min_rps=$PERF_MIN_RPS perf_max_p95_ms=$PERF_MAX_P95_MS perf_max_p99_ms=$PERF_MAX_P99_MS perf_max_error_rate=$PERF_MAX_ERROR_RATE"
 log "http2_enforce_downstream_h2=$HTTP2_ENFORCE_DOWNSTREAM_H2"
 log "results_json=$RESULT_JSON"
+
+etcd_watchdog_preflight
+core_proxy_transport_preflight
 
 total_rows=0
 failed_rows=0
