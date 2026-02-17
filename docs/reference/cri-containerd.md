@@ -26,6 +26,52 @@ Notes:
 - Detailed profile behavior: `docs/guides/runtime-profiles.md`.
 - End-to-end core/edge CRI runbook: `docs/guides/multinode-lab.md`.
 
+## Ingress deep validation lanes (recommended)
+
+Use `k1s-*` profile targets and keep ingress matrix runs mode-isolated.
+
+Preflight before deep/deep+perf lanes:
+
+```bash
+sudo -v
+scripts/dev/etcd_maintenance.sh watchdog
+```
+
+Optional guided wrapper with restart checkpoints:
+
+```bash
+scripts/dev/run_ingress_mode_lanes.sh --lanes all
+```
+
+Core-proxy mini sanity:
+
+```bash
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy --archetypes ws-echo --tier tier2 --validation-profile standard
+```
+
+Primary release lane (`core-proxy`, policy + observability):
+
+```bash
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy --archetypes ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 --validation-profile deep+perf --perf-profile sample --lb-proof-scope auto
+```
+
+Strict LB proof lane (`edge-local`, separate stack start):
+
+```bash
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep \
+  --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 \
+  --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/
+```
+
+Interpretation:
+- `core-proxy` LB rows are `assertion_level=policy_switch_only` when strict distribution is not required.
+- `edge-local` LB rows are `assertion_level=strict_distribution` and are the strict proof source.
+- Full sequence and failure triage: `docs/guides/ingress-capability-test-sequence.md`.
+
 ## Runtime selection and advanced overrides
 
 If you need manual runtime overrides outside profile helpers:

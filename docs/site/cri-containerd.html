@@ -738,6 +738,31 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 <li>Detailed profile behavior: <code>docs/guides/runtime-profiles.md</code>.</li>
 <li>End-to-end core/edge CRI runbook: <code>docs/guides/multinode-lab.md</code>.</li>
 </ul>
+<h2 id="ingress-deep-validation-lanes-recommended">Ingress deep validation lanes (recommended)</h2>
+<p>Use <code>k1s-*</code> profile targets and keep ingress matrix runs mode-isolated.</p>
+<p>Preflight before deep/deep+perf lanes:</p>
+<pre><code>sudo -v
+scripts/dev/etcd_maintenance.sh watchdog</code></pre>
+<p>Optional guided wrapper with restart checkpoints:</p>
+<pre><code>scripts/dev/run_ingress_mode_lanes.sh --lanes all</code></pre>
+<p>Core-proxy mini sanity:</p>
+<pre><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy --archetypes ws-echo --tier tier2 --validation-profile standard</code></pre>
+<p>Primary release lane (<code>core-proxy</code>, policy + observability):</p>
+<pre><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy --archetypes ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 --validation-profile deep+perf --perf-profile sample --lb-proof-scope auto</code></pre>
+<p>Strict LB proof lane (<code>edge-local</code>, separate stack start):</p>
+<pre><code>scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep \
+  --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 \
+  --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/</code></pre>
+<p>Interpretation:</p>
+<ul>
+<li><code>core-proxy</code> LB rows are <code>assertion_level=policy_switch_only</code> when strict distribution is not required.</li>
+<li><code>edge-local</code> LB rows are <code>assertion_level=strict_distribution</code> and are the strict proof source.</li>
+<li>Full sequence and failure triage: <code>docs/guides/ingress-capability-test-sequence.md</code>.</li>
+</ul>
 <h2 id="runtime-selection-and-advanced-overrides">Runtime selection and advanced overrides</h2>
 <p>If you need manual runtime overrides outside profile helpers:</p>
 <pre><code>export AE_RUNTIME_BACKEND=cri
@@ -997,7 +1022,7 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-13 19:11:07</span>
+        <span>Built 2026-02-17 10:45:25</span>
       </div>
     </footer>
     <script>

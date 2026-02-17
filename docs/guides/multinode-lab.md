@@ -44,6 +44,8 @@ sudo -E \
   AE_DEV_LOCAL=1 \
   EDGE_INGRESS_MODE=edge-local \
   AE_ROUTE_BUNDLE_ENABLED=1 \
+  AE_ENABLE_SERVICE_PROXY=1 \
+  AE_SERVICE_PROVIDER=iptables \
   AE_RUNTIME_BACKEND=cri \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_INFRA_BACKEND=cri \
@@ -72,10 +74,8 @@ sudo -E \
 Notes:
 - Keep `AE_DEV_LOCAL=1` enabled for local docs/playground/dashboard behavior in this lane.
 - Use a unique `AE_APISHIM_IMAGE` tag per run when iterating apishim changes to avoid stale image reuse.
-- For ingress baseline validation, keep service proxy disabled unless explicitly testing it.
-  Enabling `AE_ENABLE_SERVICE_PROXY=1` with `AE_SERVICE_PROVIDER=iptables` can
-  alter local docs/dashboard routing behavior and should be validated in a
-  separate lane.
+- For the strict edge-local bundle-endpoints lane in this guide, run core with `AE_ENABLE_SERVICE_PROXY=1` and `AE_SERVICE_PROVIDER=iptables`.
+- If you are only running non-strict baseline lanes, you may keep service proxy disabled.
 
 ### Core node (hub)
 
@@ -136,7 +136,7 @@ gpid=$(pgrep -f "python -m ae.gateway" | head -n1)
 test -n "$cpid" && test -n "$gpid"
 
 sudo cat "/proc/$cpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED|AE_TRANSPORT_BACKEND|AE_NATS_URL'
-sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL'
+sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_EDGE_LOCAL_UPSTREAM_MODE|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL'
 
 ls -ld state/profiles/k1s-core/edge-local
 ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true
@@ -147,8 +147,8 @@ rg -n 'user: "hub-controller"|k1s.v1.site.\*.routes.bundle' ops/dev/nats-hub.con
 ```
 Expected:
 - controller env includes `EDGE_INGRESS_MODE=edge-local` and `AE_ROUTE_BUNDLE_ENABLED=1`
-- gateway env includes `EDGE_INGRESS_MODE=edge-local` and `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=.../state/profiles/k1s-core/edge-local`
-- gateway env includes `AE_EDGE_LOCAL_INGRESS_CONFIG_FILE`, `AE_EDGE_LOCAL_INGRESS_RELOAD_CMD`, and `AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints`
+- gateway env includes `EDGE_INGRESS_MODE=edge-local`, `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=.../state/profiles/k1s-core/edge-local`, and `AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints`
+- gateway env includes `AE_EDGE_LOCAL_INGRESS_CONFIG_FILE` and `AE_EDGE_LOCAL_INGRESS_RELOAD_CMD`
 - controller and gateway both include `AE_TRANSPORT_BACKEND=nats-core` or `nats-js`, and `AE_NATS_URL` is set
 - `state/profiles/k1s-core/edge-local` exists before tier checks run
 - backend probe should become `2xx` once app workload is ready (for tier checks)
@@ -521,6 +521,8 @@ sudo -E \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   EDGE_INGRESS_MODE=edge-local \
   AE_ROUTE_BUNDLE_ENABLED=1 \
+  AE_ENABLE_SERVICE_PROXY=1 \
+  AE_SERVICE_PROVIDER=iptables \
   AE_CRI_REGISTRY_MODE=managed \
   AE_CRI_REGISTRY_INSECURE=1 \
   AE_DEV_LOCAL=1 \
@@ -596,6 +598,7 @@ sudo -E env PATH="$SUDO_PATH" \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
   AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
+  AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints \
   AE_LOG_LEVEL=debug \
   make k1s-edge-core-cri
 ```
@@ -609,7 +612,7 @@ gpid=$(pgrep -f "python -m ae.gateway" | head -n1)
 test -n "$cpid" && test -n "$gpid"
 
 sudo cat "/proc/$cpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED|AE_TRANSPORT_BACKEND|AE_NATS_URL'
-sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL'
+sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_EDGE_LOCAL_UPSTREAM_MODE|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL'
 
 ls -ld state/profiles/k1s-core/edge-local
 ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true
@@ -1181,7 +1184,7 @@ scripts/dev/test_ingress_modes_single_host.sh \
 5. Validate `edge-local` Tier 1 (required baseline gate):
 ```bash
 # terminal A (restart core with bundle publisher enabled)
-AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=edge-local AE_ROUTE_BUNDLE_ENABLED=1 make k1s-core
+AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=edge-local AE_ROUTE_BUNDLE_ENABLED=1 AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=iptables make k1s-core
 
 # verify hub-controller publish permission includes route bundles
 rg -n 'user: "hub-controller"|k1s.v1.site.\*.routes.bundle' ops/dev/nats-hub.conf
@@ -1191,6 +1194,7 @@ AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
 EDGE_INGRESS_MODE=edge-local \
 AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
+AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints \
 make k1s-edge-core
 
 # terminal C (checks)
@@ -1225,7 +1229,7 @@ scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier2
 # core-to-edge-public tier2
 scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier2
 
-# edge-local tier2 (default listener: https://127.0.0.1:${CADDY_HTTPS_PORT:-8443}/)
+# edge-local tier2 (default listener: https://<route-host>/)
 scripts/dev/test_ingress_modes_single_host.sh \
   --mode edge-local \
   --tier tier2
@@ -1234,19 +1238,55 @@ scripts/dev/test_ingress_modes_single_host.sh \
 scripts/dev/test_ingress_modes_single_host.sh \
   --mode edge-local \
   --tier tier2 \
-  --edge-local-listener-url https://127.0.0.1:11443/
+  --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/
 ```
 Tier 2 is intentionally optional in this lane; track failures separately while
 keeping Tier 1 as the mandatory day-to-day gate.
 
-8. Run the workload-variation ingress matrix across all canonical modes:
+8. Run workload-variation ingress matrix in mode-isolated lanes (single-host CRI):
+```bash
+sudo -v
+scripts/dev/etcd_maintenance.sh watchdog
+```
+Optional guided wrapper with restart checkpoints:
+```bash
+scripts/dev/run_ingress_mode_lanes.sh --lanes all
+```
+Core-proxy lane (start stack with `EDGE_INGRESS_MODE=core-proxy`):
+```bash
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy \
+  --archetypes http-static,http-path-routing \
+  --tier tier1 --validation-profile standard
+```
+Primary deep lane (core-proxy policy + observability):
+```bash
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy \
+  --archetypes ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 \
+  --validation-profile deep+perf \
+  --perf-profile sample \
+  --lb-proof-scope auto
+```
+Optional full core-proxy lane:
+```bash
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy \
+  --archetypes http-static,http-path-routing,ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 \
+  --validation-profile deep+perf \
+  --perf-profile sample \
+  --lb-proof-scope auto
+```
+Core-to-edge-public lane (restart stack with `EDGE_INGRESS_MODE=core-to-edge-public`):
 ```bash
 scripts/dev/test_ingress_matrix_single_host.sh \
-  --modes core-proxy,core-to-edge-public,edge-local \
-  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
-  --tier tier1
+  --modes core-to-edge-public \
+  --archetypes http-static,http-path-routing \
+  --tier tier1 --validation-profile standard
 ```
-Known-good edge-local deep proof pattern:
+Edge-local strict LB proof lane (restart stack with `EDGE_INGRESS_MODE=edge-local` and `AE_ROUTE_BUNDLE_ENABLED=1`):
 ```bash
 scripts/dev/test_ingress_matrix_single_host.sh \
   --modes edge-local \
@@ -1257,24 +1297,17 @@ scripts/dev/test_ingress_matrix_single_host.sh \
   --lb-sample-requests 5000 \
   --lb-min-backends 2 \
   --lb-max-skew-ratio 0.35 \
-  --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/
+  --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/
 ```
 Notes:
+- Do not run mixed-mode rows on one stack profile.
+- Keep `CORE_PROXY_FORCE_RATHOLE_RESTART=0` in long core-proxy lanes.
+- If etcd churn appears (`mvcc: database space exceeded`), run `scripts/dev/etcd_maintenance.sh compact-defrag` before reruns.
 - Archetype manifests live under `specs/examples/ingress-matrix/`.
-- The matrix script generates per-row `EdgeIngressRoute` fixtures and calls
-  `scripts/dev/test_ingress_modes_single_host.sh` for each mode/archetype pair.
-- If `state/profiles/k1s-core/specs` ownership drifts after sudo runs, re-apply:
-```bash
-CORE_SPECS=state/profiles/k1s-core/specs
-sudo chown -R "$USER:$(id -gn)" "$CORE_SPECS"
-sudo chmod -R g+rwX "$CORE_SPECS"
-sudo find "$CORE_SPECS" -type d -exec chmod 2775 {} \;
-test -w "$CORE_SPECS" && echo "core specs writable: $CORE_SPECS"
-```
-- Matrix results are written to:
-  `state/test-results/ingress-matrix-<timestamp>.json`
-- On failure, diagnostics are collected under:
-  `state/test-results/failures/ingress-matrix-<timestamp>/`
+- In core-proxy lanes, LB rows report `assertion_level=policy_switch_only` unless strict scope is enabled.
+- Edge-local lane is the strict LB proof path (`assertion_level=strict_distribution`).
+- Matrix results are written to `state/test-results/ingress-matrix-<timestamp>.json`.
+- On failure, diagnostics are collected under `state/test-results/failures/ingress-matrix-<timestamp>/`.
 
 9. Capability test track 1 (multi-host CRI topology):
 ```bash
@@ -1450,6 +1483,8 @@ rm -f "$CORE_SPECS/edge-ingress-route-core-to-edge-public.yaml"
 AE_DEV_LOCAL=1 \
 EDGE_INGRESS_MODE=edge-local \
 AE_ROUTE_BUNDLE_ENABLED=1 \
+AE_ENABLE_SERVICE_PROXY=1 \
+AE_SERVICE_PROVIDER=iptables \
 make k1s-core
 ```
 1a. Ensure hub-controller can publish route bundles:
@@ -1462,6 +1497,7 @@ AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
 EDGE_INGRESS_MODE=edge-local \
 AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local \
+AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints \
 make k1s-edge-core
 ```
 3. Run the Tier 1 edge-local gate (the script stages `edge-ingress-route-edge-local.yaml` automatically):
@@ -1514,7 +1550,7 @@ scripts/dev/test_ingress_modes_single_host.sh --mode core-proxy --tier tier2
 # core-to-edge-public
 scripts/dev/test_ingress_modes_single_host.sh --mode core-to-edge-public --tier tier2
 
-# edge-local (default listener uses CADDY_HTTPS_PORT, fallback 8443)
+# edge-local (default listener: https://<route-host>/)
 scripts/dev/test_ingress_modes_single_host.sh \
   --mode edge-local \
   --tier tier2
@@ -1523,7 +1559,7 @@ scripts/dev/test_ingress_modes_single_host.sh \
 scripts/dev/test_ingress_modes_single_host.sh \
   --mode edge-local \
   --tier tier2 \
-  --edge-local-listener-url https://127.0.0.1:11443/
+  --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/
 ```
 Use Tier 2 when you need release-level confidence in ingress serving. Keep
 Tier 1 mandatory for routine dev/CI loops.

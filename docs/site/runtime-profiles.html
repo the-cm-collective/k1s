@@ -829,6 +829,12 @@ EDGE_INGRESS_MODE=edge-local make k1s-edge</code></pre>
 <li><code>edge-local</code>: no core ingress; the gateway renders an edge-local Caddyfile if enabled.</li>
 <li>For canonical WG/Rosenpass multi-site patterns (production + single-host), see Option D in <code>docs/guides/multinode-lab.md</code>.</li>
 </ul>
+<p>Ingress deep validation defaults (CRI lanes):</p>
+<ul>
+<li>Primary lane: <code>core-proxy</code> deep/deep+perf (<code>lb-proof-scope=auto</code>) for policy + observability checks.</li>
+<li>Strict LB proof lane: <code>edge-local</code> deep (<code>lb-proof-scope=edge-only</code>) for distribution proof.</li>
+<li>Canonical command sequence: <code>docs/guides/ingress-capability-test-sequence.md</code>.</li>
+</ul>
 <h2 id="core-edge-pairings">Core + Edge pairings</h2>
 <p>JetStream path (k1s-core + edge running JetStream work queue):</p>
 <pre><code># Terminal 1
@@ -933,7 +939,7 @@ make k1s-edge-core-cri</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-13 19:11:07</span>
+        <span>Built 2026-02-16 09:04:29</span>
       </div>
     </footer>
     <script>

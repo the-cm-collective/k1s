@@ -24,6 +24,7 @@ k1s is under very active development and has not reached a fully stable release.
 - API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
 - Operations runbook: see `docs/ops/runbook.md`
 - Ingress/TLS details: see `docs/reference/ingress.md`
+- Ingress deep validation lanes (core-proxy primary + edge-local strict proof): `docs/guides/ingress-capability-test-sequence.md`
 - End-to-end walkthrough: see `docs/guides/e2e.md`
 
 ## Kubernetes Alignment Matrix (Operator View)

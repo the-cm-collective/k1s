@@ -47,6 +47,18 @@ NATS + etcd dev stack (Mode A)
   - Rollback: stop the gateway and restart the controller with `AE_TRANSPORT_BACKEND=http` (or unset) to return to HTTP dispatch.
 - Automated canary + rollback: `scripts/dev/nats_etcd_canary.sh` (uses `.venv` if present; override `METRICS_PORT` if 9108 is in use).
 
+Etcd maintenance (dev/CI)
+- Quick status: `scripts/dev/etcd_maintenance.sh status`
+- Guard before long ingress lanes: `scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog`
+- Forced reclaim when etcd returns `mvcc: database space exceeded`:
+  - `scripts/dev/etcd_maintenance.sh compact-defrag`
+- Startup defaults in `k1s-core`/`dev-etcd` profiles:
+  - `AE_ETCD_MAINTENANCE_ENABLE=1`
+  - `AE_ETCD_MAINTENANCE_THRESHOLD_PCT=80`
+- Override/disable behavior when needed:
+  - `AE_ETCD_MAINTENANCE_ENABLE=0 make k1s-core-cri`
+  - `AE_ETCD_MAINTENANCE_THRESHOLD_PCT=70 make k1s-core-cri`
+
 Rosenpass WireGuard PSK (Option C)
 - Requires: WireGuard tools (`wg`, `wg-quick`) and Rosenpass installed on each node host.
 - Enable managed Rosenpass: `AE_ROSENPASS_ENABLED=1` on each node.
@@ -107,6 +119,33 @@ Ingress and TLS
 - Environment:
   - AE_TLS_DIR (default: state/tls)
   - AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT
+
+Ingress validation lanes (CRI, mode-isolated)
+- Preflight before long lanes:
+  - `sudo -v`
+  - `scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog`
+- Optional guided wrapper with lane checkpoints:
+  - `scripts/dev/run_ingress_lanes.sh --lanes all` (compat alias: `scripts/dev/run_ingress_mode_lanes.sh`)
+- Core-proxy mini sanity lane:
+  - `CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes ws-echo --tier tier2 --validation-profile standard`
+- Core-proxy primary deep lane (policy + observability):
+  - `CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes ws-echo,lb-distribution,sticky-cookie --tier tier2 --validation-profile deep+perf --perf-profile sample --lb-proof-scope auto`
+- Optional full core-proxy lane:
+  - `CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes http-static,http-path-routing,ws-echo,lb-distribution,sticky-cookie --tier tier2 --validation-profile deep+perf --perf-profile sample --lb-proof-scope auto`
+- Core-to-edge-public lane (separate stack start with `EDGE_INGRESS_MODE=core-to-edge-public`):
+  - `scripts/dev/test_ingress_matrix_single_host.sh --modes core-to-edge-public --archetypes http-static,http-path-routing --tier tier1 --validation-profile standard`
+- Edge-local strict LB proof lane (separate stack start with `EDGE_INGRESS_MODE=edge-local` + `AE_ROUTE_BUNDLE_ENABLED=1`):
+  - `scripts/dev/test_ingress_matrix_single_host.sh --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/`
+- Security baseline + staged active auth probes (per lane or after full sequence):
+  - `scripts/dev/security_baseline_check.sh --fail-on high`
+  - `scripts/dev/security_active_tests.sh --fail-on high`
+  - wrapper integrated path: `scripts/dev/run_ingress_lanes.sh --lanes all --security-all`
+- Keep lanes mode-isolated. Do not run mixed-mode rows on one stack profile.
+- Summary interpretation (`state/test-results/ingress-matrix-*.json`):
+  - `lb_policy_passed=true`: core-proxy policy lane passed.
+  - `lb_observability_passed=true`: core-proxy LB row emitted usable backend-observation evidence.
+  - `lb_strict_proof_passed=true`: strict edge-local distribution proof passed.
+- Cross-platform parity benchmark: `docs/ops/perf-parity-k1s-vs-k3s.md`
 
 Rollouts
 - Pause/resume:

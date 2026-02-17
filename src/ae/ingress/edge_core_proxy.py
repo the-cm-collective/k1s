@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import os
 import subprocess
 import threading
@@ -54,13 +55,16 @@ class EdgeCoreProxyConfig:
     rathole_server_addr: str
     edge_local_addr: str
     reload_cmd: str | None
+    rathole_reload_cmd: str | None
+    rathole_reload_enabled: bool
 
 
 class EdgeCoreProxyRenderer:
     def __init__(self, store: SQLiteStateStore, config: EdgeCoreProxyConfig) -> None:
         self._store = store
         self._config = config
-        self._last_hash: str | None = None
+        self._last_envoy_hash: str | None = None
+        self._last_rathole_hash: str | None = None
         self._lock = threading.Lock()
 
     def render(self) -> None:
@@ -120,13 +124,18 @@ class EdgeCoreProxyRenderer:
                 )
                 out = self._config.rathole_client_dir / f"rathole-client-{route.site_id}.toml"
                 write_rathole_client(out, client_cfg)
-        payload = (envoy_text + "\n" + rathole_text).encode("utf-8")
-        digest = hashlib.sha256(payload).hexdigest()
-        if self._last_hash == digest:
+        envoy_digest = hashlib.sha256(envoy_text.encode("utf-8")).hexdigest()
+        rathole_digest = hashlib.sha256(rathole_text.encode("utf-8")).hexdigest()
+        envoy_changed = self._last_envoy_hash != envoy_digest
+        rathole_changed = self._last_rathole_hash != rathole_digest
+        if not envoy_changed and not rathole_changed:
             return
-        self._last_hash = digest
-        if self._config.reload_cmd:
+        self._last_envoy_hash = envoy_digest
+        self._last_rathole_hash = rathole_digest
+        if envoy_changed and self._config.reload_cmd:
             _run_reload(self._config.reload_cmd)
+        if rathole_changed and self._config.rathole_reload_enabled and self._config.rathole_reload_cmd:
+            _run_reload(self._config.rathole_reload_cmd)
 
 
 def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
@@ -146,6 +155,11 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
     rathole_server_addr = os.getenv("AE_RATHOLE_SERVER_ADDR", "127.0.0.1:2333")
     edge_local_addr = os.getenv("AE_EDGE_INGRESS_LOCAL_ADDR", "127.0.0.1:18081")
     reload_cmd = os.getenv("AE_EDGE_INGRESS_RELOAD_CMD")
+    rathole_reload_cmd = os.getenv("AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD")
+    rathole_reload_enabled = (
+        str(os.getenv("AE_EDGE_INGRESS_RATHOLE_RELOAD", "1") or "1").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
     tls_root = Path(os.getenv("AE_TLS_DIR", "state/tls")).expanduser()
     if not tls_root.is_absolute():
         tls_root = (Path.cwd() / tls_root).resolve()
@@ -190,6 +204,8 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
         rathole_server_addr=rathole_server_addr,
         edge_local_addr=edge_local_addr,
         reload_cmd=reload_cmd,
+        rathole_reload_cmd=rathole_reload_cmd,
+        rathole_reload_enabled=rathole_reload_enabled,
     )
 
 
@@ -998,11 +1014,46 @@ def _coerce_bool(value) -> bool | None:
             return False
     return None
 
-
 def _run_reload(cmd: str) -> None:
+    lock_raw = os.getenv("AE_EDGE_INGRESS_RELOAD_LOCK", "state/profiles/k1s-core/edge-ingress/.reload.lock")
+    lock_path = Path(lock_raw).expanduser()
+    if not lock_path.is_absolute():
+        lock_path = (Path.cwd() / lock_path).resolve()
+    else:
+        lock_path = lock_path.resolve()
+
     try:
-        subprocess.run(cmd, shell=True, check=False)  # noqa: S602
-    except Exception:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+            LOGGER.info("edge ingress reload start: cmd=%s", cmd)
+            proc = subprocess.run(  # noqa: S602
+                cmd,
+                shell=True,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            out = (proc.stdout or "").strip()
+            err = (proc.stderr or "").strip()
+            if proc.returncode != 0:
+                LOGGER.warning(
+                    "edge ingress reload failed: rc=%s cmd=%s stdout=%s stderr=%s",
+                    proc.returncode,
+                    cmd,
+                    out[-400:],
+                    err[-400:],
+                )
+            else:
+                LOGGER.info(
+                    "edge ingress reload done: rc=%s cmd=%s stdout=%s stderr=%s",
+                    proc.returncode,
+                    cmd,
+                    out[-200:],
+                    err[-200:],
+                )
+    except Exception as exc:
+        LOGGER.warning("edge ingress reload exception: cmd=%s error=%s", cmd, exc)
         return
 
 

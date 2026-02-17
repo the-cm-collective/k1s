@@ -17,12 +17,14 @@
 - Strict CRI profile orchestration for dev lanes, including `k1s-core-cri`, `k1s-edge-cri`, `k1s-core-edge-cri`, `k1s-edge-core-cri`, and `edge-site-cri`, with registry mode, image policy, and local build fallback handling.
 - Ingress capability validation expansion for CRI: single-host and multisite matrix suites, deeper capability probes, and perf-oriented ingress validation harnesses with new ingress matrix scenarios.
 - Core-proxy ingress policy controls for load balancing and cookie stickiness.
+- Ingress matrix result JSON now includes LB assertion and observability summary fields (`lb_policy_passed`, `lb_strict_proof_passed`, `lb_observability_passed`) plus per-row LB assertion metadata.
 - Benchmark tooling now captures CRI (`crictl`) container snapshot/inspect data in matrix/rollout workflows.
 - Project metadata now includes the `version_codename` field (`Snow Moon`) in `pyproject.toml`.
 
 ### Changed
 - Docs server pages and README were refreshed to align CRI guidance around `k1s-*` profile targets, with updated Start Here, Overview, Runtime Profiles, CRI reference, Multi-node lab, and related reference pages.
 - Ingress runbooks and examples were tightened around canonical mode validation flows and reproducible single-host strict CRI execution paths.
+- Ingress deep validation guidance now treats `core-proxy` as the primary policy/observability lane and keeps strict LB distribution proof in the `edge-local` lane.
 - Runtime profile behavior now auto-detects strict CRI core stacks more explicitly and fails fast on incompatible compose profile pairings.
 - Benchmark docs/charts were refreshed with CRI scenario coverage annotations.
 
