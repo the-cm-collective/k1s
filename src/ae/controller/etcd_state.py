@@ -1069,11 +1069,19 @@ class EtcdStateStore(SQLiteStateStore):
                 "site_id": site_id,
                 "mode": mode,
                 "core_proxy_port": port,
-                "public_urls": [],
-                "quarantine_until": None,
+                # Preserve endpoint metadata when assigning a core-proxy port
+                # for a site that may already have public endpoint details.
+                "public_urls": list(existing.public_urls) if existing else [],
+                "quarantine_until": (
+                    existing.quarantine_until.isoformat()
+                    if existing and existing.quarantine_until
+                    else None
+                ),
                 "created_at": now_iso,
                 "updated_at": now_iso,
             }
+            if existing and existing.created_at:
+                payload["created_at"] = existing.created_at.isoformat()
             self._put_json(self._k("ingress", "sites", site_id), payload)
             return port
         raise RuntimeError("no core-proxy ports available")
@@ -1104,16 +1112,17 @@ class EtcdStateStore(SQLiteStateStore):
         quarantine_until: datetime | None = None,
     ) -> None:
         now_iso = _now_iso()
+        existing, _ = self._get_json(self._k("ingress", "sites", site_id))
+        existing_port = existing.get("core_proxy_port") if existing else None
         payload = {
             "site_id": site_id,
             "mode": mode,
-            "core_proxy_port": core_proxy_port,
+            "core_proxy_port": core_proxy_port if core_proxy_port is not None else existing_port,
             "public_urls": list(public_urls or []),
             "quarantine_until": quarantine_until.isoformat() if quarantine_until else None,
             "created_at": now_iso,
             "updated_at": now_iso,
         }
-        existing, _ = self._get_json(self._k("ingress", "sites", site_id))
         if existing and existing.get("created_at"):
             payload["created_at"] = existing.get("created_at")
         self._put_json(self._k("ingress", "sites", site_id), payload)
