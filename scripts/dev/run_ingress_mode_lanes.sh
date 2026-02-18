@@ -14,6 +14,8 @@ NODE_ID="${NODE_ID:-edge-1}"
 
 LANES_CSV="${LANES_CSV:-core-proxy,core-to-edge-public,edge-local}"
 PROMPT_CHECKPOINTS=1
+CHECKPOINT_BELL="${CHECKPOINT_BELL:-1}"
+CHECKPOINT_BELL_COUNT="${CHECKPOINT_BELL_COUNT:-2}"
 KEEP_GOING=0
 SKIP_ETCD_WATCHDOG=0
 SKIP_ENV_VALIDATE=0
@@ -79,6 +81,8 @@ Environment overrides:
   VALIDATE_SCRIPT                Ingress preflight validator path
   SECURITY_BASELINE_SCRIPT       Security baseline script path
   SECURITY_ACTIVE_SCRIPT         Security active test script path
+  CHECKPOINT_BELL                Emit bell at checkpoints (default: 1)
+  CHECKPOINT_BELL_COUNT          Number of bell rings per checkpoint (default: 2)
 
   CORE_START_CORE_PROXY_CMD      Printed core restart command for core-proxy lane
   CORE_START_PUBLIC_CMD          Printed core restart command for core-to-edge-public lane
@@ -104,6 +108,32 @@ die() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+checkpoint_bell() {
+  (( PROMPT_CHECKPOINTS == 1 )) || return 0
+
+  local enabled
+  enabled="$(printf '%s' "$CHECKPOINT_BELL" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$enabled" == "0" || "$enabled" == "false" || "$enabled" == "no" || "$enabled" == "off" ]]; then
+    return 0
+  fi
+
+  local count="$CHECKPOINT_BELL_COUNT"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=2
+  (( count > 0 )) || return 0
+
+  local i
+  for ((i = 0; i < count; i++)); do
+    if command -v tput >/dev/null 2>&1; then
+      tput bel || printf "\a"
+    else
+      printf "\a"
+    fi
+    if (( i + 1 < count )); then
+      sleep 0.2
+    fi
+  done
 }
 
 trim() {
@@ -212,6 +242,7 @@ checkpoint_prompt() {
   if (( PROMPT_CHECKPOINTS == 0 )); then
     return 0
   fi
+  checkpoint_bell
   printf '\n'
   printf '[ingress-lanes] Lane checkpoint: %s\n' "$lane"
   printf '[ingress-lanes] Press Enter when restart steps are complete, or type q to abort: '
