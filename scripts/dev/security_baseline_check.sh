@@ -91,11 +91,11 @@ find_controller_pid() {
 read_environ_raw() {
   local pid="$1"
   if [[ -r "/proc/${pid}/environ" ]]; then
-    cat "/proc/${pid}/environ"
+    tr '\0' '\n' < "/proc/${pid}/environ"
     return 0
   fi
   if sudo -n true >/dev/null 2>&1; then
-    sudo -n cat "/proc/${pid}/environ"
+    sudo -n tr '\0' '\n' < "/proc/${pid}/environ"
     return 0
   fi
   return 1

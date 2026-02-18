@@ -95,11 +95,11 @@ find_controller_pid() {
 read_environ_raw() {
   local pid="$1"
   if [[ -r "/proc/${pid}/environ" ]]; then
-    cat "/proc/${pid}/environ"
+    tr '\0' '\n' < "/proc/${pid}/environ"
     return 0
   fi
   if sudo -n true >/dev/null 2>&1; then
-    sudo -n cat "/proc/${pid}/environ"
+    sudo -n tr '\0' '\n' < "/proc/${pid}/environ"
     return 0
   fi
   return 1
@@ -268,8 +268,9 @@ run_apishim_auth_tests() {
     shim_tls_args=(-k)
   fi
 
+  # Probe a protected API path; /openapi/* and discovery endpoints are intentionally public.
   local code
-  code="$(curl_code "${APISHIM_SERVER%/}/openapi/v2" "${shim_tls_args[@]}")"
+  code="$(curl_code "${APISHIM_SERVER%/}/api/v1" "${shim_tls_args[@]}")"
 
   if truthy "$shim_anon"; then
     case "$code" in
@@ -296,7 +297,7 @@ run_apishim_auth_tests() {
   esac
 
   if [[ -n "$shim_token" ]]; then
-    code="$(curl_code "${APISHIM_SERVER%/}/openapi/v2" "${shim_tls_args[@]}" -H 'Authorization: Bearer invalid-token')"
+    code="$(curl_code "${APISHIM_SERVER%/}/api/v1" "${shim_tls_args[@]}" -H 'Authorization: Bearer invalid-token')"
     case "$code" in
       401|403)
         record_test pass high apishim_invalid_token_denied "401/403" "$code" "apishim invalid token rejected"
