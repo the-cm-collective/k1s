@@ -68,7 +68,7 @@ sudo -E \
   AE_EDGE_INGRESS_RATHOLE_RELOAD=1 \
   AE_RUNTIME_BACKEND=cri AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=runc \
-  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=1 \
+  AE_CRI_REGISTRY_MODE=managed \
   AE_LABS=1 AE_APISHIM_AUTOSTART=1 AE_APISHIM_MODE=cri \
   AE_APISHIM_IMAGE="${APISHIM_TAG}" AE_APISHIM_STARTUP_TIMEOUT=60 \
   BENCH_MODE=0 AE_WG_INTERFACE=wg-hub \
@@ -88,7 +88,7 @@ sudo -E \
   AE_EDGE_INGRESS_RATHOLE_RELOAD=1 \
   AE_RUNTIME_BACKEND=cri AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=runc \
-  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=1 \
+  AE_CRI_REGISTRY_MODE=managed \
   AE_LABS=1 AE_APISHIM_AUTOSTART=1 AE_APISHIM_MODE=cri \
   AE_APISHIM_IMAGE="${APISHIM_TAG}" AE_APISHIM_STARTUP_TIMEOUT=60 \
   BENCH_MODE=0 AE_WG_INTERFACE=wg-hub \
@@ -109,7 +109,7 @@ sudo -E \
   AE_EDGE_INGRESS_RATHOLE_RELOAD=1 \
   AE_RUNTIME_BACKEND=cri AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=runc \
-  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=1 \
+  AE_CRI_REGISTRY_MODE=managed \
   AE_LABS=1 AE_APISHIM_AUTOSTART=1 AE_APISHIM_MODE=cri \
   AE_APISHIM_IMAGE="${APISHIM_TAG}" AE_APISHIM_STARTUP_TIMEOUT=60 \
   BENCH_MODE=0 AE_WG_INTERFACE=wg-hub \
@@ -158,7 +158,6 @@ sudo -E env PATH="$SUDO_PATH" \
   EDGE_INGRESS_MODE=core-proxy \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_REGISTRY_MODE=managed \
-  AE_CRI_REGISTRY_INSECURE=1 \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
@@ -174,7 +173,7 @@ RELOAD_CMD="/usr/bin/install -D -m 0644 ${EDGE_LOCAL_DIR}/edge-local.caddy ${ROO
 
 sudo -E env PATH="$SUDO_PATH" \
   AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=runc \
-  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=1 \
+  AE_CRI_REGISTRY_MODE=managed \
   EDGE_INGRESS_MODE=edge-local AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints \
   AE_EDGE_LOCAL_INGRESS_CONFIG_DIR="$EDGE_LOCAL_DIR" \
   AE_EDGE_LOCAL_INGRESS_CONFIG_FILE="$EDGE_LOCAL_DIR/edge-local.caddy" \
@@ -343,6 +342,22 @@ scripts/dev/security_baseline_check.sh --fail-on high
 scripts/dev/security_active_tests.sh --fail-on high
 scripts/dev/run_ingress_lanes.sh --lanes all --security-all
 ```
+
+To make `--fail-on high` green on a strict CRI stack:
+
+- Start core without `AE_CRI_REGISTRY_INSECURE=1` (managed registry TLS is the secure default).
+- Start core with API/apishim secrets exported into the same `sudo -E make k1s-core` invocation:
+
+```bash
+AE_API_READ_TOKEN="$(openssl rand -hex 16)"
+AE_API_ADMIN_TOKEN="$(openssl rand -hex 16)"
+AE_APISHIM_TOKEN="$(openssl rand -hex 16)"
+AE_APISHIM_READ_TOKEN="$(openssl rand -hex 16)"
+AE_APISHIM_MINT_TOKEN="$(openssl rand -hex 16)"
+AE_APISHIM_SESSION_SECRET="$(openssl rand -hex 32)"
+```
+
+- Run security scripts with `sudo -E` so controller env checks can read `/proc/<pid>/environ`.
 
 Artifacts:
 - `state/test-results/security-baseline-<timestamp>.json`

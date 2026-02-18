@@ -51,7 +51,6 @@ sudo -E \
   AE_INFRA_BACKEND=cri \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_REGISTRY_MODE=managed \
-  AE_CRI_REGISTRY_INSECURE=1 \
   AE_LABS=1 \
   AE_APISHIM_AUTOSTART=1 \
   AE_APISHIM_MODE=cri \
@@ -76,6 +75,7 @@ Notes:
 - Use a unique `AE_APISHIM_IMAGE` tag per run when iterating apishim changes to avoid stale image reuse.
 - For the strict edge-local bundle-endpoints lane in this guide, run core with `AE_ENABLE_SERVICE_PROXY=1` and `AE_SERVICE_PROVIDER=iptables`.
 - If you are only running non-strict baseline lanes, you may keep service proxy disabled.
+- Managed strict-CRI registry now defaults to TLS; keep `AE_CRI_REGISTRY_INSECURE` unset for security-gated runs.
 
 ### Core node (hub)
 
@@ -117,7 +117,6 @@ sudo -E env PATH="$SUDO_PATH" \
   EDGE_INGRESS_MODE=edge-local \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_REGISTRY_MODE=managed \
-  AE_CRI_REGISTRY_INSECURE=1 \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
@@ -524,7 +523,6 @@ sudo -E \
   AE_ENABLE_SERVICE_PROXY=1 \
   AE_SERVICE_PROVIDER=iptables \
   AE_CRI_REGISTRY_MODE=managed \
-  AE_CRI_REGISTRY_INSECURE=1 \
   AE_DEV_LOCAL=1 \
   AE_LABS=1 \
   AE_APISHIM_AUTOSTART=1 \
@@ -593,7 +591,6 @@ sudo -E env PATH="$SUDO_PATH" \
   EDGE_INGRESS_MODE=edge-local \
   AE_CRI_RUNTIME_HANDLER=runc \
   AE_CRI_REGISTRY_MODE=managed \
-  AE_CRI_REGISTRY_INSECURE=1 \
   AE_SITE_ID=sea-edge-02 \
   AE_NODE_ID=edge-1 \
   AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
@@ -1316,12 +1313,16 @@ Notes:
 
 Security sequence (run after each lane or after the full sweep):
 ```bash
-scripts/dev/security_baseline_check.sh --fail-on high
-scripts/dev/security_active_tests.sh --fail-on high
+sudo -E scripts/dev/security_baseline_check.sh --fail-on high
+sudo -E scripts/dev/security_active_tests.sh --fail-on high
 
 # Integrated wrapper path:
 scripts/dev/run_ingress_lanes.sh --lanes all --security-all
 ```
+
+Security gate notes:
+- For `--fail-on high`, start core with `AE_API_READ_TOKEN` plus apishim tokens (`AE_APISHIM_TOKEN`, `AE_APISHIM_READ_TOKEN`, `AE_APISHIM_MINT_TOKEN`) and `AE_APISHIM_SESSION_SECRET`.
+- Keep `AE_CRI_REGISTRY_INSECURE` unset to avoid the high-severity insecure-registry failure.
 
 9. Capability test track 1 (multi-host CRI topology):
 ```bash

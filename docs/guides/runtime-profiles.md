@@ -66,8 +66,9 @@ Notes:
   - `external` common microk8s endpoint: `localhost:32000`
   - optional preset: `AE_CRI_REGISTRY_PRESET=microk8s|local`
 - Optional containerd trust hook for strict CRI startup:
-  - set `AE_CRI_REGISTRY_TRUST=1` (or `AE_CRI_REGISTRY_INSECURE=1`) to call
-    `scripts/containerd_registry_trust.sh` before CRI preflight.
+  - managed registry TLS (`AE_CRI_REGISTRY_MODE=managed`) defaults to secure trust wiring.
+  - set `AE_CRI_REGISTRY_TRUST=1` to force trust configuration for external registries.
+  - `AE_CRI_REGISTRY_INSECURE=1` is a dev-only opt-out and will fail security baseline high gates.
 - Bind Postgres to the hub WG IP with `POSTGRES_BIND_IP=<hub-wg-ip>` so edge nodes can reach it.
 - Override the DSN with `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname` if needed.
 
