@@ -126,6 +126,8 @@ Ingress validation lanes (CRI, mode-isolated)
   - `scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog`
 - Optional guided wrapper with lane checkpoints:
   - `scripts/dev/run_ingress_lanes.sh --lanes all` (compat alias: `scripts/dev/run_ingress_mode_lanes.sh`)
+- Full tested startup command set (core/core-node/edge-gateway/edge-node by lane mode):
+  - `docs/guides/ingress-capability-test-sequence.md` (Step 1a)
 - Core-proxy mini sanity lane:
   - `CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes ws-echo --tier tier2 --validation-profile standard`
 - Core-proxy primary deep lane (policy + observability):
@@ -135,7 +137,7 @@ Ingress validation lanes (CRI, mode-isolated)
 - Core-to-edge-public lane (separate stack start with `EDGE_INGRESS_MODE=core-to-edge-public`):
   - `scripts/dev/test_ingress_matrix_single_host.sh --modes core-to-edge-public --archetypes http-static,http-path-routing --tier tier1 --validation-profile standard`
 - Edge-local strict LB proof lane (separate stack start with `EDGE_INGRESS_MODE=edge-local` + `AE_ROUTE_BUNDLE_ENABLED=1`):
-  - `scripts/dev/test_ingress_matrix_single_host.sh --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/`
+  - `scripts/dev/test_ingress_matrix_single_host.sh --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/`
 - Security baseline + staged active auth probes (per lane or after full sequence):
   - `scripts/dev/security_baseline_check.sh --fail-on high`
   - `scripts/dev/security_active_tests.sh --fail-on high`

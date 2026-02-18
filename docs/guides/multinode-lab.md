@@ -1250,8 +1250,13 @@ scripts/dev/etcd_maintenance.sh watchdog
 ```
 Optional guided wrapper with restart checkpoints:
 ```bash
+scripts/dev/run_ingress_lanes.sh --lanes all
+# Compatibility alias:
 scripts/dev/run_ingress_mode_lanes.sh --lanes all
+# Integrated security sweep:
+scripts/dev/run_ingress_lanes.sh --lanes all --security-all
 ```
+Full rootful startup command sets validated for these lanes are documented in `docs/guides/ingress-capability-test-sequence.md` Step 1a.
 Core-proxy lane (start stack with `EDGE_INGRESS_MODE=core-proxy`):
 ```bash
 CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
@@ -1308,6 +1313,15 @@ Notes:
 - Edge-local lane is the strict LB proof path (`assertion_level=strict_distribution`).
 - Matrix results are written to `state/test-results/ingress-matrix-<timestamp>.json`.
 - On failure, diagnostics are collected under `state/test-results/failures/ingress-matrix-<timestamp>/`.
+
+Security sequence (run after each lane or after the full sweep):
+```bash
+scripts/dev/security_baseline_check.sh --fail-on high
+scripts/dev/security_active_tests.sh --fail-on high
+
+# Integrated wrapper path:
+scripts/dev/run_ingress_lanes.sh --lanes all --security-all
+```
 
 9. Capability test track 1 (multi-host CRI topology):
 ```bash
