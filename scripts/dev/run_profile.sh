@@ -149,11 +149,136 @@ run_cri_stack() {
   PYTHONPATH=src "$PYTHON_BIN" "$ROOT_DIR/scripts/dev/cri_stack.py" "$@"
 }
 
+ensure_managed_registry_tls_material() {
+  if ! is_strict_cri; then
+    return 0
+  fi
+  if [[ "${AE_CRI_REGISTRY_MODE:-managed}" != "managed" ]]; then
+    return 0
+  fi
+  if ! is_truthy "${AE_CRI_MANAGED_REGISTRY_TLS:-1}"; then
+    return 0
+  fi
+  if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
+    return 0
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "error: openssl is required when AE_CRI_MANAGED_REGISTRY_TLS=1" >&2
+    exit 1
+  fi
+
+  local tls_dir ca_key ca_crt cert_key cert_crt cert_csr cert_ext
+  local ca_days cert_days ca_subj cert_subj san
+  tls_dir="${AE_CRI_MANAGED_REGISTRY_TLS_DIR:-$ROOT_DIR/state/profiles/${PROFILE}/registry/tls}"
+  ca_key="$tls_dir/ca.key"
+  ca_crt="$tls_dir/ca.crt"
+  cert_key="$tls_dir/registry.key"
+  cert_crt="$tls_dir/registry.crt"
+  cert_csr="$tls_dir/registry.csr"
+  cert_ext="$tls_dir/registry.ext"
+
+  ca_days="${AE_CRI_MANAGED_REGISTRY_CA_DAYS:-3650}"
+  cert_days="${AE_CRI_MANAGED_REGISTRY_CERT_DAYS:-365}"
+  ca_subj="${AE_CRI_MANAGED_REGISTRY_CA_SUBJECT:-/CN=k1s-managed-registry-ca}"
+  cert_subj="${AE_CRI_MANAGED_REGISTRY_SUBJECT:-/CN=localhost}"
+  san="${AE_CRI_MANAGED_REGISTRY_TLS_SANS:-DNS:localhost,IP:127.0.0.1,IP:::1}"
+
+  mkdir -p "$tls_dir"
+
+  local regen_ca=0 regen_cert=0 cert_text=""
+  if [[ ! -s "$ca_crt" || ! -s "$ca_key" ]]; then
+    regen_ca=1
+  elif ! openssl x509 -in "$ca_crt" -noout >/dev/null 2>&1; then
+    regen_ca=1
+  elif ! openssl pkey -in "$ca_key" -noout >/dev/null 2>&1; then
+    regen_ca=1
+  else
+    cert_text="$(openssl x509 -in "$ca_crt" -noout -text 2>/dev/null || true)"
+    if ! grep -q "CA:TRUE" <<<"$cert_text"; then
+      regen_ca=1
+    fi
+  fi
+
+  if [[ "$regen_ca" -eq 1 ]]; then
+    rm -f "$ca_key" "$ca_crt" "$tls_dir/ca.srl"
+    if ! openssl req -x509 -newkey rsa:4096 -sha256 -nodes \
+      -keyout "$ca_key" -out "$ca_crt" -days "$ca_days" -subj "$ca_subj" \
+      -addext "basicConstraints=critical,CA:TRUE,pathlen:1" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -addext "subjectKeyIdentifier=hash" >/dev/null 2>&1; then
+      openssl req -x509 -newkey rsa:4096 -sha256 -nodes \
+        -keyout "$ca_key" -out "$ca_crt" -days "$ca_days" -subj "$ca_subj" >/dev/null 2>&1 || {
+        echo "error: failed to generate managed registry CA cert" >&2
+        exit 1
+      }
+    fi
+    regen_cert=1
+  fi
+
+  if [[ "$regen_cert" -eq 0 ]]; then
+    if [[ ! -s "$cert_crt" || ! -s "$cert_key" ]]; then
+      regen_cert=1
+    elif ! openssl x509 -in "$cert_crt" -noout >/dev/null 2>&1; then
+      regen_cert=1
+    elif ! openssl pkey -in "$cert_key" -noout >/dev/null 2>&1; then
+      regen_cert=1
+    elif ! openssl x509 -in "$cert_crt" -checkend 0 -noout >/dev/null 2>&1; then
+      regen_cert=1
+    else
+      cert_text="$(openssl x509 -in "$cert_crt" -noout -text 2>/dev/null || true)"
+      if ! grep -q "DNS:localhost" <<<"$cert_text"; then
+        regen_cert=1
+      elif ! grep -q "IP Address:127.0.0.1" <<<"$cert_text"; then
+        regen_cert=1
+      fi
+    fi
+  fi
+
+  if [[ "$regen_cert" -eq 1 ]]; then
+    rm -f "$cert_key" "$cert_crt" "$cert_csr"
+    cat > "$cert_ext" <<EXT
+[v3_req]
+subjectAltName=${san}
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+EXT
+    openssl req -new -newkey rsa:2048 -sha256 -nodes \
+      -keyout "$cert_key" -out "$cert_csr" -subj "$cert_subj" >/dev/null 2>&1 || {
+      rm -f "$cert_ext"
+      echo "error: failed to generate managed registry server CSR" >&2
+      exit 1
+    }
+    openssl x509 -req -in "$cert_csr" -CA "$ca_crt" -CAkey "$ca_key" -CAcreateserial \
+      -out "$cert_crt" -days "$cert_days" -sha256 -extfile "$cert_ext" -extensions v3_req >/dev/null 2>&1 || {
+      rm -f "$cert_ext"
+      echo "error: failed to sign managed registry server cert" >&2
+      exit 1
+    }
+    rm -f "$cert_csr" "$cert_ext"
+  fi
+
+  chmod 600 "$ca_key" "$cert_key"
+  chmod 644 "$ca_crt" "$cert_crt"
+
+  export AE_CRI_MANAGED_REGISTRY_TLS_DIR="$tls_dir"
+  export AE_CRI_MANAGED_REGISTRY_TLS_CA="$ca_crt"
+  export AE_CRI_MANAGED_REGISTRY_TLS_CERT="$cert_crt"
+  export AE_CRI_MANAGED_REGISTRY_TLS_KEY="$cert_key"
+}
+
 ensure_cri_registry_defaults() {
   if ! is_strict_cri; then
     return 0
   fi
+
   local preset mode
+  local insecure_explicit=0
+  local trust_explicit=0
+
+  [[ -n "${AE_CRI_REGISTRY_INSECURE+x}" ]] && insecure_explicit=1
+  [[ -n "${AE_CRI_REGISTRY_TRUST+x}" ]] && trust_explicit=1
+
   preset="$(printf '%s' "${AE_CRI_REGISTRY_PRESET:-}" | tr '[:upper:]' '[:lower:]')"
   case "$preset" in
     "" ) ;;
@@ -208,9 +333,37 @@ ensure_cri_registry_defaults() {
     return 0
   fi
 
-  if [[ -z "${AE_CRI_REGISTRY:-}" ]]; then
-    export AE_CRI_REGISTRY="localhost:${AE_CRI_MANAGED_REGISTRY_PORT:-5001}"
+  # Managed mode defaults: secure TLS endpoint by default with explicit insecure opt-out.
+  if [[ -z "${AE_CRI_MANAGED_REGISTRY_TLS+x}" ]]; then
+    export AE_CRI_MANAGED_REGISTRY_TLS=1
   fi
+
+  if is_truthy "${AE_CRI_MANAGED_REGISTRY_TLS:-1}"; then
+    if [[ "$insecure_explicit" -eq 0 ]]; then
+      export AE_CRI_REGISTRY_INSECURE=0
+    fi
+    if [[ -z "${AE_CRI_REGISTRY:-}" ]]; then
+      export AE_CRI_REGISTRY="https://localhost:${AE_CRI_MANAGED_REGISTRY_PORT:-5001}"
+    fi
+  else
+    if [[ "$insecure_explicit" -eq 0 ]]; then
+      export AE_CRI_REGISTRY_INSECURE=1
+    fi
+    if [[ -z "${AE_CRI_REGISTRY:-}" ]]; then
+      export AE_CRI_REGISTRY="localhost:${AE_CRI_MANAGED_REGISTRY_PORT:-5001}"
+    fi
+  fi
+
+  if is_truthy "${AE_CRI_MANAGED_REGISTRY_TLS:-0}" && ! is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
+    ensure_managed_registry_tls_material
+    if [[ "$trust_explicit" -eq 0 ]]; then
+      export AE_CRI_REGISTRY_TRUST=1
+    fi
+    if [[ -z "${AE_CRI_REGISTRY_TRUST_CA:-}" && -n "${AE_CRI_MANAGED_REGISTRY_TLS_CA:-}" ]]; then
+      export AE_CRI_REGISTRY_TRUST_CA="${AE_CRI_MANAGED_REGISTRY_TLS_CA}"
+    fi
+  fi
+
   echo "[cri] registry mode=managed endpoint=${AE_CRI_REGISTRY}" >&2
 }
 
@@ -283,7 +436,15 @@ ensure_cri_registry_ready() {
       exit 1
     fi
     if ! port_open "$probe_host" "$port"; then
-      if ! run_cri_stack up-registry --profile "$PROFILE" --host "$probe_host" --port "$port"; then
+      local registry_args=(up-registry --profile "$PROFILE" --host "$probe_host" --port "$port")
+      if is_truthy "${AE_CRI_MANAGED_REGISTRY_TLS:-0}" && ! is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
+        if [[ -z "${AE_CRI_MANAGED_REGISTRY_TLS_CERT:-}" || -z "${AE_CRI_MANAGED_REGISTRY_TLS_KEY:-}" ]]; then
+          echo "error: managed registry TLS requested but cert/key paths are missing." >&2
+          exit 1
+        fi
+        registry_args+=(--tls-cert "${AE_CRI_MANAGED_REGISTRY_TLS_CERT}" --tls-key "${AE_CRI_MANAGED_REGISTRY_TLS_KEY}")
+      fi
+      if ! run_cri_stack "${registry_args[@]}"; then
         echo "error: failed to start managed CRI registry at ${probe_host}:${port}" >&2
         exit 1
       fi

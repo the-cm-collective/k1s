@@ -933,21 +933,40 @@ def _start_registry(
     host: str,
     port: int,
     *,
+    tls_cert: Path | None = None,
+    tls_key: Path | None = None,
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
     registry_data = ROOT / "state" / "registry"
     registry_data.mkdir(parents=True, exist_ok=True)
+
+    if (tls_cert is None) != (tls_key is None):
+        raise ValueError("registry TLS requires both tls_cert and tls_key")
+
+    env = {
+        "REGISTRY_HTTP_ADDR": f"{host}:{port}",
+        "REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY": "/var/lib/registry",
+    }
+    mounts = [_mount(registry_data, "/var/lib/registry")]
+
+    if tls_cert is not None and tls_key is not None:
+        if not tls_cert.is_file():
+            raise FileNotFoundError(f"registry TLS cert not found: {tls_cert}")
+        if not tls_key.is_file():
+            raise FileNotFoundError(f"registry TLS key not found: {tls_key}")
+        env["REGISTRY_HTTP_TLS_CERTIFICATE"] = "/etc/registry/tls/registry.crt"
+        env["REGISTRY_HTTP_TLS_KEY"] = "/etc/registry/tls/registry.key"
+        mounts.append(_mount(tls_cert, "/etc/registry/tls/registry.crt", readonly=True))
+        mounts.append(_mount(tls_key, "/etc/registry/tls/registry.key", readonly=True))
+
     _start_component(
         profile=profile,
         component=f"{profile}-registry",
         image=os.getenv("AE_CRI_MANAGED_REGISTRY_IMAGE", "docker.io/library/registry:2"),
         runtime_handler=runtime_handler,
-        env={
-            "REGISTRY_HTTP_ADDR": f"{host}:{port}",
-            "REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY": "/var/lib/registry",
-        },
-        mounts=[_mount(registry_data, "/var/lib/registry")],
+        env=env,
+        mounts=mounts,
         recreate=recreate,
         resolve_image=False,
     )
@@ -1225,6 +1244,8 @@ def main(argv: list[str] | None = None) -> int:
     registry.add_argument("--profile", default="k1s-core")
     registry.add_argument("--host", default="127.0.0.1")
     registry.add_argument("--port", type=int, default=5001)
+    registry.add_argument("--tls-cert")
+    registry.add_argument("--tls-key")
     registry.add_argument("--recreate", action="store_true")
 
     nh = sub.add_parser("up-nats-hub", help="start/reload hub nats")
@@ -1291,6 +1312,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.profile,
                 args.host,
                 args.port,
+                tls_cert=Path(args.tls_cert).resolve() if args.tls_cert else None,
+                tls_key=Path(args.tls_key).resolve() if args.tls_key else None,
                 runtime_handler=args.runtime_handler,
                 recreate=bool(args.recreate),
             )

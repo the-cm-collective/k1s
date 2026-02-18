@@ -252,14 +252,16 @@ Kubernetes clusters.
 - `AE_CRI_REGISTRY=<host:port>` to rewrite strict-CRI managed image refs to a registry.
 - `AE_CRI_REGISTRY_NAMESPACE=<prefix>` to prepend a registry path segment (for example `k1s`).
 - `AE_CRI_REGISTRY_MODE=managed|external|off`
-  - `managed`: k1s starts/health-checks a local strict-CRI registry (default endpoint `localhost:5001`)
+  - `managed`: k1s starts/health-checks a local strict-CRI registry (default endpoint `https://localhost:5001`)
   - `external`: k1s validates external registry reachability and fails fast if unavailable
   - `off`: disable strict-CRI registry rewrite/readiness checks
 - `AE_CRI_REGISTRY_PRESET=microk8s|local`
   - `microk8s`: sets `AE_CRI_REGISTRY_MODE=external` + default `AE_CRI_REGISTRY=localhost:32000`
   - `local`: sets `AE_CRI_REGISTRY_MODE=managed`
-- `AE_CRI_REGISTRY_INSECURE=1` for insecure dev registries.
-- `AE_CRI_REGISTRY_TRUST=1` to apply trust configuration during strict CRI startup.
+- `AE_CRI_MANAGED_REGISTRY_TLS=1|0` (default `1`) enables/disables managed-registry TLS.
+- Managed TLS material defaults under `state/profiles/<profile>/registry/tls` and is auto-generated when missing.
+- `AE_CRI_REGISTRY_INSECURE=1` is a dev-only opt-out for plaintext/insecure registry access.
+- `AE_CRI_REGISTRY_TRUST=1` to apply trust configuration during strict CRI startup (auto-enabled for managed TLS).
 - `AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt` or `AE_CRI_REGISTRY_TRUST_INSECURE=1` (dev).
 - `AE_CRI_REGISTRY_TRUST_SCHEME=http` to override scheme (default `https`).
 - `AE_CRI_REGISTRY_TRUST_RESTART=1` to restart containerd after writing trust.
