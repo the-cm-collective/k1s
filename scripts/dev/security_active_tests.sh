@@ -99,7 +99,7 @@ read_environ_raw() {
     return 0
   fi
   if sudo -n true >/dev/null 2>&1; then
-    sudo -n tr '\0' '\n' < "/proc/${pid}/environ"
+    sudo -n sh -c "tr '\0' '\n' < '/proc/$pid/environ'"
     return 0
   fi
   return 1
