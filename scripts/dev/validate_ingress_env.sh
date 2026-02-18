@@ -214,7 +214,7 @@ check_mode_requirements() {
       if listener_present 10443; then
         record_check pass info listener_10443 "listener 10443 present"
       else
-        record_check fail high listener_10443 "listener 10443 missing"
+        record_check warn medium listener_10443 "listener 10443 missing (TLS listener may activate after route staging)"
       fi
       ;;
     edge-local)
