@@ -67,7 +67,10 @@ Notes:
   - optional preset: `AE_CRI_REGISTRY_PRESET=microk8s|local`
 - Optional containerd trust hook for strict CRI startup:
   - managed registry TLS (`AE_CRI_REGISTRY_MODE=managed`) defaults to secure trust wiring.
+  - on scheme transitions (`http` <-> `https`), strict startup auto-restarts containerd by default (`AE_CRI_REGISTRY_AUTO_RESTART=1`).
+  - set `AE_CRI_REGISTRY_AUTO_RESTART=0` to disable auto-restart (startup will fail fast on unresolved transitions).
   - set `AE_CRI_REGISTRY_TRUST=1` to force trust configuration for external registries.
+  - trust wiring also ensures CRI registry `config_path=/etc/containerd/certs.d` for hosts.toml resolution.
   - `AE_CRI_REGISTRY_INSECURE=1` is a dev-only opt-out and will fail security baseline high gates.
 - Bind Postgres to the hub WG IP with `POSTGRES_BIND_IP=<hub-wg-ip>` so edge nodes can reach it.
 - Override the DSN with `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname` if needed.

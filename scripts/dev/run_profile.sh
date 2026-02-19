@@ -343,7 +343,8 @@ ensure_cri_registry_defaults() {
       export AE_CRI_REGISTRY_INSECURE=0
     fi
     if [[ -z "${AE_CRI_REGISTRY:-}" ]]; then
-      export AE_CRI_REGISTRY="https://localhost:${AE_CRI_MANAGED_REGISTRY_PORT:-5001}"
+      # Registry image rewrite expects OCI host[:port], not URL scheme.
+      export AE_CRI_REGISTRY="localhost:${AE_CRI_MANAGED_REGISTRY_PORT:-5001}"
     fi
   else
     if [[ "$insecure_explicit" -eq 0 ]]; then
@@ -403,6 +404,28 @@ _cri_registry_scheme() {
   printf 'https'
 }
 
+
+_cri_registry_normalize_host() {
+  local raw="${1:-}"
+  raw="${raw#http://}"
+  raw="${raw#https://}"
+  raw="${raw%%/*}"
+  printf '%s\n' "$raw"
+}
+
+_cri_registry_hosts_toml_scheme() {
+  local registry_host
+  registry_host="$(_cri_registry_normalize_host "${1:-}")"
+  if [[ -z "$registry_host" ]]; then
+    return 0
+  fi
+  local hosts_file="/etc/containerd/certs.d/${registry_host}/hosts.toml"
+  if [[ ! -r "$hosts_file" ]]; then
+    return 0
+  fi
+  sed -n 's/^[[:space:]]*server[[:space:]]*=[[:space:]]*"\(https\?\):\/\/.*/\1/p' "$hosts_file" | head -n1
+}
+
 ensure_cri_registry_ready() {
   if ! is_strict_cri; then
     return 0
@@ -429,21 +452,24 @@ ensure_cri_registry_ready() {
     probe_host="127.0.0.1"
   fi
 
+  local registry_args=()
   if [[ "$mode" == "managed" ]]; then
     if ! [[ "$host" == "localhost" || "$host" == "127.0.0.1" || "$host" == "0.0.0.0" ]]; then
       echo "error: AE_CRI_REGISTRY_MODE=managed expects a local registry host, got '${host}'." >&2
       echo "error: use AE_CRI_REGISTRY_MODE=external for remote or microk8s registries." >&2
       exit 1
     fi
-    if ! port_open "$probe_host" "$port"; then
-      local registry_args=(up-registry --profile "$PROFILE" --host "$probe_host" --port "$port")
-      if is_truthy "${AE_CRI_MANAGED_REGISTRY_TLS:-0}" && ! is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
-        if [[ -z "${AE_CRI_MANAGED_REGISTRY_TLS_CERT:-}" || -z "${AE_CRI_MANAGED_REGISTRY_TLS_KEY:-}" ]]; then
-          echo "error: managed registry TLS requested but cert/key paths are missing." >&2
-          exit 1
-        fi
-        registry_args+=(--tls-cert "${AE_CRI_MANAGED_REGISTRY_TLS_CERT}" --tls-key "${AE_CRI_MANAGED_REGISTRY_TLS_KEY}")
+
+    registry_args=(up-registry --profile "$PROFILE" --host "$probe_host" --port "$port")
+    if is_truthy "${AE_CRI_MANAGED_REGISTRY_TLS:-0}" && ! is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
+      if [[ -z "${AE_CRI_MANAGED_REGISTRY_TLS_CERT:-}" || -z "${AE_CRI_MANAGED_REGISTRY_TLS_KEY:-}" ]]; then
+        echo "error: managed registry TLS requested but cert/key paths are missing." >&2
+        exit 1
       fi
+      registry_args+=(--tls-cert "${AE_CRI_MANAGED_REGISTRY_TLS_CERT}" --tls-key "${AE_CRI_MANAGED_REGISTRY_TLS_KEY}")
+    fi
+
+    if ! port_open "$probe_host" "$port"; then
       if ! run_cri_stack "${registry_args[@]}"; then
         echo "error: failed to start managed CRI registry at ${probe_host}:${port}" >&2
         exit 1
@@ -477,6 +503,7 @@ ensure_cri_registry_ready() {
   if command -v curl >/dev/null 2>&1; then
     local probe_url="${scheme}://${probe_host}:${port}/v2/"
     local curl_args=(-sS -o /dev/null -w "%{http_code}" --connect-timeout 2 --max-time 3)
+    local recreated_for_probe=0
     if [[ "$scheme" == "https" ]]; then
       curl_args+=(-k)
     fi
@@ -489,6 +516,14 @@ ensure_cri_registry_ready() {
       fi
       now_ts="$(date +%s)"
       if (( now_ts - start_ts >= timeout_s )); then
+        if [[ "$mode" == "managed" && "$recreated_for_probe" -eq 0 && "${#registry_args[@]}" -gt 0 ]]; then
+          echo "[cri] registry probe mismatch on ${probe_url}; recreating managed registry with current TLS settings" >&2
+          if run_cri_stack "${registry_args[@]}" --recreate; then
+            recreated_for_probe=1
+            start_ts="$(date +%s)"
+            continue
+          fi
+        fi
         echo "error: registry endpoint responded unexpectedly at ${probe_url} (last_http=${code:-000})" >&2
         exit 1
       fi
@@ -510,13 +545,15 @@ ensure_cri_registry_trust() {
   if ! is_truthy "${AE_CRI_REGISTRY_TRUST:-0}" && ! is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
     return 0
   fi
+
   local trust_script="$ROOT_DIR/scripts/containerd_registry_trust.sh"
   if [[ ! -x "$trust_script" ]]; then
     echo "error: missing registry trust helper: $trust_script" >&2
     exit 1
   fi
-  local registry_host="${AE_CRI_REGISTRY#http://}"
-  registry_host="${registry_host#https://}"
+
+  local registry_host
+  registry_host="$(_cri_registry_normalize_host "${AE_CRI_REGISTRY}")"
   local scheme="${AE_CRI_REGISTRY_TRUST_SCHEME:-}"
   if [[ -z "$scheme" ]]; then
     if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
@@ -525,7 +562,36 @@ ensure_cri_registry_trust() {
       scheme="https"
     fi
   fi
+
+  local previous_scheme
+  previous_scheme="$(_cri_registry_hosts_toml_scheme "$registry_host")"
+  local scheme_changed=0
+  if [[ -n "$previous_scheme" && "$previous_scheme" != "$scheme" ]]; then
+    scheme_changed=1
+  fi
+
+  local auto_restart="${AE_CRI_REGISTRY_AUTO_RESTART:-1}"
+  local restart_selected=0
   local trust_args=(--host "$registry_host" --scheme "$scheme")
+
+  if [[ "$scheme_changed" -eq 1 ]]; then
+    if is_truthy "$auto_restart"; then
+      if ! command -v systemctl >/dev/null 2>&1; then
+        echo "error: registry scheme transition detected (${previous_scheme} -> ${scheme}) for ${registry_host}, but systemctl is unavailable for automatic restart." >&2
+        echo "error: restart containerd manually, or set AE_CRI_REGISTRY_TRUST_RESTART=1 when a restart mechanism is available." >&2
+        exit 1
+      fi
+      trust_args+=(--restart)
+      restart_selected=1
+      echo "[cri] registry trust scheme transition detected (${previous_scheme} -> ${scheme}) for ${registry_host}; restarting containerd to apply resolver state" >&2
+    elif ! is_truthy "${AE_CRI_REGISTRY_TRUST_RESTART:-0}"; then
+      echo "error: registry scheme transition detected (${previous_scheme} -> ${scheme}) for ${registry_host}." >&2
+      echo "error: containerd must be restarted to apply resolver state changes." >&2
+      echo "error: set AE_CRI_REGISTRY_AUTO_RESTART=1 (default), or AE_CRI_REGISTRY_TRUST_RESTART=1, or run 'sudo systemctl restart containerd' and retry." >&2
+      exit 1
+    fi
+  fi
+
   if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}" || is_truthy "${AE_CRI_REGISTRY_TRUST_INSECURE:-0}"; then
     trust_args+=(--insecure)
   elif [[ -n "${AE_CRI_REGISTRY_TRUST_CA:-}" ]]; then
@@ -534,9 +600,10 @@ ensure_cri_registry_trust() {
   if is_truthy "${AE_CRI_REGISTRY_TRUST_SYSTEM:-0}"; then
     trust_args+=(--system-trust)
   fi
-  if is_truthy "${AE_CRI_REGISTRY_TRUST_RESTART:-0}"; then
+  if is_truthy "${AE_CRI_REGISTRY_TRUST_RESTART:-0}" && [[ "$restart_selected" -eq 0 ]]; then
     trust_args+=(--restart)
   fi
+
   "$trust_script" "${trust_args[@]}"
 }
 

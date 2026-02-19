@@ -336,7 +336,15 @@ def _rathole_inotify_mitigate(component: str) -> str | None:
 def _resolve_registry_host() -> str:
     if str(os.getenv("AE_CRI_REGISTRY_MODE", "")).strip().lower() == "off":
         return ""
-    return str(os.getenv("AE_CRI_REGISTRY") or os.getenv("AE_REGISTRY_HOST") or "").strip()
+    raw = str(os.getenv("AE_CRI_REGISTRY") or os.getenv("AE_REGISTRY_HOST") or "").strip()
+    if not raw:
+        return ""
+    # Accept URL-style env values but normalize to OCI registry host[:port].
+    if raw.startswith("http://"):
+        raw = raw[len("http://") :]
+    elif raw.startswith("https://"):
+        raw = raw[len("https://") :]
+    return raw.split("/", 1)[0].strip()
 
 
 def _resolve_registry_namespace() -> str:

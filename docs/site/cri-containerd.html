@@ -815,6 +815,7 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <pre><code>scripts/containerd_registry_trust.sh --host localhost:32000 --scheme http --insecure --restart</code></pre>
 <h2 id="trust-and-auth-containerd">Trust and auth (containerd)</h2>
 <p>Containerd requires explicit trust config for insecure registries or custom CA. Use the helper to write <code>/etc/containerd/certs.d/&lt;host&gt;/hosts.toml</code>:</p>
+<p>The helper also ensures containerd CRI registry <code>config_path</code> points to <code>/etc/containerd/certs.d</code> and restarts containerd automatically when that setting changes.</p>
 <pre><code>scripts/containerd_registry_trust.sh \
   --host registry.k1s.home.arpa:32000 \
   --ca /tmp/registry.crt \
@@ -866,7 +867,7 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <li><code>AE_CRI_REGISTRY_NAMESPACE=&lt;prefix&gt;</code> to prepend a registry path segment (for example <code>k1s</code>).</li>
 <li><code>AE_CRI_REGISTRY_MODE=managed|external|off</code>
 <ul>
-<li><code>managed</code>: k1s starts/health-checks a local strict-CRI registry (default endpoint <code>localhost:5001</code>)</li>
+<li><code>managed</code>: k1s starts/health-checks a local strict-CRI registry (default endpoint <code>https://localhost:5001</code>)</li>
 <li><code>external</code>: k1s validates external registry reachability and fails fast if unavailable</li>
 <li><code>off</code>: disable strict-CRI registry rewrite/readiness checks</li>
 </ul>
@@ -877,11 +878,14 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <li><code>local</code>: sets <code>AE_CRI_REGISTRY_MODE=managed</code></li>
 </ul>
 </li>
-<li><code>AE_CRI_REGISTRY_INSECURE=1</code> for insecure dev registries.</li>
-<li><code>AE_CRI_REGISTRY_TRUST=1</code> to apply trust configuration during strict CRI startup.</li>
+<li><code>AE_CRI_MANAGED_REGISTRY_TLS=1|0</code> (default <code>1</code>) enables/disables managed-registry TLS.</li>
+<li>Managed TLS material defaults under <code>state/profiles/&lt;profile&gt;/registry/tls</code> and is auto-generated when missing.</li>
+<li><code>AE_CRI_REGISTRY_INSECURE=1</code> is a dev-only opt-out for plaintext/insecure registry access.</li>
+<li><code>AE_CRI_REGISTRY_TRUST=1</code> to apply trust configuration during strict CRI startup (auto-enabled for managed TLS).</li>
 <li><code>AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt</code> or <code>AE_CRI_REGISTRY_TRUST_INSECURE=1</code> (dev).</li>
 <li><code>AE_CRI_REGISTRY_TRUST_SCHEME=http</code> to override scheme (default <code>https</code>).</li>
-<li><code>AE_CRI_REGISTRY_TRUST_RESTART=1</code> to restart containerd after writing trust.</li>
+<li><code>AE_CRI_REGISTRY_AUTO_RESTART=1|0</code> (default <code>1</code>) restarts containerd automatically when registry trust scheme flips (<code>http</code> &lt;-&gt; <code>https</code>).</li>
+<li><code>AE_CRI_REGISTRY_TRUST_RESTART=1</code> forces restart after trust write, even without scheme transition.</li>
 <li><code>AE_CRI_IMAGE_POLICY=prompt|pull|fail</code> for strict-CRI missing-image behavior.</li>
 <li><code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker</code> to pick strict-CRI local build backend for fallback action <code>b</code>.</li>
 <li><code>AE_APISHIM_IMAGE=&lt;image-ref&gt;</code> to override strict-CRI apishim image.</li>
@@ -1022,7 +1026,7 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-17 10:45:25</span>
+        <span>Built 2026-02-18 09:00:48</span>
       </div>
     </footer>
     <script>

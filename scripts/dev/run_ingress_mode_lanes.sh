@@ -21,6 +21,9 @@ SKIP_ETCD_WATCHDOG=0
 SKIP_ENV_VALIDATE=0
 RUN_SECURITY_BASELINE=0
 RUN_SECURITY_ACTIVE=0
+SECURITY_NON_GATING=0
+PRECHECK_RETRIES="${PRECHECK_RETRIES:-0}"
+LANE_TEST_RETRIES="${LANE_TEST_RETRIES:-0}"
 
 CORE_PROXY_ARCHETYPES="${CORE_PROXY_ARCHETYPES:-ws-echo,lb-distribution,sticky-cookie}"
 CORE_PROXY_TIER="${CORE_PROXY_TIER:-tier2}"
@@ -67,7 +70,9 @@ Options:
   --skip-env-validate            Skip validate_ingress_env preflight before each lane
   --security-baseline            Run security baseline checks after each lane
   --security-active              Run staged active security probes after each lane
-  --security-all                 Run baseline + active security checks after each lane
+  --security-all                 Run baseline + active security checks after each lane (non-gating; summary only)
+  --precheck-retries <n>         Retries for env/preflight/watchdog stages per lane (default: 0)
+  --lane-retries <n>             Retries for lane test execution per lane (default: 0)
   --validate-script <path>       Override preflight script path
   --security-baseline-script <path>
                                  Override baseline script path
@@ -83,6 +88,8 @@ Environment overrides:
   SECURITY_ACTIVE_SCRIPT         Security active test script path
   CHECKPOINT_BELL                Emit bell at checkpoints (default: 1)
   CHECKPOINT_BELL_COUNT          Number of bell rings per checkpoint (default: 2)
+  PRECHECK_RETRIES               Retries for env/preflight/watchdog stages per lane
+  LANE_TEST_RETRIES              Retries for lane test execution per lane
 
   CORE_START_CORE_PROXY_CMD      Printed core restart command for core-proxy lane
   CORE_START_PUBLIC_CMD          Printed core restart command for core-to-edge-public lane
@@ -253,6 +260,56 @@ checkpoint_prompt() {
   fi
 }
 
+
+retry_checkpoint_prompt() {
+  local lane="$1"
+  local stage="$2"
+  local attempt="$3"
+  local total="$4"
+
+  if (( PROMPT_CHECKPOINTS == 0 )); then
+    log "retrying lane=$lane stage=$stage attempt=$attempt/$total (non-interactive)"
+    sleep 2
+    return 0
+  fi
+
+  checkpoint_bell
+  printf '\n'
+  printf '[ingress-lanes] Retry checkpoint: lane=%s stage=%s attempt=%s/%s\n' "$lane" "$stage" "$attempt" "$total"
+  printf '[ingress-lanes] Fix stack/env, then press Enter to retry, or type q to abort: '
+  local reply
+  IFS= read -r reply
+  if [[ "$reply" == "q" || "$reply" == "Q" ]]; then
+    die "aborted at retry checkpoint: lane=$lane stage=$stage"
+  fi
+}
+
+run_with_retries() {
+  local lane="$1"
+  local stage="$2"
+  local retries="$3"
+  shift 3
+
+  local attempt=0
+  local total=$((retries + 1))
+  local rc=0
+
+  while true; do
+    if "$@"; then
+      if (( attempt > 0 )); then
+        log "stage recovered: lane=$lane stage=$stage attempt=$((attempt + 1))/$total"
+      fi
+      return 0
+    fi
+    rc=$?
+    if (( attempt >= retries )); then
+      return "$rc"
+    fi
+    attempt=$((attempt + 1))
+    log "stage failed: lane=$lane stage=$stage attempt=$attempt/$total"
+    retry_checkpoint_prompt "$lane" "$stage" "$((attempt + 1))" "$total"
+  done
+}
 print_checkpoint() {
   local lane="$1"
   printf '\n'
@@ -416,19 +473,48 @@ run_security_checks() {
   local stamp
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 
+  local baseline_json=""
+  local active_json=""
+  local baseline_rc=0
+  local active_rc=0
+  local baseline_status="SKIP"
+  local active_status="SKIP"
+
   if (( RUN_SECURITY_BASELINE == 1 )); then
     [[ -x "$SECURITY_BASELINE_SCRIPT" ]] || die "missing executable security baseline script: $SECURITY_BASELINE_SCRIPT"
-    local baseline_json="$ROOT_DIR/state/test-results/security-baseline-${lane}-${stamp}.json"
+    baseline_json="$ROOT_DIR/state/test-results/security-baseline-${lane}-${stamp}.json"
     log "running security baseline lane=$lane result_json=$baseline_json"
-    "$SECURITY_BASELINE_SCRIPT" --result-json "$baseline_json"
+    if "$SECURITY_BASELINE_SCRIPT" --result-json "$baseline_json"; then
+      baseline_status="PASS"
+    else
+      baseline_rc=$?
+      baseline_status="FAIL"
+    fi
   fi
 
   if (( RUN_SECURITY_ACTIVE == 1 )); then
     [[ -x "$SECURITY_ACTIVE_SCRIPT" ]] || die "missing executable security active script: $SECURITY_ACTIVE_SCRIPT"
-    local active_json="$ROOT_DIR/state/test-results/security-active-${lane}-${stamp}.json"
+    active_json="$ROOT_DIR/state/test-results/security-active-${lane}-${stamp}.json"
     log "running security active lane=$lane result_json=$active_json"
-    "$SECURITY_ACTIVE_SCRIPT" --result-json "$active_json"
+    if "$SECURITY_ACTIVE_SCRIPT" --result-json "$active_json"; then
+      active_status="PASS"
+    else
+      active_rc=$?
+      active_status="FAIL"
+    fi
   fi
+
+  log "security summary lane=$lane baseline=$baseline_status${baseline_json:+ result_json=$baseline_json} active=$active_status${active_json:+ result_json=$active_json}"
+
+  if (( baseline_rc != 0 || active_rc != 0 )); then
+    if (( SECURITY_NON_GATING == 1 )); then
+      log "security summary non-gating: lane=$lane (continuing despite security check failures)"
+      return 0
+    fi
+    return 1
+  fi
+
+  return 0
 }
 
 run_lane_test() {
@@ -515,7 +601,16 @@ parse_args() {
       --security-all)
         RUN_SECURITY_BASELINE=1
         RUN_SECURITY_ACTIVE=1
+        SECURITY_NON_GATING=1
         shift
+        ;;
+      --precheck-retries)
+        PRECHECK_RETRIES="$2"
+        shift 2
+        ;;
+      --lane-retries)
+        LANE_TEST_RETRIES="$2"
+        shift 2
         ;;
       --validate-script)
         VALIDATE_SCRIPT="$2"
@@ -543,6 +638,9 @@ parse_args() {
 main() {
   parse_args "$@"
 
+  [[ "$PRECHECK_RETRIES" =~ ^[0-9]+$ ]] || die "--precheck-retries must be a non-negative integer"
+  [[ "$LANE_TEST_RETRIES" =~ ^[0-9]+$ ]] || die "--lane-retries must be a non-negative integer"
+
   need_cmd ss
   need_cmd rg
   [[ -x "$MATRIX_SCRIPT" ]] || die "missing executable matrix script: $MATRIX_SCRIPT"
@@ -565,7 +663,7 @@ main() {
     print_checkpoint "$lane"
     checkpoint_prompt "$lane"
 
-    if ! run_env_validate "$lane"; then
+    if ! run_with_retries "$lane" "env-validate" "$PRECHECK_RETRIES" run_env_validate "$lane"; then
       if (( KEEP_GOING == 1 )); then
         failed=$((failed + 1))
         continue
@@ -573,7 +671,7 @@ main() {
       exit 1
     fi
 
-    if ! verify_lane_preconditions "$lane"; then
+    if ! run_with_retries "$lane" "lane-preflight" "$PRECHECK_RETRIES" verify_lane_preconditions "$lane"; then
       if (( KEEP_GOING == 1 )); then
         failed=$((failed + 1))
         continue
@@ -581,7 +679,7 @@ main() {
       exit 1
     fi
 
-    if ! run_etcd_watchdog; then
+    if ! run_with_retries "$lane" "etcd-watchdog" "$PRECHECK_RETRIES" run_etcd_watchdog; then
       if (( KEEP_GOING == 1 )); then
         failed=$((failed + 1))
         continue
@@ -590,7 +688,7 @@ main() {
     fi
 
     log "running lane test: $lane"
-    if run_lane_test "$lane"; then
+    if run_with_retries "$lane" "lane-test" "$LANE_TEST_RETRIES" run_lane_test "$lane"; then
       log "lane PASS: $lane"
     else
       log "lane FAIL: $lane"

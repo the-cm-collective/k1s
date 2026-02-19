@@ -158,6 +158,8 @@ scripts/containerd_registry_trust.sh --host localhost:32000 --scheme http --inse
 Containerd requires explicit trust config for insecure registries or custom CA.
 Use the helper to write `/etc/containerd/certs.d/<host>/hosts.toml`:
 
+The helper also ensures containerd CRI registry `config_path` points to `/etc/containerd/certs.d` and restarts containerd automatically when that setting changes.
+
 ```
 scripts/containerd_registry_trust.sh \
   --host registry.k1s.home.arpa:32000 \
@@ -264,7 +266,8 @@ Kubernetes clusters.
 - `AE_CRI_REGISTRY_TRUST=1` to apply trust configuration during strict CRI startup (auto-enabled for managed TLS).
 - `AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt` or `AE_CRI_REGISTRY_TRUST_INSECURE=1` (dev).
 - `AE_CRI_REGISTRY_TRUST_SCHEME=http` to override scheme (default `https`).
-- `AE_CRI_REGISTRY_TRUST_RESTART=1` to restart containerd after writing trust.
+- `AE_CRI_REGISTRY_AUTO_RESTART=1|0` (default `1`) restarts containerd automatically when registry trust scheme flips (`http` <-> `https`).
+- `AE_CRI_REGISTRY_TRUST_RESTART=1` forces restart after trust write, even without scheme transition.
 - `AE_CRI_IMAGE_POLICY=prompt|pull|fail` for strict-CRI missing-image behavior.
 - `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker` to pick strict-CRI local build backend for fallback action `b`.
 - `AE_APISHIM_IMAGE=<image-ref>` to override strict-CRI apishim image.
