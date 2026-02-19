@@ -17,7 +17,7 @@ def _manifest_with_readiness(port: int) -> AppManifest:
     return AppManifest.model_validate(
         {
             "apiVersion": "ae.dev/v1alpha1",
-            "kind": "App",
+            "kind": "Deployment",
             "metadata": {"name": "demo"},
             "spec": {
                 "image": "alpine:3.20",

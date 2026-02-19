@@ -14,6 +14,7 @@ def test_upsert_and_get_node(tmp_path):
         endpoint="127.0.0.1:9000",
         pod_cidr="10.42.0.0/24",
         wg_pubkey="pubkey",
+        rp_pubkey="rppubkey",
     )
     store.record_heartbeat("node-1", "Ready")
 
@@ -27,6 +28,7 @@ def test_upsert_and_get_node(tmp_path):
     assert node.endpoint == "127.0.0.1:9000"
     assert node.pod_cidr == "10.42.0.0/24"
     assert node.wg_pubkey == "pubkey"
+    assert node.rp_pubkey == "rppubkey"
     assert isinstance(node.created_at, datetime)
     assert status is not None
     assert status.status == "Ready"

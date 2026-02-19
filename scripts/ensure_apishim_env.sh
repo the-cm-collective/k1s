@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${APISHIM_ENV_FILE:-$ROOT_DIR/state/labs/apishim.env}"
+ENV_FILE="${APISHIM_ENV_FILE:-$ROOT_DIR/state/profiles/labs/apishim.env}"
 ENV_OVERRIDE_FILE="${APISHIM_ENV_OVERRIDE_FILE:-$ROOT_DIR/.env}"
 
 log() {
@@ -65,6 +65,7 @@ require_strong() {
 token="${AE_APISHIM_TOKEN:-}"
 read_token="${AE_APISHIM_READ_TOKEN:-}"
 session_secret="${AE_APISHIM_SESSION_SECRET:-}"
+mint_token="${AE_APISHIM_MINT_TOKEN:-}"
 admin_token="${AE_API_ADMIN_TOKEN:-}"
 labs_token="${AE_LABS_TOKEN:-}"
 
@@ -76,6 +77,9 @@ if [[ -z "$read_token" ]]; then
 fi
 if [[ -z "$session_secret" ]]; then
   session_secret="$(read_env_var "AE_APISHIM_SESSION_SECRET" "$ENV_OVERRIDE_FILE" || true)"
+fi
+if [[ -z "$mint_token" ]]; then
+  mint_token="$(read_env_var "AE_APISHIM_MINT_TOKEN" "$ENV_OVERRIDE_FILE" || true)"
 fi
 if [[ -z "$admin_token" ]]; then
   admin_token="$(read_env_var "AE_API_ADMIN_TOKEN" "$ENV_OVERRIDE_FILE" || true)"
@@ -91,6 +95,9 @@ if [[ -z "$read_token" ]]; then
 fi
 if [[ -z "$session_secret" ]]; then
   session_secret="$(read_env_var "AE_APISHIM_SESSION_SECRET" "$ENV_FILE" || true)"
+fi
+if [[ -z "$mint_token" ]]; then
+  mint_token="$(read_env_var "AE_APISHIM_MINT_TOKEN" "$ENV_FILE" || true)"
 fi
 if [[ -z "$admin_token" ]]; then
   admin_token="$(read_env_var "AE_API_ADMIN_TOKEN" "$ENV_FILE" || true)"
@@ -108,6 +115,9 @@ fi
 if ! require_strong "AE_APISHIM_SESSION_SECRET" "$session_secret" 32; then
   session_secret="$(gen_token)"
 fi
+if ! require_strong "AE_APISHIM_MINT_TOKEN" "$mint_token"; then
+  mint_token="$(gen_token)"
+fi
 if ! require_strong "AE_API_ADMIN_TOKEN" "$admin_token"; then
   admin_token="$(gen_token)"
 fi
@@ -121,6 +131,7 @@ cat > "$ENV_FILE" <<EOF
 AE_APISHIM_TOKEN=${token}
 AE_APISHIM_READ_TOKEN=${read_token}
 AE_APISHIM_SESSION_SECRET=${session_secret}
+AE_APISHIM_MINT_TOKEN=${mint_token}
 AE_API_ADMIN_TOKEN=${admin_token}
 AE_LABS_TOKEN=${labs_token}
 AE_LABS_HELM_TOKEN=${token}
@@ -128,16 +139,29 @@ EOF
 chmod 600 "$ENV_FILE"
 log "Wrote $ENV_FILE (tokens generated or sourced securely)."
 
-CERT_FILE="${APISHIM_CERT_FILE:-$ROOT_DIR/state/labs/apishim.crt}"
-KEY_FILE="${APISHIM_KEY_FILE:-$ROOT_DIR/state/labs/apishim.key}"
-if [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" ]]; then
-  if command -v openssl >/dev/null 2>&1; then
+CERT_FILE="${APISHIM_CERT_FILE:-$ROOT_DIR/state/profiles/labs/apishim.crt}"
+KEY_FILE="${APISHIM_KEY_FILE:-$ROOT_DIR/state/profiles/labs/apishim.key}"
+if command -v openssl >/dev/null 2>&1; then
+  need_regen=0
+  if [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]]; then
+    cert_text="$(openssl x509 -in "$CERT_FILE" -noout -text 2>/dev/null || true)"
+    if ! grep -q "Subject Alternative Name" <<<"$cert_text"; then
+      need_regen=1
+    elif ! grep -q "DNS:localhost" <<<"$cert_text"; then
+      need_regen=1
+    elif ! grep -q "IP Address:127.0.0.1" <<<"$cert_text"; then
+      need_regen=1
+    fi
+  fi
+  if [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" || $need_regen -eq 1 ]]; then
     mkdir -p "$(dirname "$CERT_FILE")"
+    subj="/CN=apishim"
+    san="${APISHIM_CERT_SANS:-DNS:apishim,DNS:localhost,IP:127.0.0.1,IP:::1}"
     openssl req -x509 -newkey rsa:2048 -sha256 -days 3 -nodes \
-      -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=apishim" >/dev/null 2>&1
+      -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "$subj" -addext "subjectAltName=${san}" >/dev/null 2>&1
     chmod 600 "$KEY_FILE" "$CERT_FILE"
     log "Wrote $CERT_FILE and $KEY_FILE (self-signed, dev only)."
-  else
-    log "openssl not found; skipping apishim TLS cert generation."
   fi
+else
+  log "openssl not found; skipping apishim TLS cert generation."
 fi

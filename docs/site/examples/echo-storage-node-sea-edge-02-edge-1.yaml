@@ -1,0 +1,21 @@
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: echo-storage-node-sea-edge-02-edge-1
+spec:
+  image: mendhak/http-https-echo:37
+  replicas: 1
+  ports:
+    - name: http
+      containerPort: 8080
+  nodeSelector:
+    role: worker
+    site: sea-edge-02
+  health:
+    readiness:
+      httpGet: { path: /healthz, port: 8080 }
+      initialDelaySeconds: 1
+  storage:
+    - name: data
+      mountPath: /var/lib/echo
+      retention: Retain

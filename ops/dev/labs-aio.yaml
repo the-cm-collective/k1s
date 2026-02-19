@@ -1,13 +1,13 @@
 services:
   controller:
-    image: python:3.12-slim
+    image: docker.io/library/python:3.12-slim
     working_dir: /workspace
-    command: bash -lc "python -m pip install -e .[watch] && AE_LABS=1 AE_API_MUTATIONS=1 AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs} python -m ae.controller --loop --specs \"${AE_SPECS_DIR:-state/demo-specs}\" --metrics-port 9108 --watch"
+    command: bash -lc "python -m pip install -e .[watch] && AE_LABS=1 AE_API_MUTATIONS=1 AE_SPECS_DIR=${AE_SPECS_DIR:-state/profiles/labs/specs} python -m ae.controller --loop --specs \"${AE_SPECS_DIR:-state/profiles/labs/specs}\" --metrics-port 9108 --watch"
     volumes:
       - ../..:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
-      - ../../state/labs/apishim.env
+      - ../../state/profiles/labs/apishim.env
     environment:
       - AE_LABS=1
       - AE_API_MUTATIONS=1
@@ -22,8 +22,12 @@ services:
       - AE_DEMO_MODE=1
       - AE_REGISTER_LOCAL_NODE=1
       - AE_NODE_NOTREADY_AFTER=${AE_NODE_NOTREADY_AFTER:-40}
-      - AE_SPECS_DIR=${AE_SPECS_DIR:-state/demo-specs}
-      - AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
+      - AE_SPECS_DIR=${AE_SPECS_DIR:-state/profiles/labs/specs}
+      - AE_STATE_DB=${AE_STATE_DB:-state/profiles/labs/controller.db}
+      - AE_STATE_BACKEND=${AE_STATE_BACKEND:-sqlite}
+      - AE_ETCD_ENDPOINTS=${AE_ETCD_ENDPOINTS:-http://etcd:2379}
+      - AE_ETCD_PREFIX=${AE_ETCD_PREFIX:-k1s/profiles/labs}
+      - AE_PROJECTION_ROOT=${AE_PROJECTION_ROOT:-state/profiles/labs/projections}
       - AE_PROBE_LOOPBACK_FALLBACK=host.docker.internal
       - AE_APISHIM_DSN=${AE_APISHIM_DSN:-}
       - AE_STATE_DSN=${AE_STATE_DSN:-}
@@ -32,14 +36,14 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
   apishim:
-    image: python:3.12-slim
+    image: docker.io/library/python:3.12-slim
     working_dir: /workspace
     command: bash -lc "python -m pip install -e . && AE_APISHIM_ENABLE=1 python -m ae.apishim serve --host 0.0.0.0 --port 8445 --tls"
     volumes:
       - ../..:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
-      - ../../state/labs/apishim.env
+      - ../../state/profiles/labs/apishim.env
     environment:
       - AE_APISHIM_ENABLE=1
       - AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-docker}
@@ -49,13 +53,13 @@ services:
       - AE_APISHIM_SOT=1
       - AE_APISHIM_ADAPTER=0
       - AE_APISHIM_DSN=${AE_APISHIM_DSN:-}
-      - AE_APISHIM_TLS_CERT=/workspace/state/labs/apishim.crt
-      - AE_APISHIM_TLS_KEY=/workspace/state/labs/apishim.key
+      - AE_APISHIM_TLS_CERT=/workspace/state/profiles/labs/apishim.crt
+      - AE_APISHIM_TLS_KEY=/workspace/state/profiles/labs/apishim.key
       - AE_STATE_DSN=${AE_STATE_DSN:-}
     ports:
       - "127.0.0.1:${APISHIM_PORT:-8445}:8445"
   caddy:
-    image: caddy:2.8
+    image: docker.io/library/caddy:2.8
     depends_on:
       - controller
     ports:
@@ -70,8 +74,24 @@ services:
       - ../../docs/site:/srv/docs:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.13
+    profiles:
+      - etcd
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd0
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd0=http://etcd:2380
+      - --initial-cluster-state=new
+    volumes:
+      - ../../state/profiles/labs/etcd:/etcd-data
   postgres:
-    image: postgres:16
+    image: docker.io/library/postgres:16
     profiles:
       - postgres
     environment:

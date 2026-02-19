@@ -43,7 +43,7 @@ class _StubRuntime(RuntimeAdapter):
 def _build_manifest(name: str = "demo", replicas: int = 2) -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name=name),
         spec=AppSpec(
             image="alpine:3.20",

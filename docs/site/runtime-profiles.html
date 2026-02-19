@@ -1,0 +1,1036 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Runtime Profiles</title>
+    <link rel="icon" href="static/favicon.ico" sizes="any"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
+    <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-16x16.svg"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="static/favicon-16x16.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-48x48.svg"/>
+    <link rel="icon" type="image/png" sizes="48x48" href="static/favicon-48x48.png"/>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180x180.png"/>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --k1s-bg: #121212;
+        --k1s-surface: #181818;
+        --k1s-panel: #2c2c2c;
+        --k1s-border: #404040;
+        --k1s-border-soft: #4a4a4a;
+        --k1s-text: #e5e7eb;
+        --k1s-text-muted: #9ca3af;
+        --k1s-primary: #2563eb;
+        --k1s-primary-soft: #3b82f6;
+        --k1s-highlight: #60a5fa;
+        --k1s-info: #0284c7;
+        --k1s-info-bg: #e0f2fe;
+        --k1s-success: #16a34a;
+        --k1s-success-bg: #16a34a33;
+        --k1s-warn: #f59e0b;
+        --k1s-warn-bg: #f59e0b33;
+        --k1s-danger: #ef4444;
+        --k1s-danger-bg: #ef444433;
+        --k1s-card-bg: #2c2c2c;
+        --k1s-header-bg: #0a0a0a10;
+        --k1s-radius: 8px;
+        --k1s-radius-pill: 999px;
+        --k1s-gap: 12px;
+        --k1s-brand-gold: #fbc02d;
+        --k1s-brand-graphite: #404040;
+        --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
+        /* Legacy aliases used by docs/labs styles */
+        --bg: var(--k1s-bg);
+        --fg: var(--k1s-text);
+        --muted: var(--k1s-panel);
+        --link: #5a86c9;
+        --link-hover: #7aa0e8;
+        --code-bg: #1b1b1b;
+        --border: var(--k1s-border);
+      }
+      html[data-theme="light"] {
+        --k1s-bg: #f4f5f7;
+        --k1s-surface: #f8fafb;
+        --k1s-panel: #ffffff;
+        --k1s-border: #d4d7dd;
+        --k1s-border-soft: #e6e8ec;
+        --k1s-text: #0f141c;
+        --k1s-text-muted: #4a5565;
+        --k1s-card-bg: #ffffff;
+        --k1s-header-bg: rgba(255,255,255,0.82);
+        --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
+        --bg: var(--k1s-bg);
+        --fg: var(--k1s-text);
+        --muted: var(--k1s-panel);
+        --link: #2f59b9;
+        --link-hover: #3b63c5;
+        --border: var(--k1s-border);
+      }
+    </style>
+    <style>
+      /* Base layout aligned to dashboard palette */
+      html { height: 100%; }
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
+        margin: 0;
+        padding: 2rem;
+        line-height: 1.55;
+        box-sizing: border-box;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
+        color: var(--fg);
+      }
+      img { max-width: 100%; height: auto; }
+      nav {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: .6rem;
+        justify-content: center;
+        margin: 0 auto 1.25rem auto;
+        width: min(100%, 1320px);
+        padding: 10px 16px;
+        box-sizing: border-box;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 14px;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+        position: sticky;
+        top: 12px;
+        z-index: 10;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+      }
+      nav::after {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        bottom: 6px;
+        height: 2px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent);
+        opacity: 0.5;
+        pointer-events: none;
+      }
+      nav a {
+        display: inline-flex;
+        align-items: center;
+        gap: .25rem;
+        padding: 7px 12px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        text-decoration: none;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.16);
+        transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
+        font-weight: 600;
+      }
+      nav a:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-brand-gold);
+        color: var(--link-hover);
+        transform: translateY(-1px);
+      }
+      nav .nav-brand {
+        gap: 10px;
+        padding: 6px 10px;
+        border: 1px solid transparent;
+        background: transparent;
+        box-shadow: none;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 11px;
+        color: var(--k1s-text-muted);
+      }
+      nav .nav-brand:hover {
+        background: color-mix(in srgb, var(--k1s-card-bg) 60%, transparent);
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+        transform: translateY(0);
+      }
+      nav .nav-brand img {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+      }
+      nav a:active { transform: translateY(0); }
+      .spacer { flex: 1 1 auto; }
+      button#api-mode-toggle {
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        border: 1px solid var(--k1s-border);
+        border-radius: 8px;
+        padding: 6px 10px;
+        cursor: pointer;
+        transition: background .15s ease, border-color .15s ease;
+      }
+      button#api-mode-toggle:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-border-soft);
+      }
+      .theme-fab {
+        position: fixed;
+        right: 18px;
+        bottom: 140px;
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 12px 35px rgba(0,0,0,0.32);
+        cursor: pointer;
+        z-index: 20;
+        transition: background .15s ease, border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+      }
+      .theme-fab:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-border-soft);
+        transform: translateY(-1px);
+        box-shadow: 0 14px 40px rgba(0,0,0,0.38);
+      }
+      .theme-fab:active { transform: translateY(0); }
+      .theme-fab svg { width: 26px; height: 26px; fill: currentColor; }
+      .theme-fab .icon-sun { display: none; }
+      html[data-theme="light"] .theme-fab .icon-sun { display: block; }
+      html[data-theme="light"] .theme-fab .icon-moon { display: none; }
+      html[data-theme="dark"] .theme-fab .icon-moon { display: block; }
+      @media (max-height: 740px) {
+        .theme-fab { bottom: 32px; }
+      }
+      code, pre {
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        border-radius: 8px;
+      }
+      code { overflow-wrap: anywhere; }
+      pre code { overflow-wrap: normal; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      thead th {
+        text-align: left;
+        padding: 12px 14px;
+        background: var(--k1s-card-bg);
+        border-bottom: 1px solid var(--k1s-border);
+        color: var(--fg);
+        font-weight: 600;
+      }
+      tbody td {
+        padding: 12px 14px;
+        border-top: 1px solid var(--k1s-border-soft);
+        color: var(--fg);
+        vertical-align: top;
+      }
+      tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #000000 8%);
+      }
+      html[data-theme="light"] tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #ffffff 8%);
+      }
+      pre {
+        padding: 12px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        position: relative;
+      }
+      pre::-webkit-scrollbar { width: 0; height: 0; }
+      pre.has-copy { padding-top: 32px; }
+      .copy-btn {
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 9px;
+        border-radius: 8px;
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-surface);
+        color: var(--fg);
+        font-size: 12px;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.24);
+        opacity: 0;
+        transition: opacity .14s ease, transform .12s ease, background .12s ease, border-color .12s ease;
+        z-index: 1;
+      }
+      pre:hover .copy-btn,
+      pre:focus-within .copy-btn {
+        opacity: .96;
+      }
+      .copy-btn:hover {
+        background: var(--k1s-panel);
+        border-color: var(--k1s-border-soft);
+      }
+      .copy-btn:active { transform: translateY(0); }
+      .copy-btn svg { width: 16px; height: 16px; fill: currentColor; }
+      .copy-btn.copied { color: var(--k1s-success); border-color: var(--k1s-success); }
+      h1 { margin-top: 0; font-size: 28px; letter-spacing: 0.01em; }
+      h2 { margin-top: 1.5em; font-size: 20px; }
+      h3 { margin-top: 1.1em; font-size: 17px; }
+      a { color: var(--link); }
+      a:hover { color: var(--link-hover); }
+      a:focus-visible { outline: 2px solid var(--k1s-highlight); outline-offset: 2px; border-radius: 4px; }
+      .container {
+        width: min(100%, 1320px);
+        max-width: 1320px;
+        margin: 0 auto;
+        flex: 1 0 auto;
+      }
+      .card {
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-card-bg);
+        border-radius: var(--k1s-radius);
+        padding: 10px 12px;
+      }
+      .hero {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+        padding: 22px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 22%, transparent) 0%, transparent 55%),
+          linear-gradient(135deg, color-mix(in srgb, var(--k1s-panel) 86%, #000000 14%) 0%, var(--k1s-panel) 55%, color-mix(in srgb, var(--k1s-brand-gold) 14%, var(--k1s-panel)) 100%);
+        overflow: hidden;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+      }
+      html[data-theme="light"] .hero {
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 26%, transparent) 0%, transparent 60%),
+          linear-gradient(135deg, #ffffff 0%, #f8f7f2 60%, color-mix(in srgb, var(--k1s-brand-gold) 18%, #ffffff) 100%);
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        right: -24px;
+        bottom: -36px;
+        width: 220px;
+        height: 220px;
+        background: url('static/k1s-logo-circle.svg') no-repeat center / contain;
+        opacity: 0.12;
+        pointer-events: none;
+      }
+      .hero-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 1;
+      }
+      .hero-logo-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .hero-logo {
+        width: min(320px, 90%);
+        height: auto;
+        opacity: 0.85;
+      }
+      .hero-pill {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        background: var(--k1s-brand-gold);
+        color: #2b2b2b;
+        box-shadow: 0 10px 22px rgba(251, 192, 45, 0.25);
+      }
+      .hero h1 {
+        font-size: 32px;
+        margin: 4px 0 0;
+      }
+      .hero-tagline {
+        max-width: 52ch;
+        color: var(--k1s-text-muted);
+        font-size: 15px;
+      }
+      .hero-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      .hero-repo {
+        margin-top: 14px;
+        padding: 10px 12px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 6px 10px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 12px;
+        background: var(--k1s-panel);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+      }
+      .hero-repo-label {
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-link {
+        color: var(--link);
+        font-weight: 600;
+        text-decoration: none;
+        word-break: break-word;
+      }
+      .hero-repo-link:hover {
+        color: var(--link-hover);
+        text-decoration: underline;
+      }
+      .hero-link {
+        text-decoration: none;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 70%, transparent);
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .hero-link--stack {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .hero-link-title {
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .hero-link-sub {
+        font-weight: 400;
+        font-size: 11px;
+        line-height: 1.3;
+        color: var(--k1s-text-muted);
+      }
+      .hero-link:hover {
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+      }
+      .hero-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        align-items: start;
+        z-index: 1;
+      }
+      .hero-card {
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 85%, transparent);
+        border-radius: 14px;
+        padding: 12px;
+        box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+      }
+      .hero-card h2 {
+        margin: 0 0 6px;
+        font-size: 16px;
+      }
+      .hero-card p {
+        margin: 0 0 10px;
+        color: var(--k1s-text-muted);
+        font-size: 13px;
+      }
+      .hero-card pre {
+        margin: 8px 0 0;
+        font-size: 12px;
+      }
+      .hero-index {
+        grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 2fr);
+      }
+      .hero-index .hero-actions {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .hero-card--section {
+        min-height: 180px;
+      }
+      .hero-links--dense {
+        gap: 8px;
+      }
+      .hero-links--dense .hero-link {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
+      .callout, blockquote {
+        border-left: 4px solid var(--k1s-primary-soft);
+        background: var(--k1s-card-bg);
+        border: 1px solid var(--k1s-border);
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .muted, .note { color: var(--k1s-text-muted); }
+      /* Shared helper to allow scrolling without visible bars */
+      .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+      .scrollbar-hide::-webkit-scrollbar { width: 0; height: 0; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+      footer.site-footer {
+        margin-top: 3rem;
+        border-top: 1px solid var(--k1s-border);
+        flex: 0 0 auto;
+      }
+      footer.site-footer .inner {
+        display: flex;
+        align-items: center;
+        gap: .75rem;
+        padding: 14px 0;
+        opacity: .85;
+      }
+      @media (hover: none) {
+        .copy-btn { opacity: .92; }
+        pre.has-copy { padding-top: 36px; }
+      }
+      @media (max-width: 980px) {
+        body { padding: 1.5rem; }
+        nav {
+          width: 100%;
+          padding: 8px 10px;
+          gap: .5rem;
+          justify-content: flex-start;
+        }
+        nav a {
+          padding: 6px 10px;
+          font-size: 12px;
+        }
+        nav .nav-brand {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+        }
+        .hero {
+          padding: 18px;
+        }
+        .hero h1 { font-size: 28px; }
+        .hero-tagline { font-size: 14px; }
+        .hero-index { grid-template-columns: 1fr; }
+        .hero-actions { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        .hero-card--section { min-height: auto; }
+        .theme-fab { right: 12px; bottom: 88px; }
+        footer.site-footer .inner { flex-wrap: wrap; }
+      }
+      @media (max-width: 720px) {
+        body { padding: 1.1rem; }
+        nav {
+          top: 8px;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        nav::-webkit-scrollbar { width: 0; height: 0; }
+        nav a { flex: 0 0 auto; }
+        nav::after { left: 8px; right: 8px; }
+        h1 { font-size: 24px; }
+        h2 { font-size: 18px; }
+        h3 { font-size: 15px; }
+        .hero { padding: 16px; }
+        .hero-logo { width: min(220px, 90%); }
+        .hero-pill { font-size: 11px; }
+        .hero-links { gap: 8px; }
+        .hero-link { font-size: 12px; }
+        .hero-actions { grid-template-columns: 1fr; }
+        .theme-fab { bottom: 24px; width: 48px; height: 48px; }
+        pre { font-size: 13px; }
+        table {
+          display: block;
+          max-width: 100%;
+          width: max-content;
+          min-width: 100%;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        thead th, tbody td { padding: 10px 12px; }
+      }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        const labels = {
+          dark: 'Switch to light mode',
+          light: 'Switch to dark mode',
+        };
+        function update(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          var label = labels[cur] || 'Toggle theme';
+          btn.setAttribute('aria-label', label);
+          btn.setAttribute('title', label);
+        }
+        function wire() {
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) return;
+          update(btn);
+          btn.addEventListener('click', function() {
+            var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+            var next = (cur === 'dark') ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', next);
+            localStorage.setItem(key, next);
+            update(btn);
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', wire);
+        } else {
+          wire();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>
+      // Attach copy buttons to all code blocks client-side
+      (function() {
+        function addButtons() {
+          var blocks = document.querySelectorAll('pre > code');
+          blocks.forEach(function(code) {
+            var pre = code.parentElement;
+            if (pre.dataset.hasCopy) return;
+            pre.dataset.hasCopy = '1';
+            pre.classList.add('has-copy');
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'copy-btn';
+            btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z"/></svg><span>Copy</span>';
+
+            btn.addEventListener('click', function() {
+              var text = code.textContent || '';
+              var setState = function(ok) {
+                btn.classList.toggle('copied', ok);
+                btn.lastChild.textContent = ok ? 'Copied!' : 'Copy';
+                setTimeout(function() {
+                  btn.classList.remove('copied');
+                  btn.lastChild.textContent = 'Copy';
+                }, 1400);
+              };
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() { setState(true); }, function() { setState(false); });
+              } else {
+                try {
+                  var ta = document.createElement('textarea');
+                  ta.value = text;
+                  ta.style.position = 'fixed';
+                  ta.style.opacity = '0';
+                  document.body.appendChild(ta);
+                  ta.select();
+                  document.execCommand('copy');
+                  document.body.removeChild(ta);
+                  setState(true);
+                } catch (e) {
+                  setState(false);
+                }
+              }
+            });
+
+            pre.style.position = 'relative';
+            pre.insertBefore(btn, code);
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', addButtons);
+        } else {
+          addButtons();
+        }
+      })();
+    </script>
+    
+  </head>
+  <body>
+    <nav>
+      <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <a href="start-here.html">Start Here</a>
+      <a href="overview.html">Overview</a>
+      <a href="examples.html">Demos</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="cri-containerd.html">CRI containerd</a>
+      <a href="multinode-lab.html">Multi-Node</a>
+      <a href="http-api.html">HTTP API</a>
+      <a href="apishim-compatibility-matrix.html">API Shim</a>
+      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="api-auth.html">API Auth</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="playground.html">Playground</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+    </nav>
+    <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
+      <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
+        <path d="M480-360q50 0 85-35t35-85q0-50-35-85t-85-35q-50 0-85 35t-35 85q0 50 35 85t85 35Zm0 80q-83 0-141.5-58.5T280-480q0-83 58.5-141.5T480-680q83 0 141.5 58.5T680-480q0 83-58.5 141.5T480-280ZM200-440H40v-80h160v80Zm720 0H760v-80h160v80ZM440-760v-160h80v160h-80Zm0 720v-160h80v160h-80ZM256-650l-101-97 57-59 96 100-52 56Zm492 496-97-101 53-55 101 97-57 59Zm-98-550 97-101 59 57-100 96-56-52ZM154-212l101-97 55 53-97 101-59-57Zm326-268Z"/>
+      </svg>
+      <svg class="icon-moon" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
+        <path d="M480-120q-150 0-255-105T120-480q0-150 105-255t255-105q14 0 27.5 1t26.5 3q-41 29-65.5 75.5T444-660q0 90 63 153t153 63q55 0 101-24.5t75-65.5q2 13 3 26.5t1 27.5q0 150-105 255T480-120Zm0-80q88 0 158-48.5T740-375q-20 5-40 8t-40 3q-123 0-209.5-86.5T364-660q0-20 3-40t8-40q-78 32-126.5 102T200-480q0 116 82 198t198 82Zm-10-270Z"/>
+      </svg>
+    </button>
+    <div class="container">
+    <h1 id="runtime-profiles">Runtime Profiles</h1>
+<p>k1s ships lightweight runtime profiles so you can run the control plane without the demo apps. Each profile uses an empty specs directory under <code>state/profiles/&lt;profile&gt;/specs</code>, so nothing is reconciled until you apply a manifest.</p>
+<h2 id="quickstart">Quickstart</h2>
+<p>Strict CRI (recommended path for containerd lanes)</p>
+<pre><code>make k1s-core-cri
+make k1s-edge-cri
+make k1s-core-edge-cri
+make k1s-edge-core-cri
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></pre>
+<p>Notes:</p>
+<ul>
+<li>These aliases set <code>AE_RUNTIME_BACKEND=cri</code> and <code>AE_INFRA_BACKEND=cri</code>.</li>
+<li>Use <code>sudo -E</code> when your containerd environment requires elevated privileges.</li>
+<li>See <code>docs/reference/cri-containerd.md</code> for registry-first image prep and trust setup.</li>
+</ul>
+<p><code>dev-min</code> (SQLite + HTTP, local loop)</p>
+<pre><code>make dev-min</code></pre>
+<p><code>dev-etcd</code> (etcd + HTTP; auto-starts etcd)</p>
+<pre><code>make dev-etcd</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>dev-min</code>/<code>dev-etcd</code> default to SQLite for apishim (no <code>AE_APISHIM_DSN</code> set unless you provide it).</li>
+</ul>
+<p><code>k1s-core</code> (etcd + NATS + JetStream; auto-starts etcd + hub NATS)</p>
+<pre><code>make k1s-core</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>k1s-core</code> starts etcd + hub NATS + Postgres infra and sets <code>AE_APISHIM_DSN</code> by default.</li>
+<li>Infra backend auto-selection:
+<ul>
+<li><code>AE_RUNTIME_BACKEND=cri|containerd</code> -&gt; strict CRI infra (<code>AE_INFRA_BACKEND=cri</code>)</li>
+<li>otherwise -&gt; compose infra (<code>AE_INFRA_BACKEND=compose</code>)</li>
+<li>force legacy compose with <code>AE_INFRA_BACKEND=compose</code></li>
+</ul>
+</li>
+<li>Strict CRI runtime handler defaults to <code>runc</code> (<code>AE_CRI_RUNTIME_HANDLER=runc</code>). Override only if your containerd CRI runtime handler differs.</li>
+<li>DSN selection is mode-aware:
+<ul>
+<li><code>AE_APISHIM_MODE=host</code>: <code>postgresql://shim:shim@127.0.0.1:&lt;port&gt;/shim</code></li>
+<li><code>AE_APISHIM_MODE=cri</code>: <code>postgresql://shim:shim@127.0.0.1:&lt;port&gt;/shim</code></li>
+<li>container mode: uses the compose service name: <code>postgresql://shim:shim@postgres:5432/shim</code></li>
+</ul>
+</li>
+<li>In strict CRI <code>k1s-core</code>, default <code>AE_APISHIM_MODE=cri</code> starts apishim as CRI pod <code>k1s-core-apishim</code> (controller remains host-process).</li>
+<li>Missing-image behavior in strict CRI:
+<ul>
+<li>default interactive policy: <code>AE_CRI_IMAGE_POLICY=prompt</code></li>
+<li>non-interactive/CI default: <code>AE_CRI_IMAGE_POLICY=fail</code></li>
+<li>explicit pull-only mode: <code>AE_CRI_IMAGE_POLICY=pull</code></li>
+<li>strict fallback action <code>b</code>:
+<ul>
+<li>apishim image (<code>k1s-core-apishim</code>): local build + registry push + CRI pull verify</li>
+<li>other strict-CRI managed images (etcd/nats/postgres/envoy/rathole/caddy): mirror source image into <code>AE_CRI_REGISTRY</code> + CRI pull verify</li>
+</ul>
+</li>
+<li>local build backend order: <code>nerdctl</code>, then <code>podman</code>, then <code>docker</code></li>
+<li>optional override: <code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker</code></li>
+</ul>
+</li>
+<li>Registry mapping in strict CRI:
+<ul>
+<li><code>AE_CRI_REGISTRY=&lt;host:port&gt;</code> rewrites CRI-managed image refs to that registry</li>
+<li>optional path prefix: <code>AE_CRI_REGISTRY_NAMESPACE=&lt;prefix&gt;</code></li>
+<li>if unset, <code>AE_REGISTRY_HOST</code> is used when provided</li>
+</ul>
+</li>
+<li>Strict CRI registry mode:
+<ul>
+<li><code>AE_CRI_REGISTRY_MODE=managed|external|off</code> (default: <code>managed</code> when no registry is set; <code>external</code> when <code>AE_CRI_REGISTRY</code> is set)</li>
+<li><code>managed</code> default endpoint: <code>localhost:5001</code> (k1s-managed local registry)</li>
+<li><code>external</code> common microk8s endpoint: <code>localhost:32000</code></li>
+<li>optional preset: <code>AE_CRI_REGISTRY_PRESET=microk8s|local</code></li>
+</ul>
+</li>
+<li>Optional containerd trust hook for strict CRI startup:
+<ul>
+<li>managed registry TLS (<code>AE_CRI_REGISTRY_MODE=managed</code>) defaults to secure trust wiring.</li>
+<li>on scheme transitions (<code>http</code> &lt;-&gt; <code>https</code>), strict startup auto-restarts containerd by default (<code>AE_CRI_REGISTRY_AUTO_RESTART=1</code>).</li>
+<li>set <code>AE_CRI_REGISTRY_AUTO_RESTART=0</code> to disable auto-restart (startup will fail fast on unresolved transitions).</li>
+<li>set <code>AE_CRI_REGISTRY_TRUST=1</code> to force trust configuration for external registries.</li>
+<li>trust wiring also ensures CRI registry <code>config_path=/etc/containerd/certs.d</code> for hosts.toml resolution.</li>
+<li><code>AE_CRI_REGISTRY_INSECURE=1</code> is a dev-only opt-out and will fail security baseline high gates.</li>
+</ul>
+</li>
+<li>Bind Postgres to the hub WG IP with <code>POSTGRES_BIND_IP=&lt;hub-wg-ip&gt;</code> so edge nodes can reach it.</li>
+<li>Override the DSN with <code>AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname</code> if needed.</li>
+</ul>
+<p><code>k1s-edge</code> (edge gateway + stub worker; NATS core by default)</p>
+<pre><code>make k1s-edge</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>k1s-edge</code> does not start Postgres by default; edge nodes typically point at the core Postgres over WG/LAN.</li>
+<li>Start a local Postgres on the edge only if needed with <code>EDGE_START_POSTGRES=1</code> (also set <code>POSTGRES_PORT</code> to avoid conflicts when core and edge share a host).</li>
+<li>With strict CRI infra (<code>AE_INFRA_BACKEND=cri</code>), edge NATS and rathole components run as CRI pods.</li>
+</ul>
+<h2 id="ingress-modes-k1s-core-k1s-edge">Ingress modes (k1s-core / k1s-edge)</h2>
+<p>Set the ingress mode with <code>EDGE_INGRESS_MODE</code>:</p>
+<ul>
+<li><code>core-proxy</code> (default): core ingress proxies to edge over rathole.</li>
+<li><code>core-to-edge-public</code>: core ingress routes directly to edge public endpoints.</li>
+<li><code>edge-local</code>: edge ingress only; core ingress is not in the request path.</li>
+</ul>
+<p>Examples:</p>
+<pre><code>EDGE_INGRESS_MODE=core-to-edge-public make k1s-core
+EDGE_INGRESS_MODE=edge-local make k1s-edge</code></pre>
+<p>By default, <code>make k1s-core</code> starts Envoy (core ingress) and rathole server, and <code>make k1s-edge</code> starts a rathole client when <code>EDGE_INGRESS_MODE=core-proxy</code>. Override images with <code>AE_ENVOY_IMAGE</code> / <code>AE_RATHOLE_IMAGE</code>, or disable auto-start with <code>EDGE_INGRESS_START=0</code>.</p>
+<p>Mode behavior:</p>
+<ul>
+<li><code>core-proxy</code>: Envoy + rathole server/client.</li>
+<li><code>core-to-edge-public</code>: Envoy only (no rathole).</li>
+<li><code>edge-local</code>: no core ingress; the gateway renders an edge-local Caddyfile if enabled.</li>
+<li>For canonical WG/Rosenpass multi-site patterns (production + single-host), see Option D in <code>docs/guides/multinode-lab.md</code>.</li>
+</ul>
+<p>Ingress deep validation defaults (CRI lanes):</p>
+<ul>
+<li>Primary lane: <code>core-proxy</code> deep/deep+perf (<code>lb-proof-scope=auto</code>) for policy + observability checks.</li>
+<li>Strict LB proof lane: <code>edge-local</code> deep (<code>lb-proof-scope=edge-only</code>) for distribution proof.</li>
+<li>Canonical command sequence: <code>docs/guides/ingress-capability-test-sequence.md</code>.</li>
+</ul>
+<h2 id="core-edge-pairings">Core + Edge pairings</h2>
+<p>JetStream path (k1s-core + edge running JetStream work queue):</p>
+<pre><code># Terminal 1
+make k1s-core
+
+# Terminal 2
+make k1s-edge-core</code></pre>
+<p>Core-NATS path (k1s-edge work.pull without JetStream):</p>
+<pre><code># Terminal 1
+make k1s-core-edge
+
+# Terminal 2
+make k1s-edge</code></pre>
+<h2 id="multiple-edges">Multiple edges</h2>
+<p>Run additional edges in new terminals with unique node IDs:</p>
+<pre><code>AE_NODE_ID=edge-node-2 make k1s-edge</code></pre>
+<p>For multi-site tests, also override site IDs:</p>
+<pre><code>AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-node-2 make k1s-edge</code></pre>
+<h2 id="optional-overrides">Optional overrides</h2>
+<p>Disable the stub worker (gateway only):</p>
+<pre><code>EDGE_START_WORKER=0 make k1s-edge</code></pre>
+<p>Bring up the docs server alongside k1s-core:</p>
+<pre><code>CORE_DOCS=1 make k1s-core</code></pre>
+<p>Docs will serve on <code>http://127.0.0.1:9109</code> (override with <code>AE_DOCS_PORT</code> / <code>DOCS_BIND</code>), and the dashboard remains on <code>http://127.0.0.1:9108/dashboard</code>.</p>
+<p>Start Caddy for TLS hostnames (docs/api/dashboard) on any core profile:</p>
+<pre><code>CORE_CADDY=1 make k1s-core
+CORE_CADDY=1 make dev-min
+CORE_CADDY=1 make dev-etcd</code></pre>
+<p>This uses the dev Caddy config with <code>docs.home.arpa</code>, <code>api.home.arpa</code>, and <code>dash.home.arpa</code> on port <code>8443</code> (override with <code>CADDY_HTTPS_PORT</code>).</p>
+<p>Dev-min/dev-etcd defaults (can be disabled explicitly):</p>
+<ul>
+<li><code>AE_REGISTER_LOCAL_NODE=1</code> (single-node scheduling)</li>
+<li><code>AE_LABS=1</code> + apishim autostart</li>
+<li>Disable with <code>AE_REGISTER_LOCAL_NODE=0 AE_LABS=0 AE_APISHIM_AUTOSTART=0</code></li>
+</ul>
+<p>Local DNS + TLS trust helper (optional):</p>
+<ul>
+<li><code>AE_DEV_LOCAL=1 make dev-min</code> (or <code>dev-etcd</code> / <code>k1s-core</code>) will:
+<ul>
+<li>add <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>echo.home.arpa</code> to <code>/etc/hosts</code></li>
+<li>install local Caddy/Apishim/Envoy certs into system trust (requires <code>update-ca-certificates</code>)</li>
+</ul>
+</li>
+<li><code>make dev-local</code> runs the helper on demand (useful after Caddy/Envoy have minted certs)</li>
+</ul>
+<p>Aliases:</p>
+<ul>
+<li><code>make k1s-core-caddy</code></li>
+<li><code>make dev-min-caddy</code></li>
+<li><code>make dev-etcd-caddy</code></li>
+</ul>
+<p>Force the container engine:</p>
+<pre><code>AE_CONTAINER_CLI=podman make k1s-core</code></pre>
+<p>Profiles default to Podman; override with:</p>
+<pre><code>AE_RUNTIME_BACKEND=docker make k1s-core</code></pre>
+<p>Strict CRI aliases:</p>
+<pre><code>make k1s-core-cri
+make k1s-core-edge-cri
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+make k1s-edge-cri
+make k1s-edge-core-cri</code></pre>
+<p>Equivalent explicit override: <code>AE_CRI_RUNTIME_HANDLER=runc make k1s-core-cri</code></p>
+<p>Notes:</p>
+<ul>
+<li><code>run_profile.sh</code> now auto-selects CRI infra when a running <code>k1s-core</code> CRI stack is detected, and fails fast if a compose edge/core profile is invoked against that CRI core.</li>
+<li><code>edge-site-cri</code> defaults the CRI edge NATS profile to <code>k1s-core</code> (JetStream path). Set <code>EDGE_PROFILE=k1s-edge</code> when pairing with <code>make k1s-edge-cri</code>.</li>
+<li>Strict CRI edge startup port precedence is: <code>EDGE_PORT</code>, then explicit port from <code>AE_NATS_URL</code>, then fallback <code>4223</code>.</li>
+</ul>
+<h2 id="apply-a-sample-any-profile">Apply a sample (any profile)</h2>
+<pre><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></pre>
+<h2 id="manual-smoke-test-profiles">Manual smoke test (profiles)</h2>
+<p>**dev-min** 1. <code>CORE_DOCS=1 make dev-min</code> (optional TLS: <code>CORE_CADDY=1 make dev-min</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> (expect 1 ready app) 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
+<p>**dev-etcd** 1. <code>CORE_DOCS=1 make dev-etcd</code> (optional TLS: <code>CORE_CADDY=1 make dev-etcd</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli metrics</code> 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
+<p>**k1s-core + multiple edges (same host)** 1. Terminal A: <code>AE_DEV_LOCAL=1 make k1s-core</code> (optional TLS only: <code>CORE_CADDY=1 make k1s-core</code>) 2. Terminal B: <code>make k1s-edge</code> (site <code>sfo-edge-01</code>, node <code>edge-node-1</code>) 3. Terminal C: <code>AE_SITE_ID=sfo-edge-01 AE_NODE_ID=edge-node-2 make k1s-edge</code> (second node, same site) 4. Terminal D (second site on same host):</p>
+<ul>
+<li><code>make edge-site SITE_ID=sfo-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></li>
+<li><code>AE_SITE_ID=sfo-edge-02 AE_NODE_ID=edge-node-1 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 make k1s-edge</code></li>
+<li>Note: <code>AE_NODE_ID</code> must be globally unique across sites. Prefer <code>AE_NODE_ID=&lt;site_id&gt;--&lt;node_id&gt;</code> for multi-site tests.</li>
+</ul>
+<p>5. In the core terminal: <code>source &lt;(ae auth local)</code> then <code>ae nodes</code> (expect 3 nodes across 2 sites) 6. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 7. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli events echo</code> 8. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 9. <code>make down</code></p>
+<h2 id="stop-everything">Stop everything</h2>
+<pre><code>make down</code></pre>
+<p>&lt;details&gt; &lt;summary&gt;&lt;strong&gt;Ingress Envoy Test Coverage&lt;/strong&gt;&lt;/summary&gt;</p>
+<p>Unit test (config render only):</p>
+<ul>
+<li><code>tests/unit/test_envoy_core_local_ingress.py</code></li>
+<li><code>PYTHONPATH=src pytest -q tests/unit/test_envoy_core_local_ingress.py</code></li>
+</ul>
+<p>Opt‑in integration test (TLS handshake):</p>
+<ul>
+<li><code>tests/integration/test_envoy_core_local_ingress_tls.py</code></li>
+<li><code>AE_E2E_ENVOY_TLS=1 PYTHONPATH=src pytest -q tests/integration/test_envoy_core_local_ingress_tls.py</code></li>
+<li>Requires <code>docker</code>/<code>podman</code> and <code>openssl</code></li>
+<li>Uses the local Caddy CA if present (<code>state/caddy-data/.../root.crt</code>); otherwise generates a temporary CA.</li>
+<li>Envoy image can be overridden with <code>AE_ENVOY_IMAGE</code>.</li>
+</ul>
+<p>&lt;/details&gt;</p>
+    </div>
+    <footer class="site-footer">
+      <div class="container inner">
+        <span>k1s Documentation</span>
+        <span class="spacer"></span>
+        <button id="api-mode-toggle">API Mode</button>
+        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
+        <span>Built 2026-02-18 09:00:48</span>
+      </div>
+    </footer>
+    <script>
+      (function() {
+        var btn = document.getElementById('api-mode-toggle');
+        if (!btn) return;
+        function label() {
+          var mode = localStorage.getItem('docsApiMode') || 'proxy';
+          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
+          var lab = document.getElementById('api-mode-label');
+          if (lab) {
+            if (mode === 'direct') {
+              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
+              lab.textContent = ' [' + base + ']';
+            } else {
+              lab.textContent = ' (proxy)';
+            }
+          }
+        }
+        btn.addEventListener('click', function() {
+          var cur = localStorage.getItem('docsApiMode') || 'proxy';
+          var next = (cur === 'direct') ? 'proxy' : 'direct';
+          localStorage.setItem('docsApiMode', next);
+          label();
+          if (location.pathname.endsWith('playground.html')) location.reload();
+        });
+        label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
+      })();
+    </script>
+  </body>
+</html>

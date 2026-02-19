@@ -17,7 +17,7 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 APP="${APP:-specs/examples/echo.yaml}"
 APP_NAME="${APP_NAME:-echo}"
 REPLICAS="${REPLICAS:-1,5,10}"
-ROLL_REPLICAS="${ROLL_REPLICAS:-5}"
+ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 DURATION="${DURATION:-30}"
 
 LABEL_CRI="${LABEL_CRI:-r$(date +%Y%m%d)+cri+containerd}"
@@ -460,17 +460,37 @@ REPLICAS="$REPLICAS" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
   --duration "$DURATION" \
   --sudo
 
-AE_ENGINE_STRICT=1 \
-LABEL_SUITE_ROLL="$LABEL_CRI" \
-APP="$BENCH_PRIMARY_MANIFEST" APP_NAME="$bench_app_name" \
-ROLL_REPLICAS="$ROLL_REPLICAS" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
-./scripts/bench/run_rollout_k1s.sh \
-  --label-suite "$LABEL_CRI" \
-  --app "$BENCH_PRIMARY_MANIFEST" \
-  --app-name "$bench_app_name" \
-  --replicas "$ROLL_REPLICAS" \
-  --duration "$DURATION" \
-  --sudo
+rollout_replicas=()
+IFS=',' read -r -a rollout_replicas_raw <<< "$ROLL_REPLICAS"
+for rep in "${rollout_replicas_raw[@]}"; do
+  rep="${rep// /}"
+  [[ -z "$rep" ]] && continue
+  if [[ ! "$rep" =~ ^[0-9]+$ ]]; then
+    log "invalid rollout replicas '${rep}' (expected integer); aborting"
+    exit 2
+  fi
+  rollout_replicas+=("$rep")
+done
+if (( ${#rollout_replicas[@]} == 0 )); then
+  log "no valid rollout replicas provided (ROLL_REPLICAS='${ROLL_REPLICAS}')"
+  exit 2
+fi
+
+for rep in "${rollout_replicas[@]}"; do
+  log "cleanup CRI pods before rollout replicas=${rep}"
+  cri_cleanup_app_pods "$bench_app_name"
+  AE_ENGINE_STRICT=1 \
+  LABEL_SUITE_ROLL="$LABEL_CRI" \
+  APP="$BENCH_PRIMARY_MANIFEST" APP_NAME="$bench_app_name" \
+  ROLL_REPLICAS="$rep" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
+  ./scripts/bench/run_rollout_k1s.sh \
+    --label-suite "$LABEL_CRI" \
+    --app "$BENCH_PRIMARY_MANIFEST" \
+    --app-name "$bench_app_name" \
+    --replicas "$rep" \
+    --duration "$DURATION" \
+    --sudo
+done
 
 ./scripts/bench/bench_env_teardown.sh --env "$ENV_FILE"
 

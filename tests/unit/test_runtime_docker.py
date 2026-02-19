@@ -157,7 +157,7 @@ class FakeDockerClient:
 def make_manifest(replica_count: int = 1, image: str = "alpine:3.20") -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image=image,
@@ -397,7 +397,7 @@ def test_build_state_prefers_readiness_port_for_endpoint():
     # Manifest with readiness on 9090
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="echo"),
         spec=AppSpec(
             image="alpine:3.20",

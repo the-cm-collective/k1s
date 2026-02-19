@@ -14,7 +14,7 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 APP="${APP:-specs/examples/echo.yaml}"
 APP_NAME="${APP_NAME:-echo}"
 REPLICAS="${REPLICAS:-1,5,10}"
-ROLL_REPLICAS="${ROLL_REPLICAS:-5}"
+ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 DURATION="${DURATION:-30}"
 bench_specs_minimal="${BENCH_SPECS_MINIMAL:-1}"
 bench_specs_empty="${BENCH_SPECS_EMPTY:-1}"
@@ -36,6 +36,8 @@ export AE_APISHIM_RUNTIME="podman"
 export AE_ALLOW_PLAINTEXT_SECRETS=1
 export AE_REGISTER_LOCAL_NODE=1
 export AE_NODE_NOTREADY_AFTER="${BENCH_NODE_NOTREADY_AFTER:-${AE_NODE_NOTREADY_AFTER:-600}}"
+
+./scripts/bench/podman_rootful_socket.sh
 
 ENV_FILE="$(BENCH_SPECS_MINIMAL="$bench_specs_minimal" BENCH_SPECS_EMPTY="$bench_specs_empty" \
   ./scripts/bench/bench_env_prep.sh --manifest "$APP" --metrics-port 9211 --sudo-controller)"

@@ -1,13 +1,10 @@
-name: e2e-plan
+name: e2e-plan-legacy
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch: {}
 
 concurrency:
-  group: e2e-plan-${{ github.ref }}
+  group: e2e-plan-legacy-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

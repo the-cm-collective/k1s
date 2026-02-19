@@ -9,10 +9,10 @@ case "$MODE" in
     cat <<'USAGE'
 Usage: scripts/bench/k1nd_sanitize.sh [pre|post]
 
-pre  - Tear down prior labs-aio stack (unless K1ND_SKIP_PRE_DOWN=1) and remove
+pre  - Tear down prior k1nd stack (unless K1ND_SKIP_PRE_DOWN=1) and remove
        stray ae.app containers across Docker/Podman before running k1nd benches.
 post - Remove any ae.app containers left by the run and optionally tear down the
-       labs-aio stack (set K1ND_SKIP_POST_DOWN=1 to keep it running).
+       k1nd stack (set K1ND_SKIP_POST_DOWN=1 to keep it running).
 USAGE
     exit 0
     ;;
@@ -22,7 +22,7 @@ USAGE
     ;;
 esac
 
-COMPOSE_FILE=${K1ND_COMPOSE_FILE:-ops/dev/labs-aio.yaml}
+COMPOSE_FILE=${K1ND_COMPOSE_FILE:-ops/bench/k1nd-compose.yaml}
 COMPOSE_ARGS=(docker compose -f "$COMPOSE_FILE")
 
 log() {
@@ -36,7 +36,7 @@ stack_down() {
   if [[ ! -f "$COMPOSE_FILE" ]]; then
     return
   fi
-  log "bringing down labs stack: $COMPOSE_FILE"
+  log "bringing down k1nd stack: $COMPOSE_FILE"
   "${COMPOSE_ARGS[@]}" down --remove-orphans >/dev/null 2>&1 || true
 }
 

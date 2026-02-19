@@ -1,13 +1,33 @@
 api.home.arpa:443, api.home.arpa
 {
     tls internal
-    encode gzip zstd
+    @no_sse {
+        not path /labs/sse/* /dashboard/sse/* /logs/*/stream
+    }
+    encode @no_sse gzip zstd
 
     @ui {
         path /dashboard* /playground*
     }
     handle @ui {
         respond 404
+    }
+
+    # SSE paths: flush immediately for streaming responses
+    @sse {
+        path /labs/sse/* /dashboard/sse/* /logs/*/stream
+    }
+    handle @sse {
+        reverse_proxy {
+            to {$CADDY_HOST_ALIAS:host.docker.internal}:9108
+            header_up Host {http.reverse_proxy.upstream.hostport}
+            flush_interval -1
+            # Keep SSE streams alive across config reloads to reduce reconnect churn.
+            stream_close_delay 5m
+            stream_timeout 24h
+            header_down X-Accel-Buffering no
+            header_down Cache-Control no-cache
+        }
     }
 
     # Proxy shim API (exec/port-forward) to the apishim service
@@ -28,14 +48,14 @@ api.home.arpa:443, api.home.arpa
     }
     handle @controller {
         reverse_proxy {
-            to host.docker.internal:9108
+            to {$CADDY_HOST_ALIAS:host.docker.internal}:9108
             header_up Host {http.reverse_proxy.upstream.hostport}
         }
     }
 
     handle {
         reverse_proxy {
-            to host.docker.internal:9108
+            to {$CADDY_HOST_ALIAS:host.docker.internal}:9108
             header_up Host {http.reverse_proxy.upstream.hostport}
         }
     }

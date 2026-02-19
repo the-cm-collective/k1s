@@ -7,8 +7,9 @@ import json
 import os
 import sqlite3
 import hashlib
+import uuid
 from dataclasses import InitVar, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -63,6 +64,7 @@ class PodStatus:
     readiness_message: str
     liveness_message: str
     pod_name: str = ""
+    endpoint: str | None = None
     exit_code: int | None = None
     finished_at: datetime | None = None
     replica_id: InitVar[str | None] = None
@@ -120,6 +122,102 @@ class AppEvent:
 
 
 @dataclass(slots=True)
+class WorkQueueLease:
+    """Leased work item for lab-edge work.pull."""
+
+    work_id: str
+    attempt: int
+    site_id: str
+    payload: dict
+    lease_id: str
+    lease_expires_at: datetime | None
+
+
+@dataclass(slots=True)
+class NodeLease:
+    """Lease record for a node (lab-edge semantics)."""
+
+    node_id: str
+    site_id: str
+    session_id: str
+    lease_id: str
+    controller_epoch: int
+    lease_ttl_ms: int
+    renew_after_ms: int
+    last_renew_at: datetime
+    expires_at: datetime
+
+
+@dataclass(slots=True)
+class SiteIngressEndpoint:
+    """Ingress endpoint metadata for a site (core-proxy/core-to-edge-public)."""
+
+    site_id: str
+    mode: str
+    core_proxy_port: int | None
+    public_urls: list[str | dict]
+    quarantine_until: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class SiteIngressListItem:
+    site_id: str
+    mode: str
+    core_proxy_port: int | None
+    public_urls: list[str | dict]
+    quarantine_until: datetime | None
+
+
+@dataclass(slots=True)
+class EdgeIngressRouteRecord:
+    name: str
+    namespace: str
+    site_id: str
+    policy_name: str | None
+    policy_namespace: str | None
+    spec: dict
+    status: dict | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class EdgeIngressPolicyRecord:
+    name: str
+    namespace: str
+    spec: dict
+    status: dict | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class WorkOutboxEntry:
+    work_id: str
+    attempt: int
+    site_id: str
+    payload: dict
+    publish_attempts: int
+
+
+@dataclass(slots=True)
+class WorkLedgerEntry:
+    work_id: str
+    attempt: int
+    site_id: str
+    state: str
+    desired_generation: int | None
+    assigned_node_id: str | None
+    observed_generation: int | None
+    result: dict | None
+    created_at: datetime
+    updated_at: datetime
+    state_updated_at: datetime
+
+
+@dataclass(slots=True)
 class ServiceRecord:
     """Service-level metadata such as ClusterIP and exposed ports."""
 
@@ -148,17 +246,6 @@ class ServiceListItem:
 
 
 @dataclass(slots=True)
-class StorageBinding:
-    """Mapping of a persistent volume to the node that owns it."""
-
-    app_name: str
-    volume_name: str
-    node_id: str
-    retention: str | None
-    created_at: datetime
-
-
-@dataclass(slots=True)
 class VolumeAttachment:
     """Attachment record for a volume bound to a node."""
 
@@ -181,6 +268,7 @@ class NodeRecord:
     endpoint: str | None
     pod_cidr: str | None
     wg_pubkey: str | None
+    rp_pubkey: str | None
     cordoned: bool
     created_at: datetime
     updated_at: datetime
@@ -226,6 +314,19 @@ class SQLiteStateStore:
             # Drop legacy replica tables now that pod naming is canonical.
             conn.execute("DROP TABLE IF EXISTS replica_nodes")
             conn.execute("DROP TABLE IF EXISTS replica_status")
+            # Best-effort schema upgrades before strict checks.
+            try:
+                self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
+            except Exception:
+                pass
+            try:
+                self._ensure_column(conn, "pod_status", "updated_at", "TEXT")
+            except Exception:
+                pass
+            try:
+                self._ensure_column(conn, "nodes", "rp_pubkey", "TEXT")
+            except Exception:
+                pass
             needs_reset = not self._schema_matches(
                 conn,
                 "app_status",
@@ -251,13 +352,15 @@ class SQLiteStateStore:
                     "pod_name",
                     "ready",
                     "live",
+                    "endpoint",
                     "status",
                     "readiness_message",
                     "liveness_message",
-                    "exit_code",
-                    "finished_at",
-                ],
-            )
+                "exit_code",
+                "finished_at",
+                "updated_at",
+            ],
+        )
             if needs_reset:
                 conn.execute("DROP TABLE IF EXISTS probe_history")
                 conn.execute("DROP TABLE IF EXISTS pod_status")
@@ -328,6 +431,7 @@ class SQLiteStateStore:
                     "cordoned",
                     "created_at",
                     "updated_at",
+                    "rp_pubkey",
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS nodes")
@@ -341,18 +445,6 @@ class SQLiteStateStore:
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS node_heartbeats")
-            if not self._schema_matches(
-                conn,
-                "storage_bindings",
-                [
-                    "app_name",
-                    "volume_name",
-                    "node_id",
-                    "retention",
-                    "created_at",
-                ],
-            ):
-                conn.execute("DROP TABLE IF EXISTS storage_bindings")
             if not self._schema_matches(
                 conn,
                 "volume_attachments",
@@ -420,18 +512,72 @@ class SQLiteStateStore:
                     "sql", "controller", "create_node_heartbeats.sql"
                 )
             )
-            conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "create_storage_bindings.sql"
-                )
+            self._execute_script(
+                conn,
+                resource_loader.load_text("sql", "controller", "create_node_leases.sql"),
             )
             conn.execute(
                 resource_loader.load_text(
                     "sql", "controller", "create_volume_attachments.sql"
                 )
             )
-            self._migrate_storage_bindings(conn)
+            self._execute_script(
+                conn,
+                resource_loader.load_text("sql", "controller", "create_work_queue.sql"),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text("sql", "controller", "create_work_outbox.sql"),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text("sql", "controller", "create_work_ledger.sql"),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text(
+                    "sql", "controller", "create_site_ingress_endpoints.sql"
+                ),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text(
+                    "sql", "controller", "create_edge_ingress_routes.sql"
+                ),
+            )
+            self._execute_script(
+                conn,
+                resource_loader.load_text(
+                    "sql", "controller", "create_edge_ingress_policies.sql"
+                ),
+            )
+            self._ensure_column(conn, "edge_ingress_routes", "status_json", "TEXT")
+            self._ensure_column(conn, "edge_ingress_policies", "status_json", "TEXT")
+            self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
             conn.commit()
+
+    def _execute_script(self, conn, sql: str) -> None:
+        if self.backend == "sqlite":
+            conn.executescript(sql)
+            return
+        for stmt in sql.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                conn.execute(stmt)
+
+    def _ensure_column(self, conn, table: str, column: str, col_type: str) -> None:
+        if self.backend == "sqlite":
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            except Exception:
+                return
+            return
+        try:
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
+            )
+        except Exception:
+            return
 
     def _connect(self):
         if self.backend == "sqlite":
@@ -454,36 +600,6 @@ class SQLiteStateStore:
         # For Postgres we skip strict schema match; rely on CREATE IF NOT EXISTS.
         return True
 
-    def _migrate_storage_bindings(self, conn) -> None:
-        """Best-effort migration from legacy storage_bindings to volume_attachments."""
-        try:
-            rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_storage_bindings_all.sql"
-                )
-            ).fetchall()
-        except Exception:
-            return
-        if not rows:
-            return
-        try:
-            existing = conn.execute(
-                resource_loader.load_text("sql", "controller", "count_volume_attachments.sql")
-            ).fetchone()
-            if existing and int(existing[0]) > 0:
-                return
-        except Exception:
-            return
-        for row in rows:
-            try:
-                conn.execute(
-                    resource_loader.load_text(
-                        "sql", "controller", "insert_volume_attachments_ignore.sql"
-                    ),
-                    (row[0], row[1], row[2], row[3], row[4]),
-                )
-            except Exception:
-                continue
 
     def record_snapshot(
         self,
@@ -515,13 +631,16 @@ class SQLiteStateStore:
                 ),
             )
 
-            conn.execute(
-                "DELETE FROM pod_status WHERE app_name = ?",
-                (app_name,),
-            )
-
-            # Clean existing placements for this app; will be repopulated below
-            conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
+            # Preserve existing placements to avoid dashboard flicker; refresh timestamps
+            # for pods that still exist, and prune by TTL instead of per-snapshot deletion.
+            current_pods = [pod.pod_name for pod in health_report.pods if pod.pod_name]
+            ts = datetime.now(timezone.utc).isoformat()
+            if current_pods:
+                placeholders = ",".join("?" for _ in current_pods)
+                conn.execute(
+                    f"UPDATE pod_nodes SET updated_at = ? WHERE app_name = ? AND pod_name IN ({placeholders})",
+                    (ts, app_name, *current_pods),
+                )
 
             rows = []
             for pod in health_report.pods:
@@ -532,11 +651,13 @@ class SQLiteStateStore:
                         pod.pod_name,
                         int(pod.ready),
                         int(pod.live),
+                        state.endpoint if state else None,
                         state.status if state else "unknown",
                         pod.readiness_message,
                         pod.liveness_message,
                         state.exit_code if state else None,
                         state.finished_at.isoformat() if state and state.finished_at else None,
+                        ts,
                     )
                 )
             if rows:
@@ -545,6 +666,31 @@ class SQLiteStateStore:
                         "sql", "controller", "insert_pod_status.sql"
                     ),
                     rows,
+                )
+
+            try:
+                ttl_seconds = int(
+                    os.getenv("AE_POD_STATUS_TTL_SECONDS", "30") or "30"
+                )
+            except Exception:
+                ttl_seconds = 30
+            if ttl_seconds > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+                conn.execute(
+                    "DELETE FROM pod_status WHERE app_name = ? AND (updated_at IS NULL OR updated_at < ?)",
+                    (app_name, cutoff.isoformat()),
+                )
+            try:
+                node_ttl_seconds = int(
+                    os.getenv("AE_POD_NODE_TTL_SECONDS", "300") or "300"
+                )
+            except Exception:
+                node_ttl_seconds = 300
+            if node_ttl_seconds > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=node_ttl_seconds)
+                conn.execute(
+                    "DELETE FROM pod_nodes WHERE app_name = ? AND (updated_at IS NULL OR updated_at < ?)",
+                    (app_name, cutoff.isoformat()),
                 )
 
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -662,9 +808,9 @@ class SQLiteStateStore:
         items: list[PodStatus] = []
         for row in rows:
             finished_at = None
-            if row[7]:
+            if row[8]:
                 try:
-                    finished_at = datetime.fromisoformat(row[7])
+                    finished_at = datetime.fromisoformat(row[8])
                 except Exception:
                     finished_at = None
             items.append(
@@ -672,18 +818,15 @@ class SQLiteStateStore:
                     pod_name=row[0],
                     ready=bool(row[1]),
                     live=bool(row[2]),
-                    status=row[3],
-                    readiness_message=row[4],
-                    liveness_message=row[5],
-                    exit_code=row[6] if row[6] is not None else None,
+                    status=row[4],
+                    endpoint=row[3],
+                    readiness_message=row[5],
+                    liveness_message=row[6],
+                    exit_code=row[7] if row[7] is not None else None,
                     finished_at=finished_at,
                 )
             )
         return items
-
-    def list_replicas(self, app_name: str) -> list[PodStatus]:
-        """Alias for list_pods (deprecated)."""
-        return self.list_pods(app_name)
 
     def list_pod_nodes(self, app_name: str) -> list[tuple[str, str]]:
         with self._connect() as conn:
@@ -691,13 +834,9 @@ class SQLiteStateStore:
                 resource_loader.load_text(
                     "sql", "controller", "select_pod_nodes_with_status.sql"
                 ),
-                (app_name,),
+                (app_name, app_name),
             ).fetchall()
         return [(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in rows]
-
-    def list_replica_nodes(self, app_name: str) -> list[tuple[str, str]]:
-        """Alias for list_pod_nodes (deprecated)."""
-        return self.list_pod_nodes(app_name)
 
     def set_pod_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
         """Replace placement mapping for an app."""
@@ -712,10 +851,6 @@ class SQLiteStateStore:
                     [(app_name, rid, nid, ts) for rid, nid in placements],
                 )
             conn.commit()
-
-    def set_replica_nodes(self, app_name: str, placements: list[tuple[str, str]]) -> None:
-        """Alias for set_pod_nodes (deprecated)."""
-        self.set_pod_nodes(app_name, placements)
 
     def get_probe_history(self, app_name: str, limit: int) -> list[ProbeHistoryEntry]:
         with self._connect() as conn:
@@ -1017,6 +1152,1071 @@ class SQLiteStateStore:
             )
         return events, total
 
+    # --- Node leases (lab-edge) ---
+    def acquire_lease(
+        self,
+        site_id: str,
+        node_id: str,
+        session_id: str,
+        lease_ttl_ms: int,
+        renew_after_ms: int,
+        controller_epoch: int,
+    ) -> NodeLease:
+        now = datetime.now(timezone.utc)
+        lease_id = str(uuid.uuid4())
+        expires_at = now + timedelta(milliseconds=int(lease_ttl_ms))
+        now_iso = now.isoformat()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM node_leases WHERE node_id = ?", (node_id,))
+            conn.execute(
+                """
+                INSERT INTO node_leases
+                  (node_id, site_id, session_id, lease_id, controller_epoch,
+                   lease_ttl_ms, renew_after_ms, last_renew_at, expires_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    node_id,
+                    site_id,
+                    session_id,
+                    lease_id,
+                    int(controller_epoch),
+                    int(lease_ttl_ms),
+                    int(renew_after_ms),
+                    now_iso,
+                    expires_at.isoformat(),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+        return NodeLease(
+            node_id=node_id,
+            site_id=site_id,
+            session_id=session_id,
+            lease_id=lease_id,
+            controller_epoch=int(controller_epoch),
+            lease_ttl_ms=int(lease_ttl_ms),
+            renew_after_ms=int(renew_after_ms),
+            last_renew_at=now,
+            expires_at=expires_at,
+        )
+
+    def renew_lease(
+        self,
+        node_id: str,
+        session_id: str,
+        lease_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[NodeLease | None, str | None]:
+        now_dt = now or datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT node_id, site_id, session_id, lease_id, controller_epoch,
+                       lease_ttl_ms, renew_after_ms, last_renew_at, expires_at
+                FROM node_leases WHERE node_id = ?
+                """,
+                (node_id,),
+            ).fetchone()
+            if row is None:
+                return None, "unknown_lease"
+            if str(row[2]) != str(session_id):
+                return None, "invalid_session"
+            if str(row[3]) != str(lease_id):
+                return None, "unknown_lease"
+            try:
+                expires_at = datetime.fromisoformat(row[8])
+            except Exception:
+                expires_at = now_dt - timedelta(seconds=1)
+            if expires_at <= now_dt:
+                conn.execute("DELETE FROM node_leases WHERE node_id = ?", (node_id,))
+                conn.commit()
+                return None, "expired"
+            lease_ttl_ms = int(row[5])
+            renew_after_ms = int(row[6])
+            new_expires = now_dt + timedelta(milliseconds=lease_ttl_ms)
+            conn.execute(
+                """
+                UPDATE node_leases
+                SET last_renew_at = ?, expires_at = ?, updated_at = ?
+                WHERE node_id = ?
+                """,
+                (now_iso, new_expires.isoformat(), now_iso, node_id),
+            )
+            conn.commit()
+            lease = NodeLease(
+                node_id=str(row[0]),
+                site_id=str(row[1]),
+                session_id=str(row[2]),
+                lease_id=str(row[3]),
+                controller_epoch=int(row[4]),
+                lease_ttl_ms=lease_ttl_ms,
+                renew_after_ms=renew_after_ms,
+                last_renew_at=now_dt,
+                expires_at=new_expires,
+            )
+            return lease, None
+
+    # --- Work queue (lab-edge) ---
+    def enqueue_work(
+        self,
+        work_id: str,
+        attempt: int,
+        site_id: str,
+        payload: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload_json = json.dumps(payload)
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM work_queue WHERE work_id = ? AND attempt = ?",
+                (work_id, attempt),
+            )
+            conn.execute(
+                """
+                INSERT INTO work_queue
+                  (work_id, attempt, site_id, payload_json, state, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (work_id, attempt, site_id, payload_json, "Pending", now, now),
+            )
+            conn.commit()
+
+    def pull_work(
+        self,
+        site_id: str,
+        limit: int,
+        visibility_timeout_ms: int,
+    ) -> list[WorkQueueLease]:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        timeout_ms = max(0, int(visibility_timeout_ms))
+        lease_expires_at = now + timedelta(milliseconds=timeout_ms)
+        exp_iso = lease_expires_at.isoformat()
+        leases: list[WorkQueueLease] = []
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_queue
+                SET state = ?, lease_id = NULL, leased_at = NULL,
+                    lease_expires_at = NULL, acked_at = NULL, updated_at = ?
+                WHERE state IN ('Leased', 'Acked')
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at < ?
+                """,
+                ("Pending", now_iso, now_iso),
+            )
+            rows = conn.execute(
+                """
+                SELECT work_id, attempt, payload_json
+                FROM work_queue
+                WHERE site_id = ? AND state = 'Pending'
+                ORDER BY created_at
+                LIMIT ?
+                """,
+                (site_id, int(limit)),
+            ).fetchall()
+            for row in rows:
+                work_id, attempt, payload_json = row[0], int(row[1]), row[2]
+                lease_id = str(uuid.uuid4())
+                cursor = conn.execute(
+                    """
+                    UPDATE work_queue
+                    SET state = ?, lease_id = ?, leased_at = ?, lease_expires_at = ?, updated_at = ?
+                    WHERE work_id = ? AND attempt = ? AND state = 'Pending'
+                    """,
+                    ("Leased", lease_id, now_iso, exp_iso, now_iso, work_id, attempt),
+                )
+                if getattr(cursor, "rowcount", 1) == 0:
+                    continue
+                payload = json.loads(payload_json) if payload_json else {}
+                try:
+                    self.update_work_state(
+                        work_id=work_id, attempt=attempt, state="Dispatched"
+                    )
+                except Exception:
+                    pass
+                leases.append(
+                    WorkQueueLease(
+                        work_id=work_id,
+                        attempt=attempt,
+                        site_id=site_id,
+                        payload=payload,
+                        lease_id=lease_id,
+                        lease_expires_at=lease_expires_at,
+                    )
+                )
+            conn.commit()
+        return leases
+
+    def ack_work(self, lease_ids: list[str]) -> int:
+        if not lease_ids:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        updated = 0
+        with self._connect() as conn:
+            for lease_id in lease_ids:
+                cursor = conn.execute(
+                    """
+                    UPDATE work_queue
+                    SET state = ?, acked_at = ?, updated_at = ?
+                    WHERE lease_id = ?
+                    """,
+                    ("Acked", now, now, lease_id),
+                )
+                try:
+                    updated += int(getattr(cursor, "rowcount", 0) or 0)
+                except Exception:
+                    pass
+            conn.commit()
+        return updated
+
+    # --- Site ingress endpoints (edge ingress scaffolding) ---
+    def get_site_ingress_endpoint(self, site_id: str) -> SiteIngressEndpoint | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT site_id, mode, core_proxy_port, public_urls_json,
+                       quarantine_until, created_at, updated_at
+                FROM site_ingress_endpoints
+                WHERE site_id = ?
+                """,
+                (site_id,),
+            ).fetchone()
+            if not row:
+                return None
+            public_urls = json.loads(row[3]) if row[3] else []
+            quarantine_until = None
+            if row[4]:
+                try:
+                    quarantine_until = datetime.fromisoformat(row[4])
+                except Exception:
+                    quarantine_until = None
+            return SiteIngressEndpoint(
+                site_id=str(row[0]),
+                mode=str(row[1]),
+                core_proxy_port=int(row[2]) if row[2] is not None else None,
+                public_urls=list(public_urls) if isinstance(public_urls, list) else [],
+                quarantine_until=quarantine_until,
+                created_at=datetime.fromisoformat(row[5]),
+                updated_at=datetime.fromisoformat(row[6]),
+            )
+
+    def ensure_site_ingress_port(
+        self,
+        site_id: str,
+        *,
+        port_min: int = 18080,
+        port_max: int = 18999,
+        mode: str = "core-proxy",
+    ) -> int:
+        if port_min > port_max:
+            raise ValueError("port_min must be <= port_max")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT core_proxy_port FROM site_ingress_endpoints WHERE site_id = ?",
+                (site_id,),
+            ).fetchone()
+            if row and row[0] is not None:
+                return int(row[0])
+            used = {
+                int(r[0])
+                for r in conn.execute(
+                    """
+                    SELECT core_proxy_port
+                    FROM site_ingress_endpoints
+                    WHERE core_proxy_port IS NOT NULL
+                    """
+                ).fetchall()
+            }
+            for port in range(int(port_min), int(port_max) + 1):
+                if port in used:
+                    continue
+                try:
+                    if row:
+                        conn.execute(
+                            """
+                            UPDATE site_ingress_endpoints
+                            SET mode = ?, core_proxy_port = ?, updated_at = ?
+                            WHERE site_id = ?
+                            """,
+                            (mode, port, now_iso, site_id),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO site_ingress_endpoints
+                              (site_id, mode, core_proxy_port, public_urls_json,
+                               quarantine_until, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (site_id, mode, port, json.dumps([]), None, now_iso, now_iso),
+                        )
+                    conn.commit()
+                    return port
+                except Exception:
+                    # retry on constraint conflicts
+                    continue
+        raise RuntimeError("no core-proxy ports available")
+
+    def list_site_ingress_endpoints(self) -> list[SiteIngressListItem]:
+        items: list[SiteIngressListItem] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT site_id, mode, core_proxy_port, public_urls_json, quarantine_until
+                FROM site_ingress_endpoints
+                ORDER BY site_id
+                """
+            ).fetchall()
+        for row in rows:
+            public_urls = json.loads(row[3]) if row[3] else []
+            quarantine_until = None
+            if row[4]:
+                try:
+                    quarantine_until = datetime.fromisoformat(row[4])
+                except Exception:
+                    quarantine_until = None
+            items.append(
+                SiteIngressListItem(
+                    site_id=str(row[0]),
+                    mode=str(row[1]),
+                    core_proxy_port=int(row[2]) if row[2] is not None else None,
+                    public_urls=list(public_urls) if isinstance(public_urls, list) else [],
+                    quarantine_until=quarantine_until,
+                )
+            )
+        return items
+
+    def upsert_site_ingress_endpoint(
+        self,
+        *,
+        site_id: str,
+        mode: str,
+        core_proxy_port: int | None = None,
+        public_urls: list[str | dict] | None = None,
+        quarantine_until: datetime | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        public_json = json.dumps(public_urls or [])
+        quarantine_val = quarantine_until.isoformat() if quarantine_until else None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT site_id, core_proxy_port FROM site_ingress_endpoints WHERE site_id = ?",
+                (site_id,),
+            ).fetchone()
+            if row:
+                existing_port = row[1]
+                port_val = core_proxy_port if core_proxy_port is not None else existing_port
+                conn.execute(
+                    """
+                    UPDATE site_ingress_endpoints
+                    SET mode = ?, core_proxy_port = ?, public_urls_json = ?,
+                        quarantine_until = ?, updated_at = ?
+                    WHERE site_id = ?
+                    """,
+                    (mode, port_val, public_json, quarantine_val, now, site_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO site_ingress_endpoints
+                      (site_id, mode, core_proxy_port, public_urls_json,
+                       quarantine_until, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (site_id, mode, core_proxy_port, public_json, quarantine_val, now, now),
+                )
+            conn.commit()
+
+    # --- Edge ingress routes/policies (edge-local bundles) ---
+    def upsert_edge_ingress_route(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        site_id: str,
+        policy_name: str | None,
+        policy_namespace: str | None,
+        document: dict,
+        status: dict | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(document, sort_keys=True)
+        status_json = json.dumps(status, sort_keys=True) if status is not None else None
+        with self._connect() as conn:
+            conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "insert_edge_ingress_routes_upsert.sql"
+                ),
+                (
+                    name,
+                    namespace,
+                    site_id,
+                    policy_name,
+                    policy_namespace,
+                    payload,
+                    status_json,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def upsert_edge_ingress_policy(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        document: dict,
+        status: dict | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(document, sort_keys=True)
+        status_json = json.dumps(status, sort_keys=True) if status is not None else None
+        with self._connect() as conn:
+            conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "insert_edge_ingress_policies_upsert.sql"
+                ),
+                (
+                    name,
+                    namespace,
+                    payload,
+                    status_json,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def update_edge_ingress_route_status(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        status: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        status_json = json.dumps(status, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE edge_ingress_routes
+                SET status_json = ?, updated_at = ?
+                WHERE name = ? AND namespace = ?
+                """,
+                (status_json, now, name, namespace),
+            )
+            conn.commit()
+
+    def update_edge_ingress_policy_status(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        status: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        status_json = json.dumps(status, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE edge_ingress_policies
+                SET status_json = ?, updated_at = ?
+                WHERE name = ? AND namespace = ?
+                """,
+                (status_json, now, name, namespace),
+            )
+            conn.commit()
+
+    def list_edge_ingress_routes(self) -> list[EdgeIngressRouteRecord]:
+        items: list[EdgeIngressRouteRecord] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "select_edge_ingress_routes_all.sql"
+                )
+            ).fetchall()
+        for row in rows:
+            spec = {}
+            status = None
+            if row[5]:
+                try:
+                    spec = json.loads(row[5])
+                except Exception:
+                    spec = {}
+            if row[6]:
+                try:
+                    status = json.loads(row[6])
+                except Exception:
+                    status = None
+            created_at = datetime.now(timezone.utc)
+            updated_at = created_at
+            try:
+                created_at = datetime.fromisoformat(row[7])
+            except Exception:
+                created_at = datetime.now(timezone.utc)
+            try:
+                updated_at = datetime.fromisoformat(row[8])
+            except Exception:
+                updated_at = created_at
+            items.append(
+                EdgeIngressRouteRecord(
+                    name=str(row[0]),
+                    namespace=str(row[1]),
+                    site_id=str(row[2]),
+                    policy_name=str(row[3]) if row[3] is not None else None,
+                    policy_namespace=str(row[4]) if row[4] is not None else None,
+                    spec=spec if isinstance(spec, dict) else {},
+                    status=status if isinstance(status, dict) else None,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+            )
+        return items
+
+    def get_edge_ingress_route(
+        self, *, name: str, namespace: str | None = None
+    ) -> EdgeIngressRouteRecord | None:
+        ns = namespace or "default"
+        for record in self.list_edge_ingress_routes():
+            if record.name == name and record.namespace == ns:
+                return record
+        return None
+
+    def list_edge_ingress_routes_for_site(self, site_id: str) -> list[EdgeIngressRouteRecord]:
+        items: list[EdgeIngressRouteRecord] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "select_edge_ingress_routes_by_site.sql"
+                ),
+                (site_id,),
+            ).fetchall()
+        for row in rows:
+            spec = {}
+            status = None
+            if row[5]:
+                try:
+                    spec = json.loads(row[5])
+                except Exception:
+                    spec = {}
+            if row[6]:
+                try:
+                    status = json.loads(row[6])
+                except Exception:
+                    status = None
+            created_at = datetime.now(timezone.utc)
+            updated_at = created_at
+            try:
+                created_at = datetime.fromisoformat(row[7])
+            except Exception:
+                created_at = datetime.now(timezone.utc)
+            try:
+                updated_at = datetime.fromisoformat(row[8])
+            except Exception:
+                updated_at = created_at
+            items.append(
+                EdgeIngressRouteRecord(
+                    name=str(row[0]),
+                    namespace=str(row[1]),
+                    site_id=str(row[2]),
+                    policy_name=str(row[3]) if row[3] is not None else None,
+                    policy_namespace=str(row[4]) if row[4] is not None else None,
+                    spec=spec if isinstance(spec, dict) else {},
+                    status=status if isinstance(status, dict) else None,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+            )
+        return items
+
+    def get_edge_ingress_policy(
+        self, *, name: str, namespace: str
+    ) -> EdgeIngressPolicyRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "select_edge_ingress_policy_by_key.sql"
+                ),
+                (name, namespace),
+            ).fetchone()
+        if not row:
+            return None
+        spec = {}
+        status = None
+        if row[2]:
+            try:
+                spec = json.loads(row[2])
+            except Exception:
+                spec = {}
+        if row[3]:
+            try:
+                status = json.loads(row[3])
+            except Exception:
+                status = None
+        try:
+            created_at = datetime.fromisoformat(row[4])
+        except Exception:
+            created_at = datetime.now(timezone.utc)
+        try:
+            updated_at = datetime.fromisoformat(row[5])
+        except Exception:
+            updated_at = created_at
+        return EdgeIngressPolicyRecord(
+            name=str(row[0]),
+            namespace=str(row[1]),
+            spec=spec if isinstance(spec, dict) else {},
+            status=status if isinstance(status, dict) else None,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+    def list_edge_ingress_policies(self) -> list[EdgeIngressPolicyRecord]:
+        items: list[EdgeIngressPolicyRecord] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                resource_loader.load_text(
+                    "sql", "controller", "select_edge_ingress_policies_all.sql"
+                )
+            ).fetchall()
+        for row in rows:
+            spec = {}
+            status = None
+            if row[2]:
+                try:
+                    spec = json.loads(row[2])
+                except Exception:
+                    spec = {}
+            if row[3]:
+                try:
+                    status = json.loads(row[3])
+                except Exception:
+                    status = None
+            try:
+                created_at = datetime.fromisoformat(row[4])
+            except Exception:
+                created_at = datetime.now(timezone.utc)
+            try:
+                updated_at = datetime.fromisoformat(row[5])
+            except Exception:
+                updated_at = created_at
+            items.append(
+                EdgeIngressPolicyRecord(
+                    name=str(row[0]),
+                    namespace=str(row[1]),
+                    spec=spec if isinstance(spec, dict) else {},
+                    status=status if isinstance(status, dict) else None,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+            )
+        return items
+
+    def list_site_ids(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT site_id FROM node_leases ORDER BY site_id"
+            ).fetchall()
+        return [str(row[0]) for row in rows if row and row[0]]
+
+    def list_route_bundle_site_ids(self) -> list[str]:
+        """Return site IDs eligible for route bundle publish.
+
+        Includes sites from active node leases plus any sites explicitly
+        referenced by EdgeIngressRoute placement.
+        """
+        sites: set[str] = set()
+        with self._connect() as conn:
+            lease_rows = conn.execute(
+                "SELECT DISTINCT site_id FROM node_leases ORDER BY site_id"
+            ).fetchall()
+            for row in lease_rows:
+                if row and row[0]:
+                    site = str(row[0]).strip()
+                    if site:
+                        sites.add(site)
+
+            route_rows = conn.execute(
+                "SELECT DISTINCT site_id FROM edge_ingress_routes WHERE site_id IS NOT NULL"
+            ).fetchall()
+            for row in route_rows:
+                if row and row[0]:
+                    site = str(row[0]).strip()
+                    if site:
+                        sites.add(site)
+        return sorted(sites)
+
+    def mark_work_done(self, work_id: str, attempt: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_queue
+                SET state = ?, updated_at = ?, lease_id = NULL, lease_expires_at = NULL
+                WHERE work_id = ? AND attempt = ?
+                """,
+                ("Done", now, work_id, attempt),
+            )
+            conn.commit()
+
+    # --- Outbox (jetstream) ---
+    def enqueue_work_outbox(
+        self,
+        work_id: str,
+        attempt: int,
+        site_id: str,
+        payload: dict,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload_json = json.dumps(payload)
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM work_outbox WHERE work_id = ? AND attempt = ?",
+                (work_id, attempt),
+            )
+            conn.execute(
+                """
+                INSERT INTO work_outbox
+                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
+                   last_publish_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    int(attempt),
+                    site_id,
+                    payload_json,
+                    "Unpublished",
+                    0,
+                    None,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def list_outbox_unpublished(self, limit: int = 100) -> list[WorkOutboxEntry]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT work_id, attempt, site_id, payload_json, publish_attempts
+                FROM work_outbox
+                WHERE state = 'Unpublished'
+                ORDER BY created_at
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        entries: list[WorkOutboxEntry] = []
+        for row in rows:
+            payload = json.loads(row[3]) if row[3] else {}
+            entries.append(
+                WorkOutboxEntry(
+                    work_id=str(row[0]),
+                    attempt=int(row[1]),
+                    site_id=str(row[2]),
+                    payload=payload,
+                    publish_attempts=int(row[4] or 0),
+                )
+            )
+        return entries
+
+    def get_outbox_payload(self, work_id: str, attempt: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM work_outbox
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (work_id, int(attempt)),
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                return json.loads(row[0]) if row[0] else {}
+            except Exception:
+                return {}
+
+    def mark_outbox_published(self, work_id: str, attempt: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_outbox
+                SET state = ?, publish_attempts = publish_attempts + 1,
+                    last_publish_at = ?, updated_at = ?
+                WHERE work_id = ? AND attempt = ?
+                """,
+                ("Published", now, now, work_id, int(attempt)),
+            )
+            conn.commit()
+
+    def record_outbox_publish_attempt(self, work_id: str, attempt: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE work_outbox
+                SET publish_attempts = publish_attempts + 1, last_publish_at = ?, updated_at = ?
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (now, now, work_id, int(attempt)),
+            )
+            conn.commit()
+
+    # --- Work ledger (jetstream watchdog) ---
+    def upsert_work_ledger(
+        self,
+        *,
+        work_id: str,
+        attempt: int,
+        site_id: str,
+        state: str,
+        desired_generation: int | None = None,
+    ) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT work_id FROM work_ledger WHERE work_id = ?",
+                (work_id,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """
+                    UPDATE work_ledger
+                    SET attempt = ?, site_id = ?, state = ?, desired_generation = ?,
+                        updated_at = ?, state_updated_at = ?
+                    WHERE work_id = ?
+                    """,
+                    (
+                        int(attempt),
+                        site_id,
+                        state,
+                        desired_generation,
+                        now_iso,
+                        now_iso,
+                        work_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO work_ledger
+                      (work_id, attempt, site_id, state, desired_generation,
+                       assigned_node_id, observed_generation, result_json,
+                       created_at, updated_at, state_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        work_id,
+                        int(attempt),
+                        site_id,
+                        state,
+                        desired_generation,
+                        None,
+                        None,
+                        None,
+                        now_iso,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+            conn.commit()
+
+    def get_work_ledger(self, work_id: str) -> WorkLedgerEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT work_id, attempt, site_id, state, desired_generation,
+                       assigned_node_id, observed_generation, result_json,
+                       created_at, updated_at, state_updated_at
+                FROM work_ledger
+                WHERE work_id = ?
+                """,
+                (work_id,),
+            ).fetchone()
+            if not row:
+                return None
+            result = None
+            if row[7]:
+                try:
+                    result = json.loads(row[7])
+                except Exception:
+                    result = None
+            return WorkLedgerEntry(
+                work_id=str(row[0]),
+                attempt=int(row[1]),
+                site_id=str(row[2]),
+                state=str(row[3]),
+                desired_generation=int(row[4]) if row[4] is not None else None,
+                assigned_node_id=str(row[5]) if row[5] else None,
+                observed_generation=int(row[6]) if row[6] is not None else None,
+                result=result,
+                created_at=datetime.fromisoformat(row[8]),
+                updated_at=datetime.fromisoformat(row[9]),
+                state_updated_at=datetime.fromisoformat(row[10]),
+            )
+
+    def update_work_state(
+        self,
+        *,
+        work_id: str,
+        attempt: int,
+        state: str,
+        assigned_node_id: str | None = None,
+        observed_generation: int | None = None,
+        result: dict | None = None,
+    ) -> bool:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result_json = json.dumps(result) if result is not None else None
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE work_ledger
+                SET state = ?, assigned_node_id = COALESCE(?, assigned_node_id),
+                    observed_generation = COALESCE(?, observed_generation),
+                    result_json = COALESCE(?, result_json),
+                    updated_at = ?, state_updated_at = ?
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (
+                    state,
+                    assigned_node_id,
+                    observed_generation,
+                    result_json,
+                    now_iso,
+                    now_iso,
+                    work_id,
+                    int(attempt),
+                ),
+            )
+            try:
+                updated = int(getattr(cursor, "rowcount", 0) or 0)
+            except Exception:
+                updated = 0
+            conn.commit()
+            return updated > 0
+
+    def list_work_state_before(
+        self, state: str, cutoff: datetime
+    ) -> list[WorkLedgerEntry]:
+        cutoff_iso = cutoff.isoformat()
+        rows: list[WorkLedgerEntry] = []
+        with self._connect() as conn:
+            results = conn.execute(
+                """
+                SELECT work_id, attempt, site_id, state, desired_generation,
+                       assigned_node_id, observed_generation, result_json,
+                       created_at, updated_at, state_updated_at
+                FROM work_ledger
+                WHERE state = ? AND state_updated_at <= ?
+                ORDER BY state_updated_at
+                """,
+                (state, cutoff_iso),
+            ).fetchall()
+            for row in results:
+                result = None
+                if row[7]:
+                    try:
+                        result = json.loads(row[7])
+                    except Exception:
+                        result = None
+                rows.append(
+                    WorkLedgerEntry(
+                        work_id=str(row[0]),
+                        attempt=int(row[1]),
+                        site_id=str(row[2]),
+                        state=str(row[3]),
+                        desired_generation=int(row[4]) if row[4] is not None else None,
+                        assigned_node_id=str(row[5]) if row[5] else None,
+                        observed_generation=int(row[6]) if row[6] is not None else None,
+                        result=result,
+                        created_at=datetime.fromisoformat(row[8]),
+                        updated_at=datetime.fromisoformat(row[9]),
+                        state_updated_at=datetime.fromisoformat(row[10]),
+                    )
+                )
+        return rows
+
+    def reschedule_work(
+        self,
+        *,
+        work_id: str,
+        attempt: int,
+    ) -> int | None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT site_id, payload_json
+                FROM work_outbox
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (work_id, int(attempt)),
+            ).fetchone()
+            if not row:
+                return None
+            site_id = str(row[0])
+            try:
+                payload = json.loads(row[1]) if row[1] else {}
+            except Exception:
+                payload = {}
+            new_attempt = int(attempt) + 1
+            payload["attempt"] = new_attempt
+            payload.setdefault("work_id", work_id)
+            payload.setdefault("site_id", site_id)
+            payload["created_at"] = now_iso
+            cursor = conn.execute(
+                """
+                UPDATE work_ledger
+                SET attempt = ?, state = ?, updated_at = ?, state_updated_at = ?
+                WHERE work_id = ? AND attempt = ?
+                """,
+                (
+                    new_attempt,
+                    "Pending",
+                    now_iso,
+                    now_iso,
+                    work_id,
+                    int(attempt),
+                ),
+            )
+            try:
+                updated = int(getattr(cursor, "rowcount", 0) or 0)
+            except Exception:
+                updated = 0
+            if updated <= 0:
+                conn.commit()
+                return None
+            conn.execute(
+                """
+                INSERT INTO work_outbox
+                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
+                   last_publish_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    new_attempt,
+                    site_id,
+                    json.dumps(payload),
+                    "Unpublished",
+                    0,
+                    None,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+            return new_attempt
+
     # --- Canary rollout state ----------------------------------------------
 
     def get_canary_state(self, app_name: str) -> dict | None:
@@ -1167,6 +2367,7 @@ class SQLiteStateStore:
         endpoint: str | None = None,
         pod_cidr: str | None = None,
         wg_pubkey: str | None = None,
+        rp_pubkey: str | None = None,
         cordoned: bool | None = None,
     ) -> None:
         if cordoned is None:
@@ -1184,6 +2385,7 @@ class SQLiteStateStore:
                     endpoint,
                     pod_cidr,
                     wg_pubkey,
+                    rp_pubkey,
                     int(bool(cordoned)),
                     now,
                     now,
@@ -1238,11 +2440,11 @@ class SQLiteStateStore:
             except Exception:
                 taints = []
             try:
-                created = datetime.fromisoformat(row[8])
+                created = datetime.fromisoformat(row[9])
             except Exception:
                 created = datetime.fromtimestamp(0, tz=timezone.utc)
             try:
-                updated = datetime.fromisoformat(row[9])
+                updated = datetime.fromisoformat(row[10])
             except Exception:
                 updated = datetime.fromtimestamp(0, tz=timezone.utc)
             node = NodeRecord(
@@ -1254,17 +2456,18 @@ class SQLiteStateStore:
                 endpoint=row[5],
                 pod_cidr=row[6],
                 wg_pubkey=row[7],
-                cordoned=bool(row[10]),
+                rp_pubkey=row[8],
+                cordoned=bool(row[11]),
                 created_at=created,
                 updated_at=updated,
             )
             status = None
-            if row[11] is not None:
+            if row[12] is not None:
                 try:
-                    seen_at = datetime.fromisoformat(row[12])
+                    seen_at = datetime.fromisoformat(row[13])
                 except Exception:
                     seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
-                status = NodeStatus(node_id=row[0], status=row[11], seen_at=seen_at)
+                status = NodeStatus(node_id=row[0], status=row[12], seen_at=seen_at)
             result.append((node, status))
         return result
 
@@ -1287,11 +2490,11 @@ class SQLiteStateStore:
         except Exception:
             taints = []
         try:
-            created = datetime.fromisoformat(row[8])
+            created = datetime.fromisoformat(row[9])
         except Exception:
             created = datetime.fromtimestamp(0, tz=timezone.utc)
         try:
-            updated = datetime.fromisoformat(row[9])
+            updated = datetime.fromisoformat(row[10])
         except Exception:
             updated = datetime.fromtimestamp(0, tz=timezone.utc)
         node = NodeRecord(
@@ -1303,17 +2506,18 @@ class SQLiteStateStore:
             endpoint=row[5],
             pod_cidr=row[6],
             wg_pubkey=row[7],
-            cordoned=bool(row[10]),
+            rp_pubkey=row[8],
+            cordoned=bool(row[11]),
             created_at=created,
             updated_at=updated,
         )
         status = None
-        if row[11] is not None:
+        if row[12] is not None:
             try:
-                seen_at = datetime.fromisoformat(row[12])
+                seen_at = datetime.fromisoformat(row[13])
             except Exception:
                 seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
-            status = NodeStatus(node_id=row[0], status=row[11], seen_at=seen_at)
+            status = NodeStatus(node_id=row[0], status=row[12], seen_at=seen_at)
         return node, status
 
     # --- Volume attachments --------------------------------------------
@@ -1341,14 +2545,6 @@ class SQLiteStateStore:
                 ),
                 (app_name,),
             ).fetchall()
-            # Back-compat: if no attachments are present, consult storage_bindings.
-            if not rows:
-                rows = conn.execute(
-                    resource_loader.load_text(
-                        "sql", "controller", "select_storage_bindings_by_app.sql"
-                    ),
-                    (app_name,),
-                ).fetchall()
         out: list[VolumeAttachment] = []
         for row in rows:
             try:
@@ -1372,33 +2568,6 @@ class SQLiteStateStore:
             conn.execute("DELETE FROM volume_attachments WHERE app_name = ?", (app_name,))
             conn.commit()
 
-    # --- Storage bindings (legacy) ------------------------------------
-
-    def upsert_storage_binding(
-        self, app_name: str, volume_name: str, node_id: str, retention: str | None = None
-    ) -> None:
-        """Record that a persistent volume resides on a specific node."""
-        self.upsert_volume_attachment(app_name, volume_name, node_id, retention)
-
-    def list_storage_bindings(self, app_name: str) -> list[StorageBinding]:
-        """Return recorded bindings for an app's persistent volumes."""
-        out: list[StorageBinding] = []
-        for att in self.list_volume_attachments(app_name):
-            out.append(
-                StorageBinding(
-                    app_name=att.app_name,
-                    volume_name=att.volume_name,
-                    node_id=att.node_id,
-                    retention=att.retention,
-                    created_at=att.created_at,
-                )
-            )
-        return out
-
-    def delete_storage_bindings(self, app_name: str) -> None:
-        """Remove all bindings for an app (e.g., on delete)."""
-        self.delete_volume_attachments(app_name)
-
     # --- Admin / maintenance helpers ---
     def delete_app_state(self, app_name: str, *, purge_history: bool = False) -> None:
         """Remove status and pod rows for an app. Optionally purge events and revisions.
@@ -1409,12 +2578,24 @@ class SQLiteStateStore:
             conn.execute("DELETE FROM pod_status WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM app_status WHERE app_name = ?", (app_name,))
-            conn.execute("DELETE FROM storage_bindings WHERE app_name = ?", (app_name,))
             conn.execute("DELETE FROM volume_attachments WHERE app_name = ?", (app_name,))
             if purge_history:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
                 conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))
             conn.commit()
+
+
+def state_store_from_env() -> SQLiteStateStore:
+    backend = (os.getenv("AE_STATE_BACKEND") or "").strip().lower()
+    if backend == "etcd":
+        from ae.controller.etcd_state import EtcdStateStore
+
+        return EtcdStateStore()
+    dsn = os.getenv("AE_STATE_DSN")
+    db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
+    if not dsn:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    return SQLiteStateStore(db_path, dsn=dsn)
 
 
 class _PgCompatConnection:

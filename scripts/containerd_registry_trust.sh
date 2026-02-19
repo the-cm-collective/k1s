@@ -75,6 +75,149 @@ if [[ "$EUID" -ne 0 ]]; then
   SUDO="sudo"
 fi
 
+ensure_containerd_config_version_v2() {
+  local config_file="/etc/containerd/config.toml"
+  [[ -f "$config_file" ]] || return 1
+
+  # Only normalize when file already uses v2-style plugin identifiers.
+  if ! grep -Eq 'io\.containerd\.grpc\.v1\.cri|io\.containerd\.[[:alnum:]_.-]+\.v[0-9]+' "$config_file"; then
+    return 1
+  fi
+
+  local current
+  current="$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*\([0-9]\+\).*/\1/p' "$config_file" | head -n1)"
+  if [[ "$current" == "2" ]]; then
+    return 1
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  if [[ -n "$current" ]]; then
+    awk '
+      BEGIN { done=0 }
+      {
+        if (!done && $0 ~ /^[[:space:]]*version[[:space:]]*=/) {
+          print "version = 2"
+          done=1
+          next
+        }
+        print
+      }
+    ' "$config_file" >"$tmp"
+    if ! grep -Eq '^[[:space:]]*version[[:space:]]*=' "$tmp"; then
+      {
+        echo 'version = 2'
+        echo
+        cat "$tmp"
+      } >"${tmp}.withver"
+      mv "${tmp}.withver" "$tmp"
+    fi
+  else
+    {
+      echo 'version = 2'
+      echo
+      cat "$config_file"
+    } >"$tmp"
+  fi
+
+  if cmp -s "$config_file" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  $SUDO cp "$tmp" "$config_file"
+  $SUDO chmod 0644 "$config_file"
+  rm -f "$tmp"
+  echo "containerd config normalized: ${config_file} (version=2)"
+  return 0
+}
+
+ensure_containerd_registry_config_path() {
+  local config_file="/etc/containerd/config.toml"
+  local desired="/etc/containerd/certs.d"
+
+  if [[ ! -f "$config_file" ]]; then
+    return 1
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v desired="$desired" '
+    BEGIN { in_table=0; done=0 }
+    {
+      if ($0 ~ /^\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\][[:space:]]*$/) {
+        print
+        in_table=1
+        next
+      }
+      if (in_table && $0 ~ /^\[/) {
+        if (!done) {
+          print "  config_path = \"" desired "\""
+          done=1
+        }
+        in_table=0
+      }
+      if (in_table && $0 ~ /^[[:space:]]*config_path[[:space:]]*=/) {
+        if (!done) {
+          print "  config_path = \"" desired "\""
+          done=1
+        }
+        next
+      }
+      print
+    }
+    END {
+      if (!done) {
+        if (NR > 0) {
+          print ""
+        }
+        print "[plugins.\"io.containerd.grpc.v1.cri\".registry]"
+        print "  config_path = \"" desired "\""
+      }
+    }
+  ' "$config_file" >"$tmp"
+
+  if cmp -s "$config_file" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  $SUDO cp "$tmp" "$config_file"
+  $SUDO chmod 0644 "$config_file"
+  rm -f "$tmp"
+  echo "containerd CRI registry config updated: ${config_file} (config_path=${desired})"
+  return 0
+}
+
+ensure_containerd_runc_runtime() {
+  local config_file="/etc/containerd/config.toml"
+  [[ -f "$config_file" ]] || return 1
+
+  if grep -Eq '^\[plugins\."io\.containerd\.grpc\.v1\.cri"\.containerd\.runtimes\.runc\][[:space:]]*$' "$config_file"; then
+    return 1
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  cat "$config_file" >"$tmp"
+  {
+    echo
+    echo '[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]'
+    echo '  runtime_type = "io.containerd.runc.v2"'
+  } >>"$tmp"
+
+  if cmp -s "$config_file" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  $SUDO cp "$tmp" "$config_file"
+  $SUDO chmod 0644 "$config_file"
+  rm -f "$tmp"
+  echo "containerd CRI runtime updated: ensured runc handler in ${config_file}"
+  return 0
+}
+
 cert_dir="/etc/containerd/certs.d/${host}"
 $SUDO mkdir -p "$cert_dir"
 
@@ -110,6 +253,22 @@ if [[ $system_trust -eq 1 ]]; then
   elif command -v update-ca-trust >/dev/null 2>&1; then
     $SUDO update-ca-trust extract >/dev/null 2>&1 || true
   fi
+fi
+
+config_changed=0
+if ensure_containerd_config_version_v2; then
+  config_changed=1
+fi
+if ensure_containerd_registry_config_path; then
+  config_changed=1
+fi
+if ensure_containerd_runc_runtime; then
+  config_changed=1
+fi
+
+if [[ $config_changed -eq 1 && $restart -eq 0 ]]; then
+  restart=1
+  echo "containerd restart required to apply config updates"
 fi
 
 if [[ $restart -eq 1 ]]; then

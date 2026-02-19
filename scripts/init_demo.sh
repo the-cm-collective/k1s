@@ -63,7 +63,7 @@ start_apishim() {
   fi
   APISHIM_PORT=${APISHIM_PORT:-8445}
   APISHIM_HOST=${APISHIM_HOST:-0.0.0.0}
-  local env_file="state/labs/apishim.env"
+  local env_file="${LABS_APISHIM_ENV:-${LABS_PROFILE_DIR:-state/profiles/labs}/apishim.env}"
   if [[ ! -f "${env_file}" ]]; then
     ./scripts/ensure_apishim_env.sh
   fi
@@ -141,8 +141,8 @@ start_apishim() {
   export AE_APISHIM_ALLOW_ANON=0
   export AE_APISHIM_RBAC=1
   export AE_APISHIM_RBAC_EVAL=0
-  export AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-state/labs/apishim.crt}"
-  export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-state/labs/apishim.key}"
+  export AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-${LABS_PROFILE_DIR}/apishim.crt}"
+  export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-${LABS_PROFILE_DIR}/apishim.key}"
   log "Starting apishim (runtime=${AE_APISHIM_RUNTIME}) on https://${APISHIM_HOST}:${APISHIM_PORT}"
   mkdir -p state
   nohup "$PY_BIN" -m ae.apishim serve --host "${APISHIM_HOST}" --port "${APISHIM_PORT}" --tls \
@@ -186,32 +186,49 @@ cleanup_demo_containers() {
 }
 
 cleanup_demo_state() {
-  local dbs=()
-  dbs+=("state/controller.db")
+  local controller_dbs=()
+  local shim_dbs=()
+  controller_dbs+=("${DEMO_STATE_DB:-state/profiles/demo/controller.db}")
+  controller_dbs+=("state/controller.db")
+  shim_dbs+=("${DEMO_APISHIM_DB:-${DEMO_PROFILE_DIR:-state/profiles/demo}/apishim.db}")
+  shim_dbs+=("state/apishim.db")
   if [[ -n "${AE_STATE_DB:-}" ]]; then
-    dbs+=("${AE_STATE_DB}")
+    controller_dbs+=("${AE_STATE_DB}")
+  fi
+  if [[ -n "${AE_APISHIM_DB:-}" ]]; then
+    shim_dbs+=("${AE_APISHIM_DB}")
   fi
   if [[ -f state/env.sh ]]; then
     # shellcheck disable=SC1090
     source state/env.sh >/dev/null 2>&1 || true
     if [[ -n "${AE_STATE_DB:-}" ]]; then
-      dbs+=("${AE_STATE_DB}")
+      controller_dbs+=("${AE_STATE_DB}")
+    fi
+    if [[ -n "${AE_APISHIM_DB:-}" ]]; then
+      shim_dbs+=("${AE_APISHIM_DB}")
     fi
   fi
   if [[ -d state/bench-env ]]; then
-    dbs+=("state/bench-env/controller.db")
+    controller_dbs+=("state/bench-env/controller.db")
   fi
   declare -A seen=()
-  for db in "${dbs[@]}"; do
+  for db in "${controller_dbs[@]}"; do
     if [[ -n "${db}" && -f "${db}" && -z "${seen[$db]:-}" ]]; then
       log "Removing controller state DB (${db})"
       rm -f "${db}" 2>/dev/null || true
       seen["$db"]=1
     fi
   done
-  if [[ -d state/projections ]]; then
-    log "Removing projected config/state under state/projections/"
-    rm -rf state/projections 2>/dev/null || true
+  for db in "${shim_dbs[@]}"; do
+    if [[ -n "${db}" && -f "${db}" && -z "${seen[$db]:-}" ]]; then
+      log "Removing apishim state DB (${db})"
+      rm -f "${db}" 2>/dev/null || true
+      seen["$db"]=1
+    fi
+  done
+  if [[ -d "${DEMO_PROJECTIONS_DIR:-state/profiles/demo/projections}" ]]; then
+    log "Removing projected config/state under ${DEMO_PROJECTIONS_DIR}"
+    rm -rf "${DEMO_PROJECTIONS_DIR}" 2>/dev/null || true
   fi
 }
 
@@ -294,6 +311,8 @@ NO_CONTROLLER=0
 API_PORT=${API_PORT:-9108}
 # Runtime backend (default to podman/OCI if not set)
 AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}
+# State backend (sqlite default; set to etcd for dev-fidelity runs)
+AE_STATE_BACKEND=${AE_STATE_BACKEND:-sqlite}
 # Convenience: register a local node for demo/labs unless explicitly disabled
 AE_REGISTER_LOCAL_NODE=${AE_REGISTER_LOCAL_NODE:-1}
 AE_USE_REGISTRY_CACHE=${AE_USE_REGISTRY_CACHE:-1}
@@ -316,8 +335,12 @@ LABS_ENABLE=${LABS_ENABLE:-0}
 LABS_TOKEN=${LABS_TOKEN:-}
 # Secrets env convenience flag (sets AE_ALLOW_PLAINTEXT_SECRETS=1 and SOPS_AGE_KEY_FILE)
 WITH_SECRETS_ENV=0
-# Default location for the curated demo specs set (controller watches this)
-DEMO_SPECS_DIR=${DEMO_SPECS_DIR:-state/demo-specs}
+# Profile-scoped state/specs locations
+DEMO_PROFILE_DIR=${DEMO_PROFILE_DIR:-state/profiles/demo}
+LABS_PROFILE_DIR=${LABS_PROFILE_DIR:-state/profiles/labs}
+DEMO_SPECS_DIR=${DEMO_SPECS_DIR:-${DEMO_PROFILE_DIR}/specs}
+DEMO_STATE_DB=${DEMO_STATE_DB:-${DEMO_PROFILE_DIR}/controller.db}
+DEMO_PROJECTIONS_DIR=${DEMO_PROJECTIONS_DIR:-${DEMO_PROFILE_DIR}/projections}
 
 # Compose file list for dev stack (optionally include registry cache override)
 DEV_COMPOSE_FILES=(-f ops/dev/docker-compose.yaml)
@@ -636,6 +659,8 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     STACK_COMPOSE_DOWN=("$STACK_BIN_DOWN" compose)
     log "Stopping dev ${STACK_BIN_DOWN} compose stack (caddy, prometheus)"
     "${STACK_COMPOSE_DOWN[@]}" "${DEV_COMPOSE_FILES_WITH_CACHE[@]}" down || true
+    log "Stopping ${STACK_BIN_DOWN} NATS/etcd stack (nats-hub, nats-edge, etcd)"
+    "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/docker-compose.nats-etcd.yaml down || true
     log "Stopping ${STACK_BIN_DOWN} labs stacks (labs-aio, labs-compose)"
     "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/labs-aio.yaml down || true
     "${STACK_COMPOSE_DOWN[@]}" -f ops/dev/labs-compose.yaml down || true
@@ -651,9 +676,9 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
     rm -f state/caddy/*.caddy 2>/dev/null || true
   fi
-  if [[ -d state/labs ]]; then
-    log "Clearing Labs shim artifacts under state/labs/"
-    rm -f state/labs/helm-demo.log state/labs/apishim.env 2>/dev/null || true
+  if [[ -d "${LABS_PROFILE_DIR}" ]]; then
+    log "Clearing Labs shim artifacts under ${LABS_PROFILE_DIR}/"
+    rm -f "${LABS_PROFILE_DIR}/helm-demo.log" "${LABS_PROFILE_DIR}/apishim.env" 2>/dev/null || true
   fi
   # Clear controller state to drop any non-default demo apps.
   cleanup_demo_state
@@ -716,9 +741,9 @@ if [[ $RESET_FLAG -eq 1 ]]; then
     log "Clearing dynamic Caddy sites under state/caddy/*.caddy"
     rm -f state/caddy/*.caddy 2>/dev/null || true
   fi
-  if [[ -d state/labs ]]; then
-    log "Clearing Labs shim artifacts under state/labs/"
-    rm -f state/labs/helm-demo.log state/labs/apishim.env 2>/dev/null || true
+  if [[ -d "${LABS_PROFILE_DIR}" ]]; then
+    log "Clearing Labs shim artifacts under ${LABS_PROFILE_DIR}/"
+    rm -f "${LABS_PROFILE_DIR}/helm-demo.log" "${LABS_PROFILE_DIR}/apishim.env" 2>/dev/null || true
   fi
   log "Reset complete. Continuing with setup..."
 fi
@@ -792,6 +817,14 @@ if [[ -z "${STACK_BIN:-}" ]]; then
 fi
 STACK_COMPOSE=("$STACK_BIN" compose)
 
+start_etcd_if_needed() {
+  if [[ "${AE_STATE_BACKEND}" != "etcd" ]]; then
+    return 0
+  fi
+  log "Starting etcd for demo/labs (backend=etcd)"
+  "${STACK_COMPOSE[@]}" -f ops/dev/docker-compose.nats-etcd.yaml up -d etcd >/dev/null 2>&1 || true
+}
+
 # Runtime CLI for app containers (may differ from dev stack runtime)
 if [[ "$AE_RUNTIME_BACKEND" == "docker" ]]; then
   if command -v docker >/dev/null 2>&1; then
@@ -836,6 +869,7 @@ export AE_PODMAN_NETWORK=${AE_PODMAN_NETWORK:-dev_default}
 
 # Ensure dev env defaults exist for compose-based stacks.
 ./scripts/ensure_dev_env.sh
+start_etcd_if_needed
 
 VENV_DIR=${VENV_DIR:-.venv-demo}
 
@@ -1121,11 +1155,17 @@ if command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; then
     export AE_CONTAINER_CLI="${DETECTED_ENGINE}"
   fi
 fi
-export AE_STATE_DB=${AE_STATE_DB:-state/controller.db}
+export AE_STATE_DB=${AE_STATE_DB:-${DEMO_STATE_DB}}
 # Guard against bench env leakage into demo runs.
 if [[ "${AE_STATE_DB}" == *"bench-env"* ]]; then
-  log "AE_STATE_DB points to bench env (${AE_STATE_DB}); using state/controller.db for demo"
-  export AE_STATE_DB="state/controller.db"
+  log "AE_STATE_DB points to bench env (${AE_STATE_DB}); using ${DEMO_STATE_DB} for demo"
+  export AE_STATE_DB="${DEMO_STATE_DB}"
+fi
+export AE_PROJECTION_ROOT="${AE_PROJECTION_ROOT:-${DEMO_PROJECTIONS_DIR}}"
+export AE_STATE_BACKEND="${AE_STATE_BACKEND}"
+if [[ "${AE_STATE_BACKEND}" == "etcd" ]]; then
+  export AE_ETCD_ENDPOINTS="${AE_ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
+  export AE_ETCD_PREFIX="${AE_ETCD_PREFIX:-k1s/profiles/demo}"
 fi
 # Guard: ensure controller DB is writable (bench runs with sudo can leave it root-owned)
 DB_DIR="$(dirname -- "${AE_STATE_DB}")"
@@ -1204,10 +1244,10 @@ export AE_DOCKER_NETWORK=${AE_DOCKER_NETWORK:-dev_default}
 if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
   if [[ -z "${AE_LABS_HELM_SERVER:-}" ]]; then
     allow_reuse=0
-    LABS_APISHIM_ENV="state/labs/apishim.env"
+    LABS_APISHIM_ENV="${LABS_APISHIM_ENV:-${LABS_PROFILE_DIR}/apishim.env}"
     if [[ -n "${AE_APISHIM_DSN:-}" ]]; then
       allow_reuse=1
-    elif [[ -n "${AE_APISHIM_DB:-}" && "${AE_APISHIM_DB}" != "state/apishim.db" ]]; then
+    elif [[ -n "${AE_APISHIM_DB:-}" && "${AE_APISHIM_DB}" != "${LABS_PROFILE_DIR}/apishim.db" ]]; then
       allow_reuse=1
     elif [[ -f "$LABS_APISHIM_ENV" ]]; then
       allow_reuse=1
@@ -1234,7 +1274,7 @@ if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
         fi
       fi
     else
-      log "Skipping apishim auto-detect; set AE_LABS_HELM_SERVER, AE_APISHIM_DSN, or create state/labs/apishim.env to reuse a running shim."
+      log "Skipping apishim auto-detect; set AE_LABS_HELM_SERVER, AE_APISHIM_DSN, or create ${LABS_PROFILE_DIR}/apishim.env to reuse a running shim."
     fi
   fi
 fi
@@ -1250,13 +1290,13 @@ if [[ -n "${AE_LABS_HELM_TOKEN:-}" ]]; then
 fi
 # Default apishim DB to the shared demo DB when no DSN is configured.
 if [[ -z "${AE_APISHIM_DSN:-}" ]]; then
-  export AE_APISHIM_DB=${AE_APISHIM_DB:-state/apishim.db}
+  export AE_APISHIM_DB=${AE_APISHIM_DB:-${LABS_PROFILE_DIR}/apishim.db}
 fi
 export AE_LABS=${LABS_ENABLE}
 export AE_LABS_TOKEN=${LABS_TOKEN}
 if [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
   ./scripts/ensure_apishim_env.sh
-  LABS_APISHIM_ENV="state/labs/apishim.env"
+  LABS_APISHIM_ENV="${LABS_APISHIM_ENV:-${LABS_PROFILE_DIR}/apishim.env}"
   if [[ -z "${AE_APISHIM_SESSION_SECRET:-}" ]]; then
     LABS_SESSION_SECRET="$(read_env_file_var "AE_APISHIM_SESSION_SECRET" "$LABS_APISHIM_ENV" || true)"
     if [[ -z "$LABS_SESSION_SECRET" ]]; then
@@ -1303,6 +1343,10 @@ export AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}
 export API_PORT=${API_PORT}
 export AE_SPECS_DIR=${DEMO_SPECS_DIR}
 export AE_STATE_DB=${AE_STATE_DB}
+export AE_STATE_BACKEND=${AE_STATE_BACKEND}
+export AE_ETCD_ENDPOINTS=${AE_ETCD_ENDPOINTS:-}
+export AE_ETCD_PREFIX=${AE_ETCD_PREFIX:-}
+export AE_PROJECTION_ROOT=${AE_PROJECTION_ROOT:-}
 export AE_APISHIM_DB=${AE_APISHIM_DB:-}
 export AE_APISHIM_RUNTIME=${AE_APISHIM_RUNTIME:-}
 export AE_APISHIM_MIRROR=${AE_APISHIM_MIRROR:-}
@@ -1346,6 +1390,24 @@ https://docs.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
+    @no_sse {
+        not path /labs/sse/* /logs/*/stream
+    }
+    encode @no_sse gzip zstd
+
+    @sse {
+        path /labs/sse/* /logs/*/stream
+    }
+    handle @sse {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT} {
+            flush_interval -1
+            # Keep SSE streams alive across config reloads to reduce reconnect churn.
+            stream_close_delay 5m
+            stream_timeout 24h
+            header_down X-Accel-Buffering no
+            header_down Cache-Control no-cache
+        }
+    }
 
     # Proxy controller API paths for single-origin labs (no CORS required)
     @apibase path /health /openapi.json
@@ -1381,6 +1443,24 @@ https://api.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
+    @no_sse {
+        not path /labs/sse/* /dashboard/sse/* /logs/*/stream
+    }
+    encode @no_sse gzip zstd
+
+    @sse {
+        path /labs/sse/* /dashboard/sse/* /logs/*/stream
+    }
+    handle @sse {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT} {
+            flush_interval -1
+            # Keep SSE streams alive across config reloads to reduce reconnect churn.
+            stream_close_delay 5m
+            stream_timeout 24h
+            header_down X-Accel-Buffering no
+            header_down Cache-Control no-cache
+        }
+    }
 
     @ui path /dashboard* /playground*
     handle @ui {
@@ -1415,7 +1495,28 @@ https://dash.home.arpa {
     }
     header -Strict-Transport-Security
     tls internal
-    reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
+    @no_sse {
+        not path /dashboard/sse/* /logs/*/stream
+    }
+    encode @no_sse gzip zstd
+
+    @sse {
+        path /dashboard/sse/* /logs/*/stream
+    }
+    handle @sse {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT} {
+            flush_interval -1
+            # Keep SSE streams alive across config reloads to reduce reconnect churn.
+            stream_close_delay 5m
+            stream_timeout 24h
+            header_down X-Accel-Buffering no
+            header_down Cache-Control no-cache
+        }
+    }
+
+    handle {
+        reverse_proxy ${AE_CADDY_HOST_ALIAS:-$HOST_ALIAS}:${API_PORT}
+    }
 }
 DASH
 
@@ -1432,7 +1533,7 @@ start_apishim
 
 # Auto-start the controller daemon unless disabled
 # Build a temporary specs set for the selected demo so the controller only watches required apps
-DEMO_SPECS_DIR="state/demo-specs"
+DEMO_SPECS_DIR="${DEMO_SPECS_DIR:-${DEMO_PROFILE_DIR}/specs}"
 rm -rf "$DEMO_SPECS_DIR" 2>/dev/null || true
 mkdir -p "$DEMO_SPECS_DIR"
 if [[ $DOCS_ONLY -ne 1 ]]; then
@@ -1470,6 +1571,8 @@ if [[ $DOCS_ONLY -ne 1 ]]; then
   if [[ $DEMO_STORAGE -eq 1 ]]; then
     add_spec specs/examples/echo-storage.yaml
   fi
+  log "Demo apps are sourced from ${DEMO_SPECS_DIR}."
+  log "Edit specs there (or rerun after updating specs/examples) to keep changes; runtime tweaks are reconciled back."
 fi
 
 if [[ $NO_CONTROLLER -eq 0 ]]; then
@@ -1610,7 +1713,7 @@ if [[ $DEMO_CONFIGS -eq 1 ]]; then
   if apply_with_heartbeat "echo" "specs/examples/echo.yaml"; then
     "$PY_BIN" -m ae.cli status echo --wide || true
     # Print projection location and sample values if present
-    APP_ROOT="state/projections/echo-rev1"; for d in "$APP_ROOT"*; do APP_ROOT="$d"; break; done
+    APP_ROOT="${DEMO_PROJECTIONS_DIR}/echo-rev1"; for d in "$APP_ROOT"*; do APP_ROOT="$d"; break; done
     if [[ -d "$APP_ROOT" ]]; then
       log "Projection files under $APP_ROOT (mounted at /var/run/ae/config/echo)"
       find "$APP_ROOT" -maxdepth 2 -type f | sed 's/^/[proj] /'

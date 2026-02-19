@@ -97,24 +97,10 @@ remove_service_port() {
 }
 
 ensure_rootful_podman_socket() {
-  if ! command -v sudo >/dev/null 2>&1 || ! command -v podman >/dev/null 2>&1; then
-    return 0
-  fi
-  if sudo podman info >/dev/null 2>&1; then
-    return 0
-  fi
-  sudo systemctl start podman.socket >/dev/null 2>&1 || true
-  sleep 1
-  if sudo podman info >/dev/null 2>&1; then
-    return 0
-  fi
-  sudo podman system service -t 0 >/dev/null 2>&1 &
-  sleep 2
-  if sudo podman info >/dev/null 2>&1; then
-    return 0
-  fi
-  echo "[full-refresh] rootful podman socket not available (expected /run/podman/podman.sock)" >&2
-  return 1
+  "$repo_root/scripts/bench/podman_rootful_socket.sh" || {
+    echo "[full-refresh] rootful podman socket not available (expected /run/podman/podman.sock)" >&2
+    return 1
+  }
 }
 
 stop_docker_dev_stack() {
@@ -197,6 +183,25 @@ wait_k1nd_controller_ready() {
   return 1
 }
 
+wait_bench_controller_ready() {
+  local log_file="$1"
+  local pid="${2:-}"
+  local tries=${BENCH_WAIT_TRIES:-30}
+  local delay=${BENCH_WAIT_DELAY:-2}
+  for _ in $(seq 1 "$tries"); do
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      echo "[full-refresh] dev-min controller exited early" >&2
+      return 1
+    fi
+    if grep -q "http api listening" "$log_file" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+  echo "[full-refresh] dev-min controller not ready after $((tries * delay))s" >&2
+  return 1
+}
+
 kill_controllers() {
   local pids=("$@")
   if (( ${#pids[@]} == 0 )); then
@@ -258,15 +263,14 @@ detect_controllers
 sanitize_env_podman
 
 if [[ "${BENCH_PRE_CLEAN:-1}" == "1" ]]; then
-  echo "[full-refresh] pre-clean: sanitize engines and labs stack" >&2
+  echo "[full-refresh] pre-clean: sanitize engines and dev stacks" >&2
   stop_docker_dev_stack || true
-  ./scripts/bench/k1nd_sanitize.sh pre >/dev/null 2>&1 || true
 fi
 
 DATE="r$(date +%Y%m%d)"
 DURATION=30
 REPLICAS=1,5,10
-ROLL_REPLICAS=5
+ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 APP=specs/examples/echo.yaml
 APP_NAME=echo
 bench_specs_minimal="${BENCH_SPECS_MINIMAL:-1}"
@@ -352,16 +356,12 @@ make bench-mem-e2e-k1s-sudo
 
 ./scripts/bench/bench_env_teardown.sh --env "$ENV_FILE"
 
-# Clear Podman before k1nd to avoid foreign-engine contamination.
+# Clear Podman before k1nd bench to avoid foreign-engine contamination.
 clean_podman_rootless
 clean_podman_rootful
 
-export AE_RUNTIME_BACKEND=docker
-export AE_APISHIM_RUNTIME=docker
-
 sanitize_env_docker
-stop_docker_dev_stack || true
-scripts/bench/k1nd_sanitize.sh pre
+export AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-docker}"
 
 ensure_demo_images "demo-blue:latest" "demo-green:latest" docker
 k1nd_specs_rel="${BENCH_K1ND_SPECS_DIR:-state/bench-k1nd-specs}"
@@ -377,21 +377,17 @@ app_src="$APP"
 if [[ "$app_src" != /* ]]; then
   app_src="${repo_root}/${app_src}"
 fi
-if [[ -f "$app_src" ]]; then
-  # Always copy a standalone manifest for apply/scale operations.
-  cp -f "$app_src" "$k1nd_apply_abs/$(basename "$app_src")"
-  # Optionally keep the controller spec dir empty to avoid file reconcile resets.
-  if [[ "$k1nd_specs_empty" != "1" ]]; then
-    cp -f "$app_src" "$k1nd_specs_abs/$(basename "$app_src")"
-  fi
+if [[ ! -f "$app_src" ]]; then
+  echo "[full-refresh] k1nd manifest missing: $app_src" >&2
+  exit 4
 fi
+# Always copy a standalone manifest for apply/scale operations.
+k1nd_manifest="${k1nd_apply_abs}/$(basename "$app_src")"
+cp -f "$app_src" "$k1nd_manifest"
 k1nd_state_rel="${BENCH_K1ND_STATE_DIR:-state/bench-k1nd-state}"
 k1nd_state_abs="${repo_root}/${k1nd_state_rel}"
 rm -rf "$k1nd_state_abs"
 mkdir -p "$k1nd_state_abs"
-k1nd_state_db="${k1nd_state_rel}/controller.db"
-k1nd_manifest_rel="${k1nd_apply_rel}/$(basename "$app_src")"
-k1nd_manifest="${k1nd_apply_abs}/$(basename "$app_src")"
 k1nd_port_start="${BENCH_K1ND_PORT_START:-18080}"
 k1nd_port_end="${BENCH_K1ND_PORT_END:-18180}"
 if [[ -f "$k1nd_manifest" ]]; then
@@ -414,41 +410,55 @@ if [[ -f "$k1nd_manifest" ]]; then
     fi
   fi
 fi
-AE_SPECS_DIR="$k1nd_specs_rel" \
-AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" \
-AE_STATE_DB="${k1nd_state_db}" \
-make labs-aio-up
-if ! wait_k1nd_controller_ready; then
-  echo "[full-refresh] k1nd controller not ready; check docker logs dev-controller-1" >&2
+export K1ND_STATE_DIR="$k1nd_state_abs"
+export K1ND_SPECS_DIR="$k1nd_specs_abs"
+export K1ND_APPLY_DIR="$k1nd_apply_abs"
+export K1ND_MANIFEST="$k1nd_manifest"
+if [[ "$k1nd_specs_empty" != "1" ]]; then
+  export K1ND_SEED_SPECS=1
+else
+  export K1ND_SEED_SPECS=0
 fi
-AE_CLI_IN_CONTAINER=1 AE_COLLECT_ENGINE=docker AE_ENGINE_STRICT=1 AE_SERIAL_SERVICE_ROLLOUT=1 \
-AE_STATE_DB="/tmp/k1s-bench-$(id -un).db" SKIP_GUARDS=1 \
-AE_SPECS_DIR="$k1nd_specs_rel" \
-AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" AE_STATE_DB="${k1nd_state_db}" \
-LABEL_SUITE="${DATE}+docker+runc+k1nd" \
-APP="$k1nd_manifest_rel" APP_NAME="$APP_NAME" \
-REPLICAS="$REPLICAS" DURATION="$DURATION" \
-bash ./scripts/bench/run_matrix.sh \
-  --label-suite "${DATE}+docker+runc+k1nd" \
-  --app "$k1nd_manifest_rel" \
-  --app-name "$APP_NAME" \
-  --replicas "$REPLICAS" \
-  --duration "$DURATION" \
-  --sudo
-AE_CLI_IN_CONTAINER=1 AE_COLLECT_ENGINE=docker AE_ENGINE_STRICT=1 AE_SERIAL_SERVICE_ROLLOUT=1 \
-AE_STATE_DB="/tmp/k1s-bench-$(id -un).db" SKIP_GUARDS=1 \
-AE_SPECS_DIR="$k1nd_specs_rel" \
-AE_APISHIM_DSN="${k1nd_state_rel}/apishim.db" AE_STATE_DB="${k1nd_state_db}" \
-LABEL_SUITE_ROLL="${DATE}+docker+runc+k1nd" \
-APP="$k1nd_manifest_rel" APP_NAME="$APP_NAME" \
-ROLL_REPLICAS="$ROLL_REPLICAS" DURATION="$DURATION" \
-bash ./scripts/bench/run_rollout_k1s.sh \
-  --label-suite "${DATE}+docker+runc+k1nd" \
-  --app "$k1nd_manifest_rel" \
-  --app-name "$APP_NAME" \
-  --replicas "$ROLL_REPLICAS" \
-  --duration "$DURATION" \
-  --sudo
-scripts/bench/k1nd_sanitize.sh post
+
+if ! scripts/bench/k1nd_single.sh up; then
+  echo "[full-refresh] k1nd container failed to start" >&2
+else
+  if ! scripts/bench/k1nd_single.sh wait; then
+    echo "[full-refresh] k1nd controller not ready" >&2
+  else
+    k1nd_manifest_in_container="/apply/$(basename "$k1nd_manifest")"
+    AE_RUNTIME_BACKEND=docker AE_ENGINE_STRICT=1 AE_SERIAL_SERVICE_ROLLOUT=1 \
+    AE_CLI_IN_CONTAINER=1 AE_CLI_CONTAINER="${AE_CLI_CONTAINER:-k1nd-server}" \
+    AE_K1ND_CONTROLLER_CONTAINER="${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server}" \
+    AE_K1ND_APISHIM_CONTAINER="${AE_K1ND_APISHIM_CONTAINER:-k1nd-server}" \
+    AE_K1ND_INGRESS_CONTAINER="${AE_K1ND_INGRESS_CONTAINER:-k1nd-server}" \
+    AE_COLLECT_ENGINE=docker \
+    LABEL_SUITE="${DATE}+docker+k1nd" \
+    APP="$k1nd_manifest_in_container" APP_NAME="$APP_NAME" \
+    REPLICAS="$REPLICAS" DURATION="$DURATION" \
+    bash ./scripts/bench/run_matrix.sh \
+      --label-suite "${DATE}+docker+k1nd" \
+      --app "$k1nd_manifest_in_container" \
+      --app-name "$APP_NAME" \
+      --replicas "$REPLICAS" \
+      --duration "$DURATION"
+    AE_RUNTIME_BACKEND=docker AE_ENGINE_STRICT=1 AE_SERIAL_SERVICE_ROLLOUT=1 \
+    AE_CLI_IN_CONTAINER=1 AE_CLI_CONTAINER="${AE_CLI_CONTAINER:-k1nd-server}" \
+    AE_K1ND_CONTROLLER_CONTAINER="${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server}" \
+    AE_K1ND_APISHIM_CONTAINER="${AE_K1ND_APISHIM_CONTAINER:-k1nd-server}" \
+    AE_K1ND_INGRESS_CONTAINER="${AE_K1ND_INGRESS_CONTAINER:-k1nd-server}" \
+    AE_COLLECT_ENGINE=docker \
+    LABEL_SUITE_ROLL="${DATE}+docker+k1nd" \
+    APP="$k1nd_manifest_in_container" APP_NAME="$APP_NAME" \
+    ROLL_REPLICAS="$ROLL_REPLICAS" DURATION="$DURATION" \
+    bash ./scripts/bench/run_rollout_k1s.sh \
+      --label-suite "${DATE}+docker+k1nd" \
+      --app "$k1nd_manifest_in_container" \
+      --app-name "$APP_NAME" \
+      --replicas "$ROLL_REPLICAS" \
+      --duration "$DURATION"
+  fi
+fi
+scripts/bench/k1nd_single.sh down >/dev/null 2>&1 || true
 
 make bench-mem-docs

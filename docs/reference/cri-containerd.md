@@ -1,11 +1,80 @@
 # CRI containerd
 
-This page documents running k1s with containerd (CRI), the registry-first image
-flow, and the tooling available for CRI operations.
+This page documents strict CRI workflows in k1s (containerd + CRI), the
+registry-first image flow, and current CRI tooling.
 
-## Runtime selection
+For current dev and docs/lab lanes, CRI is best exercised with `k1s-*` profile
+targets. Use raw env exports only when debugging or overriding defaults.
 
-Use the CRI backend:
+## Recommended entrypoints (k1s-* profile targets)
+
+Use these targets first:
+
+```
+make k1s-core-cri
+make k1s-edge-cri
+make k1s-core-edge-cri
+make k1s-edge-core-cri
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+```
+
+Notes:
+- If your containerd setup requires elevated privileges, run strict CRI profile
+  targets with `sudo -E`.
+- `k1s-core-cri` and related targets wire `AE_RUNTIME_BACKEND=cri` and
+  `AE_INFRA_BACKEND=cri` for you.
+- Detailed profile behavior: `docs/guides/runtime-profiles.md`.
+- End-to-end core/edge CRI runbook: `docs/guides/multinode-lab.md`.
+
+## Ingress deep validation lanes (recommended)
+
+Use `k1s-*` profile targets and keep ingress matrix runs mode-isolated.
+
+Preflight before deep/deep+perf lanes:
+
+```bash
+sudo -v
+scripts/dev/etcd_maintenance.sh watchdog
+```
+
+Optional guided wrapper with restart checkpoints:
+
+```bash
+scripts/dev/run_ingress_mode_lanes.sh --lanes all
+```
+
+Core-proxy mini sanity:
+
+```bash
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy --archetypes ws-echo --tier tier2 --validation-profile standard
+```
+
+Primary release lane (`core-proxy`, policy + observability):
+
+```bash
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy --archetypes ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 --validation-profile deep+perf --perf-profile sample --lb-proof-scope auto
+```
+
+Strict LB proof lane (`edge-local`, separate stack start):
+
+```bash
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep \
+  --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 \
+  --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/
+```
+
+Interpretation:
+- `core-proxy` LB rows are `assertion_level=policy_switch_only` when strict distribution is not required.
+- `edge-local` LB rows are `assertion_level=strict_distribution` and are the strict proof source.
+- Full sequence and failure triage: `docs/guides/ingress-capability-test-sequence.md`.
+
+## Runtime selection and advanced overrides
+
+If you need manual runtime overrides outside profile helpers:
 
 ```
 export AE_RUNTIME_BACKEND=cri
@@ -58,9 +127,9 @@ The manifest enables TLS + htpasswd auth and deletes:
 `REGISTRY_STORAGE_DELETE_ENABLED=true`.
 For single-node dev, add `registry.k1s.home.arpa` to `/etc/hosts`.
 
-When this default is selected for CRI demos, `scripts/init_demo.sh` will also
-disable the local registry cache (`AE_USE_REGISTRY_CACHE=0`) to avoid routing
-dev-stack images through the in-cluster registry.
+If you point strict CRI lanes at this in-cluster registry, disable the local
+pull-through cache (`AE_USE_REGISTRY_CACHE=0`) so demo/dev image pulls do not
+route through a conflicting cache endpoint.
 
 ### Local dev registry cache
 
@@ -89,17 +158,13 @@ scripts/containerd_registry_trust.sh --host localhost:32000 --scheme http --inse
 Containerd requires explicit trust config for insecure registries or custom CA.
 Use the helper to write `/etc/containerd/certs.d/<host>/hosts.toml`:
 
+The helper also ensures containerd CRI registry `config_path` points to `/etc/containerd/certs.d` and restarts containerd automatically when that setting changes.
+
 ```
 scripts/containerd_registry_trust.sh \
   --host registry.k1s.home.arpa:32000 \
   --ca /tmp/registry.crt \
   --restart
-```
-
-Or use the CLI wrapper:
-
-```
-ae cri trust --host registry.k1s.home.arpa:32000 --ca /tmp/registry.crt --restart
 ```
 
 Registry auth for CRI pulls is read from:
@@ -137,22 +202,35 @@ Registry auth for CRI pulls is read from:
   ServiceAccount `imagePullSecrets` only if the pod template omits the field
   entirely (an explicit empty list disables the fallback, matching Kubernetes behavior).
 
-## Image sync and prewarm
+## Image prep and prewarm
 
-### Demo sync (push + CRI pull)
+### Prepare example images for strict CRI (recommended)
 
-```
-AE_CRI_IMAGE_SYNC=1 ./scripts/init_demo.sh
-```
-
-This pushes demo images to the registry and pulls them via CRI.
-When enabled, demo specs are rewritten to reference `AE_REGISTRY_HOST`.
-
-### Prewarm (host)
+For registry-first strict CRI lanes, prebuild/mirror example images into your
+registry before running docs/lab manifests:
 
 ```
-AE_CRI_PREWARM=1 AE_CRI_PREWARM_IMAGES="mendhak/http-https-echo:37" \
-  ./scripts/init_demo.sh
+scripts/dev/examples_registry_prepare.sh \
+  --registry "${AE_CRI_REGISTRY:-${AE_REGISTRY_HOST}}" \
+  --namespace "${AE_CRI_REGISTRY_NAMESPACE:-k1s}" \
+  --output-dir state/examples/registry \
+  --pull-cri
+```
+
+This writes registry-rewritten manifests under `state/examples/registry/` (for
+both `specs/examples` and `docs/site/examples`) so examples can be applied
+without relying on upstream registries during the lab flow.
+
+### Prewarm (host via crictl)
+
+```
+AE_CRI_PREWARM_IMAGES="mendhak/http-https-echo:37" scripts/cri_image_prewarm.sh
+```
+
+Or pass images explicitly:
+
+```
+scripts/cri_image_prewarm.sh --image registry.k1s.home.arpa:32000/demo-green:latest
 ```
 
 ### Prewarm (Kubernetes)
@@ -171,29 +249,36 @@ Kubernetes clusters.
 
 ### Key env vars
 
-- `AE_CRI_IMAGE_SYNC=1` to push demo images to the registry and pull via CRI
-- `AE_CRI_PREWARM=1` and `AE_CRI_PREWARM_IMAGES="img1 img2"` for host prewarm
-- `AE_CRI_BUILDKIT_BUILD=1` to build/push the buildkit-only image on demo/labs
-- `AE_CRI_CRICTL_BUILD=1` to build/push the crictl-only image on demo/labs
-- `AE_CRI_TOOLBOX_BUILD=1` to build/push the toolbox image (advanced)
-- `AE_CRI_BUILDKIT_KEEP=1` to keep the buildkit pod after `ae cri build`
-- `AE_CRI_REGISTRY_TRUST=1` to write containerd trust for `AE_REGISTRY_HOST` during `init_demo.sh`
-- `AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt` or `AE_CRI_REGISTRY_TRUST_INSECURE=1` (dev)
-- `AE_CRI_REGISTRY_TRUST_SCHEME=http` to override scheme (default `https`)
-- `AE_CRI_REGISTRY_TRUST_RESTART=1` to restart containerd after writing trust
-- `AE_CRI_SOCKET_ACCESS=1` to grant temporary ACL access to the containerd socket (dev-only)
-- `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default)
+- `AE_CRI_ENDPOINT` for CRI endpoint selection.
+- `AE_CRI_RUNTIME_HANDLER` for CRI runtime handler selection (default `runc` in strict profile targets).
+- `AE_CRI_REGISTRY=<host:port>` to rewrite strict-CRI managed image refs to a registry.
+- `AE_CRI_REGISTRY_NAMESPACE=<prefix>` to prepend a registry path segment (for example `k1s`).
+- `AE_CRI_REGISTRY_MODE=managed|external|off`
+  - `managed`: k1s starts/health-checks a local strict-CRI registry (default endpoint `https://localhost:5001`)
+  - `external`: k1s validates external registry reachability and fails fast if unavailable
+  - `off`: disable strict-CRI registry rewrite/readiness checks
+- `AE_CRI_REGISTRY_PRESET=microk8s|local`
+  - `microk8s`: sets `AE_CRI_REGISTRY_MODE=external` + default `AE_CRI_REGISTRY=localhost:32000`
+  - `local`: sets `AE_CRI_REGISTRY_MODE=managed`
+- `AE_CRI_MANAGED_REGISTRY_TLS=1|0` (default `1`) enables/disables managed-registry TLS.
+- Managed TLS material defaults under `state/profiles/<profile>/registry/tls` and is auto-generated when missing.
+- `AE_CRI_REGISTRY_INSECURE=1` is a dev-only opt-out for plaintext/insecure registry access.
+- `AE_CRI_REGISTRY_TRUST=1` to apply trust configuration during strict CRI startup (auto-enabled for managed TLS).
+- `AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt` or `AE_CRI_REGISTRY_TRUST_INSECURE=1` (dev).
+- `AE_CRI_REGISTRY_TRUST_SCHEME=http` to override scheme (default `https`).
+- `AE_CRI_REGISTRY_AUTO_RESTART=1|0` (default `1`) restarts containerd automatically when registry trust scheme flips (`http` <-> `https`).
+- `AE_CRI_REGISTRY_TRUST_RESTART=1` forces restart after trust write, even without scheme transition.
+- `AE_CRI_IMAGE_POLICY=prompt|pull|fail` for strict-CRI missing-image behavior.
+- `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker` to pick strict-CRI local build backend for fallback action `b`.
+- `AE_APISHIM_IMAGE=<image-ref>` to override strict-CRI apishim image.
+- `AE_CRI_SET_HOSTNAME=1` to request explicit hostname wiring for CRI stack components.
+- `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default).
+- `AE_CRI_REQUIRE_RUNTIME_READY=1` / `AE_CRI_REQUIRE_NETWORK_READY=1` to make preflight fail hard when CRI conditions are not ready.
 
 ### Temporary socket access (dev)
 
-If you want to run CRI demos without sudo, grant ACL access to the containerd
-socket for the current user:
-
-```
-AE_CRI_SOCKET_ACCESS=1 ./scripts/init_demo.sh
-```
-
-Manual helpers:
+If you want to run CRI operations without sudo, grant ACL access to the
+containerd socket for the current user:
 
 ```
 ./scripts/containerd_socket_access.sh --grant
@@ -270,10 +355,10 @@ AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 \
 The prewarm DaemonSet uses this image by default. For a short-lived ops pod,
 apply `specs/examples/cri-crictl-k8s.yaml`.
 
-## Buildkit-only image and `ae cri build`
+## Buildkit-only image (manual build pods)
 
 The buildkit-only image runs buildkitd/buildctl without mounting the host
-containerd socket. It is the default for `ae cri build`.
+containerd socket. Use it for manual in-cluster build pods.
 
 Build and push:
 
@@ -282,17 +367,7 @@ AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 \
   scripts/build_cri_buildkit_image.sh --push
 ```
 
-Build and push with the buildkit pod (`specs/examples/cri-buildkit-k8s.yaml`):
-
-```
-ae cri build --context /path/to/context \
-  --image registry.k1s.home.arpa:32000/demo-green:latest
-```
-
-By default the buildkit pod is deleted after the build. Use `--keep-buildkit-pod`
-(or set `AE_CRI_BUILDKIT_KEEP=1`) to reuse it. The helper can also pre-pull the
-image via a crictl-only pod; pass `--no-cri-pull` to skip that step.
-Pre-pull uses registry credentials from `~/.config/ae/registries.yaml` if present.
+Manifest: `specs/examples/cri-buildkit-k8s.yaml`.
 
 ## Toolbox image (advanced)
 
@@ -309,26 +384,8 @@ AE_REGISTRY_HOST=registry.k1s.home.arpa:32000 \
 
 Manifest: `specs/examples/cri-toolbox-k8s.yaml`.
 
-You can also point `ae cri build` at the toolbox pod (for an all-in-one pod with
-nerdctl + buildkit) by swapping the manifest and pod name:
-
-```
-ae cri build --context /path/to/context \
-  --image registry.k1s.home.arpa:32000/demo-green:latest \
-  --buildkit-manifest specs/examples/cri-toolbox-k8s.yaml \
-  --buildkit-namespace k1s-tools \
-  --buildkit-pod cri-toolbox
-```
-
-### Auto-build on demo/labs
-
-When `AE_RUNTIME_BACKEND=cri`, `scripts/init_demo.sh` builds and pushes the
-buildkit-only and crictl-only images by default. You can disable either:
-
-```
-AE_CRI_BUILDKIT_BUILD=0
-AE_CRI_CRICTL_BUILD=0
-```
+No automatic image builds are performed by strict CRI profile targets; build
+and push explicitly as part of your lane setup.
 
 ## Streaming exec/port-forward via node agent
 
@@ -412,36 +469,27 @@ Update the manifest to set `AE_CONTROLLER_URL` (controller agent API) and
 `AE_AGENT_TOKEN` (shared secret). The manifest defaults to CRI containerd; for
 Podman/Docker nodes, change `AE_RUNTIME_BACKEND` and remove the socket mount.
 
-## k1s CLI helpers
+## CRI command helpers
 
-CRI runtime images:
-- `ae cri images list`
-- `ae cri images pull <image>`
-- `ae cri images rm <image>`
-- `ae cri images inspect <image> --json`
+Profile and stack orchestration:
+- `make k1s-core-cri`, `make k1s-edge-cri`, `make k1s-core-edge-cri`, `make k1s-edge-core-cri`
+- `make edge-site-cri SITE_ID=<site> EDGE_PORT=<port> EDGE_HTTP_PORT=<port>`
+- `python scripts/dev/cri_stack.py preflight`
 
-CRI registry helpers (HTTP API + build/push):
-- `ae cri registry list --registry registry.k1s.home.arpa:32000`
-- `ae cri registry tags <repo> --registry registry.k1s.home.arpa:32000`
-- `ae cri registry manifest <repo>:<tag> --registry registry.k1s.home.arpa:32000`
-- `ae cri registry tag <repo>:<tag> <repo>:<new-tag> --registry registry.k1s.home.arpa:32000`
-- `ae cri registry delete <repo>:<tag> --registry registry.k1s.home.arpa:32000 --force`
-- `ae cri registry rm <repo>:<tag> --registry registry.k1s.home.arpa:32000 --force`
-- `ae cri registry push --context /path/to/context --image registry.k1s.home.arpa:32000/app:tag`
+Host helpers:
+- `scripts/cri_preflight.sh`
+- `scripts/cri_teardown.sh`
+- `scripts/containerd_registry_trust.sh --host <host:port> ...`
+- `scripts/dev/examples_registry_prepare.sh --registry <host:port> --pull-cri`
+- `scripts/cri_image_prewarm.sh --image <ref>`
 
-Containerd trust helper:
-- `ae cri trust --host registry.k1s.home.arpa:32000 --ca /tmp/registry.crt --restart`
-- `ae cri trust --host localhost:32000 --scheme http --insecure --restart`
+`crictl` quick checks:
+- `crictl --runtime-endpoint "${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}" pods`
+- `crictl --runtime-endpoint "${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}" ps`
+- `crictl --runtime-endpoint "${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}" images`
 
-The registry `push` helper uses buildkit (same path as `ae cri build`).
-
-Delete requires a registry with deletes enabled (registry:2 uses
-`REGISTRY_STORAGE_DELETE_ENABLED=true`).
-Helpers use basic auth from `~/.config/ae/registries.yaml` or `--username/--password`.
-For HTTP registries (for example `localhost:5001` or MicroK8s),
-use `--scheme http`.
-For TLS with a custom CA, pass `--ca /path/to/ca.crt` or use `--insecure`
-for dev-only.
+Registry credentials for pulls are managed with `ae registry` and stored in
+`~/.config/ae/registries.yaml`.
 
 ## Security notes
 

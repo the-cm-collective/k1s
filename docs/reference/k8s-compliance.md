@@ -3,7 +3,7 @@
 This page summarizes our current Kubernetes spec compliance for exported manifests.
 
 How it works
-- We export K8s YAML from representative App manifests using `ae cli export-k8s` (preset: web-hardened).
+- We export K8s YAML from representative Deployment manifests using `ae export-k8s` (preset: web-hardened).
 - We run offline structural validation, optional `kubeconform -strict` schema checks, optional `kubectl apply --dry-run=server`, and our `k8s-check --policy strict`.
 - A weighted score is computed per sample; the overall score is the average across samples.
 
@@ -20,7 +20,7 @@ Online (cluster-backed) checks
 
 The compliance status and per-sample details render below when a report is present.
 
-## Current Coverage Summary (2026-01-16)
+## Current Coverage Summary (2026-02-14)
 
 - Workloads: Deployment full support; StatefulSet/DaemonSet/Job/CronJob are stored with best-effort status but emulated as Deployment-like apps (no real completion, scheduling, or per-node placement).
 - Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.

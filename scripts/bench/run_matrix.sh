@@ -43,10 +43,17 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 py_path="${PYTHONPATH:-$repo_root/src}"
 sudo_env_base=(
   "HOME=/root"
+  "XDG_CONFIG_HOME=/root/.config"
+  "XDG_DATA_HOME=/root/.local/share"
+  "XDG_CACHE_HOME=/root/.cache"
   "XDG_RUNTIME_DIR=/run/user/0"
   "DBUS_SESSION_BUS_ADDRESS="
   "CONTAINER_HOST="
   "PODMAN_HOST="
+)
+sudo_env_clean=(
+  "-i"
+  "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 )
 sudo_env_snapshot=(
   "${sudo_env_base[@]}"
@@ -76,13 +83,38 @@ sudo_env_cli=(
   "PYTHONPATH=${py_path}"
 )
 
+# Auto-detect k1nd single-container runs (k1nd-server) and set sane defaults.
+detect_k1nd_container() {
+  local name="${AE_CLI_CONTAINER:-k1nd-server}"
+  command -v docker >/dev/null 2>&1 || return 1
+  if docker ps -q --filter "name=^${name}$" 2>/dev/null | head -n1 | grep -q '.'; then
+    echo "$name"
+    return 0
+  fi
+  return 1
+}
+
+k1nd_container=""
+if [[ "${AE_K1ND_AUTO:-1}" != "0" ]]; then
+  k1nd_container="$(detect_k1nd_container || true)"
+fi
+if [[ -n "$k1nd_container" ]]; then
+  : "${AE_CLI_IN_CONTAINER:=1}"
+  : "${AE_CLI_CONTAINER:=$k1nd_container}"
+  : "${AE_K1ND_CONTROLLER_CONTAINER:=$k1nd_container}"
+  : "${AE_K1ND_APISHIM_CONTAINER:=$k1nd_container}"
+  : "${AE_K1ND_INGRESS_CONTAINER:=$k1nd_container}"
+  : "${AE_COLLECT_ENGINE:=docker}"
+  : "${AE_RUNTIME_BACKEND:=docker}"
+fi
+
 # Support running ae CLI inside the controller container for k1nd
 AE_CLI_CONTAINER=${AE_CLI_CONTAINER:-dev-controller-1}
 if [[ "${AE_CLI_IN_CONTAINER:-0}" == "1" ]] && command -v docker >/dev/null 2>&1; then
   ae() { docker exec "$AE_CLI_CONTAINER" python -m ae.cli "$@"; }
 elif [[ "${BENCH_CONTROLLER_SUDO:-0}" == "1" ]] && command -v sudo >/dev/null 2>&1; then
   ae() {
-    sudo env "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@";
+    sudo env "${sudo_env_clean[@]}" "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@";
   }
 else
   ae() { "$python_bin" -m ae.cli "$@"; }
@@ -225,6 +257,12 @@ ensure_controller() {
 preflight_runtime() {
   backend=${AE_RUNTIME_BACKEND:-podman}
   if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+    if [[ "$use_sudo" == "1" ]]; then
+      if ! "$repo_root/scripts/bench/podman_rootful_socket.sh"; then
+        echo "[matrix] rootful Podman socket not available (expected /run/podman/podman.sock)." >&2
+        exit 2
+      fi
+    fi
     if ! command -v podman >/dev/null 2>&1; then
       echo "[matrix] Podman not found. Set AE_RUNTIME_BACKEND=docker or install Podman." >&2
       exit 2
@@ -281,7 +319,32 @@ wait_ready() {
   local tries=${WAIT_READY_TRIES:-$default_tries}
   local delay=${WAIT_READY_DELAY:-2}
   info "[matrix] wait_ready name=$name target=$want tries=$tries delay=${delay}s"
+  local use_runtime_wait="${BENCH_WAIT_RUNTIME:-0}"
+  local backend="${AE_RUNTIME_BACKEND:-podman}"
   while (( tries-- > 0 )); do
+    if [[ "$use_runtime_wait" == "1" ]]; then
+      local count=0
+      if [[ "$backend" == "podman" ]]; then
+        if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+          count=$(sudo env "${sudo_env_base[@]}" "${AE_PODMAN_BIN:-podman}" ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        else
+          count=$("${AE_PODMAN_BIN:-podman}" ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        fi
+      elif [[ "$backend" == "docker" ]]; then
+        if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+          count=$(sudo env "${sudo_env_base[@]}" docker ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        else
+          count=$(docker ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        fi
+      else
+        use_runtime_wait="0"
+      fi
+      if [[ "$use_runtime_wait" == "1" && "$count" -ge "$want" ]]; then
+        return 0
+      fi
+      sleep "$delay"
+      continue
+    fi
     local js
     if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
     local ready desired
@@ -299,9 +362,9 @@ if [[ "${SKIP_IDLE:-0}" != "1" ]]; then
   info "idle snapshot"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
     else
-      sudo env "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
     fi
   else
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
@@ -341,9 +404,9 @@ for n in "${reps[@]}"; do
   info "snapshot label=${label_suite}-pods-${n}"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration"
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration"
     else
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration" || true
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-pods-${n}" --duration "$duration" || true
     fi
   else
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then

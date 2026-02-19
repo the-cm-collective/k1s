@@ -721,8 +721,8 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 05 - Observability: Logs, Metrics, Events</h1>
-<h2>Concept</h2>
+    <h1 id="chapter-05-observability-logs-metrics-events">Chapter 05 - Observability: Logs, Metrics, Events</h1>
+<h2 id="concept">Concept</h2>
 <p>Observability is the ability to understand system behavior from the outside. Metrics quantify state, events explain transitions, and logs provide raw evidence. Together, they enable fast diagnosis and safe operations.</p>
 <pre class="mermaid">flowchart TB
   Metrics[Metrics] --&gt; Q1[&quot;How healthy?&quot;]
@@ -731,7 +731,7 @@
   Q1 --&gt; Triage[Triage]
   Q2 --&gt; Triage
   Q3 --&gt; Triage</pre>
-<h3>Theory</h3>
+<h3 id="theory">Theory</h3>
 <p>The three pillars serve different purposes: metrics answer &quot;how much&quot; and &quot;how many,&quot; events answer &quot;what changed,&quot; and logs answer &quot;what happened at a point in time.&quot; Effective systems emit all three, and operators should move between them methodically.</p>
 <pre class="mermaid">flowchart LR
   State[SQLite state] --&gt; MetricsSvc[MetricsService]
@@ -739,7 +739,7 @@
   MetricsSvc --&gt; HTTP[&quot;/metrics HTTP&quot;]
   State --&gt; Events[Events table]
   Events --&gt; CLI2[ae cli events]</pre>
-<h3>Design</h3>
+<h3 id="design">Design</h3>
 <p>k1s stores reconciliation state in SQLite, derives aggregate metrics from that store, and emits structured events during every reconcile. A lightweight HTTP API exposes Prometheus metrics and event data. This design keeps observability local and reproducible while still compatible with external tooling.</p>
 <pre class="mermaid">sequenceDiagram
   participant O as Operator
@@ -750,7 +750,7 @@
   O-&gt;&gt;C: Query metrics/events
   C-&gt;&gt;S: Read snapshots
   C--&gt;&gt;O: Metrics + events</pre>
-<h3>Application</h3>
+<h3 id="application">Application</h3>
 <p>When troubleshooting, start with metrics to see if the system is degraded, then use events to find the trigger. If you need detail, inspect logs for the specific runtime or controller. This approach scales to production k8s workflows with Prometheus and Events API.</p>
 <pre class="mermaid">flowchart TB
   Symptom[Issue observed] --&gt; Metrics[Check metrics]
@@ -758,7 +758,7 @@
   Events --&gt; Logs[Check logs]
   Logs --&gt; Fix[Apply fix]
   Fix --&gt; Verify[Verify metrics]</pre>
-<h2>Key Terms and Acronyms</h2>
+<h2 id="key-terms-and-acronyms">Key Terms and Acronyms</h2>
 <ul>
 <li>Observability - Ability to understand system state from signals.</li>
 <li>Metrics - Numeric aggregates over time.</li>
@@ -769,20 +769,20 @@
 <li>HTTP API - Controller interface for metrics/events/status.</li>
 <li>Triage - Structured troubleshooting flow.</li>
 </ul>
-<h2>Commands (copy/paste)</h2>
+<h2 id="commands-copy-paste">Commands (copy/paste)</h2>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108
 python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli metrics --json
 python -m ae.cli events echo --limit 20
 curl http://127.0.0.1:9108/metrics</code></pre>
-<h2>Docs references (source + site)</h2>
+<h2 id="docs-references-source-site">Docs references (source + site)</h2>
 <ul>
 <li>Source: <code>docs/reference/observability.md</code></li>
 <li>Source: <code>docs/ops/grafana.md</code></li>
 <li>Source: <code>docs/ops/runbook.md</code></li>
 <li>Site: <code>docs/site/observability.html</code></li>
 </ul>
-<h2>Code references (walkthrough anchors)</h2>
+<h2 id="code-references-walkthrough-anchors">Code references (walkthrough anchors)</h2>
 <ul>
 <li>Metrics snapshot aggregation: <code>src/ae/observability/metrics.py:25</code></li>
 </ul>
@@ -813,7 +813,7 @@ def handle_events(...):
     for event in events:
         timestamp = event.created_at.strftime(&quot;%Y-%m-%d %H:%M:%S&quot;)
         print(f&quot;{timestamp} rev={event.revision} {event.event_type}: {event.message}&quot;)</code></pre>
-<h2>Chapter navigation</h2>
+<h2 id="chapter-navigation">Chapter navigation</h2>
 <ul>
 <li>Prev: <a href="concepts-in-practice-04-scheduling-placement.html">Chapter 04 - Scheduling &amp; Placement</a></li>
 <li>Next: <a href="concepts-in-practice-06-ingress-service-exposure.html">Chapter 06 - Ingress &amp; Service Exposure</a></li>
@@ -825,7 +825,7 @@ def handle_events(...):
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

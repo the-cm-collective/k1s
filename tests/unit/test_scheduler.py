@@ -11,7 +11,7 @@ from ae.controller.state import SQLiteStateStore
 def _manifest(name: str = "app", replicas: int = 3) -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name=name),
         spec=AppSpec(image="busybox", replicas=replicas),
     )

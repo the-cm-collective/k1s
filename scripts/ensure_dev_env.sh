@@ -31,10 +31,22 @@ if [[ "$engine" == "podman" ]]; then
 fi
 
 apishim_port="${APISHIM_PORT:-8445}"
-apishim_upstream="${APISHIM_UPSTREAM:-${host_alias}:${apishim_port}}"
+if [[ -n "${POSTGRES_PORT:-}" && "${apishim_port}" == "${POSTGRES_PORT}" ]]; then
+  apishim_port="8445"
+fi
+if [[ "${apishim_port}" == "5432" ]]; then
+  apishim_port="8445"
+fi
+apishim_container="${APISHIM_CONTAINER:-0}"
+if [[ "${apishim_container}" == "1" ]]; then
+  apishim_upstream="apishim:${apishim_port}"
+else
+  apishim_upstream="${APISHIM_UPSTREAM:-${host_alias}:${apishim_port}}"
+fi
 
 mkdir -p "$(dirname "$ENV_FILE")"
-cat > "$ENV_FILE" <<EOF
-APISHIM_PORT=${apishim_port}
-APISHIM_UPSTREAM=${apishim_upstream}
-EOF
+{
+  printf 'APISHIM_PORT=%s\n' "${apishim_port}"
+  printf 'CADDY_HOST_ALIAS=%s\n' "${host_alias}"
+  printf 'APISHIM_UPSTREAM=%s\n' "${apishim_upstream}"
+} > "$ENV_FILE"

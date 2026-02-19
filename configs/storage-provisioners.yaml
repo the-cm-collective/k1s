@@ -1,0 +1,30 @@
+provisioners:
+  - name: k1s-local
+    provisioner: k1s.io/local-path
+    type: builtin
+    volumeBindingMode: WaitForFirstConsumer
+    reclaimPolicy: Delete
+    allowVolumeExpansion: false
+    default: true
+  - name: k1s-nfs
+    provisioner: k1s.io/nfs
+    type: builtin
+    parameters:
+      server: 10.0.0.10
+      path: /exports/k1s
+    volumeBindingMode: Immediate
+    reclaimPolicy: Retain
+    allowVolumeExpansion: true
+  - name: cephfs-rwx
+    provisioner: cephfs.csi.ceph.com
+    type: csi
+    controllerEndpoint: unix:///run/cephfs-csi.sock
+    nodeEndpoint: unix:///run/cephfs-csi.sock
+    parameters:
+      clusterID: <cluster-id>
+      fsName: <fs-name>
+      csi.storage.k8s.io/fstype: ext4
+    mountOptions:
+      - noatime
+    topologyKeys:
+      - site

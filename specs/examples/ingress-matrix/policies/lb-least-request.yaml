@@ -1,0 +1,8 @@
+apiVersion: k1s.io/v1
+kind: EdgeIngressPolicy
+metadata:
+  name: ingress-matrix-lb-policy
+  namespace: default
+spec:
+  loadBalancing:
+    strategy: least_request

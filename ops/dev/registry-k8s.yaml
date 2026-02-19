@@ -36,7 +36,7 @@ spec:
       #   k1s.io/registry: "true"
       containers:
         - name: registry
-          image: registry:2
+        image: docker.io/library/registry:2
           imagePullPolicy: IfNotPresent
           ports:
             - name: registry

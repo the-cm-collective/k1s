@@ -721,7 +721,7 @@
       </svg>
     </button>
     <div class="container">
-    <h1>End-to-End Guide</h1>
+    <h1 id="end-to-end-guide">End-to-End Guide</h1>
 <p>This guide walks an engineer through full system operation on a single host: boot the controller, apply all example manifests, observe readiness/liveness, ingress, storage, rollouts, run portability checks, export K8s YAML, and clean up. Every command below is runnable as-is on a dev machine.</p>
 <p>Prerequisites</p>
 <ul>
@@ -769,7 +769,13 @@
 <li><code>./scripts/cni_init.sh</code> (or <code>AE_CNI_FORCE=1 AE_CNI_VERSION=1.0.0 ./scripts/cni_init.sh</code>)</li>
 </ul>
 </li>
-<li>Export runtime env:
+<li>Start strict CRI profile lanes (recommended):
+<ul>
+<li><code>make k1s-core-cri</code></li>
+<li>Optional edge pairings: <code>make k1s-edge-cri</code> / <code>make k1s-edge-core-cri</code></li>
+</ul>
+</li>
+<li>Advanced/manual env override path:
 <ul>
 <li><code>export AE_RUNTIME_BACKEND=cri</code></li>
 <li><code>export AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock</code></li>
@@ -952,7 +958,7 @@
 <li>BYO TLS via Secret material:
 <ul>
 <li><code>python -m ae.cli tls sync --name mycert --input path/to/mycert.yaml --root state/tls</code></li>
-<li>Set only <code>spec.ingress.tlsSecretName: mycert</code> in your App manifest; controller resolves PEMs.</li>
+<li>Set only <code>spec.ingress.tlsSecretName: mycert</code> in your Deployment manifest; controller resolves PEMs.</li>
 </ul>
 </li>
 </ul>
@@ -989,7 +995,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-13 19:11:07</span>
       </div>
     </footer>
     <script>

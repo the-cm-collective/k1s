@@ -12,7 +12,7 @@ class DummyResult:
 def _manifest_single(image: str = "localhost/demo-blue:latest") -> AppManifest:
     return AppManifest(
         api_version="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="blue"),
         spec=AppSpec(
             image=image,
@@ -135,7 +135,7 @@ def test_oci_runtime_flag_in_init_containers(monkeypatch):
     # Build a manifest with a simple init container
     m = AppManifest(
         api_version="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="initapp"),
         spec=AppSpec(
             image="localhost/demo:latest",

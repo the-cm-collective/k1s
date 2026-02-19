@@ -12,7 +12,7 @@ from ae.runtime.base import PodState, RuntimeResult
 def test_health_manager_counts_ready():
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(image="alpine:3.20", replicas=2),
     )
@@ -40,7 +40,7 @@ def test_health_manager_counts_ready():
 def test_health_manager_http_probe(monkeypatch):
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -88,7 +88,7 @@ def test_health_manager_loopback_fallback(monkeypatch):
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -134,7 +134,7 @@ def test_health_manager_initial_delay(monkeypatch):
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",

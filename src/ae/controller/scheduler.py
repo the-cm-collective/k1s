@@ -6,7 +6,7 @@ The scheduler is intentionally lightweight:
 - Defaults to round-robin across eligible nodes.
 - Pins all pods to a single node when persistent storage is declared to avoid
   cross-node volume assumptions.
-- Falls back to the local runtime when no nodes are eligible.
+- Falls back to the local runtime when no nodes are registered.
 """
 
 from __future__ import annotations
@@ -74,6 +74,9 @@ class Scheduler:
 
         pod_names = [f"{app_name}-rev{revision}-{i}" for i in range(desired)]
         nodes = self._store.list_nodes()
+        if not nodes:
+            warnings.append("no nodes registered; scheduling on local runtime")
+            return [Placement(node=None, agent_url=None, pod_names=pod_names)], warnings
         grace = self._not_ready_grace_seconds()
         now = datetime.now(timezone.utc)
 

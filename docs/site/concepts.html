@@ -721,25 +721,25 @@
       </svg>
     </button>
     <div class="container">
-    <h1>k1s Concepts</h1>
+    <h1 id="k1s-concepts">k1s Concepts</h1>
 <p>This guide explains core concepts used throughout k1s.</p>
-<h2>Terminology map (k1s -&gt; Kubernetes)</h2>
-<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>App</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: App</code>).</td></tr><tr><td>Pod</td><td>Pod</td><td>One container instance for a Deployment/App revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
-<h2>App (Deployment-like workload)</h2>
-<p>The primary unit of deployment. Defined by an <code>App</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
-<h2>Pod</h2>
+<h2 id="terminology-map-k1s-kubernetes">Terminology map (k1s -&gt; Kubernetes)</h2>
+<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>Deployment</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: Deployment</code>).</td></tr><tr><td>Pod</td><td>Pod</td><td>One container instance for a Deployment revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
+<h2 id="deployment-k1s-workload">Deployment (k1s workload)</h2>
+<p>The primary unit of deployment. Defined by a <code>Deployment</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
+<h2 id="pod">Pod</h2>
 <p>An individual container instance belonging to an app revision. Pod names follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
-<h2>Node</h2>
+<h2 id="node">Node</h2>
 <p>A registered worker (or the controller host) that can run pods. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via <code>ae nodes</code>.</p>
-<h2>Service VIP (Service/ClusterIP)</h2>
+<h2 id="service-vip-service-clusterip">Service VIP (Service/ClusterIP)</h2>
 <p>A stable virtual IP allocated from the Service CIDR and fronted by the overlay provider. Ingress prefers VIPs when ready endpoints exist; hostPorts remain for single-node edge cases.</p>
-<h2>Revision (Deployment revision)</h2>
+<h2 id="revision-deployment-revision">Revision (Deployment revision)</h2>
 <p>An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.</p>
 <ul>
 <li>Stored in SQLite with its normalized JSON and status.</li>
 <li>Used for rollbacks: <code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code>.</li>
 </ul>
-<h2>Reconcile</h2>
+<h2 id="reconcile">Reconcile</h2>
 <p>The controller compares the desired state from specs to the observed state (SQLite/Postgres + node inventory + runtimes) and performs the operations needed to converge.</p>
 <ul>
 <li>Schedules replicas onto Ready nodes that match <code>nodeSelector</code>/tolerations/topology spread. Storage pinning keeps retained volumes on a single node.</li>
@@ -747,14 +747,14 @@
 <li>Removes containers from older revisions after the new revision is live.</li>
 <li>Allocates Service VIPs and updates ingress to healthy upstreams once readiness passes.</li>
 </ul>
-<h2>Health</h2>
+<h2 id="health">Health</h2>
 <ul>
 <li>Readiness: Determines whether a pod should receive traffic (2xx HTTP implies success).</li>
 <li>Liveness: Indicates the pod is still alive (defaults to true if not specified).</li>
 <li>Initial delay: Allows the app to boot before probes start.</li>
 <li>Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around pod start/stop.</li>
 </ul>
-<h2>Status</h2>
+<h2 id="status">Status</h2>
 <p>Per‑app aggregate status is one of:</p>
 <ul>
 <li>ready: all desired replicas are ready</li>
@@ -763,7 +763,7 @@
 </ul>
 <p>CLI examples:</p>
 <pre><code>ae status myapp --wide --events</code></pre>
-<h2>Events</h2>
+<h2 id="events">Events</h2>
 <p>Lightweight audit trail for changes and noteworthy events:</p>
 <ul>
 <li>ApplyStarted, ApplyCompleted</li>
@@ -774,7 +774,7 @@
 </ul>
 <p>Inspect with:</p>
 <pre><code>ae events myapp --limit 20</code></pre>
-<h2>Rollouts</h2>
+<h2 id="rollouts">Rollouts</h2>
 <p>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics across one or more nodes:</p>
 <p>1. Start a new pod for the next revision. 2. Wait for readiness. 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled). 4. Stop and remove old revision containers.</p>
 <p>Pause/resume and canary:</p>
@@ -784,16 +784,16 @@
 </ul>
 <p>Rollback uses the recorded manifest for the target revision:</p>
 <pre><code>ae rollback myapp --to 3</code></pre>
-<h2>Resources &amp; Volumes</h2>
+<h2 id="resources-volumes">Resources &amp; Volumes</h2>
 <ul>
 <li>CPU/memory limits map to engine flags (Docker nano_cpus; Podman/Docker <code>--cpus</code>, memory quantities → bytes).</li>
 <li>Volumes map to hostPath → bind mount (ro/rw). <code>spec.storage</code> creates named engine volumes per app.</li>
 <li>Storage volumes are bound to the node that first creates them; scheduler pins retained volumes to that node.</li>
 </ul>
-<h2>Ingress</h2>
+<h2 id="ingress">Ingress</h2>
 <p>For apps with <code>spec.ingress</code>, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, loopback upstreams are rewritten to the host alias: <code>host.docker.internal</code> (Docker) or <code>host.containers.internal</code> (Podman).</p>
 <p>In multi-node runs, ingress prefers Service VIPs supplied by the overlay provider so upstream selection is node-agnostic.</p>
-<h2>HTTP API</h2>
+<h2 id="http-api">HTTP API</h2>
 <p>Read‑only status/metrics/events published at:</p>
 <ul>
 <li><code>/metrics</code>, <code>/health</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code></li>
@@ -815,7 +815,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

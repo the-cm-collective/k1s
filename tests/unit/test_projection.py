@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 from ae.controller.health import HealthManager
 from ae.controller.reconciler import Reconciler
@@ -25,7 +26,7 @@ def make_manifest(tmp_path: Path) -> AppManifest:
     sec.write_text('{"token": "abc123"}')
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="tproj"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -45,7 +46,8 @@ def make_manifest(tmp_path: Path) -> AppManifest:
     )
 
 
-def test_projection_writes_files(tmp_path: Path):
+def test_projection_writes_files(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AE_PROJECTION_ROOT", str(tmp_path / "projections"))
     store = SQLiteStateStore(tmp_path / "state.db")
     runtime = StubRuntime()
     health = HealthManager()
@@ -56,7 +58,8 @@ def test_projection_writes_files(tmp_path: Path):
 
     m = make_manifest(tmp_path)
     report = reconciler.reconcile(m)
-    proj = Path("state/projections") / f"{m.metadata.name}-rev{report.revision}"
+    base = Path(os.getenv("AE_PROJECTION_ROOT", "state/projections"))
+    proj = base / f"{m.metadata.name}-rev{report.revision}"
     cfg_file = proj / "config" / "mode"
     sec_file = proj / "secret" / "token"
     assert cfg_file.exists()

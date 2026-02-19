@@ -721,7 +721,7 @@
       </svg>
     </button>
     <div class="container">
-    <h1>HTTP API Reference</h1>
+    <h1 id="http-api-reference">HTTP API Reference</h1>
 <p>The controller exposes an HTTP API when started with <code>--metrics-port PORT</code>. By default, endpoints are read-only. Mutating endpoints can be enabled for dev/testing.</p>
 <p>Base URL: <code>http://&lt;host&gt;:&lt;port&gt;</code></p>
 <ul>
@@ -834,7 +834,7 @@
 </ul>
 <ul>
 <li>POST <code>/rollout/pause/&lt;app&gt;</code> and <code>/rollout/resume/&lt;app&gt;</code> (admin)</li>
-<li>POST <code>/apply</code> (admin; JSON App manifest)</li>
+<li>POST <code>/apply</code> (admin; JSON Deployment manifest)</li>
 <li>POST <code>/exec/&lt;app&gt;</code> (admin; remote exec payload)</li>
 </ul>
 <p>AuthN/AuthZ (optional)</p>
@@ -885,7 +885,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

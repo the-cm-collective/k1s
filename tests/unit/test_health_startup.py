@@ -17,7 +17,7 @@ def test_startup_gates_liveness_and_readiness(monkeypatch):
     # startup initialDelay not elapsed -> readiness false, liveness true, no HTTP called
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -66,7 +66,7 @@ def test_startup_pass_enables_probes(monkeypatch):
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",

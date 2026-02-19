@@ -38,7 +38,7 @@ def test_hpa_assumptions_validation(tmp_path) -> None:
     man_path.write_text(
         """
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata:
   name: echo
 spec:
@@ -67,7 +67,7 @@ def test_hpa_mem_value_invalid(tmp_path) -> None:
     content = "\n".join(
         [
             "apiVersion: ae.dev/v1alpha1",
-            "kind: App",
+            "kind: Deployment",
             "metadata:",
             "  name: echo",
             "spec:",
@@ -89,7 +89,7 @@ def test_startup_probe_hint_emitted() -> None:
 
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -108,7 +108,7 @@ def test_prestop_short_grace_warns() -> None:
 
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -126,7 +126,7 @@ def test_qos_limits_without_requests_warns() -> None:
 
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",

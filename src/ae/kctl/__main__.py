@@ -21,12 +21,11 @@ from ae.cli.__main__ import (
     health_manager_factory,
     ingress_service_factory,
     secret_manager_factory,
-    state_store_from_env,
 )
 from ae.controller.spec import app_key, format_app_ref, parse_app_ref
 from ae.observability.logging import configure_logging
 from ae.controller.reconciler import Reconciler
-from ae.controller.state import SQLiteStateStore
+from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.ingress.service import IngressService
 from ae.controller.__main__ import service_controller_factory
 

@@ -964,6 +964,8 @@ class Reconciler:
                 if target:
                     host, port = target
                     prev_eps.append(f"{host}:{int(port)}")
+            ready_eps.sort()
+            prev_eps.sort()
             # Merge, de-duplicating, keeping new first to honor prefer-first policy
             seen = set()
             merged: list[str] = []
@@ -975,6 +977,7 @@ class Reconciler:
             if merged:
                 return merged
         if ready_eps:
+            ready_eps.sort()
             return ready_eps
 
         # Fallback: allow loopback endpoints when nothing else is ready (useful for local/stub runtimes)
@@ -1180,7 +1183,8 @@ class Reconciler:
         were written, else None.
         """
         app = app_key_for_manifest(manifest)
-        root = Path("state/projections") / f"{app}-rev{revision}"
+        base = Path(os.getenv("AE_PROJECTION_ROOT", "state/projections"))
+        root = base / f"{app}-rev{revision}"
         wrote = False
 
         # Config files

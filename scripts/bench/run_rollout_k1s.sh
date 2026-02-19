@@ -5,12 +5,12 @@ set -euo pipefail
 # during and after the rollout.
 #
 # Usage:
-#   scripts/bench/run_rollout_k1s.sh --label-suite baseline-roll --app specs/examples/echo.yaml --app-name echo --replicas 5 --duration 30
+#   scripts/bench/run_rollout_k1s.sh --label-suite baseline-roll --app specs/examples/echo.yaml --app-name echo --replicas 2,5 --duration 30
 
 label_suite="baseline-roll"
 manifest="specs/examples/echo.yaml"
 app_name="echo"
-replicas=5
+replicas_csv="2,5"
 duration=30
 use_sudo=0
 
@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
     --label-suite) label_suite="$2"; shift 2;;
     --app) manifest="$2"; shift 2;;
     --app-name) app_name="$2"; shift 2;;
-    --replicas) replicas="$2"; shift 2;;
+    --replicas) replicas_csv="$2"; shift 2;;
     --duration) duration="$2"; shift 2;;
     --sudo) use_sudo=1; shift;;
     *) echo "unknown arg: $1"; exit 2;;
@@ -33,6 +33,9 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 py_path="${PYTHONPATH:-$repo_root/src}"
 sudo_env_base=(
   "HOME=/root"
+  "XDG_CONFIG_HOME=/root/.config"
+  "XDG_DATA_HOME=/root/.local/share"
+  "XDG_CACHE_HOME=/root/.cache"
   "XDG_RUNTIME_DIR=/run/user/0"
   "DBUS_SESSION_BUS_ADDRESS="
   "CONTAINER_HOST="
@@ -65,6 +68,31 @@ sudo_env_cli=(
   "AE_DISABLE_INGRESS=${AE_DISABLE_INGRESS:-}"
   "PYTHONPATH=${py_path}"
 )
+
+# Auto-detect k1nd single-container runs (k1nd-server) and set sane defaults.
+detect_k1nd_container() {
+  local name="${AE_CLI_CONTAINER:-k1nd-server}"
+  command -v docker >/dev/null 2>&1 || return 1
+  if docker ps -q --filter "name=^${name}$" 2>/dev/null | head -n1 | grep -q '.'; then
+    echo "$name"
+    return 0
+  fi
+  return 1
+}
+
+k1nd_container=""
+if [[ "${AE_K1ND_AUTO:-1}" != "0" ]]; then
+  k1nd_container="$(detect_k1nd_container || true)"
+fi
+if [[ -n "$k1nd_container" ]]; then
+  : "${AE_CLI_IN_CONTAINER:=1}"
+  : "${AE_CLI_CONTAINER:=$k1nd_container}"
+  : "${AE_K1ND_CONTROLLER_CONTAINER:=$k1nd_container}"
+  : "${AE_K1ND_APISHIM_CONTAINER:=$k1nd_container}"
+  : "${AE_K1ND_INGRESS_CONTAINER:=$k1nd_container}"
+  : "${AE_COLLECT_ENGINE:=docker}"
+  : "${AE_RUNTIME_BACKEND:=docker}"
+fi
 
 # Support running ae CLI inside the controller container for k1nd
 AE_CLI_CONTAINER=${AE_CLI_CONTAINER:-dev-controller-1}
@@ -190,6 +218,12 @@ ensure_controller() {
 preflight_runtime() {
   backend=${AE_RUNTIME_BACKEND:-podman}
   if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+    if [[ "$use_sudo" == "1" ]]; then
+      if ! "$repo_root/scripts/bench/podman_rootful_socket.sh"; then
+        echo "[rollout] rootful Podman socket not available (expected /run/podman/podman.sock)." >&2
+        exit 2
+      fi
+    fi
     if ! command -v podman >/dev/null 2>&1; then
       echo "[rollout] Podman not found. Set AE_RUNTIME_BACKEND=docker or install Podman." >&2
       exit 2
@@ -211,6 +245,26 @@ preflight_runtime() {
   fi
 }
 
+ensure_demo_images() {
+  local blue="$1"
+  local green="$2"
+  shift 2
+  local runner=("$@")
+  if [[ ${#runner[@]} -eq 0 ]]; then
+    return 0
+  fi
+  local images
+  images="$("${runner[@]}" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)"
+  if ! grep -q "^${blue}$" <<<"$images"; then
+    info "building ${blue}"
+    "${runner[@]}" build -t "${blue}" "${repo_root}/samples/servers/blue" >/dev/null 2>&1 || true
+  fi
+  if ! grep -q "^${green}$" <<<"$images"; then
+    info "building ${green}"
+    "${runner[@]}" build -t "${green}" "${repo_root}/samples/servers/green" >/dev/null 2>&1 || true
+  fi
+}
+
 secrets_guard() {
   if [[ "${AE_ALLOW_PLAINTEXT_SECRETS:-0}" != "1" ]]; then
     if ! command -v sops >/dev/null 2>&1; then
@@ -224,6 +278,30 @@ if [[ "${SKIP_GUARDS:-0}" != "1" ]]; then
   ensure_controller
   preflight_runtime
   secrets_guard
+fi
+
+# Ensure demo rollout images exist for the selected engine (rootless/rootful).
+default_blue=""
+default_green=""
+if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+  default_blue="localhost/demo-blue:latest"
+  default_green="localhost/demo-green:latest"
+elif [[ "$backend" == "docker" ]]; then
+  default_blue="demo-blue:latest"
+  default_green="demo-green:latest"
+fi
+if [[ -n "$default_blue" && -n "$default_green" ]]; then
+  if [[ "$rollout_blue_image" == "$default_blue" && "$rollout_green_image" == "$default_green" ]]; then
+    if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+      if [[ "$use_sudo" == "1" ]]; then
+        ensure_demo_images "$default_blue" "$default_green" sudo podman
+      else
+        ensure_demo_images "$default_blue" "$default_green" podman
+      fi
+    elif [[ "$backend" == "docker" ]]; then
+      ensure_demo_images "$default_blue" "$default_green" docker
+    fi
+  fi
 fi
 
 # If user kept default label 'baseline-roll', switch to an auto label
@@ -314,14 +392,34 @@ open(dst,'w',encoding='utf-8').write("\n".join(out)+"\n")
 PY
 }
 
-echo "[rollout] scale ${app_name} to ${replicas} and wait ready" >&2
-# Apply a manifest with replicas set to avoid single-replica host port publishing collisions
-if [[ "$IN_CONTAINER" == "1" ]]; then
-  startman="state/rollout-start-${app_name}-${replicas}.yaml"
-else
-  startman=$(mktemp)
+rollout_replicas=()
+IFS=',' read -r -a rollout_replicas_raw <<< "$replicas_csv"
+for rep in "${rollout_replicas_raw[@]}"; do
+  rep="${rep// /}"
+  [[ -z "$rep" ]] && continue
+  if [[ ! "$rep" =~ ^[0-9]+$ ]]; then
+    echo "[rollout] invalid replicas '${rep}' (expected integer); skipping" >&2
+    continue
+  fi
+  rollout_replicas+=("$rep")
+done
+if (( ${#rollout_replicas[@]} == 0 )); then
+  echo "[rollout] no valid replicas provided (got: '${replicas_csv}')" >&2
+  exit 2
 fi
-python - "$manifest" "$startman" "$replicas" <<-'PY'
+
+run_rollout_once() {
+  local replicas="$1"
+
+  echo "[rollout] scale ${app_name} to ${replicas} and wait ready" >&2
+  # Apply a manifest with replicas set to avoid single-replica host port publishing collisions
+  local startman
+  if [[ "$IN_CONTAINER" == "1" ]]; then
+    startman="state/rollout-start-${app_name}-${replicas}.yaml"
+  else
+    startman=$(mktemp)
+  fi
+  python - "$manifest" "$startman" "$replicas" <<-'PY'
 import sys, re
 src, dst, replicas = sys.argv[1:4]
 try:
@@ -354,66 +452,74 @@ if replicas is not None and not did_rep:
     out=out2
 open(dst,'w',encoding='utf-8').write("\n".join(out)+"\n")
 PY
-ae apply -f "$startman" || true
-ae scale "$app_name" --replicas "$replicas" || true
-wait_ready "$app_name" "$replicas" || true
+  ae apply -f "$startman" || true
+  ae scale "$app_name" --replicas "$replicas" || true
+  wait_ready "$app_name" "$replicas" || true
 
-base_img=$(current_image)
-target_img="$base_img"
-if [[ "$base_img" == *demo-blue* ]]; then target_img="$rollout_green_image"; fi
-if [[ "$base_img" == *demo-green* || -z "$base_img" ]]; then target_img="$rollout_blue_image"; fi
+  local base_img
+  local target_img
+  base_img=$(current_image)
+  target_img="$base_img"
+  if [[ "$base_img" == *demo-blue* ]]; then target_img="$rollout_green_image"; fi
+  if [[ "$base_img" == *demo-green* || -z "$base_img" ]]; then target_img="$rollout_blue_image"; fi
 
-if [[ "$IN_CONTAINER" == "1" ]]; then
-  tmpman="state/rollout-${app_name}-${replicas}.yaml"
-else
-  tmpman=$(mktemp)
-fi
-switch_image "$manifest" "$tmpman" "$target_img" "$replicas"
-
-echo "[rollout] apply new image: ${target_img}" >&2
-ae apply -f "$tmpman" || true
-
-echo "[rollout] snapshot DURING rollout" >&2
-# Skip if existing and SKIP_EXISTING=1
-if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-during"/* >/dev/null 2>&1; then
-  echo "[rollout] skip existing DURING snapshot ${label_suite}-rollout-${replicas}-during" >&2
-else
-  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
-    else
-    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
-    fi
+  local tmpman
+  if [[ "$IN_CONTAINER" == "1" ]]; then
+    tmpman="state/rollout-${app_name}-${replicas}.yaml"
   else
-    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+    tmpman=$(mktemp)
+  fi
+  switch_image "$manifest" "$tmpman" "$target_img" "$replicas"
+
+  echo "[rollout] apply new image: ${target_img}" >&2
+  ae apply -f "$tmpman" || true
+
+  echo "[rollout] snapshot DURING rollout" >&2
+  # Skip if existing and SKIP_EXISTING=1
+  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-during"/* >/dev/null 2>&1; then
+    echo "[rollout] skip existing DURING snapshot ${label_suite}-rollout-${replicas}-during" >&2
+  else
+    if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+      else
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+      fi
     else
-    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+      else
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+      fi
     fi
   fi
-fi
 
-echo "[rollout] wait ready post-rollout" >&2
-wait_ready "$app_name" "$replicas" || true
+  echo "[rollout] wait ready post-rollout" >&2
+  wait_ready "$app_name" "$replicas" || true
 
-echo "[rollout] snapshot POST rollout" >&2
-# Skip if existing and SKIP_EXISTING=1
-if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-post"/* >/dev/null 2>&1; then
-  echo "[rollout] skip existing POST snapshot ${label_suite}-rollout-${replicas}-post" >&2
-else
-  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
-    else
-    sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
-    fi
+  echo "[rollout] snapshot POST rollout" >&2
+  # Skip if existing and SKIP_EXISTING=1
+  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-post"/* >/dev/null 2>&1; then
+    echo "[rollout] skip existing POST snapshot ${label_suite}-rollout-${replicas}-post" >&2
   else
-    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+    if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+      else
+      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+      fi
     else
-    AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+      else
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+      fi
     fi
   fi
-fi
+}
+
+for replicas in "${rollout_replicas[@]}"; do
+  run_rollout_once "$replicas"
+done
 
 echo "[rollout] done" >&2

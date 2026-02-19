@@ -40,12 +40,21 @@ ae delete echo --purge
 ### NetFS StorageClass config
 
 Provide StorageClass definitions via `AE_STORAGE_PROVISIONERS` (YAML file). The
-shim will seed these into its object store on startup.
+shim will seed these into its object store on startup. The file can be either:
 
-Example (see `docs/reference/storage-classes.yaml`):
+- Kubernetes `StorageClass` manifests (backward-compatible), or
+- a `provisioners:` registry that also includes CSI endpoints.
+
+Example (StorageClass manifests, see `docs/reference/storage-classes.yaml`):
 
 ```
 export AE_STORAGE_PROVISIONERS=docs/reference/storage-classes.yaml
+```
+
+Example (provisioner registry, see `configs/storage-provisioners.yaml`):
+
+```
+export AE_STORAGE_PROVISIONERS=configs/storage-provisioners.yaml
 ```
 
 ### Default StorageClass (built-in)
@@ -86,17 +95,36 @@ export AE_ENABLE_NETFS=1
 export AE_APISHIM_DB=state/apishim.db
 ```
 
-NetFS currently supports NFS PVs. The node must have `mount`/`umount` plus an
-NFS helper (`mount.nfs` or `mount.nfs4`). If these tools or the NFS mount fail,
+NetFS supports NFS PVs and CSI PVs (when CSI endpoints are configured). The node
+must have `mount`/`umount` plus an NFS helper (`mount.nfs` or `mount.nfs4`). If
+these tools or the NFS mount fail,
 the agent records a PVC warning event; use `kubectl get events -n <ns>` to inspect
 `NfsPrereqFailed`, `MountFailed`, or `MountConflict` reasons.
+
+### CSI gRPC (CephFS)
+
+To use CSI drivers (for example, CephFS), provide controller + node endpoints in
+the provisioner registry and ensure the CSI driver pods are running on the hub
+(controller plugin) and edge nodes (node plugin).
+
+Key StorageClass parameters (standard Kubernetes keys):
+
+- `csi.storage.k8s.io/fstype`
+- `csi.storage.k8s.io/provisioner-secret-name` / `-namespace`
+- `csi.storage.k8s.io/controller-publish-secret-name` / `-namespace`
+- `csi.storage.k8s.io/node-stage-secret-name` / `-namespace`
+- `csi.storage.k8s.io/node-publish-secret-name` / `-namespace`
+
+Example registry entry: `configs/storage-provisioners.yaml`.
+
+Node staging paths live under `AE_CSI_STAGE_ROOT` (default `/var/lib/ae/csi`).
 
 ### NetFS capability matrix (current)
 
 | Backend | Dynamic provisioning | Attach/Detach | Mounts | Notes |
 | --- | --- | --- | --- | --- |
 | NFS (`k1s.io/nfs`) | Yes | No | Yes | RWX supported, mountOptions honored. |
-| CSI (static PVs) | No | Controller creates VolumeAttachment | Marker only | Requires PV.spec.csi.driver + volumeHandle; no CSI gRPC. |
+| CSI (gRPC) | Yes | Yes | Yes | Requires CSI endpoints in `AE_STORAGE_PROVISIONERS`. |
 | local-path (`k1s.io/local-path`) | Yes | No | Yes | HostPath-backed (not network). |
 
 ### NetFS cloning (PVC dataSourceRef)

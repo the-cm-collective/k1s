@@ -12,7 +12,7 @@ def write_manifest(path: Path) -> None:
     path.write_text(
         """
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata:
   name: echo
 spec:

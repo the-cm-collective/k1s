@@ -1,6 +1,6 @@
 """Kubernetes exporter: convert AppManifest to upstream K8s YAML.
 
-This module maps our ae.dev/v1alpha1 App spec to a minimal, portable set of
+This module maps our ae.dev/v1alpha1 Deployment spec to a minimal, portable set of
 Kubernetes resources:
 
 - Deployment (apps/v1)

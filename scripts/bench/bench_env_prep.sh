@@ -21,6 +21,11 @@ BENCH_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS:-1}"
 : "${BENCH_SPECS_EMPTY:=1}"
 # Keep nodes eligible during long bench runs (override via BENCH_NODE_NOTREADY_AFTER or AE_NODE_NOTREADY_AFTER).
 bench_node_notready_after="${BENCH_NODE_NOTREADY_AFTER:-${AE_NODE_NOTREADY_AFTER:-600}}"
+bench_register_local_node="${BENCH_REGISTER_LOCAL_NODE:-${AE_REGISTER_LOCAL_NODE:-1}}"
+bench_probe_loopback="${BENCH_PROBE_LOOPBACK:-${AE_PROBE_LOOPBACK_FALLBACK:-127.0.0.1}}"
+bench_no_proxy="${BENCH_NO_PROXY:-${NO_PROXY:-127.0.0.1,localhost}}"
+bench_probe_verbose="${BENCH_PROBE_VERBOSE:-${AE_PROBE_VERBOSE:-1}}"
+bench_wait_runtime="${BENCH_WAIT_RUNTIME:-${BENCH_SPECS_EMPTY:-1}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,6 +71,40 @@ if [[ -z "$podman_bin" ]]; then
   podman_bin="podman"
 fi
 
+port_is_free() {
+  local port="$1"
+  "$python_bin" - "$port" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("127.0.0.1", port))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+sys.exit(0)
+PY
+  return $?
+}
+
+pick_metrics_port() {
+  local start_port="$1"
+  local max_tries="${BENCH_METRICS_PORT_SPAN:-50}"
+  local port="$start_port"
+  local i=0
+  while (( i < max_tries )); do
+    if port_is_free "$port"; then
+      echo "$port"
+      return 0
+    fi
+    port=$((port + 1))
+    i=$((i + 1))
+  done
+  return 1
+}
+
 check_netavark_isolation() {
   if [[ "$controller_mode" != "sudo" ]]; then
     return 0
@@ -107,6 +146,27 @@ caddy_dir="$env_dir/caddy"
 state_db="$env_dir/controller.db"
 pid_file="$env_dir/controller.pid"
 log_file="$env_dir/controller.log"
+
+# Guard against accidental destructive deletes when env_file points to /tmp or /
+if [[ -z "$env_dir" || "$env_dir" == "/" || "$env_dir" == "/tmp" || "$env_dir" == "/var/tmp" ]]; then
+  echo "[bench-env] unsafe env dir '$env_dir' derived from --env-file ($env_file)." >&2
+  echo "[bench-env] use a dedicated subdir, e.g. --env-file /tmp/bench-env/env.sh" >&2
+  exit 4
+fi
+
+if ! port_is_free "$metrics_port"; then
+  if [[ "${BENCH_METRICS_PORT_STRICT:-0}" == "1" ]]; then
+    echo "[bench-env] metrics port $metrics_port already in use" >&2
+    exit 4
+  fi
+  alt_port="$(pick_metrics_port "$metrics_port" || true)"
+  if [[ -z "$alt_port" ]]; then
+    echo "[bench-env] no free metrics port found starting at $metrics_port" >&2
+    exit 4
+  fi
+  echo "[bench-env] metrics port $metrics_port in use; switching to $alt_port" >&2
+  metrics_port="$alt_port"
+fi
 
 # Fresh sandbox each run unless BENCH_REUSE_ENV=1
 if [[ -d "$env_dir" && "${BENCH_REUSE_ENV:-0}" != "1" ]]; then
@@ -267,15 +327,32 @@ if [[ "$controller_mode" == "sudo" ]]; then
     exit 3
   fi
   check_netavark_isolation
-  sudo env \
+  if ! "$repo_root/scripts/bench/podman_rootful_socket.sh"; then
+    echo "[bench-env] rootful podman socket not available; aborting" >&2
+    exit 5
+  fi
+  sudo env -i \
+    PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" \
     PYTHON_BIN="$python_bin" \
     AE_PODMAN_BIN="$podman_bin" \
     PYTHONPATH="${PYTHONPATH:-$repo_root/src}" \
     HOME="/root" \
+    XDG_CONFIG_HOME="/root/.config" \
+    XDG_DATA_HOME="/root/.local/share" \
+    XDG_CACHE_HOME="/root/.cache" \
     XDG_RUNTIME_DIR="/run/user/0" \
     DBUS_SESSION_BUS_ADDRESS="" \
     CONTAINER_HOST="" \
     PODMAN_HOST="" \
+    HTTP_PROXY="" \
+    HTTPS_PROXY="" \
+    http_proxy="" \
+    https_proxy="" \
+    NO_PROXY="$bench_no_proxy" \
+    no_proxy="$bench_no_proxy" \
+    AE_PROBE_LOOPBACK_FALLBACK="$bench_probe_loopback" \
+    AE_PROBE_VERBOSE="$bench_probe_verbose" \
+    BENCH_REPO_ROOT="$repo_root" \
     AE_SPECS_DIR="$spec_dir" \
     AE_STATE_DB="$state_db" \
     AE_CADDY_DIR="$caddy_dir" \
@@ -284,20 +361,20 @@ if [[ "$controller_mode" == "sudo" ]]; then
     AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
     AE_CRI_ENDPOINT="${AE_CRI_ENDPOINT:-}" \
     AE_CRI_SANDBOX_IMAGE="${AE_CRI_SANDBOX_IMAGE:-}" \
-    AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-}" \
+    AE_REGISTER_LOCAL_NODE="${bench_register_local_node}" \
     AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}" \
     AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
     BENCH_METRICS_PORT="$metrics_port" \
     BENCH_LOG_FILE="$log_file" \
     BENCH_PID_FILE="$pid_file" \
-    bash -lc 'install -d -m 0700 /run/user/0 || true; nohup "$PYTHON_BIN" -m ae.controller --loop --specs "$AE_SPECS_DIR" --watch --metrics-port "$BENCH_METRICS_PORT" >>"$BENCH_LOG_FILE" 2>&1 & echo $! > "$BENCH_PID_FILE"' </dev/null
+    bash -lc 'cd "$BENCH_REPO_ROOT" || exit 1; install -d -m 0700 /run/user/0 || true; nohup "$PYTHON_BIN" -m ae.controller --loop --specs "$AE_SPECS_DIR" --watch --metrics-port "$BENCH_METRICS_PORT" >>"$BENCH_LOG_FILE" 2>&1 & echo $! > "$BENCH_PID_FILE"' </dev/null
   controller_pid=$(cat "$pid_file" 2>/dev/null || true)
 else
   AE_SPECS_DIR="$spec_dir" AE_STATE_DB="$state_db" AE_CADDY_DIR="$caddy_dir" \
   AE_ALLOW_PLAINTEXT_SECRETS="${AE_ALLOW_PLAINTEXT_SECRETS:-1}" \
   AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-podman}" \
   AE_OCI_RUNTIME="${AE_OCI_RUNTIME:-}" \
-  AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-}" \
+  AE_REGISTER_LOCAL_NODE="${bench_register_local_node}" \
   AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}" \
   AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}" \
   nohup "$python_bin" -m ae.controller --loop --specs "$spec_dir" --watch --metrics-port "$metrics_port" \
@@ -344,6 +421,12 @@ export AE_CRI_ENDPOINT="${AE_CRI_ENDPOINT:-}"
 export AE_CRI_SANDBOX_IMAGE="${AE_CRI_SANDBOX_IMAGE:-}"
 export AE_PODMAN_BIN="$podman_bin"
 export AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}"
+export AE_REGISTER_LOCAL_NODE="${bench_register_local_node}"
+export AE_PROBE_LOOPBACK_FALLBACK="${bench_probe_loopback}"
+export AE_PROBE_VERBOSE="${bench_probe_verbose}"
+export BENCH_WAIT_RUNTIME="${bench_wait_runtime}"
+export NO_PROXY="${bench_no_proxy}"
+export no_proxy="${bench_no_proxy}"
 export AE_NODE_NOTREADY_AFTER="${bench_node_notready_after}"
 export BENCH_ENV_DIR="$env_dir"
 export BENCH_CONTROLLER_PID_FILE="$pid_file"

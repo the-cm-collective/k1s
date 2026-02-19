@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -133,6 +134,33 @@ class ObjectStore:
             )
             cur.execute("CREATE INDEX IF NOT EXISTS watch_events_rv_idx ON watch_events (rv)")
         self._outbox_enabled = True
+
+    def close(self) -> None:
+        """Best-effort shutdown for background workers and DB connection."""
+        self._outbox_stop.set()
+        thread = self._outbox_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            with contextlib.suppress(Exception):
+                thread.join(timeout=2.0)
+        self._outbox_thread = None
+        conn = None
+        with self._lock:
+            conn = self._conn
+            self._conn = None
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        return False
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
 
     def _start_outbox(self) -> None:
         if not self._outbox_enabled:
