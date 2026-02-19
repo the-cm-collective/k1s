@@ -38,7 +38,7 @@
 
 This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.
 
-Note: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
+Note: k1s is pre-1.0 and still evolving. v0.1.3 expands operational validation (deep+perf ingress lanes, repeatability and fault-injection gates, security baseline and active auth probes, and release-time live OpenAPI gates), but production promotion still requires environment-specific security review and rollout validation.
 
 Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.
 

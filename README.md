@@ -4,72 +4,48 @@
 
 # k1s Minimal Application Engine
 
-It started out of both basic necessity and general curiosity. I tend to push things—usually too far—and this was no exception. I needed a lightweight Kubernetes-like system for low-resource environments, and I wanted to learn how Kubernetes actually works. I feel we’ve achieved both, and it has become a great learning tool for understanding application engines in general.
+k1s is a small, readable, Kubernetes-like orchestration engine built for distributed compute across messy reality: NAT/CGNAT, roaming nodes, intermittent links, heterogeneous sites, and federated clouds.
 
-After all, application engines are the heart of the modern web. While they can be daunting and complex, we created an integrated dashboard to help visualize the stack and an interactive playground page to help new users learn the basics. We also hope this is useful to anyone who needs a lightweight Kubernetes-like system for their own projects or lab experiments.
+The goal is to make private, self-hosted, federated compute feasible without surrendering control to a single vendor or central authority. k1s is privacy-first, consent-first, and secure-by-default while staying understandable end-to-end (`spec -> reconcile -> runtime -> networking`).
 
-So, what is k1s? In short, it’s a lightweight multi-node application engine with a Kubernetes-compatible API shim. It provides a subset of full Kubernetes functionality with a much smaller footprint and lower resource requirements, and it’s designed to run on a single node or multiple nodes.
+k1s borrows Kubernetes mental models and API shapes where useful, but it is not a full Kubernetes clone. The focus is a compact surface area with a lightweight control plane and lower resource requirements.
 
-Development is ongoing, and we're always looking for feedback and contributions. If you're interested in learning more or getting involved, please check out the documentation and reach out to us.
+Project principles and non-goals: `TENETS.md`.
 
 ## Status & Production Use
 
-k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
+k1s is pre-1.0 and still evolving. v0.1.3 expands validation coverage and operational testing, but this is still an actively changing release line.
+
+Production guidance:
+- Recommended now: labs, staging, and controlled production pilots with explicit operator ownership.
+- Not yet recommended: broad multi-tenant or compliance-critical environments that require full Kubernetes semantics.
+- Always run environment-specific security review, failure drills, and rollout validation before promotion.
+
+## v0.1.3 Release Highlights
+
+- Expanded ingress validation lanes, including deep+perf and strict edge-local proof: `docs/guides/ingress-capability-test-sequence.md`
+- Repeatability and fault-injection gates for operational patterns: `docs/guides/ingress-capability-test-sequence.md`
+- Security baseline and active auth probes in the lane flow: `docs/guides/ingress-capability-test-sequence.md`, `docs/ops/runbook.md`
+- Deep+perf parity benchmark process for k1s vs k3s: `docs/ops/perf-parity-k1s-vs-k3s.md`
+- Release-time live OpenAPI gating: `.github/workflows/release.yml`, `docs/ops/branch-protection.md`
 
 ## Documentation
 
+- Start here onboarding: `docs/getting-started/start-here.md`
+- High-level overview and getting started: `docs/getting-started/overview.md`
+- Technical architecture and reference: `docs/reference/architecture.md`
 - Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`
 - Runtime profile targets (including strict CRI aliases): `docs/guides/runtime-profiles.md`
-- CRI/containerd reference (registry-first + trust/image prep): `docs/reference/cri-containerd.md`
+- CRI/containerd workflows and registry-first image prep: `docs/reference/cri-containerd.md`
 - API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
-- Operations runbook: see `docs/ops/runbook.md`
-- Ingress/TLS details: see `docs/reference/ingress.md`
-- Ingress deep validation lanes (core-proxy primary + edge-local strict proof): `docs/guides/ingress-capability-test-sequence.md`
-- End-to-end walkthrough: see `docs/guides/e2e.md`
-
-## Kubernetes Alignment Matrix (Operator View)
-
-Legend: Green = aligned/supported; Yellow = partial/best-effort; Red = out-of-scope; N/A = not applicable.
-
-Columns: Runtime = k1s engine behavior; Shim = Kubernetes API shim (kubectl/helm); Export = `ae export-k8s` YAML.
-
-Matrix updated: 2026-02-14 (see `docs/site/k8s_status.json`).
-
-| Area | Capability | Runtime | Shim | Export | Operator notes |
-| --- | --- | --- | --- | --- | --- |
-| API & tooling | kubectl get/apply/watch | N/A | Green | N/A | CI smoke gates cover apply/watch and OpenAPI drift. |
-| API & tooling | SSA + JSON Merge Patch | N/A | Green | N/A | `managedFields` + conflict detection supported. |
-| API & tooling | OpenAPI v2/v3 | N/A | Green | N/A | v3 mirrors v2; schemas validated in CI. |
-| Workloads | Deployment/ReplicaSet/Pod semantics | Green | Green | Green | status/conditions + logs/exec/port-forward. |
-| Workloads | StatefulSet/DaemonSet/Job/CronJob semantics | Yellow | Yellow | Green | stored + best-effort status; emulated as Deployment-like apps. |
-| Workloads | HPA v2 | Green | Green | Green | backed by k1s autoscaling with status/currentMetrics. |
-| Networking | Service (ClusterIP/NodePort/LB status) | Green | Green | Green | VIP/overlay-aware; EndpointSlice projection. |
-| Networking | Ingress v1 (basic) | Green | Green | Green | no regex/canary/advanced annotations. |
-| Networking | NetworkPolicy enforcement | Red | Red | Yellow | export emits NP; enforcement depends on CNI (k3s default flannel doesn’t enforce). |
-| Security/Auth | Tokens + RBAC | N/A | Green | Green | RBAC enforced in shim; export emits Role/RoleBinding presets. |
-| Security/Auth | ServiceAccount tokens | N/A | Green | Green | shim issues SA tokens; exporter emits SA + bindings. |
-| Security/Auth | PodSecurity admission/webhooks | Red | Red | Yellow | exporter can emit PSA namespace labels only. |
-| Storage | PV/PVC/StorageClass/CSI semantics | Red | Red | Yellow | exporter can emit PVCs/volumeClaimTemplates only. |
-| Observability | Logs/exec/port-forward | Green | Green | N/A | pod + service port-forward supported in shim. |
-| Observability | Events API | Green | Green | N/A | controller/agent events surfaced to `/api/v1/events`. |
-| Observability | metrics.k8s.io / aggregated APIs | Red | Red | N/A | out-of-scope. |
-| Scheduling | nodeSelector/taints/tolerations/topology spread | Green | Green | Green | honored by scheduler; passed through on export. |
-| Nodes | Inventory/cordon/drain | Green | Yellow | N/A | `ae nodes` supports cordon/drain; shim projects Nodes but no kubelet. |
-| Operator workflow | Helm install/upgrade/uninstall (stateless charts) | N/A | Yellow | N/A | good for Deploy/Service/Ingress + RBAC/HPA/PDB; operators/controllers out-of-scope. |
-| Operator workflow | Rollout control (pause/resume/canary ramp) | Green | N/A | N/A | k1s-native rollout policy with canary weights. |
-
-### k1s-specific operator features (not part of upstream Kubernetes; not available in k3s by default)
-
-- `ae k8s-check` portability checks and `ae k8s-report` compliance JSON embedded in docs.
-- `ae export-k8s` presets (`web-hardened`, `web-strict`) + strict validation for portable YAML.
-- Caddy site-fragment ingress with `ae tls` helpers for k8s-style TLS secrets.
-- `ae plan` placement hints and `ae nodes` inventory/cordon/drain workflows.
-- Rollout policy with canary weights + auto-ramp persisted in state.
-- Built-in `/dashboard`, `/nodes`, and enriched `/metrics` endpoints.
-
-### Quick token generation with expiration
-- Generate API tokens that expire in 24 hours and write them to a file of exports you can `source`:
-  - `python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api`
+- HTTP API reference and UI docs: `docs/reference/http-api.md`
+- Configs & Secrets: `docs/reference/configs-secrets.md`
+- Ingress and TLS reference: `docs/reference/ingress.md`
+- Ingress deep validation lanes: `docs/guides/ingress-capability-test-sequence.md`
+- Operations runbook: `docs/ops/runbook.md`
+- Demo modes and examples: `docs/guides/demos-examples.md`
+- End-to-end walkthrough: `docs/guides/e2e.md`
+- CI examples: `docs/ops/ci-gh-actions.md`
 
 ## Integrated Dashboard & Interactive Playground
 
@@ -163,6 +139,50 @@ Kubernetes API shim (kubectl/helm):
 - Point kubectl: `kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods`
 - Port-forward and apply work for Deployments/Services/Ingress/HPA/StatefulSet/DaemonSet/Job/CronJob.
 - Compatibility matrix and open gaps: `docs/reference/apishim-compatibility-matrix.md`, `docs/wip/conformance.md`.
+
+## Kubernetes Alignment Matrix (Operator View)
+
+Legend: Green = aligned/supported; Yellow = partial/best-effort; Red = out-of-scope; N/A = not applicable.
+
+Columns: Runtime = k1s engine behavior; Shim = Kubernetes API shim (kubectl/helm); Export = `ae export-k8s` YAML.
+
+Matrix source: `docs/site/k8s_status.json`.
+
+| Area | Capability | Runtime | Shim | Export | Operator notes |
+| --- | --- | --- | --- | --- | --- |
+| API & tooling | kubectl get/apply/watch | N/A | Green | N/A | CI smoke gates cover apply/watch and OpenAPI drift. |
+| API & tooling | SSA + JSON Merge Patch | N/A | Green | N/A | `managedFields` + conflict detection supported. |
+| API & tooling | OpenAPI v2/v3 | N/A | Green | N/A | v3 mirrors v2; schemas validated in CI. |
+| Workloads | Deployment/ReplicaSet/Pod semantics | Green | Green | Green | status/conditions + logs/exec/port-forward. |
+| Workloads | StatefulSet/DaemonSet/Job/CronJob semantics | Yellow | Yellow | Green | stored + best-effort status; emulated as Deployment-like apps. |
+| Workloads | HPA v2 | Green | Green | Green | backed by k1s autoscaling with status/currentMetrics. |
+| Networking | Service (ClusterIP/NodePort/LB status) | Green | Green | Green | VIP/overlay-aware; EndpointSlice projection. |
+| Networking | Ingress v1 (basic) | Green | Green | Green | no regex/canary/advanced annotations. |
+| Networking | NetworkPolicy enforcement | Red | Red | Yellow | export emits NP; enforcement depends on CNI (k3s default flannel doesn't enforce). |
+| Security/Auth | Tokens + RBAC | N/A | Green | Green | RBAC enforced in shim; export emits Role/RoleBinding presets. |
+| Security/Auth | ServiceAccount tokens | N/A | Green | Green | shim issues SA tokens; exporter emits SA + bindings. |
+| Security/Auth | PodSecurity admission/webhooks | Red | Red | Yellow | exporter can emit PSA namespace labels only. |
+| Storage | PV/PVC/StorageClass/CSI semantics | Red | Red | Yellow | exporter can emit PVCs/volumeClaimTemplates only. |
+| Observability | Logs/exec/port-forward | Green | Green | N/A | pod + service port-forward supported in shim. |
+| Observability | Events API | Green | Green | N/A | controller/agent events surfaced to `/api/v1/events`. |
+| Observability | metrics.k8s.io / aggregated APIs | Red | Red | N/A | out-of-scope. |
+| Scheduling | nodeSelector/taints/tolerations/topology spread | Green | Green | Green | honored by scheduler; passed through on export. |
+| Nodes | Inventory/cordon/drain | Green | Yellow | N/A | `ae nodes` supports cordon/drain; shim projects Nodes but no kubelet. |
+| Operator workflow | Helm install/upgrade/uninstall (stateless charts) | N/A | Yellow | N/A | good for Deploy/Service/Ingress + RBAC/HPA/PDB; operators/controllers out-of-scope. |
+| Operator workflow | Rollout control (pause/resume/canary ramp) | Green | N/A | N/A | k1s-native rollout policy with canary weights. |
+
+### k1s-specific operator features (not part of upstream Kubernetes; not available in k3s by default)
+
+- `ae k8s-check` portability checks and `ae k8s-report` compliance JSON embedded in docs.
+- `ae export-k8s` presets (`web-hardened`, `web-strict`) + strict validation for portable YAML.
+- Caddy site-fragment ingress with `ae tls` helpers for k8s-style TLS secrets.
+- `ae plan` placement hints and `ae nodes` inventory/cordon/drain workflows.
+- Rollout policy with canary weights + auto-ramp persisted in state.
+- Built-in `/dashboard`, `/nodes`, and enriched `/metrics` endpoints.
+
+### Quick token generation with expiration
+- Generate API tokens that expire in 24 hours and write them to a file of exports you can `source`:
+  - `python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api`
 
 ## Makefile Helper Commands
 
@@ -278,19 +298,6 @@ Images and containers:
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --np-preset web --validate > k8s.yaml`
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --np-preset backend --validate > k8s.yaml`
 - See `docs/reference/k8s-export.md` for supported fields: startupProbe, image pull options, env/envFrom, projected volumes, PDB/HPA, pod-level security, and more.
-
-## Documentation Index
-
-- Start here onboarding: `docs/getting-started/start-here.md`
-- High-level overview and getting started: `docs/getting-started/overview.md`
-- Runtime profiles (including strict CRI aliases): `docs/guides/runtime-profiles.md`
-- CRI/containerd workflows and registry-first image prep: `docs/reference/cri-containerd.md`
-- Technical architecture and reference: `docs/reference/architecture.md`
-- HTTP API reference and UI docs: `docs/reference/http-api.md`
-- Configs & Secrets: `docs/reference/configs-secrets.md`
-- Demo Modes (flags for init script and Make): `docs/guides/demos-examples.md`
-- End-to-end test process: `docs/guides/e2e.md`
-- CI examples: `docs/ops/ci-gh-actions.md`
 
 ## Remote CLI (over LAN)
 
