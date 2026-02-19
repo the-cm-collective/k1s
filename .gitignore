@@ -30,4 +30,5 @@ htmlcov/
 docs/export/*
 docs/wiki/*
 content-prep/
+cip-series/
 libpod
