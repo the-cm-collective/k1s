@@ -11,7 +11,7 @@
 ### Fixed
 - No user-facing fixes yet.
 
-## 0.1.3 - 2026-02-14
+## 0.1.3 - 2026-02-19
 
 ### Added
 - Strict CRI profile orchestration for dev lanes, including `k1s-core-cri`, `k1s-edge-cri`, `k1s-core-edge-cri`, `k1s-edge-core-cri`, and `edge-site-cri`, with registry mode, image policy, and local build fallback handling.
@@ -20,6 +20,8 @@
 - Ingress matrix result JSON now includes LB assertion and observability summary fields (`lb_policy_passed`, `lb_strict_proof_passed`, `lb_observability_passed`) plus per-row LB assertion metadata.
 - Benchmark tooling now captures CRI (`crictl`) container snapshot/inspect data in matrix/rollout workflows.
 - Project metadata now includes the `version_codename` field (`Snow Moon`) in `pyproject.toml`.
+- Parity benchmark assets for k1s vs k3s were added, including a preflight helper (`scripts/dev/parity_preflight.sh`) and parity fixture manifest (`specs/examples/k3s-ingress-parity.yaml`).
+- A containerd trust/bootstrap helper was added for managed registry CA wiring in strict CRI flows (`scripts/containerd_registry_trust.sh`).
 
 ### Changed
 - Docs server pages and README were refreshed to align CRI guidance around `k1s-*` profile targets, with updated Start Here, Overview, Runtime Profiles, CRI reference, Multi-node lab, and related reference pages.
@@ -27,6 +29,9 @@
 - Ingress deep validation guidance now treats `core-proxy` as the primary policy/observability lane and keeps strict LB distribution proof in the `edge-local` lane.
 - Runtime profile behavior now auto-detects strict CRI core stacks more explicitly and fails fast on incompatible compose profile pairings.
 - Benchmark docs/charts were refreshed with CRI scenario coverage annotations.
+- Managed registry behavior in CRI profiles now defaults to TLS/trust-first operation, with explicit security-gate guidance for strict runs.
+- Ingress lane preflight behavior was softened for setup checks that are not always present in every stage (warn instead of fail for specific public listener checks), while keeping lane gating intact.
+- README and Start Here messaging were updated to align with TENETS language and the v0.1.3 production-validation posture.
 
 ### Fixed
 - Edge-local route bundle publish permissions and preflight handling were hardened, including controller/etcd edge-ingress state alignment and safer route bundle publishing behavior.
@@ -36,6 +41,8 @@
 - Playground/dashboard behavior fixes: resilient log/event streaming and re-arming, better ingress status handling, minimal-image shell defaults (`sh`), and improved token selection for exec/port-forward workflows.
 - Local auth/export improvements now ensure state DB paths are exported consistently so CLI status matches controller state.
 - Bench automation now clears rootful Podman before k1nd and hardens CRI waits/spec isolation to reduce flakiness.
+- Security baseline/active probe scripts now handle sudo/proc environment parsing and apishim auth probe evaluation more reliably in strict validation lanes.
+- Etcd-backed site ingress endpoint state now preserves public endpoint metadata across lane updates.
 
 ## 0.1.2 - 2026-01-30
 
