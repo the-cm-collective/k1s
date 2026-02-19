@@ -1,0 +1,38 @@
+apiVersion: k1s.io/v1
+kind: EdgeIngressPolicy
+metadata:
+  name: app-web-policy
+  namespace: default
+spec:
+  auth:
+    mode: oidc
+    oidc:
+      issuer: https://issuer.example.com
+      clientId: k1s-app-web
+  waf:
+    mode: basic
+    basic:
+      maxBodyBytes: 1048576
+      rateLimit:
+        rps: 50
+        burst: 200
+  headers:
+    request:
+      add:
+        X-K1S-Route: app-web
+    response:
+      add:
+        Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+  timeouts:
+    requestHeadersMs: 10000
+    requestBodyMs: 30000
+    idleMs: 60000
+  loadBalancing:
+    strategy: round_robin
+  websockets:
+    enabled: true
+  stickiness:
+    mode: cookie
+    cookie:
+      name: k1s_route
+      ttlSeconds: 3600

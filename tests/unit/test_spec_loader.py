@@ -17,7 +17,7 @@ def test_load_manifest_success(tmp_path: Path) -> None:
         tmp_path / "app.yaml",
         """
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata:
   name: example
 spec:
@@ -49,7 +49,7 @@ def test_load_manifest_validation_error(tmp_path: Path) -> None:
         tmp_path / "bad.yaml",
         """
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata: {}
 spec: {}
         """.strip(),

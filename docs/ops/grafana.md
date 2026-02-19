@@ -5,6 +5,7 @@ This folder includes `ae_dashboard.json`, a minimal Grafana dashboard seeded wit
 - Per-app reconcile duration (avg via sum/count)
 - Canary weight per app
 - Container restart counts
+- Transport stats (sites seen/stale, outbox publish OK/fail, JS stream/consumer gauges, gateway NAK/stale, route bundle apply)
 
 Steps
 1) Ensure Prometheus scrapes the controller (port 9108 by default):

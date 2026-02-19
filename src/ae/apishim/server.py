@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from ae.controller.state import AppEvent, ServiceEndpoint, SQLiteStateStore
+from ae.controller.state import AppEvent, ServiceEndpoint, SQLiteStateStore, state_store_from_env
 from ae.runtime import (
     CRIRuntime,
     DockerRuntime,
@@ -1002,7 +1002,7 @@ def _swagger_doc() -> dict[str, Any]:
             },
             "additionalProperties": True,
         },
-        "io.k8s.api.ae.dev.v1alpha1.AppSpec": {
+        "io.k8s.api.ae.dev.v1alpha1.DeploymentSpec": {
             "type": "object",
             "properties": {
                 "image": {"type": "string"},
@@ -1047,13 +1047,13 @@ def _swagger_doc() -> dict[str, Any]:
             },
             "additionalProperties": True,
         },
-        "io.k8s.api.ae.dev.v1alpha1.App": {
+        "io.k8s.api.ae.dev.v1alpha1.Deployment": {
             "type": "object",
             "properties": {
                 "apiVersion": {"type": "string"},
                 "kind": {"type": "string"},
                 "metadata": {"$ref": "#/definitions/io.k8s.api.meta.v1.ObjectMeta"},
-                "spec": {"$ref": "#/definitions/io.k8s.api.ae.dev.v1alpha1.AppSpec"},
+                "spec": {"$ref": "#/definitions/io.k8s.api.ae.dev.v1alpha1.DeploymentSpec"},
             },
             "additionalProperties": True,
         },
@@ -1512,10 +1512,10 @@ def _swagger_doc() -> dict[str, Any]:
             },
         },
         "apps": {
-            "definition": "io.k8s.api.ae.dev.v1alpha1.App",
+            "definition": "io.k8s.api.ae.dev.v1alpha1.Deployment",
             "example": {
                 "apiVersion": "ae.dev/v1alpha1",
-                "kind": "App",
+                "kind": "Deployment",
                 "metadata": {"name": "demo", "namespace": "default"},
                 "spec": {"image": "nginx:latest", "ports": [{"containerPort": 8080}]},
             },
@@ -1548,9 +1548,17 @@ def _swagger_doc() -> dict[str, Any]:
             entry.setdefault(method, op)
 
     def _path_param(name: str, description: str) -> dict[str, Any]:
-        return {"name": name, "in": "path", "required": True, "type": "string", "description": description}
+        return {
+            "name": name,
+            "in": "path",
+            "required": True,
+            "type": "string",
+            "description": description,
+        }
 
-    def _query_param(name: str, description: str, param_type: str, default: Any | None = None) -> dict[str, Any]:
+    def _query_param(
+        name: str, description: str, param_type: str, default: Any | None = None
+    ) -> dict[str, Any]:
         param: dict[str, Any] = {
             "name": name,
             "in": "query",
@@ -1666,11 +1674,7 @@ def _swagger_doc() -> dict[str, Any]:
 
     def _describe_list(plural: str, namespaced: bool) -> str:
         scope = "namespace" if namespaced else "cluster"
-        example = (
-            f"kubectl get {plural} -n <namespace>"
-            if namespaced
-            else f"kubectl get {plural}"
-        )
+        example = f"kubectl get {plural} -n <namespace>" if namespaced else f"kubectl get {plural}"
         return (
             f"List {plural} in the {scope} scope. Use `watch=1` to stream changes."
             f"\n\nExample:\n\n`{example}`"
@@ -2161,7 +2165,7 @@ def _swagger_doc() -> dict[str, Any]:
         "swagger": "2.0",
         "info": {
             "title": "k1s apishim",
-            "version": "0.1.2",
+            "version": "0.1.3.dev0",
             "description": (
                 "Kubernetes-compatible API shim for local k1s development. "
                 "Supports discovery, basic CRUD for core workloads, and a minimal OpenAPI schema "
@@ -2229,6 +2233,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     read_token: str | None = os.getenv("AE_APISHIM_READ_TOKEN")
     exec_token: str | None = os.getenv("AE_APISHIM_EXEC_TOKEN")
     portforward_token: str | None = os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+    mint_token: str | None = os.getenv("AE_APISHIM_MINT_TOKEN")
     session_secret: str | None = os.getenv("AE_APISHIM_SESSION_SECRET")
     pod_state_check: bool = os.getenv("AE_APISHIM_POD_STATE_CHECK", "0") == "1"
     pod_watch_check: bool = False
@@ -2387,6 +2392,56 @@ class ShimHandler(BaseHTTPRequestHandler):
             scopes = [str(s) for s in scopes_val if s]
         return role, scopes
 
+    def _mint_session_token(
+        self,
+        *,
+        role: str,
+        scopes: list[str] | None = None,
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        secret = self.session_secret or os.getenv("AE_APISHIM_SESSION_SECRET", "")
+        secret = str(secret).strip()
+        if not secret:
+            raise RuntimeError("session tokens disabled")
+        role_name = str(role or "").strip().lower()
+        if role_name not in {"exec", "portforward", "read"}:
+            raise ValueError("invalid role for session token")
+        clean_scopes = [str(s).strip() for s in (scopes or []) if str(s).strip()]
+        try:
+            default_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL", "600") or "600")
+        except Exception:
+            default_ttl = 600
+        try:
+            max_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL_MAX", str(default_ttl)) or default_ttl)
+        except Exception:
+            max_ttl = default_ttl
+        if default_ttl <= 0:
+            default_ttl = 600
+        if max_ttl <= 0:
+            max_ttl = default_ttl
+        ttl = int(ttl_seconds) if ttl_seconds and int(ttl_seconds) > 0 else int(default_ttl)
+        ttl = max(60, min(int(ttl), int(max_ttl)))
+        exp = int(time.time()) + int(ttl)
+        token_payload: dict[str, Any] = {"role": role_name, "exp": exp}
+        if clean_scopes:
+            token_payload["scopes"] = clean_scopes
+        payload_raw = json.dumps(token_payload, separators=(",", ":")).encode("utf-8")
+
+        def _b64url(data: bytes) -> str:
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+        payload_b64 = _b64url(payload_raw)
+        sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+        sig_b64 = _b64url(sig)
+        token = f"sess1.{payload_b64}.{sig_b64}"
+        return {
+            "token": token,
+            "expires_in": ttl,
+            "expires_at": exp,
+            "role": role_name,
+            "scopes": clean_scopes,
+        }
+
     def _parse_principal(self) -> Principal:
         cached = getattr(self, "_principal_cache", None)
         if cached is not None:
@@ -2418,6 +2473,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             username = "portforward"
             groups = {"system:authenticated", "portforward"}
             token_role = "portforward"  # noqa: S105 - role label, not a secret
+        elif tok and tok == self.mint_token:
+            username = "mint"
+            groups = {"system:authenticated", "mint"}
+            token_role = "mint"  # noqa: S105 - role label, not a secret
         else:
             session = self._parse_session_token(tok)
             if session:
@@ -2579,11 +2638,191 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return str(val)
         return None
 
-    def _resolve_pod_container(self, namespace: str | None, pod_name: str) -> dict | None:
+    @staticmethod
+    def _normalize_runtime_endpoint(endpoint: str | None) -> str | None:
+        """Rewrite node endpoints for containerized apishim reachability.
+
+        In single-host dev flows, node agents may advertise hostnames that are not
+        resolvable from the apishim container (or loopback addresses that resolve
+        to the container itself). When AE_NODE_ADVERTISE_IP is set for apishim,
+        use it as a fallback host in those cases.
+        """
+        if not endpoint:
+            return endpoint
+        fallback_host = (os.getenv("AE_NODE_ADVERTISE_IP") or "").strip()
+        if not fallback_host:
+            try:
+                if Path("/.dockerenv").exists():
+                    fallback_host = "host.containers.internal"
+            except Exception:
+                fallback_host = ""
+        if not fallback_host:
+            return endpoint
         try:
-            containers = self.server.runtime.list_containers_info()  # type: ignore[attr-defined]
+            parsed = urlparse(endpoint)
+        except Exception:
+            return endpoint
+        host = str(parsed.hostname or "").strip()
+        if not host:
+            return endpoint
+        host_l = host.lower()
+        replace = host_l in {"127.0.0.1", "localhost", "::1"}
+        if not replace:
+            try:
+                probe_port = parsed.port or (443 if (parsed.scheme or "http") == "https" else 80)
+                socket.getaddrinfo(host, probe_port)
+            except OSError:
+                replace = True
+        if not replace:
+            return endpoint
+        net_host = (
+            f"[{fallback_host}]"
+            if (":" in fallback_host and not fallback_host.startswith("["))
+            else fallback_host
+        )
+        netloc = f"{net_host}:{parsed.port}" if parsed.port is not None else net_host
+        try:
+            normalized = parsed._replace(netloc=netloc).geturl()
+        except Exception:
+            return endpoint
+        if normalized != endpoint:
+            LOGGER.debug(
+                "rewrote node endpoint for apishim runtime: %s -> %s", endpoint, normalized
+            )
+        return normalized
+
+    def _runtime_for_endpoint(self, endpoint: str | None) -> RuntimeAdapter:
+        endpoint = self._normalize_runtime_endpoint(endpoint)
+        if not endpoint:
+            return self.server.runtime  # type: ignore[attr-defined]
+        agent_url = self._normalize_runtime_endpoint(  # type: ignore[attr-defined]
+            getattr(self.server, "_agent_url", None)  # type: ignore[attr-defined]
+        )
+        if agent_url and endpoint == agent_url:
+            return self.server.runtime  # type: ignore[attr-defined]
+        cache = getattr(self.server, "_runtime_cache", None)  # type: ignore[attr-defined]
+        if isinstance(cache, dict) and endpoint in cache:
+            return cache[endpoint]
+        try:
+            from ae.runtime import RemoteRuntime
+
+            base = getattr(self.server, "_runtime_base", self.server.runtime)  # type: ignore[attr-defined]
+            runtime = RemoteRuntime(endpoint, base)
+            if isinstance(cache, dict):
+                cache[endpoint] = runtime
+            return runtime
+        except Exception:
+            return self.server.runtime  # type: ignore[attr-defined]
+
+    def _node_endpoint_for_id(self, node_id: str | None) -> str | None:
+        if not node_id:
+            return None
+        state = getattr(self.server, "state", None)  # type: ignore[attr-defined]
+        if state is None or not hasattr(state, "get_node"):
+            return None
+        try:
+            rec = state.get_node(node_id)
         except Exception:
             return None
+        if not rec:
+            return None
+        node, _status = rec
+        return getattr(node, "endpoint", None)
+
+    def _node_id_for_pod(
+        self,
+        pod_name: str,
+        *,
+        namespace: str | None = None,
+        app_name: str | None = None,
+        container_info: dict | None = None,
+    ) -> str | None:
+        labels = (container_info or {}).get("labels", {}) or {}
+        node_id = labels.get("ae.node")
+        if node_id:
+            return str(node_id)
+        state = getattr(self.server, "state", None)  # type: ignore[attr-defined]
+        if state is None or not hasattr(state, "list_pod_nodes"):
+            return None
+        try:
+            if app_name:
+                rows = state.list_pod_nodes(app_name)
+                for row in rows:
+                    if row and row[0] == pod_name:
+                        return str(row[1])
+            if not hasattr(state, "list_status"):
+                return None
+            for status in state.list_status():
+                if namespace and not str(getattr(status, "app_name", "")).startswith(
+                    f"{namespace}/"
+                ):
+                    continue
+                rows = state.list_pod_nodes(status.app_name)
+                for row in rows:
+                    if row and row[0] == pod_name:
+                        return str(row[1])
+        except Exception:
+            return None
+        return None
+
+    def _runtime_for_pod(
+        self, namespace: str | None, pod_name: str, *, container_info: dict | None = None
+    ) -> tuple[RuntimeAdapter, str | None, str | None]:
+        app_name = None
+        if container_info:
+            app_name = self._app_from_labels(container_info.get("labels", {}) or {})
+        node_id = self._node_id_for_pod(
+            pod_name, namespace=namespace, app_name=app_name, container_info=container_info
+        )
+        endpoint = self._node_endpoint_for_id(node_id)
+        runtime = self._runtime_for_endpoint(endpoint)
+        return runtime, node_id, endpoint
+
+    def _node_record_for_ip(self, ip: str) -> Any | None:
+        state = getattr(self.server, "state", None)  # type: ignore[attr-defined]
+        if state is None or not hasattr(state, "list_nodes"):
+            return None
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except Exception:
+            return None
+        try:
+            nodes = state.list_nodes()
+        except Exception:
+            nodes = []
+        for rec, _st in nodes:
+            try:
+                if rec.pod_cidr and ip_obj in ipaddress.ip_network(rec.pod_cidr, strict=False):
+                    return rec
+            except Exception:
+                continue
+        return None
+
+    def _container_for_pod_ip(
+        self, runtime: RuntimeAdapter, namespace: str | None, pod_ip: str
+    ) -> dict | None:
+        try:
+            containers = runtime.list_containers_info()
+        except Exception:
+            return None
+        for c in containers:
+            if str(c.get("pod_ip") or "") != str(pod_ip):
+                continue
+            labels = c.get("labels", {}) or {}
+            c_ns = labels.get("ae.namespace") or "default"
+            if namespace and c_ns != namespace:
+                continue
+            return c
+        return None
+
+    def _resolve_pod_container(
+        self, namespace: str | None, pod_name: str, *, runtime: RuntimeAdapter | None = None
+    ) -> dict | None:
+        target_runtime = runtime or self.server.runtime  # type: ignore[attr-defined]
+        try:
+            containers = target_runtime.list_containers_info()
+        except Exception:
+            containers = []
         for c in containers:
             labels = c.get("labels", {}) or {}
             rid = labels.get("ae.pod_name") or labels.get("ae.replica_id") or c.get("name")
@@ -2742,7 +2981,14 @@ class ShimHandler(BaseHTTPRequestHandler):
         expected_uid: str | None = None,
         expected_rv: int | None = None,
     ) -> dict | None:
-        container = self._resolve_pod_container(namespace, pod_name)
+        runtime, _node_id, _endpoint = self._runtime_for_pod(namespace, pod_name)
+        container = self._resolve_pod_container(namespace, pod_name, runtime=runtime)
+        if container is None and runtime is not self.server.runtime:  # type: ignore[attr-defined]
+            container = self._resolve_pod_container(
+                namespace,
+                pod_name,
+                runtime=self.server.runtime,  # type: ignore[arg-type]
+            )
         if not container:
             self._not_found()
             return None
@@ -2767,8 +3013,6 @@ class ShimHandler(BaseHTTPRequestHandler):
         if self.pod_state_check and hasattr(self.server, "state"):
             try:
                 fn = getattr(self.server.state, "list_pod_nodes", None)  # type: ignore[attr-defined]
-                if fn is None:
-                    fn = getattr(self.server.state, "list_replica_nodes", None)  # type: ignore[attr-defined]
                 if callable(fn):
                     found = False
                     for rid, _node, _ready, _live, _status, _rmsg, _lmsg in fn(app):
@@ -2856,11 +3100,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             ok = role_name in {"admin", "exec"}
         elif role == "portforward":
             ok = role_name in {"admin", "portforward"}
+        elif role == "mint":
+            ok = role_name in {"admin", "mint"}
         elif role in {"rbac-read", "rbac-write"}:
             ok = role_name in {"admin", "read"}
         if ok or (
             rbac_relaxed
-            and role in {"read", "write", "exec", "portforward", "rbac-read", "rbac-write"}
+            and role in {"read", "write", "exec", "portforward", "mint", "rbac-read", "rbac-write"}
         ):
             return True
         if self.allow_anonymous:
@@ -3113,7 +3359,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             return 0
 
     # ---------------- WebSocket port-forward (best-effort) ----------------
-    def _handle_port_forward_ws(self, target_host: str, target_port: int) -> None:
+    def _handle_port_forward_ws(
+        self,
+        target_host: str,
+        target_port: int,
+        *,
+        upstream_factory=None,
+    ) -> None:
         """Minimal WebSocket port-forward bridge (single connection, multi-port)."""
 
         key = self.headers.get("Sec-WebSocket-Key")
@@ -3228,8 +3480,12 @@ class ShimHandler(BaseHTTPRequestHandler):
             channel_error = 1
             upstream = None
             try:
-                upstream = socket.create_connection((target_host, target_port), timeout=5.0)
-                upstream.settimeout(0.1)
+                if upstream_factory:
+                    upstream = upstream_factory(target_port)
+                if not upstream:
+                    upstream = socket.create_connection((target_host, target_port), timeout=5.0)
+                if upstream:
+                    upstream.settimeout(0.1)
             except Exception:
                 if PF_DEBUG:
                     LOGGER.warning(
@@ -3361,7 +3617,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             ws_conn = WsConn(self.connection, _recv_ws, _send_ws)
             try:
                 self._handle_port_forward_spdy(
-                    target_host, [target_port], conn_override=ws_conn, suppress_handshake=True
+                    target_host,
+                    [target_port],
+                    conn_override=ws_conn,
+                    suppress_handshake=True,
+                    upstream_factory=upstream_factory,
                 )
             finally:
                 try:
@@ -3378,7 +3638,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             if port in upstream_socks:
                 return upstream_socks[port]
             try:
-                s = socket.create_connection((target_host, port), timeout=5.0)
+                if upstream_factory:
+                    s = upstream_factory(port)
+                if not s:
+                    s = socket.create_connection((target_host, port), timeout=5.0)
                 s.settimeout(0.1)
                 upstream_socks[port] = s
                 return s
@@ -3487,6 +3750,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         *,
         conn_override=None,
         suppress_handshake: bool = False,
+        upstream_factory=None,
     ) -> None:
         """Implements the SPDY/3.1 port-forward protocol used by kubectl.
 
@@ -3840,10 +4104,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     _pf_debug(
                                         f"connect sid={stream_id} host={dest_host} port={dest_port}"
                                     )
-                                    upstream_cache[stream_id] = socket.create_connection(
-                                        (dest_host, dest_port), timeout=5.0
-                                    )
-                                    upstream_cache[stream_id].settimeout(0.05)
+                                    if upstream_factory:
+                                        upstream_cache[stream_id] = upstream_factory(dest_port)
+                                    if not upstream_cache.get(stream_id):
+                                        upstream_cache[stream_id] = socket.create_connection(
+                                            (dest_host, dest_port), timeout=5.0
+                                        )
+                                    if upstream_cache.get(stream_id):
+                                        upstream_cache[stream_id].settimeout(0.05)
+                                    else:
+                                        upstream_cache.pop(stream_id, None)
+                                        continue
                                 except Exception as e:
                                     _pf_debug(f"connect-fail sid={stream_id} port={port} err={e}")
                                     upstream_cache.pop(stream_id, None)
@@ -3930,6 +4201,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         want_stdin: bool,
         want_stdout: bool,
         want_stderr: bool,
+        runtime: RuntimeAdapter | None = None,
     ) -> None:
         stream_debug = SPDY_DEBUG or str(
             os.getenv("AE_APISHIM_SPDY_DEBUG", "")
@@ -3958,12 +4230,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             stderr=want_stderr,
             cmd=" ".join(command),
         )
+        rt = runtime or self.server.runtime  # type: ignore[attr-defined]
         # Try to open an attached exec session on the runtime (docker/podman only for now)
         exec_sock = None
         exec_id = None
-        if hasattr(self.server.runtime, "exec_attach"):  # type: ignore[attr-defined]
+        if hasattr(rt, "exec_attach"):
             try:
-                exec_sock, exec_id = self.server.runtime.exec_attach(  # type: ignore[attr-defined]
+                exec_sock, exec_id = rt.exec_attach(  # type: ignore[attr-defined]
                     pod_name, command, container=container, tty=tty
                 )
                 exec_sock.settimeout(0.05)
@@ -4147,11 +4420,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     else None
                                 )
                                 w = int(doc.get("Width")) if doc.get("Width") is not None else None
-                                if hasattr(self.server.runtime, "exec_resize"):  # type: ignore[attr-defined]
+                                if hasattr(rt, "exec_resize"):
                                     try:
-                                        self.server.runtime.exec_resize(
+                                        rt.exec_resize(  # type: ignore[attr-defined]
                                             exec_id or "", height=h, width=w
-                                        )  # type: ignore[attr-defined]
+                                        )
                                     except Exception:
                                         pass
                             except Exception:
@@ -4204,8 +4477,8 @@ class ShimHandler(BaseHTTPRequestHandler):
         finally:
             exit_code = 0
             try:
-                if exec_id and hasattr(self.server.runtime, "exec_exit_code"):  # type: ignore[attr-defined]
-                    exit_code = int(self.server.runtime.exec_exit_code(exec_id))  # type: ignore[attr-defined]
+                if exec_id and hasattr(rt, "exec_exit_code"):
+                    exit_code = int(rt.exec_exit_code(exec_id))  # type: ignore[attr-defined]
             except Exception:
                 exit_code = 0
             if stream_debug:
@@ -4254,6 +4527,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         want_stdin: bool,
         want_stdout: bool,
         want_stderr: bool,
+        runtime: RuntimeAdapter | None = None,
     ) -> None:
         spdy_debug = SPDY_DEBUG or str(os.getenv("AE_APISHIM_SPDY_DEBUG", "")).strip().lower() in {
             "1",
@@ -4280,12 +4554,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             stderr=want_stderr,
             cmd=" ".join(command),
         )
+        rt = runtime or self.server.runtime  # type: ignore[attr-defined]
         # Try to open an attached exec session on the runtime (docker/podman only for now)
         exec_sock = None
         exec_id = None
-        if hasattr(self.server.runtime, "exec_attach"):  # type: ignore[attr-defined]
+        if hasattr(rt, "exec_attach"):
             try:
-                exec_sock, exec_id = self.server.runtime.exec_attach(  # type: ignore[attr-defined]
+                exec_sock, exec_id = rt.exec_attach(  # type: ignore[attr-defined]
                     pod_name, command, container=container, tty=tty
                 )
                 exec_sock.settimeout(0.05)
@@ -4681,11 +4956,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                                     else None
                                 )
                                 w = int(doc.get("Width")) if doc.get("Width") is not None else None
-                                if hasattr(self.server.runtime, "exec_resize"):  # type: ignore[attr-defined]
+                                if hasattr(rt, "exec_resize"):
                                     try:
-                                        self.server.runtime.exec_resize(
-                                            exec_id or "", height=h, width=w
-                                        )  # type: ignore[attr-defined]
+                                        rt.exec_resize(exec_id or "", height=h, width=w)  # type: ignore[attr-defined]
                                     except Exception:
                                         pass
                             except Exception:
@@ -4809,8 +5082,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             # Send exit status over error stream if present
             exit_code = 0
             try:
-                if exec_id and hasattr(self.server.runtime, "exec_exit_code"):  # type: ignore[attr-defined]
-                    exit_code = int(self.server.runtime.exec_exit_code(exec_id))  # type: ignore[attr-defined]
+                if exec_id and hasattr(rt, "exec_exit_code"):
+                    exit_code = int(rt.exec_exit_code(exec_id))  # type: ignore[attr-defined]
             except Exception:
                 exit_code = 0
             err_sid = stream_ids.get("error")
@@ -6145,7 +6418,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     try:
                         rows = self.server.state.list_pod_nodes(app)  # type: ignore[attr-defined]
                     except Exception:
-                        rows = self.server.state.list_replica_nodes(app)  # type: ignore[attr-defined]
+                        rows = []
                     for rid, node_id, ready, live, status, rmsg, lmsg in rows:
                         replica_info[rid] = (node_id, ready, live, status, rmsg, lmsg)
             except Exception:
@@ -6317,18 +6590,19 @@ class ShimHandler(BaseHTTPRequestHandler):
                 return
             expected_uid = self._extract_pod_uid(qs)
             expected_rv = self._extract_pod_rv(qs)
-            if (
-                self._validate_pod_scope(
-                    namespace=m_exec.group(1),
-                    pod_name=m_exec.group(2),
-                    scope_env="AE_API_EXEC_SCOPE",
-                    action="exec",
-                    expected_uid=expected_uid,
-                    expected_rv=expected_rv,
-                )
-                is None
-            ):
+            container_info = self._validate_pod_scope(
+                namespace=m_exec.group(1),
+                pod_name=m_exec.group(2),
+                scope_env="AE_API_EXEC_SCOPE",
+                action="exec",
+                expected_uid=expected_uid,
+                expected_rv=expected_rv,
+            )
+            if container_info is None:
                 return
+            exec_runtime, _node_id, _endpoint = self._runtime_for_pod(
+                m_exec.group(1), m_exec.group(2), container_info=container_info
+            )
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
                 container = (qs.get("container") or [None])[0]
@@ -6345,6 +6619,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     want_stdin=want_stdin,
                     want_stdout=want_stdout,
                     want_stderr=want_stderr,
+                    runtime=exec_runtime,
                 )
                 return
             elif upgrade == "websocket":
@@ -6362,6 +6637,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     want_stdin=want_stdin,
                     want_stdout=want_stdout,
                     want_stderr=want_stderr,
+                    runtime=exec_runtime,
                 )
                 return
             else:
@@ -6447,6 +6723,38 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="no ready endpoints for service",
                 )
                 return
+            upstream_factory = None
+            try:
+                node_rec = self._node_record_for_ip(str(target_ip))
+            except Exception:
+                node_rec = None
+            if node_rec and getattr(node_rec, "endpoint", None):
+                svc_runtime = self._runtime_for_endpoint(getattr(node_rec, "endpoint", None))
+                if hasattr(svc_runtime, "port_forward_socket"):
+                    container = self._container_for_pod_ip(svc_runtime, ns, str(target_ip))
+                    if container:
+                        pod_id = container.get("uid") or container.get("id")
+                        labels = container.get("labels", {}) or {}
+                        pod_name = (
+                            labels.get("ae.pod_name")
+                            or labels.get("ae.replica_id")
+                            or container.get("name")
+                        )
+
+                        # Use node agent port-forward when available.
+
+                        def _pf_open(port: int, _rt=svc_runtime) -> socket.socket | None:
+                            try:
+                                return _rt.port_forward_socket(  # type: ignore[attr-defined]
+                                    pod_id=str(pod_id) if pod_id else None,
+                                    pod_name=str(pod_name) if pod_name else None,
+                                    namespace=ns,
+                                    port=int(port),
+                                )
+                            except Exception:
+                                return None
+
+                        upstream_factory = _pf_open
             upgrade = (self.headers.get("Upgrade") or "").lower()
             port_label = ",".join(str(p) for p in target_ports)
             if upgrade.startswith("spdy"):
@@ -6467,7 +6775,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 try:
                     self._handle_port_forward_spdy(
-                        target_ip, target_ports, ep_map if ep_map else None
+                        target_ip,
+                        target_ports,
+                        ep_map if ep_map else None,
+                        upstream_factory=upstream_factory,
                     )
                 finally:
                     self._audit(
@@ -6485,7 +6796,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     protocol="websocket",
                 )
                 try:
-                    self._handle_port_forward_ws(target_ip, target_ports[0])
+                    self._handle_port_forward_ws(
+                        target_ip, target_ports[0], upstream_factory=upstream_factory
+                    )
                 finally:
                     self._audit(
                         "portforward.end",
@@ -6520,6 +6833,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             )
             if container_info is None:
                 return
+            pf_runtime, _node_id, _endpoint = self._runtime_for_pod(
+                ns, pod_name, container_info=container_info
+            )
             upgrade = (self.headers.get("Upgrade") or "").lower()
             requested_ports: list[int] = []
             for p in ports_q:
@@ -6575,6 +6891,27 @@ class ShimHandler(BaseHTTPRequestHandler):
                             target_ports = [sorted(port_map.values())[0]]
             else:
                 target_host = "127.0.0.1"
+            use_agent_pf = (
+                pf_runtime is not self.server.runtime  # type: ignore[attr-defined]
+                and hasattr(pf_runtime, "port_forward_socket")
+            )
+            if use_agent_pf and requested_ports:
+                target_ports = list(requested_ports)
+            upstream_factory = None
+            if use_agent_pf:
+
+                def _pf_open(port: int, _rt=pf_runtime) -> socket.socket | None:
+                    try:
+                        return _rt.port_forward_socket(  # type: ignore[attr-defined]
+                            pod_id=str(pod_id) if pod_id else None,
+                            pod_name=str(pod_name) if pod_name else None,
+                            namespace=ns,
+                            port=int(port),
+                        )
+                    except Exception:
+                        return None
+
+                upstream_factory = _pf_open
             pf_port_map: dict[int, int] | None = None
             cri_pf_procs: list[subprocess.Popen] = []
             use_cri_pf = (
@@ -6618,7 +6955,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     ws_port = target_ports[0]
                     if pf_port_map:
                         ws_port = pf_port_map.get(target_ports[0], ws_port)
-                    self._handle_port_forward_ws(target_host, ws_port)
+                    self._handle_port_forward_ws(
+                        target_host, ws_port, upstream_factory=upstream_factory
+                    )
                 finally:
                     if cri_pf_procs:
                         self._stop_cri_port_forward(cri_pf_procs)
@@ -6637,7 +6976,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                     protocol="spdy",
                 )
                 try:
-                    self._handle_port_forward_spdy(target_host, target_ports, port_map=pf_port_map)
+                    self._handle_port_forward_spdy(
+                        target_host,
+                        target_ports,
+                        port_map=pf_port_map,
+                        upstream_factory=upstream_factory,
+                    )
                 finally:
                     if cri_pf_procs:
                         self._stop_cri_port_forward(cri_pf_procs)
@@ -7355,13 +7699,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 plural,
                                 s_ns,
                                 q,
-                                transform=_to_generic("snapshot.storage.k8s.io", "v1", kind, plural),
+                                transform=_to_generic(
+                                    "snapshot.storage.k8s.io", "v1", kind, plural
+                                ),
                             )
                             return
                         items = (
                             self.server.store.list_all("snapshot.storage.k8s.io", "v1", plural)
                             if s_ns is None
-                            else self.server.store.list("snapshot.storage.k8s.io", "v1", plural, s_ns)
+                            else self.server.store.list(
+                                "snapshot.storage.k8s.io", "v1", plural, s_ns
+                            )
                         )  # type: ignore[attr-defined]
                         self._ok(
                             {
@@ -7793,6 +8141,50 @@ class ShimHandler(BaseHTTPRequestHandler):
         path = parsed.path
         self.path = path
         upgrade = (self.headers.get("Upgrade") or "").lower()
+        if path == "/api/v1/sessiontokens":
+            if not self._authz(role="mint"):
+                return
+            doc = _read_json(self._read_body())
+            role = str(doc.get("role") or "exec").strip().lower()
+            scopes_val = doc.get("scopes")
+            if scopes_val is None:
+                scopes_val = doc.get("scope")
+            scopes: list[str]
+            if isinstance(scopes_val, str):
+                scopes = [scopes_val]
+            elif isinstance(scopes_val, list | tuple):
+                scopes = [str(s) for s in scopes_val if s]
+            else:
+                scopes = []
+            try:
+                ttl_req = int(doc.get("ttlSeconds") or doc.get("ttl") or 0)
+            except Exception:
+                ttl_req = 0
+            try:
+                minted = self._mint_session_token(role=role, scopes=scopes, ttl_seconds=ttl_req)
+            except ValueError as exc:
+                self._json_status(
+                    HTTPStatus.BAD_REQUEST,
+                    reason="BadRequest",
+                    message=str(exc),
+                )
+                return
+            except RuntimeError as exc:
+                self._json_status(
+                    HTTPStatus.NOT_FOUND,
+                    reason="NotFound",
+                    message=str(exc),
+                )
+                return
+            except Exception as exc:  # pragma: no cover - defensive
+                self._json_status(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    reason="InternalError",
+                    message=str(exc),
+                )
+                return
+            self._ok(minted)
+            return
         is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
         is_pf_path = re.match(r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path)
         # SubjectAccessReview should be callable by read tokens; other POSTs require write/admin.
@@ -7829,18 +8221,19 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return
                 expected_uid = self._extract_pod_uid(qs)
                 expected_rv = self._extract_pod_rv(qs)
-                if (
-                    self._validate_pod_scope(
-                        namespace=m_exec_spdy.group(1),
-                        pod_name=m_exec_spdy.group(2),
-                        scope_env="AE_API_EXEC_SCOPE",
-                        action="exec",
-                        expected_uid=expected_uid,
-                        expected_rv=expected_rv,
-                    )
-                    is None
-                ):
+                container_info = self._validate_pod_scope(
+                    namespace=m_exec_spdy.group(1),
+                    pod_name=m_exec_spdy.group(2),
+                    scope_env="AE_API_EXEC_SCOPE",
+                    action="exec",
+                    expected_uid=expected_uid,
+                    expected_rv=expected_rv,
+                )
+                if container_info is None:
                     return
+                exec_runtime, _node_id, _endpoint = self._runtime_for_pod(
+                    m_exec_spdy.group(1), m_exec_spdy.group(2), container_info=container_info
+                )
                 if upgrade.startswith("spdy"):
                     container = (qs.get("container") or [None])[0]
                     tty = (qs.get("tty") or ["false"])[0].lower() in ("1", "true", "yes")
@@ -7868,6 +8261,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         want_stdin=want_stdin,
                         want_stdout=want_stdout,
                         want_stderr=want_stderr,
+                        runtime=exec_runtime,
                     )
                 elif upgrade == "websocket":
                     container = (qs.get("container") or [None])[0]
@@ -7896,6 +8290,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         want_stdin=want_stdin,
                         want_stdout=want_stdout,
                         want_stderr=want_stderr,
+                        runtime=exec_runtime,
                     )
                 else:
                     self._json_status(
@@ -7993,21 +8388,22 @@ class ShimHandler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             expected_uid = self._extract_pod_uid(qs)
             expected_rv = self._extract_pod_rv(qs)
-            if (
-                self._validate_pod_scope(
-                    namespace=m_exec.group(1),
-                    pod_name=m_exec.group(2),
-                    scope_env="AE_API_EXEC_SCOPE",
-                    action="exec",
-                    expected_uid=expected_uid,
-                    expected_rv=expected_rv,
-                )
-                is None
-            ):
+            container_info = self._validate_pod_scope(
+                namespace=m_exec.group(1),
+                pod_name=m_exec.group(2),
+                scope_env="AE_API_EXEC_SCOPE",
+                action="exec",
+                expected_uid=expected_uid,
+                expected_rv=expected_rv,
+            )
+            if container_info is None:
                 return
+            exec_runtime, _node_id, _endpoint = self._runtime_for_pod(
+                m_exec.group(1), m_exec.group(2), container_info=container_info
+            )
             try:
                 rc = int(
-                    self.server.runtime.exec(  # type: ignore[attr-defined]
+                    exec_runtime.exec(  # type: ignore[attr-defined]
                         m_exec.group(2),
                         [str(c) for c in cmd],
                         timeout=int(timeout) if timeout else None,
@@ -8047,6 +8443,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             )
             if container_info is None:
                 return
+            pf_runtime, _node_id, _endpoint = self._runtime_for_pod(
+                ns, pod_name, container_info=container_info
+            )
             requested_ports: list[int] = []
             for p in ports_q:
                 try:
@@ -8086,6 +8485,27 @@ class ShimHandler(BaseHTTPRequestHandler):
                     target_host = "127.0.0.1"
             elif isinstance(self.server.runtime, StubRuntime):  # type: ignore[attr-defined]
                 target_host = os.getenv("AE_STUB_BACKEND_HOST", target_host)
+            use_agent_pf = (
+                pf_runtime is not self.server.runtime  # type: ignore[attr-defined]
+                and hasattr(pf_runtime, "port_forward_socket")
+            )
+            if use_agent_pf and requested_ports:
+                target_ports = list(requested_ports)
+            upstream_factory = None
+            if use_agent_pf:
+
+                def _pf_open(port: int, _rt=pf_runtime) -> socket.socket | None:
+                    try:
+                        return _rt.port_forward_socket(  # type: ignore[attr-defined]
+                            pod_id=str(pod_id) if pod_id else None,
+                            pod_name=str(pod_name) if pod_name else None,
+                            namespace=ns,
+                            port=int(port),
+                        )
+                    except Exception:
+                        return None
+
+                upstream_factory = _pf_open
             pf_port_map: dict[int, int] | None = None
             cri_pf_procs: list[subprocess.Popen] = []
             use_cri_pf = (
@@ -8121,6 +8541,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         target_host,
                         pf_ports,
                         port_map=pf_port_map or (port_map if use_host_ports else None),
+                        upstream_factory=upstream_factory,
                     )
                 finally:
                     if cri_pf_procs:
@@ -8144,7 +8565,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     ws_port = target_ports[0]
                     if pf_port_map:
                         ws_port = pf_port_map.get(target_ports[0], ws_port)
-                    self._handle_port_forward_ws(target_host, ws_port)
+                    self._handle_port_forward_ws(
+                        target_host, ws_port, upstream_factory=upstream_factory
+                    )
                 finally:
                     if cri_pf_procs:
                         self._stop_cri_port_forward(cri_pf_procs)
@@ -8239,6 +8662,38 @@ class ShimHandler(BaseHTTPRequestHandler):
                     message="ports query param required",
                 )
                 return
+            upstream_factory = None
+            try:
+                node_rec = self._node_record_for_ip(str(target_ip))
+            except Exception:
+                node_rec = None
+            if node_rec and getattr(node_rec, "endpoint", None):
+                svc_runtime = self._runtime_for_endpoint(getattr(node_rec, "endpoint", None))
+                if hasattr(svc_runtime, "port_forward_socket"):
+                    container = self._container_for_pod_ip(svc_runtime, ns, str(target_ip))
+                    if container:
+                        pod_id = container.get("uid") or container.get("id")
+                        labels = container.get("labels", {}) or {}
+                        pod_name = (
+                            labels.get("ae.pod_name")
+                            or labels.get("ae.replica_id")
+                            or container.get("name")
+                        )
+
+                        # Use node agent port-forward when available.
+
+                        def _pf_open(port: int, _rt=svc_runtime) -> socket.socket | None:
+                            try:
+                                return _rt.port_forward_socket(  # type: ignore[attr-defined]
+                                    pod_id=str(pod_id) if pod_id else None,
+                                    pod_name=str(pod_name) if pod_name else None,
+                                    namespace=ns,
+                                    port=int(port),
+                                )
+                            except Exception:
+                                return None
+
+                        upstream_factory = _pf_open
             upgrade = (self.headers.get("Upgrade") or "").lower()
             if upgrade.startswith("spdy"):
                 port_label = ",".join(str(p) for p in target_ports)
@@ -8250,7 +8705,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     protocol="spdy",
                 )
                 try:
-                    self._handle_port_forward_spdy(target_ip, target_ports)
+                    self._handle_port_forward_spdy(
+                        target_ip, target_ports, upstream_factory=upstream_factory
+                    )
                 finally:
                     self._audit(
                         "portforward.end",
@@ -8268,7 +8725,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                     protocol="websocket",
                 )
                 try:
-                    self._handle_port_forward_ws(target_ip, target_ports[0])
+                    self._handle_port_forward_ws(
+                        target_ip, target_ports[0], upstream_factory=upstream_factory
+                    )
                 finally:
                     self._audit(
                         "portforward.end",
@@ -9478,7 +9937,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
             )
             name_eff = md.get("name") or name
-            ns_eff = None if plural in {"namespaces", "persistentvolumes"} else (md.get("namespace") or ns)
+            ns_eff = (
+                None
+                if plural in {"namespaces", "persistentvolumes"}
+                else (md.get("namespace") or ns)
+            )
             if not _valid_name(name_eff):
                 self._json_status(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -9955,19 +10418,19 @@ class ShimHandler(BaseHTTPRequestHandler):
         return True
 
     def _validate_app_custom_resource(self, doc: dict[str, Any]) -> str | None:
-        # Validate App CRD payload against native schema to prevent incompatible objects.
+        # Validate ae.dev Deployment CRD payload against native schema.
         if (doc.get("apiVersion") or "").lower() not in {"ae.dev/v1alpha1"}:
-            return "unsupported apiVersion for App (expected ae.dev/v1alpha1)"
-        if (doc.get("kind") or "").lower() != "app":
-            return "unsupported kind for ae.dev/v1alpha1 (expected App)"
+            return "unsupported apiVersion for Deployment (expected ae.dev/v1alpha1)"
+        if (doc.get("kind") or "").lower() != "deployment":
+            return "unsupported kind for ae.dev/v1alpha1 (expected Deployment)"
         try:
             from ae.controller.spec import AppManifest  # imported lazily to avoid startup cost
         except Exception as exc:  # pragma: no cover - defensive import guard
-            return f"unable to load App schema: {exc}"
+            return f"unable to load Deployment schema: {exc}"
         try:
             AppManifest.model_validate(doc)
         except Exception as exc:
-            return f"App validation failed: {exc}"
+            return f"Deployment validation failed: {exc}"
         return None
 
     def _apply_app_admission(self, doc: dict[str, Any]) -> bool:
@@ -10169,7 +10632,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self._deny(403)
                 return
             ok = self.server.store.delete(
-                "", "v1", plural, None if plural in {"namespaces", "persistentvolumes"} else ns, name
+                "",
+                "v1",
+                plural,
+                None if plural in {"namespaces", "persistentvolumes"} else ns,
+                name,
             )  # type: ignore[attr-defined]
             if not ok:
                 self._not_found()
@@ -10283,11 +10750,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                         items = (
                             self.server.store.list_all("snapshot.storage.k8s.io", "v1", plural)
                             if s_ns is None
-                            else self.server.store.list("snapshot.storage.k8s.io", "v1", plural, s_ns)
+                            else self.server.store.list(
+                                "snapshot.storage.k8s.io", "v1", plural, s_ns
+                            )
                         )  # type: ignore[attr-defined]
                         for obj in items:
                             self.server.store.delete(  # type: ignore[attr-defined]
-                                "snapshot.storage.k8s.io", "v1", plural, obj.namespace or None, obj.name
+                                "snapshot.storage.k8s.io",
+                                "v1",
+                                plural,
+                                obj.namespace or None,
+                                obj.name,
                             )
                     self._json_status(HTTPStatus.OK, reason="Success", message="deleted")
                     return
@@ -11723,6 +12196,7 @@ def _pod_obj(container: dict, rv: int, node_name: str | None) -> dict[str, Any]:
 
 class ShimServer(ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = True
 
     def __init__(
         self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False
@@ -11748,6 +12222,7 @@ class ShimServer(ThreadingHTTPServer):
         ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")
         ShimHandler.exec_token = os.getenv("AE_APISHIM_EXEC_TOKEN")
         ShimHandler.portforward_token = os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+        ShimHandler.mint_token = os.getenv("AE_APISHIM_MINT_TOKEN")
         ShimHandler.session_secret = os.getenv("AE_APISHIM_SESSION_SECRET")
         ShimHandler.pod_state_check = os.getenv("AE_APISHIM_POD_STATE_CHECK", "0") == "1"
         ShimHandler.pod_watch_check = os.getenv("AE_APISHIM_POD_WATCH_CHECK", "0") == "1"
@@ -11759,11 +12234,12 @@ class ShimServer(ThreadingHTTPServer):
             ShimHandler.pod_watch_ttl = 30.0
         ShimHandler.pod_watch_cache = {}
         ShimHandler.allow_anonymous = allow_anonymous
-        state_dsn = os.getenv("AE_STATE_DSN")
-        db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
-        self.state = SQLiteStateStore(db_path if not state_dsn else None, dsn=state_dsn)
+        self.state = state_store_from_env()
         ShimHandler.state = self.state  # type: ignore[assignment]
         self.runtime = _runtime_from_env()
+        self._runtime_base = getattr(self.runtime, "_local", self.runtime)
+        self._runtime_cache: dict[str, RuntimeAdapter] = {}
+        self._agent_url = os.getenv("AE_APISHIM_AGENT_URL") or os.getenv("AE_AGENT_URL")
         self._bootstrap_crds()
         # Start adapter worker to reconcile apps/v1 Deployments into k1s
         adapter_enabled = str(os.getenv("AE_APISHIM_ADAPTER", "1") or "").strip().lower() in {

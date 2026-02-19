@@ -8,6 +8,7 @@ dist/
 *.egg-info/
 state/
 .venv-demo/
+.local/
 # Benchmark/test artifacts
 snapshots/
 combined/
@@ -18,9 +19,14 @@ charts-user/
 /docs.home.arpa_*.png
 # Ignore future dev Caddy site snippets broadly
 ops/dev/caddy/sites/*.caddy
+# Local dev tool binaries
+ops/dev/bin/
 # Generated dev Caddy site snippets (ports are ephemeral)
 ops/dev/caddy/sites/blue.caddy
 ops/dev/caddy/sites/green.caddy
+# Generated edge NATS configs (created by add_edge_site.sh)
+ops/dev/nats-edge-*.conf
+ops/dev/nats-hub.conf
 .pytest_cache/
 .mypy_cache/
 coverage.xml
@@ -32,3 +38,9 @@ docs/wiki/*
 content-prep/
 cip-series/
 libpod
+# Rosenpass/WireGuard PSK artifacts (local-only)
+rosenpass/
+rosenpass*.key
+rosenpass*.pub
+rosenpass*.conf
+rosenpass-status.json

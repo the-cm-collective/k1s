@@ -15,7 +15,7 @@ class _StubNetFS:
 def test_node_volume_manager_injects_device_mount() -> None:
     man = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="busybox",

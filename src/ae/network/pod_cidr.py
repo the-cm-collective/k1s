@@ -65,6 +65,7 @@ class PodCIDRAllocator:
                 backend=getattr(node, "backend", None) if current else None,
                 endpoint=getattr(node, "endpoint", None) if current else None,
                 wg_pubkey=getattr(node, "wg_pubkey", None) if current else None,
+                rp_pubkey=getattr(node, "rp_pubkey", None) if current else None,
             )
             return cidr
         raise RuntimeError(f"no free pod CIDRs available in pool {self._pool} (/ {self._mask})")

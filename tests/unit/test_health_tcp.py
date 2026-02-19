@@ -12,7 +12,7 @@ def test_tcp_probe_success(monkeypatch):
         ),  # type: ignore[arg-type]
     )
     m = AppManifest(
-        apiVersion="ae.dev/v1alpha1", kind="App", metadata=Metadata(name="tcp"), spec=spec
+        apiVersion="ae.dev/v1alpha1", kind="Deployment", metadata=Metadata(name="tcp"), spec=spec
     )
     r = RuntimeResult(
         revision=1,
@@ -54,7 +54,7 @@ def test_tcp_probe_failure(monkeypatch):
         ),  # type: ignore[arg-type]
     )
     m = AppManifest(
-        apiVersion="ae.dev/v1alpha1", kind="App", metadata=Metadata(name="tcp"), spec=spec
+        apiVersion="ae.dev/v1alpha1", kind="Deployment", metadata=Metadata(name="tcp"), spec=spec
     )
     r = RuntimeResult(
         revision=1,

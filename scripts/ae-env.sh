@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$ROOT_DIR/state/labs/apishim.env}"
+APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$ROOT_DIR/state/profiles/labs/apishim.env}"
 DEV_ENV_FILE="${DEV_ENV_FILE:-$ROOT_DIR/state/dev.env}"
 CONTROLLER_ENV_FILE="${CONTROLLER_ENV_FILE:-$ROOT_DIR/state/env.sh}"
 
@@ -72,6 +72,72 @@ PY
   head -c 16 /dev/urandom | xxd -p -c 32
 }
 
+running_in_container() {
+  if [[ -f "/.dockerenv" || -f "/run/.containerenv" ]]; then
+    return 0
+  fi
+  if [[ -r "/proc/1/cgroup" ]]; then
+    if grep -Eq "(docker|podman|containerd|kubepods)" /proc/1/cgroup; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+normalize_upstream_server_for_host() {
+  local server="$1"
+  local port_hint="${2:-}"
+  if [[ -z "$server" ]]; then
+    printf '%s' "$server"
+    return 0
+  fi
+  if running_in_container; then
+    printf '%s' "$server"
+    return 0
+  fi
+
+  local scheme=""
+  local rest="$server"
+  if [[ "$server" == *"://"* ]]; then
+    scheme="${server%%://*}"
+    rest="${server#*://}"
+  fi
+
+  local hostport="$rest"
+  local path=""
+  if [[ "$rest" == */* ]]; then
+    hostport="${rest%%/*}"
+    path="/${rest#*/}"
+  fi
+
+  local host="$hostport"
+  local port=""
+  if [[ "$hostport" == *":"* ]]; then
+    host="${hostport%%:*}"
+    port="${hostport##*:}"
+  fi
+
+  if [[ "$host" != "apishim" ]]; then
+    printf '%s' "$server"
+    return 0
+  fi
+
+  if [[ -z "$port" ]]; then
+    port="$port_hint"
+  fi
+  if [[ -z "$port" ]]; then
+    port="8445"
+  fi
+
+  local out="127.0.0.1:${port}${path}"
+  if [[ -n "$scheme" ]]; then
+    out="${scheme}://${out}"
+  else
+    out="https://${out}"
+  fi
+  printf '%s' "$out"
+}
+
 mode="${1:-}"
 shift || true
 out_file=""
@@ -124,26 +190,32 @@ case "$mode" in
     if [[ -n "$read_token" ]]; then emit "export AE_API_READ_TOKEN=${read_token}"; fi
 
     server="${AE_APISHIM_SERVER:-}"
+    server_from_upstream=0
+    port_hint=""
     if [[ -z "$server" ]]; then
       upstream="${APISHIM_UPSTREAM:-}"
-      port="${APISHIM_PORT:-}"
+      port_hint="${APISHIM_PORT:-}"
       if [[ -z "$upstream" ]]; then
         upstream="$(read_env_var "APISHIM_UPSTREAM" "$DEV_ENV_FILE" || true)"
       fi
-      if [[ -z "$port" ]]; then
-        port="$(read_env_var "APISHIM_PORT" "$DEV_ENV_FILE" || true)"
+      if [[ -z "$port_hint" ]]; then
+        port_hint="$(read_env_var "APISHIM_PORT" "$DEV_ENV_FILE" || true)"
       fi
       if [[ -n "$upstream" ]]; then
+        server_from_upstream=1
         if [[ "$upstream" == *"://"* ]]; then
           server="$upstream"
         else
           server="https://${upstream}"
         fi
-      elif [[ -n "$port" ]]; then
-        server="https://127.0.0.1:${port}"
+      elif [[ -n "$port_hint" ]]; then
+        server="https://127.0.0.1:${port_hint}"
       else
         server="https://127.0.0.1:8445"
       fi
+    fi
+    if [[ "$server_from_upstream" -eq 1 ]]; then
+      server="$(normalize_upstream_server_for_host "$server" "$port_hint")"
     fi
     emit "export AE_APISHIM_SERVER=${server}"
     ;;

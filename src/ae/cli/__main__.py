@@ -11,6 +11,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
@@ -26,7 +27,7 @@ from ae.controller.spec import (
     parse_app_ref,
     split_app_key,
 )
-from ae.controller.state import AppStatus, SQLiteStateStore
+from ae.controller.state import AppStatus, SQLiteStateStore, state_store_from_env
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.k8s.check import k8s_portability_issues
 from ae.k8s.exporter import ExportOptions, export_k8s_yaml
@@ -47,7 +48,7 @@ from ae.secrets import SecretManager
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ae", description="Minimal workload engine CLI (Deployment/App manifests)"
+        prog="ae", description="Minimal workload engine CLI (Deployment manifests)"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
@@ -55,7 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING/ERROR)"
     )
     parser.add_argument(
-        "--server", default=None, help="Remote API base URL (e.g. http://127.0.0.1:9108)"
+        "--server",
+        default=os.getenv("AE_API_SERVER") or None,
+        help="Remote API base URL (e.g. http://127.0.0.1:9108)",
     )
     parser.add_argument("--token", default=None, help="Bearer token for remote API auth")
     parser.add_argument(
@@ -73,7 +76,26 @@ def build_parser() -> argparse.ArgumentParser:
             help="Namespace to operate in when the app name is unqualified (overrides global --namespace)",
         )
 
-    apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (App)")
+    # work queue helpers (lab-edge / outbox)
+    work_parser = subparsers.add_parser("work", help="Work queue helpers")
+    work_sub = work_parser.add_subparsers(dest="work_cmd", required=True)
+    work_enqueue = work_sub.add_parser("enqueue", help="Enqueue work for a site")
+    work_enqueue.add_argument("--site-id", required=True, help="Target site id")
+    work_enqueue.add_argument("--work-id", default=None, help="Work id (defaults to uuid)")
+    work_enqueue.add_argument("--attempt", type=int, default=1, help="Attempt number")
+    work_enqueue.add_argument(
+        "--mode",
+        choices=["outbox", "queue"],
+        default="outbox",
+        help="outbox publishes via JetStream; queue is lab-edge work.pull",
+    )
+    work_enqueue.add_argument("--payload", default=None, help="JSON payload override")
+    work_enqueue.add_argument("--payload-file", type=Path, default=None, help="JSON payload file")
+    work_enqueue.add_argument("--op", default=None, help="Operation name (optional)")
+    work_enqueue.add_argument("--preferred-node", default=None, help="Preferred node id")
+    work_enqueue.add_argument("--target", default=None, help="Target JSON string")
+
+    apply_parser = subparsers.add_parser("apply", help="Apply a workload manifest (Deployment)")
     _add_namespace_arg(apply_parser)
     apply_parser.add_argument("-f", "--file", type=Path, required=True, help="Path to manifest")
     apply_parser.add_argument(
@@ -87,9 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override metadata.namespace in the manifest(s) with --namespace",
     )
 
-    status_parser = subparsers.add_parser("status", help="Show workload (App) status")
+    status_parser = subparsers.add_parser("status", help="Show workload (Deployment) status")
     _add_namespace_arg(status_parser)
-    status_parser.add_argument("name", nargs="?", help="Workload (App) name (omit to list all)")
+    status_parser.add_argument("name", nargs="?", help="Workload name (omit to list all)")
     status_parser.add_argument(
         "--history", type=int, default=0, help="Show the most recent N probe evaluations"
     )
@@ -115,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     logs_parser = subparsers.add_parser("logs", help="Tail workload logs")
     _add_namespace_arg(logs_parser)
-    logs_parser.add_argument("name", help="Workload (App) name")
+    logs_parser.add_argument("name", help="Workload name")
     logs_parser.add_argument("--follow", action="store_true", help="Stream logs continuously")
     logs_parser.add_argument(
         "--container", help="Pod selector: index (e.g. 0) or pod name", default=None
@@ -139,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     # exec: run a command inside a container
     exec_parser = subparsers.add_parser("exec", help="Run a command in a container")
     _add_namespace_arg(exec_parser)
-    exec_parser.add_argument("name", help="Workload (App) name")
+    exec_parser.add_argument("name", help="Workload name")
     exec_parser.add_argument(
         "--container", required=False, help="Target container name or pod name"
     )
@@ -162,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     shell_parser = subparsers.add_parser("shell", help="Open an interactive shell in a container")
     _add_namespace_arg(shell_parser)
-    shell_parser.add_argument("name", help="Workload (App) name")
+    shell_parser.add_argument("name", help="Workload name")
     shell_parser.add_argument(
         "--container", required=False, help="Target container name or pod name"
     )
@@ -180,6 +202,33 @@ def build_parser() -> argparse.ArgumentParser:
     tty_group.add_argument("--tty", action="store_true", help="Force TTY on")
     tty_group.add_argument("--no-tty", action="store_true", help="Disable TTY")
     shell_parser.add_argument("cmd", nargs="*", help="Shell command after --")
+
+    pf_parser = subparsers.add_parser(
+        "port-forward",
+        help="Forward a local TCP port to a pod via the API shim (WebSocket)",
+    )
+    _add_namespace_arg(pf_parser)
+    pf_parser.add_argument("name", help="Workload name")
+    pf_parser.add_argument(
+        "mapping",
+        help="Port mapping in the form local:remote (e.g., 18080:8080).",
+    )
+    pf_parser.add_argument(
+        "--pod",
+        dest="pod",
+        default=None,
+        help="Pod name override (defaults to a ready pod for the app).",
+    )
+    pf_parser.add_argument(
+        "--bind",
+        default="127.0.0.1",
+        help="Local bind address (default: 127.0.0.1).",
+    )
+    pf_parser.add_argument(
+        "--apishim",
+        default=None,
+        help="API shim base URL for WebSocket port-forward (defaults to AE_APISHIM_SERVER when set)",
+    )
 
     nodes_parser = subparsers.add_parser("nodes", help="List or describe nodes")
     nodes_parser.add_argument("name", nargs="?", help="Node id to describe (omit to list)")
@@ -199,7 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rollback_parser = subparsers.add_parser("rollback", help="Rollback a workload revision")
     _add_namespace_arg(rollback_parser)
-    rollback_parser.add_argument("name", help="Workload (App) name")
+    rollback_parser.add_argument("name", help="Workload name")
     rollback_parser.add_argument(
         "--to",
         type=int,
@@ -209,7 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     revisions_parser = subparsers.add_parser("revisions", help="List stored revisions")
     _add_namespace_arg(revisions_parser)
-    revisions_parser.add_argument("name", help="Workload (App) name")
+    revisions_parser.add_argument("name", help="Workload name")
     revisions_parser.add_argument("--limit", type=int, default=10)
 
     # registry helpers
@@ -269,7 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     events_parser = subparsers.add_parser("events", help="Show recent events")
     _add_namespace_arg(events_parser)
-    events_parser.add_argument("name", help="Workload (App) name")
+    events_parser.add_argument("name", help="Workload name")
     events_parser.add_argument("--limit", type=int, default=20)
 
     services_parser = subparsers.add_parser(
@@ -280,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     history_parser = subparsers.add_parser("history", help="Show recent probe evaluations")
     _add_namespace_arg(history_parser)
-    history_parser.add_argument("name", help="Workload (App) name")
+    history_parser.add_argument("name", help="Workload name")
     history_parser.add_argument("--limit", type=int, default=20)
     history_parser.add_argument("--pod", dest="pod", default=None, help="Filter by pod name")
     history_parser.add_argument(
@@ -327,7 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
         "delete", help="Delete a workload/app (containers + status)"
     )
     _add_namespace_arg(delete_parser)
-    delete_parser.add_argument("name", help="Workload (App) name")
+    delete_parser.add_argument("name", help="Workload name")
     delete_parser.add_argument(
         "--purge", action="store_true", help="Also purge events and revisions history"
     )
@@ -337,7 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
         "scale", help="Scale a workload/app by reconciling replicas"
     )
     _add_namespace_arg(scale_parser)
-    scale_parser.add_argument("name", help="Workload (App) name")
+    scale_parser.add_argument("name", help="Workload name")
     scale_parser.add_argument("--replicas", type=int, required=True)
 
     # backup/restore
@@ -648,7 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
             Path("specs/examples/multi-replica-echo.yaml"),
             Path("specs/examples/echo-hpa.yaml"),
         ],
-        help="List of Deployment/App manifests to score (files)",
+        help="List of Deployment manifests to score (files)",
     )
     kr.add_argument("--namespace", default="demo")
     kr.add_argument(
@@ -681,10 +730,10 @@ def build_parser() -> argparse.ArgumentParser:
     rollout_sub = rollout_cmd.add_subparsers(dest="rollout_cmd", required=True)
     r_pause = rollout_sub.add_parser("pause", help="Pause rollout for a workload/app")
     _add_namespace_arg(r_pause)
-    r_pause.add_argument("name", help="Workload (App) name")
+    r_pause.add_argument("name", help="Workload name")
     r_resume = rollout_sub.add_parser("resume", help="Resume rollout for a workload/app")
     _add_namespace_arg(r_resume)
-    r_resume.add_argument("name", help="Workload (App) name")
+    r_resume.add_argument("name", help="Workload name")
 
     # api tokens helper
     api_cmd = subparsers.add_parser("api", help="HTTP API helpers")
@@ -740,7 +789,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--apishim-env",
         type=Path,
         default=None,
-        help="Path to apishim env file (default: state/labs/apishim.env)",
+        help="Path to apishim env file (default: inferred profile apishim.cli.env/apishim.env)",
     )
     auth_local.add_argument(
         "--controller-env",
@@ -764,6 +813,39 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Path to apishim pid file (default: state/apishim.pid)",
+    )
+    auth_local.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit nonzero when no usable apishim auth token can be resolved",
+    )
+    auth_mint = auth_sub.add_parser("mint", help="Mint short-lived API shim session tokens")
+    auth_mint.add_argument(
+        "--role",
+        choices=["exec", "portforward", "read"],
+        default="exec",
+        help="Role encoded in the minted session token",
+    )
+    auth_mint.add_argument(
+        "--scope",
+        default=None,
+        help="Optional scope (for example default/my-app or default/my-pod)",
+    )
+    auth_mint.add_argument(
+        "--ttl",
+        type=int,
+        default=None,
+        help="Optional TTL in seconds (bounded by shim limits)",
+    )
+    auth_mint.add_argument(
+        "--server",
+        default=None,
+        help="API shim base URL (defaults to AE_APISHIM_SERVER)",
+    )
+    auth_mint.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit full JSON response instead of token-only output",
     )
     auth_remote = auth_sub.add_parser("remote", help="Generate fresh tokens for remote setup")
     auth_remote.add_argument(
@@ -878,12 +960,6 @@ def build_parser() -> argparse.ArgumentParser:
     vimg.add_argument("--json", action="store_true", help="Emit JSON result")
 
     return parser
-
-
-def state_store_from_env() -> SQLiteStateStore:
-    db_path = Path(os.getenv("AE_STATE_DB", "state/controller.db"))
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return SQLiteStateStore(db_path)
 
 
 def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> RuntimeAdapter:
@@ -1296,34 +1372,67 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "k8s-report":
         return handle_k8s_report(args)
 
-    store = state_store_from_env()
-    registry_auth = registry_auth_factory()
-    runtime = runtime_factory(registry_auth=registry_auth)
-    health_manager = health_manager_factory()
-    ingress_service = ingress_service_factory()
-    # Inject store into ingress service if supported (for canary state persistence)
-    try:
-        if ingress_service is not None:
-            ingress_service._store = store  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    secret_manager = secret_manager_factory()
-    config_manager = config_manager_factory()
-    reconciler = Reconciler(
-        runtime=runtime,
-        state_store=store,
-        health_manager=health_manager,
-        ingress_service=ingress_service,
-        secret_manager=secret_manager,
-        config_manager=config_manager,
-    )
+    ctx: dict[str, object] = {}
 
-    auth_handler = globals().get("handle_auth")
-    if auth_handler is None:
+    def _ensure_context() -> dict[str, object]:
+        if ctx:
+            return ctx
+        store = state_store_from_env()
+        registry_auth = registry_auth_factory()
+        runtime = runtime_factory(registry_auth=registry_auth)
+        health_manager = health_manager_factory()
+        ingress_service = ingress_service_factory()
+        # Inject store into ingress service if supported (for canary state persistence)
+        try:
+            if ingress_service is not None:
+                ingress_service._store = store  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        secret_manager = secret_manager_factory()
+        config_manager = config_manager_factory()
+        reconciler = Reconciler(
+            runtime=runtime,
+            state_store=store,
+            health_manager=health_manager,
+            ingress_service=ingress_service,
+            secret_manager=secret_manager,
+            config_manager=config_manager,
+        )
+        ctx.update(
+            {
+                "store": store,
+                "runtime": runtime,
+                "reconciler": reconciler,
+                "ingress_service": ingress_service,
+            }
+        )
+        return ctx
+
+    class _Lazy:
+        def __init__(self, getter):
+            self._getter = getter
+
+        def _value(self):
+            return self._getter()
+
+        def __getattr__(self, name: str):
+            return getattr(self._value(), name)
+
+    store = _Lazy(lambda: _ensure_context()["store"])
+    runtime = _Lazy(lambda: _ensure_context()["runtime"])
+    reconciler = _Lazy(lambda: _ensure_context()["reconciler"])
+    ingress_service = _Lazy(lambda: _ensure_context()["ingress_service"])
+
+    _auth_impl = globals().get("handle_auth")
+    if _auth_impl is None:
 
         def auth_handler(_ns: argparse.Namespace) -> int:
             print("auth command unavailable in this build")
             return 2
+    else:
+
+        def auth_handler(ns: argparse.Namespace) -> int:
+            return _auth_impl(ns, args)
 
     command_handlers: dict[str, Callable[[argparse.Namespace], int]] = {
         "apply": lambda ns: handle_apply(ns, reconciler, args),
@@ -1331,6 +1440,7 @@ def main(argv: list[str] | None = None) -> int:
         "logs": lambda ns: handle_logs(ns, store, runtime),
         "exec": lambda ns: handle_exec(ns, store, runtime),
         "shell": lambda ns: handle_shell(ns, store, runtime),
+        "port-forward": lambda ns: handle_port_forward(ns, store, runtime),
         "rollback": lambda ns: handle_rollback(ns, store, reconciler),
         "revisions": lambda ns: handle_revisions(ns, store),
         "rollout": lambda ns: handle_rollout(ns, store, reconciler),
@@ -1356,6 +1466,7 @@ def main(argv: list[str] | None = None) -> int:
         "verify-image": handle_verify_image,
         "nodes": lambda ns: handle_nodes(ns, store, runtime),
         "certs": handle_certs,
+        "work": lambda ns: handle_work(ns, store),
     }
 
     handler = command_handlers.get(args.command)
@@ -1405,14 +1516,14 @@ def handle_apply(
             return True
 
         def _is_native(doc: dict) -> bool:
-            return _k8s_api(doc) == "ae.dev/v1alpha1" and _k8s_kind(doc) in {"App", "Deployment"}
+            return _k8s_api(doc) == "ae.dev/v1alpha1"
 
         if len(docs) == 1 and _is_native(docs[0]):
             return False
         for doc in docs:
             kind = _k8s_kind(doc)
             api = _k8s_api(doc)
-            if api == "ae.dev/v1alpha1" and kind in {"App", "Deployment"}:
+            if api == "ae.dev/v1alpha1":
                 continue
             if kind:
                 return True
@@ -1513,12 +1624,6 @@ def handle_apply(
 
         return manifest, warnings
 
-    def _warn_deprecated_kind(kind: str | None) -> None:
-        if str(kind or "") == "App":
-            print(
-                "warning: kind 'App' is deprecated; use kind 'Deployment' (apiVersion: ae.dev/v1alpha1)"
-            )
-
     def _doc_has_namespace(doc: dict) -> bool:
         meta = doc.get("metadata")
         if not isinstance(meta, dict):
@@ -1563,9 +1668,8 @@ def handle_apply(
                 payload = manifest.model_dump(by_alias=True)
             else:
                 if len(docs) != 1:
-                    raise ValueError("expected a single Deployment/App manifest document")
+                    raise ValueError("expected a single Deployment manifest document")
                 payload = docs[0]
-                _warn_deprecated_kind(payload.get("kind") if isinstance(payload, dict) else None)
             resp = _http_post_json(base, "/apply", payload, tok)
             print(
                 f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
@@ -1590,9 +1694,8 @@ def handle_apply(
                 print(f"warning: {w}")
         else:
             if len(docs) != 1:
-                raise ManifestError("expected a single Deployment/App manifest document")
+                raise ManifestError("expected a single Deployment manifest document")
             manifest = load_manifest(args.file)
-            _warn_deprecated_kind(getattr(manifest, "kind", None))
             if ns_override and (force_namespace or not raw_has_namespace):
                 manifest = manifest.model_copy(
                     update={
@@ -1796,6 +1899,7 @@ def handle_nodes(
         print(f"  endpoint: {node.endpoint or '-'}")
         print(f"  podCIDR:  {node.pod_cidr or '-'}")
         print(f"  wgPubkey: {node.wg_pubkey or '-'}")
+        print(f"  rpPubkey: {getattr(node, 'rp_pubkey', None) or '-'}")
         print(f"  labels:   {_fmt_labels(node.labels)}")
         print(f"  taints:   {_fmt_taints(node.taints)}")
         print(f"  cordoned: {'yes' if getattr(node, 'cordoned', False) else 'no'}")
@@ -2312,6 +2416,60 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
+    if ns.work_cmd != "enqueue":
+        print("unsupported work command")
+        return 2
+    import json as _json
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    work_id = ns.work_id or str(_uuid.uuid4())
+    attempt = int(ns.attempt or 1)
+    site_id = ns.site_id
+    payload = {}
+    if ns.payload_file:
+        payload = _json.loads(Path(ns.payload_file).read_text(encoding="utf-8"))
+    elif ns.payload:
+        payload = _json.loads(ns.payload)
+    if not isinstance(payload, dict):
+        print("payload must be a JSON object")
+        return 2
+    payload.setdefault("work_id", work_id)
+    payload.setdefault("attempt", attempt)
+    payload.setdefault("site_id", site_id)
+    if ns.op:
+        payload.setdefault("op", ns.op)
+    if ns.preferred_node:
+        payload.setdefault("preferred_node", ns.preferred_node)
+    if ns.target:
+        try:
+            payload.setdefault("target", _json.loads(ns.target))
+        except Exception as exc:  # noqa: BLE001
+            print(f"invalid --target json: {exc}")
+            return 2
+    payload.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    desired_generation = payload.get("desired_generation")
+    try:
+        desired_generation = int(desired_generation) if desired_generation is not None else None
+    except Exception:
+        desired_generation = None
+    store.upsert_work_ledger(
+        work_id=work_id,
+        attempt=attempt,
+        site_id=site_id,
+        state="Pending",
+        desired_generation=desired_generation,
+    )
+    if ns.mode == "queue":
+        store.enqueue_work(work_id, attempt, site_id, payload)
+        print(f"enqueued work_id={work_id} attempt={attempt} site={site_id} mode=queue")
+    else:
+        store.enqueue_work_outbox(work_id, attempt, site_id, payload)
+        print(f"enqueued work_id={work_id} attempt={attempt} site={site_id} mode=outbox")
+    return 0
+
+
 def _http_get_json(base: str, path: str, token: str | None = None):
     import requests
 
@@ -2334,6 +2492,380 @@ def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
     r = requests.post(url, headers=headers, json=body, timeout=10)
     r.raise_for_status()
     return r.json()
+
+
+def _apishim_base_url(base: str) -> str:
+    out = str(base or "").strip()
+    if not out:
+        return out
+    if "://" not in out:
+        out = "http://" + out
+    return out.rstrip("/")
+
+
+def _apishim_requests_verify() -> bool | str:
+    ca_bundle = (
+        os.getenv("AE_APISHIM_CA_BUNDLE")
+        or os.getenv("AE_APISHIM_CA")
+        or os.getenv("AE_APISHIM_TLS_CA")
+    )
+    if ca_bundle:
+        return str(ca_bundle)
+    return os.getenv("AE_APISHIM_INSECURE") != "1"
+
+
+def _cli_labs_mint_fallback_enabled() -> bool:
+    raw = str(os.getenv("AE_CLI_LABS_MINT_FALLBACK", "1") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _controller_api_candidates(global_server: str | None = None) -> list[str]:
+    out: list[str] = []
+    for cand in (global_server, os.getenv("AE_API_SERVER"), "http://127.0.0.1:9108"):
+        base = _apishim_base_url(str(cand or "").strip()) if cand else ""
+        if base and base not in out:
+            out.append(base)
+    return out
+
+
+def _mint_session_via_labs(
+    *,
+    role: str,
+    scope: str | None,
+    global_server: str | None = None,
+    ttl_seconds: int | None = None,
+) -> dict[str, Any]:
+    import requests
+
+    labs_token = (os.getenv("AE_LABS_TOKEN") or "").strip()
+    if not labs_token:
+        raise RuntimeError("labs session fallback unavailable: AE_LABS_TOKEN is not set")
+    verify = _apishim_requests_verify()
+    if verify is False:
+        try:
+            import urllib3
+
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except Exception:
+            pass
+    payload: dict[str, Any] = {"role": role}
+    if scope:
+        payload["scope"] = scope
+    if ttl_seconds is not None and int(ttl_seconds) > 0:
+        payload["ttlSeconds"] = int(ttl_seconds)
+    headers = {
+        "Authorization": f"Bearer {labs_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    errors: list[str] = []
+    for base in _controller_api_candidates(global_server):
+        url = base.rstrip("/") + "/api/apishim/session"
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=8, verify=verify)
+        except Exception as exc:
+            errors.append(f"{base}: {exc}")
+            continue
+        if resp.status_code >= 400:
+            body = (resp.text or "").strip()
+            if len(body) > 160:
+                body = body[:160] + "..."
+            errors.append(f"{base}: {resp.status_code} {body}".strip())
+            continue
+        try:
+            data = resp.json()
+        except Exception as exc:
+            errors.append(f"{base}: invalid JSON ({exc})")
+            continue
+        if not isinstance(data, dict):
+            errors.append(f"{base}: invalid payload")
+            continue
+        token = str(data.get("token") or "").strip()
+        if not token:
+            errors.append(f"{base}: token missing")
+            continue
+        return data
+    raise RuntimeError("labs session token mint failed: " + "; ".join(errors))
+
+
+def _resolve_labs_stream_token(
+    *,
+    apishim_base: str,
+    role: str,
+    scope: str | None,
+    global_server: str | None = None,
+) -> str | None:
+    if not _cli_labs_mint_fallback_enabled():
+        return None
+    cached = _cached_apishim_session_token(apishim_base, role, scope)
+    if cached:
+        return cached
+    try:
+        minted = _mint_session_via_labs(
+            role=role,
+            scope=scope,
+            global_server=global_server,
+        )
+    except Exception:
+        return None
+    token = str(minted.get("token") or "").strip()
+    if not token:
+        return None
+    exp_raw = minted.get("expires_at")
+    try:
+        exp = int(exp_raw) if exp_raw is not None else 0
+    except Exception:
+        exp = 0
+    _cache_apishim_session_token(apishim_base, role, scope, token, exp if exp > 0 else None)
+    return token
+
+
+def _extract_http_status(exc: Exception) -> int | None:
+    import re
+
+    m = re.search(r"\b([1-5][0-9][0-9])\b", str(exc))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _looks_like_connection_refused(exc: Exception) -> bool:
+    text = str(exc).strip().lower()
+    return "connection refused" in text or "errno 111" in text
+
+
+def _is_local_apishim_server(server: str | None) -> bool:
+    if not server:
+        return False
+    candidate = server if "://" in server else f"https://{server}"
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _print_apishim_connection_refused_hint(server: str | None) -> None:
+    target = server or "AE_APISHIM_SERVER"
+    print(f"hint: apishim appears unreachable at {target} (connection refused).")
+    print("hint: verify apishim is listening (example: ss -ltn | rg ':8445').")
+    print("hint: check state/apishim.pid and state/profiles/k1s-core/apishim.log.")
+
+
+def _session_token_expiry(token: str) -> int | None:
+    import base64
+    import json
+
+    if not token or not token.startswith("sess1."):
+        return None
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    payload_b64 = parts[1]
+    pad = "=" * ((4 - len(payload_b64) % 4) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(payload_b64 + pad)
+        payload = json.loads(raw.decode("utf-8"))
+        return int(payload.get("exp") or 0)
+    except Exception:
+        return None
+
+
+def _apishim_session_cache_path() -> Path:
+    override = (os.getenv("AE_APISHIM_SESSION_CACHE") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    xdg = (os.getenv("XDG_CACHE_HOME") or "").strip()
+    if xdg:
+        return Path(xdg).expanduser() / "ae" / "apishim_sessions.json"
+    return Path.home() / ".cache" / "ae" / "apishim_sessions.json"
+
+
+def _load_apishim_session_cache() -> dict[str, dict[str, Any]]:
+    import json
+
+    path = _apishim_session_cache_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for key, val in payload.items():
+        if isinstance(key, str) and isinstance(val, dict):
+            out[key] = val
+    return out
+
+
+def _save_apishim_session_cache(cache: dict[str, dict[str, Any]]) -> None:
+    import json
+    import tempfile
+
+    path = _apishim_session_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+    payload = json.dumps(cache, separators=(",", ":"))
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=str(path.parent), delete=False
+        ) as tmp:
+            tmp.write(payload)
+            tmp_path = Path(tmp.name)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except Exception:
+            pass
+        tmp_path.replace(path)
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+    except Exception:
+        return
+
+
+def _apishim_cache_key(base: str, role: str, scope: str | None) -> str:
+    return f"{_apishim_base_url(base)}|{role}|{scope or '*'}"
+
+
+def _cached_apishim_session_token(base: str, role: str, scope: str | None) -> str | None:
+    import time
+
+    cache = _load_apishim_session_cache()
+    key = _apishim_cache_key(base, role, scope)
+    entry = cache.get(key) or {}
+    token = str(entry.get("token") or "").strip()
+    if not token:
+        return None
+    exp = entry.get("expires_at")
+    try:
+        exp_ts = int(exp) if exp is not None else 0
+    except Exception:
+        exp_ts = 0
+    if exp_ts <= 0:
+        exp_ts = int(_session_token_expiry(token) or 0)
+    if exp_ts <= int(time.time() + 15):
+        cache.pop(key, None)
+        _save_apishim_session_cache(cache)
+        return None
+    return token
+
+
+def _cache_apishim_session_token(
+    base: str, role: str, scope: str | None, token: str, expires_at: int | None
+) -> None:
+    if not token:
+        return
+    cache = _load_apishim_session_cache()
+    key = _apishim_cache_key(base, role, scope)
+    exp = expires_at
+    if exp is None:
+        exp = _session_token_expiry(token)
+    cache[key] = {"token": token, "expires_at": int(exp or 0)}
+    _save_apishim_session_cache(cache)
+
+
+def _mint_apishim_session_token(
+    base: str,
+    *,
+    mint_token: str,
+    role: str,
+    scope: str | None = None,
+    ttl_seconds: int | None = None,
+) -> dict[str, Any]:
+    import requests
+
+    verify = _apishim_requests_verify()
+    if verify is False:
+        try:
+            import urllib3
+
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except Exception:
+            pass
+    url = _apishim_base_url(base).rstrip("/") + "/api/v1/sessiontokens"
+    payload: dict[str, Any] = {"role": role}
+    if scope:
+        payload["scopes"] = [scope]
+    if ttl_seconds is not None and int(ttl_seconds) > 0:
+        payload["ttlSeconds"] = int(ttl_seconds)
+    headers = {
+        "Authorization": f"Bearer {mint_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=10, verify=verify)
+    if resp.status_code >= 400:
+        msg = (resp.text or "").strip()
+        raise RuntimeError(f"session token mint failed: {resp.status_code} {msg}".strip())
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise RuntimeError(f"session token mint failed: invalid JSON response ({exc})") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("session token mint failed: invalid response payload")
+    token = str(data.get("token") or "").strip()
+    if not token:
+        raise RuntimeError("session token mint failed: token missing in response")
+    try:
+        exp = int(data.get("expires_at") or 0)
+    except Exception:
+        exp = 0
+    _cache_apishim_session_token(base, role, scope, token, exp if exp > 0 else None)
+    return data
+
+
+def _resolve_apishim_stream_token(
+    *,
+    base: str,
+    role: str,
+    scope: str | None,
+    explicit_token: str | None,
+    role_token: str | None,
+    generic_token: str | None,
+    mint_token: str | None,
+    force_refresh: bool = False,
+) -> str | None:
+    if not force_refresh:
+        for candidate in (explicit_token, role_token, generic_token):
+            if candidate:
+                return str(candidate)
+        cached = _cached_apishim_session_token(base, role, scope)
+        if cached:
+            return cached
+    mint_credential = (
+        str(mint_token)
+        if mint_token
+        else str(explicit_token or generic_token or "").strip() or None
+    )
+    if mint_credential:
+        try:
+            minted = _mint_apishim_session_token(
+                base,
+                mint_token=mint_credential,
+                role=role,
+                scope=scope,
+            )
+            token = str(minted.get("token") or "").strip()
+            if token:
+                return token
+        except Exception:
+            return None
+    return None
+
+
+def _apishim_scope(namespace: str, app_name: str, pod_name: str | None) -> str:
+    if pod_name:
+        return f"{namespace}/{pod_name}"
+    _ns, name = split_app_key(app_name)
+    return f"{namespace}/{name}"
 
 
 def _resolve_app_name(name: str | None, namespace: str | None = None) -> str | None:
@@ -2385,7 +2917,7 @@ def handle_status(
                 # When --wide, include pod and container details if available
                 if args.wide:
                     try:
-                        for r in (data.get("pods") or data.get("replicas") or []):
+                        for r in data.get("pods") or data.get("replicas") or []:
                             pod_name = r.get("pod_name") or r.get("replica_id")
                             print(
                                 f"  - {pod_name}: ready={bool(r.get('ready'))} "
@@ -2718,13 +3250,176 @@ def _read_proc_env(pid: int) -> dict[str, str]:
     return out
 
 
-def handle_auth(args: argparse.Namespace) -> int:
-    if args.auth_cmd == "local":
-        apishim_env = Path(
-            args.apishim_env
-            if args.apishim_env
-            else os.getenv("APISHIM_ENV_FILE", "state/labs/apishim.env")
+def _profile_env_from_state_db(state_db: str | None) -> Path | None:
+    if not state_db:
+        return None
+    try:
+        db_path = Path(state_db).expanduser()
+        if not db_path.is_absolute():
+            db_path = Path.cwd() / db_path
+        profile_dir = db_path.parent
+        if profile_dir.parent.name != "profiles":
+            return None
+        return _preferred_profile_apishim_env(profile_dir)
+    except Exception:
+        return None
+
+
+def _preferred_profile_apishim_env(profile_dir: Path) -> Path | None:
+    candidates = [profile_dir / "apishim.cli.env", profile_dir / "apishim.env"]
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.R_OK):
+            return candidate
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _profile_state_db_from_env(apishim_env: Path | None) -> Path | None:
+    if not apishim_env:
+        return None
+    try:
+        profile_dir = apishim_env.expanduser().parent
+        if profile_dir.parent.name != "profiles":
+            return None
+        return profile_dir / "controller.db"
+    except Exception:
+        return None
+
+
+def _profile_name_from_env(apishim_env: Path | None) -> str | None:
+    if not apishim_env:
+        return None
+    try:
+        profile_dir = apishim_env.expanduser().parent
+        if profile_dir.parent.name != "profiles":
+            return None
+        return profile_dir.name
+    except Exception:
+        return None
+
+
+def _profile_etcd_defaults(profile_name: str | None) -> dict[str, str]:
+    if not profile_name:
+        return {}
+    if profile_name in {"dev-etcd", "k1s-core"}:
+        return {
+            "AE_STATE_BACKEND": "etcd",
+            "AE_ETCD_ENDPOINTS": "http://127.0.0.1:2379",
+            "AE_ETCD_PREFIX": f"k1s/profiles/{profile_name}",
+        }
+    return {}
+
+
+def _running_in_container() -> bool:
+    if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
+        return True
+    try:
+        text = Path("/proc/1/cgroup").read_text(encoding="utf-8")
+    except Exception:
+        return False
+    return any(tok in text for tok in ("docker", "podman", "containerd", "kubepods"))
+
+
+def _normalize_upstream_server_for_host(server: str, port_hint: str | None = None) -> str:
+    if not server:
+        return server
+    if _running_in_container():
+        return server
+    try:
+        if "://" not in server:
+            host = server
+            path = ""
+            if "/" in server:
+                host, rest = server.split("/", 1)
+                path = "/" + rest
+            host_part, sep, port = host.partition(":")
+            if host_part != "apishim":
+                return server
+            final_port = port
+            if not final_port and port_hint and port_hint.isdigit():
+                final_port = port_hint
+            if final_port:
+                return f"https://127.0.0.1:{final_port}{path}"
+            return f"https://127.0.0.1:8445{path}"
+
+        parsed = urlparse(server)
+        if parsed.hostname != "apishim":
+            return server
+        port = parsed.port
+        if port is None and port_hint and port_hint.isdigit():
+            port = int(port_hint)
+        netloc = "127.0.0.1"
+        if port:
+            netloc = f"{netloc}:{port}"
+        return urlunparse(
+            (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
         )
+    except Exception:
+        return server
+
+
+def _latest_profile_apishim_env(root: Path) -> Path | None:
+    try:
+        envs = [
+            p
+            for pattern in ("*/apishim.env", "*/apishim.cli.env")
+            for p in root.glob(pattern)
+            if p.is_file()
+        ]
+    except Exception:
+        return None
+    if not envs:
+        return None
+    try:
+        envs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        ordered = envs
+    else:
+        ordered = envs
+    for env_path in ordered:
+        preferred = _preferred_profile_apishim_env(env_path.parent)
+        if preferred:
+            return preferred
+    return None
+
+
+def _detect_apishim_env(
+    explicit: Path | None, controller_env: Path, proc_env: dict[str, str] | None = None
+) -> Path:
+    if explicit:
+        return explicit
+    env_override = os.getenv("APISHIM_ENV_FILE")
+    if env_override:
+        return Path(env_override)
+
+    state_db = os.getenv("AE_STATE_DB")
+    candidate = _profile_env_from_state_db(state_db)
+    if candidate:
+        return candidate
+
+    controller_state_db = _read_env_file_var(controller_env, "AE_STATE_DB")
+    candidate = _profile_env_from_state_db(controller_state_db)
+    if candidate:
+        return candidate
+
+    if proc_env:
+        candidate = _profile_env_from_state_db(proc_env.get("AE_APISHIM_DB"))
+        if candidate:
+            return candidate
+
+    root = Path("state/profiles")
+    latest = _latest_profile_apishim_env(root)
+    if latest:
+        return latest
+    return Path("state/profiles/labs/apishim.env")
+
+
+def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None = None) -> int:
+    if args.auth_cmd == "local":
+        import sys
+
         controller_env = Path(
             args.controller_env
             if args.controller_env
@@ -2744,13 +3439,36 @@ def handle_auth(args: argparse.Namespace) -> int:
             return ""
 
         proc_env: dict[str, str] = {}
+        proc_environ_warning: str | None = None
         if apishim_pid.exists():
             try:
                 pid_val = int(apishim_pid.read_text().strip() or "0")
             except Exception:
                 pid_val = 0
             if pid_val > 0:
+                proc_env_path = Path(f"/proc/{pid_val}/environ")
+                try:
+                    if proc_env_path.exists() and not os.access(proc_env_path, os.R_OK):
+                        proc_environ_warning = (
+                            f"warning: cannot read {proc_env_path} (permission denied)"
+                        )
+                except Exception:
+                    proc_environ_warning = None
                 proc_env = _read_proc_env(pid_val)
+
+        apishim_env = _detect_apishim_env(
+            args.apishim_env if args.apishim_env else None, controller_env, proc_env
+        )
+        profile_state_db_path = _profile_state_db_from_env(apishim_env)
+        profile_state_db = None
+        if profile_state_db_path:
+            try:
+                if profile_state_db_path.exists():
+                    profile_state_db = str(profile_state_db_path)
+            except Exception:
+                profile_state_db = None
+        profile_name = _profile_name_from_env(apishim_env)
+        profile_etcd = _profile_etcd_defaults(profile_name)
 
         apishim_token = pick(
             proc_env.get("AE_APISHIM_TOKEN"),
@@ -2777,12 +3495,37 @@ def handle_auth(args: argparse.Namespace) -> int:
             _read_env_file_var(apishim_env, "AE_APISHIM_SESSION_SECRET"),
             os.getenv("AE_APISHIM_SESSION_SECRET"),
         )
+        apishim_mint = pick(
+            proc_env.get("AE_APISHIM_MINT_TOKEN"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_MINT_TOKEN"),
+            os.getenv("AE_APISHIM_MINT_TOKEN"),
+        )
+        apishim_ca_bundle = pick(
+            proc_env.get("AE_APISHIM_CA_BUNDLE"),
+            proc_env.get("AE_APISHIM_CA"),
+            proc_env.get("AE_APISHIM_TLS_CA"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_CA_BUNDLE"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_CA"),
+            _read_env_file_var(apishim_env, "AE_APISHIM_TLS_CA"),
+            os.getenv("AE_APISHIM_CA_BUNDLE"),
+            os.getenv("AE_APISHIM_CA"),
+            os.getenv("AE_APISHIM_TLS_CA"),
+        )
+        if not apishim_ca_bundle:
+            try:
+                candidate = apishim_env.with_name("apishim.ca.crt")
+                if candidate.is_file() and os.access(candidate, os.R_OK):
+                    apishim_ca_bundle = str(candidate)
+            except Exception:
+                apishim_ca_bundle = ""
         admin_token = pick(
+            proc_env.get("AE_API_ADMIN_TOKEN"),
             _read_env_file_var(apishim_env, "AE_API_ADMIN_TOKEN"),
             _read_env_file_var(controller_env, "AE_API_ADMIN_TOKEN"),
             os.getenv("AE_API_ADMIN_TOKEN"),
         )
         labs_token = pick(
+            proc_env.get("AE_LABS_TOKEN"),
             _read_env_file_var(apishim_env, "AE_LABS_TOKEN"),
             _read_env_file_var(controller_env, "AE_LABS_TOKEN"),
             os.getenv("AE_LABS_TOKEN"),
@@ -2796,28 +3539,101 @@ def handle_auth(args: argparse.Namespace) -> int:
             os.getenv("AE_API_READ_TOKEN"),
         )
         state_db = pick(
+            profile_state_db,
             _read_env_file_var(controller_env, "AE_STATE_DB"),
             os.getenv("AE_STATE_DB"),
         )
+        state_backend = pick(
+            profile_etcd.get("AE_STATE_BACKEND"),
+            _read_env_file_var(controller_env, "AE_STATE_BACKEND"),
+            os.getenv("AE_STATE_BACKEND"),
+        )
+        etcd_endpoints = pick(
+            profile_etcd.get("AE_ETCD_ENDPOINTS"),
+            _read_env_file_var(controller_env, "AE_ETCD_ENDPOINTS"),
+            os.getenv("AE_ETCD_ENDPOINTS"),
+        )
+        etcd_prefix = pick(
+            profile_etcd.get("AE_ETCD_PREFIX"),
+            _read_env_file_var(controller_env, "AE_ETCD_PREFIX"),
+            os.getenv("AE_ETCD_PREFIX"),
+        )
 
-        server = args.server or os.getenv("AE_APISHIM_SERVER")
+        server = args.server or os.getenv("AE_APISHIM_SERVER") or proc_env.get("AE_APISHIM_SERVER")
         if not server:
             server = _read_env_file_var(controller_env, "AE_APISHIM_SERVER")
+        server_from_upstream = False
+        port_hint = None
         if not server:
             upstream = pick(
                 os.getenv("APISHIM_UPSTREAM"),
                 _read_env_file_var(dev_env, "APISHIM_UPSTREAM"),
             )
-            port = pick(
+            port_hint = pick(
                 os.getenv("APISHIM_PORT"),
                 _read_env_file_var(dev_env, "APISHIM_PORT"),
             )
             if upstream:
+                server_from_upstream = True
                 server = upstream if "://" in upstream else f"https://{upstream}"
-            elif port:
-                server = f"https://127.0.0.1:{port}"
+            elif port_hint:
+                server = f"https://127.0.0.1:{port_hint}"
             else:
                 server = "https://127.0.0.1:8445"
+        if server and server_from_upstream:
+            server = _normalize_upstream_server_for_host(server, port_hint)
+
+        warnings: list[str] = []
+        try:
+            if apishim_env.exists() and not os.access(apishim_env, os.R_OK):
+                warnings.append(f"warning: cannot read {apishim_env} (permission denied)")
+        except Exception:
+            pass
+        if proc_environ_warning:
+            warnings.append(proc_environ_warning)
+
+        has_direct_stream_auth = bool(apishim_exec or apishim_pf or apishim_token or apishim_mint)
+        has_labs_stream_auth = bool(labs_token)
+        shared_cli_env = apishim_env.with_name("apishim.cli.env")
+        root_only_profile_env = False
+        try:
+            root_only_profile_env = (
+                apishim_env.name == "apishim.env"
+                and apishim_env.parent.parent.name == "profiles"
+                and apishim_env.exists()
+                and not os.access(apishim_env, os.R_OK)
+            )
+        except Exception:
+            root_only_profile_env = False
+        if warnings and not has_direct_stream_auth:
+            for warn in warnings:
+                print(warn, file=sys.stderr)
+            if has_labs_stream_auth:
+                print(
+                    "warning: no direct apishim stream token resolved; CLI will rely on AE_LABS_TOKEN session fallback on 401",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "warning: no apishim stream token resolved; non-root shell/port-forward may fail with 401",
+                    file=sys.stderr,
+                )
+        if getattr(args, "strict", False) and not (has_direct_stream_auth or has_labs_stream_auth):
+            print(
+                "error: strict mode requires AE_APISHIM_EXEC_TOKEN/AE_APISHIM_PORTFORWARD_TOKEN/AE_APISHIM_TOKEN/AE_APISHIM_MINT_TOKEN or AE_LABS_TOKEN",
+                file=sys.stderr,
+            )
+            print(
+                f"hint: provide a readable shared CLI env at {shared_cli_env} containing AE_APISHIM_MINT_TOKEN",
+                file=sys.stderr,
+            )
+            if root_only_profile_env:
+                group_name = os.getenv("AE_CLI_SHARED_GROUP", "aecli")
+                print(
+                    f"hint: create readable shared CLI env {shared_cli_env} with AE_APISHIM_MINT_TOKEN (mode 640, group {group_name})",
+                    file=sys.stderr,
+                )
+            return 1
 
         lines: list[str] = []
         if apishim_token:
@@ -2830,6 +3646,8 @@ def handle_auth(args: argparse.Namespace) -> int:
             lines.append(f"export AE_APISHIM_PORTFORWARD_TOKEN={apishim_pf}")
         if apishim_secret:
             lines.append(f"export AE_APISHIM_SESSION_SECRET={apishim_secret}")
+        if apishim_mint:
+            lines.append(f"export AE_APISHIM_MINT_TOKEN={apishim_mint}")
         if admin_token:
             lines.append(f"export AE_API_ADMIN_TOKEN={admin_token}")
         if labs_token:
@@ -2840,9 +3658,60 @@ def handle_auth(args: argparse.Namespace) -> int:
             lines.append(f"export AE_API_READ_TOKEN={read_token}")
         if server:
             lines.append(f"export AE_APISHIM_SERVER={server}")
+        if apishim_ca_bundle:
+            lines.append(f"export AE_APISHIM_CA_BUNDLE={apishim_ca_bundle}")
+        if state_backend:
+            lines.append(f"export AE_STATE_BACKEND={state_backend}")
+        if etcd_endpoints:
+            lines.append(f"export AE_ETCD_ENDPOINTS={etcd_endpoints}")
+        if etcd_prefix:
+            lines.append(f"export AE_ETCD_PREFIX={etcd_prefix}")
         if state_db:
             lines.append(f"export AE_STATE_DB={state_db}")
         _write_export_lines(lines, getattr(args, "output", None))
+        return 0
+
+    if args.auth_cmd == "mint":
+        import json
+
+        server = (
+            getattr(args, "server", None)
+            or os.getenv("AE_APISHIM_SERVER")
+            or (
+                str(getattr(global_args, "server", ""))
+                if global_args and getattr(global_args, "server", None)
+                else ""
+            )
+        )
+        if not server:
+            print("error: set --server or AE_APISHIM_SERVER for auth mint")
+            return 2
+        mint_token = (
+            (str(getattr(global_args, "token", "")).strip() if global_args else "")
+            or (os.getenv("AE_APISHIM_MINT_TOKEN") or "").strip()
+            or (os.getenv("AE_APISHIM_TOKEN") or "").strip()
+        )
+        if not mint_token:
+            print("error: missing mint credential (set --token or AE_APISHIM_MINT_TOKEN)")
+            return 2
+        role = str(getattr(args, "role", "exec") or "exec").strip().lower()
+        scope = str(getattr(args, "scope", "") or "").strip() or None
+        ttl = getattr(args, "ttl", None)
+        try:
+            minted = _mint_apishim_session_token(
+                server,
+                mint_token=mint_token,
+                role=role,
+                scope=scope,
+                ttl_seconds=ttl,
+            )
+        except Exception as exc:
+            print(f"error: {exc}")
+            return 1
+        if getattr(args, "json", False):
+            print(json.dumps(minted))
+        else:
+            print(str(minted.get("token") or ""))
         return 0
 
     if args.auth_cmd == "remote":
@@ -2850,19 +3719,28 @@ def handle_auth(args: argparse.Namespace) -> int:
 
         apishim_token = secrets.token_urlsafe(32)
         apishim_read = secrets.token_urlsafe(32)
+        apishim_mint = secrets.token_urlsafe(32)
         apishim_secret = secrets.token_urlsafe(32)
         admin_token = secrets.token_hex(16)
         scaler_token = secrets.token_hex(16)
         read_token = secrets.token_hex(16)
+        api_server = os.getenv("AE_API_SERVER") or (
+            str(getattr(global_args, "server", ""))
+            if global_args and getattr(global_args, "server", None)
+            else None
+        )
 
         lines = [
             f"export AE_APISHIM_TOKEN={apishim_token}",
             f"export AE_APISHIM_READ_TOKEN={apishim_read}",
+            f"export AE_APISHIM_MINT_TOKEN={apishim_mint}",
             f"export AE_APISHIM_SESSION_SECRET={apishim_secret}",
             f"export AE_API_ADMIN_TOKEN={admin_token}",
             f"export AE_API_SCALER_TOKEN={scaler_token}",
             f"export AE_API_READ_TOKEN={read_token}",
         ]
+        if api_server:
+            lines.append(f"export AE_API_SERVER={api_server}")
         if not getattr(args, "no_mutations", False):
             lines.append("export AE_API_MUTATIONS=1")
         _write_export_lines(lines, getattr(args, "output", None))
@@ -3065,6 +3943,53 @@ def _resolve_exec_target(
             target = next((r for r in pods if r.ready), pods[0])
             pod_name = target.pod_name
     return pod_name, container_name
+
+
+def _resolve_pod_via_apishim(
+    base: str, namespace: str, app_name: str, token: str | None = None
+) -> str | None:
+    try:
+        payload = _http_get_json(
+            _apishim_base_url(base), f"/api/v1/namespaces/{namespace}/pods", token
+        )
+    except Exception:
+        return None
+
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return None
+
+    _ns, short_name = split_app_key(app_name)
+    prefix = f"{short_name}-rev"
+    candidates: list[tuple[int, int, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        status = item.get("status") if isinstance(item.get("status"), dict) else {}
+        name = str(meta.get("name") or "")
+        if not name:
+            continue
+        labels = meta.get("labels") if isinstance(meta.get("labels"), dict) else {}
+        label_app = str(labels.get("app") or labels.get("app.kubernetes.io/name") or "")
+        if not (
+            name == short_name
+            or name.startswith(prefix)
+            or label_app == short_name
+        ):
+            continue
+        phase = str(status.get("phase") or "")
+        running = 1 if phase.lower() == "running" else 0
+        ready = 0
+        container_statuses = status.get("containerStatuses")
+        if isinstance(container_statuses, list) and container_statuses:
+            ready = 1 if all(bool(cs.get("ready")) for cs in container_statuses if isinstance(cs, dict)) else 0
+        candidates.append((ready, running, name))
+
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][2]
 
 
 def _exec_over_spdy(
@@ -3615,6 +4540,256 @@ def _exec_over_ws(
     return exit_code
 
 
+def _parse_pf_mapping(mapping: str) -> tuple[int, int]:
+    raw = str(mapping or "").strip()
+    if not raw:
+        raise ValueError("port mapping is required (local:remote)")
+    if ":" in raw:
+        left, right = raw.split(":", 1)
+    else:
+        left, right = raw, raw
+    left = left.strip()
+    right = right.strip()
+    if not left or not right:
+        raise ValueError("port mapping must be in local:remote form")
+    return int(left), int(right)
+
+
+def _portforward_over_ws(
+    base: str,
+    *,
+    namespace: str,
+    pod_name: str,
+    local_host: str,
+    local_port: int,
+    remote_port: int,
+    token: str | None,
+    timeout: int | None,
+) -> int:
+    import base64
+    import os
+    import signal
+    import socket
+    import ssl
+    import sys
+    import threading
+    import urllib.parse
+
+    if "://" not in base:
+        base = "http://" + base
+    parsed = urllib.parse.urlparse(base)
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if scheme == "https" else 80)
+    if not host:
+        raise RuntimeError(f"invalid apishim base: {base}")
+    base_path = parsed.path.rstrip("/")
+    path = f"{base_path}/api/v1/namespaces/{namespace}/pods/{pod_name}/portforward"
+    query = urllib.parse.urlencode({"ports": str(remote_port), "token": token or ""})
+    full_path = path + ("?" + query if query else "")
+
+    stop_event = threading.Event()
+
+    def _open_ws() -> socket.socket:
+        sock = socket.create_connection((host, port), timeout=timeout or 10)
+        if scheme == "https":
+            ctx = ssl.create_default_context()
+            if os.getenv("AE_APISHIM_INSECURE") == "1":
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(sock, server_hostname=host)
+        ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        req_lines = [
+            f"GET {full_path} HTTP/1.1",
+            f"Host: {host}:{port}",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            "Sec-WebSocket-Version: 13",
+            f"Sec-WebSocket-Key: {ws_key}",
+            "Sec-WebSocket-Protocol: portforward.k8s.io",
+        ]
+        if token:
+            req_lines.append(f"Authorization: Bearer {token}")
+        req_lines.append("\r\n")
+        sock.sendall(("\r\n".join(req_lines)).encode("utf-8"))
+
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        if b"\r\n" not in buf:
+            raise RuntimeError("websocket: invalid response from server")
+        status_line = buf.split(b"\r\n", 1)[0]
+        try:
+            status_code = int(status_line.split()[1])
+        except Exception:
+            status_code = 0
+        if status_code != 101:
+            raise RuntimeError(f"websocket upgrade failed: {status_code}")
+        try:
+            sock.settimeout(0.2)
+        except Exception:
+            pass
+        return sock
+
+    def _send_ws(sock: socket.socket, payload: bytes) -> None:
+        mask_key = os.urandom(4)
+        header = bytearray()
+        header.append(0x82)
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < (1 << 16):
+            header.append(0x80 | 126)
+            header.extend(length.to_bytes(2, "big"))
+        else:
+            header.append(0x80 | 127)
+            header.extend(length.to_bytes(8, "big"))
+        masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        sock.sendall(bytes(header) + mask_key + masked)
+
+    def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
+        buf = b""
+        while len(buf) < n:
+            try:
+                chunk = sock.recv(n - len(buf))
+            except TimeoutError:
+                return None
+            if not chunk:
+                return None
+            buf += chunk
+        return buf
+
+    def _recv_ws(sock: socket.socket) -> tuple[int, bytes] | None:
+        hdr = _recv_exact(sock, 2)
+        if not hdr:
+            return None
+        opcode = hdr[0] & 0x0F
+        length = hdr[1] & 0x7F
+        if length == 126:
+            ext = _recv_exact(sock, 2)
+            if ext is None:
+                return None
+            length = int.from_bytes(ext, "big")
+        elif length == 127:
+            ext = _recv_exact(sock, 8)
+            if ext is None:
+                return None
+            length = int.from_bytes(ext, "big")
+        payload = _recv_exact(sock, length) if length else b""
+        if payload is None:
+            return None
+        return opcode, payload
+
+    def _handle_conn(conn: socket.socket) -> None:
+        conn_stop = threading.Event()
+        try:
+            ws = _open_ws()
+        except Exception as exc:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            print(f"port-forward connect failed: {exc}")
+            return
+
+        def _pump_local() -> None:
+            while not stop_event.is_set() and not conn_stop.is_set():
+                try:
+                    data = conn.recv(4096)
+                except Exception:
+                    break
+                if not data:
+                    break
+                try:
+                    _send_ws(ws, bytes([0]) + data)
+                except Exception:
+                    break
+            conn_stop.set()
+
+        def _pump_ws() -> None:
+            while not stop_event.is_set() and not conn_stop.is_set():
+                msg = _recv_ws(ws)
+                if msg is None:
+                    continue
+                opcode, payload = msg
+                if opcode == 0x8:
+                    break
+                if not payload:
+                    continue
+                ch = payload[0]
+                data = payload[1:]
+                if ch == 0 and data:
+                    try:
+                        conn.sendall(data)
+                    except Exception:
+                        break
+                elif ch == 1 and data:
+                    try:
+                        sys.stderr.buffer.write(data)
+                        sys.stderr.buffer.flush()
+                    except Exception:
+                        pass
+            conn_stop.set()
+
+        t1 = threading.Thread(target=_pump_local, daemon=True)
+        t2 = threading.Thread(target=_pump_ws, daemon=True)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        try:
+            ws.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((local_host, local_port))
+    listener.listen(5)
+    listener.settimeout(0.5)
+
+    print(f"Forwarding from {local_host}:{local_port} -> {pod_name}:{remote_port}")
+    print("Press Ctrl+C to stop.")
+
+    def _stop(_sig=None, _frame=None) -> None:  # noqa: ANN001 - signal handler
+        stop_event.set()
+        try:
+            listener.close()
+        except Exception:
+            pass
+
+    old_int = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, _stop)
+
+    try:
+        while not stop_event.is_set():
+            try:
+                conn, _addr = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            t = threading.Thread(target=_handle_conn, args=(conn,), daemon=True)
+            t.start()
+    finally:
+        try:
+            listener.close()
+        except Exception:
+            pass
+        try:
+            signal.signal(signal.SIGINT, old_int)
+        except Exception:
+            pass
+    return 0
+
+
 def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter) -> int:
     # Remote mode
     import inspect as _inspect
@@ -3629,13 +4804,12 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         ws_fallback = bool(
             getattr(args, "ws_fallback", False) or _os.getenv("AE_EXEC_WS_FALLBACK") == "1"
         )
-        token = None
-        if gargs is not None:
-            token = getattr(gargs, "token", None)
-        if token is None:
-            token = _os.getenv("AE_APISHIM_TOKEN")
-        if token is None:
-            token = _os.getenv("AE_APISHIM_EXEC_TOKEN")
+        explicit_token = getattr(gargs, "token", None) if gargs is not None else None
+        role_token = _os.getenv("AE_APISHIM_EXEC_TOKEN")
+        generic_token = _os.getenv("AE_APISHIM_TOKEN")
+        mint_token = _os.getenv("AE_APISHIM_MINT_TOKEN")
+        labs_server = getattr(gargs, "server", None) if gargs is not None else None
+        labs_attempted = False
         if apishim_base:
             app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
             cmd = list(args.cmd or [])
@@ -3644,16 +4818,29 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
             if not cmd:
                 print("exec requires a command after -- (e.g., ae exec app -- sh -c 'echo hi')")
                 return 2
+            ns, _name = split_app_key(app_name)
             pod_name, container_name = _resolve_exec_target(
                 store, app_name, getattr(args, "container", None)
             )
             if pod_name is None:
+                lookup_token = explicit_token or _os.getenv("AE_APISHIM_READ_TOKEN") or generic_token
+                pod_name = _resolve_pod_via_apishim(apishim_base, ns, app_name, lookup_token)
+            if pod_name is None:
                 pod_name = app_name
                 print("warning: no local status; using app name as pod reference")
-            ns, _name = split_app_key(app_name)
             want_stdin = bool(getattr(args, "stdin", False))
             want_tty = bool(getattr(args, "tty", False))
             want_stderr = not want_tty
+            scope = _apishim_scope(ns, app_name, pod_name)
+            token = _resolve_apishim_stream_token(
+                base=apishim_base,
+                role="exec",
+                scope=scope,
+                explicit_token=explicit_token,
+                role_token=role_token,
+                generic_token=generic_token,
+                mint_token=mint_token,
+            )
             try:
                 return _exec_over_spdy(
                     apishim_base,
@@ -3669,6 +4856,62 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                     timeout=getattr(args, "timeout", None),
                 )
             except Exception as exc:
+                if _extract_http_status(exc) == 401:
+                    refreshed = _resolve_apishim_stream_token(
+                        base=apishim_base,
+                        role="exec",
+                        scope=scope,
+                        explicit_token=explicit_token,
+                        role_token=role_token,
+                        generic_token=generic_token,
+                        mint_token=mint_token,
+                        force_refresh=True,
+                    )
+                    if refreshed and refreshed != token:
+                        token = refreshed
+                        try:
+                            return _exec_over_spdy(
+                                apishim_base,
+                                namespace=ns,
+                                pod_name=pod_name,
+                                command=cmd,
+                                container=container_name,
+                                stdin=want_stdin,
+                                stdout=True,
+                                stderr=want_stderr,
+                                tty=want_tty,
+                                token=token,
+                                timeout=getattr(args, "timeout", None),
+                            )
+                        except Exception as retry_exc:
+                            exc = retry_exc
+                if _extract_http_status(exc) == 401 and not labs_attempted:
+                    labs_attempted = True
+                    labs_token = _resolve_labs_stream_token(
+                        apishim_base=apishim_base,
+                        role="exec",
+                        scope=scope,
+                        global_server=str(labs_server) if labs_server else None,
+                    )
+                    if labs_token and labs_token != token:
+                        print("spdy exec got 401; trying labs session token fallback...")
+                        token = labs_token
+                        try:
+                            return _exec_over_spdy(
+                                apishim_base,
+                                namespace=ns,
+                                pod_name=pod_name,
+                                command=cmd,
+                                container=container_name,
+                                stdin=want_stdin,
+                                stdout=True,
+                                stderr=want_stderr,
+                                tty=want_tty,
+                                token=token,
+                                timeout=getattr(args, "timeout", None),
+                            )
+                        except Exception as retry_exc:
+                            exc = retry_exc
                 if ws_fallback:
                     print(f"spdy exec failed ({exc}); trying websocket fallback...")
                     try:
@@ -3686,8 +4929,68 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                             timeout=getattr(args, "timeout", None),
                         )
                     except Exception as exc2:
+                        if _extract_http_status(exc2) == 401:
+                            refreshed = _resolve_apishim_stream_token(
+                                base=apishim_base,
+                                role="exec",
+                                scope=scope,
+                                explicit_token=explicit_token,
+                                role_token=role_token,
+                                generic_token=generic_token,
+                                mint_token=mint_token,
+                                force_refresh=True,
+                            )
+                            if refreshed and refreshed != token:
+                                token = refreshed
+                                try:
+                                    return _exec_over_ws(
+                                        apishim_base,
+                                        namespace=ns,
+                                        pod_name=pod_name,
+                                        command=cmd,
+                                        container=container_name,
+                                        stdin=want_stdin,
+                                        stdout=True,
+                                        stderr=want_stderr,
+                                        tty=want_tty,
+                                        token=token,
+                                        timeout=getattr(args, "timeout", None),
+                                    )
+                                except Exception as retry_ws_exc:
+                                    exc2 = retry_ws_exc
+                        if _extract_http_status(exc2) == 401 and not labs_attempted:
+                            labs_attempted = True
+                            labs_token = _resolve_labs_stream_token(
+                                apishim_base=apishim_base,
+                                role="exec",
+                                scope=scope,
+                                global_server=str(labs_server) if labs_server else None,
+                            )
+                            if labs_token and labs_token != token:
+                                print(
+                                    "websocket exec got 401; trying labs session token fallback..."
+                                )
+                                token = labs_token
+                                try:
+                                    return _exec_over_ws(
+                                        apishim_base,
+                                        namespace=ns,
+                                        pod_name=pod_name,
+                                        command=cmd,
+                                        container=container_name,
+                                        stdin=want_stdin,
+                                        stdout=True,
+                                        stderr=want_stderr,
+                                        tty=want_tty,
+                                        token=token,
+                                        timeout=getattr(args, "timeout", None),
+                                    )
+                                except Exception as retry_ws_exc:
+                                    exc2 = retry_ws_exc
                         print(f"websocket exec failed: {exc2}")
                         return 1
+                if _looks_like_connection_refused(exc) and _is_local_apishim_server(apishim_base):
+                    _print_apishim_connection_refused_hint(apishim_base)
                 print(f"spdy exec failed: {exc}")
                 return 1
         if gargs is not None and getattr(gargs, "server", None):
@@ -3725,9 +5028,7 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                 print(f"exec failed: {exc}")
                 return 1
         # Fallback: select a pod by name substring
-        target = next(
-            (r for r in pods if (r.pod_name == cname or cname in r.pod_name)), None
-        )
+        target = next((r for r in pods if (r.pod_name == cname or cname in r.pod_name)), None)
         if not target:
             print(f"No matching pod for --container={cname}")
             return 1
@@ -3802,6 +5103,123 @@ def handle_shell(args: argparse.Namespace, store: SQLiteStateStore, runtime: Run
         exec_args.tty = bool(_sys.stdin.isatty() and _sys.stdout.isatty())
     exec_args.apishim = apishim_base
     return handle_exec(exec_args, store, runtime)
+
+
+def handle_port_forward(
+    args: argparse.Namespace, store: SQLiteStateStore, _runtime: RuntimeAdapter
+) -> int:
+    import inspect as _inspect
+    import os as _os
+
+    frame = _inspect.currentframe()
+    gargs = None
+    if frame is not None:
+        outer_locals = frame.f_back.f_locals if frame.f_back else {}
+        gargs = outer_locals.get("global_args") or outer_locals.get("args")
+
+    apishim_base = getattr(args, "apishim", None) or _os.getenv("AE_APISHIM_SERVER")
+    if not apishim_base and gargs and getattr(gargs, "server", None):
+        apishim_base = gargs.server
+    if not apishim_base:
+        print("port-forward requires the API shim; set --apishim or AE_APISHIM_SERVER")
+        return 2
+
+    explicit_token = getattr(gargs, "token", None) if gargs is not None else None
+    role_token = _os.getenv("AE_APISHIM_PORTFORWARD_TOKEN")
+    generic_token = _os.getenv("AE_APISHIM_TOKEN")
+    mint_token = _os.getenv("AE_APISHIM_MINT_TOKEN")
+    labs_server = getattr(gargs, "server", None) if gargs is not None else None
+
+    try:
+        local_port, remote_port = _parse_pf_mapping(getattr(args, "mapping", ""))
+    except Exception as exc:  # noqa: BLE001
+        print(f"invalid port mapping: {exc}")
+        return 2
+
+    app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
+    pod_name = getattr(args, "pod", None)
+    ns, _name = split_app_key(app_name)
+    if not pod_name:
+        pod_name, _container = _resolve_exec_target(store, app_name, None)
+    if not pod_name:
+        lookup_token = explicit_token or _os.getenv("AE_APISHIM_READ_TOKEN") or generic_token
+        pod_name = _resolve_pod_via_apishim(apishim_base, ns, app_name, lookup_token)
+    if not pod_name:
+        pod_name = app_name
+        print("warning: no local status; using app name as pod reference")
+
+    scope = _apishim_scope(ns, app_name, pod_name)
+    token = _resolve_apishim_stream_token(
+        base=apishim_base,
+        role="portforward",
+        scope=scope,
+        explicit_token=explicit_token,
+        role_token=role_token,
+        generic_token=generic_token,
+        mint_token=mint_token,
+    )
+    bind_host = getattr(args, "bind", None) or "127.0.0.1"
+    try:
+        return _portforward_over_ws(
+            apishim_base,
+            namespace=ns,
+            pod_name=pod_name,
+            local_host=bind_host,
+            local_port=local_port,
+            remote_port=remote_port,
+            token=token,
+            timeout=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if _extract_http_status(exc) == 401:
+            refreshed = _resolve_apishim_stream_token(
+                base=apishim_base,
+                role="portforward",
+                scope=scope,
+                explicit_token=explicit_token,
+                role_token=role_token,
+                generic_token=generic_token,
+                mint_token=mint_token,
+                force_refresh=True,
+            )
+            if refreshed and refreshed != token:
+                try:
+                    return _portforward_over_ws(
+                        apishim_base,
+                        namespace=ns,
+                        pod_name=pod_name,
+                        local_host=bind_host,
+                        local_port=local_port,
+                        remote_port=remote_port,
+                        token=refreshed,
+                        timeout=None,
+                    )
+                except Exception as retry_exc:
+                    exc = retry_exc
+        if _extract_http_status(exc) == 401:
+            labs_token = _resolve_labs_stream_token(
+                apishim_base=apishim_base,
+                role="portforward",
+                scope=scope,
+                global_server=str(labs_server) if labs_server else None,
+            )
+            if labs_token and labs_token != token:
+                print("port-forward got 401; trying labs session token fallback...")
+                try:
+                    return _portforward_over_ws(
+                        apishim_base,
+                        namespace=ns,
+                        pod_name=pod_name,
+                        local_host=bind_host,
+                        local_port=local_port,
+                        remote_port=remote_port,
+                        token=labs_token,
+                        timeout=None,
+                    )
+                except Exception as retry_exc:
+                    exc = retry_exc
+        print(f"port-forward failed: {exc}")
+        return 1
 
 
 def _status_to_json(status: AppStatus, store: SQLiteStateStore, *, include_details: bool) -> str:
@@ -4047,7 +5465,7 @@ def handle_services(args: argparse.Namespace, store: SQLiteStateStore) -> int:
             detail = store.get_service(svc.app_name)
             ports = getattr(detail, "ports", {}) if detail else {}
         port_str = ", ".join(
-            f"{p.get('name','')}:{p.get('port')}->{p.get('targetPort')}"
+            f"{p.get('name', '')}:{p.get('port')}->{p.get('targetPort')}"
             for p in (ports or {}).get("ports", [])
         )
         print(f"{_display_app_name(svc.app_name)}: ip={svc.cluster_ip} ports={port_str}")

@@ -18,6 +18,16 @@
   let ingressCheckAttempts = 0;
   let ingressCheckUrl = '';
   let ingressCheckOk = null;
+  const sseState = { disabled: false, errors: 0, lastErrorAt: 0 };
+  const apiFailState = { errors: 0, lastErrorAt: 0 };
+  const netErrorState = { errors: 0, lastErrorAt: 0 };
+  const API_FAIL_WINDOW_MS = 8000;
+  const API_FAIL_THRESHOLD = 2;
+  const NET_ERROR_WINDOW_MS = 8000;
+  const NET_ERROR_THRESHOLD = 2;
+  const SSE_ERROR_WINDOW_MS = 8000;
+  const SSE_ERROR_THRESHOLD = 2;
+  const SSE_COOLDOWN_MS = 30000;
 
   const xtermFallback = {
     css: '/static/vendor/xterm.css',
@@ -46,6 +56,10 @@
     document.head.appendChild(l);
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   function ensureXtermLoaded() {
     if (window.Terminal && window.FitAddon && window.FitAddon.FitAddon) return Promise.resolve(true);
     if (xtermPromise) return xtermPromise;
@@ -66,6 +80,72 @@
     if (!el) return;
     el.textContent = txt;
     if (cls) { el.className = cls; }
+  }
+
+  function parseSessionToken(tok) {
+    if (!tok || tok.indexOf('sess1.') !== 0) return null;
+    const parts = tok.split('.');
+    if (parts.length !== 3) return null;
+    let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = payload.length % 4;
+    if (pad) payload += '===='.slice(pad);
+    try {
+      const raw = atob(payload);
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  function sessionTokenExp(tok) {
+    const info = parseSessionToken(tok);
+    if (!info) return 0;
+    return parseInt(info.exp || '0', 10) || 0;
+  }
+
+  function sessionTokenExpired(tok, skewSec) {
+    if (!tok || tok.indexOf('sess1.') !== 0) return false;
+    const exp = sessionTokenExp(tok);
+    if (!exp) return true;
+    const now = Math.floor(Date.now() / 1000);
+    return exp <= (now + (skewSec || 0));
+  }
+
+  function scopePatternMatch(pat, value) {
+    if (!pat) return false;
+    if (pat === value) return true;
+    const raw = String(pat || '');
+    let esc = '';
+    const specials = '\\^$+?.()|{}[]';
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (ch === '*') { esc += '.*'; continue; }
+      if (ch === '?') { esc += '.'; continue; }
+      if (specials.indexOf(ch) !== -1) { esc += '\\' + ch; continue; }
+      esc += ch;
+    }
+    const re = '^' + esc + '$';
+    try { return new RegExp(re).test(String(value || '')); } catch { return false; }
+  }
+
+  function sessionTokenAllowsScope(tok, scope) {
+    const info = parseSessionToken(tok);
+    if (!info) return false;
+    const scopesVal = info.scopes || info.scope || [];
+    let scopes = [];
+    if (typeof scopesVal === 'string') scopes = [scopesVal];
+    else if (Array.isArray(scopesVal)) scopes = scopesVal.map((s) => String(s || '')).filter(Boolean);
+    if (!scopes.length) return true;
+    for (let i = 0; i < scopes.length; i++) {
+      if (scopePatternMatch(scopes[i], scope)) return true;
+    }
+    return false;
+  }
+
+  function clearStoredSession(kind) {
+    try { localStorage.removeItem('ae_apishim_' + kind + '_token'); } catch {}
+    try { localStorage.removeItem('ae_apishim_' + kind + '_scope'); } catch {}
+    try { localStorage.removeItem('ae_apishim_' + kind + '_exp'); } catch {}
   }
 
   function extractExampleBaseName(yamlText) {
@@ -120,25 +200,76 @@
     setCanaryInfo(null, null, null);
   }
 
+  function resetApiFailures() {
+    apiFailState.errors = 0;
+    apiFailState.lastErrorAt = 0;
+    netErrorState.errors = 0;
+    netErrorState.lastErrorAt = 0;
+  }
+
+  async function maybeSwitchToDirect(reason) {
+    if (!window.DOCS_API_BASE) return false;
+    if (API && API !== '') return false;
+    const now = Date.now();
+    if (now - apiFailState.lastErrorAt > API_FAIL_WINDOW_MS) apiFailState.errors = 0;
+    apiFailState.errors += 1;
+    apiFailState.lastErrorAt = now;
+    if (apiFailState.errors >= API_FAIL_THRESHOLD) {
+      apiFailState.errors = 0;
+      try { await switchToDirectApi(reason || 'proxy error'); } catch(_){}
+      return true;
+    }
+    return false;
+  }
+
+  function isNetworkError(err) {
+    if (err instanceof TypeError) return true;
+    const msg = String(err || '');
+    return msg.includes('Failed to fetch')
+      || msg.includes('NetworkError')
+      || msg.includes('ERR_NETWORK_CHANGED')
+      || msg.includes('ERR_INTERNET_DISCONNECTED');
+  }
+
+  function shouldNotifyNetworkError() {
+    const now = Date.now();
+    if (now - netErrorState.lastErrorAt > NET_ERROR_WINDOW_MS) netErrorState.errors = 0;
+    netErrorState.errors += 1;
+    netErrorState.lastErrorAt = now;
+    return netErrorState.errors >= NET_ERROR_THRESHOLD;
+  }
+
+  function noteNetworkError(label, err) {
+    if (!shouldNotifyNetworkError()) return;
+    netErrorState.errors = 0;
+    const msg = label ? `${label} temporarily unreachable; retrying...` : 'Network hiccup; retrying...';
+    try { banner(msg, 'warn', 4000); } catch(_){}
+  }
+
   async function jsonGet(url) {
     try {
       const r = await fetch(url, { headers: labsHeaders({ 'Accept': 'application/json' }) });
+      if (r.status < 500) resetApiFailures();
       if (!r.ok) {
         if (r.status >= 500 && (!API || API==='') && window.DOCS_API_BASE && typeof url === 'string' && url.startsWith('/')) {
-          try { await switchToDirectApi('proxy 5xx'); } catch(_){}
-          const r2 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
-          if (!r2.ok) throw new Error(`${r2.status}`);
-          return await r2.json();
+          const switched = await maybeSwitchToDirect('proxy 5xx');
+          if (switched) {
+            const r2 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
+            if (!r2.ok) throw new Error(`${r2.status}`);
+            return await r2.json();
+          }
         }
         throw new Error(`${r.status}`);
       }
       return await r.json();
     } catch (e) {
       if ((!API || API==='') && window.DOCS_API_BASE && typeof url === 'string' && url.startsWith('/')) {
-        try { await switchToDirectApi('proxy network error'); } catch(_){}
-        const r3 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
-        if (!r3.ok) throw new Error(`${r3.status}`);
-        return await r3.json();
+        const switched = await maybeSwitchToDirect('proxy network error');
+        if (switched) {
+          const r3 = await fetch(`${window.DOCS_API_BASE}${url}`, { headers: labsHeaders({ 'Accept': 'application/json' }) });
+          if (!r3.ok) throw new Error(`${r3.status}`);
+          return await r3.json();
+        }
       }
       throw e;
     }
@@ -149,15 +280,44 @@
     const url = `${API||''}${rel.startsWith('/')? rel : ('/' + rel)}`;
     try {
       const r = await fetch(url, opts||{});
+      if (r.status < 500) resetApiFailures();
       if (r.status >= 500 && (!API || API==='') && window.DOCS_API_BASE) {
-        try { await switchToDirectApi('proxy 5xx'); } catch(_){}
-        return await fetch(`${window.DOCS_API_BASE}${rel.startsWith('/')? rel : ('/' + rel)}`, opts||{});
+        const switched = await maybeSwitchToDirect('proxy 5xx');
+        if (switched) {
+          return await fetch(`${window.DOCS_API_BASE}${rel.startsWith('/')? rel : ('/' + rel)}`, opts||{});
+        }
       }
       return r;
     } catch (e) {
       if ((!API || API==='') && window.DOCS_API_BASE) {
-        try { await switchToDirectApi('proxy network error'); } catch(_){}
-        return await fetch(`${window.DOCS_API_BASE}${rel.startsWith('/')? rel : ('/' + rel)}`, opts||{});
+        const switched = await maybeSwitchToDirect('proxy network error');
+        if (switched) {
+          return await fetch(`${window.DOCS_API_BASE}${rel.startsWith('/')? rel : ('/' + rel)}`, opts||{});
+        }
+      }
+      throw e;
+    }
+  }
+
+  async function apiFetchRetry(label, path, opts) {
+    try {
+      return await apiFetch(path, opts);
+    } catch (e) {
+      if (isNetworkError(e)) {
+        await sleep(400);
+        try {
+          return await apiFetch(path, opts);
+        } catch (e2) {
+          if (label) {
+            if (isNetworkError(e2)) noteNetworkError(label, e2);
+            else banner(`${label} error: ${e2}`, 'fail');
+          }
+          throw e2;
+        }
+      }
+      if (label) {
+        if (isNetworkError(e)) noteNetworkError(label, e);
+        else banner(`${label} error: ${e}`, 'fail');
       }
       throw e;
     }
@@ -191,6 +351,8 @@
     API = window.DOCS_API_BASE;
     try { setText('#env-api-base', API); } catch(_){}
     try { banner(`Switching to direct API (${reason})`, 'warn'); } catch(_){}
+    try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+    try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
     try { if (state.sessionId) armSSE(); } catch(_){}
     try { refreshStatusNow(); } catch(_){}
   }
@@ -276,11 +438,21 @@
     return true;
   }
 
+  function isMixedContentConfig() {
+    if ((location.protocol || '') !== 'https:') return false;
+    const base = String(API || window.DOCS_API_BASE || '').trim().toLowerCase();
+    return base.startsWith('http://');
+  }
+
   function bannerFetchFailure(actionLabel, err) {
     const label = actionLabel || 'Action';
     const msg = String(err || '');
     if (msg.toLowerCase().includes('failed to fetch')) {
-      banner(`${label} failed: API unreachable or blocked by the browser (TLS/mixed content). Confirm docs proxy is up at https://docs.home.arpa:8443 and API mode is Proxy.`, 'fail', 8000);
+      if (isMixedContentConfig()) {
+        banner(`${label} failed: browser blocked mixed content. Use HTTPS for the API base or switch to Proxy mode.`, 'fail', 8000);
+      } else {
+        banner(`${label} failed: API unreachable or proxy error. Confirm docs proxy is up at https://docs.home.arpa:8443 and API mode is Proxy.`, 'fail', 8000);
+      }
       return;
     }
     banner(`${label} error: ${err}`, 'fail');
@@ -376,18 +548,6 @@
     const pref = (localStorage.getItem('docsApiMode')||'proxy');
     const bs = document.getElementById('backend-status');
     if (bs) { bs.textContent = 'Detecting environment…'; }
-    if (pref === 'direct') {
-      API = window.DOCS_API_BASE || 'http://127.0.0.1:9108';
-    } else {
-      try {
-        const r = await fetch('/health', { headers: labsHeaders({ 'Accept': 'application/json' }) });
-        if (r.ok) { API = ''; }
-        else { throw new Error('no proxy'); }
-      } catch {
-        API = window.DOCS_API_BASE || 'http://127.0.0.1:9108';
-      }
-    }
-    setText('#env-api-base', API || '(same origin)');
     // Prefill labs token from docs build (if provided) or session storage
     try {
       const envTok = (window.DOCS_LABS_TOKEN || '').trim();
@@ -400,6 +560,18 @@
         if (inp) inp.value = tok;
       }
     } catch(_){}
+    if (pref === 'direct') {
+      API = window.DOCS_API_BASE || 'http://127.0.0.1:9108';
+    } else {
+      try {
+        const r = await fetch('/health', { headers: labsHeaders({ 'Accept': 'application/json' }) });
+        if (r.ok) { API = ''; }
+        else { throw new Error('no proxy'); }
+      } catch {
+        API = window.DOCS_API_BASE || 'http://127.0.0.1:9108';
+      }
+    }
+    setText('#env-api-base', API || '(same origin)');
     try {
       const dash = document.getElementById('open-dashboard');
       if (dash) {
@@ -689,7 +861,7 @@
       wireControls();
       // Ensure any SSE placeholders are disabled in read-only mode
       try {
-        const ids = ['logs-sse','events-sse','status-summary'];
+        const ids = ['logs-sse','events-sse'];
         ids.forEach(id => {
           const el = document.getElementById(id);
           if (el) el.removeAttribute('sse-connect');
@@ -699,6 +871,8 @@
         const polyEv = document.getElementById('observe-events');
         if (poly) poly.classList.remove('hidden');
         if (polyEv) polyEv.classList.remove('hidden');
+        try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+        try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
       } catch(_){}
       // Show neutral status
       setText('#status-summary', 'n/a', 'pending');
@@ -727,6 +901,12 @@
       state.appName = `shell-demo-${state.sessionId}`;
       state.orch.token = data.token || null;
       state.appApplied = false;
+      sseState.disabled = false;
+      sseState.errors = 0;
+      sseState.lastErrorAt = 0;
+      try { if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer = null; } } catch(_){}
+      try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+      try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
       wireControls();
       armSSE();
       try { toast('Session started — next: click "Apply Selected Example"', 'ok'); } catch(_){}
@@ -745,7 +925,7 @@
     state.appName = 'shell-demo';
     // Stop/disable SSE and prefer non-HTMX panels
     try {
-      const ids = ['logs-sse','events-sse','status-summary'];
+      const ids = ['logs-sse','events-sse'];
       ids.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.removeAttribute('sse-connect');
@@ -758,6 +938,8 @@
       const sseEv = document.getElementById('events-sse');
       if (sseLogs) sseLogs.classList.add('hidden');
       if (sseEv) sseEv.classList.add('hidden');
+      try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+      try { if (window.k1sStopLogsStream) window.k1sStopLogsStream(); } catch(_){}
     } catch(_){}
     // Clear panels and indicators
     try { const ev = document.getElementById('observe-events'); if (ev) ev.textContent = ''; } catch(_){}
@@ -806,6 +988,51 @@
     refreshStatusNow();
   }
 
+  function handleSseError() {
+    if (sseState.disabled) return;
+    const now = Date.now();
+    if (now - sseState.lastErrorAt > SSE_ERROR_WINDOW_MS) sseState.errors = 0;
+    sseState.errors += 1;
+    sseState.lastErrorAt = now;
+    if (sseState.errors >= SSE_ERROR_THRESHOLD) {
+      disableHtmxSse('stream error');
+    }
+  }
+
+  function hookSseError(el) {
+    if (!el || el.dataset.sseErrorHooked) return;
+    el.dataset.sseErrorHooked = '1';
+    try { el.addEventListener('htmx:sseError', handleSseError); } catch(_){}
+  }
+
+  function closeHtmxSse(el) {
+    if (!el || !window.htmx || typeof window.htmx.getInternalData !== 'function') return;
+    try {
+      const data = window.htmx.getInternalData(el);
+      const src = data ? data.sseEventSource : null;
+      if (src) {
+        try { src.close(); } catch(_){}
+        data.sseEventSource = null;
+      }
+    } catch(_){}
+  }
+
+  function disableHtmxSse(reason) {
+    if (sseState.disabled) return;
+    sseState.disabled = true;
+    const sseEv = document.getElementById('events-sse');
+    if (sseEv) {
+      closeHtmxSse(sseEv);
+      sseEv.removeAttribute('sse-connect');
+      sseEv.classList.add('hidden');
+    }
+    const polyEv = document.getElementById('observe-events');
+    if (polyEv) polyEv.classList.remove('hidden');
+    if (reason) { try { banner(`Live stream paused (${reason}); using polling.`, 'warn', 4000); } catch(_){ } }
+    try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
+    try { if (window.k1sStartEventPoll) window.k1sStartEventPoll(); } catch(_){}
+  }
+
   function armSSE(){
     const app = state.appName;
     if (!app) return;
@@ -815,25 +1042,17 @@
     if (sseLogs) { try { sseLogs.classList.add('hidden'); } catch(_){} }
     const poly = document.getElementById('observe-logs');
     if (poly) { try { poly.classList.remove('hidden'); } catch(_){} }
-    // HTMX SSE for events
-    const sseEv = document.getElementById('events-sse');
-    if (window.htmx && sseEv) {
-      const params = { app, limit: '20' };
-      try { if (state.orch && state.orch.token) params['token'] = state.orch.token; } catch(_){}
-      sseEv.setAttribute('sse-connect', `${API}/labs/sse/events_html?` + new URLSearchParams(params).toString());
-      try { window.htmx.process(sseEv); } catch(_){}
-      sseEv.classList.remove('hidden');
+    if (sseState.disabled) {
       const polyEv = document.getElementById('observe-events');
-      if (polyEv) polyEv.classList.add('hidden');
+      if (polyEv) polyEv.classList.remove('hidden');
+      return;
     }
-    // HTMX SSE for status badge
-    const sseStatus = document.getElementById('status-summary');
-    if (window.htmx && sseStatus) {
-      const qs = new URLSearchParams({ app });
-      try { if (state.orch && state.orch.token) qs.set('token', state.orch.token); } catch(_){}
-      sseStatus.setAttribute('sse-connect', `${API}/labs/sse/status_badge?` + qs.toString());
-      try { window.htmx.process(sseStatus); } catch(_){}
-    }
+    const polyEv = document.getElementById('observe-events');
+    if (polyEv) polyEv.classList.remove('hidden');
+    const sseEv = document.getElementById('events-sse');
+    if (sseEv) sseEv.classList.add('hidden');
+    try { if (window.k1sStartEventsStream) window.k1sStartEventsStream(); } catch(_){}
+    try { if (window.k1sMaybeRestartLogs) window.k1sMaybeRestartLogs(); } catch(_){}
   }
 
   function makeIngressUrl(host, path) {
@@ -1019,9 +1238,37 @@
     if (baseInput) baseInput.value = base;
     try { localStorage.setItem('ae_apishim_base', base); } catch {}
     if (tokenInput && !tokenInput.value) {
-      try { tokenInput.value = localStorage.getItem('ae_apishim_token') || ''; } catch {}
+      try { tokenInput.value = localStorage.getItem('ae_apishim_exec_token') || localStorage.getItem('ae_apishim_token') || ''; } catch {}
     }
     const scope = `${ns}/${splitAppName(state.appName || '').name || pod}`;
+    let execStoredToken = '';
+    let execStoredScope = '';
+    try { execStoredToken = localStorage.getItem('ae_apishim_exec_token') || localStorage.getItem('ae_apishim_token') || ''; } catch {}
+    try { execStoredScope = localStorage.getItem('ae_apishim_exec_scope') || ''; } catch {}
+    if (execStoredToken && execStoredToken.indexOf('sess1.') === 0) {
+      if (sessionTokenExpired(execStoredToken, 15)) {
+        clearStoredSession('exec');
+        execStoredToken = '';
+        execStoredScope = '';
+      } else if (execStoredScope && execStoredScope !== scope) {
+        clearStoredSession('exec');
+        execStoredToken = '';
+        execStoredScope = '';
+      }
+    }
+    if (tokenInput && !tokenInput.value && execStoredToken) {
+      tokenInput.value = execStoredToken;
+    }
+    if (tokenInput && tokenInput.value && tokenInput.value.indexOf('sess1.') === 0) {
+      if (sessionTokenExpired(tokenInput.value, 15) || !sessionTokenAllowsScope(tokenInput.value, scope)) {
+        clearStoredSession('exec');
+        tokenInput.value = '';
+      }
+    }
+    if (tokenInput && tokenInput.value && execStoredScope && execStoredScope !== scope && tokenInput.value.indexOf('sess1.') === 0) {
+      try { clearStoredSession('exec'); } catch {}
+      tokenInput.value = '';
+    }
     const doConnect = () => {
       const params = new URLSearchParams();
       splitArgs(cmdInput?.value || 'sh').forEach(c => params.append('command', c));
@@ -1061,6 +1308,14 @@
       labsShellStatus('minting token', 'muted');
       mintShimToken('exec', scope).then((tok) => {
         if (tok && tokenInput) tokenInput.value = tok;
+        try {
+          if (tok) {
+            localStorage.setItem('ae_apishim_exec_token', tok);
+            localStorage.setItem('ae_apishim_exec_scope', scope);
+            const exp = sessionTokenExp(tok);
+            if (exp) localStorage.setItem('ae_apishim_exec_exp', String(exp));
+          }
+        } catch {}
         doConnect();
       }).catch(() => { doConnect(); });
       return;
@@ -1077,6 +1332,8 @@
     socket: null,
     encoder: (window.TextEncoder ? new TextEncoder() : null),
     decoder: (window.TextDecoder ? new TextDecoder() : null),
+    view: 'source',
+    previewTimer: null,
   };
 
   function labsPfStatus(txt, cls) {
@@ -1084,6 +1341,116 @@
     if (!el) return;
     el.textContent = txt || '';
     if (cls) el.className = `pill ${cls}`;
+  }
+
+  function labsPfEscapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, (ch) => {
+      if (ch === '&') return '&amp;';
+      if (ch === '<') return '&lt;';
+      if (ch === '>') return '&gt;';
+      if (ch === '"') return '&quot;';
+      if (ch === "'") return '&#39;';
+      return ch;
+    });
+  }
+
+  function labsParsePfResponse(raw) {
+    let text = raw || '';
+    let sep = '\r\n\r\n';
+    let idx = text.indexOf(sep);
+    if (idx === -1) {
+      sep = '\n\n';
+      idx = text.indexOf(sep);
+    }
+    if (idx === -1) return { headers: '', body: text, status: '' };
+    const headers = text.slice(0, idx);
+    const body = text.slice(idx + sep.length);
+    const status = headers.split(/\r?\n/)[0] || '';
+    return { headers, body, status };
+  }
+
+  function labsUpdatePfPreview() {
+    const frame = document.getElementById('labs-pf-preview-frame');
+    const resp = document.getElementById('labs-pf-response');
+    if (!frame || !resp) return;
+    const raw = resp.value || '';
+    const previewStyle = 'html,body{height:100%;}body{margin:0;padding:12px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#e2e8f0;background:#0b0f14;scrollbar-width:none;-ms-overflow-style:none;}body::-webkit-scrollbar{width:0;height:0;}';
+    const injectStyles = (html) => {
+      if (!html) return '';
+      const styleTag = '<style>' + previewStyle + '</style>';
+      if (/<head[\\s>]/i.test(html)) {
+        return html.replace(/<head[^>]*>/i, (match) => match + styleTag);
+      }
+      if (/<html[\\s>]/i.test(html)) {
+        return html.replace(/<html[^>]*>/i, (match) => match + '<head>' + styleTag + '</head>');
+      }
+      return '<!doctype html><html><head>' + styleTag + '</head><body>' + html + '</body></html>';
+    };
+    if (!raw) {
+      frame.srcdoc = '<!doctype html><html><head><meta charset="utf-8"><style>' + previewStyle.replace('#e2e8f0', '#94a3b8') + '</style></head><body>No response yet.</body></html>';
+      return;
+    }
+    const parsed = labsParsePfResponse(raw);
+    const headers = parsed.headers || '';
+    const body = parsed.body || '';
+    let contentType = '';
+    if (headers) {
+      const lines = headers.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue;
+        const idx = line.indexOf(':');
+        if (idx < 0) continue;
+        const key = line.slice(0, idx).trim().toLowerCase();
+        if (key === 'content-type') {
+          contentType = line.slice(idx + 1).trim().toLowerCase();
+          break;
+        }
+      }
+    }
+    const trimmed = body.trim();
+    let isHtml = false;
+    if (contentType) {
+      if (contentType.indexOf('text/html') !== -1 || contentType.indexOf('application/xhtml+xml') !== -1) {
+        isHtml = true;
+      }
+    } else if (trimmed.indexOf('<!doctype') === 0 || trimmed.indexOf('<html') === 0 || trimmed.indexOf('<body') === 0 || trimmed.indexOf('<svg') === 0) {
+      isHtml = true;
+    }
+    let doc = '';
+    if (isHtml) {
+      doc = injectStyles(body);
+    } else {
+      doc = '<!doctype html><html><head><meta charset="utf-8"><style>' + previewStyle + 'pre{margin:0;white-space:pre-wrap;}</style></head><body><pre>' + labsPfEscapeHtml(body) + '</pre></body></html>';
+    }
+    frame.srcdoc = doc;
+  }
+
+  function labsSchedulePfPreviewUpdate() {
+    if (labsPf.previewTimer) return;
+    labsPf.previewTimer = setTimeout(() => {
+      labsPf.previewTimer = null;
+      labsUpdatePfPreview();
+    }, 80);
+  }
+
+  function labsSetPfView(view) {
+    labsPf.view = view || 'source';
+    const sourceWrap = document.getElementById('labs-pf-response-source');
+    const previewWrap = document.getElementById('labs-pf-preview');
+    const sourceBtn = document.getElementById('labs-pf-view-source');
+    const previewBtn = document.getElementById('labs-pf-view-preview');
+    if (sourceWrap) sourceWrap.classList.toggle('hidden', labsPf.view !== 'source');
+    if (previewWrap) previewWrap.classList.toggle('hidden', labsPf.view !== 'preview');
+    if (sourceBtn) {
+      sourceBtn.classList.toggle('active', labsPf.view === 'source');
+      sourceBtn.setAttribute('aria-pressed', labsPf.view === 'source' ? 'true' : 'false');
+    }
+    if (previewBtn) {
+      previewBtn.classList.toggle('active', labsPf.view === 'preview');
+      previewBtn.setAttribute('aria-pressed', labsPf.view === 'preview' ? 'true' : 'false');
+    }
+    if (labsPf.view === 'preview') labsSchedulePfPreviewUpdate();
   }
 
   function labsPfSend(ch, data) {
@@ -1105,6 +1472,7 @@
       if (ch === 0 || ch === 1) {
         const out = document.getElementById('labs-pf-response');
         if (out) out.value = (out.value || '') + txt;
+        if (labsPf.view === 'preview') labsSchedulePfPreviewUpdate();
       }
     } catch {}
   }
@@ -1120,7 +1488,15 @@
     if (modal) modal.classList.remove('hidden');
     const resp = document.getElementById('labs-pf-response');
     if (resp) resp.value = '';
+    const req = document.getElementById('labs-pf-request');
+    if (req) {
+      const current = String(req.value || '');
+      if (!current.trim() || current.indexOf('\n') === -1) {
+        req.value = 'GET / HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n';
+      }
+    }
     labsPfStatus('idle', 'muted');
+    labsSetPfView('source');
   }
 
   function labsClosePf() {
@@ -1175,6 +1551,14 @@
       labsPfStatus('minting token', 'muted');
       mintShimToken('portforward', scope).then((tok) => {
         if (tok && tokenInput) tokenInput.value = tok;
+        try {
+          if (tok) {
+            localStorage.setItem('ae_apishim_pf_token', tok);
+            localStorage.setItem('ae_apishim_pf_scope', scope);
+            const exp = sessionTokenExp(tok);
+            if (exp) localStorage.setItem('ae_apishim_pf_exp', String(exp));
+          }
+        } catch {}
         doConnect();
       }).catch(() => { doConnect(); });
       return;
@@ -1182,11 +1566,24 @@
     doConnect();
   }
 
+  function normalizePfPayload(payload) {
+    if (payload == null) return '';
+    let text = String(payload);
+    if (text.indexOf('\\r') !== -1 || text.indexOf('\\n') !== -1) {
+      text = text.replace(/\\r\\n/g, '\r\n').replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+    }
+    if (text.indexOf('\n') !== -1) {
+      text = text.replace(/\r?\n/g, '\r\n');
+    }
+    return text;
+  }
+
   function labsPfSendRequest() {
     const req = document.getElementById('labs-pf-request');
     const payload = req?.value || '';
     if (!payload) return;
-    labsPfSend(0, payload);
+    if (!labsPf.socket || labsPf.socket.readyState !== 1) { labsPfStatus('not connected', 'warn'); return; }
+    labsPfSend(0, normalizePfPayload(payload));
   }
 
   function labsPfDisconnect() {
@@ -1268,12 +1665,54 @@
       const ready = Number(st.readyReplicas||0);
       const ok = desired > 0 ? (ready === desired) : false;
       setText('#status-summary', `${ready}/${desired} ready`, ok? 'ok':'fail');
+      const link = $('#ingress-link');
+      if (link && st.ingress_host) {
+        link.textContent = st.ingress_host;
+        const href = st.ingress_host.startsWith('http')
+          ? st.ingress_host + (st.ingress_path||'/')
+          : makeIngressUrl(st.ingress_host, st.ingress_path);
+        link.href = href;
+        try { setCurlHint(href); } catch(_){}
+        try {
+          if (state.sessionId && state.orch.available) {
+            if (href !== ingressCheckUrl) resetIngressCheck(href);
+            if (ingressCheckOk !== true && !ingressCheckTimer) verifyIngress();
+          }
+        } catch(_){}
+      } else if (link) {
+        clearIngressUI('not configured');
+      }
     } catch { setText('#status-summary','pending','pending'); }
+  }
+
+  async function refreshAppIngress(){
+    if (!state.appApplied) return;
+    try {
+      const st = await jsonGet(`${API}/status/${encodeURIComponent(state.appName)}`);
+      const link = $('#ingress-link');
+      if (link && st.ingress_host) {
+        link.textContent = st.ingress_host;
+        const href = st.ingress_host.startsWith('http')
+          ? st.ingress_host + (st.ingress_path||'/')
+          : makeIngressUrl(st.ingress_host, st.ingress_path);
+        link.href = href;
+        try { setCurlHint(href); } catch(_){}
+        try {
+          if (state.sessionId && state.orch.available) {
+            if (href !== ingressCheckUrl) resetIngressCheck(href);
+            if (ingressCheckOk !== true && !ingressCheckTimer) verifyIngress();
+          }
+        } catch(_){}
+      }
+    } catch {}
   }
 
   function refreshStatusNow(){
     if (state.statusMode === 'app') { refreshAppSummary(); }
-    else { refreshClusterSummary(); }
+    else {
+      refreshClusterSummary();
+      if (state.appApplied) refreshAppIngress();
+    }
   }
 
   function setStatusMode(mode){
@@ -1464,14 +1903,16 @@
       // Attempt server cleanup when orchestrator is available (session optional)
       if (state.orch.available) {
         try {
-          const r = await apiFetch(`/labs/reset`, {
+          const r = await apiFetchRetry('Reset', `/labs/reset`, {
             method: 'POST',
             headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
             body: JSON.stringify({ session_id: prev })
           });
           if (await handleLabsAuth(r, 'Reset')) { return; }
           if (!r.ok && r.status !== 404) { banner(`Reset failed: ${await r.text()}`, 'fail'); return; }
-        } catch(e){ bannerFetchFailure('Reset', e); return; }
+        } catch {
+          return;
+        }
         // Best-effort: stop helm demo runner so the lab demo resets too.
         try {
           const demoResp = await apiFetch(`/labs/helm-demo`, {
@@ -1491,7 +1932,7 @@
       state.appName = 'shell-demo';
       // Stop/disable SSE and prefer non-HTMX panels
       try {
-        const ids = ['logs-sse','events-sse','status-summary'];
+        const ids = ['logs-sse','events-sse'];
         ids.forEach(id => {
           const el = document.getElementById(id);
           if (el) el.removeAttribute('sse-connect');
@@ -1589,8 +2030,9 @@
       state.appName = expectedName;
       await withButtonFeedback(btn, `Submitting apply for “${expectedName}”…`, async () => {
         // use computed `example`
+        let resp = null;
         try {
-          const resp = await apiFetch(`/labs/apply`, {
+          resp = await apiFetchRetry('Apply', `/labs/apply`, {
             method: 'POST',
             headers: {
               'Content-Type':'application/json',
@@ -1598,27 +2040,29 @@
             },
             body: JSON.stringify({ session_id: state.sessionId, backend: state.backend, example })
           });
-          if (!resp.ok) { banner(`Apply failed: ${await resp.text()}`, 'fail'); return; }
-          // Prefer server-declared app name (e.g., echo-<session>)
-          try {
-            const out = await resp.json();
-            if (out && out.app) { state.appName = out.app; }
-            state.appApplied = true;
-            clearCanaryInfo();
-          } catch(_) { state.appApplied = true; }
-          try { armSSE(); } catch(_){}
-          // Immediate, visible feedback like dashboard header
-          try { banner(`Apply accepted for “${state.appName}” — reconciling…`, 'ok', 6000); } catch(_){}
-          setTimeout(verifyApply, 800);
-          setTimeout(()=>verifyScale(), 1200);
-          setTimeout(verifyIngress, 1500);
-          try { refreshStatusNow(); } catch(_){}
-          // Auto-start the log tail for the newly applied example
-          try {
-            const observeBtn = document.getElementById('btn-observe-toggle');
-            if (observeBtn && /Start/i.test(observeBtn.textContent||'')) { observeBtn.click(); }
-          } catch(_){}
-        } catch(e){ banner(`Apply error: ${e}`, 'fail'); return; }
+        } catch {
+          return;
+        }
+        if (!resp.ok) { banner(`Apply failed: ${await resp.text()}`, 'fail'); return; }
+        // Prefer server-declared app name (e.g., echo-<session>)
+        try {
+          const out = await resp.json();
+          if (out && out.app) { state.appName = out.app; }
+          state.appApplied = true;
+          clearCanaryInfo();
+        } catch(_) { state.appApplied = true; }
+        try { armSSE(); } catch(_){}
+        // Immediate, visible feedback like dashboard header
+        try { banner(`Apply accepted for “${state.appName}” — reconciling…`, 'ok', 6000); } catch(_){}
+        setTimeout(verifyApply, 800);
+        setTimeout(()=>verifyScale(), 1200);
+        setTimeout(verifyIngress, 1500);
+        try { refreshStatusNow(); } catch(_){}
+        // Auto-start the log tail for the newly applied example
+        try {
+          const observeBtn = document.getElementById('btn-observe-toggle');
+          if (observeBtn && /Start/i.test(observeBtn.textContent||'')) { observeBtn.click(); }
+        } catch(_){}
       });
     });
     $('#btn-scale-2')?.addEventListener('click', async (e)=>{
@@ -1736,26 +2180,32 @@
       if (!state.orch.available) return;
       const btn = e.currentTarget || document.getElementById('btn-rollout-pause');
       await withButtonFeedback(btn, 'Pausing rollout…', async ()=>{
+        let r = null;
         try {
-          const r = await fetch(`${API}/labs/rollout`, {
+          r = await apiFetchRetry('Pause', `/labs/rollout`, {
             method: 'POST', headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
             body: JSON.stringify({ session_id: state.sessionId, action: 'pause', app: state.appName })
           });
-          if (!r.ok) { banner(`Pause failed: ${await r.text()}`, 'fail'); return; }
-        } catch(e){ banner(`Pause error: ${e}`, 'fail'); return; }
+        } catch {
+          return;
+        }
+        if (!r.ok) { banner(`Pause failed: ${await r.text()}`, 'fail'); return; }
       });
     });
     $('#btn-rollout-resume')?.addEventListener('click', async(e)=>{
       if (!state.orch.available) return;
       const btn = e.currentTarget || document.getElementById('btn-rollout-resume');
       await withButtonFeedback(btn, 'Resuming rollout…', async ()=>{
+        let r = null;
         try {
-          const r = await fetch(`${API}/labs/rollout`, {
+          r = await apiFetchRetry('Resume', `/labs/rollout`, {
             method: 'POST', headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
             body: JSON.stringify({ session_id: state.sessionId, action: 'resume', app: state.appName })
           });
-          if (!r.ok) { banner(`Resume failed: ${await r.text()}`, 'fail'); return; }
-        } catch(e){ banner(`Resume error: ${e}`, 'fail'); return; }
+        } catch {
+          return;
+        }
+        if (!r.ok) { banner(`Resume failed: ${await r.text()}`, 'fail'); return; }
       });
     });
     document.getElementById('btn-helm-demo')?.addEventListener('click', () => startHelmDemo());
@@ -1765,11 +2215,17 @@
   async function doScale(n){
     if (!state.orch.available) return;
     try { banner(`Scaling “${state.appName}” to ${n}…`, 'pending', 5000); } catch(_){}
-    await apiFetch(`/labs/scale`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
-      body: JSON.stringify({ session_id: state.sessionId, app: state.appName, replicas: n })
-    });
+    let resp = null;
+    try {
+      resp = await apiFetchRetry('Scale', `/labs/scale`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json', ...(state.orch.token? { 'Authorization': `Bearer ${state.orch.token}` } : {})},
+        body: JSON.stringify({ session_id: state.sessionId, app: state.appName, replicas: n })
+      });
+    } catch {
+      return;
+    }
+    if (!resp.ok) { banner(`Scale failed: ${await resp.text()}`, 'fail'); return; }
     setTimeout(verifyApply, 800);
     setTimeout(()=>verifyScale(n), 1200);
     setTimeout(verifyIngress, 1500);
@@ -1824,29 +2280,112 @@
     bind();
     // Observe tail toggle
     const observeBtn = document.getElementById('btn-observe-toggle');
+    let observeActive = false;
     let esLogs = null, esEvents = null, esStatus = null;
+    let esLogsApp = null;
+    let esEventsApp = null;
+    let logsRetryTimer = null;
+    let eventsRetryTimer = null;
+    let logsCooldownUntil = 0;
+    let eventsCooldownUntil = 0;
     function stopStreams(){
       try { if (esLogs) { esLogs.close(); esLogs=null; } } catch(_){}
       try { if (esEvents) { esEvents.close(); esEvents=null; } } catch(_){}
       try { if (esStatus) { esStatus.close(); esStatus=null; } } catch(_){}
       if (state._logsTimer) { clearInterval(state._logsTimer); state._logsTimer=null; }
+      if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer=null; }
+      if (logsRetryTimer) { clearTimeout(logsRetryTimer); logsRetryTimer = null; }
+      if (eventsRetryTimer) { clearTimeout(eventsRetryTimer); eventsRetryTimer = null; }
+      esLogsApp = null;
+      esEventsApp = null;
+      try { if (window.k1sStopEventsStream) window.k1sStopEventsStream(); } catch(_){}
     }
+    const renderEvents = (items) => {
+      const box = document.getElementById('observe-events');
+      if (!box) return;
+      const list = Array.isArray(items) ? items.slice().reverse() : [];
+      box.innerHTML = (list||[]).map(e=>{
+        const ts = e.created_at || '-';
+        const msg = (e.message||'');
+        return `<div class="log-entry"><code>${ts}</code> ${msg}</div>`;
+      }).join('') || '<div class="log-entry">No recent events</div>';
+      follow(box);
+    };
     async function pollEventsOnce(){
       try {
         const ev = await jsonGet(`${API}/events/${encodeURIComponent(state.appName)}?limit=20`);
-        const box = document.getElementById('observe-events');
-        if (box) {
-          // Oldest-first so newest ends at the bottom and we can follow
-          const items = Array.isArray(ev) ? ev.slice().reverse() : [];
-          box.innerHTML = (items||[]).map(e=>{
-            const ts = e.created_at || '-';
-            const msg = (e.message||'');
-            return `<div class="log-entry"><code>${ts}</code> ${msg}</div>`;
-          }).join('') || '<div class="log-entry">No recent events</div>';
-          follow(box);
-        }
+        renderEvents(ev);
       } catch {}
     }
+    const stopEventsPoll = () => {
+      if (state._eventsTimer) { clearInterval(state._eventsTimer); state._eventsTimer = null; }
+    };
+    const startEventsPoll = () => {
+      if (state._eventsTimer) return;
+      pollEventsOnce();
+      state._eventsTimer = setInterval(pollEventsOnce, 2000);
+    };
+    const scheduleEventsRetry = (delayMs) => {
+      if (eventsRetryTimer) return;
+      const now = Date.now();
+      const delay = Math.max(0, delayMs || (eventsCooldownUntil > now ? (eventsCooldownUntil - now) : SSE_COOLDOWN_MS));
+      eventsRetryTimer = setTimeout(() => {
+        eventsRetryTimer = null;
+        if (!esEvents && state.sessionId && state.orch.available && !sseState.disabled) {
+          startEventsStream('retry');
+        }
+      }, delay);
+    };
+    const startEventsStream = () => {
+      if (sseState.disabled) { startEventsPoll(); return; }
+      if (!state.sessionId || !state.orch.available) return;
+      const now = Date.now();
+      if (eventsCooldownUntil && now < eventsCooldownUntil) {
+        startEventsPoll();
+        scheduleEventsRetry();
+        return;
+      }
+      if (esEvents && esEventsApp === state.appName) return;
+      if (esEvents && esEventsApp !== state.appName) {
+        try { esEvents.close(); } catch(_){}
+        esEvents = null;
+      }
+      stopEventsPoll();
+      try {
+        const q1 = { app: state.appName, limit: '20' };
+        try { if (state.orch && state.orch.token) q1['token'] = state.orch.token; } catch(_){}
+        const evUrl = `${API}/labs/sse/events?` + new URLSearchParams(q1).toString();
+        esEvents = new EventSource(evUrl);
+        esEventsApp = state.appName;
+        esEvents.onmessage = (ev) => {
+          try {
+            const arr = JSON.parse(ev.data || '[]');
+            renderEvents(arr);
+          } catch {}
+        };
+        esEvents.onerror = () => {
+          try { esEvents?.close(); } catch(_){}
+          esEvents = null;
+          esEventsApp = null;
+          eventsCooldownUntil = Date.now() + SSE_COOLDOWN_MS;
+          startEventsPoll();
+          scheduleEventsRetry(SSE_COOLDOWN_MS);
+        };
+      } catch {
+        startEventsPoll();
+        eventsCooldownUntil = Date.now() + SSE_COOLDOWN_MS;
+        scheduleEventsRetry(SSE_COOLDOWN_MS);
+      }
+    };
+    const stopEventsStream = () => {
+      try { if (esEvents) { esEvents.close(); esEvents=null; } } catch(_){}
+      if (eventsRetryTimer) { clearTimeout(eventsRetryTimer); eventsRetryTimer = null; }
+      eventsCooldownUntil = 0;
+      stopEventsPoll();
+    };
+    window.k1sStartEventPoll = startEventsPoll;
+    window.k1sStartEventsStream = startEventsStream;
+    window.k1sStopEventsStream = stopEventsStream;
     async function pollLogsOnce(){
       try {
         const qs = new URLSearchParams({ tail: '200' });
@@ -1872,98 +2411,90 @@
         }
       } catch {}
     }
+    const stopLogsPoll = () => {
+      if (state._logsTimer) { clearInterval(state._logsTimer); state._logsTimer = null; }
+    };
+    const startLogsPoll = () => {
+      if (state._logsTimer) return;
+      pollLogsOnce();
+      state._logsTimer = setInterval(pollLogsOnce, 2000);
+    };
+    const scheduleLogsRetry = (delayMs) => {
+      if (logsRetryTimer) return;
+      const now = Date.now();
+      const delay = Math.max(0, delayMs || (logsCooldownUntil > now ? (logsCooldownUntil - now) : SSE_COOLDOWN_MS));
+      logsRetryTimer = setTimeout(() => {
+        logsRetryTimer = null;
+        if (observeActive) startLogsStream('retry');
+      }, delay);
+    };
+    const startLogsStream = () => {
+      if (!observeActive) return;
+      const now = Date.now();
+      if (logsCooldownUntil && now < logsCooldownUntil) {
+        startLogsPoll();
+        scheduleLogsRetry();
+        return;
+      }
+      if (esLogs && esLogsApp === state.appName) return;
+      if (esLogs && esLogsApp !== state.appName) {
+        try { esLogs.close(); } catch(_){}
+        esLogs = null;
+      }
+      stopLogsPoll();
+      try {
+        const qs = new URLSearchParams({ tail: '200' });
+        try { if (state.orch && state.orch.token) qs.set('token', state.orch.token); } catch(_){}
+        const url = `${API}/logs/${encodeURIComponent(state.appName)}/stream?` + qs.toString();
+        esLogs = new EventSource(url);
+        esLogsApp = state.appName;
+        const box = document.getElementById('observe-logs');
+        if (box) { box.innerHTML=''; box.classList.remove('hidden'); }
+        const sseHide = document.getElementById('logs-sse'); if (sseHide) sseHide.classList.add('hidden');
+        requestAnimationFrame(forceFollowAll);
+        esLogs.onmessage = (ev) => {
+          if (!box) return;
+          const div = document.createElement('div');
+          div.className = 'log-entry';
+          div.textContent = ev.data || '';
+          box.appendChild(div);
+          follow(box);
+        };
+        esLogs.onerror = () => {
+          try { esLogs?.close(); } catch(_){}
+          esLogs = null;
+          esLogsApp = null;
+          logsCooldownUntil = Date.now() + SSE_COOLDOWN_MS;
+          startLogsPoll();
+          scheduleLogsRetry(SSE_COOLDOWN_MS);
+        };
+      } catch(e){
+        logsCooldownUntil = Date.now() + SSE_COOLDOWN_MS;
+        startLogsPoll();
+        scheduleLogsRetry(SSE_COOLDOWN_MS);
+      }
+    };
+    const stopLogsStream = () => {
+      try { if (esLogs) { esLogs.close(); esLogs=null; } } catch(_){}
+      esLogsApp = null;
+      logsCooldownUntil = 0;
+      if (logsRetryTimer) { clearTimeout(logsRetryTimer); logsRetryTimer = null; }
+      stopLogsPoll();
+    };
+    window.k1sStartLogsStream = startLogsStream;
+    window.k1sStopLogsStream = stopLogsStream;
+    window.k1sMaybeRestartLogs = () => { if (observeActive) startLogsStream('restart'); };
     if (observeBtn) {
       observeBtn.addEventListener('click', () => {
         if (!state.sessionId) return;
         if (observeBtn.textContent.includes('Start')) {
           observeBtn.textContent = 'Stop Tail';
-          // Always use EventSource to populate the polyfill logs panel
-          try {
-            const qs = new URLSearchParams({ tail: '200' });
-            try { if (state.orch && state.orch.token) qs.set('token', state.orch.token); } catch(_){}
-            const url = `${API}/logs/${encodeURIComponent(state.appName)}/stream?` + qs.toString();
-            esLogs = new EventSource(url);
-            const box = document.getElementById('observe-logs');
-            if (box) { box.innerHTML=''; box.classList.remove('hidden'); }
-            const sseHide = document.getElementById('logs-sse'); if (sseHide) sseHide.classList.add('hidden');
-            requestAnimationFrame(forceFollowAll);
-            esLogs.onmessage = (ev) => {
-              if (!box) return;
-              const div = document.createElement('div');
-              div.className = 'log-entry';
-              div.textContent = ev.data || '';
-              box.appendChild(div);
-              follow(box);
-            };
-            esLogs.onerror = () => {
-              try { esLogs?.close(); } catch(_){}
-              esLogs = null;
-              if (!state._logsTimer) {
-                pollLogsOnce();
-                state._logsTimer = setInterval(pollLogsOnce, 2000);
-              }
-            };
-          } catch(e){ console.error('EventSource logs error', e); }
-          // Events SSE (labs) with fallback to polling
-          try {
-            const q1 = { app: state.appName, limit: '20' };
-            try { if (state.orch && state.orch.token) q1['token'] = state.orch.token; } catch(_){}
-            const evUrl = `${API}/labs/sse/events?` + new URLSearchParams(q1).toString();
-            esEvents = new EventSource(evUrl);
-            esEvents.onmessage = (ev) => {
-              const arr = JSON.parse(ev.data || '[]');
-              const box = document.getElementById('observe-events');
-              if (box) {
-                // Oldest-first so new events appear at the bottom (match logs)
-                const items = (Array.isArray(arr) ? arr.slice().reverse() : []);
-                box.innerHTML = items.map(e=>{
-                  const ts = e.created_at || '-';
-                  const msg = (e.message||'');
-                  return `<div class="log-entry"><code>${ts}</code> ${msg}</div>`;
-                }).join('') || '<div class="log-entry">No recent events</div>';
-                follow(box);
-              }
-            };
-            esEvents.onerror = () => { try { if ((!API || API==='') && window.DOCS_API_BASE) { switchToDirectApi('events SSE error'); } } catch(_){} };
-          } catch {
-            pollEventsOnce();
-            state._eventsTimer = setInterval(pollEventsOnce, 2000);
-          }
-          // Status SSE to keep verifiers fresh
-          try {
-            const q2 = { app: state.appName };
-            try { if (state.orch && state.orch.token) q2['token'] = state.orch.token; } catch(_){}
-            const stUrl = `${API}/labs/sse/status?` + new URLSearchParams(q2).toString();
-            esStatus = new EventSource(stUrl);
-            esStatus.onmessage = (ev) => {
-              try {
-                const s = JSON.parse(ev.data || 'null');
-                if (!s) return;
-                const ok = Number(s.ready||0) === Number(s.desired||0);
-                setText('#v-apply-ready', ok?'ok':'fail', ok?'ok':'fail');
-                setText('#status-summary', `${s.ready||0}/${s.desired||0} ready`, ok?'ok':'fail');
-                const link = document.getElementById('ingress-link');
-                if (link && s.ingress_host) {
-                  link.textContent = s.ingress_host;
-                  const href = s.ingress_host.startsWith('http')
-                    ? s.ingress_host + (s.ingress_path||'/')
-                    : makeIngressUrl(s.ingress_host, s.ingress_path);
-                  link.href = href;
-                  try {
-                    if (state.sessionId && state.orch.available) {
-                      if (href !== ingressCheckUrl) resetIngressCheck(href);
-                      if (ingressCheckOk !== true && !ingressCheckTimer) verifyIngress();
-                    }
-                  } catch(_){}
-                } else if (link) {
-                  clearIngressUI('not configured');
-                }
-              } catch {}
-            };
-            esStatus.onerror = () => { try { if ((!API || API==='') && window.DOCS_API_BASE) { switchToDirectApi('status SSE error'); } } catch(_){} };
-          } catch {}
+          observeActive = true;
+          try { startLogsStream(); } catch(_){}
+          try { startEventsStream(); } catch(_){}
         } else {
           observeBtn.textContent = 'Start Tail';
+          observeActive = false;
           stopStreams();
           const ssePanel = document.getElementById('logs-sse');
           if (ssePanel) { try { ssePanel.classList.add('hidden'); } catch(_){} }
@@ -1989,6 +2520,8 @@
     try { document.getElementById('labs-pf-connect')?.addEventListener('click', labsPfConnect); } catch(_){}
     try { document.getElementById('labs-pf-send')?.addEventListener('click', labsPfSendRequest); } catch(_){}
     try { document.getElementById('labs-pf-disconnect')?.addEventListener('click', labsPfDisconnect); } catch(_){}
+    try { document.getElementById('labs-pf-view-source')?.addEventListener('click', () => labsSetPfView('source')); } catch(_){}
+    try { document.getElementById('labs-pf-view-preview')?.addEventListener('click', () => labsSetPfView('preview')); } catch(_){}
     try {
       window.addEventListener('resize', () => {
         const modal = document.getElementById('labs-shell-modal');
@@ -1997,8 +2530,8 @@
     } catch(_){}
   });
   // Ensure HTMX-driven events panel auto-scrolls to bottom after swaps (when follow is enabled)
-  try {
-    document.body.addEventListener('htmx:afterSwap', (evt) => {
+    try {
+      document.body.addEventListener('htmx:afterSwap', (evt) => {
       try {
         const tgt = evt.target;
         if (tgt && tgt.id === 'events-sse') {
@@ -2008,6 +2541,9 @@
           }
         }
       } catch(_){}
+    });
+    document.body.addEventListener('htmx:sseError', () => {
+      handleSseError();
     });
   } catch(_){}
 })();

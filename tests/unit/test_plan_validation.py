@@ -19,7 +19,7 @@ def write_manifest(tmp_path: Path, content: str) -> Path:
 def test_plan_rollout_bounds_warnings(tmp_path):
     man = """
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata: { name: test }
 spec:
   image: alpine:3
@@ -51,7 +51,7 @@ spec:
 def test_plan_hook_schema_validation(tmp_path):
     man = """
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata: { name: testhooks }
 spec:
   image: alpine:3

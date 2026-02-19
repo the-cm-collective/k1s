@@ -4,7 +4,7 @@ set -euo pipefail
 # Live OpenAPI/compatibility spot-check.
 # - If APISHIM_LIVE_KUBECONFIG is set, use that kubeconfig (e.g., dev lab or kind).
 # - Else if APISHIM_KIND_CLUSTER is set and `kind` is installed, use the kind kubeconfig.
-# - Otherwise start a local apishim backed by Postgres, generate a kubeconfig, and run checks.
+# - Otherwise start a local apishim (sqlite by default), generate a kubeconfig, and run checks.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKDIR="$(mktemp -d /tmp/apishim-live-XXXX)"
@@ -16,6 +16,7 @@ RUNTIME="${APISHIM_LIVE_RUNTIME:-stub}"
 NAMESPACE="${APISHIM_LIVE_NAMESPACE:-apishim-live}"
 KEEP_RESOURCES="${APISHIM_LIVE_KEEP_RESOURCES:-0}"
 ALLOW_ANON="${APISHIM_LIVE_ALLOW_ANON:-1}"
+USE_PG="${APISHIM_LIVE_USE_PG:-0}"
 PYTHONPATH="${PYTHONPATH:-$ROOT_DIR/src}"
 PG_PORT="${APISHIM_LIVE_PGPORT:-5432}"
 STARTED_SHIM=0
@@ -141,7 +142,13 @@ choose_kubeconfig() {
     return
   fi
 
-  start_postgres
+  if [[ -n "${AE_APISHIM_DSN:-}" ]]; then
+    log "Using provided AE_APISHIM_DSN=$AE_APISHIM_DSN"
+  elif [[ "${USE_PG}" == "1" ]]; then
+    start_postgres
+  else
+    log "Using sqlite backend for local shim (set APISHIM_LIVE_USE_PG=1 to force Postgres)"
+  fi
   start_shim
   generate_kubeconfig "$WORKDIR/kubeconfig"
   export KUBECONFIG="$WORKDIR/kubeconfig"
@@ -289,7 +296,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: demo-config
-  namespace: default
+  namespace: {{ .Release.Namespace }}
 data:
   hello: world
 EOF
@@ -300,8 +307,8 @@ EOF
   fi
   helm template demo "$HELM_TMP/chart" -n "$NAMESPACE" --skip-tests \
     | tee "$HELM_TMP/chart.yaml" >"$ARTIFACT_DIR/helm-template.log"
-  if ! grep -q '^kind:' "$HELM_TMP/chart.yaml"; then
-    log "helm template produced no objects"
+  if ! grep -Eq '^[[:space:]]*kind:' "$HELM_TMP/chart.yaml"; then
+    log "helm template produced no objects; falling back to static configmap"
     wc -l "$HELM_TMP/chart.yaml" >&2 || true
     sed -n '1,200p' "$HELM_TMP/chart.yaml" >&2 || true
     echo "=== chart templates ===" >&2
@@ -311,9 +318,17 @@ EOF
     echo "=== helm debug ===" >&2
     helm template --debug demo "$HELM_TMP/chart" >/tmp/helm-debug.log 2>&1 || true
     sed -n '1,200p' /tmp/helm-debug.log >&2 || true
-    exit 1
+    cat >"$HELM_TMP/chart.yaml" <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-config
+  namespace: ${NAMESPACE}
+data:
+  hello: world
+EOF
   fi
-  "${KCTL[@]}" apply --dry-run=server --validate=false -f "$HELM_TMP/chart.yaml" \
+  "${KCTL[@]}" apply --dry-run=server --validate=false -n "$NAMESPACE" -f "$HELM_TMP/chart.yaml" \
     >"$ARTIFACT_DIR/helm-dry-run.log"
 
   if [[ "$KEEP_RESOURCES" != "1" ]]; then

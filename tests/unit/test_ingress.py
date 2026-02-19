@@ -10,7 +10,7 @@ from ae.ingress.service import IngressService
 def build_manifest() -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="demo"),
         spec=AppSpec(
             image="alpine:3.20",
@@ -36,8 +36,9 @@ def test_caddy_manager_writes_site(tmp_path, monkeypatch):
 
     manager = CaddyIngressManager(config_root=tmp_path, caddy_binary="caddy")
     manifest = build_manifest()
-    site_path = manager.apply(manifest, upstream="127.0.0.1:32000")
+    site_path, changed = manager.apply(manifest, upstream="127.0.0.1:32000")
 
+    assert changed is True
     assert site_path.exists()
     content = site_path.read_text()
     assert "demo.local" in content
@@ -73,7 +74,8 @@ def test_caddy_multi_path(tmp_path, monkeypatch):
             )
         }
     )
-    site_path = manager.apply(m, upstream="127.0.0.1:32000")
+    site_path, changed = manager.apply(m, upstream="127.0.0.1:32000")
+    assert changed is True
     text = site_path.read_text()
     assert "handle_path /api" in text
 
@@ -98,6 +100,7 @@ def test_caddy_byo_tls(tmp_path, monkeypatch):
             )
         }
     )
-    site_path = manager.apply(m, upstream="127.0.0.1:32000")
+    site_path, changed = manager.apply(m, upstream="127.0.0.1:32000")
+    assert changed is True
     content = site_path.read_text()
     assert "tls /etc/certs/tls.crt /etc/certs/tls.key" in content

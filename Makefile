@@ -1,4 +1,8 @@
-.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke
+.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track
+.PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
+.PHONY: k1s-core-cri k1s-edge-cri k1s-core-edge-cri k1s-edge-core-cri edge-site-cri
+.PHONY: edge-site
+.PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy dev-local
 .PHONY: shim-helm-demo
 
 install:
@@ -28,6 +32,85 @@ loop:
 
 run:
 	python -m ae.controller --once --specs $${AE_SPECS_DIR:-specs}
+
+dev-min:
+	@./scripts/dev/run_profile.sh dev-min
+
+dev-etcd:
+	@./scripts/dev/run_profile.sh dev-etcd
+
+k1s-core:
+	@./scripts/dev/run_profile.sh k1s-core
+
+k1s-edge:
+	@./scripts/dev/run_profile.sh k1s-edge
+
+k1s-core-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  ./scripts/dev/run_profile.sh k1s-core
+
+k1s-edge-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  ./scripts/dev/run_profile.sh k1s-edge
+
+k1s-core-edge-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  AE_TRANSPORT_BACKEND=nats-core ./scripts/dev/run_profile.sh k1s-core
+
+k1s-edge-core-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  EDGE_PROFILE=k1s-core ./scripts/dev/run_profile.sh k1s-edge
+
+edge-site:
+	@SITE_ID=$${SITE_ID:?set SITE_ID} EDGE_PORT=$${EDGE_PORT:-4224} EDGE_HTTP_PORT=$${EDGE_HTTP_PORT:-8224} \
+	  ./scripts/dev/add_edge_site.sh
+
+edge-site-cri:
+	@AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=$${AE_CRI_RUNTIME_HANDLER:-runc} \
+	  SITE_ID=$${SITE_ID:?set SITE_ID} EDGE_PORT=$${EDGE_PORT:-4224} EDGE_HTTP_PORT=$${EDGE_HTTP_PORT:-8224} \
+	  ./scripts/dev/add_edge_site.sh
+
+k1s-core-edge:
+	@AE_TRANSPORT_BACKEND=nats-core ./scripts/dev/run_profile.sh k1s-core
+
+k1s-edge-core:
+	@EDGE_PROFILE=k1s-core ./scripts/dev/run_profile.sh k1s-edge
+
+k1s-core-node:
+	@AE_NODE_ID=$${AE_NODE_ID:-hub-1} \
+	  AE_NODE_LABELS="$${AE_NODE_LABELS:-role=hub,site=hub}$${AE_WG_ENDPOINT:+,wg_endpoint=$${AE_WG_ENDPOINT}}" \
+	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.0.0/24} \
+	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
+	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
+	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-$$(if [ "$$(id -u)" -eq 0 ]; then echo /var/lib/ae/rosenpass; else echo state/rosenpass; fi)} \
+	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
+	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
+	  AE_NODE_PORT=$${AE_NODE_PORT:-9111} \
+	  PYTHONPATH=src python -m ae.node --ensure-pod-net
+
+k1s-edge-node:
+	@AE_NODE_ID=$${AE_NODE_ID:-edge-1} \
+	  AE_NODE_LABELS="$${AE_NODE_LABELS:-site=edge}" \
+	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.1.0/24} \
+	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
+	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
+	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-$$(if [ "$$(id -u)" -eq 0 ]; then echo /var/lib/ae/rosenpass; else echo state/rosenpass; fi)} \
+	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
+	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
+	  AE_NODE_PORT=$${AE_NODE_PORT:-9112} \
+	  PYTHONPATH=src python -m ae.node --ensure-pod-net
+
+k1s-core-caddy:
+	@CORE_CADDY=1 ./scripts/dev/run_profile.sh k1s-core
+
+dev-min-caddy:
+	@CORE_CADDY=1 ./scripts/dev/run_profile.sh dev-min
+
+dev-etcd-caddy:
+	@CORE_CADDY=1 ./scripts/dev/run_profile.sh dev-etcd
+
+dev-local:
+	@AE_DEV_LOCAL=1 ./scripts/dev/ensure_dev_local.sh
 
 apply-sample:
 	python -m ae.cli apply -f specs/examples/echo.yaml
@@ -107,15 +190,14 @@ labs-k3d-down:
 	@./scripts/lab_k3d.sh down --name $${K3D_NAME:-k1s-labs}
 
 .PHONY: labs-up labs-down labs-aio-up labs-aio-down labs-apishim-env
+# labs-* wrappers now run the dev-etcd profile (controller on host, etcd via compose).
+# - labs-up: CLI-only (no docs/dashboard/Caddy).
+# - labs-aio-up: docs + dashboard via Caddy (mirrors dev-etcd-caddy + AE_DEV_LOCAL).
 labs-up:
-	@./scripts/ensure_dev_env.sh
-	@./scripts/ensure_apishim_env.sh >/dev/null
-	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/labs/apishim.env); \
-	  if [ -n "$$LABS_TOKEN" ]; then DOCS_LABS_TOKEN="$$LABS_TOKEN" python docs/build_docs.py || true; fi
-	docker compose -f ops/dev/labs-compose.yaml up -d
+	@CORE_CADDY=0 CORE_DOCS=0 AE_DEV_LOCAL=0 ./scripts/dev/run_profile.sh dev-etcd
 
 labs-down:
-	docker compose -f ops/dev/labs-compose.yaml down
+	@$(MAKE) down
 
 .PHONY: apishim-smoke
 apishim-smoke:
@@ -132,40 +214,34 @@ apishim-smoke:
 	  exit $$rc
 
 labs-aio-up:
-	@./scripts/ensure_apishim_env.sh
-	@./scripts/ensure_dev_env.sh
-	@LABS_TOKEN=$$(awk -F= '/^AE_LABS_TOKEN=/{print $$2}' state/labs/apishim.env); \
-	  if [ -n "$$LABS_TOKEN" ]; then DOCS_LABS_TOKEN="$$LABS_TOKEN" python docs/build_docs.py || true; fi
-	@if [ "$${AE_LABS_USE_POSTGRES:-0}" = "1" ]; then \
-	  if [ -z "$${AE_APISHIM_DSN:-}" ] && [ -z "$${AE_STATE_DSN:-}" ]; then \
-	    export AE_APISHIM_DSN="postgresql://shim:shim@postgres:5432/shim"; \
-	    export AE_STATE_DSN="postgresql://shim:shim@postgres:5432/shim"; \
-	  fi; \
-	  docker compose --profile postgres -f ops/dev/labs-aio.yaml up -d postgres; \
-	  for i in $$(seq 1 30); do \
-	    if docker compose --profile postgres -f ops/dev/labs-aio.yaml exec -T postgres pg_isready -U shim -d shim >/dev/null 2>&1; then \
-	      break; \
-	    fi; \
-	    sleep 1; \
-	  done; \
-	  docker compose --profile postgres -f ops/dev/labs-aio.yaml up -d; \
-	else \
-	  docker compose -f ops/dev/labs-aio.yaml up -d; \
-	fi
+	@CORE_CADDY=1 AE_DEV_LOCAL=1 ./scripts/dev/run_profile.sh dev-etcd
 
 labs-aio-down:
-	docker compose -f ops/dev/labs-aio.yaml down
+	@$(MAKE) down
 
 labs-apishim-env:
-	@if [ ! -f state/labs/apishim.env ]; then \
-	  echo "[labs] state/labs/apishim.env not found; run make labs-aio-up first."; \
+	@if [ ! -f state/profiles/dev-etcd/apishim.env ]; then \
+	  echo "[labs] state/profiles/dev-etcd/apishim.env not found; run make labs-up or labs-aio-up first."; \
 	  exit 1; \
 	fi
 	@echo "[labs] apishim tokens (dev only):"
-	@cat state/labs/apishim.env
+	@cat state/profiles/dev-etcd/apishim.env
 
-.PHONY: demo demo-down integ-test
+.PHONY: demo demo-legacy demo-down integ-test labs
 demo:
+	@PROFILE_DIR=$${PROFILE_DIR:-state/profiles/demo} \
+	  SPECS_DIR=$${SPECS_DIR:-state/profiles/demo/specs} \
+	  AE_ALLOW_PLAINTEXT_SECRETS=$${AE_ALLOW_PLAINTEXT_SECRETS:-1} \
+	  AE_RUNTIME_BACKEND=$${AE_RUNTIME_BACKEND:-podman} \
+	  AE_INFRA_BACKEND=$${AE_INFRA_BACKEND:-compose} \
+	  AE_DEMO_SEED=1 \
+	  AE_DEMO_SEED_WIPE=1 \
+	  AE_DEMO_MODE=1 \
+	  AE_DEV_LOCAL=$${AE_DEV_LOCAL:-1} \
+	  CORE_CADDY=$${CORE_CADDY:-1} \
+	  ./scripts/dev/run_profile.sh dev-min
+
+demo-legacy:
 	@TOKEN=$${AE_LABS_TOKEN:-D34DB33F}; \
 	  SOPS_AGE_KEY_FILE=$${SOPS_AGE_KEY_FILE:-$$HOME/.config/ae/keys.txt} \
 	  AE_ALLOW_PLAINTEXT_SECRETS=$${AE_ALLOW_PLAINTEXT_SECRETS:-1} \
@@ -177,7 +253,7 @@ demo-help:
 	./scripts/init_demo.sh --help
 
 demo-down:
-	./scripts/init_demo.sh --down -y
+	@bash scripts/stop_all.sh
 
 .PHONY: reg-cache-reset
 reg-cache-reset:
@@ -198,23 +274,40 @@ demo-reset:
 	@{ command -v podman >/dev/null 2>&1 && podman compose -f ops/dev/labs-compose.yaml down >/dev/null 2>&1 || true; }
 	@echo "[demo-reset] clearing dynamic Caddy sites"
 	@rm -f state/caddy/*.caddy 2>/dev/null || true
-	@echo "[demo-reset] removing controller DB (state/controller.db)"
+	@echo "[demo-reset] removing controller DB (state/profiles/demo/controller.db)"
+	@rm -f state/profiles/demo/controller.db 2>/dev/null || true
 	@rm -f state/controller.db 2>/dev/null || true
 	@{ if [ -f state/env.sh ]; then \
 	  . state/env.sh >/dev/null 2>&1 || true; \
-	  if [ -n "$$AE_STATE_DB" ] && [ "$$AE_STATE_DB" != "state/controller.db" ]; then \
+	  if [ -n "$$AE_STATE_DB" ] && [ "$$AE_STATE_DB" != "state/profiles/demo/controller.db" ]; then \
 	    echo "[demo-reset] removing controller DB ($$AE_STATE_DB)"; \
 	    rm -f "$$AE_STATE_DB" 2>/dev/null || true; \
 	  fi; \
 	fi; }
-	@echo "[demo-reset] removing shim DB (state/apishim.db)"
+	@echo "[demo-reset] removing shim DBs (profile + legacy)"
+	@rm -f state/profiles/demo/apishim.db 2>/dev/null || true
 	@rm -f state/apishim.db 2>/dev/null || true
+	@{ if [ -f state/env.sh ]; then \
+	  . state/env.sh >/dev/null 2>&1 || true; \
+	  if [ -n "$$AE_APISHIM_DB" ] && [ "$$AE_APISHIM_DB" != "state/profiles/demo/apishim.db" ] && [ "$$AE_APISHIM_DB" != "state/apishim.db" ]; then \
+	    echo "[demo-reset] removing shim DB ($$AE_APISHIM_DB)"; \
+	    rm -f "$$AE_APISHIM_DB" 2>/dev/null || true; \
+	  fi; \
+	fi; }
 	@echo "[demo-reset] pruning ae.app volumes (docker/podman)"
 	@{ command -v docker >/dev/null 2>&1 && docker volume ls -q --filter label=ae.app | xargs -r docker volume rm >/dev/null 2>&1; } || true
 	@{ command -v podman >/dev/null 2>&1 && podman volume ls -q --filter label=ae.app | xargs -r podman volume rm >/dev/null 2>&1; } || true
-	@echo "[demo-reset] removing curated specs directory (state/demo-specs)"
+	@echo "[demo-reset] removing curated specs directory (state/profiles/demo/specs)"
+	@rm -rf state/profiles/demo/specs 2>/dev/null || true
 	@rm -rf state/demo-specs 2>/dev/null || true
 	@echo "[demo-reset] done"
+
+labs:
+	@PROFILE_DIR=$${PROFILE_DIR:-state/profiles/labs} \
+	  SPECS_DIR=$${SPECS_DIR:-state/profiles/labs/specs} \
+	  AE_ETCD_PREFIX=$${AE_ETCD_PREFIX:-k1s/profiles/labs} \
+	  CORE_CADDY=$${CORE_CADDY:-1} \
+	  ./scripts/dev/run_profile.sh dev-etcd
 
 integ-test:
 	AE_INTEG_RUNTIME=$${AE_INTEG_RUNTIME:-podman} pytest -q tests/integration/
@@ -294,7 +387,7 @@ bench-mem-e2e-k3s-sudo:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--deploy $${DEPLOY:-echo} \
 		--namespace $${NS:-default} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30} \
 		--sudo
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
@@ -315,14 +408,20 @@ bench-mem-e2e-k1s:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 
+.PHONY: bench-podman-rootful-socket
+# Ensure rootful Podman socket is available (systemd socket or service fallback).
+bench-podman-rootful-socket:
+	@./scripts/bench/podman_rootful_socket.sh
+
 .PHONY: bench-mem-e2e-k1s-sudo
 # End-to-end: k1s matrix + rollout, but escalate snapshots with --sudo
 bench-mem-e2e-k1s-sudo:
+	@$(MAKE) bench-podman-rootful-socket
 	@./scripts/bench/engines_clear.sh --confirm
 	@PYTHONPATH=$${PYTHONPATH:-src} AE_COLLECT_PODMAN_SUDO=$${AE_COLLECT_PODMAN_SUDO:-1} ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
@@ -335,7 +434,7 @@ bench-mem-e2e-k1s-sudo:
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
 		--app $${APP:-specs/examples/echo.yaml} \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30} \
 		--sudo
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
@@ -350,29 +449,45 @@ bench-mem-cri:
 bench-mem-cri-quick:
 	@DURATION=$${DURATION:-10} \
 	 REPLICAS=$${REPLICAS:-1,5,10} \
-	 ROLL_REPLICAS=$${ROLL_REPLICAS:-5} \
+	 ROLL_REPLICAS=$${ROLL_REPLICAS:-2,5} \
 	 ./scripts/bench/run_cri_refresh.sh
 
 .PHONY: bench-mem-e2e-k1nd
-# End-to-end: k1nd (k1s-in-Docker via labs-aio compose) matrix + rollout + combine + plot
-# - Ensures the compose stack with controller + caddy is running
+# End-to-end: k1nd (k1s-in-Docker single-container) matrix + rollout + combine + plot
+# - Builds and runs the k1nd container
 # - Uses Docker on the host for preflights and container cgroup metrics
 # - Skips guard auto-start to avoid spawning a host controller
 bench-mem-e2e-k1nd:
 	@scripts/bench/k1nd_sanitize.sh pre
-	@$(MAKE) labs-aio-up
-	# Use a writable, isolated state DB for host-side CLI during k1nd runs
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
+	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	 APP_BASE=$$(basename "$$APP_PATH"); \
+	 export K1ND_MANIFEST="$$APP_PATH"; \
+	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
+	 scripts/bench/k1nd_single.sh up; \
+	 scripts/bench/k1nd_single.sh wait; \
+	 AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_CLI_CONTAINER=$${AE_CLI_CONTAINER:-k1nd-server} \
+	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
+	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
+	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
+	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
+	 bash ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
-		--app $${APP:-specs/examples/echo.yaml} \
+		--app "$$K1ND_APP_IN_CONTAINER" \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${REPLICAS:-1,5,10} \
-		--duration $${DURATION:-30}
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
+		--duration $${DURATION:-30}; \
+	 AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_CLI_CONTAINER=$${AE_CLI_CONTAINER:-k1nd-server} \
+	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
+	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
+	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
+	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
+	 bash ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
-		--app $${APP:-specs/examples/echo.yaml} \
+		--app "$$K1ND_APP_IN_CONTAINER" \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
@@ -382,19 +497,36 @@ bench-mem-e2e-k1nd:
 # Same as bench-mem-e2e-k1nd but runs snapshots with sudo to capture full PSS
 bench-mem-e2e-k1nd-sudo:
 	@scripts/bench/k1nd_sanitize.sh pre
-	@$(MAKE) labs-aio-up
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
+	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	 APP_BASE=$$(basename "$$APP_PATH"); \
+	 export K1ND_MANIFEST="$$APP_PATH"; \
+	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
+	 scripts/bench/k1nd_single.sh up; \
+	 scripts/bench/k1nd_single.sh wait; \
+	 AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_CLI_CONTAINER=$${AE_CLI_CONTAINER:-k1nd-server} \
+	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
+	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
+	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
+	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
+	 bash ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
-		--app $${APP:-specs/examples/echo.yaml} \
+		--app "$$K1ND_APP_IN_CONTAINER" \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${REPLICAS:-1,5,10} \
 		--duration $${DURATION:-30} \
-		--sudo
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
+		--sudo; \
+	 AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_CLI_CONTAINER=$${AE_CLI_CONTAINER:-k1nd-server} \
+	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
+	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
+	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
+	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
+	 bash ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
-		--app $${APP:-specs/examples/echo.yaml} \
+		--app "$$K1ND_APP_IN_CONTAINER" \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30} \
 		--sudo
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
@@ -405,26 +537,37 @@ bench-mem-e2e-k1nd-sudo:
 # Fast profile: in-container CLI, no warm, shorter snapshots, fewer waits
 bench-mem-e2e-k1nd-quick:
 	@scripts/bench/k1nd_sanitize.sh pre
-	@$(MAKE) labs-aio-up
-	@AE_CLI_IN_CONTAINER=1 AE_BENCH_QUICK=1 SKIP_IDLE=$${SKIP_IDLE:-1} PRUNE_OLD=$${PRUNE_OLD:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
-		AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} \
-		AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
-		AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} \
-		AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
-		AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_matrix.sh \
+	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	 APP_BASE=$$(basename "$$APP_PATH"); \
+	 export K1ND_MANIFEST="$$APP_PATH"; \
+	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
+	 scripts/bench/k1nd_single.sh up; \
+	 scripts/bench/k1nd_single.sh wait; \
+	 AE_CLI_IN_CONTAINER=1 AE_CLI_CONTAINER=$${AE_CLI_CONTAINER:-k1nd-server} AE_BENCH_QUICK=1 \
+	 SKIP_IDLE=$${SKIP_IDLE:-1} PRUNE_OLD=$${PRUNE_OLD:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
+	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
+	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
+	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
+	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
+	 bash ./scripts/bench/run_matrix.sh \
 		--label-suite $${LABEL_SUITE:-baseline} \
-		--app $${APP:-specs/examples/echo.yaml} \
+		--app "$$K1ND_APP_IN_CONTAINER" \
 		--app-name $${APP_NAME:-echo} \
 		--replicas $${REPLICAS:-1,5,10} \
 		--duration $${DURATION:-10} \
-		--sudo
-	@AE_CLI_IN_CONTAINER=1 AE_BENCH_QUICK=1 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
-		AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
-		AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
+		--sudo; \
+	 AE_CLI_IN_CONTAINER=1 AE_CLI_CONTAINER=$${AE_CLI_CONTAINER:-k1nd-server} AE_BENCH_QUICK=1 \
+	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
+	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
+	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
+	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
+	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
-		--app $${APP:-specs/examples/echo.yaml} \
+		--app "$$K1ND_APP_IN_CONTAINER" \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-10} \
 		--sudo
 	@scripts/bench/k1nd_sanitize.sh post
@@ -433,20 +576,24 @@ bench-mem-e2e-k1nd-quick:
 # Resume only the rollout stage (use the same LABEL_SUITE as the previous matrix stage)
 bench-mem-e2e-k1nd-resume-rollout:
 	@scripts/bench/k1nd_sanitize.sh pre
-	@$(MAKE) labs-aio-up
-	@AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
-	 AE_STATE_DB=$${AE_STATE_DB:-/tmp/k1s-bench-$$(id -un).db} \
+	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	 APP_BASE=$$(basename "$$APP_PATH"); \
+	 export K1ND_MANIFEST="$$APP_PATH"; \
+	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
+	 scripts/bench/k1nd_single.sh up; \
+	 scripts/bench/k1nd_single.sh wait; \
+	 AE_CLI_IN_CONTAINER=$${AE_CLI_IN_CONTAINER:-1} AE_CLI_CONTAINER=$${AE_CLI_CONTAINER:-k1nd-server} \
+	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
+	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
+	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
+	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
 	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
 		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
-		--app $${APP:-specs/examples/echo.yaml} \
+		--app "$$K1ND_APP_IN_CONTAINER" \
 		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30}
-		--label-suite $${LABEL_SUITE_ROLL:-$${LABEL_SUITE:-baseline}} \
-		--app $${APP:-specs/examples/echo.yaml} \
-		--app-name $${APP_NAME:-echo} \
-		--replicas $${ROLL_REPLICAS:-5} \
-		--duration $${DURATION:-10}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@scripts/bench/k1nd_sanitize.sh post
@@ -455,13 +602,12 @@ bench-mem-e2e-k1nd-resume-rollout:
 # Same as bench-mem-e2e-k1nd but tears down the compose stack afterwards
 bench-mem-e2e-k1nd-down:
 	@$(MAKE) bench-mem-e2e-k1nd
-	@$(MAKE) labs-aio-down
 
 .PHONY: bench-mem-e2e-all bench-mem-e2e-minimal
 bench-mem-e2e-all:
 	@DURATION=$${DURATION:-30} \
 	 REPLICAS=$${REPLICAS:-1,5,10} \
-	 ROLL_REPLICAS=$${ROLL_REPLICAS:-5} \
+	 ROLL_REPLICAS=$${ROLL_REPLICAS:-2,5} \
 	 LABEL_ROOTFUL=$${LABEL_ROOTFUL:-r$$(date +%Y%m%d)+podman+rootful+cg2} \
 	 LABEL_ROOTLESS=$${LABEL_ROOTLESS:-r$$(date +%Y%m%d)+podman+rootless+cg2} \
 	 LABEL_K1ND=$${LABEL_K1ND:-r$$(date +%Y%m%d)+docker+k1nd} \
@@ -505,7 +651,7 @@ bench-mem-docs:
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@python docs/build_docs.py
 
-.PHONY: bench-fix-perms
+.PHONY: bench-fix-perms dev-fix-perms
 # Normalize ownership/permissions for result artifacts (useful after sudo runs)
 # - If run with sudo, uses SUDO_USER to assign back to the invoking user
 # - Always tries to set permissive read/execute for directories and read for files
@@ -522,6 +668,35 @@ bench-fix-perms:
 	   fi; \
 	 done; \
 	 echo "[bench-fix-perms] done"
+
+# Normalize ownership/permissions for local dev generated artifacts after rootful runs.
+# Usage:
+#   make dev-fix-perms
+#   make dev-fix-perms SUDO=1         # use sudo for reclaiming root-owned paths
+#   sudo make dev-fix-perms           # uses SUDO_USER as target owner when available
+#   make dev-fix-perms FIX_USER=<usr> # force target owner
+dev-fix-perms:
+	@OWN=$${FIX_USER:-$${SUDO_USER:-$$(id -un)}}; \
+	 GRP=$$(id -gn "$$OWN"); \
+	 RUN_AS=""; \
+	 if [ "$$(id -u)" -ne 0 ] && [ "$${SUDO:-0}" = "1" ]; then RUN_AS="sudo"; fi; \
+	 TARGETS="state docs/site docs/export docs/wiki"; \
+	 echo "[dev-fix-perms] target owner=$$OWN:$$GRP runner=$${RUN_AS:-direct}"; \
+	 for d in $$TARGETS; do \
+	   if [ -e "$$d" ]; then \
+	     echo "[dev-fix-perms] processing $$d"; \
+	     $$RUN_AS chown -R "$$OWN:$$GRP" "$$d" >/dev/null 2>&1 || true; \
+	     $$RUN_AS find "$$d" -type d -exec chmod u+rwx {} + >/dev/null 2>&1 || true; \
+	     $$RUN_AS find "$$d" -type f -exec chmod u+rw {} + >/dev/null 2>&1 || true; \
+	   fi; \
+	 done; \
+	 for f in ops/dev/nats-edge-*.conf; do \
+	   [ -e "$$f" ] || continue; \
+	   echo "[dev-fix-perms] processing $$f"; \
+	   $$RUN_AS chown "$$OWN:$$GRP" "$$f" >/dev/null 2>&1 || true; \
+	   $$RUN_AS chmod u+rw "$$f" >/dev/null 2>&1 || true; \
+	 done; \
+	 echo "[dev-fix-perms] done"
 
 .PHONY: bench-snapshots-clean bench-snapshots-clean-sudo
 # Remove invalid snapshots from the last N hours; optionally include quick-* labels.
@@ -541,9 +716,10 @@ bench-snapshots-clean-sudo:
 bench-state-clean:
 	@./scripts/bench/clean_state.sh --bench
 
-# Wipe full state/ directory (requires CONFIRM=1)
+# Wipe full state/ directory (requires CONFIRM=1), preserving TLS artifacts
 dev-state-clean:
-	@CONFIRM=$${CONFIRM:-0} ./scripts/bench/clean_state.sh --dev $${CONFIRM:+--confirm}
+	@bash scripts/stop_all.sh
+	@CONFIRM=$${CONFIRM:-0} KEEP_TLS=1 ./scripts/bench/clean_state.sh --dev --keep-tls $${CONFIRM:+--confirm}
 
 .PHONY: bench-mem-backfill
 # Aggregate any snapshots missing summary.json, then rebuild combined, charts, and docs
@@ -618,6 +794,14 @@ bench-mem-finalize-sudo:
 docs-watch:
 	@python scripts/watch_docs.py
 
+# Local-only: hide regenerated docs/site from git status (useful during dev).
+docs-local-ignore:
+	@bash scripts/docs-local-ignore.sh
+
+# Local-only: re-enable tracking for docs/site updates before committing.
+docs-local-track:
+	@bash scripts/docs-local-track.sh
+
 # End-to-end: k3s matrix + rollout + combine + plot (requires k3d cluster up)
 bench-mem-e2e-k3s:
 	@./scripts/bench/run_matrix_k3s.sh \
@@ -629,7 +813,7 @@ bench-mem-e2e-k3s:
 		--label-suite $${LABEL_SUITE_ROLL:-baseline-roll} \
 		--deploy $${DEPLOY:-echo} \
 		--namespace $${NS:-default} \
-		--replicas $${ROLL_REPLICAS:-5} \
+		--replicas $${ROLL_REPLICAS:-2,5} \
 		--duration $${DURATION:-30}
 	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}

@@ -20,6 +20,7 @@ SC_GROUP = "storage.k8s.io"
 SC_VERSION = "v1"
 SC_RESOURCE = "storageclasses"
 VA_RESOURCE = "volumeattachments"
+CSIDRIVER_RESOURCE = "csidrivers"
 SECRETS_RESOURCE = "secrets"  # noqa: S105 - Kubernetes resource plural
 
 
@@ -47,6 +48,8 @@ class StorageState(Protocol):
     def list_mounts(self, node_id: str | None = None) -> list[NetFSMount]: ...
 
     def get_volume_attachment(self, pv: PvRef, node_id: str) -> Any | None: ...
+
+    def get_csi_driver(self, name: str) -> Any | None: ...
 
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None: ...
 
@@ -110,6 +113,10 @@ class InMemoryStorageState:
 
     def get_volume_attachment(self, pv: PvRef, node_id: str) -> Any | None:
         _ = (pv, node_id)
+        return None
+
+    def get_csi_driver(self, name: str) -> Any | None:
+        _ = name
         return None
 
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None:
@@ -176,6 +183,14 @@ class ApishimStorageState(InMemoryStorageState):
             if source.get("persistentVolumeName") == pv.name:
                 return att
         return None
+
+    def get_csi_driver(self, name: str) -> Any | None:
+        if not name:
+            return None
+        try:
+            return self._store.get(SC_GROUP, SC_VERSION, CSIDRIVER_RESOURCE, None, name)
+        except Exception:
+            return None
 
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None:
         if not namespace or not name:

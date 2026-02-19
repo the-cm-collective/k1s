@@ -1,0 +1,10 @@
+apiVersion: k1s.io/v1
+kind: EdgeIngressPolicy
+metadata:
+  name: ingress-matrix-ws-policy
+  namespace: default
+spec:
+  websockets:
+    enabled: true
+  timeouts:
+    idleMs: 600000

@@ -4,7 +4,7 @@ set -euo pipefail
 # Run a clean, leak-free baseline across:
 # - k1s (Podman rootless)
 # - k1s (Podman rootful, snapshots via sudo)
-# - k1nd (k1s-in-Docker via labs-aio)
+# - dev-min (host controller + podman, no compose)
 # - k3d/k3s (cluster up/down, snapshots via sudo)
 #
 # Requirements:
@@ -290,18 +290,23 @@ else
   log "sudo not enabled; skipping k1s rootful"
 fi
 
-# -------- Suite: k1nd (labs-aio up/down) --------
+# -------- Suite: k1nd (single-container) --------
 if [[ "$DISABLE_K1ND" == "1" ]]; then
   log "skipping suite: k1nd (DISABLE_K1ND=1)"
 else
-  log "suite: k1nd"
+  log "suite: k1nd (single-container)"
   engines_clear_all
-  PYTHONPATH=src AE_RUNTIME_BACKEND=docker AE_COLLECT_ENGINE=docker AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
-    WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1nd \
-    LABEL_SUITE="$LBL_K1ND" REPLICAS="$REPLICAS" DURATION="$DURATION"
-  # ensure compose stack torn down
-  make labs-aio-down >/dev/null 2>&1 || true
+  AE_ENGINE_STRICT=1 AE_COLLECT_ENGINE=docker WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1nd \
+    LABEL_SUITE="$LBL_K1ND" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
   fix_perms
+fi
+
+# -------- Suite: dev-min (legacy k1nd compose deprecated) --------
+if [[ "$DISABLE_DEV_MIN" == "1" ]]; then
+  log "skipping suite: dev-min (DISABLE_DEV_MIN=1)"
+else
+  log "suite: dev-min (uses rootless podman bench env)"
+  # dev-min bench runs are covered by the rootless/rootful suites above.
 fi
 
 # -------- Suite: k3d/k3s (sudo snapshots) --------

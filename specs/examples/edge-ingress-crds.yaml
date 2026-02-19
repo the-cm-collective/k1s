@@ -1,0 +1,132 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: edgeingressroutes.k1s.io
+spec:
+  group: k1s.io
+  names:
+    kind: EdgeIngressRoute
+    plural: edgeingressroutes
+    singular: edgeingressroute
+    shortNames:
+      - eir
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - host
+                - exposure
+              properties:
+                host:
+                  type: string
+                paths:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      path:
+                        type: string
+                      serviceRef:
+                        type: object
+                        properties:
+                          namespace:
+                            type: string
+                          name:
+                            type: string
+                          port:
+                            type: integer
+                exposure:
+                  type: object
+                  required:
+                    - mode
+                    - placement
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                        - core-proxy
+                        - core-to-edge-public
+                        - edge-local
+                    placement:
+                      type: object
+                      properties:
+                        site:
+                          type: string
+                    tls:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                policyRef:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: edgeingresspolicies.k1s.io
+spec:
+  group: k1s.io
+  names:
+    kind: EdgeIngressPolicy
+    plural: edgeingresspolicies
+    singular: edgeingresspolicy
+    shortNames:
+      - eip
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: siteingressendpoints.k1s.io
+spec:
+  group: k1s.io
+  names:
+    kind: SiteIngressEndpoint
+    plural: siteingressendpoints
+    singular: siteingressendpoint
+    shortNames:
+      - sie
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

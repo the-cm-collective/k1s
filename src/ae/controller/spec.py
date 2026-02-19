@@ -536,10 +536,10 @@ class AppSpec(BaseModel):
 
 
 class AppManifest(BaseModel):
-    """Top-level workload manifest (Deployment/App)."""
+    """Top-level workload manifest (Deployment)."""
 
     api_version: Literal["ae.dev/v1alpha1"] = Field(alias="apiVersion")
-    kind: Literal["App", "Deployment"]
+    kind: Literal["Deployment"]
     metadata: Metadata
     spec: AppSpec
 
@@ -552,14 +552,14 @@ class AppManifest(BaseModel):
             raw = v.strip()
             low = raw.lower()
             if low == "app":
-                return "App"
+                raise ValueError("kind 'App' is no longer supported; use kind 'Deployment'")
             if low == "deployment":
                 return "Deployment"
         return v
 
 
 def load_manifest(path: Path) -> AppManifest:
-    """Load a Deployment/App manifest from YAML."""
+    """Load a Deployment manifest from YAML."""
 
     try:
         data = yaml.safe_load(path.read_text())

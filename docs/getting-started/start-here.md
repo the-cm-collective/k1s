@@ -38,9 +38,9 @@
 
 This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.
 
-Note: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
+Note: k1s is pre-1.0 and still evolving. v0.1.3 expands operational validation (deep+perf ingress lanes, repeatability and fault-injection gates, security baseline and active auth probes, and release-time live OpenAPI gates), but production promotion still requires environment-specific security review and rollout validation.
 
-Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Service VIPs map to Services/ClusterIP.
+Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.
 
 ## Prerequisites
 - Python 3.11+
@@ -50,7 +50,7 @@ Terminology: k1s "Apps" are Deployment-like workloads; replicas map to Pods; Ser
 - Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
 ## Option A — Zero‑to‑Labs (automated)
-This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Apps).
+This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Deployments).
 
 1) Run the demo initializer (adds hosts; Ctrl‑C safe):
 ```
@@ -119,9 +119,16 @@ docker compose -f ops/dev/docker-compose.yaml up -d
 ```
 python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch
 ```
-   - For CRI/containerd: `AE_RUNTIME_BACKEND=cri` and follow the CRI section in `docs/ops/runbook.md` for CNI init + smoke checks.
+   - Strict CRI/containerd (recommended): use profile targets instead of manually wiring all CRI env vars:
+```
+make k1s-core-cri
+# optional pairings:
+make k1s-edge-cri
+make k1s-edge-core-cri
+```
+   - Profile and CRI details: `docs/guides/runtime-profiles.md`, `docs/reference/cri-containerd.md`, `docs/guides/multinode-lab.md`.
 
-4) Apply and inspect a sample workload (App):
+4) Apply and inspect a sample workload (Deployment):
 ```
 python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli status echo --wide --events
@@ -165,6 +172,10 @@ Local dev and samples
 - `make down`: stop all dev/demo stacks (best-effort).
 - `make loop`: controller reconcile loop (watch mode).
 - `make run`: single reconcile pass.
+- `make dev-min` / `make dev-etcd` / `make k1s-core` / `make k1s-edge`: runtime profiles with empty specs (no default apps).
+- `make k1s-core-cri` / `make k1s-edge-cri` / `make k1s-core-edge-cri` / `make k1s-edge-core-cri`: strict CRI profile aliases.
+- `make edge-site-cri SITE_ID=<site> EDGE_PORT=<port> EDGE_HTTP_PORT=<port>`: strict CRI multi-site edge helper.
+- `make dev-min-caddy` / `make dev-etcd-caddy` / `make k1s-core-caddy`: same profiles with TLS hostnames for docs/api/dashboard.
 - `make apply-sample`: apply `specs/examples/echo.yaml`.
 - `make status-sample`: status for `echo`.
 - `make logs-sample`: logs for `echo`.
@@ -184,7 +195,7 @@ Docs, labs, and playground
 - `make labs-up` / `make labs-down`: docs + playground via compose (controller runs on host).
 - `make labs-aio-up` / `make labs-aio-down`: all-in-one labs stack (controller + apishim + docs).
 - `make labs-k3d-up` / `make labs-k3d-down`: bring up/down local k3d cluster for labs.
-- `make labs-apishim-env`: print apishim tokens from `state/labs/apishim.env`.
+- `make labs-apishim-env`: print apishim tokens from `state/profiles/labs/apishim.env`.
 - `make apishim-smoke`: quick API shim health check on port 8445.
 - `make shim-helm-demo`: run the helm shim demo helper.
 
@@ -355,7 +366,6 @@ Details: `README.md:67` and token management in `docs/ops/runbook.md:1`.
 - Teardown demo: `./scripts/init_demo.sh --down -y` or `make demo-down`.
 - Reset demo state: `./scripts/init_demo.sh --reset` or `make demo-reset`.
 
-Happy shipping!
 Want a stricter baseline? Try the hardened demo (non‑root, read‑only, startup/liveness, PDB, PSA labels, NP default‑deny):
 ```
 ./scripts/init_demo.sh --demo-hardened -y -d

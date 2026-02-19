@@ -1422,6 +1422,34 @@ def md_to_html(
             stripped = stripped[:-1]
         return [cell.strip() for cell in stripped.split("|")]
 
+    def slugify_heading(text: str) -> str:
+        # Strip a few common markdown inline markers before slugging.
+        s = re.sub(r"`([^`]*)`", r"\1", text)
+        s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+        s = re.sub(r"[*_~]", "", s)
+        s = s.lower()
+        s = re.sub(r"[^a-z0-9]+", "-", s)
+        s = re.sub(r"-{2,}", "-", s).strip("-")
+        return s or "section"
+
+    def split_heading_id(text: str) -> tuple[str, str | None]:
+        # Support explicit heading IDs: "## Title {#my-id}"
+        m = re.match(r"^(.*?)(?:\s*\{#([A-Za-z][A-Za-z0-9:_-]*)\}\s*)$", text)
+        if not m:
+            return text, None
+        return m.group(1).rstrip(), m.group(2)
+
+    used_heading_ids: dict[str, int] = {}
+
+    def render_heading(level: int, text: str) -> str:
+        heading_text, explicit_id = split_heading_id(text)
+        hid = explicit_id or slugify_heading(heading_text)
+        n = used_heading_ids.get(hid, 0)
+        used_heading_ids[hid] = n + 1
+        if n:
+            hid = f"{hid}-{n}"
+        return f'<h{level} id="{hid}">{fmt(heading_text)}</h{level}>'
+
     para_buf: list[str] = []
     i = 0
     while i < len(lines):
@@ -1509,32 +1537,32 @@ def md_to_html(
         # headings
         if line.startswith("###### "):
             flush_paragraph(para_buf)
-            out.append(f"<h6>{fmt(line[7:])}</h6>")
+            out.append(render_heading(6, line[7:]))
             i += 1
             continue
         if line.startswith("##### "):
             flush_paragraph(para_buf)
-            out.append(f"<h5>{fmt(line[6:])}</h5>")
+            out.append(render_heading(5, line[6:]))
             i += 1
             continue
         if line.startswith("#### "):
             flush_paragraph(para_buf)
-            out.append(f"<h4>{fmt(line[5:])}</h4>")
+            out.append(render_heading(4, line[5:]))
             i += 1
             continue
         if line.startswith("### "):
             flush_paragraph(para_buf)
-            out.append(f"<h3>{fmt(line[4:])}</h3>")
+            out.append(render_heading(3, line[4:]))
             i += 1
             continue
         if line.startswith("## "):
             flush_paragraph(para_buf)
-            out.append(f"<h2>{fmt(line[3:])}</h2>")
+            out.append(render_heading(2, line[3:]))
             i += 1
             continue
         if line.startswith("# "):
             flush_paragraph(para_buf)
-            out.append(f"<h1>{fmt(line[2:])}</h1>")
+            out.append(render_heading(1, line[2:]))
             i += 1
             continue
 
@@ -1578,7 +1606,7 @@ def build_one(
     api_mode_widget: str,
     api_mode_script: str,
 ) -> None:
-    allow_raw = md_path.name in {"playground.md", "start-here.md"} or (
+    allow_raw = md_path.name in {"playground.md", "start-here.md", "memory.md"} or (
         md_path.name == "index.md" and md_path.parent.name == "concepts-in-practice"
     )
     html_body = md_to_html(
@@ -2482,6 +2510,7 @@ def main() -> None:
             "title": "Platform Guides",
             "desc": "Storage, rollouts, and runtime configuration guides.",
             "links": [
+                ("Runtime Profiles", "runtime-profiles.html", False, False),
                 ("Configs & Secrets", "configs-secrets.html", False, False),
                 ("Rollouts", "rollouts.html", False, False),
                 ("Storage", "storage.html", False, False),

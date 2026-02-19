@@ -32,9 +32,16 @@ class NodeVolumeManager:
         self._default_ns = default_namespace
 
     def inject_pvc_mounts(
-        self, manifest: AppManifest, *, node_id: str | None = None
+        self,
+        manifest: AppManifest,
+        *,
+        node_id: str | None = None,
+        replica_id: str | None = None,
     ) -> AppManifest:
         """Ensure PVC mounts are present and inject hostPath volumes into the manifest."""
+        # replica_id is accepted for compatibility with runtime/node call sites.
+        # NetFS mount resolution is PVC-scoped today and does not use per-replica state.
+        _ = replica_id
 
         pvc_mounts = list(getattr(manifest.spec, "pvc_mounts", []) or [])
         if not pvc_mounts:

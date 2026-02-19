@@ -5,9 +5,10 @@ MODE="full"
 MANIFEST="${BENCH_MANIFEST:-specs/examples/echo.yaml}"
 DURATION="${DURATION:-30}"
 REPLICAS="${REPLICAS:-1,5,10}"
-ROLL_REPLICAS="${ROLL_REPLICAS:-5}"
+ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 LABEL_ROOTFUL="${LABEL_ROOTFUL:-r$(date +%Y%m%d)+podman+rootful+cg2}"
 LABEL_ROOTLESS="${LABEL_ROOTLESS:-r$(date +%Y%m%d)+podman+rootless+cg2}"
+LABEL_DEV_MIN="${LABEL_DEV_MIN:-r$(date +%Y%m%d)+podman+dev-min}"
 LABEL_K1ND="${LABEL_K1ND:-r$(date +%Y%m%d)+docker+k1nd}"
 METRICS_PORT="${BENCH_METRICS_PORT:-9210}"
 
@@ -39,7 +40,6 @@ need_sudo() {
 stop_dev_stacks() {
   if command -v docker >/dev/null 2>&1; then
     sudo docker compose -f ops/dev/docker-compose.yaml down >/dev/null 2>&1 || true
-    sudo docker compose -f ops/dev/labs-aio.yaml down >/dev/null 2>&1 || true
   fi
 }
 
@@ -93,6 +93,12 @@ fi
 
 run_make bench-mem-e2e-k1s-sudo "$LABEL_ROOTFUL"
 run_make bench-mem-e2e-k1s "$LABEL_ROOTLESS"
-run_make bench-mem-e2e-k1nd-sudo "$LABEL_K1ND"
+# dev-min uses the same rootless path; keep labels aligned for reporting.
+run_make bench-mem-e2e-k1s "$LABEL_DEV_MIN"
+if command -v docker >/dev/null 2>&1; then
+  run_make bench-mem-e2e-k1nd "$LABEL_K1ND"
+else
+  echo "[bench-suite] docker missing; skipping k1nd stage" >&2
+fi
 
 sudo make bench-mem-finalize-sudo

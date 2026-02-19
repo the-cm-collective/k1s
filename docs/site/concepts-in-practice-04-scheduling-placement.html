@@ -721,15 +721,15 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 04 - Scheduling &amp; Placement</h1>
-<h2>Concept</h2>
+    <h1 id="chapter-04-scheduling-placement">Chapter 04 - Scheduling &amp; Placement</h1>
+<h2 id="concept">Concept</h2>
 <p>Scheduling is the process of deciding where workloads run. It is not just &quot;pick a node,&quot; but &quot;pick a node that satisfies constraints.&quot; Placement becomes part of correctness when storage, network policy, or affinity rules are involved.</p>
 <pre class="mermaid">flowchart TB
   Workload[Workload spec] --&gt; Filters[Eligibility filters]
   Filters --&gt;|ready + not cordoned| Eligible[Eligible nodes]
   Eligible --&gt;|spread| Placement[Pod placement plan]
   Placement --&gt; Runtime[Runtime execution]</pre>
-<h3>Theory</h3>
+<h3 id="theory">Theory</h3>
 <p>Schedulers perform a filter-and-score pipeline. First, they filter out nodes that cannot run the workload (not ready, cordoned, selector mismatch, taints not tolerated). Then they score remaining nodes to balance load or satisfy topology constraints. This separates hard constraints from soft preferences.</p>
 <pre class="mermaid">flowchart LR
   Node[Node] --&gt; Check1{Ready?}
@@ -741,7 +741,7 @@
   Check3 -- yes --&gt; Check4{Tolerations ok?}
   Check4 -- no --&gt; Reject
   Check4 -- yes --&gt; Eligible[Eligible]</pre>
-<h3>Design</h3>
+<h3 id="design">Design</h3>
 <p>k1s implements a lightweight scheduler that filters nodes by readiness, cordon status, nodeSelector, taints/tolerations, and then spreads pods round-robin. If storage is declared, it pins placement to one node to avoid cross-node volume assumptions. When no nodes qualify, it falls back to the local runtime so single-node setups remain usable.</p>
 <pre class="mermaid">flowchart TB
   Spec[AppSpec] --&gt;|storage declared| Pin[Pin to single node]
@@ -750,7 +750,7 @@
   Pin --&gt; Plan[Placement plan]
   Spread --&gt; Plan
   RoundRobin --&gt; Plan</pre>
-<h3>Application</h3>
+<h3 id="application">Application</h3>
 <p>When a workload does not schedule, inspect selectors, taints, and node readiness first. For multi-node development, consider adding labels that enable explicit node selection and validating placement decisions with <code>ae nodes</code> and events. This aligns with how kube-scheduler behaves in production clusters.</p>
 <pre class="mermaid">flowchart TB
   Pending[Workload pending] --&gt; Nodes[ae nodes]
@@ -761,7 +761,7 @@
   Cordon -- no --&gt; Labels{Selector/taints match?}
   Labels -- no --&gt; UpdateSpec[Fix selector/tolerations]
   Labels -- yes --&gt; Reapply[Re-apply spec]</pre>
-<h2>Key Terms and Acronyms</h2>
+<h2 id="key-terms-and-acronyms">Key Terms and Acronyms</h2>
 <ul>
 <li>Scheduler - Component that decides placement for pods.</li>
 <li>Node - Execution target for workloads.</li>
@@ -773,21 +773,21 @@
 <li>Placement - The chosen nodes for pods.</li>
 <li>Pod - A single instance of a workload.</li>
 </ul>
-<h2>Commands (copy/paste)</h2>
+<h2 id="commands-copy-paste">Commands (copy/paste)</h2>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108
 python -m ae.cli nodes
 python -m ae.cli nodes &lt;node-id&gt; --cordon
 python -m ae.cli nodes &lt;node-id&gt; --uncordon
 python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli events echo --limit 20</code></pre>
-<h2>Docs references (source + site)</h2>
+<h2 id="docs-references-source-site">Docs references (source + site)</h2>
 <ul>
 <li>Source: <code>docs/reference/scheduling.md</code></li>
 <li>Source: <code>docs/getting-started/concepts.md</code> (nodes + scheduling)</li>
 <li>Site: <code>docs/site/scheduling.html</code></li>
 <li>Site: <code>docs/site/concepts.html</code></li>
 </ul>
-<h2>Code references (walkthrough anchors)</h2>
+<h2 id="code-references-walkthrough-anchors">Code references (walkthrough anchors)</h2>
 <ul>
 <li>Scheduler placement logic: <code>src/ae/controller/scheduler.py:61</code></li>
 </ul>
@@ -841,7 +841,7 @@ python -m ae.cli events echo --limit 20</code></pre>
     topology_spread_constraints: List[dict] = Field(
         default_factory=list, alias=&quot;topologySpreadConstraints&quot;
     )</code></pre>
-<h2>Chapter navigation</h2>
+<h2 id="chapter-navigation">Chapter navigation</h2>
 <ul>
 <li>Prev: <a href="concepts-in-practice-03-runtime-adapters.html">Chapter 03 - Runtime Adapters &amp; Container Execution</a></li>
 <li>Next: <a href="concepts-in-practice-05-observability.html">Chapter 05 - Observability: Logs, Metrics, Events</a></li>
@@ -853,7 +853,7 @@ python -m ae.cli events echo --limit 20</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

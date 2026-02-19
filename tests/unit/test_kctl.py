@@ -9,7 +9,7 @@ def write_manifest(path: Path, image: str = "alpine:3.20") -> None:
     path.write_text(
         f"""
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata:
   name: echo
 spec:

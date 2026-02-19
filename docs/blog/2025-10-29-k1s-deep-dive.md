@@ -82,7 +82,7 @@ Most fields map directly to runtime flags: `security` maps to user/group, read�
 
 ```yaml
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata: { name: web }
 spec:
   image: ghcr.io/example/web:1.2.3
@@ -203,7 +203,7 @@ for manifest in manifests:
 
 ## Kubernetes Parity & Tooling
 
-- `ae export-k8s`: render K8s YAML from an App manifest (presets for security); optional validation and extras (HPA, PDB, SA)
+- `ae export-k8s`: render K8s YAML from a Deployment manifest (presets for security); optional validation and extras (HPA, PDB, SA)
 - `ae k8s-check`: static portability checklist; `--policy strict` for CI‑style gates
 - `ae k8s-report`: produce a compliance JSON; docs embed it on the k8s‑compliance page
 

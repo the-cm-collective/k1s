@@ -21,19 +21,42 @@
     {
       "type": "stat",
       "title": "Apps Ready",
-      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
-      "targets": [{"expr": "ae_apps_ready"}]
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "ae_apps_ready"
+        }
+      ]
     },
     {
       "type": "stat",
       "title": "Replicas Ready",
-      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 3},
-      "targets": [{"expr": "ae_replicas_ready"}]
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "ae_replicas_ready"
+        }
+      ]
     },
     {
       "type": "graph",
       "title": "Per-App Reconcile Duration (avg)",
-      "gridPos": {"x": 0, "y": 3, "w": 12, "h": 6},
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 12,
+        "h": 6
+      },
       "targets": [
         {
           "expr": "(ae_reconcile_duration_seconds_sum{app=\"$app\"}) / ignoring(app) (ae_reconcile_duration_seconds_count{app=\"$app\"})",
@@ -44,20 +67,274 @@
     {
       "type": "graph",
       "title": "Canary Weight",
-      "gridPos": {"x": 0, "y": 9, "w": 12, "h": 6},
-      "targets": [{"expr": "ae_canary_weight{app=\"$app\"}", "legendFormat": "{{app}}"}]
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "ae_canary_weight{app=\"$app\"}",
+          "legendFormat": "{{app}}"
+        }
+      ]
     },
     {
       "type": "stat",
       "title": "Canary Steps",
-      "gridPos": {"x": 0, "y": 15, "w": 12, "h": 3},
-      "targets": [{"expr": "ae_canary_steps_total{app=\"$app\"}", "legendFormat": "{{app}}"}]
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 12,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "ae_canary_steps_total{app=\"$app\"}",
+          "legendFormat": "{{app}}"
+        }
+      ]
     },
     {
       "type": "table",
       "title": "Container Restarts",
-      "gridPos": {"x": 0, "y": 18, "w": 12, "h": 8},
-      "targets": [{"expr": "ae_container_restart_count{app=\"$app\"}"}]
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "ae_container_restart_count{app=\"$app\"}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Sites Seen",
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "count(ae_site_last_seen_seconds)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Sites Stale",
+      "gridPos": {
+        "x": 4,
+        "y": 27,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(ae_site_stale)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Last Site Seen (s)",
+      "gridPos": {
+        "x": 8,
+        "y": 27,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "max(ae_site_last_seen_seconds)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Outbox OK (5m)",
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "increase(ae_outbox_publish_success_total[5m])"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Outbox Fail (5m)",
+      "gridPos": {
+        "x": 4,
+        "y": 30,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "increase(ae_outbox_publish_fail_total[5m])"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Gateway NAK (5m)",
+      "gridPos": {
+        "x": 8,
+        "y": 30,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(ae_gateway_work_nak_total[5m]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Gateway Stale (5m)",
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(ae_gateway_work_stale_total[5m]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "JS Streams",
+      "gridPos": {
+        "x": 4,
+        "y": 33,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "count(ae_js_stream_bytes_used)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "JS Consumers",
+      "gridPos": {
+        "x": 8,
+        "y": 33,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "count(ae_js_consumer_pending)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "JS Pending",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(ae_js_consumer_pending)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "JS Ack Pending",
+      "gridPos": {
+        "x": 4,
+        "y": 36,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(ae_js_consumer_ack_pending)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Route Bundles Fail (5m)",
+      "gridPos": {
+        "x": 8,
+        "y": 36,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(ae_route_bundle_apply_fail_total[5m]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Route Bundles OK (5m)",
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(ae_route_bundle_apply_ok_total[5m]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Route Bundle Latency (s)",
+      "gridPos": {
+        "x": 4,
+        "y": 39,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "max(ae_route_bundle_apply_latency_seconds)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "JS Redelivered",
+      "gridPos": {
+        "x": 8,
+        "y": 39,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum(ae_js_consumer_redelivered)"
+        }
+      ]
     }
   ]
 }

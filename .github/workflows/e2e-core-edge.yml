@@ -1,0 +1,66 @@
+name: e2e-core-edge
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: e2e-core-edge-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DOCKER_BUILDKIT: 1
+      K1S_E2E_DIR: /tmp/e2e-core-edge
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    steps:
+      - name: Trust Gitea cert (or disable verify)
+        run: |
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v4
+      - name: Configure Docker client (insecure TLS fallback)
+        run: |
+          if [ -S /var/run/docker.sock ]; then
+            echo "DOCKER_HOST=unix:///var/run/docker.sock" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=0" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          elif [ -d /certs/client ]; then
+            echo "DOCKER_HOST=tcp://docker:2376" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_VERIFY=0" >> "$GITHUB_ENV"
+            echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
+            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e .[dev]
+      - name: Run core/edge E2E (JetStream + etcd)
+        run: |
+          python scripts/e2e_k1s_core_edge.py
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "== docker compose ps ==" > /tmp/e2e-core-edge/compose-ps.txt || true
+          docker compose -f /tmp/e2e-core-edge/compose.yaml ps >> /tmp/e2e-core-edge/compose-ps.txt || true
+          docker compose -f /tmp/e2e-core-edge/compose.yaml logs --no-color > /tmp/e2e-core-edge/compose-logs.txt || true
+      - name: Upload artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-core-edge-artifacts
+          path: /tmp/e2e-core-edge

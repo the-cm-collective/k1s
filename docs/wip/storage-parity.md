@@ -96,8 +96,8 @@ lifecycle semantics.
      app-level named volume only.
    - Add a per-replica volume naming mode for StatefulSet semantics.
 
-6) **Adapter mappings (apishim -> k1s App)**
-   - Deployments/StatefulSets in apishim are translated to k1s Apps.
+6) **Adapter mappings (apishim -> k1s Deployment)**
+   - Deployments/StatefulSets in apishim are translated to k1s Deployments.
    - PVC-backed volumes are represented in an extended k1s manifest format
      or via sidecar metadata in state (see Phase 1 for schema decision).
 

@@ -721,29 +721,29 @@
       </svg>
     </button>
     <div class="container">
-    <h1>Chapter 07 - Health Probes</h1>
-<h2>Concept</h2>
+    <h1 id="chapter-07-health-probes">Chapter 07 - Health Probes</h1>
+<h2 id="concept">Concept</h2>
 <p>Health probes determine when a workload can receive traffic (readiness) and when it should be restarted (liveness). Startup probes protect slow-boot services. These signals are foundational to safe rollouts.</p>
 <pre class="mermaid">flowchart TB
   Startup[Startup probe] --&gt;|pass| Readiness[Readiness probe]
   Readiness --&gt;|pass| Traffic[Traffic allowed]
   Readiness --&gt;|fail| NoTraffic[No traffic]
   Liveness[Liveness probe] --&gt;|fail| Restart[Restart container]</pre>
-<h3>Theory</h3>
+<h3 id="theory">Theory</h3>
 <p>Readiness and liveness represent orthogonal checks: readiness gates traffic, liveness gates restarts. Probe intervals, thresholds, and timeouts control sensitivity. Startup probes temporarily override readiness and liveness until an initial healthy state is established.</p>
 <pre class="mermaid">flowchart LR
   Probe[Probe run] --&gt; Streaks[Success/failure streaks]
   Streaks --&gt; Thresholds{Threshold met?}
   Thresholds -- yes --&gt; Status[Effective status]
   Thresholds -- no --&gt; Hold[Keep previous]</pre>
-<h3>Design</h3>
+<h3 id="design">Design</h3>
 <p>k1s evaluates probe outcomes per pod, tracks success/failure streaks, enforces probe periods, and applies backoff after failures. Results are aggregated into HealthReports, which feed rollout decisions and service endpoint selection. This aligns with Kubernetes probe semantics.</p>
 <pre class="mermaid">flowchart TB
   Runtime[RuntimeResult] --&gt; Health[HealthManager.evaluate]
   Health --&gt; Report[HealthReport]
   Report --&gt; Reconciler[Reconciler]
   Reconciler --&gt; ServiceIngress[Service/Ingress updates]</pre>
-<h3>Application</h3>
+<h3 id="application">Application</h3>
 <p>Define probes early for all production workloads. Tune thresholds to avoid flapping, and use startup probes for slow initializations. Monitor readiness events during rollouts to understand why traffic did or did not shift.</p>
 <pre class="mermaid">flowchart LR
   Fail[Readiness failing] --&gt; Inspect[Inspect probe config]
@@ -753,7 +753,7 @@
   Observe --&gt; Pass{Readiness OK?}
   Pass -- no --&gt; Tune
   Pass -- yes --&gt; Traffic[Traffic enabled]</pre>
-<h2>Key Terms and Acronyms</h2>
+<h2 id="key-terms-and-acronyms">Key Terms and Acronyms</h2>
 <ul>
 <li>Readiness probe - Check that gates traffic eligibility.</li>
 <li>Liveness probe - Check that triggers restart when failing.</li>
@@ -763,19 +763,19 @@
 <li>Backoff - Delay between retries after failure.</li>
 <li>Health report - Aggregate readiness/liveness results per reconcile.</li>
 </ul>
-<h2>Commands (copy/paste)</h2>
+<h2 id="commands-copy-paste">Commands (copy/paste)</h2>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108
 python -m ae.cli apply -f specs/examples/echo.yaml
 python -m ae.cli events echo --limit 50
 python -m ae.cli history echo --limit 20</code></pre>
-<h2>Docs references (source + site)</h2>
+<h2 id="docs-references-source-site">Docs references (source + site)</h2>
 <ul>
 <li>Source: <code>docs/getting-started/concepts.md</code> (Health section)</li>
 <li>Source: <code>docs/reference/rollouts.md</code></li>
 <li>Site: <code>docs/site/concepts.html</code></li>
 <li>Site: <code>docs/site/rollouts.html</code></li>
 </ul>
-<h2>Code references (walkthrough anchors)</h2>
+<h2 id="code-references-walkthrough-anchors">Code references (walkthrough anchors)</h2>
 <ul>
 <li>Health evaluation and probe gating: <code>src/ae/controller/health.py:71</code></li>
 </ul>
@@ -817,7 +817,7 @@ python -m ae.cli history echo --limit 20</code></pre>
       port: 8080
     failureThreshold: 30
     periodSeconds: 5</code></pre>
-<h2>Chapter navigation</h2>
+<h2 id="chapter-navigation">Chapter navigation</h2>
 <ul>
 <li>Prev: <a href="concepts-in-practice-06-ingress-service-exposure.html">Chapter 06 - Ingress &amp; Service Exposure</a></li>
 <li>Next: <a href="concepts-in-practice-08-rollouts-updates.html">Chapter 08 - Rollouts, Updates, &amp; Rollbacks</a></li>
@@ -829,7 +829,7 @@ python -m ae.cli history echo --limit 20</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>

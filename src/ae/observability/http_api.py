@@ -19,6 +19,7 @@ import http.server
 import json
 import logging
 import os
+import signal
 import socketserver
 import subprocess
 import threading
@@ -54,11 +55,182 @@ _APP_ROLLOUT_OPS: dict[str, dict[str, int]] = {}
 # Canary tracking: latest weight and step counter per app
 _APP_CANARY_WEIGHT: dict[str, float] = {}
 _APP_CANARY_STEPS: dict[str, int] = {}
+_OUTBOX_PUBLISH_OK: int = 0
+_OUTBOX_PUBLISH_FAIL: int = 0
+_SITE_LAST_SEEN: dict[str, float] = {}
+_JS_STREAM_STATS: dict[str, dict[str, float]] = {}
+_JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
+_GATEWAY_WORK_METRICS: dict[str, dict[str, float]] = {}
+_ROUTE_BUNDLE_METRICS: dict[str, dict[str, float]] = {}
 
+
+def _read_env_file_var(path: str, key: str) -> str:
+    if not path:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                raw = line.strip()
+                if not raw or raw.startswith("#") or "=" not in raw:
+                    continue
+                k, v = raw.split("=", 1)
+                if k.strip() == key:
+                    return v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        return ""
+    except Exception:
+        return ""
+    return ""
+
+
+def _resolve_apishim_env_file() -> str:
+    env_file = os.getenv("AE_APISHIM_ENV_FILE", "").strip()
+    if env_file and Path(env_file).exists():
+        return env_file
+    prof = os.getenv("DEV_PROFILE_DIR", "").strip()
+    if prof:
+        candidate = Path(prof) / "apishim.env"
+        if candidate.exists():
+            return str(candidate)
+    state_db = os.getenv("AE_STATE_DB", "").strip()
+    if state_db:
+        candidate = Path(state_db).parent / "apishim.env"
+        if candidate.exists():
+            return str(candidate)
+    fallback = Path("state/profiles/labs/apishim.env")
+    if fallback.exists():
+        return str(fallback)
+    return ""
+
+
+def _resolve_apishim_verify() -> bool | str:
+    override = (
+        os.getenv("AE_APISHIM_CA_BUNDLE")
+        or os.getenv("AE_APISHIM_CA")
+        or os.getenv("AE_APISHIM_TLS_CA")
+        or ""
+    ).strip()
+    if override:
+        try:
+            path = Path(override)
+            if path.exists():
+                return str(path)
+        except Exception:
+            pass
+    cert_hint = (os.getenv("AE_APISHIM_TLS_CERT") or "").strip()
+    if cert_hint:
+        try:
+            path = Path(cert_hint)
+            if path.exists():
+                return str(path)
+        except Exception:
+            pass
+    try:
+        env_file = _resolve_apishim_env_file()
+        if env_file:
+            candidate = Path(env_file).parent / "apishim.crt"
+            if candidate.exists():
+                return str(candidate)
+    except Exception:
+        pass
+    for path in ("state/profiles/labs/apishim.crt", "state/certs/combined-dev-ca.pem"):
+        try:
+            if Path(path).exists():
+                return path
+        except Exception:
+            continue
+    return False
+
+
+def record_outbox_publish(success: bool) -> None:
+    global _OUTBOX_PUBLISH_OK, _OUTBOX_PUBLISH_FAIL
+    if success:
+        _OUTBOX_PUBLISH_OK += 1
+    else:
+        _OUTBOX_PUBLISH_FAIL += 1
+
+
+def record_site_seen(site_id: str) -> None:
+    if not site_id:
+        return
+    _SITE_LAST_SEEN[site_id] = time.time()
+
+
+def record_gateway_metrics(
+    site_id: str,
+    *,
+    work_stale_total: float | int | None,
+    work_nak_total: float | int | None,
+    lease_retry_total: float | int | None,
+) -> None:
+    if not site_id:
+        return
+    stale_val = float(work_stale_total or 0.0)
+    nak_val = float(work_nak_total or 0.0)
+    retry_val = float(lease_retry_total or 0.0)
+    _GATEWAY_WORK_METRICS[site_id] = {
+        "work_stale_total": stale_val,
+        "work_nak_total": nak_val,
+        "lease_retry_total": retry_val,
+    }
+
+
+def record_route_bundle_apply(
+    site_id: str, *, ok: bool, latency_seconds: float | None
+) -> None:
+    if not site_id:
+        return
+    metrics = _ROUTE_BUNDLE_METRICS.setdefault(
+        site_id,
+        {"apply_ok_total": 0.0, "apply_fail_total": 0.0, "last_latency_s": 0.0},
+    )
+    if ok:
+        metrics["apply_ok_total"] = metrics.get("apply_ok_total", 0.0) + 1.0
+    else:
+        metrics["apply_fail_total"] = metrics.get("apply_fail_total", 0.0) + 1.0
+    if latency_seconds is not None:
+        metrics["last_latency_s"] = float(latency_seconds)
+
+
+def record_js_stream_stats(
+    *,
+    stream: str,
+    bytes_used: int,
+    messages: int,
+    max_bytes: int,
+) -> None:
+    if not stream:
+        return
+    _JS_STREAM_STATS[stream] = {
+        "bytes_used": float(bytes_used),
+        "messages": float(messages),
+        "max_bytes": float(max_bytes),
+    }
+
+
+def record_js_consumer_stats(
+    *,
+    stream: str,
+    consumer: str,
+    site_id: str,
+    pending: int,
+    ack_pending: int,
+    redelivered: int,
+    waiting: int,
+) -> None:
+    if not stream or not consumer:
+        return
+    _JS_CONSUMER_STATS[(stream, consumer)] = {
+        "site_id": site_id,
+        "pending": float(pending),
+        "ack_pending": float(ack_pending),
+        "redelivered": float(redelivered),
+        "waiting": float(waiting),
+    }
 _HELM_DEMO_LOCK = threading.RLock()
 _HELM_DEMO_STATE: dict[str, object] = {
     "proc": None,
-    "log": Path(os.getenv("AE_LABS_HELM_LOG", "state/labs/helm-demo.log")),
+    "log": Path(os.getenv("AE_LABS_HELM_LOG", "state/profiles/labs/helm-demo.log")),
     "log_handle": None,
     "port": int(os.getenv("AE_LABS_HELM_PORT", "8455") or 8455),
     "token": os.getenv("AE_LABS_HELM_TOKEN", "helm-demo"),
@@ -160,6 +332,7 @@ def _helm_demo_status() -> dict[str, object]:
 
 def _helm_demo_start() -> dict[str, object]:
     with _HELM_DEMO_LOCK:
+        port_note = ""
         proc = _HELM_DEMO_STATE.get("proc")
         if proc and getattr(proc, "poll", lambda: None)() is None:
             return _helm_demo_status() | {"message": "demo already running"}
@@ -184,15 +357,16 @@ def _helm_demo_start() -> dict[str, object]:
         env.setdefault("PYTHONPATH", str(root / "src"))
         explicit_server = bool(_HELM_DEMO_STATE.get("server_override"))
         helm_server = os.getenv("AE_LABS_HELM_SERVER", "").strip() if explicit_server else ""
-        port_note = ""
-        port = int(_HELM_DEMO_STATE.get("port") or 8455)
-        if not helm_server and not _port_available("127.0.0.1", port):
-            fallback = _pick_free_port("127.0.0.1")
-            _HELM_DEMO_STATE["port"] = fallback
-            port_note = f"port {port} busy; using {fallback}"
-            port = fallback
-        env.setdefault("PORT", str(port))
-        env.setdefault("TOKEN", str(_HELM_DEMO_STATE.get("token")))
+        if not helm_server:
+            helm_server = os.getenv("AE_APISHIM_SERVER", "").strip()
+        if not helm_server:
+            raise RuntimeError("AE_APISHIM_SERVER is required to run the helm demo")
+        token_val = (
+            os.getenv("AE_LABS_HELM_TOKEN")
+            or os.getenv("AE_APISHIM_TOKEN")
+            or str(_HELM_DEMO_STATE.get("token") or "")
+        ).strip()
+        env.setdefault("TOKEN", token_val)
         env.setdefault("RUNTIME", str(_HELM_DEMO_STATE.get("runtime")))
         env.setdefault("NAMESPACE", str(_HELM_DEMO_STATE.get("namespace")))
         env.setdefault("CHART_NAME", str(_HELM_DEMO_STATE.get("chart")))
@@ -201,57 +375,47 @@ def _helm_demo_start() -> dict[str, object]:
             env.setdefault("HELM_SHIM_KEEP", keep if keep else "1")
         except Exception:
             env.setdefault("HELM_SHIM_KEEP", "1")
-        if helm_server:
-            # If an explicit server is set but unreachable, fall back to local shim.
-            try:
-                import ssl as _ssl
-                import urllib.request as _urlreq
+        # Verify the shim endpoint is reachable; do not start a local shim.
+        try:
+            import ssl as _ssl
+            import urllib.request as _urlreq
 
-                probe_url = helm_server.rstrip("/") + "/version"
-                headers = {}
-                token_val = str(_HELM_DEMO_STATE.get("token") or "")
-                if token_val:
-                    headers["Authorization"] = f"Bearer {token_val}"
-                verify_path = "state/certs/combined-dev-ca.pem"
-                ctx = None
-                if helm_server.startswith("https://"):
-                    if os.path.exists(verify_path):
-                        ctx = _ssl.create_default_context(cafile=verify_path)
-                    else:
-                        ctx = _ssl._create_unverified_context()  # noqa: S323
-                req = _urlreq.Request(probe_url, headers=headers)  # noqa: S310
-                with _urlreq.urlopen(req, timeout=2, context=ctx) as resp:  # noqa: S310
-                    if getattr(resp, "status", 200) >= 400:
-                        raise RuntimeError("probe failed")
-                    body = resp.read().decode("utf-8", "ignore")
-                    if "k1s-shim" not in body:
-                        raise RuntimeError("probe failed")
-            except Exception:
-                logger.info(
-                    "labs helm demo shim unreachable at %s; starting local shim", helm_server
-                )
-                helm_server = ""
-        if helm_server:
-            env.setdefault("APISHIM_SERVER", helm_server)
-            try:
-                import urllib.parse as _up
+            probe_url = helm_server.rstrip("/") + "/version"
+            headers = {}
+            if token_val:
+                headers["Authorization"] = f"Bearer {token_val}"
+            verify = _resolve_apishim_verify()
+            ctx = None
+            if helm_server.startswith("https://"):
+                if isinstance(verify, str):
+                    ctx = _ssl.create_default_context(cafile=verify)
+                elif verify:
+                    ctx = _ssl.create_default_context()
+                else:
+                    ctx = _ssl._create_unverified_context()  # noqa: S323
+            req = _urlreq.Request(probe_url, headers=headers)  # noqa: S310
+            with _urlreq.urlopen(req, timeout=2, context=ctx) as resp:  # noqa: S310
+                if getattr(resp, "status", 200) >= 400:
+                    raise RuntimeError("probe failed")
+                body = resp.read().decode("utf-8", "ignore")
+                if "k1s-shim" not in body:
+                    raise RuntimeError("probe failed")
+        except Exception as exc:
+            raise RuntimeError(f"helm demo shim unreachable at {helm_server}: {exc}") from exc
+        env.setdefault("APISHIM_SERVER", helm_server)
+        try:
+            import urllib.parse as _up
 
-                parsed = _up.urlparse(helm_server)
-                if parsed.port:
-                    _HELM_DEMO_STATE["port"] = parsed.port
-            except Exception:
-                pass
-        else:
-            # Align controller mirror with the local shim demo server.
-            tls_mode = str(os.getenv("HELM_SHIM_TLS", "1") or "1").strip()
-            scheme = "https" if tls_mode != "0" else "http"
-            helm_server = f"{scheme}://127.0.0.1:{port}"
+            parsed = _up.urlparse(helm_server)
+            if parsed.port:
+                _HELM_DEMO_STATE["port"] = parsed.port
+        except Exception:
+            pass
         env.setdefault("TMPDIR", str(log_path.parent))
         # Persist resolved shim endpoint + token for the controller mirror loop.
         try:
             if helm_server:
                 os.environ["AE_LABS_HELM_SERVER"] = helm_server
-            token_val = str(_HELM_DEMO_STATE.get("token") or "")
             if token_val:
                 os.environ["AE_LABS_HELM_TOKEN"] = token_val
         except Exception:
@@ -280,6 +444,7 @@ def _helm_demo_start() -> dict[str, object]:
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             env=env,
+            start_new_session=True,
         )
         _HELM_DEMO_STATE["proc"] = proc
         _HELM_DEMO_STATE["log_handle"] = log_handle
@@ -290,14 +455,218 @@ def _helm_demo_start() -> dict[str, object]:
     return status
 
 
+def _session_pids(session_id: int) -> list[int]:
+    pids: list[int] = []
+    proc_root = Path("/proc")
+    if proc_root.exists():
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                pid = int(entry.name)
+            except Exception:
+                continue
+            try:
+                if os.getsid(pid) == session_id:
+                    pids.append(pid)
+            except Exception:
+                continue
+        return pids
+    try:
+        output = subprocess.check_output(["ps", "-eo", "pid,sid"], text=True)
+    except Exception:
+        return pids
+    for line in output.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+            sid = int(parts[1])
+        except Exception:
+            continue
+        if sid == session_id:
+            pids.append(pid)
+    return pids
+
+
+def _descendant_pids(root_pid: int) -> list[int]:
+    ppid_map: dict[int, list[int]] = {}
+    proc_root = Path("/proc")
+    if proc_root.exists():
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                pid = int(entry.name)
+            except Exception:
+                continue
+            status_path = entry / "status"
+            try:
+                status_text = status_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            ppid = None
+            for line in status_text.splitlines():
+                if line.startswith("PPid:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            ppid = int(parts[1])
+                        except Exception:
+                            ppid = None
+                    break
+            if ppid is None:
+                continue
+            ppid_map.setdefault(ppid, []).append(pid)
+    else:
+        try:
+            output = subprocess.check_output(["ps", "-eo", "pid,ppid"], text=True)
+        except Exception:
+            return []
+        for line in output.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[0])
+                ppid = int(parts[1])
+            except Exception:
+                continue
+            ppid_map.setdefault(ppid, []).append(pid)
+
+    descendants: list[int] = []
+    queue = [root_pid]
+    seen = {root_pid}
+    while queue:
+        current = queue.pop(0)
+        for child in ppid_map.get(current, []):
+            if child in seen:
+                continue
+            seen.add(child)
+            descendants.append(child)
+            queue.append(child)
+    return descendants
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    proc_stat = Path(f"/proc/{pid}/stat")
+    try:
+        data = proc_stat.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return True
+    rparen = data.rfind(")")
+    if rparen == -1:
+        return True
+    tail = data[rparen + 2 :].split()
+    if not tail:
+        return True
+    state = tail[0]
+    return state != "Z"
+
+
+def _wait_pids_exit(pids: list[int], timeout: float = 1.0) -> None:
+    if not pids:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        alive = [pid for pid in pids if _pid_exists(pid)]
+        if not alive:
+            return
+        time.sleep(0.05)
+
+
+def _signal_session(session_id: int | None, sig: int, *, exclude: set[int]) -> None:
+    if session_id is None:
+        return
+    try:
+        if os.getsid(0) == session_id:
+            return
+    except Exception:
+        return
+    for pid in _session_pids(session_id):
+        if pid in exclude:
+            continue
+        try:
+            os.kill(pid, sig)
+        except Exception:
+            continue
+
+
+def _wait_session_exit(session_id: int | None, timeout: float = 1.0) -> None:
+    if session_id is None:
+        return
+    try:
+        if os.getsid(0) == session_id:
+            return
+    except Exception:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        remaining = [pid for pid in _session_pids(session_id) if pid != os.getpid()]
+        if not remaining:
+            return
+        time.sleep(0.05)
+
+
 def _helm_demo_stop() -> dict[str, object]:
     with _HELM_DEMO_LOCK:
         proc = _HELM_DEMO_STATE.get("proc")
         if proc and getattr(proc, "poll", lambda: None)() is None:
+            session_id = None
+            descendants = []
             try:
-                proc.terminate()
+                session_id = os.getsid(proc.pid)
+            except Exception:
+                session_id = None
+            try:
+                descendants = _descendant_pids(proc.pid)
+            except Exception:
+                descendants = []
+            all_pids = [proc.pid] + descendants
+            try:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
+                _signal_session(session_id, signal.SIGTERM, exclude={os.getpid()})
+                for pid in descendants:
+                    if pid == os.getpid():
+                        continue
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except Exception:
+                        continue
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    _signal_session(session_id, signal.SIGKILL, exclude={os.getpid()})
+                    for pid in descendants:
+                        if pid == os.getpid():
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except Exception:
+                            continue
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
             except Exception:
                 pass
+            _wait_pids_exit(all_pids, timeout=3.0)
+            _wait_session_exit(session_id, timeout=1.0)
         _HELM_DEMO_STATE["proc"] = None
         handle = _HELM_DEMO_STATE.get("log_handle")
         if handle:
@@ -387,6 +756,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self.request.responses.append(code)
         except Exception:
             pass
+
+    def handle_one_request(self) -> None:  # type: ignore[override]
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Clients can disconnect mid-response (dashboard/labs polls); ignore noisy socket errors.
+            return
 
     # --- Dev CORS helpers (used by the labs playground) ----------------
     def _labs_enabled(self) -> bool:
@@ -1166,7 +1542,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 body = self.rfile.read(length) if length > 0 else b"{}"
                 payload = json.loads(body.decode("utf-8"))
             except Exception:
-                self._json_error(400, "invalid JSON body: expected Deployment/App manifest")
+                self._json_error(400, "invalid JSON body: expected Deployment manifest")
                 return
             try:
                 # Scope enforcement: admin token must be allowed for target app
@@ -1705,6 +2081,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
             try:
                 logger.info("labs reset requested")
+                # Stop helm demo runner first so it cannot reapply while we clean up.
+                try:
+                    _helm_demo_stop()
+                except Exception:
+                    pass
                 sess = str(payload.get("session_id") or "")
                 # Prefer tracked labs apps that match the session suffix; fallback to echo-<sess>
                 try:
@@ -1820,12 +2201,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         removed_shim = 0
                         shim_reachable = False
                         shim_base = ""
+                        env_file = _resolve_apishim_env_file()
                         try:
                             import os as _os
 
                             import requests as _req
 
                             base = str(_os.getenv("AE_LABS_HELM_SERVER", "") or "").strip()
+                            if not base and env_file:
+                                base = _read_env_file_var(env_file, "AE_LABS_HELM_SERVER")
                             if not base:
                                 port = int(_HELM_DEMO_STATE.get("port") or 8455)
                                 base = f"https://127.0.0.1:{port}"
@@ -1836,17 +2220,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 or str(_os.getenv("AE_APISHIM_TOKEN") or "").strip()
                                 or str(_HELM_DEMO_STATE.get("token") or "").strip()
                             )
-                            headers = {"Authorization": f"Bearer {token}"} if token else {}
-                            verify_path = "state/certs/combined-dev-ca.pem"
-                            verify = verify_path if _os.path.exists(verify_path) else False
-                            try:
-                                probe = _req.get(
-                                    f"{base}/version", headers=headers, timeout=2, verify=verify
+                            if not token and env_file:
+                                token = (
+                                    _read_env_file_var(env_file, "AE_LABS_HELM_TOKEN")
+                                    or _read_env_file_var(env_file, "AE_APISHIM_TOKEN")
                                 )
-                                shim_reachable = probe.status_code < 500
-                            except Exception:
+                            headers = {"Authorization": f"Bearer {token}"} if token else {}
+                            verify = _resolve_apishim_verify()
+                            if token:
+                                try:
+                                    probe = _req.get(
+                                        f"{base}/version", headers=headers, timeout=2, verify=verify
+                                    )
+                                    shim_reachable = probe.status_code < 500
+                                except Exception:
+                                    shim_reachable = False
+                            else:
                                 shim_reachable = False
-                            if shim_reachable:
+                            if shim_reachable and token:
                                 logger.info(
                                     "labs reset using shim API at %s for namespace %s",
                                     shim_base or "<unknown>",
@@ -1915,31 +2306,43 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             from ae.apishim.store import ObjectStore as _ObjectStore
 
                             dsn = _os.getenv("AE_APISHIM_DSN")
-                            db_path = _os.getenv("AE_APISHIM_DB", "state/apishim.db")
+                            db_path = _os.getenv("AE_APISHIM_DB", "").strip()
+                            if not db_path and env_file:
+                                db_path = _read_env_file_var(env_file, "AE_APISHIM_DB")
+                            if not db_path and env_file:
+                                try:
+                                    db_path = str(_Path(env_file).with_suffix(".db"))
+                                except Exception:
+                                    db_path = ""
+                            if not db_path:
+                                db_path = "state/apishim.db"
                             store = (
                                 _ObjectStore(dsn=dsn)
                                 if dsn
                                 else _ObjectStore(db_path=_Path(db_path))
                             )
-                            for grp, ver, res in targets:
-                                try:
-                                    items = store.list(grp, ver, res, ns)
-                                except Exception:
-                                    continue
-                                for obj in items:
-                                    if store.delete(grp, ver, res, ns, obj.name):
-                                        removed_shim += 1
+                            try:
+                                for grp, ver, res in targets:
+                                    try:
+                                        items = store.list(grp, ver, res, ns)
+                                    except Exception:
+                                        continue
+                                    for obj in items:
+                                        if store.delete(grp, ver, res, ns, obj.name):
+                                            removed_shim += 1
+                            finally:
+                                close = getattr(store, "close", None)
+                                if callable(close):
+                                    try:
+                                        close()
+                                    except Exception:
+                                        pass
                             if removed_shim:
                                 logger.info(
                                     "labs reset removed %s shim objects in namespace %s",
                                     removed_shim,
                                     ns,
                                 )
-                except Exception:
-                    pass
-                # Ensure the shim demo process is stopped so it doesn't reapply.
-                try:
-                    _helm_demo_stop()
                 except Exception:
                     pass
                 self._json_ok({"removed": removed_apps})
@@ -1949,18 +2352,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Ingress reachability check (server-side to avoid browser TLS issues in dev)
         if path == "/labs/ingress_check":
             try:
-                import os as _os
-
-                if _os.getenv("AE_DISABLE_INGRESS") == "1":
-                    self._json_ok(
-                        {
-                            "ok": False,
-                            "code": 0,
-                            "disabled": True,
-                            "reason": "ingress disabled via AE_DISABLE_INGRESS=1",
-                        }
-                    )
-                    return
                 url = str(payload.get("url") or "").strip()
                 if not url:
                     # Support host+path form
@@ -1983,10 +2374,23 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     self._json_error(400, "bad url")
                     return
+                import os as _os
                 import time as _t
                 from urllib.parse import urlparse as _urlparse
 
                 import requests as _req
+
+                if _os.getenv("AE_DISABLE_INGRESS") == "1":
+                    self._json_ok(
+                        {
+                            "ok": False,
+                            "code": 0,
+                            "elapsed_ms": 0,
+                            "disabled": True,
+                            "reason": "ingress disabled via AE_DISABLE_INGRESS=1",
+                        }
+                    )
+                    return
 
                 verify_path = "state/certs/combined-dev-ca.pem"
                 verify = verify_path if _os.path.exists(verify_path) else False
@@ -2074,7 +2478,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     self._json_error(500, str(exc))
                 return
             if action == "canary":
-                # Set canary weight on existing app manifest when possible; fallback to curated example
+                # Set canary weight on existing deployment manifest when possible; fallback to curated example
                 if self.apply_fn is None:
                     self._json_error(404, "apply not available")
                     return
@@ -2212,8 +2616,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last_serialized = ""
+        heartbeat = 10.0
+        last_ping = _t.monotonic()
         try:
-            self.wfile.write(b"retry: 1500\n\n")
+            # Back off reconnects to reduce proxy churn/noise on transient disconnects.
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
                 events = self.store.list_events(app, limit=limit)
@@ -2228,10 +2635,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     for e in events
                 ]
                 s = _json.dumps(data)
+                now = _t.monotonic()
                 if s != last_serialized:
                     last_serialized = s
                     self.wfile.write(("data: " + s + "\n\n").encode("utf-8"))
                     self.wfile.flush()
+                    last_ping = now
+                elif now - last_ping >= heartbeat:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_ping = now
                 _t.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -2259,8 +2672,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last_serialized = ""
+        heartbeat = 10.0
+        last_ping = _t.monotonic()
         try:
-            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
                 s = self.store.get_status(app)
@@ -2277,10 +2692,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "ingress_path": s.ingress_path,
                     }
                 sval = _json.dumps(obj)
+                now = _t.monotonic()
                 if sval != last_serialized:
                     last_serialized = sval
                     self.wfile.write(("data: " + sval + "\n\n").encode("utf-8"))
                     self.wfile.flush()
+                    last_ping = now
+                elif now - last_ping >= heartbeat:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_ping = now
                 _t.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -2312,8 +2733,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last_serialized = ""
+        heartbeat = 10.0
+        last_ping = _t.monotonic()
         try:
-            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
                 events = self.store.list_events(app, limit=limit)
@@ -2328,6 +2751,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     for e in events
                 ]
                 s = _json.dumps(data)
+                now = _t.monotonic()
                 if s != last_serialized:
                     last_serialized = s
                     # Emit full HTML snapshot oldest-first so new events appear at the bottom
@@ -2337,6 +2761,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     )
                     self.wfile.write(("data: " + html + "\n\n").encode("utf-8"))
                     self.wfile.flush()
+                    last_ping = now
+                elif now - last_ping >= heartbeat:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_ping = now
                 _t.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -2363,8 +2792,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last_html = ""
+        heartbeat = 10.0
+        last_ping = _t.monotonic()
         try:
-            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
             while True:
                 s = self.store.get_status(app)
@@ -2374,10 +2805,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     ok = int(s.ready_replicas) == int(s.desired_replicas)
                     klass = "ok" if ok else "fail"
                     html = f"<span class='{klass}'>{int(s.ready_replicas)}/{int(s.desired_replicas)} ready</span>"
+                now = _t.monotonic()
                 if html != last_html:
                     last_html = html
                     self.wfile.write(("data: " + html + "\n\n").encode("utf-8"))
                     self.wfile.flush()
+                    last_ping = now
+                elif now - last_ping >= heartbeat:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_ping = now
                 _t.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -2424,6 +2861,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# HELP ae_services_total Services with allocated cluster IPs",
             "# TYPE ae_services_total gauge",
             f"ae_services_total {getattr(snap, 'total_services', 0)}",
+            "# HELP ae_edge_ingress_routes_total Edge ingress routes",
+            "# TYPE ae_edge_ingress_routes_total gauge",
+            f"ae_edge_ingress_routes_total {getattr(snap, 'edge_routes_total', 0)}",
+            "# HELP ae_edge_ingress_routes_valid Edge ingress routes with valid status",
+            "# TYPE ae_edge_ingress_routes_valid gauge",
+            f"ae_edge_ingress_routes_valid {getattr(snap, 'edge_routes_valid', 0)}",
+            "# HELP ae_edge_ingress_routes_invalid Edge ingress routes with invalid status",
+            "# TYPE ae_edge_ingress_routes_invalid gauge",
+            f"ae_edge_ingress_routes_invalid {getattr(snap, 'edge_routes_invalid', 0)}",
+            "# HELP ae_edge_ingress_routes_policy_unsupported Edge ingress routes with unsupported policy fields",
+            "# TYPE ae_edge_ingress_routes_policy_unsupported gauge",
+            f"ae_edge_ingress_routes_policy_unsupported {getattr(snap, 'edge_routes_policy_unsupported', 0)}",
+            "# HELP ae_edge_ingress_policies_total Edge ingress policies",
+            "# TYPE ae_edge_ingress_policies_total gauge",
+            f"ae_edge_ingress_policies_total {getattr(snap, 'edge_policies_total', 0)}",
             "# HELP ae_pvs_total HostPath-backed PVs tracked for health",
             "# TYPE ae_pvs_total gauge",
             f"ae_pvs_total {getattr(snap, 'total_pvs', 0)}",
@@ -2631,6 +3083,49 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     lines.append(f"ae_node_last_seen_seconds{{{labels}}} {last_age}")
         except Exception:
             pass
+        # Site telemetry metrics (status/logs/caps last seen)
+        try:
+            import os as _os
+            from datetime import datetime as _dt
+            from datetime import timezone as _tz
+
+            grace = int(_os.getenv("AE_SITE_NOTREADY_AFTER", "90") or 90)
+            now = _dt.now(_tz.utc)
+            for site_id, last_ts in list(_SITE_LAST_SEEN.items()):
+                try:
+                    last_age = now.timestamp() - float(last_ts)
+                except Exception:
+                    continue
+                stale = 1 if last_age > grace else 0
+                labels = f'site="{site_id}"'
+                lines.append(f"ae_site_last_seen_seconds{{{labels}}} {last_age}")
+                lines.append(f"ae_site_stale{{{labels}}} {stale}")
+        except Exception:
+            pass
+        # Route bundle apply metrics
+        try:
+            if _ROUTE_BUNDLE_METRICS:
+                lines += [
+                    "# HELP ae_route_bundle_apply_ok_total Route bundle apply successes",
+                    "# TYPE ae_route_bundle_apply_ok_total counter",
+                    "# HELP ae_route_bundle_apply_fail_total Route bundle apply failures",
+                    "# TYPE ae_route_bundle_apply_fail_total counter",
+                    "# HELP ae_route_bundle_apply_latency_seconds Last route bundle apply latency",
+                    "# TYPE ae_route_bundle_apply_latency_seconds gauge",
+                ]
+                for site_id, metrics in sorted(_ROUTE_BUNDLE_METRICS.items()):
+                    labels = f'site="{site_id}"'
+                    lines.append(
+                        f"ae_route_bundle_apply_ok_total{{{labels}}} {metrics.get('apply_ok_total', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_apply_fail_total{{{labels}}} {metrics.get('apply_fail_total', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_apply_latency_seconds{{{labels}}} {metrics.get('last_latency_s', 0.0)}"
+                    )
+        except Exception:
+            pass
         # Service/VIP metrics
         try:
             from collections import defaultdict
@@ -2793,6 +3288,69 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             lines.append("# TYPE ae_canary_steps_total counter")
             for app, n in _APP_CANARY_STEPS.items():
                 lines.append(f'ae_canary_steps_total{{app="{app}"}} {int(n)}')
+        lines.append("# HELP ae_outbox_publish_success_total Outbox publishes that succeeded")
+        lines.append("# TYPE ae_outbox_publish_success_total counter")
+        lines.append(f"ae_outbox_publish_success_total {_OUTBOX_PUBLISH_OK}")
+        lines.append("# HELP ae_outbox_publish_fail_total Outbox publishes that failed")
+        lines.append("# TYPE ae_outbox_publish_fail_total counter")
+        lines.append(f"ae_outbox_publish_fail_total {_OUTBOX_PUBLISH_FAIL}")
+        if _GATEWAY_WORK_METRICS:
+            lines.append("# HELP ae_gateway_work_stale_total Gateway work items marked stale")
+            lines.append("# TYPE ae_gateway_work_stale_total counter")
+            lines.append("# HELP ae_gateway_work_nak_total Gateway work items NAKed for redelivery")
+            lines.append("# TYPE ae_gateway_work_nak_total counter")
+            lines.append("# HELP ae_gateway_lease_retry_total Gateway lease acquire retries")
+            lines.append("# TYPE ae_gateway_lease_retry_total counter")
+            for site_id, stats in _GATEWAY_WORK_METRICS.items():
+                labels = f'site="{site_id}"'
+                stale = float(stats.get("work_stale_total", 0.0) or 0.0)
+                nacked = float(stats.get("work_nak_total", 0.0) or 0.0)
+                retries = float(stats.get("lease_retry_total", 0.0) or 0.0)
+                lines.append(f"ae_gateway_work_stale_total{{{labels}}} {stale}")
+                lines.append(f"ae_gateway_work_nak_total{{{labels}}} {nacked}")
+                lines.append(f"ae_gateway_lease_retry_total{{{labels}}} {retries}")
+        if _JS_STREAM_STATS:
+            lines.append("# HELP ae_js_stream_bytes JetStream stream bytes in use")
+            lines.append("# TYPE ae_js_stream_bytes gauge")
+            lines.append("# HELP ae_js_stream_messages JetStream stream message count")
+            lines.append("# TYPE ae_js_stream_messages gauge")
+            lines.append("# HELP ae_js_stream_max_bytes JetStream stream max bytes")
+            lines.append("# TYPE ae_js_stream_max_bytes gauge")
+            lines.append(
+                "# HELP ae_js_stream_bytes_utilization JetStream stream bytes used / max bytes"
+            )
+            lines.append("# TYPE ae_js_stream_bytes_utilization gauge")
+            for stream, stats in _JS_STREAM_STATS.items():
+                labels = f'stream="{stream}"'
+                bytes_used = float(stats.get("bytes_used", 0.0) or 0.0)
+                messages = float(stats.get("messages", 0.0) or 0.0)
+                max_bytes = float(stats.get("max_bytes", 0.0) or 0.0)
+                lines.append(f"ae_js_stream_bytes{{{labels}}} {bytes_used}")
+                lines.append(f"ae_js_stream_messages{{{labels}}} {messages}")
+                lines.append(f"ae_js_stream_max_bytes{{{labels}}} {max_bytes}")
+                if max_bytes > 0:
+                    util = bytes_used / max_bytes
+                    lines.append(f"ae_js_stream_bytes_utilization{{{labels}}} {util}")
+        if _JS_CONSUMER_STATS:
+            lines.append("# HELP ae_js_consumer_pending JetStream consumer pending messages")
+            lines.append("# TYPE ae_js_consumer_pending gauge")
+            lines.append("# HELP ae_js_consumer_ack_pending JetStream consumer ack pending")
+            lines.append("# TYPE ae_js_consumer_ack_pending gauge")
+            lines.append("# HELP ae_js_consumer_redelivered JetStream consumer redelivered")
+            lines.append("# TYPE ae_js_consumer_redelivered gauge")
+            lines.append("# HELP ae_js_consumer_waiting JetStream consumer waiting pulls")
+            lines.append("# TYPE ae_js_consumer_waiting gauge")
+            for (stream, consumer), stats in _JS_CONSUMER_STATS.items():
+                site_id = str(stats.get("site_id", "") or "")
+                labels = f'stream="{stream}",consumer="{consumer}",site="{site_id}"'
+                pending = float(stats.get("pending", 0.0) or 0.0)
+                ack_pending = float(stats.get("ack_pending", 0.0) or 0.0)
+                redelivered = float(stats.get("redelivered", 0.0) or 0.0)
+                waiting = float(stats.get("waiting", 0.0) or 0.0)
+                lines.append(f"ae_js_consumer_pending{{{labels}}} {pending}")
+                lines.append(f"ae_js_consumer_ack_pending{{{labels}}} {ack_pending}")
+                lines.append(f"ae_js_consumer_redelivered{{{labels}}} {redelivered}")
+                lines.append(f"ae_js_consumer_waiting{{{labels}}} {waiting}")
         lines.append("")
         payload = "\n".join(lines).encode("utf-8")
         self.send_response(200)
@@ -2850,7 +3408,117 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             crash = {app: (float(until) > now) for app, until in list(_APP_CRASHLOOP_UNTIL.items())}
         except Exception:
             crash = {}
+        # Transport snapshot (best-effort, derived from in-process counters)
+        transport: dict = {}
+        try:
+            backend = (os.getenv("AE_TRANSPORT_BACKEND") or "http").strip() or "http"
+            transport["backend"] = backend
+            js_domain = (os.getenv("AE_JS_DOMAIN") or "").strip()
+            if js_domain:
+                transport["js_domain"] = js_domain
+            transport["outbox"] = {
+                "ok_total": int(_OUTBOX_PUBLISH_OK),
+                "fail_total": int(_OUTBOX_PUBLISH_FAIL),
+            }
+            # Site telemetry summary
+            try:
+                grace = int(os.getenv("AE_SITE_NOTREADY_AFTER", "90") or 90)
+            except Exception:
+                grace = 90
+            now_ts = time.time()
+            seen = len(_SITE_LAST_SEEN)
+            stale = 0
+            last_seen_age = None
+            site_details: dict[str, dict[str, float | bool]] = {}
+            for last_ts in list(_SITE_LAST_SEEN.values()):
+                try:
+                    age = float(now_ts) - float(last_ts)
+                except Exception:
+                    continue
+                if last_seen_age is None or age < last_seen_age:
+                    last_seen_age = age
+                if age > grace:
+                    stale += 1
+            for site_id, last_ts in list(_SITE_LAST_SEEN.items()):
+                try:
+                    age = float(now_ts) - float(last_ts)
+                except Exception:
+                    continue
+                site_details[str(site_id)] = {
+                    "last_seen_age_s": age,
+                    "stale": age > grace,
+                }
+            transport["sites"] = {
+                "seen": int(seen),
+                "stale": int(stale),
+                "fresh": int(max(0, seen - stale)),
+                "last_seen_age_s": last_seen_age,
+            }
+            if site_details:
+                transport["sites_detail"] = site_details
+            # JetStream summary (if any stats are present)
+            if _JS_STREAM_STATS or _JS_CONSUMER_STATS:
+                js_pending = 0.0
+                js_ack_pending = 0.0
+                js_redelivered = 0.0
+                js_waiting = 0.0
+                for stats in _JS_CONSUMER_STATS.values():
+                    js_pending += float(stats.get("pending", 0.0) or 0.0)
+                    js_ack_pending += float(stats.get("ack_pending", 0.0) or 0.0)
+                    js_redelivered += float(stats.get("redelivered", 0.0) or 0.0)
+                    js_waiting += float(stats.get("waiting", 0.0) or 0.0)
+                transport["js"] = {
+                    "streams": int(len(_JS_STREAM_STATS)),
+                    "consumers": int(len(_JS_CONSUMER_STATS)),
+                    "pending": js_pending,
+                    "ack_pending": js_ack_pending,
+                    "redelivered": js_redelivered,
+                    "waiting": js_waiting,
+                }
+            # Gateway work summary (NAKs, stale work)
+            if _GATEWAY_WORK_METRICS:
+                gw_nak = 0.0
+                gw_stale = 0.0
+                gw_retries = 0.0
+                for stats in _GATEWAY_WORK_METRICS.values():
+                    gw_nak += float(stats.get("work_nak_total", 0.0) or 0.0)
+                    gw_stale += float(stats.get("work_stale_total", 0.0) or 0.0)
+                    gw_retries += float(stats.get("lease_retry_total", 0.0) or 0.0)
+                transport["gateway"] = {
+                    "work_nak_total": gw_nak,
+                    "work_stale_total": gw_stale,
+                    "lease_retry_total": gw_retries,
+                    "sites": int(len(_GATEWAY_WORK_METRICS)),
+                }
+            # Route bundle apply summary
+            if _ROUTE_BUNDLE_METRICS:
+                ok_total = 0.0
+                fail_total = 0.0
+                last_latency = None
+                for stats in _ROUTE_BUNDLE_METRICS.values():
+                    ok_total += float(stats.get("apply_ok_total", 0.0) or 0.0)
+                    fail_total += float(stats.get("apply_fail_total", 0.0) or 0.0)
+                    latency = stats.get("last_latency_s")
+                    if latency is None:
+                        continue
+                    try:
+                        lat_val = float(latency)
+                    except Exception:
+                        continue
+                    if last_latency is None or lat_val > last_latency:
+                        last_latency = lat_val
+                transport["routes"] = {
+                    "bundle_ok_total": ok_total,
+                    "bundle_fail_total": fail_total,
+                    "last_latency_s": last_latency,
+                    "sites": int(len(_ROUTE_BUNDLE_METRICS)),
+                }
+        except Exception:
+            transport = {}
+
         payload = {"controller": ctrl, "rbac": rbac, "crashloop": crash, **(extra or {})}
+        if transport:
+            payload["transport"] = transport
         self._json_ok(payload)
 
     def _handle_ui_features(self) -> None:
@@ -2928,7 +3596,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         )
         doc = {
             "openapi": "3.0.0",
-            "info": {"title": "k1s Controller API", "version": "0.1.2"},
+            "info": {"title": "k1s Controller API", "version": "0.1.3.dev0"},
             "components": {
                 "securitySchemes": {
                     "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
@@ -3328,6 +3996,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     "taints": node.taints,
                     "pod_cidr": node.pod_cidr,
                     "wg_pubkey": node.wg_pubkey,
+                    "rp_pubkey": getattr(node, "rp_pubkey", None),
                     "cordoned": bool(getattr(node, "cordoned", False)),
                     "status": st,
                     "seen_at": seen_at.isoformat() if seen_at else None,
@@ -3608,6 +4277,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_logs_stream(self, app: str) -> None:
         """Stream logs as Server-Sent Events (SSE): one log entry per event."""
+        import queue as _queue
+        import threading as _threading
+        import time as _t
         import urllib.parse as _up
 
         _path, _, query = self.path.partition("?")
@@ -3633,15 +4305,47 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
+        stop = _threading.Event()
+        q: _queue.Queue[object] = _queue.Queue(maxsize=1000)
+        sentinel = object()
+
+        def _pump() -> None:
+            try:
+                for line in fn(app, container, tail, since, True):  # type: ignore[misc]
+                    if stop.is_set():
+                        break
+                    try:
+                        q.put(line, timeout=0.5)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            finally:
+                try:
+                    q.put(sentinel, timeout=0.5)
+                except Exception:
+                    pass
+
+        worker = _threading.Thread(target=_pump, name="ae-logs-sse", daemon=True)
+        worker.start()
+        heartbeat = 10.0
         try:
             # Hint client retry interval
-            self.wfile.write(b"retry: 1000\n\n")
+            self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
-            for line in fn(app, container, tail, since, True):  # type: ignore[misc]
-                if isinstance(line, (bytes, bytearray)):
-                    s = line.decode("utf-8", "replace").rstrip("\n")
+            while True:
+                try:
+                    item = q.get(timeout=heartbeat)
+                except _queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    continue
+                if item is sentinel:
+                    break
+                if isinstance(item, (bytes, bytearray)):
+                    s = item.decode("utf-8", "replace").rstrip("\n")
                 else:
-                    s = str(line).rstrip("\n")
+                    s = str(item).rstrip("\n")
                 lowered = s.lower()
                 if "no container with name or id" in lowered or "no such container" in lowered:
                     continue
@@ -3649,8 +4353,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(out)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
+            stop.set()
             return
         except Exception:
+            stop.set()
             try:
                 self.wfile.write(b"event: error\ndata: stream closed\n\n")
                 self.wfile.flush()

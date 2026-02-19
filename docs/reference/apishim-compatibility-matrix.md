@@ -1,4 +1,4 @@
-# API Shim Compatibility Matrix (2026-01-16)
+# API Shim Compatibility Matrix (2026-02-14)
 
 Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.
 

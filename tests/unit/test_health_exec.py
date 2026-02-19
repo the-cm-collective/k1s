@@ -17,7 +17,7 @@ def test_exec_probe_success():
         ),  # type: ignore[arg-type]
     )
     m = AppManifest(
-        apiVersion="ae.dev/v1alpha1", kind="App", metadata=Metadata(name="e1"), spec=spec
+        apiVersion="ae.dev/v1alpha1", kind="Deployment", metadata=Metadata(name="e1"), spec=spec
     )
     r = RuntimeResult(
         revision=1,
@@ -45,7 +45,7 @@ def test_exec_probe_failure():
         ),  # type: ignore[arg-type]
     )
     m = AppManifest(
-        apiVersion="ae.dev/v1alpha1", kind="App", metadata=Metadata(name="e2"), spec=spec
+        apiVersion="ae.dev/v1alpha1", kind="Deployment", metadata=Metadata(name="e2"), spec=spec
     )
     r = RuntimeResult(
         revision=1,

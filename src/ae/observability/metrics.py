@@ -28,6 +28,11 @@ class MetricsSnapshot:
     unhealthy_pvs: int = 0
     storage_used_bytes: dict[str, int] = field(default_factory=dict)
     storage_quota_bytes: dict[str, int] = field(default_factory=dict)
+    edge_routes_total: int = 0
+    edge_routes_valid: int = 0
+    edge_routes_invalid: int = 0
+    edge_routes_policy_unsupported: int = 0
+    edge_policies_total: int = 0
 
 
 class MetricsService:
@@ -136,6 +141,25 @@ class MetricsService:
                     continue
                 storage_quotas[quota.namespace] = limit
 
+        edge_routes_total = edge_routes_valid = edge_routes_invalid = 0
+        edge_routes_policy_unsupported = 0
+        edge_policies_total = 0
+        try:
+            routes = self._store.list_edge_ingress_routes()
+            edge_routes_total = len(routes)
+            for route in routes:
+                status = route.status or {}
+                if status.get("valid", True):
+                    edge_routes_valid += 1
+                else:
+                    edge_routes_invalid += 1
+                unsupported = status.get("policyUnsupported") or []
+                if unsupported:
+                    edge_routes_policy_unsupported += 1
+            edge_policies_total = len(self._store.list_edge_ingress_policies())
+        except Exception:
+            pass
+
         return MetricsSnapshot(
             total_apps=total_apps,
             ready_apps=ready_apps,
@@ -153,6 +177,11 @@ class MetricsService:
             unhealthy_pvs=unhealthy_pvs,
             storage_used_bytes=storage_used,
             storage_quota_bytes=storage_quotas,
+            edge_routes_total=edge_routes_total,
+            edge_routes_valid=edge_routes_valid,
+            edge_routes_invalid=edge_routes_invalid,
+            edge_routes_policy_unsupported=edge_routes_policy_unsupported,
+            edge_policies_total=edge_policies_total,
         )
 
 

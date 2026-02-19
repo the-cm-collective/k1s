@@ -38,7 +38,7 @@ def _cri_ready(endpoint: str) -> bool:
 def _manifest(name: str, image: str) -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name=name),
         spec=AppSpec(
             image=image,

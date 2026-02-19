@@ -11,6 +11,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from ae.config.transport import TransportConfig, check_nats_connectivity
 from ae.controller.spec import AppManifest
 from ae.runtime import PodState, RuntimeAdapter, RuntimeResult
 import requests
@@ -18,13 +19,32 @@ import requests
 LOGGER = logging.getLogger(__name__)
 
 
-def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict) -> None:
+def _is_client_disconnect(exc: BaseException) -> bool:
+    if isinstance(exc, BrokenPipeError | ConnectionResetError | ConnectionAbortedError):
+        return True
+    if isinstance(exc, OSError):
+        return exc.errno in {32, 103, 104}
+    return False
+
+
+def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict) -> bool:
     payload = json.dumps(body).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(payload)))
-    handler.end_headers()
-    handler.wfile.write(payload)
+    try:
+        handler.end_headers()
+        handler.wfile.write(payload)
+    except Exception as exc:  # noqa: BLE001
+        if _is_client_disconnect(exc):
+            LOGGER.debug(
+                "agent client disconnected during response write path=%s status=%s",
+                getattr(handler, "path", "<unknown>"),
+                status,
+            )
+            return False
+        raise
+    return True
 
 
 def _parse_manifest(payload: dict) -> AppManifest:
@@ -255,6 +275,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _json_response(self, 200, {"removed": removed})
                 return
         except Exception as exc:  # noqa: BLE001
+            if _is_client_disconnect(exc):
+                LOGGER.debug("agent client disconnected path=%s", self.path)
+                return
             LOGGER.exception("agent error on %s", self.path)
             _json_response(self, 500, {"error": str(exc)})
             return
@@ -292,6 +315,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _json_response(self, 200, {"volumes": vols})
                 return
         except Exception as exc:  # noqa: BLE001
+            if _is_client_disconnect(exc):
+                LOGGER.debug("agent client disconnected path=%s", self.path)
+                return
             LOGGER.exception("agent error on %s", self.path)
             _json_response(self, 500, {"error": str(exc)})
             return
@@ -398,6 +424,7 @@ def _start_heartbeat_loop(
     interval: int,
     pod_cidr: str | None = None,
     wg_pubkey: str | None = None,
+    rp_pubkey: str | None = None,
     ca_file: str | None = None,
     client_cert: str | None = None,
     client_key: str | None = None,
@@ -418,6 +445,7 @@ def _start_heartbeat_loop(
                 "status": "Ready",
                 "pod_cidr": pod_cidr,
                 "wg_pubkey": wg_pubkey,
+                "rp_pubkey": rp_pubkey,
             }
             try:
                 headers = {}
@@ -584,9 +612,11 @@ def serve(
     node_endpoint: str | None = None,
     pod_cidr: str | None = None,
     wg_pubkey: str | None = None,
+    rp_pubkey: str | None = None,
     token: str | None = None,
     ensure_pod_net: bool = False,
     pod_bridge: str = "ae0",
+    wg_iface: str = "wg0",
     wg_config: str | None = None,
     tls_cert: str | None = None,
     tls_key: str | None = None,
@@ -602,7 +632,7 @@ def serve(
 
             ensure_pod_bridge(pod_bridge, pod_cidr)
             if wg_config:
-                apply_wireguard(wg_config)
+                apply_wireguard(wg_config, iface=wg_iface)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("overlay setup failed: %s", exc)
 
@@ -618,6 +648,7 @@ def serve(
         heartbeat_interval,
         pod_cidr=pod_cidr,
         wg_pubkey=wg_pubkey,
+        rp_pubkey=rp_pubkey,
         ca_file=controller_ca,
         client_cert=controller_client_cert,
         client_key=controller_client_key,
@@ -688,7 +719,15 @@ def serve(
     else:
         scheme = "http"
     LOGGER.info("ae.node agent listening on %s://%s:%s", scheme, host, port)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        LOGGER.info("shutdown requested (keyboard interrupt)")
+    finally:
+        try:
+            server.server_close()
+        except Exception:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -739,6 +778,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--controller-client-key", default=os.getenv("AE_CONTROLLER_TLS_KEY"))
     args = parser.parse_args(argv)
 
+    try:
+        transport = TransportConfig.from_env()
+        if transport.backend != "http":
+            LOGGER.warning(
+                "AE_TRANSPORT_BACKEND=%s configured; node agent still uses HTTP.",
+                transport.backend,
+            )
+            if transport.nats_url:
+                ok, detail = check_nats_connectivity(transport.nats_url)
+                if ok:
+                    LOGGER.info("nats connectivity ok (%s)", detail)
+                else:
+                    LOGGER.warning("nats connectivity failed (%s)", detail)
+            else:
+                LOGGER.warning("AE_NATS_URL not set; skipping nats connectivity check")
+        else:
+            LOGGER.info("transport backend=%s", transport.backend)
+    except Exception:
+        pass
+
     from ae.runtime import CRIRuntime, DockerRuntime, PodmanRuntime
 
     if args.runtime_backend in {"cri", "containerd"}:
@@ -751,6 +810,66 @@ def main(argv: list[str] | None = None) -> int:
     node_taints = []
     token = os.getenv("AE_AGENT_TOKEN")
     endpoint = args.advertise_endpoint or f"http://{socket.gethostname()}:{args.port}"
+    pod_cidr = os.getenv("AE_POD_CIDR")
+    wg_pubkey = os.getenv("AE_WG_PUBKEY")
+    rp_pubkey = os.getenv("AE_ROSENPASS_PUBKEY") or os.getenv("AE_RP_PUBKEY")
+    wg_config = os.getenv("AE_WG_CONFIG")
+    wg_iface = os.getenv("AE_WG_INTERFACE", "wg0")
+    if os.getenv("AE_ROSENPASS_ENABLED", "0") == "1":
+        try:
+            from pathlib import Path
+
+            from ae.node.rosenpass import prepare_rosenpass
+
+            base_dir = Path(os.getenv("AE_ROSENPASS_DIR", "/var/lib/ae/rosenpass"))
+            cfg_raw = (os.getenv("AE_ROSENPASS_CONFIG") or "").strip()
+            peers_from_controller = cfg_raw.lower() == "controller"
+            cfg_path = None if peers_from_controller or not cfg_raw else Path(cfg_raw)
+            backend = runtime.__class__.__name__.replace("Runtime", "").lower()
+            refresh_raw = os.getenv("AE_ROSENPASS_PEER_REFRESH_SEC", "30")
+            try:
+                refresh_sec = float(refresh_raw)
+            except Exception:
+                refresh_sec = 30.0
+            if refresh_sec < 0:
+                refresh_sec = 0.0
+            bootstrap_payload = {
+                "node_id": node_id,
+                "name": node_name,
+                "backend": backend,
+                "endpoint": endpoint,
+                "labels": node_labels,
+                "taints": node_taints,
+                "status": "Ready",
+                "pod_cidr": pod_cidr,
+            }
+            rp_runtime = prepare_rosenpass(
+                config_path=cfg_path,
+                base_dir=base_dir,
+                controller_url=args.controller_url,
+                token=token,
+                node_id=node_id,
+                pod_cidr=pod_cidr,
+                peers_from_controller=peers_from_controller,
+                bootstrap_payload=bootstrap_payload,
+                peer_refresh_sec=refresh_sec if peers_from_controller else 0.0,
+            )
+            if rp_runtime:
+                wg_iface = rp_runtime.interface or wg_iface
+                if rp_runtime.wg_public_key:
+                    wg_pubkey = rp_runtime.wg_public_key
+                if rp_runtime.rp_public_key:
+                    rp_pubkey = rp_runtime.rp_public_key
+                if rp_runtime.wg_config:
+                    try:
+                        from ae.node.net_helper import apply_wireguard
+
+                        apply_wireguard(rp_runtime.wg_config, iface=rp_runtime.interface)
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.warning("wireguard apply failed: %s", exc)
+                    wg_config = rp_runtime.wg_config
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("rosenpass setup failed: %s", exc)
     serve(
         runtime,
         host=args.host,
@@ -763,12 +882,14 @@ def main(argv: list[str] | None = None) -> int:
         heartbeat_interval=args.heartbeat_interval,
         node_endpoint=endpoint,
         token=token,
-        pod_cidr=os.getenv("AE_POD_CIDR"),
-        wg_pubkey=os.getenv("AE_WG_PUBKEY"),
+        pod_cidr=pod_cidr,
+        wg_pubkey=wg_pubkey,
+        rp_pubkey=rp_pubkey,
         ensure_pod_net=args.ensure_pod_net
         or bool(int(os.getenv("AE_AGENT_CONFIGURE_OVERLAY", "0"))),
         pod_bridge=args.pod_bridge,
-        wg_config=os.getenv("AE_WG_CONFIG"),
+        wg_iface=wg_iface,
+        wg_config=wg_config,
         tls_cert=args.tls_cert,
         tls_key=args.tls_key,
         client_ca=args.client_ca,

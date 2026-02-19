@@ -110,7 +110,7 @@ python -m ae.cli rollback echo-rollout --to <revision>
 - Rollout spec example: `specs/examples/echo-rollout.yaml:17`
 ```yaml
 apiVersion: ae.dev/v1alpha1
-kind: App
+kind: Deployment
 metadata:
   name: echo-rollout
 spec:

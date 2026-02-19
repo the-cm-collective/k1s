@@ -1,6 +1,6 @@
 # CRI parity tracking (containerd)
 
-Last updated: 2026-01-31
+Last updated: 2026-02-12
 
 Goal: make CRI/containerd a safe default backend for k1s dev/labs with a
 Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
@@ -16,6 +16,16 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
 - CRI smoke + NodePort smoke scripts (gated for CRI nodes).
 - NetFS harness: smoke + snapshot/clone + CSI path green (with heartbeat loop in harness).
 - Node agent returns Pending pod state when PVC mounts are not ready (avoids hard 500s).
+- Strict profile infra lane: when `AE_RUNTIME_BACKEND=cri` profiles can run core/edge
+  dev infra as CRI pods (`AE_INFRA_BACKEND=cri`) instead of compose/Podman.
+  - strict lane defaults `AE_CRI_RUNTIME_HANDLER=runc`
+  - host-network sandboxes omit explicit hostname by default (prevents runc UTS errors)
+  - rathole strict-CRI launch uses image entrypoint + args (`--server` / `--client`)
+  - strict `k1s-core` now supports `AE_APISHIM_MODE=cri` (`k1s-core-apishim` CRI pod)
+  - missing strict-CRI images support interactive build/pull prompt (`AE_CRI_IMAGE_POLICY`)
+  - strict-CRI fallback action `b` uses local build + registry push + CRI pull verify
+    (backend order: nerdctl, podman, docker; override via `AE_CRI_LOCAL_BUILD_BACKEND`)
+  - strict-CRI image refs can target existing dev registries via `AE_CRI_REGISTRY`
 
 ## P0: Required for CRI as default backend (dev/labs)
 

@@ -7,19 +7,78 @@ Setup
 - Install Python deps: `python -m pip install -e .[dev]`
 - Dev services (optional): `docker compose -f ops/dev/docker-compose.yaml up -d`
 - Controller loop (dev):
-  - Default specs dir: `python -m ae.controller --loop --interval 5 --specs specs/ --metrics-port 9108`
+  - Default specs dir: `python -m ae.controller --loop --interval 10 --specs specs/ --metrics-port 9108`
+    - `--interval` defaults to 2s; increase it for ops (for example 10–30s) to reduce log noise.
+    - The specs dir is imported into the registry; the reconciler always runs against the registry. An empty specs dir does not clear existing workloads.
   - Curated demo/specs: set `AE_SPECS_DIR` and use Make targets that respect it:
-    - `AE_SPECS_DIR=state/demo-specs make loop` (watches only the curated set)
-    - `AE_SPECS_DIR=state/demo-specs make run` (single reconcile pass)
-- Tip: `scripts/init_demo.sh` seeds `state/demo-specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` for demo runs.
+    - `AE_SPECS_DIR=state/profiles/demo/specs make loop` (watches only the curated set)
+    - `AE_SPECS_DIR=state/profiles/demo/specs make run` (single reconcile pass)
+- Tip: `scripts/init_demo.sh` seeds `state/profiles/demo/specs` and exports `AE_SPECS_DIR` + `AE_DEMO_MODE=1` for demo runs.
   - Demo convenience: `AE_REGISTER_LOCAL_NODE=1` registers a local node when no nodes are present (keeps demo/labs single-node runs working while preserving Kubernetes scheduling semantics by default).
-  - Reset state quickly when switching contexts: `./scripts/init_demo.sh --reset` (deletes `state/controller.db` and `state/projections/`).
+  - Reset state quickly when switching contexts: `./scripts/init_demo.sh --reset` (deletes `state/profiles/demo/controller.db` and `state/profiles/demo/projections/`).
   - Registry cache: `./scripts/init_demo.sh --reset-registry-cache` (clears `state/registry` to force re-pull into the local cache).
+- Etcd-backed demo/labs:
+  - `AE_STATE_BACKEND=etcd make demo` (auto-starts etcd for the demo controller)
+  - `AE_STATE_BACKEND=etcd make labs-aio-up` (labs stack uses an embedded etcd service)
 - SOPS/age (secrets):
   - Generate an age identity: `mkdir -p ~/.config/ae && age-keygen -o ~/.config/ae/keys.txt && chmod 600 ~/.config/ae/keys.txt`
   - Point SOPS to it: `export SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt`
   - Seal sample secret: `make secrets-seal-demo` (uses `AE_AGE_RECIPIENT` or your keys.txt)
   - Convenience for demos: run `./scripts/init_demo.sh --with-secrets-env` to export both `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE` automatically.
+
+NATS + etcd dev stack (Mode A)
+- Start hub + etcd + edge NATS: `docker compose -f ops/dev/docker-compose.nats-etcd.yaml up -d`
+- Stop stack: `docker compose -f ops/dev/docker-compose.nats-etcd.yaml down`
+- Configs: `ops/dev/nats-hub.conf`, `ops/dev/nats-edge.conf` (dev-only credentials).
+- Manual core+edge test pattern: `docs/ops/core-edge-manual-test.md`
+- Gateway env defaults: `ops/dev/site-gateway.env.sample` (Option A ack settings).
+- Default dev creds: hub controller `hub-controller/dev`, site uplink `site-sfo-edge-01-uplink/dev`, local `gateway/dev` and `worker/dev` (do not use in prod).
+- If docker-compose fails to create `state/etcd`, fix ownership once:
+  - `sudo mkdir -p state/etcd`
+  - `sudo chown -R $USER:$USER state/etcd`
+- Local E2E stub (work.pull path):
+  - Start gateway: `AE_TRANSPORT_BACKEND=nats-core AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway`
+  - Start stub worker: `ae-worker-stub --node-id node-01 --nats-url nats://127.0.0.1:4223`
+  - Enqueue a work item: `ae work enqueue --site-id sfo-edge-01 --mode queue --op ensure_pod --preferred-node node-01`
+- Mode A canary (JetStream path):
+  - Hub controller: `AE_TRANSPORT_BACKEND=nats-js AE_SITE_IDS=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4222 python -m ae.controller --loop --interval 2 --metrics-port 9108`
+  - Gateway: `AE_TRANSPORT_BACKEND=nats-js AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway`
+  - Enqueue: `ae work enqueue --site-id sfo-edge-01 --mode outbox --op ensure_pod --preferred-node node-01`
+  - Rollback: stop the gateway and restart the controller with `AE_TRANSPORT_BACKEND=http` (or unset) to return to HTTP dispatch.
+- Automated canary + rollback: `scripts/dev/nats_etcd_canary.sh` (uses `.venv` if present; override `METRICS_PORT` if 9108 is in use).
+
+Etcd maintenance (dev/CI)
+- Quick status: `scripts/dev/etcd_maintenance.sh status`
+- Guard before long ingress lanes: `scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog`
+- Forced reclaim when etcd returns `mvcc: database space exceeded`:
+  - `scripts/dev/etcd_maintenance.sh compact-defrag`
+- Startup defaults in `k1s-core`/`dev-etcd` profiles:
+  - `AE_ETCD_MAINTENANCE_ENABLE=1`
+  - `AE_ETCD_MAINTENANCE_THRESHOLD_PCT=80`
+- Override/disable behavior when needed:
+  - `AE_ETCD_MAINTENANCE_ENABLE=0 make k1s-core-cri`
+  - `AE_ETCD_MAINTENANCE_THRESHOLD_PCT=70 make k1s-core-cri`
+
+Rosenpass WireGuard PSK (Option C)
+- Requires: WireGuard tools (`wg`, `wg-quick`) and Rosenpass installed on each node host.
+- Enable managed Rosenpass: `AE_ROSENPASS_ENABLED=1` on each node.
+- Data directory (keys/config/status): `AE_ROSENPASS_DIR=/var/lib/ae/rosenpass` (default).
+- Config file: `AE_ROSENPASS_CONFIG=/path/to/rosenpass.yaml` for node-local peers or `AE_ROSENPASS_CONFIG=controller` for controller-managed hub-spoke peers.
+- Hub/spoke discovery: hub node labels `role=controller` or `role=hub`; hub site override `AE_OVERLAY_HUB_SITE=<site-id>` (fallback `AE_SITE_ID`); hub WG endpoint label `wg_endpoint=<public-ip:port>` or `AE_OVERLAY_HUB_ENDPOINT`.
+- WireGuard interface override: `AE_WG_INTERFACE=wg0` (default).
+- Optional Rosenpass command override (if default fails): `AE_ROSENPASS_COMMAND="rosenpass exchange-config {config}"`.
+- Peer refresh interval (controller-managed peers): `AE_ROSENPASS_PEER_REFRESH_SEC=30` (set to `0` to disable).
+- Status file: `${AE_ROSENPASS_DIR}/rosenpass-status.json` (or `AE_ROSENPASS_STATUS_PATH`).
+
+Manual bringup (hub + edge, controller-managed peers)
+- Hub controller (agent API enabled): `AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=... python -m ae.controller --loop`
+- Hub node (with labels): `AE_NODE_LABELS="role=hub,site=<hub-site>,wg_endpoint=<public-ip:51820>" AE_ROSENPASS_ENABLED=1 AE_ROSENPASS_CONFIG=controller python -m ae.node --ensure-pod-net`
+- Edge node: `AE_NODE_LABELS="site=<edge-site>" AE_ROSENPASS_ENABLED=1 AE_ROSENPASS_CONFIG=controller AE_CONTROLLER_URL=http://<hub>:9110 AE_AGENT_TOKEN=... python -m ae.node --ensure-pod-net`
+
+Quick checks
+- Overlay config served: `curl -H "X-Agent-Token: $AE_AGENT_TOKEN" http://<hub>:9110/v1/nodes/<node-id>/overlay`
+- Rosenpass running: `cat /var/lib/ae/rosenpass/rosenpass-status.json`
+- WireGuard handshakes: `wg show wg0`
 
 CRI nodes (containerd)
 - Required env:
@@ -56,10 +115,39 @@ Ingress and TLS
 - TLS sync helper:
   - Render PEMs from a Kubernetes Secret file: `python -m ae.cli tls sync --name mycert --input path/to/mycert.yaml --root state/tls`
   - Or place direct PEMs `state/tls/mycert.crt` and `state/tls/mycert.key`.
-  - Set only `spec.ingress.tlsSecretName: mycert` in your App manifest; the controller will resolve and wire cert/key for Caddy.
+  - Set only `spec.ingress.tlsSecretName: mycert` in your Deployment manifest; the controller will resolve and wire cert/key for Caddy.
 - Environment:
   - AE_TLS_DIR (default: state/tls)
   - AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT
+
+Ingress validation lanes (CRI, mode-isolated)
+- Preflight before long lanes:
+  - `sudo -v`
+  - `scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog`
+- Optional guided wrapper with lane checkpoints:
+  - `scripts/dev/run_ingress_lanes.sh --lanes all` (compat alias: `scripts/dev/run_ingress_mode_lanes.sh`)
+- Full tested startup command set (core/core-node/edge-gateway/edge-node by lane mode):
+  - `docs/guides/ingress-capability-test-sequence.md` (Step 1a)
+- Core-proxy mini sanity lane:
+  - `CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes ws-echo --tier tier2 --validation-profile standard`
+- Core-proxy primary deep lane (policy + observability):
+  - `CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes ws-echo,lb-distribution,sticky-cookie --tier tier2 --validation-profile deep+perf --perf-profile sample --lb-proof-scope auto`
+- Optional full core-proxy lane:
+  - `CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes http-static,http-path-routing,ws-echo,lb-distribution,sticky-cookie --tier tier2 --validation-profile deep+perf --perf-profile sample --lb-proof-scope auto`
+- Core-to-edge-public lane (separate stack start with `EDGE_INGRESS_MODE=core-to-edge-public`):
+  - `scripts/dev/test_ingress_matrix_single_host.sh --modes core-to-edge-public --archetypes http-static,http-path-routing --tier tier1 --validation-profile standard`
+- Edge-local strict LB proof lane (separate stack start with `EDGE_INGRESS_MODE=edge-local` + `AE_ROUTE_BUNDLE_ENABLED=1`):
+  - `scripts/dev/test_ingress_matrix_single_host.sh --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/`
+- Security baseline + staged active auth probes (per lane or after full sequence):
+  - `scripts/dev/security_baseline_check.sh --fail-on high`
+  - `scripts/dev/security_active_tests.sh --fail-on high`
+  - wrapper integrated path: `scripts/dev/run_ingress_lanes.sh --lanes all --security-all`
+- Keep lanes mode-isolated. Do not run mixed-mode rows on one stack profile.
+- Summary interpretation (`state/test-results/ingress-matrix-*.json`):
+  - `lb_policy_passed=true`: core-proxy policy lane passed.
+  - `lb_observability_passed=true`: core-proxy LB row emitted usable backend-observation evidence.
+  - `lb_strict_proof_passed=true`: strict edge-local distribution proof passed.
+- Cross-platform parity benchmark: `docs/ops/perf-parity-k1s-vs-k3s.md`
 
 Rollouts
 - Pause/resume:
@@ -95,7 +183,23 @@ API tokens
      - `AE_API_SCALER_SCOPE="echo,web-*"` (scaler token can scale only echo and web-* apps)
 
 API shim (kubectl/helm)
-- Start shim locally: `AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445` (add `--allow-anonymous` only for dev). Postgres backend: set `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname`; default is SQLite at `AE_APISHIM_DB` (`state/apishim.db`).
+- Start shim locally: `AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445` (add `--allow-anonymous` only for dev). Postgres backend: set `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname`; default is SQLite at `AE_APISHIM_DB` (`state/apishim.db`) unless a DSN is provided.
+- Non-root CLI auth (recommended):
+  - One-time group setup: `sudo groupadd -f aecli && sudo usermod -aG aecli $USER` (re-login/newgrp required).
+  - Start `k1s-core` with sudo if needed; keep root `state/profiles/<profile>/apishim.env` private (`600`).
+  - Configure a mint-only credential: `AE_APISHIM_MINT_TOKEN=<long-random-token>` on the shim.
+  - Startup now syncs `state/profiles/<profile>/apishim.cli.env` (`640 root:aecli`) with `AE_APISHIM_SERVER`, `AE_APISHIM_MINT_TOKEN`, and `AE_APISHIM_CA_BUNDLE`.
+  - Startup also syncs `state/profiles/<profile>/apishim.ca.crt` (`640 root:aecli`) for CA verification.
+  - In operator shells run `source <(ae auth local --strict)` (no `--apishim-env` arg required); auth infers the active profile and prefers `apishim.cli.env`.
+  - `ae shell` / `ae port-forward` will mint short-lived scoped `sess1.*` tokens through `POST /api/v1/sessiontokens` and automatically refresh once on `401`.
+  - If shim token auth returns `401` but `AE_LABS_TOKEN` is present, CLI can fallback to controller-minted session tokens via `POST /api/apishim/session` (dashboard-compatible path).
+  - Disable controller fallback by setting `AE_CLI_LABS_MINT_FALLBACK=0` when you want shim-only auth behavior.
+  - Keep `AE_APISHIM_TOKEN` (admin) service-only; avoid routine `sudo ae ...`.
+- `k1s-core` profile starts Postgres for apishim by default and sets `AE_APISHIM_DSN`:
+  - `AE_APISHIM_MODE=host`: uses `127.0.0.1:<port>`.
+  - container mode: uses the compose service name `postgres:5432`.
+- For multi-site: bind Postgres to the hub WG IP with `POSTGRES_BIND_IP=<hub-wg-ip>` and point edge nodes at `AE_APISHIM_DSN=postgresql://shim:shim@<hub-wg-ip>:5432/shim`.
+  - Example: `POSTGRES_BIND_IP=10.255.0.1 make k1s-core` and `AE_APISHIM_DSN=postgresql://shim:shim@10.255.0.1:5432/shim`.
 - WS exec/port-forward smoke: `AE_APISHIM_EXEC_TOKEN=exec AE_APISHIM_PORTFORWARD_TOKEN=pf AE_RUNTIME_BACKEND=docker ./scripts/dev/apishim_ws_smoke.sh` (optional: `PF_JS=1` for JS client, `PF_RAW_DUMP=1` to capture raw frames).
 - Kubeconfig helper: `python -m ae.apishim kubeconfig --server http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN --insecure-skip-tls-verify > ~/.kube/k1s-apishim.yaml`.
 - Storage migration: `python -m ae.apishim migrate --source state/apishim.db --target $AE_APISHIM_DSN` copies objects while preserving resourceVersion between SQLite and Postgres.
@@ -120,7 +224,7 @@ Dashboard reload vs. restart
 - Env or port/token changes (anything in `state/env.sh`, `AE_API_*`, `AE_*` flags): `make dashboard-restart`
   - Stops the supervisor, clears any stale lock, then starts fresh so env is re‑sourced.
 - Scope of apps shown and reconciled
-  - The controller respects `AE_SPECS_DIR` for the active specs root. To avoid reconciling every sample under `specs/`, set `AE_SPECS_DIR` to a curated folder (e.g., `state/demo-specs`).
+  - The controller respects `AE_SPECS_DIR` for the active specs root. To avoid reconciling every sample under `specs/`, set `AE_SPECS_DIR` to a curated folder (e.g., `state/profiles/demo/specs`).
   - Updated Make targets and bench scripts auto‑honor `AE_SPECS_DIR`. If unset, they fall back to `specs/`.
   - Dashboard output is unfiltered; scope by curating `AE_SPECS_DIR` and using token scopes if needed.
 - Viewing via docs host proxy? If you changed Caddy site files, restart the docs stack:
@@ -132,12 +236,28 @@ Tips
 - For utilization HPAs, set CPU/Memory requests to avoid HPA errors.
 - Use `--policy strict` in CI to keep manifests honest.
 
+NATS edge drills (Mode A)
+- Leaf disconnect: stop the edge leader NATS process and confirm `ae_site_stale{site=...}` flips to 1.
+- Gateway reconnect: restart gateway and ensure `ae_site_last_seen_seconds` drops back near 0.
+- JS consumer lag: enqueue a batch of work and watch `ae_outbox_publish_success_total` advance; use NATS tooling to inspect consumer pending/ack if needed.
+- Hub NATS restart: restart the hub NATS process and ensure outbox publishing resumes without manual intervention.
+- Site disconnect/reconnect: stop the edge leader + gateway, confirm stale metrics, then restart and confirm the site recovers.
+- Worker crash mid-work: kill the worker stub during execution and confirm the gateway stops progress acks; message should be NAKed and redelivered once the gateway sees stale heartbeats.
+- etcd leader change: force a leader move and ensure controller reconciliation continues without errors.
+
 
 Token rotation and cleanup
 - Rotate tokens proactively before expiry; consider 24h pre‑expiry for rotation.
 - After rotating, remove old `AE_API_*_TOKEN` and `AE_API_*_TOKEN_EXPIRES` values from your environment/secret store.
 - HTTP API exports token expiry metrics so you can alert:
   - `ae_api_token_expiry_seconds{role="admin|scaler|read"}` (negative when expired).
+
+Cleanup (stop all dev containers/services)
+- Preferred: run as the same user who started the containers.
+  - `./scripts/stop_all.sh`
+- If containers were started with sudo, run:
+  - `sudo ./scripts/stop_all.sh`
+- If you’re unsure, the script will attempt to stop both rootless and root containers when invoked with sudo.
 
 
 Prometheus alert example
@@ -295,7 +415,7 @@ Two easy ways to run it:
   - Or: `./scripts/ensure_apishim_env.sh && docker compose -f ops/dev/labs-aio.yaml up -d`
   - Open https://localhost:8443/playground.html
   - Dashboard (separate host): https://dash.home.arpa:8443/dashboard
-  - API shim starts by default on `127.0.0.1:8445` with per-run tokens stored in `state/labs/apishim.env`
+  - API shim starts by default on `127.0.0.1:8445` with per-run tokens stored in `state/profiles/labs/apishim.env`
   - To override tokens, set `AE_APISHIM_TOKEN` / `AE_APISHIM_READ_TOKEN` in `.env` (long values; weak tokens are rejected)
   - To run with a local Postgres backend for controller + shim, set `AE_LABS_USE_POSTGRES=1` before bringing the stack up
   - To print the shim tokens: `make labs-apishim-env`
@@ -372,6 +492,21 @@ CSIStorageCapacity overrides:
 - StorageClasses can publish static capacity for external CSI drivers via
   `parameters.capacity` (e.g., `5Gi`) or `parameters.capacityBytes` (integer bytes).
 - This bypasses hostPath disk probes and only affects the advertised capacity object.
+
+CSI topology + labels (site placement):
+- StorageClass must define `topologyKeys: ["site"]` (or your chosen key).
+- Nodes must advertise a matching `site=<site-id>` label.
+- Confirm the selected node aligns with the intended site before attaching/mounting.
+
+Recovery checklist:
+- If PVC binds to the wrong site, update node labels and re-apply the PVC.
+- If VolumeAttachment is missing, verify `CSIDriver.attachRequired` and storage class name.
+- If NodePublish fails, confirm CSI node endpoint reachability from the edge site.
+
+Smoke checklist:
+- `ae nodes` shows `site` labels for all nodes.
+- PVC binds on the expected site and VolumeAttachment is present (attachRequired=true).
+- Pod mounts successfully on the matching node.
 
 Common failure reasons (PVC events):
 - `CloneNotReady` / `CloneNotFound`: source PVC missing or not bound.

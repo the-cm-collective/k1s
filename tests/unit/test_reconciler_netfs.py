@@ -49,7 +49,7 @@ def test_reconciler_sets_selected_node_for_local_path(tmp_path, monkeypatch):
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="app"),
         spec=AppSpec(
             image="busybox",
@@ -102,7 +102,7 @@ def test_reconciler_sets_selected_node_for_csi_single_writer(tmp_path, monkeypat
 
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
-        kind="App",
+        kind="Deployment",
         metadata=Metadata(name="app"),
         spec=AppSpec(
             image="busybox",

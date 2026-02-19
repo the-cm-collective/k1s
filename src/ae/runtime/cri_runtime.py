@@ -15,7 +15,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import grpc
+try:
+    import grpc
+except Exception:  # pragma: no cover - optional dependency
+    grpc = None
 
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
@@ -68,6 +71,9 @@ class CRIRuntime(RuntimeAdapter):
         self._exec_lock = threading.Lock()
         self._volume_manager_checked = False
         self._volume_manager = None
+        self._apishim_store_checked = False
+        self._apishim_store = None
+        self._apishim_state = None
 
     # --- RuntimeAdapter API -----------------------------------------
     def ensure_app(
@@ -274,6 +280,90 @@ class CRIRuntime(RuntimeAdapter):
             args.append("-t")
         args.append(str(container_id))
         args.extend([str(x) for x in command])
+        if tty:
+            # crictl requires a real TTY when -t is set; pipes fail with
+            # "input is not a terminal". Use a PTY-backed attach path.
+            import pty
+
+            try:
+                master_fd, slave_fd = pty.openpty()
+            except Exception as exc:
+                raise RuntimeError(f"failed to allocate pty for exec: {exc}") from exc
+            try:
+                proc = subprocess.Popen(  # noqa: S603 - crictl command with fixed args
+                    args,  # noqa: S603
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    close_fds=True,
+                )
+            except Exception:
+                with contextlib.suppress(Exception):
+                    os.close(master_fd)
+                with contextlib.suppress(Exception):
+                    os.close(slave_fd)
+                raise
+            with contextlib.suppress(Exception):
+                os.close(slave_fd)
+
+            exec_id = uuid.uuid4().hex
+            with self._exec_lock:
+                self._exec_procs[exec_id] = proc
+
+            class _FDAsSocket:
+                def __init__(self, fd: int) -> None:
+                    self._fd = fd
+                    with contextlib.suppress(Exception):
+                        os.set_blocking(fd, False)
+
+                def recv(self, n: int) -> bytes:
+                    try:
+                        return os.read(self._fd, n)
+                    except BlockingIOError as err:
+                        raise TimeoutError from err
+                    except OSError:
+                        return b""
+
+                def sendall(self, data: bytes) -> None:
+                    if not data:
+                        return
+                    view = memoryview(data)
+                    while view:
+                        try:
+                            sent = os.write(self._fd, view)
+                        except BlockingIOError as err:
+                            raise TimeoutError from err
+                        except OSError:
+                            return
+                        if sent <= 0:
+                            return
+                        view = view[sent:]
+
+                def settimeout(self, _t: float) -> None:
+                    return
+
+                def shutdown(self, _how: int) -> None:
+                    return
+
+                def close(self) -> None:
+                    with contextlib.suppress(Exception):
+                        os.close(self._fd)
+
+            def _watch_pty() -> None:
+                code = 0
+                try:
+                    code = int(proc.wait(timeout=None))
+                except Exception:
+                    code = 0
+                with self._exec_lock:
+                    self._exec_exit_codes[exec_id] = code
+                    self._exec_procs.pop(exec_id, None)
+                with contextlib.suppress(Exception):
+                    os.close(master_fd)
+
+            threading.Thread(target=_watch_pty, daemon=True).start()
+            return _FDAsSocket(master_fd), exec_id
+
         stderr = subprocess.STDOUT if tty else subprocess.PIPE
         proc = subprocess.Popen(  # noqa: S603 - crictl command with fixed args
             args,  # noqa: S603
@@ -551,6 +641,8 @@ class CRIRuntime(RuntimeAdapter):
     def _ensure_clients(self) -> None:
         if self._runtime and self._images:
             return
+        if grpc is None:  # pragma: no cover - optional dependency
+            raise RuntimeError("grpc is required for CRI runtime (install grpcio)")
         try:
             from ae.runtime.cri.api.runtime.v1 import api_pb2_grpc
         except Exception as exc:  # pragma: no cover - depends on generated stubs

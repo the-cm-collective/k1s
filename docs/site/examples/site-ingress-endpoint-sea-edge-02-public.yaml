@@ -1,0 +1,11 @@
+apiVersion: k1s.io/v1
+kind: SiteIngressEndpoint
+metadata:
+  name: sea-edge-02
+spec:
+  mode: core-to-edge-public
+  public:
+    urls:
+      - url: https://pop-sea-edge-02.home.arpa:11443
+        expectedSANs:
+          - pop-sea-edge-02.home.arpa

@@ -721,7 +721,7 @@
       </svg>
     </button>
     <div class="container">
-    <h2>Scheduling &amp; Placement</h2>
+    <h2 id="scheduling-placement">Scheduling &amp; Placement</h2>
 <p>The controller includes a lightweight scheduler for multi-node runs. It:</p>
 <ul>
 <li>Filters nodes by readiness/staleness (<code>AE_NODE_NOTREADY_AFTER</code>), cordon state, <code>nodeSelector</code>, and taints/tolerations.</li>
@@ -729,17 +729,17 @@
 <li>Spreads across eligible nodes round-robin by default; honors <code>topologySpreadConstraints</code> when a topology key is present.</li>
 <li>Falls back to the local runtime when no nodes are eligible (emits a planner warning).</li>
 </ul>
-<h3>Planner Dry Run</h3>
+<h3 id="planner-dry-run">Planner Dry Run</h3>
 <pre><code>ae plan -f specs/examples/echo-multinode.yaml --verbose</code></pre>
 <p>Verbose output shows pod names, chosen nodes/endpoints, storage bindings, and Service VIP hints. Warnings include stale nodes, missing labels for selectors, or hostPort use when VIPs are enabled.</p>
-<h3>Managing Nodes</h3>
+<h3 id="managing-nodes">Managing Nodes</h3>
 <ul>
 <li>List/describe: <code>ae nodes list</code>, <code>ae nodes &lt;node-id&gt;</code></li>
 <li>Cordon/uncordon: <code>ae nodes &lt;node-id&gt; --cordon</code> / <code>--uncordon</code></li>
 <li>Drain (best-effort evict via agent): <code>ae nodes &lt;node-id&gt; --drain</code></li>
 <li>Node labels: set on the agent via env <code>AE_NODE_LABELS=role=worker,zone=az1</code>. Taints are respected when present on node records (planner will require tolerations).</li>
 </ul>
-<h3>Spec knobs that affect placement</h3>
+<h3 id="spec-knobs-that-affect-placement">Spec knobs that affect placement</h3>
 <ul>
 <li><code>spec.nodeSelector</code> — must match node labels.</li>
 <li><code>spec.tolerations[]</code> — must tolerate taints.</li>
@@ -747,7 +747,7 @@
 <li><code>spec.affinity</code> and <code>spec.priorityClassName</code> — stored/exported; affinity is a soft hint for the scheduler today.</li>
 <li><code>spec.storage[]</code> — enables storage pinning to a single node.</li>
 </ul>
-<h3>K8s Export</h3>
+<h3 id="k8s-export">K8s Export</h3>
 <p><code>affinity</code>, <code>tolerations</code>, <code>topologySpreadConstraints</code>, <code>priorityClassName</code>, and <code>nodeSelector</code> are passed through to the Deployment/StatefulSet template. Use <code>ae k8s-check --policy strict</code> for validation and <code>ae k8s-report</code> to score parity.</p>
     </div>
     <footer class="site-footer">
@@ -756,7 +756,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-01-31 16:07:03</span>
+        <span>Built 2026-02-12 14:20:07</span>
       </div>
     </footer>
     <script>
