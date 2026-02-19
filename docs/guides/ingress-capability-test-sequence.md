@@ -359,6 +359,8 @@ AE_APISHIM_SESSION_SECRET="$(openssl rand -hex 32)"
 
 - Run security scripts with `sudo -E` so controller env checks can read `/proc/<pid>/environ`.
 
+- If you flip strict-CRI registry mode (`AE_CRI_REGISTRY_INSECURE`) between runs, keep `AE_CRI_REGISTRY_AUTO_RESTART=1` (default) so containerd resolver state is refreshed automatically.
+
 Artifacts:
 - `state/test-results/security-baseline-<timestamp>.json`
 - `state/test-results/security-active-<timestamp>.json`

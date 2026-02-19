@@ -48,6 +48,20 @@ Artifacts Layout
   - `env/` hardware, kernel, runtime metadata
   - `summary/` computed parity table and decision
 
+Optional Preflight Helper (Before Manual Benchmarks)
+- Use the safe helper to initialize `RUN_ID`, create directories, and capture the environment baseline.
+```bash
+bash scripts/dev/parity_preflight.sh --print-exports
+```
+- This helper intentionally stops before benchmark execution.
+- It validates core-proxy bootstrap readiness (listener `10080`) and exits non-zero if not ready.
+  - Start core-proxy lane: `AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core`
+  - Strict-CRI alt: `AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy make k1s-core-cri`
+- If you only want directory/env scaffolding, run with `--skip-core-proxy-check`.
+- It does not run Step 2 (`scripts/dev/run_ingress_kpi_minimatrix.sh`).
+- It does not run Step 3 (`scripts/dev/ingress_deep_probe.py` probes).
+- After it completes, run Step 2 and Step 3 manually using the command blocks it prints.
+
 Step 1: Capture Environment Baseline
 - Record these before any benchmark run:
   - `uname -a`
@@ -86,12 +100,29 @@ scripts/dev/run_ingress_kpi_minimatrix.sh
 Step 3: Run k3s Equivalent Lanes
 - Deploy equivalent `ws-echo`, `lb-distribution`, `sticky-cookie` routes on k3s.
 - Ensure endpoint/Host layout matches k1s test contract.
+- Start (or reuse) the local k3s bench cluster and apply parity routes:
+```bash
+make bench-k3s-up K3S_NAME=bench
+kubectl config use-context k3d-bench
+kubectl delete ingress k3s-parity-sticky-cookie --ignore-not-found
+kubectl apply -f specs/examples/k3s-ingress-parity.yaml
+
+kubectl rollout status deployment/k3s-parity-ws-echo --timeout=180s
+kubectl rollout status deployment/k3s-parity-lb-distribution --timeout=180s
+kubectl rollout status deployment/k3s-parity-sticky-cookie --timeout=180s
+kubectl get ingress -n default
+kubectl get ingressroute.traefik.io -n default k3s-parity-sticky-cookie
+```
+- `specs/examples/k3s-ingress-parity.yaml` configures equivalent hosts/paths:
+  - `ws-echo-core-proxy.home.arpa` on `/ws`
+  - `lb-distribution-core-proxy.home.arpa` on `/id`
+  - `sticky-cookie-core-proxy.home.arpa` on `/id` via Traefik `IngressRoute` service sticky cookie (native pod LB)
 - Use `scripts/dev/ingress_deep_probe.py` directly for the same probes.
 
 Example probe commands (repeat per concurrency lane):
 ```bash
-# Example variables for k3s ingress endpoint
-K3S_BASE_URL="https://127.0.0.1:10443"
+# k3d helper exposes k3s ingress on host :443
+K3S_BASE_URL="https://127.0.0.1"
 
 # ws-echo deep
 python scripts/dev/ingress_deep_probe.py ws_soak \
@@ -115,6 +146,12 @@ python scripts/dev/ingress_deep_probe.py sticky_probe \
   --requests-per-client 100 > sticky-deep.json
 ```
 
+- Optional cleanup after k3s shakedown:
+```bash
+kubectl delete -f specs/examples/k3s-ingress-parity.yaml
+# Optional full cluster teardown
+make bench-k3s-down K3S_NAME=bench
+```
 - Normalize k3s outputs into a JSON schema matching k1s fields:
   - `platform`, `concurrency`, `archetype`, `rps`, `p95_ms`, `p99_ms`, `error_rate`, `ws_connected_ratio`, `ws_connect_failure_rate`, `ws_message_loss`, `status`.
 

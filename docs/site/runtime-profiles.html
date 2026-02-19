@@ -797,7 +797,12 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 </li>
 <li>Optional containerd trust hook for strict CRI startup:
 <ul>
-<li>set <code>AE_CRI_REGISTRY_TRUST=1</code> (or <code>AE_CRI_REGISTRY_INSECURE=1</code>) to call <code>scripts/containerd_registry_trust.sh</code> before CRI preflight.</li>
+<li>managed registry TLS (<code>AE_CRI_REGISTRY_MODE=managed</code>) defaults to secure trust wiring.</li>
+<li>on scheme transitions (<code>http</code> &lt;-&gt; <code>https</code>), strict startup auto-restarts containerd by default (<code>AE_CRI_REGISTRY_AUTO_RESTART=1</code>).</li>
+<li>set <code>AE_CRI_REGISTRY_AUTO_RESTART=0</code> to disable auto-restart (startup will fail fast on unresolved transitions).</li>
+<li>set <code>AE_CRI_REGISTRY_TRUST=1</code> to force trust configuration for external registries.</li>
+<li>trust wiring also ensures CRI registry <code>config_path=/etc/containerd/certs.d</code> for hosts.toml resolution.</li>
+<li><code>AE_CRI_REGISTRY_INSECURE=1</code> is a dev-only opt-out and will fail security baseline high gates.</li>
 </ul>
 </li>
 <li>Bind Postgres to the hub WG IP with <code>POSTGRES_BIND_IP=&lt;hub-wg-ip&gt;</code> so edge nodes can reach it.</li>
@@ -939,7 +944,7 @@ make k1s-edge-core-cri</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-16 09:04:29</span>
+        <span>Built 2026-02-18 09:00:48</span>
       </div>
     </footer>
     <script>

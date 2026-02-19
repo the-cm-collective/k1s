@@ -76,6 +76,7 @@ Notes:
 - For the strict edge-local bundle-endpoints lane in this guide, run core with `AE_ENABLE_SERVICE_PROXY=1` and `AE_SERVICE_PROVIDER=iptables`.
 - If you are only running non-strict baseline lanes, you may keep service proxy disabled.
 - Managed strict-CRI registry now defaults to TLS; keep `AE_CRI_REGISTRY_INSECURE` unset for security-gated runs.
+- When switching registry mode between insecure and TLS on the same host, startup auto-restarts containerd by default (`AE_CRI_REGISTRY_AUTO_RESTART=1`) to avoid stale resolver state.
 
 ### Core node (hub)
 
