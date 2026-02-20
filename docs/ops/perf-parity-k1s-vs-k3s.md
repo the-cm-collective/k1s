@@ -86,6 +86,7 @@ OUT_DIR="state/test-results/parity/$RUN_ID/k1s"
 mkdir -p "$OUT_DIR"
 
 RESULTS_DIR="$OUT_DIR" \
+RUN_STAMP_BASE="${RUN_ID}-k1s-r1" \
 CONCURRENCIES_CSV=30,50,70 \
 PERF_MIN_RPS=220 \
 PERF_MAX_P95_MS=300 \
@@ -97,10 +98,10 @@ WS_MAX_MESSAGE_LOSS=0 \
 scripts/dev/run_ingress_kpi_minimatrix.sh
 ```
 
-Step 3: Run k3s Equivalent Lanes
+Step 3: Run k3s Equivalent Lanes (Strict Sticky)
 - Deploy equivalent `ws-echo`, `lb-distribution`, `sticky-cookie` routes on k3s.
 - Ensure endpoint/Host layout matches k1s test contract.
-- Start (or reuse) the local k3s bench cluster and apply parity routes:
+- Start (or reuse) local k3s bench cluster and apply parity routes:
 ```bash
 make bench-k3s-up K3S_NAME=bench
 kubectl config use-context k3d-bench
@@ -116,34 +117,78 @@ kubectl get ingressroute.traefik.io -n default k3s-parity-sticky-cookie
 - `specs/examples/k3s-ingress-parity.yaml` configures equivalent hosts/paths:
   - `ws-echo-core-proxy.home.arpa` on `/ws`
   - `lb-distribution-core-proxy.home.arpa` on `/id`
-  - `sticky-cookie-core-proxy.home.arpa` on `/id` via Traefik `IngressRoute` service sticky cookie (native pod LB)
-- Use `scripts/dev/ingress_deep_probe.py` directly for the same probes.
+  - `sticky-cookie-core-proxy.home.arpa` on `/id` via Traefik `IngressRoute` sticky cookie with `nativeLB: true`.
 
-Example probe commands (repeat per concurrency lane):
+Run k3s deep + perf matrix (same contract as k1s):
 ```bash
-# k3d helper exposes k3s ingress on host :443
 K3S_BASE_URL="https://127.0.0.1"
+mkdir -p "$ROOT/k3s"
 
-# ws-echo deep
+# Deep checks
 python scripts/dev/ingress_deep_probe.py ws_soak \
   --url "$K3S_BASE_URL/ws" \
   --host "ws-echo-core-proxy.home.arpa" \
   --duration-seconds 600 \
   --connections 50 \
-  --heartbeat-seconds 5 > ws-echo-deep.json
+  --heartbeat-seconds 5 \
+  > "$ROOT/k3s/k3s-r2-ws-echo-deep.json"
 
-# perf (repeat with --concurrency 30,50,70 for each archetype)
-python scripts/dev/ingress_deep_probe.py http_bench \
+python scripts/dev/ingress_deep_probe.py lb_sample \
   --url "$K3S_BASE_URL/id" \
   --host "lb-distribution-core-proxy.home.arpa" \
-  --duration-seconds 180 \
-  --warmup-seconds 20 \
-  --concurrency 50 > lb-distribution-perf-c50.json
+  --strategy round_robin \
+  --requests 5000 \
+  --min-backends 2 \
+  --max-skew-ratio 0.35 \
+  > "$ROOT/k3s/k3s-r2-lb-distribution-deep.json"
 
 python scripts/dev/ingress_deep_probe.py sticky_probe \
   --url "$K3S_BASE_URL/id" \
   --host "sticky-cookie-core-proxy.home.arpa" \
-  --requests-per-client 100 > sticky-deep.json
+  --requests-per-client 100 \
+  > "$ROOT/k3s/k3s-r2-sticky-deep.json"
+
+# Perf matrix: ws-echo, lb-distribution, sticky-cookie x c30,c50,c70
+for c in 30 50 70; do
+  python scripts/dev/ingress_deep_probe.py http_bench \
+    --url "$K3S_BASE_URL/id" \
+    --host "ws-echo-core-proxy.home.arpa" \
+    --duration-seconds 180 \
+    --warmup-seconds 20 \
+    --concurrency "$c" \
+    > "$ROOT/k3s/k3s-r2-ws-echo-c${c}.json"
+
+  python scripts/dev/ingress_deep_probe.py http_bench \
+    --url "$K3S_BASE_URL/id" \
+    --host "lb-distribution-core-proxy.home.arpa" \
+    --duration-seconds 180 \
+    --warmup-seconds 20 \
+    --concurrency "$c" \
+    > "$ROOT/k3s/k3s-r2-lb-c${c}.json"
+
+  python scripts/dev/ingress_deep_probe.py http_bench \
+    --url "$K3S_BASE_URL/id" \
+    --host "sticky-cookie-core-proxy.home.arpa" \
+    --duration-seconds 180 \
+    --warmup-seconds 20 \
+    --concurrency "$c" \
+    > "$ROOT/k3s/k3s-r2-sticky-c${c}.json"
+done
+```
+
+Monitoring during long k3s probe runs:
+- Probe commands are quiet when redirected (`> file.json`). No terminal output while running is expected.
+- Process monitor (separate terminal):
+```bash
+watch -n 2 'date; pgrep -af "ingress_deep_probe.py" || echo "no running probes"'
+```
+- Artifact counter (separate terminal):
+```bash
+watch -n 3 "date; ls -1 \"$ROOT/k3s\"/k3s-r2-*.json 2>/dev/null | wc -l"
+```
+- Bell on probe completion (separate terminal):
+```bash
+while pgrep -af "ingress_deep_probe.py" >/dev/null; do sleep 2; done; printf '\a'; echo "k3s probes complete"
 ```
 
 - Optional cleanup after k3s shakedown:
@@ -152,13 +197,83 @@ kubectl delete -f specs/examples/k3s-ingress-parity.yaml
 # Optional full cluster teardown
 make bench-k3s-down K3S_NAME=bench
 ```
-- Normalize k3s outputs into a JSON schema matching k1s fields:
-  - `platform`, `concurrency`, `archetype`, `rps`, `p95_ms`, `p99_ms`, `error_rate`, `ws_connected_ratio`, `ws_connect_failure_rate`, `ws_message_loss`, `status`.
 
 Step 4: Repeats for Statistical Confidence
 - Run each lane at least 5 times per platform.
-- Discard first run as warmup if host jitter is high.
-- Compare medians across repeats.
+- Current baseline policy:
+  - Keep existing `r2` artifacts as baseline.
+  - Add `r3..r6` as four additional paired cycles.
+  - Run order per cycle: `k1s` first, then `k3s`.
+
+Paired cycle template (`r3..r6`):
+```bash
+for n in 3 4 5 6; do
+  echo "=== cycle r${n}: k1s ==="
+  RESULTS_DIR="$ROOT/k1s" \
+  RUN_STAMP_BASE="${RUN_ID}-k1s-r${n}" \
+  CONCURRENCIES_CSV=30,50,70 \
+  PERF_MIN_RPS=220 \
+  PERF_MAX_P95_MS=300 \
+  PERF_MAX_P99_MS=500 \
+  PERF_MAX_ERROR_RATE=0.01 \
+  WS_MIN_CONNECTED_RATIO=1 \
+  WS_MAX_CONNECT_FAILURE_RATE=0 \
+  WS_MAX_MESSAGE_LOSS=0 \
+  scripts/dev/run_ingress_kpi_minimatrix.sh
+
+  echo "=== cycle r${n}: k3s ==="
+  K3S_BASE_URL="https://127.0.0.1"
+
+  python scripts/dev/ingress_deep_probe.py ws_soak \
+    --url "$K3S_BASE_URL/ws" \
+    --host "ws-echo-core-proxy.home.arpa" \
+    --duration-seconds 600 \
+    --connections 50 \
+    --heartbeat-seconds 5 \
+    > "$ROOT/k3s/k3s-r${n}-ws-echo-deep.json"
+
+  python scripts/dev/ingress_deep_probe.py lb_sample \
+    --url "$K3S_BASE_URL/id" \
+    --host "lb-distribution-core-proxy.home.arpa" \
+    --strategy round_robin \
+    --requests 5000 \
+    --min-backends 2 \
+    --max-skew-ratio 0.35 \
+    > "$ROOT/k3s/k3s-r${n}-lb-distribution-deep.json"
+
+  python scripts/dev/ingress_deep_probe.py sticky_probe \
+    --url "$K3S_BASE_URL/id" \
+    --host "sticky-cookie-core-proxy.home.arpa" \
+    --requests-per-client 100 \
+    > "$ROOT/k3s/k3s-r${n}-sticky-deep.json"
+
+  for c in 30 50 70; do
+    python scripts/dev/ingress_deep_probe.py http_bench \
+      --url "$K3S_BASE_URL/id" \
+      --host "ws-echo-core-proxy.home.arpa" \
+      --duration-seconds 180 \
+      --warmup-seconds 20 \
+      --concurrency "$c" \
+      > "$ROOT/k3s/k3s-r${n}-ws-echo-c${c}.json"
+
+    python scripts/dev/ingress_deep_probe.py http_bench \
+      --url "$K3S_BASE_URL/id" \
+      --host "lb-distribution-core-proxy.home.arpa" \
+      --duration-seconds 180 \
+      --warmup-seconds 20 \
+      --concurrency "$c" \
+      > "$ROOT/k3s/k3s-r${n}-lb-c${c}.json"
+
+    python scripts/dev/ingress_deep_probe.py http_bench \
+      --url "$K3S_BASE_URL/id" \
+      --host "sticky-cookie-core-proxy.home.arpa" \
+      --duration-seconds 180 \
+      --warmup-seconds 20 \
+      --concurrency "$c" \
+      > "$ROOT/k3s/k3s-r${n}-sticky-c${c}.json"
+  done
+done
+```
 
 Step 5: Compute Ratios and Deltas
 - Compute for each archetype and concurrency:

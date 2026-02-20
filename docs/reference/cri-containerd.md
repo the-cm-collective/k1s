@@ -26,6 +26,13 @@ Notes:
 - Detailed profile behavior: `docs/guides/runtime-profiles.md`.
 - End-to-end core/edge CRI runbook: `docs/guides/multinode-lab.md`.
 
+## Strict CRI control-plane defaults
+
+- Durable hub lane: `k1s-core-cri` + `k1s-edge-core-cri` uses NATS + JetStream (`AE_TRANSPORT_BACKEND=nats-js`) with etcd as the durable control-plane state path.
+- Lightweight pull lane: `k1s-core-edge-cri` + `k1s-edge-cri` uses NATS Core (`AE_TRANSPORT_BACKEND=nats-core`) for `work.pull` patterns.
+- Strict CRI docs/lab examples assume etcd endpoint `http://127.0.0.1:2379` unless overridden via `AE_APISHIM_ETCD_ENDPOINTS`.
+- Keep core + edge pairings aligned when switching lanes (`core` with `edge-core`, `core-edge` with `edge`).
+
 ## Ingress deep validation lanes (recommended)
 
 Use `k1s-*` profile targets and keep ingress matrix runs mode-isolated.
@@ -70,6 +77,7 @@ scripts/dev/test_ingress_matrix_single_host.sh \
 Interpretation:
 - `core-proxy` LB rows are `assertion_level=policy_switch_only` when strict distribution is not required.
 - `edge-local` LB rows are `assertion_level=strict_distribution` and are the strict proof source.
+- Recommended security gates after lane runs: `scripts/dev/security_baseline_check.sh --fail-on high` then `scripts/dev/security_active_tests.sh --fail-on high`.
 - Full sequence and failure triage: `docs/guides/ingress-capability-test-sequence.md`.
 
 ## Runtime selection and advanced overrides

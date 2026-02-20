@@ -703,6 +703,7 @@
       <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
@@ -738,6 +739,13 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 <li>Detailed profile behavior: <code>docs/guides/runtime-profiles.md</code>.</li>
 <li>End-to-end core/edge CRI runbook: <code>docs/guides/multinode-lab.md</code>.</li>
 </ul>
+<h2 id="strict-cri-control-plane-defaults">Strict CRI control-plane defaults</h2>
+<ul>
+<li>Durable hub lane: <code>k1s-core-cri</code> + <code>k1s-edge-core-cri</code> uses NATS + JetStream (<code>AE_TRANSPORT_BACKEND=nats-js</code>) with etcd as the durable control-plane state path.</li>
+<li>Lightweight pull lane: <code>k1s-core-edge-cri</code> + <code>k1s-edge-cri</code> uses NATS Core (<code>AE_TRANSPORT_BACKEND=nats-core</code>) for <code>work.pull</code> patterns.</li>
+<li>Strict CRI docs/lab examples assume etcd endpoint <code>http://127.0.0.1:2379</code> unless overridden via <code>AE_APISHIM_ETCD_ENDPOINTS</code>.</li>
+<li>Keep core + edge pairings aligned when switching lanes (<code>core</code> with <code>edge-core</code>, <code>core-edge</code> with <code>edge</code>).</li>
+</ul>
 <h2 id="ingress-deep-validation-lanes-recommended">Ingress deep validation lanes (recommended)</h2>
 <p>Use <code>k1s-*</code> profile targets and keep ingress matrix runs mode-isolated.</p>
 <p>Preflight before deep/deep+perf lanes:</p>
@@ -761,6 +769,7 @@ scripts/dev/etcd_maintenance.sh watchdog</code></pre>
 <ul>
 <li><code>core-proxy</code> LB rows are <code>assertion_level=policy_switch_only</code> when strict distribution is not required.</li>
 <li><code>edge-local</code> LB rows are <code>assertion_level=strict_distribution</code> and are the strict proof source.</li>
+<li>Recommended security gates after lane runs: <code>scripts/dev/security_baseline_check.sh --fail-on high</code> then <code>scripts/dev/security_active_tests.sh --fail-on high</code>.</li>
 <li>Full sequence and failure triage: <code>docs/guides/ingress-capability-test-sequence.md</code>.</li>
 </ul>
 <h2 id="runtime-selection-and-advanced-overrides">Runtime selection and advanced overrides</h2>
@@ -1026,7 +1035,7 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-18 09:00:48</span>
+        <span>Built 2026-02-19 16:37:17</span>
       </div>
     </footer>
     <script>

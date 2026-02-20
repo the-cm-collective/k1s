@@ -32,12 +32,12 @@ A stable virtual IP allocated from the Service CIDR and fronted by the overlay p
 
 An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.
 
-- Stored in SQLite with its normalized JSON and status.
+- Stored in the controller state backend (SQLite by default; Postgres/etcd durable lanes supported) with normalized JSON and status.
 - Used for rollbacks: `ae rollback <app> [--to <rev>]`.
 
 ## Reconcile
 
-The controller compares the desired state from specs to the observed state (SQLite/Postgres + node inventory + runtimes) and performs the operations needed to converge.
+The controller compares the desired state from specs to the observed state (state backend + node inventory + runtimes) and performs the operations needed to converge.
 
 - Schedules replicas onto Ready nodes that match `nodeSelector`/tolerations/topology spread. Storage pinning keeps retained volumes on a single node.
 - Creates or updates containers via the node agent runtime (pulling images as needed); falls back to the local runtime when no nodes are eligible.

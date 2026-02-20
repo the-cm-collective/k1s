@@ -35,6 +35,7 @@ make k1s-core
 ```
 Notes:
 - `k1s-core` starts etcd + hub NATS + Postgres infra and sets `AE_APISHIM_DSN` by default.
+- In strict CRI lanes, `k1s-core` uses etcd as the durable control-plane store by default; override `AE_APISHIM_ETCD_ENDPOINTS` only when your etcd endpoint is not `http://127.0.0.1:2379`.
 - Infra backend auto-selection:
   - `AE_RUNTIME_BACKEND=cri|containerd` -> strict CRI infra (`AE_INFRA_BACKEND=cri`)
   - otherwise -> compose infra (`AE_INFRA_BACKEND=compose`)
@@ -111,6 +112,7 @@ Mode behavior:
 Ingress deep validation defaults (CRI lanes):
 - Primary lane: `core-proxy` deep/deep+perf (`lb-proof-scope=auto`) for policy + observability checks.
 - Strict LB proof lane: `edge-local` deep (`lb-proof-scope=edge-only`) for distribution proof.
+- Security gates after lane runs: `scripts/dev/security_baseline_check.sh --fail-on high` then `scripts/dev/security_active_tests.sh --fail-on high`.
 - Canonical command sequence: `docs/guides/ingress-capability-test-sequence.md`.
 
 ## Core + Edge pairings

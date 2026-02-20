@@ -703,6 +703,7 @@
       <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
@@ -736,11 +737,11 @@
 <h2 id="revision-deployment-revision">Revision (Deployment revision)</h2>
 <p>An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.</p>
 <ul>
-<li>Stored in SQLite with its normalized JSON and status.</li>
+<li>Stored in the controller state backend (SQLite by default; Postgres/etcd durable lanes supported) with normalized JSON and status.</li>
 <li>Used for rollbacks: <code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code>.</li>
 </ul>
 <h2 id="reconcile">Reconcile</h2>
-<p>The controller compares the desired state from specs to the observed state (SQLite/Postgres + node inventory + runtimes) and performs the operations needed to converge.</p>
+<p>The controller compares the desired state from specs to the observed state (state backend + node inventory + runtimes) and performs the operations needed to converge.</p>
 <ul>
 <li>Schedules replicas onto Ready nodes that match <code>nodeSelector</code>/tolerations/topology spread. Storage pinning keeps retained volumes on a single node.</li>
 <li>Creates or updates containers via the node agent runtime (pulling images as needed); falls back to the local runtime when no nodes are eligible.</li>
@@ -815,7 +816,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 14:20:07</span>
+        <span>Built 2026-02-19 16:55:24</span>
       </div>
     </footer>
     <script>

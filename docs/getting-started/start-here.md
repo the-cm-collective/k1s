@@ -260,30 +260,36 @@ Images and containers
 - `make docker-build-controller`: build controller image (ops/images/controller.Dockerfile).
 - `make docker-run-controller`: run controller container with specs/state mounts.
 
-## Option C — Multi-node Lab (controller + worker)
-Use this when you want to validate the overlay Service VIP path and scheduler on two hosts.
+## Option C — Multi-node Lab (core + edge gateways)
+Use this when you need the current canonical multi-node process (strict CRI, ingress mode validation, and security gates).
 
-1) Controller (host A):
+1) Start strict CRI profile entrypoints:
 ```
-AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay \
-AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=changeme \
-python -m ae.controller --loop --specs specs/ --metrics-port 9108
-```
-
-2) Worker agent (host B):
-```
-AE_CONTROLLER_URL=http://<controller-host>:9110 AE_AGENT_TOKEN=changeme \
-AE_NODE_ID=worker-1 python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net
+make k1s-core-cri
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+make k1s-edge-core-cri
+make k1s-edge-node
 ```
 
-3) Apply and observe:
+2) Run canonical ingress mode validation:
 ```
-python -m ae.cli apply -f specs/examples/echo-multinode.yaml
-ae nodes list
-ae status echo-mn --watch
+scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/run_ingress_lanes.sh --lanes core-proxy --yes
+scripts/dev/run_ingress_lanes.sh --lanes core-to-edge-public --yes
+EDGE_LOCAL_LISTENER_URL="https://lb-distribution-edge-local.home.arpa/" \
+  scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes
 ```
 
-Full walkthrough and WireGuard tips: `docs/guides/multinode-lab.md` or `ops/dev/multinode-lab.sh -h`.
+3) Run security gates:
+```
+scripts/dev/security_baseline_check.sh --fail-on high
+scripts/dev/security_active_tests.sh --fail-on high
+```
+
+Full walkthrough and mode-specific startup commands:
+- `docs/guides/multinode-lab.md`
+- `docs/guides/ingress-capability-test-sequence.md`
+- `docs/reference/cri-containerd.md`
 
 ## Using the `ae` CLI (greatest hits)
 - Apply/inspect lifecycle:

@@ -18,7 +18,7 @@ The three pillars serve different purposes: metrics answer "how much" and "how m
 
 ```mermaid
 flowchart LR
-  State[SQLite state] --> MetricsSvc[MetricsService]
+  State[State backend] --> MetricsSvc[MetricsService]
   MetricsSvc --> CLI[ae cli metrics]
   MetricsSvc --> HTTP["/metrics HTTP"]
   State --> Events[Events table]
@@ -26,7 +26,7 @@ flowchart LR
 ```
 
 ### Design
-k1s stores reconciliation state in SQLite, derives aggregate metrics from that store, and emits structured events during every reconcile. A lightweight HTTP API exposes Prometheus metrics and event data. This design keeps observability local and reproducible while still compatible with external tooling.
+k1s stores reconciliation state in a pluggable backend (SQLite by default, with Postgres/etcd durable lanes), derives aggregate metrics from that store, and emits structured events during every reconcile. A lightweight HTTP API exposes Prometheus metrics and event data. This design keeps observability local and reproducible while still compatible with external tooling.
 
 ```mermaid
 sequenceDiagram
