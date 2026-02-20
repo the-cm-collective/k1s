@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>04 Scheduling Placement</title>
+    <title>Ingress Capability Test Sequence</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -722,131 +722,405 @@
       </svg>
     </button>
     <div class="container">
-    <h1 id="chapter-04-scheduling-placement">Chapter 04 - Scheduling &amp; Placement</h1>
-<h2 id="concept">Concept</h2>
-<p>Scheduling is the process of deciding where workloads run. It is not just &quot;pick a node,&quot; but &quot;pick a node that satisfies constraints.&quot; Placement becomes part of correctness when storage, network policy, or affinity rules are involved.</p>
-<pre class="mermaid">flowchart TB
-  Workload[Workload spec] --&gt; Filters[Eligibility filters]
-  Filters --&gt;|ready + not cordoned| Eligible[Eligible nodes]
-  Eligible --&gt;|spread| Placement[Pod placement plan]
-  Placement --&gt; Runtime[Runtime execution]</pre>
-<h3 id="theory">Theory</h3>
-<p>Schedulers perform a filter-and-score pipeline. First, they filter out nodes that cannot run the workload (not ready, cordoned, selector mismatch, taints not tolerated). Then they score remaining nodes to balance load or satisfy topology constraints. This separates hard constraints from soft preferences.</p>
-<pre class="mermaid">flowchart LR
-  Node[Node] --&gt; Check1{Ready?}
-  Check1 -- no --&gt; Reject[Reject]
-  Check1 -- yes --&gt; Check2{Cordon?}
-  Check2 -- yes --&gt; Reject
-  Check2 -- no --&gt; Check3{nodeSelector match?}
-  Check3 -- no --&gt; Reject
-  Check3 -- yes --&gt; Check4{Tolerations ok?}
-  Check4 -- no --&gt; Reject
-  Check4 -- yes --&gt; Eligible[Eligible]</pre>
-<h3 id="design">Design</h3>
-<p>k1s implements a lightweight scheduler that filters nodes by readiness, cordon status, nodeSelector, taints/tolerations, and then spreads pods round-robin. If storage is declared, it pins placement to one node to avoid cross-node volume assumptions. When no nodes qualify, it falls back to the local runtime so single-node setups remain usable.</p>
-<pre class="mermaid">flowchart TB
-  Spec[AppSpec] --&gt;|storage declared| Pin[Pin to single node]
-  Spec --&gt;|topology spread| Spread[Distribute by key]
-  Spec --&gt;|default| RoundRobin[Round-robin]
-  Pin --&gt; Plan[Placement plan]
-  Spread --&gt; Plan
-  RoundRobin --&gt; Plan</pre>
-<h3 id="application">Application</h3>
-<p>When a workload does not schedule, inspect selectors, taints, and node readiness first. For multi-node development, consider adding labels that enable explicit node selection and validating placement decisions with <code>ae nodes</code> and events. This aligns with how kube-scheduler behaves in production clusters.</p>
-<pre class="mermaid">flowchart TB
-  Pending[Workload pending] --&gt; Nodes[ae nodes]
-  Nodes --&gt; Ready{Any Ready nodes?}
-  Ready -- no --&gt; FixNode[Fix node/agent]
-  Ready -- yes --&gt; Cordon{Cordoned?}
-  Cordon -- yes --&gt; Uncordon[Uncordon node]
-  Cordon -- no --&gt; Labels{Selector/taints match?}
-  Labels -- no --&gt; UpdateSpec[Fix selector/tolerations]
-  Labels -- yes --&gt; Reapply[Re-apply spec]</pre>
-<h2 id="key-terms-and-acronyms">Key Terms and Acronyms</h2>
+    <h1 id="ingress-capability-test-sequence-multi-site-cri">Ingress Capability Test Sequence (Multi-Site CRI)</h1>
+<p>This runbook is the canonical sequence for exercising ingress capability tests across:</p>
 <ul>
-<li>Scheduler - Component that decides placement for pods.</li>
-<li>Node - Execution target for workloads.</li>
-<li>Cordon - Mark a node unschedulable.</li>
-<li>Taint - Node attribute that repels workloads unless tolerated.</li>
-<li>Toleration - Workload exception allowing tainted nodes.</li>
-<li>nodeSelector - Label-based placement constraint.</li>
-<li>Topology spread - Rule to distribute pods across domains.</li>
-<li>Placement - The chosen nodes for pods.</li>
-<li>Pod - A single instance of a workload.</li>
+<li><code>core-proxy</code></li>
+<li><code>core-to-edge-public</code></li>
+<li><code>edge-local</code></li>
 </ul>
-<h2 id="commands-copy-paste">Commands (copy/paste)</h2>
-<pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108
-python -m ae.cli nodes
-python -m ae.cli nodes &lt;node-id&gt; --cordon
-python -m ae.cli nodes &lt;node-id&gt; --uncordon
-python -m ae.cli apply -f specs/examples/echo.yaml
-python -m ae.cli events echo --limit 20</code></pre>
-<h2 id="docs-references-source-site">Docs references (source + site)</h2>
+<p>It covers:</p>
+<p>1. Single-host matrix validation 2. Multi-host matrix validation 3. Fault injection and recovery drills 4. Repeatability/stability gate</p>
+<h2 id="scope-and-outcomes">Scope and Outcomes</h2>
+<p>This sequence validates that ingress mode behavior, route propagation, and workload serving are correct for the supported workload archetypes in CRI-based multi-site setups.</p>
+<p>This runbook does **not** claim throughput/latency benchmarking beyond basic stability checks.</p>
+<h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li>Source: <code>docs/reference/scheduling.md</code></li>
-<li>Source: <code>docs/getting-started/concepts.md</code> (nodes + scheduling)</li>
-<li>Site: <code>docs/site/scheduling.html</code></li>
-<li>Site: <code>docs/site/concepts.html</code></li>
-</ul>
-<h2 id="code-references-walkthrough-anchors">Code references (walkthrough anchors)</h2>
+<li>Working CRI core/edge environment (controller, core node, edge core, edge node).</li>
+<li>For <code>edge-local</code> tests:
 <ul>
-<li>Scheduler placement logic: <code>src/ae/controller/scheduler.py:61</code></li>
+<li>core started with <code>EDGE_INGRESS_MODE=edge-local</code></li>
+<li>core started with <code>AE_ROUTE_BUNDLE_ENABLED=1</code></li>
+<li>core started with <code>AE_ENABLE_SERVICE_PROXY=1</code> and <code>AE_SERVICE_PROVIDER=iptables</code> (strict <code>bundle-endpoints</code> lane)</li>
+<li>gateway started with <code>AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints</code></li>
 </ul>
-<pre><code>    def plan(self, manifest: AppManifest, revision: int) -&gt; tuple[list[Placement], list[str]]:
-        desired = int(manifest.spec.replicas)
-        app_name = app_key_for_manifest(manifest)
-        pod_names = [f&quot;{app_name}-rev{revision}-{i}&quot; for i in range(desired)]
-        ...
-        for node, status in nodes:
-            if bool(getattr(node, &quot;cordoned&quot;, False)):
-                continue
-            if not self._is_ready(status, now, grace):
-                ...
-            if not self._matches_node_selector(node, manifest):
-                continue
-            if not self._tolerates_taints(node, manifest):
-                continue
-            eligible.append(node)
+</li>
+<li>Required commands available:
+<ul>
+<li><code>python</code>, <code>curl</code>, <code>rg</code>, <code>sudo</code></li>
+<li><code>crictl</code> (recommended for diagnostics/restart counters)</li>
+</ul>
+</li>
+<li>Repo root is current working directory.</li>
+</ul>
+<h2 id="step-1-normalize-core-specs-directory-permissions">Step 1: Normalize Core Specs Directory Permissions</h2>
+<p>Run before each test session, especially after <code>sudo</code> runs:</p>
+<pre><code>CORE_SPECS=state/profiles/k1s-core/specs
+sudo chown -R &quot;$USER:$(id -gn)&quot; &quot;$CORE_SPECS&quot;
+sudo chmod -R g+rwX &quot;$CORE_SPECS&quot;
+sudo find &quot;$CORE_SPECS&quot; -type d -exec chmod 2775 {} \;
+test -w &quot;$CORE_SPECS&quot; &amp;&amp; echo &quot;core specs writable: $CORE_SPECS&quot;</code></pre>
+<h2 id="step-1a-verified-mode-switch-startup-sequence-cri-same-host">Step 1a: Verified Mode-Switch Startup Sequence (CRI, Same-Host)</h2>
+<p>Use these tested startup patterns before lane runs. Start long-lived <code>make</code> targets in separate terminals.</p>
+<p>Common variables:</p>
+<pre><code>ROOT=&quot;${ROOT:-$PWD}&quot;
+VENV_BIN=&quot;$ROOT/.venv/bin&quot;
+SUDO_PATH=&quot;${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin&quot;
+WG_BIN=$(command -v wg)
+APISHIM_TAG=&quot;localhost:5001/k1s-apishim:dev-$(date +%s)&quot;</code></pre>
+<h3 id="1a-1-core-k1s-core-by-lane-mode">1a.1 Core (<code>k1s-core</code>) by lane mode</h3>
+<p>Core-proxy:</p>
+<pre><code>sudo -E \
+  AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-proxy \
+  AE_EDGE_INGRESS_RATHOLE_RELOAD=1 \
+  AE_RUNTIME_BACKEND=cri AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_LABS=1 AE_APISHIM_AUTOSTART=1 AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE=&quot;${APISHIM_TAG}&quot; AE_APISHIM_STARTUP_TIMEOUT=60 \
+  BENCH_MODE=0 AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+  AE_ENABLE_NETFS=1 AE_STORAGE_SEED_DEFAULTS=1 \
+  AE_STORAGE_NFS_SERVER=10.255.0.1 AE_STORAGE_NFS_PATH=/exports/k1s \
+  AE_STORAGE_NFS_CLASS=k1s-nfs AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
+  make k1s-core</code></pre>
+<p>Core-to-edge-public:</p>
+<pre><code>sudo -E \
+  AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=core-to-edge-public \
+  AE_EDGE_INGRESS_RATHOLE_RELOAD=1 \
+  AE_RUNTIME_BACKEND=cri AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_LABS=1 AE_APISHIM_AUTOSTART=1 AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE=&quot;${APISHIM_TAG}&quot; AE_APISHIM_STARTUP_TIMEOUT=60 \
+  BENCH_MODE=0 AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+  AE_ENABLE_NETFS=1 AE_STORAGE_SEED_DEFAULTS=1 \
+  AE_STORAGE_NFS_SERVER=10.255.0.1 AE_STORAGE_NFS_PATH=/exports/k1s \
+  AE_STORAGE_NFS_CLASS=k1s-nfs AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
+  make k1s-core</code></pre>
+<p>Edge-local:</p>
+<pre><code>sudo -E \
+  AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=edge-local AE_ROUTE_BUNDLE_ENABLED=1 \
+  AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=iptables \
+  AE_EDGE_INGRESS_RATHOLE_RELOAD=1 \
+  AE_RUNTIME_BACKEND=cri AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_LABS=1 AE_APISHIM_AUTOSTART=1 AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE=&quot;${APISHIM_TAG}&quot; AE_APISHIM_STARTUP_TIMEOUT=60 \
+  BENCH_MODE=0 AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=devtoken \
+  AE_ENABLE_NETFS=1 AE_STORAGE_SEED_DEFAULTS=1 \
+  AE_STORAGE_NFS_SERVER=10.255.0.1 AE_STORAGE_NFS_PATH=/exports/k1s \
+  AE_STORAGE_NFS_CLASS=k1s-nfs AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
+  make k1s-core</code></pre>
+<h3 id="1a-2-core-node-k1s-core-node">1a.2 Core node (<code>k1s-core-node</code>)</h3>
+<pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_NODE_ID=hub-1 \
+  AE_NODE_LABELS=&quot;role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=192.168.29.143:51820&quot; \
+  AE_POD_CIDR=10.42.0.0/24 \
+  AE_ROSENPASS_ENABLED=1 \
+  AE_ROSENPASS_CONFIG=controller \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+  AE_ROSENPASS_INTERFACE=wg-hub \
+  AE_WG_LISTEN_PORT=51820 \
+  AE_WG_ADDRESS=10.255.0.1/32 \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+  AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
+  make k1s-core-node</code></pre>
+<h3 id="1a-3-edge-gateway-k1s-edge-core-cri-by-lane-mode">1a.3 Edge gateway (<code>k1s-edge-core-cri</code>) by lane mode</h3>
+<p>Use the core-proxy gateway command for both the <code>core-proxy</code> and <code>core-to-edge-public</code> lanes.</p>
+<p>Core-proxy gateway:</p>
+<pre><code>sudo -E make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  EDGE_INGRESS_MODE=core-proxy \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  AE_SITE_ID=sea-edge-02 \
+  AE_NODE_ID=edge-1 \
+  AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri</code></pre>
+<p>Edge-local gateway:</p>
+<pre><code>EDGE_LOCAL_DIR=&quot;$ROOT/state/profiles/k1s-core/edge-local&quot;
+RELOAD_CMD=&quot;/usr/bin/install -D -m 0644 ${EDGE_LOCAL_DIR}/edge-local.caddy ${ROOT}/state/caddy/edge-local.caddy &amp;&amp; ${VENV_BIN}/python ${ROOT}/scripts/dev/cri_stack.py up-caddy --profile k1s-core --metrics-port 9108 --apishim-port 8445 --recreate&quot;
 
-        if not eligible:
-            warnings.append(&quot;no eligible nodes; falling back to local runtime&quot;)
-            return [Placement(node=None, agent_url=None, pod_names=pod_names)], warnings
-        ...
-        # Round-robin placement across eligible nodes.</code></pre>
+sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed \
+  EDGE_INGRESS_MODE=edge-local AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=&quot;$EDGE_LOCAL_DIR&quot; \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_FILE=&quot;$EDGE_LOCAL_DIR/edge-local.caddy&quot; \
+  AE_EDGE_LOCAL_INGRESS_RELOAD_CMD=&quot;$RELOAD_CMD&quot; \
+  AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-1 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri</code></pre>
+<h3 id="1a-4-edge-node-k1s-edge-node">1a.4 Edge node (<code>k1s-edge-node</code>)</h3>
+<pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_NODE_ID=edge-1 \
+  AE_POD_CIDR=10.42.1.0/24 \
+  AE_NODE_LABELS=&quot;role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp&quot; \
+  AE_WG_INTERFACE=wg-edge \
+  AE_ROSENPASS_INTERFACE=wg-edge \
+  AE_WG_ADDRESS=10.255.0.3/32 \
+  AE_WG_TABLE=off \
+  AE_WG_LISTEN_PORT=51821 \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:5432/shim \
+  AE_AGENT_TOKEN=devtoken \
+  AE_CONTROLLER_URL=http://127.0.0.1:9110 \
+  AE_AGENT_ENDPOINT=http://10.255.0.3:9112 \
+  make k1s-edge-node</code></pre>
+<h3 id="1a-5-lane-execution-order-tested">1a.5 Lane execution order (tested)</h3>
+<pre><code>scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/run_ingress_lanes.sh --lanes core-proxy --yes
+
+scripts/dev/validate_ingress_env.sh --lane core-to-edge-public --watchdog
+scripts/dev/run_ingress_lanes.sh --lanes core-to-edge-public --yes
+
+scripts/dev/validate_ingress_env.sh --lane edge-local --watchdog
+EDGE_LOCAL_LISTENER_URL=&quot;https://lb-distribution-edge-local.home.arpa/&quot; \
+  scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes
+
+# Security follow-up (or use --security-all wrapper below).
+scripts/dev/security_baseline_check.sh --fail-on high
+scripts/dev/security_active_tests.sh --fail-on high
+
+# Integrated wrapper for interactive/full sweeps.
+scripts/dev/run_ingress_lanes.sh --lanes all --security-all</code></pre>
+<h2 id="step-2-single-host-capability-matrix-mode-isolated">Step 2: Single-Host Capability Matrix (Mode-Isolated)</h2>
+<p>Run each mode on a stack started for that mode. Do not run mixed-mode rows on a single stack profile (for example <code>edge-local</code> rows on a <code>core-proxy</code> stack).</p>
+<p>Preflight before long lanes:</p>
+<pre><code>sudo -v
+scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog</code></pre>
+<p>Optional wrappers (recommended for mode transitions):</p>
+<pre><code>scripts/dev/run_ingress_lanes.sh --lanes all
+# Compatibility alias:
+scripts/dev/run_ingress_mode_lanes.sh --lanes all
+# Security-enabled sweep:
+scripts/dev/run_ingress_lanes.sh --lanes all --security-all</code></pre>
+<p>Use <code>--yes</code> to skip checkpoint prompts when running non-interactively. Use <code>--security-all</code> to run baseline + active security checks after each lane.</p>
+<h3 id="2-1-core-proxy-mini-sanity-lane">2.1 Core-Proxy Mini Sanity Lane</h3>
+<pre><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 \
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy \
+  --archetypes ws-echo \
+  --tier tier2 \
+  --validation-profile standard</code></pre>
+<h3 id="2-2-core-proxy-primary-deep-lane-policy-observability">2.2 Core-Proxy Primary Deep Lane (Policy + Observability)</h3>
+<pre><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 \
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy \
+  --archetypes ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 \
+  --validation-profile deep+perf \
+  --perf-profile sample \
+  --lb-proof-scope auto</code></pre>
+<h3 id="2-3-optional-full-core-proxy-lane">2.3 Optional Full Core-Proxy Lane</h3>
+<pre><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 \
+scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-proxy \
+  --archetypes http-static,http-path-routing,ws-echo,lb-distribution,sticky-cookie \
+  --tier tier2 \
+  --validation-profile deep+perf \
+  --perf-profile sample \
+  --lb-proof-scope auto</code></pre>
+<h3 id="2-4-core-to-edge-public-lane-separate-stack-start">2.4 Core-To-Edge-Public Lane (Separate Stack Start)</h3>
+<p>Restart core with <code>EDGE_INGRESS_MODE=core-to-edge-public</code>, then run:</p>
+<pre><code>scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes core-to-edge-public \
+  --archetypes http-static,http-path-routing \
+  --tier tier1 \
+  --validation-profile standard</code></pre>
+<h3 id="2-5-edge-local-strict-lb-proof-lane-separate-stack-start">2.5 Edge-Local Strict LB Proof Lane (Separate Stack Start)</h3>
+<p>Start core/gateway in edge-local mode (<code>EDGE_INGRESS_MODE=edge-local</code>, <code>AE_ROUTE_BUNDLE_ENABLED=1</code>, <code>AE_ENABLE_SERVICE_PROXY=1</code>, <code>AE_SERVICE_PROVIDER=iptables</code>, <code>AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints</code>, and <code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=...</code>), then run:</p>
+<pre><code>EDGE_LOCAL_LISTENER_URL=&quot;https://lb-distribution-edge-local.home.arpa/&quot; \
+scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes</code></pre>
+<p>Equivalent direct matrix command:</p>
+<pre><code>scripts/dev/test_ingress_matrix_single_host.sh \
+  --modes edge-local \
+  --archetypes lb-distribution \
+  --tier tier2 \
+  --validation-profile deep \
+  --lb-proof-scope edge-only \
+  --lb-sample-requests 5000 \
+  --lb-min-backends 2 \
+  --lb-max-skew-ratio 0.35 \
+  --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/</code></pre>
+<p>Notes:</p>
 <ul>
-<li>Local node registration (single-node default): <code>src/ae/controller/__main__.py:78</code></li>
+<li><code>core-proxy</code> maps each row workload service port to the fixed local tunnel target (<code>AE_EDGE_INGRESS_LOCAL_ADDR</code>, default <code>127.0.0.1:18081</code>).</li>
+<li>Keep <code>CORE_PROXY_FORCE_RATHOLE_RESTART=0</code> for long lanes to avoid restart churn.</li>
+<li>If etcd churn is high, run <code>scripts/dev/etcd_maintenance.sh compact-defrag</code> before re-running long lanes.</li>
+<li>If edge-local deep LB proof reports <code>backend_count=1</code> with <code>counts_by_backend={&quot;empty&quot;:...}</code>, use host-based listener URL (<code>https://&lt;edge-hostname&gt;/</code>) instead of <code>:8443</code>.</li>
+<li>Result JSON is written under <code>state/test-results/ingress-matrix-&lt;timestamp&gt;.json</code>.</li>
 </ul>
-<pre><code>    def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -&gt; None:
-        &quot;&quot;&quot;Best-effort local node registration for single-controller setups.&quot;&quot;&quot;
-        try:
-            node_id = os.getenv(&quot;AE_NODE_ID&quot;, socket.gethostname())
-            name = os.getenv(&quot;AE_NODE_NAME&quot;, node_id)
-            store.upsert_node(
-                node_id,
-                name=name,
-                labels={&quot;role&quot;: &quot;controller&quot;},
-                taints=[],
-                backend=runtime_backend,
-                endpoint=None,
-                pod_cidr=None,
-                wg_pubkey=None,
-            )
-            store.record_heartbeat(node_id, &quot;Ready&quot;)
-        except Exception:
-            pass</code></pre>
+<h3 id="2-6-security-baseline-and-active-auth-probes">2.6 Security Baseline and Active Auth Probes</h3>
+<p>Run after each lane or at least after the core-proxy lane:</p>
+<pre><code>scripts/dev/security_baseline_check.sh --fail-on high
+scripts/dev/security_active_tests.sh --fail-on high
+scripts/dev/run_ingress_lanes.sh --lanes all --security-all</code></pre>
+<p>To make <code>--fail-on high</code> green on a strict CRI stack:</p>
 <ul>
-<li>Spec fields that affect placement: <code>src/ae/controller/spec.py:489</code></li>
+<li>Start core without <code>AE_CRI_REGISTRY_INSECURE=1</code> (managed registry TLS is the secure default).</li>
+<li>Start core with API/apishim secrets exported into the same <code>sudo -E make k1s-core</code> invocation:</li>
 </ul>
-<pre><code>    node_selector: dict[str, str] = Field(default_factory=dict, alias=&quot;nodeSelector&quot;)
-    tolerations: List[dict] = Field(default_factory=list)
-    topology_spread_constraints: List[dict] = Field(
-        default_factory=list, alias=&quot;topologySpreadConstraints&quot;
-    )</code></pre>
-<h2 id="chapter-navigation">Chapter navigation</h2>
+<pre><code>AE_API_READ_TOKEN=&quot;$(openssl rand -hex 16)&quot;
+AE_API_ADMIN_TOKEN=&quot;$(openssl rand -hex 16)&quot;
+AE_APISHIM_TOKEN=&quot;$(openssl rand -hex 16)&quot;
+AE_APISHIM_READ_TOKEN=&quot;$(openssl rand -hex 16)&quot;
+AE_APISHIM_MINT_TOKEN=&quot;$(openssl rand -hex 16)&quot;
+AE_APISHIM_SESSION_SECRET=&quot;$(openssl rand -hex 32)&quot;</code></pre>
 <ul>
-<li>Prev: <a href="concepts-in-practice-03-runtime-adapters.html">Chapter 03 - Runtime Adapters &amp; Container Execution</a></li>
-<li>Next: <a href="concepts-in-practice-05-observability.html">Chapter 05 - Observability: Logs, Metrics, Events</a></li>
+<li>Run security scripts with <code>sudo -E</code> so controller env checks can read <code>/proc/&lt;pid&gt;/environ</code>.</li>
 </ul>
+<ul>
+<li>If you flip strict-CRI registry mode (<code>AE_CRI_REGISTRY_INSECURE</code>) between runs, keep <code>AE_CRI_REGISTRY_AUTO_RESTART=1</code> (default) so containerd resolver state is refreshed automatically.</li>
+</ul>
+<p>Artifacts:</p>
+<ul>
+<li><code>state/test-results/security-baseline-&lt;timestamp&gt;.json</code></li>
+<li><code>state/test-results/security-active-&lt;timestamp&gt;.json</code></li>
+</ul>
+<h2 id="step-3-multi-host-capability-matrix">Step 3: Multi-Host Capability Matrix</h2>
+<p>Use when core and edge run on separate hosts.</p>
+<pre><code>scripts/dev/test_ingress_matrix_cri.sh \
+  --topology multi-host \
+  --core-host &lt;core-host-ip&gt; \
+  --edge-host &lt;edge-host-ip&gt; \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier1</code></pre>
+<p>If needed, explicitly set edge-local listener URL:</p>
+<pre><code>scripts/dev/test_ingress_matrix_cri.sh \
+  --topology multi-host \
+  --core-host &lt;core-host-ip&gt; \
+  --edge-host &lt;edge-host-ip&gt; \
+  --edge-local-listener-url https://&lt;edge-host-fqdn&gt;/ \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier1</code></pre>
+<p>If your edge listener uses a non-default TLS port, include it explicitly (for example <code>https://&lt;edge-host-fqdn&gt;:11443/</code>).</p>
+<h2 id="step-4-fault-injection-and-recovery-drills">Step 4: Fault Injection and Recovery Drills</h2>
+<p>Use these to confirm expected failure signatures and deterministic recovery.</p>
+<h3 id="4-1-specs-permission-drift">4.1 Specs Permission Drift</h3>
+<pre><code>scripts/dev/ingress_fault_injection.sh --fault specs-permission-drift --action cycle</code></pre>
+<h3 id="4-2-backend-unavailable-restore">4.2 Backend Unavailable / Restore</h3>
+<pre><code>scripts/dev/ingress_fault_injection.sh --fault backend-unavailable --action cycle \
+  --app-name ingress-matrix-static \
+  --app-manifest specs/examples/ingress-matrix/http-static.yaml</code></pre>
+<h3 id="4-3-route-bundle-permission-regression-restore">4.3 Route-Bundle Permission Regression / Restore</h3>
+<pre><code>scripts/dev/ingress_fault_injection.sh --fault nats-route-bundle-permission --action cycle \
+  --route-bundle-config ops/dev/nats-hub.conf \
+  --nats-reload-cmd &quot;make k1s-core&quot;</code></pre>
+<h3 id="4-4-controller-restart-requires-start-command">4.4 Controller Restart (requires start command)</h3>
+<pre><code>scripts/dev/ingress_fault_injection.sh --fault controller-restart --action cycle \
+  --controller-start-cmd &quot;AE_DEV_LOCAL=1 EDGE_INGRESS_MODE=edge-local AE_ROUTE_BUNDLE_ENABLED=1 make k1s-core&quot;</code></pre>
+<h3 id="4-5-gateway-restart-requires-start-command">4.5 Gateway Restart (requires start command)</h3>
+<pre><code>scripts/dev/ingress_fault_injection.sh --fault gateway-restart --action cycle \
+  --gateway-start-cmd &quot;AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-1 EDGE_INGRESS_MODE=edge-local AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=state/profiles/k1s-core/edge-local make k1s-edge-core&quot;</code></pre>
+<h2 id="step-5-repeatability-stability-gate">Step 5: Repeatability / Stability Gate</h2>
+<p>Run repeated matrix checks and aggregate results:</p>
+<pre><code>scripts/dev/test_ingress_matrix_repeat.sh \
+  --iterations 10 \
+  --topology multi-host \
+  --include-faults \
+  --faults specs-permission-drift,backend-unavailable,nats-route-bundle-permission \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier1</code></pre>
+<p>Optional fail-fast:</p>
+<pre><code>scripts/dev/test_ingress_matrix_repeat.sh \
+  --iterations 10 \
+  --topology multi-host \
+  --include-faults \
+  --fail-fast \
+  --faults specs-permission-drift,backend-unavailable,nats-route-bundle-permission \
+  --modes core-proxy,core-to-edge-public,edge-local \
+  --archetypes http-static,http-path-routing,http-multi-replica,http-multiport,http-redirect,http-large-payload,http2-unary \
+  --tier tier1</code></pre>
+<h2 id="step-6-pass-fail-gates">Step 6: Pass/Fail Gates</h2>
+<p>Matrix run pass criteria:</p>
+<ul>
+<li>JSON summary has <code>failed_rows = 0</code>.</li>
+<li>Primary core-proxy deep/deep+perf lanes should report:
+<ul>
+<li><code>lb_policy_passed = true</code></li>
+<li><code>lb_observability_passed = true</code></li>
+</ul>
+</li>
+<li>Strict edge-local audit lane should report:
+<ul>
+<li><code>lb_strict_proof_passed = true</code></li>
+</ul>
+</li>
+</ul>
+<p>Repeat run pass criteria:</p>
+<ul>
+<li>Summary has <code>failed_iterations = 0</code>.</li>
+<li><code>total_failed_rows = 0</code>.</li>
+</ul>
+<p>If any gate fails, inspect failure bundles before re-running.</p>
+<h2 id="artifacts-and-where-to-look">Artifacts and Where to Look</h2>
+<ul>
+<li>Per matrix run:
+<ul>
+<li><code>state/test-results/ingress-matrix-&lt;timestamp&gt;.json</code></li>
+</ul>
+</li>
+<li>Per failure bundle:
+<ul>
+<li><code>state/test-results/failures/ingress-matrix-&lt;timestamp&gt;/...</code></li>
+</ul>
+</li>
+<li>Repeat aggregate summary:
+<ul>
+<li><code>state/test-results/ingress-matrix-summary-&lt;timestamp&gt;.json</code></li>
+</ul>
+</li>
+<li>Repeat per-iteration logs:
+<ul>
+<li><code>state/test-results/ingress-matrix-&lt;timestamp&gt;-iterN.log</code></li>
+</ul>
+</li>
+</ul>
+<h2 id="failure-triage-sequence">Failure Triage Sequence</h2>
+<p>Run in order:</p>
+<p>1. Check specs directory writability:</p>
+<pre><code>CORE_SPECS=state/profiles/k1s-core/specs
+ls -ld &quot;$CORE_SPECS&quot;
+test -w &quot;$CORE_SPECS&quot; &amp;&amp; echo &quot;writable&quot; || echo &quot;not writable&quot;</code></pre>
+<p>2. Confirm edge-local env flags (if testing edge-local):</p>
+<pre><code>cpid=$(pgrep -f &quot;python -m ae.controller&quot; | head -n1)
+gpid=$(pgrep -f &quot;python -m ae.gateway&quot; | head -n1)
+sudo cat &quot;/proc/$cpid/environ&quot; | tr &#x27;\0&#x27; &#x27;\n&#x27; | rg &#x27;EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED|AE_TRANSPORT_BACKEND|AE_NATS_URL&#x27;
+sudo cat &quot;/proc/$gpid/environ&quot; | tr &#x27;\0&#x27; &#x27;\n&#x27; | rg &#x27;EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL&#x27;</code></pre>
+<p>3. Verify route-bundle permission in hub NATS config:</p>
+<pre><code>rg -n &#x27;user: &quot;hub-controller&quot;|k1s.v1.site.\*.routes.bundle&#x27; ops/dev/nats-hub.conf</code></pre>
+<p>4. Verify rendered config presence:</p>
+<pre><code>ls -l state/profiles/k1s-core/edge-ingress/envoy.yaml
+ls -l state/profiles/k1s-core/edge-local/edge-local.caddy || true</code></pre>
+<p>5. Probe backend directly:</p>
+<pre><code>EDGE_LOCAL_ADDR=&quot;${AE_EDGE_INGRESS_LOCAL_ADDR:-127.0.0.1:18081}&quot;
+curl -sS -o /dev/null -w &#x27;%{http_code}\n&#x27; &quot;http://${EDGE_LOCAL_ADDR}/&quot;</code></pre>
+<h2 id="quick-command-reference">Quick Command Reference</h2>
+<table><thead><tr><th>Command</th><th>Purpose</th><th>Primary Output</th></tr></thead><tbody><tr><td><code>scripts/dev/test_ingress_matrix_single_host.sh</code></td><td>Single-host capability matrix</td><td><code>state/test-results/ingress-matrix-*.json</code></td></tr><tr><td><code>scripts/dev/test_ingress_matrix_cri.sh</code></td><td>Topology-aware wrapper (single/multi-host)</td><td>Matrix JSON + failure bundles</td></tr><tr><td><code>scripts/dev/ingress_fault_injection.sh</code></td><td>Fault inject/recover/cycle</td><td>Fault action logs</td></tr><tr><td><code>scripts/dev/test_ingress_matrix_repeat.sh</code></td><td>Multi-iteration stability gate</td><td><code>state/test-results/ingress-matrix-summary-*.json</code></td></tr></tbody></table>
     </div>
     <footer class="site-footer">
       <div class="container inner">

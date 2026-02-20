@@ -7,7 +7,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 - Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable, and CRI/containerd is supported where needed.
 - Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.
 - Small surface. Prefer composition over features; leave seams to extend later.
-- Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.
+- Fail well. A crash restarts cleanly; reconcile rebuilds reality from runtime state plus persisted control-plane data.
 
 ## Components
 
@@ -15,10 +15,11 @@ This document describes k1s in depth: components, data model, reconcile algorith
 - Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring `nodeSelector`, taints/tolerations, topology spread, and storage pinning.
 - Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.
 - Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.
+- Transport/gateway (src/ae/gateway + NATS): supports both NATS + JetStream (`nats-js`) and NATS Core (`nats-core`) control-plane lanes for core/edge operation.
 - Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).
 - Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).
 - Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).
-- State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables; Postgres supported).
+- State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables), with Postgres and etcd-backed durable lanes available for multi-node/strict CRI setups.
 - Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.
 - API shim (src/ae/apishim): Kubernetes-compatible API for kubectl/helm with SSA/patch and port-forward.
 - Observability (src/ae/observability): metrics snapshot, HTTP API, dashboard, logging helpers.
@@ -26,7 +27,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 
 ## State Store Notes
 
-- SQLite schema changes should be documented here alongside the state store design.
+- Relational schema changes (SQLite/Postgres lanes) should be documented here alongside the state store design.
 - For implementation details, see `src/ae/controller/state.py` and related ADRs.
 
 ## Reconcile Loop
@@ -81,10 +82,10 @@ sequenceDiagram
   participant C as Controller
   participant SCH as Scheduler
   participant A as Node Agent
-  participant R as Runtime (Podman/Docker)
+  participant R as Runtime (Podman/Docker/CRI)
   participant H as Health
   participant I as Ingress
-  participant S as SQLite
+  participant S as State Store (SQLite/Postgres/etcd lanes)
 
   CLI->>C: apply(manifest)
   C->>SCH: plan placements(nodeSelector/tolerations/storage)
@@ -150,7 +151,9 @@ spec:
   volumes: [{ hostPath: /tmp, mountPath: /host-tmp, readOnly: false }]
 ```
 
-## State Model (SQLite)
+## State Model (Relational Store: SQLite/Postgres)
+
+The table model below describes the controller's relational state lanes (SQLite default, Postgres optional). etcd-backed strict-CRI lanes track equivalent logical entities for reconcile, service, and event continuity.
 
 Tables (created in src/ae/controller/state.py)
 - app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)
@@ -269,11 +272,12 @@ Revision status
 - RuntimeAdapter protocol: implement `ensure_app` and `read_logs` for alternate engines.
 - IngressManager: implement `apply/remove/reload` for nginx or other proxies.
 - SecretManager: swap SOPS shell calls with a native decryptor if desired.
-- Store: SQLite is default; could be swapped for another lightweight store with the same interface.
+- Store backends are lane-aware: SQLite is the default local store, with Postgres and etcd-backed durable lanes for multi-node/strict-CRI operation.
 
 ## Environment Variables
 
 - AE_STATE_DB (default: `state/controller.db`), AE_STATE_DSN (Postgres DSN), AE_SPECS_DIR (default: `specs`)
+- AE_APISHIM_ETCD_ENDPOINTS (strict-CRI durable lane etcd endpoints)
 - AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT
 - AE_TLS_DIR (default: `state/tls`)
 - AE_REGISTRY_CONFIG (default: `~/.config/ae/registries.yaml`)

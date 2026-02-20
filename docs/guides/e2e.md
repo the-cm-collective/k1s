@@ -38,6 +38,22 @@ CRI Quickstart (containerd)
   - `./scripts/cri_preflight.sh`
   - `./scripts/cri_smoke.sh`
 
+CRI Multi-node Ingress + Security Validation (recommended for release confidence)
+- Run the canonical mode-isolated ingress lanes after strict CRI stack startup:
+  - `scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog`
+  - `CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/run_ingress_lanes.sh --lanes core-proxy --yes`
+  - `scripts/dev/validate_ingress_env.sh --lane core-to-edge-public --watchdog`
+  - `scripts/dev/run_ingress_lanes.sh --lanes core-to-edge-public --yes`
+  - `scripts/dev/validate_ingress_env.sh --lane edge-local --watchdog`
+  - `EDGE_LOCAL_LISTENER_URL="https://lb-distribution-edge-local.home.arpa/" scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes`
+- Run security gates after lane completion:
+  - `scripts/dev/security_baseline_check.sh --fail-on high`
+  - `scripts/dev/security_active_tests.sh --fail-on high`
+- References:
+  - `docs/guides/ingress-capability-test-sequence.md`
+  - `docs/guides/multinode-lab.md`
+  - `docs/reference/cri-containerd.md`
+
 Start Controller
 - Polling loop with metrics and watch (if watchdog installed):
   - `python -m ae.controller --loop --watch --specs specs/ --metrics-port 9108`

@@ -1,6 +1,6 @@
 # k1s Overview
 
-k1s is a small, multi‑node application engine that now supports a controller + worker agents, Service VIPs over an overlay network, and a Kubernetes‑compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.
+k1s is a small, multi‑node application engine with a controller + worker agents, Service VIPs over an overlay network, first-class NATS/JetStream control-plane transport, and a Kubernetes-compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.
 
 Status: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
 
@@ -10,8 +10,9 @@ Status: k1s is under very active development and has not reached a fully stable 
 ## Current State (Feb 2026)
 
 - Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects `nodeSelector`, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.
+- Control-plane transport: `nats-js` (NATS + JetStream) is the durable hub path for `k1s-core`/`k1s-edge-core`, while `nats-core` remains available for lightweight `work.pull` pairings (`k1s-core-edge`/`k1s-edge`).
 - Networking/Ingress: Service CIDR + overlay provider (`AE_SERVICE_PROVIDER=overlay`) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.
-- State: SQLite by default; Postgres supported for shim HA and multi‑node durability (`AE_STATE_DSN` / `AE_APISHIM_DSN`).
+- State: SQLite remains the lightweight local default; etcd durable state is supported and is the default backing lane in strict CRI core profiles; Postgres remains supported for shim HA and externalized persistence (`AE_STATE_DSN` / `AE_APISHIM_DSN`).
 - Runtime backends: Podman (default), Docker fallback, and CRI/containerd for CRI-native nodes (recommended via `make k1s-core-cri` and related `k1s-*-cri` profile targets).
 - API surface: native HTTP API plus the Kubernetes API shim (`AE_APISHIM_ENABLE=1 python -m ae.apishim serve`) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see `docs/reference/apishim-compatibility-matrix.md`).
 - Tooling: `k1s` kubectl‑style wrapper, `ae nodes` for inventory/cordon, `ae plan` for placement hints, `export-k8s` and `k8s-report` for parity/compliance, dashboard at `/dashboard` (direct on `:9108`, or `https://dash.home.arpa:8443/dashboard` in demos), and `/nodes` + enriched `/metrics` for node/service visibility.
@@ -41,7 +42,7 @@ flowchart LR
   C -->|schedule| SCH[Scheduler]
   SCH -->|place| N1[Node Agent]
   SCH -->|place| N2[Node Agent]
-  C -->|write| S[(SQLite/Postgres)]
+  C -->|write| S[(SQLite/Postgres/etcd lanes)]
   C -->|service VIPs| SV[Service Controller]
   SV -->|overlay endpoints| O[Overlay/HAProxy]
   C -->|render+reload| I[Caddy Ingress]
@@ -133,6 +134,8 @@ Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/de
 
 - Runbook: `docs/ops/runbook.md`
 - End-to-End Guide: `docs/guides/e2e.md`
+- Runtime Profiles: `docs/guides/runtime-profiles.md`
+- Multi-node + ingress mode validation: `docs/guides/multinode-lab.md`, `docs/guides/ingress-capability-test-sequence.md`
 - HTTP API: `docs/reference/http-api.md`
 - Kubernetes API shim + compatibility matrix: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
 - Architecture (detailed): `docs/reference/architecture.md`

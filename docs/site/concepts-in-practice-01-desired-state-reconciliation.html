@@ -703,6 +703,7 @@
       <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
@@ -750,10 +751,10 @@
     C-&gt;&gt;S: Record heartbeat
   end</pre>
 <h3 id="design">Design</h3>
-<p>In k1s, the controller imports specs, computes a spec hash to detect changes, creates a revision, and drives the runtime to match that revision. Events are emitted at each stage (ApplyStarted, ApplyCompleted) so operators can see the loop&#x27;s decisions. This design separates the &quot;what&quot; (spec) from the &quot;how&quot; (runtime adapter), and makes the controller robust to restarts because revisions are persisted.</p>
+<p>In k1s, the controller imports specs, computes a spec hash to detect changes, creates a revision, and drives the runtime to match that revision. Events are emitted at each stage (ApplyStarted, ApplyCompleted) so operators can see the loop&#x27;s decisions. This design separates the &quot;what&quot; (spec) from the &quot;how&quot; (runtime adapter), and makes the controller robust to restarts because revisions are persisted in the state backend (SQLite default; Postgres/etcd durable lanes supported).</p>
 <pre class="mermaid">flowchart TB
   Specs[specs/ directory] --&gt; Controller[Controller loop]
-  Controller --&gt; State[SQLite state store]
+  Controller --&gt; State[State store lanes]
   Controller --&gt; Runtime[Runtime adapter]
   Runtime --&gt; Containers[Running containers]
   Controller --&gt; Events[Events + metrics]
@@ -873,7 +874,7 @@ python -m ae.cli metrics</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 14:20:07</span>
+        <span>Built 2026-02-19 16:55:24</span>
       </div>
     </footer>
     <script>

@@ -703,6 +703,7 @@
       <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
@@ -728,7 +729,7 @@
 <li>Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable, and CRI/containerd is supported where needed.</li>
 <li>Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.</li>
 <li>Small surface. Prefer composition over features; leave seams to extend later.</li>
-<li>Fail well. A crash restarts cleanly; reconcile rebuilds reality from Docker + SQLite.</li>
+<li>Fail well. A crash restarts cleanly; reconcile rebuilds reality from runtime state plus persisted control-plane data.</li>
 </ul>
 <h2 id="components">Components</h2>
 <ul>
@@ -736,10 +737,11 @@
 <li>Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning.</li>
 <li>Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.</li>
 <li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.</li>
+<li>Transport/gateway (src/ae/gateway + NATS): supports both NATS + JetStream (<code>nats-js</code>) and NATS Core (<code>nats-core</code>) control-plane lanes for core/edge operation.</li>
 <li>Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).</li>
 <li>Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).</li>
 <li>Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).</li>
-<li>State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables; Postgres supported).</li>
+<li>State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables), with Postgres and etcd-backed durable lanes available for multi-node/strict CRI setups.</li>
 <li>Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.</li>
 <li>API shim (src/ae/apishim): Kubernetes-compatible API for kubectl/helm with SSA/patch and port-forward.</li>
 <li>Observability (src/ae/observability): metrics snapshot, HTTP API, dashboard, logging helpers.</li>
@@ -747,7 +749,7 @@
 </ul>
 <h2 id="state-store-notes">State Store Notes</h2>
 <ul>
-<li>SQLite schema changes should be documented here alongside the state store design.</li>
+<li>Relational schema changes (SQLite/Postgres lanes) should be documented here alongside the state store design.</li>
 <li>For implementation details, see <code>src/ae/controller/state.py</code> and related ADRs.</li>
 </ul>
 <h2 id="reconcile-loop">Reconcile Loop</h2>
@@ -799,10 +801,10 @@
   participant C as Controller
   participant SCH as Scheduler
   participant A as Node Agent
-  participant R as Runtime (Podman/Docker)
+  participant R as Runtime (Podman/Docker/CRI)
   participant H as Health
   participant I as Ingress
-  participant S as SQLite
+  participant S as State Store (SQLite/Postgres/etcd lanes)
 
   CLI-&gt;&gt;C: apply(manifest)
   C-&gt;&gt;SCH: plan placements(nodeSelector/tolerations/storage)
@@ -865,7 +867,8 @@ spec:
   ingress: { host: echo.localtest.me, path: /, tls: false }
   resources: { limits: { cpu: 0.25, memory: 256Mi } }
   volumes: [{ hostPath: /tmp, mountPath: /host-tmp, readOnly: false }]</code></pre>
-<h2 id="state-model-sqlite">State Model (SQLite)</h2>
+<h2 id="state-model-relational-store-sqlite-postgres">State Model (Relational Store: SQLite/Postgres)</h2>
+<p>The table model below describes the controller&#x27;s relational state lanes (SQLite default, Postgres optional). etcd-backed strict-CRI lanes track equivalent logical entities for reconcile, service, and event continuity.</p>
 <p>Tables (created in src/ae/controller/state.py)</p>
 <ul>
 <li>app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)</li>
@@ -989,11 +992,12 @@ spec:
 <li>RuntimeAdapter protocol: implement <code>ensure_app</code> and <code>read_logs</code> for alternate engines.</li>
 <li>IngressManager: implement <code>apply/remove/reload</code> for nginx or other proxies.</li>
 <li>SecretManager: swap SOPS shell calls with a native decryptor if desired.</li>
-<li>Store: SQLite is default; could be swapped for another lightweight store with the same interface.</li>
+<li>Store backends are lane-aware: SQLite is the default local store, with Postgres and etcd-backed durable lanes for multi-node/strict-CRI operation.</li>
 </ul>
 <h2 id="environment-variables">Environment Variables</h2>
 <ul>
 <li>AE_STATE_DB (default: <code>state/controller.db</code>), AE_STATE_DSN (Postgres DSN), AE_SPECS_DIR (default: <code>specs</code>)</li>
+<li>AE_APISHIM_ETCD_ENDPOINTS (strict-CRI durable lane etcd endpoints)</li>
 <li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT</li>
 <li>AE_TLS_DIR (default: <code>state/tls</code>)</li>
 <li>AE_REGISTRY_CONFIG (default: <code>~/.config/ae/registries.yaml</code>)</li>
@@ -1055,7 +1059,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-13 19:11:07</span>
+        <span>Built 2026-02-19 16:55:24</span>
       </div>
     </footer>
     <script>

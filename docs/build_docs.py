@@ -120,6 +120,7 @@ NAV_LINKS = [
     ("API Shim", "apishim-compatibility-matrix.html", False, False),
     ("OpenAPI v3", "/openapi/v3", True, True),
     ("Ingress", "ingress.html", False, False),
+    ("Ingress Validation", "ingress-capability-test-sequence.html", False, False),
     ("API Auth", "api-auth.html", False, False),
     ("Concepts", "concepts.html", False, False),
     ("Benchmarks", "benchmarks.html", False, False),

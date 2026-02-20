@@ -703,6 +703,7 @@
       <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
@@ -786,6 +787,32 @@
 <ul>
 <li><code>./scripts/cri_preflight.sh</code></li>
 <li><code>./scripts/cri_smoke.sh</code></li>
+</ul>
+</li>
+</ul>
+<p>CRI Multi-node Ingress + Security Validation (recommended for release confidence)</p>
+<ul>
+<li>Run the canonical mode-isolated ingress lanes after strict CRI stack startup:
+<ul>
+<li><code>scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog</code></li>
+<li><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/run_ingress_lanes.sh --lanes core-proxy --yes</code></li>
+<li><code>scripts/dev/validate_ingress_env.sh --lane core-to-edge-public --watchdog</code></li>
+<li><code>scripts/dev/run_ingress_lanes.sh --lanes core-to-edge-public --yes</code></li>
+<li><code>scripts/dev/validate_ingress_env.sh --lane edge-local --watchdog</code></li>
+<li><code>EDGE_LOCAL_LISTENER_URL=&quot;https://lb-distribution-edge-local.home.arpa/&quot; scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes</code></li>
+</ul>
+</li>
+<li>Run security gates after lane completion:
+<ul>
+<li><code>scripts/dev/security_baseline_check.sh --fail-on high</code></li>
+<li><code>scripts/dev/security_active_tests.sh --fail-on high</code></li>
+</ul>
+</li>
+<li>References:
+<ul>
+<li><code>docs/guides/ingress-capability-test-sequence.md</code></li>
+<li><code>docs/guides/multinode-lab.md</code></li>
+<li><code>docs/reference/cri-containerd.md</code></li>
 </ul>
 </li>
 </ul>
@@ -995,7 +1022,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-13 19:11:07</span>
+        <span>Built 2026-02-19 16:37:17</span>
       </div>
     </footer>
     <script>

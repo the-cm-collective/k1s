@@ -703,6 +703,7 @@
       <a href="apishim-compatibility-matrix.html">API Shim</a>
       <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
       <a href="concepts.html">Concepts</a>
       <a href="benchmarks.html">Benchmarks</a>
@@ -723,7 +724,7 @@
     <div class="container">
     <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Labs</h2>       <p>Provision docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable, start the controller, then apply echo.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
 <p>This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.</p>
-<p>Note: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.</p>
+<p>Note: k1s is pre-1.0 and still evolving. v0.1.3 expands operational validation (deep+perf ingress lanes, repeatability and fault-injection gates, security baseline and active auth probes, and release-time live OpenAPI gates), but production promotion still requires environment-specific security review and rollout validation.</p>
 <p>Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <ul>
@@ -926,20 +927,28 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make docker-build-controller</code>: build controller image (ops/images/controller.Dockerfile).</li>
 <li><code>make docker-run-controller</code>: run controller container with specs/state mounts.</li>
 </ul>
-<h2 id="option-c-multi-node-lab-controller-worker">Option C — Multi-node Lab (controller + worker)</h2>
-<p>Use this when you want to validate the overlay Service VIP path and scheduler on two hosts.</p>
-<p>1) Controller (host A):</p>
-<pre><code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay \
-AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=changeme \
-python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></pre>
-<p>2) Worker agent (host B):</p>
-<pre><code>AE_CONTROLLER_URL=http://&lt;controller-host&gt;:9110 AE_AGENT_TOKEN=changeme \
-AE_NODE_ID=worker-1 python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net</code></pre>
-<p>3) Apply and observe:</p>
-<pre><code>python -m ae.cli apply -f specs/examples/echo-multinode.yaml
-ae nodes list
-ae status echo-mn --watch</code></pre>
-<p>Full walkthrough and WireGuard tips: <code>docs/guides/multinode-lab.md</code> or <code>ops/dev/multinode-lab.sh -h</code>.</p>
+<h2 id="option-c-multi-node-lab-core-edge-gateways">Option C — Multi-node Lab (core + edge gateways)</h2>
+<p>Use this when you need the current canonical multi-node process (strict CRI, ingress mode validation, and security gates).</p>
+<p>1) Start strict CRI profile entrypoints:</p>
+<pre><code>make k1s-core-cri
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+make k1s-edge-core-cri
+make k1s-edge-node</code></pre>
+<p>2) Run canonical ingress mode validation:</p>
+<pre><code>scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/run_ingress_lanes.sh --lanes core-proxy --yes
+scripts/dev/run_ingress_lanes.sh --lanes core-to-edge-public --yes
+EDGE_LOCAL_LISTENER_URL=&quot;https://lb-distribution-edge-local.home.arpa/&quot; \
+  scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes</code></pre>
+<p>3) Run security gates:</p>
+<pre><code>scripts/dev/security_baseline_check.sh --fail-on high
+scripts/dev/security_active_tests.sh --fail-on high</code></pre>
+<p>Full walkthrough and mode-specific startup commands:</p>
+<ul>
+<li><code>docs/guides/multinode-lab.md</code></li>
+<li><code>docs/guides/ingress-capability-test-sequence.md</code></li>
+<li><code>docs/reference/cri-containerd.md</code></li>
+</ul>
 <h2 id="using-the-ae-cli-greatest-hits">Using the <code>ae</code> CLI (greatest hits)</h2>
 <ul>
 <li>Apply/inspect lifecycle:</li>
@@ -1030,7 +1039,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-13 19:11:07</span>
+        <span>Built 2026-02-19 16:37:17</span>
       </div>
     </footer>
     <script>
