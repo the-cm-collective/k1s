@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -55,6 +56,8 @@ class AgentHandler(BaseHTTPRequestHandler):
     runtime: RuntimeAdapter = None  # type: ignore[assignment]
     volume_manager = None
     node_id: str | None = None
+    fabric_sessions: dict[str, dict] = {}
+    fabric_lock = threading.Lock()
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
         LOGGER.info("%s - %s", self.address_string(), format % args)
@@ -71,6 +74,52 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
 
         try:
+            if self.path == "/v1/fabric/ensure_session":
+                session = payload.get("session")
+                if not isinstance(session, dict):
+                    _json_response(self, 400, {"error": "session payload required"})
+                    return
+                session_id = str(session.get("session_id") or "").strip()
+                if not session_id:
+                    _json_response(self, 400, {"error": "session_id required"})
+                    return
+                mode = str(session.get("mode") or "lan_direct").strip().lower()
+                if mode not in {"lan_direct", "wg_ephemeral"}:
+                    _json_response(self, 400, {"error": f"unsupported fabric mode {mode}"})
+                    return
+                if mode == "wg_ephemeral" and str(
+                    os.getenv("AE_FABRIC_WG_ENABLE", "0")
+                ).strip().lower() not in {"1", "true", "yes", "on"}:
+                    _json_response(
+                        self,
+                        400,
+                        {"error": "wg_ephemeral mode disabled (set AE_FABRIC_WG_ENABLE=1)"},
+                    )
+                    return
+                with self.fabric_lock:
+                    self.fabric_sessions[session_id] = {
+                        "session_id": session_id,
+                        "node_id": str(payload.get("node_id") or self.node_id or ""),
+                        "mode": mode,
+                        "policy_mode": str(session.get("policy_mode") or ""),
+                        "ifname": str(session.get("ifname") or ""),
+                        "member_ips": dict(session.get("member_ips") or {}),
+                        "allowed_rules": list(session.get("allowed_rules") or []),
+                        "expires_at": str(session.get("expires_at") or ""),
+                        "updated_at": time.time(),
+                    }
+                _json_response(self, 200, {"ok": True, "session_id": session_id, "mode": mode})
+                return
+            if self.path == "/v1/fabric/teardown_session":
+                session_id = str(payload.get("session_id") or "").strip()
+                if not session_id:
+                    _json_response(self, 400, {"error": "session_id required"})
+                    return
+                removed = False
+                with self.fabric_lock:
+                    removed = self.fabric_sessions.pop(session_id, None) is not None
+                _json_response(self, 200, {"ok": True, "removed": removed})
+                return
             if self.path == "/v1/ensure_app":
                 manifest = _parse_manifest(payload.get("manifest", {}))
                 pod_names = payload.get("pod_names") or payload.get("replica_ids")
@@ -286,6 +335,11 @@ class AgentHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         try:
+            if self.path.startswith("/v1/fabric/sessions"):
+                with self.fabric_lock:
+                    items = list(self.fabric_sessions.values())
+                _json_response(self, 200, {"sessions": items})
+                return
             if self.path.startswith("/v1/containers"):
                 items = self.runtime.list_containers_info()
                 _json_response(self, 200, {"containers": items})
@@ -410,6 +464,35 @@ def _parse_labels(raw: str | None) -> dict:
         else:
             labels[part.strip()] = ""
     return labels
+
+
+def _detect_gpu_labels() -> dict[str, str]:
+    if str(os.getenv("AE_GPU_DISCOVERY_DISABLE", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return {}
+    bin_name = str(os.getenv("AE_NVIDIA_SMI_BIN", "nvidia-smi")).strip() or "nvidia-smi"
+    try:
+        out = subprocess.check_output(  # noqa: S603
+            [bin_name, "--query-gpu=name", "--format=csv,noheader"],  # noqa: S603
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        )
+        names = [line.strip() for line in out.splitlines() if line.strip()]
+        if not names:
+            return {"gpu.present": "false", "gpu.count": "0"}
+        models = sorted(set(names))
+        return {
+            "gpu.present": "true",
+            "gpu.count": str(len(names)),
+            "gpu.models": ",".join(models),
+        }
+    except Exception:
+        return {"gpu.present": "false", "gpu.count": "0"}
 
 
 def _start_heartbeat_loop(
@@ -697,9 +780,7 @@ def serve(
             if state is None:
                 state = InMemoryStorageState()
             netfs = NetFSManager(state)
-            AgentHandler.volume_manager = NodeVolumeManager(
-                netfs, node_id=AgentHandler.node_id
-            )
+            AgentHandler.volume_manager = NodeVolumeManager(netfs, node_id=AgentHandler.node_id)
             LOGGER.info("netfs volume manager enabled on node %s", AgentHandler.node_id)
         except Exception as exc:  # noqa: BLE001
             AgentHandler.volume_manager = None
@@ -807,6 +888,9 @@ def main(argv: list[str] | None = None) -> int:
     node_id = os.getenv("AE_NODE_ID", socket.gethostname())
     node_name = os.getenv("AE_NODE_NAME", node_id)
     node_labels = _parse_labels(os.getenv("AE_NODE_LABELS"))
+    gpu_labels = _detect_gpu_labels()
+    for k, v in gpu_labels.items():
+        node_labels.setdefault(k, v)
     node_taints = []
     token = os.getenv("AE_AGENT_TOKEN")
     endpoint = args.advertise_endpoint or f"http://{socket.gethostname()}:{args.port}"

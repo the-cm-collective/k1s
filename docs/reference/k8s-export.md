@@ -21,6 +21,7 @@ Quick start
 What’s supported
 - Probes: readiness, liveness, startup → maps to `readinessProbe`, `livenessProbe`, `startupProbe`.
 - Image pulls: `spec.imagePullPolicy` and `spec.imagePullSecrets: [name, ...]`.
+- Runtime class: `spec.runtimeClassName` passes through to PodSpec `runtimeClassName`.
   - Generate a Secret from your local registry creds: `ae registry kubesecret --name regcred --namespace demo -o regcred.yaml`, then reference with `spec.imagePullSecrets: [regcred]`.
 - env and envFrom:
   - Explicit `spec.env: [{name,value}]`.

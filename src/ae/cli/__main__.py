@@ -17,12 +17,16 @@ from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
 from ae.config.manager import ConfigManager
 from ae.controller.health import HealthManager
+from ae.controller.inference_cell import InferenceCellController, InferenceCellSetController
 from ae.controller.reconciler import Reconciler, ReconcileReport
 from ae.controller.spec import (
     AppManifest,
+    InferenceCellManifest,
+    InferenceCellSetManifest,
     app_key,
     app_key_for_manifest,
     format_app_ref,
+    load_any_manifest,
     normalize_namespace,
     parse_app_ref,
     split_app_key,
@@ -320,6 +324,50 @@ def build_parser() -> argparse.ArgumentParser:
     _add_namespace_arg(events_parser)
     events_parser.add_argument("name", help="Workload name")
     events_parser.add_argument("--limit", type=int, default=20)
+
+    cell_parser = subparsers.add_parser("cell", help="Manage InferenceCell resources")
+    cell_sub = cell_parser.add_subparsers(dest="cell_cmd", required=True)
+    cell_apply = cell_sub.add_parser("apply", help="Apply and reconcile an InferenceCell manifest")
+    _add_namespace_arg(cell_apply)
+    cell_apply.add_argument(
+        "-f", "--file", type=Path, required=True, help="Path to InferenceCell manifest"
+    )
+    cell_status = cell_sub.add_parser("status", help="Show InferenceCell status")
+    _add_namespace_arg(cell_status)
+    cell_status.add_argument("name", nargs="?", help="Cell name (omit to list all)")
+    cell_status.add_argument("--json", action="store_true", help="Emit JSON output")
+    cell_events = cell_sub.add_parser("events", help="Show InferenceCell events")
+    _add_namespace_arg(cell_events)
+    cell_events.add_argument("name", help="Cell name")
+    cell_events.add_argument("--limit", type=int, default=20)
+    cell_delete = cell_sub.add_parser("delete", help="Delete an InferenceCell and release leases")
+    _add_namespace_arg(cell_delete)
+    cell_delete.add_argument("name", help="Cell name")
+
+    cellset_parser = subparsers.add_parser("cellset", help="Manage InferenceCellSet resources")
+    cellset_sub = cellset_parser.add_subparsers(dest="cellset_cmd", required=True)
+    cellset_apply = cellset_sub.add_parser(
+        "apply", help="Apply and reconcile an InferenceCellSet manifest"
+    )
+    _add_namespace_arg(cellset_apply)
+    cellset_apply.add_argument(
+        "-f", "--file", type=Path, required=True, help="Path to InferenceCellSet manifest"
+    )
+    cellset_scale = cellset_sub.add_parser("scale", help="Scale an existing InferenceCellSet")
+    _add_namespace_arg(cellset_scale)
+    cellset_scale.add_argument("name", help="CellSet name")
+    cellset_scale.add_argument("--replicas", type=int, required=True, help="Desired replica count")
+    cellset_status = cellset_sub.add_parser("status", help="Show InferenceCellSet status")
+    _add_namespace_arg(cellset_status)
+    cellset_status.add_argument("name", nargs="?", help="CellSet name (omit to list all)")
+    cellset_status.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    fabric_parser = subparsers.add_parser("fabric", help="Inspect fabric sessions")
+    fabric_sub = fabric_parser.add_subparsers(dest="fabric_cmd", required=True)
+    fabric_sessions = fabric_sub.add_parser("sessions", help="List active fabric sessions")
+    _add_namespace_arg(fabric_sessions)
+    fabric_sessions.add_argument("--cell", default=None, help="Filter by cell name")
+    fabric_sessions.add_argument("--json", action="store_true", help="Emit JSON output")
 
     services_parser = subparsers.add_parser(
         "services", help="List Services (cluster IPs/endpoints)"
@@ -1450,6 +1498,9 @@ def main(argv: list[str] | None = None) -> int:
         "registry": handle_registry,
         "metrics": lambda ns: handle_metrics(ns, store),
         "events": lambda ns: handle_events(ns, store, args),
+        "cell": lambda ns: handle_cell(ns, store, args),
+        "cellset": lambda ns: handle_cellset(ns, store, args),
+        "fabric": lambda ns: handle_fabric(ns, store, args),
         "history": lambda ns: handle_history(ns, store, args),
         "services": lambda ns: handle_services(ns, store),
         "delete": lambda ns: handle_delete(ns, store, runtime, ingress_service, args),
@@ -3972,18 +4023,18 @@ def _resolve_pod_via_apishim(
             continue
         labels = meta.get("labels") if isinstance(meta.get("labels"), dict) else {}
         label_app = str(labels.get("app") or labels.get("app.kubernetes.io/name") or "")
-        if not (
-            name == short_name
-            or name.startswith(prefix)
-            or label_app == short_name
-        ):
+        if not (name == short_name or name.startswith(prefix) or label_app == short_name):
             continue
         phase = str(status.get("phase") or "")
         running = 1 if phase.lower() == "running" else 0
         ready = 0
         container_statuses = status.get("containerStatuses")
         if isinstance(container_statuses, list) and container_statuses:
-            ready = 1 if all(bool(cs.get("ready")) for cs in container_statuses if isinstance(cs, dict)) else 0
+            ready = (
+                1
+                if all(bool(cs.get("ready")) for cs in container_statuses if isinstance(cs, dict))
+                else 0
+            )
         candidates.append((ready, running, name))
 
     if not candidates:
@@ -4823,7 +4874,9 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                 store, app_name, getattr(args, "container", None)
             )
             if pod_name is None:
-                lookup_token = explicit_token or _os.getenv("AE_APISHIM_READ_TOKEN") or generic_token
+                lookup_token = (
+                    explicit_token or _os.getenv("AE_APISHIM_READ_TOKEN") or generic_token
+                )
                 pod_name = _resolve_pod_via_apishim(apishim_base, ns, app_name, lookup_token)
             if pod_name is None:
                 pod_name = app_name
@@ -5431,6 +5484,277 @@ def handle_events(
     for event in events:
         timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
         print(f"{timestamp} rev={event.revision} {event.event_type}: {event.message}")
+    return 0
+
+
+def handle_cell(
+    args: argparse.Namespace, store: SQLiteStateStore, _global_args: argparse.Namespace
+) -> int:
+    ctrl = InferenceCellController(store)
+    ns = normalize_namespace(getattr(args, "namespace", None))
+    if args.cell_cmd == "apply":
+        try:
+            doc = load_any_manifest(args.file)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}")
+            return 2
+        if not isinstance(doc, InferenceCellManifest):
+            print("error: manifest kind must be InferenceCell for `ae cell apply`")
+            return 2
+        if ns:
+            payload = doc.model_dump(by_alias=True)
+            payload.setdefault("metadata", {})
+            payload["metadata"]["namespace"] = ns
+            doc = InferenceCellManifest.model_validate(payload)
+        rec = ctrl.reconcile_manifest(doc, source=f"cli:{args.file}")
+        active_executor = str((rec.allocations or {}).get("active_executor") or rec.executor_type)
+        print(
+            f"cell {_display_app_name(rec.cell_key)} phase={rec.phase} "
+            f"tp={rec.tp} pp={rec.pp} executor={active_executor}"
+        )
+        api_ep = (rec.allocations or {}).get("api_endpoint")
+        if api_ep:
+            print(f"api_endpoint: {api_ep}")
+        if rec.last_error:
+            print(f"last_error: {rec.last_error}")
+        return 0 if rec.phase == "READY" else 1
+
+    if args.cell_cmd == "status":
+        if getattr(args, "name", None):
+            rec = store.get_inference_cell(args.name, namespace=ns)
+            if rec is None:
+                print("cell not found")
+                return 1
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(
+                    _json.dumps(
+                        {
+                            "cell_key": rec.cell_key,
+                            "phase": rec.phase,
+                            "tp": rec.tp,
+                            "pp": rec.pp,
+                            "executor": rec.executor_type,
+                            "active_executor": (rec.allocations or {}).get("active_executor"),
+                            "ray_scope": rec.ray_scope,
+                            "restarts": rec.restarts,
+                            "last_error": rec.last_error,
+                            "allocations": rec.allocations,
+                            "admission": rec.admission,
+                            "conditions": rec.conditions,
+                            "updated_at": rec.updated_at.isoformat(),
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            print(
+                f"{_display_app_name(rec.cell_key)}: phase={rec.phase} tp={rec.tp} pp={rec.pp} "
+                f"executor={(rec.allocations or {}).get('active_executor') or rec.executor_type} "
+                f"restarts={rec.restarts}"
+            )
+            if rec.last_error:
+                print(f"last_error={rec.last_error}")
+            for name, item in sorted((rec.conditions or {}).items()):
+                status = bool(item.get("status"))
+                msg = str(item.get("message") or "")
+                print(f"condition {name}: {'true' if status else 'false'} {msg}".rstrip())
+            return 0
+        rows = store.list_inference_cells(namespace=ns)
+        if not rows:
+            print("no inference cells")
+            return 0
+        if getattr(args, "json", False):
+            import json as _json
+
+            print(
+                _json.dumps(
+                    [
+                        {
+                            "cell_key": row.cell_key,
+                            "phase": row.phase,
+                            "tp": row.tp,
+                            "pp": row.pp,
+                            "executor": row.executor_type,
+                            "restarts": row.restarts,
+                            "last_error": row.last_error,
+                            "updated_at": row.updated_at.isoformat(),
+                        }
+                        for row in rows
+                    ],
+                    indent=2,
+                )
+            )
+            return 0
+        for row in rows:
+            print(
+                f"{_display_app_name(row.cell_key)}: phase={row.phase} tp={row.tp} pp={row.pp} "
+                f"executor={row.executor_type} restarts={row.restarts}"
+            )
+        return 0
+
+    if args.cell_cmd == "events":
+        events = store.list_inference_cell_events(args.name, namespace=ns, limit=args.limit)
+        if not events:
+            print("no events")
+            return 0
+        for event in events:
+            ts = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"{ts} {event.event_type}: {event.message}")
+        return 0
+
+    if args.cell_cmd == "delete":
+        ctrl.delete_cell(args.name, namespace=ns)
+        print(f"deleted cell {args.name}")
+        return 0
+
+    print(f"unsupported cell command: {args.cell_cmd}")
+    return 2
+
+
+def handle_cellset(
+    args: argparse.Namespace, store: SQLiteStateStore, _global_args: argparse.Namespace
+) -> int:
+    ctrl = InferenceCellSetController(store)
+    ns = normalize_namespace(getattr(args, "namespace", None))
+    if args.cellset_cmd == "apply":
+        try:
+            doc = load_any_manifest(args.file)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}")
+            return 2
+        if not isinstance(doc, InferenceCellSetManifest):
+            print("error: manifest kind must be InferenceCellSet for `ae cellset apply`")
+            return 2
+        if ns:
+            payload = doc.model_dump(by_alias=True)
+            payload.setdefault("metadata", {})
+            payload["metadata"]["namespace"] = ns
+            doc = InferenceCellSetManifest.model_validate(payload)
+        rec = ctrl.reconcile_manifest(doc, source=f"cli:{args.file}")
+        print(
+            f"cellset {_display_app_name(rec.set_key)} desired={rec.desired} "
+            f"current={rec.current} ready={rec.ready}"
+        )
+        return 0 if rec.ready == rec.desired else 1
+
+    if args.cellset_cmd == "scale":
+        rec = ctrl.scale(args.name, args.replicas, namespace=ns)
+        if rec is None:
+            print("cellset not found")
+            return 1
+        print(
+            f"scaled cellset {_display_app_name(rec.set_key)} to desired={rec.desired} "
+            f"(current={rec.current} ready={rec.ready})"
+        )
+        return 0 if rec.ready == rec.desired else 1
+
+    if args.cellset_cmd == "status":
+        if getattr(args, "name", None):
+            rec = store.get_inference_cellset(args.name, namespace=ns)
+            if rec is None:
+                print("cellset not found")
+                return 1
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(
+                    _json.dumps(
+                        {
+                            "set_key": rec.set_key,
+                            "desired": rec.desired,
+                            "current": rec.current,
+                            "ready": rec.ready,
+                            "last_error": rec.last_error,
+                            "updated_at": rec.updated_at.isoformat(),
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            print(
+                f"{_display_app_name(rec.set_key)}: desired={rec.desired} "
+                f"current={rec.current} ready={rec.ready}"
+            )
+            return 0
+        rows = store.list_inference_cellsets(namespace=ns)
+        if not rows:
+            print("no inference cellsets")
+            return 0
+        if getattr(args, "json", False):
+            import json as _json
+
+            print(
+                _json.dumps(
+                    [
+                        {
+                            "set_key": row.set_key,
+                            "desired": row.desired,
+                            "current": row.current,
+                            "ready": row.ready,
+                            "updated_at": row.updated_at.isoformat(),
+                        }
+                        for row in rows
+                    ],
+                    indent=2,
+                )
+            )
+            return 0
+        for row in rows:
+            print(
+                f"{_display_app_name(row.set_key)}: desired={row.desired} "
+                f"current={row.current} ready={row.ready}"
+            )
+        return 0
+
+    print(f"unsupported cellset command: {args.cellset_cmd}")
+    return 2
+
+
+def handle_fabric(
+    args: argparse.Namespace, store: SQLiteStateStore, _global_args: argparse.Namespace
+) -> int:
+    if args.fabric_cmd != "sessions":
+        print(f"unsupported fabric command: {args.fabric_cmd}")
+        return 2
+    ns = normalize_namespace(getattr(args, "namespace", None))
+    rows = store.list_fabric_sessions(cell_name=getattr(args, "cell", None), namespace=ns)
+    if ns and not getattr(args, "cell", None):
+        rows = [row for row in rows if split_app_key(row.cell_key)[0] == ns]
+    if getattr(args, "json", False):
+        import json as _json
+
+        print(
+            _json.dumps(
+                [
+                    {
+                        "session_id": row.session_id,
+                        "cell_key": row.cell_key,
+                        "policy_mode": row.policy_mode,
+                        "status": row.status,
+                        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                        "members": row.members,
+                        "allowed_rules": row.allowed_rules,
+                        "created_at": row.created_at.isoformat(),
+                        "updated_at": row.updated_at.isoformat(),
+                    }
+                    for row in rows
+                ],
+                indent=2,
+            )
+        )
+        return 0
+    if not rows:
+        print("no fabric sessions")
+        return 0
+    for row in rows:
+        exp = row.expires_at.isoformat() if row.expires_at else "-"
+        members = len(list(row.members or []))
+        print(
+            f"{row.session_id} cell={_display_app_name(row.cell_key)} "
+            f"policy={row.policy_mode} status={row.status} members={members} expires_at={exp}"
+        )
     return 0
 
 

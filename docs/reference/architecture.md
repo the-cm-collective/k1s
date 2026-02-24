@@ -126,6 +126,7 @@ Spec fields (src/ae/controller/spec.py)
 - `resources`: requests/limits for cpu/memory.
 - `volumes`: hostPath bind mounts; `storage`: named volumes with `retention`; `emptyDirs` with medium selection.
 - `imagePullPolicy`, `imagePullSecrets[]`.
+- `runtimeClassName` (maps to CRI runtime handler and passes through in K8s export).
 - Scheduling: `nodeSelector`, `tolerations[]`, `affinity`, `topologySpreadConstraints`, `priorityClassName`.
 - Policy/export: `networkPolicy`, `podSecurity`, `dnsPolicy/config`, `hostname`, `subdomain`, `hostAliases`, `enableServiceLinks`, `shareProcessNamespace`, `hostNetwork|PID|IPC`, `setHostnameAsFQDN`.
 - `terminationGracePeriodSeconds` (default 10).

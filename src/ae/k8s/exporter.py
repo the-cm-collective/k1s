@@ -592,6 +592,8 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
         pod_spec["terminationGracePeriodSeconds"] = int(m.spec.termination_grace_period_seconds)
     if getattr(m.spec, "priority_class_name", None):
         pod_spec["priorityClassName"] = str(m.spec.priority_class_name)
+    if getattr(m.spec, "runtime_class_name", None):
+        pod_spec["runtimeClassName"] = str(m.spec.runtime_class_name)
     if getattr(m.spec, "hostname", None):
         pod_spec["hostname"] = str(m.spec.hostname)
     if getattr(m.spec, "subdomain", None):
@@ -910,6 +912,8 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
         pod_spec["terminationGracePeriodSeconds"] = int(m.spec.termination_grace_period_seconds)
     if getattr(m.spec, "priority_class_name", None):
         pod_spec["priorityClassName"] = str(m.spec.priority_class_name)
+    if getattr(m.spec, "runtime_class_name", None):
+        pod_spec["runtimeClassName"] = str(m.spec.runtime_class_name)
     if getattr(m.spec, "hostname", None):
         pod_spec["hostname"] = str(m.spec.hostname)
     if getattr(m.spec, "subdomain", None):
