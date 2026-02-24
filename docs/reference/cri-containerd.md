@@ -259,6 +259,7 @@ Kubernetes clusters.
 
 - `AE_CRI_ENDPOINT` for CRI endpoint selection.
 - `AE_CRI_RUNTIME_HANDLER` for CRI runtime handler selection (default `runc` in strict profile targets).
+- Per-workload runtime handler: set `spec.runtimeClassName` in the Deployment manifest (for example `nvidia`) to drive CRI `runtime_handler` at pod sandbox creation.
 - `AE_CRI_REGISTRY=<host:port>` to rewrite strict-CRI managed image refs to a registry.
 - `AE_CRI_REGISTRY_NAMESPACE=<prefix>` to prepend a registry path segment (for example `k1s`).
 - `AE_CRI_REGISTRY_MODE=managed|external|off`
@@ -474,8 +475,10 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml
 ```
 
 Update the manifest to set `AE_CONTROLLER_URL` (controller agent API) and
-`AE_AGENT_TOKEN` (shared secret). The manifest defaults to CRI containerd; for
-Podman/Docker nodes, change `AE_RUNTIME_BACKEND` and remove the socket mount.
+`AE_AGENT_TOKEN` (shared secret). On same-LAN deployments, `AE_CONTROLLER_URL`
+and `AE_AGENT_ENDPOINT` can use either IP or resolvable hostname. The manifest
+defaults to CRI containerd; for Podman/Docker nodes, change
+`AE_RUNTIME_BACKEND` and remove the socket mount.
 
 ## CRI command helpers
 

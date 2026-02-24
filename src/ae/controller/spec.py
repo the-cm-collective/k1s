@@ -502,6 +502,7 @@ class AppSpec(BaseModel):
         default=None, alias="imagePullPolicy"
     )
     image_pull_secrets: List[str] = Field(default_factory=list, alias="imagePullSecrets")
+    runtime_class_name: Optional[str] = Field(default=None, alias="runtimeClassName")
     # Scheduling (pass-through for K8s export)
     affinity: dict | None = None
     tolerations: List[dict] = Field(default_factory=list)
@@ -558,6 +559,242 @@ class AppManifest(BaseModel):
         return v
 
 
+class InferenceModelRef(BaseModel):
+    """Model reference for an inference cell."""
+
+    model_id: str = Field(alias="modelId")
+    revision: str | None = None
+    local_path: str = Field(alias="localPath")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceParallelismSpec(BaseModel):
+    """Parallelism settings."""
+
+    tp: int = Field(default=1, ge=1)
+    pp: int = Field(default=1, ge=1)
+
+
+class InferenceRayPorts(BaseModel):
+    """Pinned Ray port profile."""
+
+    head_port: int = Field(default=6379, alias="headPort")
+    node_manager_port: int = Field(default=10301, alias="nodeManagerPort")
+    object_manager_port: int = Field(default=12345, alias="objectManagerPort")
+    runtime_env_agent_port: int = Field(default=17001, alias="runtimeEnvAgentPort")
+    min_worker_port: int = Field(default=20001, alias="minWorkerPort")
+    max_worker_port: int = Field(default=20100, alias="maxWorkerPort")
+    include_dashboard: bool = Field(default=False, alias="includeDashboard")
+    dashboard_host: str = Field(default="127.0.0.1", alias="dashboardHost")
+    dashboard_port: int = Field(default=8265, alias="dashboardPort")
+    ray_client_server_port: int | None = Field(default=None, alias="rayClientServerPort")
+    metrics_export_port: int | None = Field(default=None, alias="metricsExportPort")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceExecutorSpec(BaseModel):
+    """Executor selection and options."""
+
+    type: Literal["ray", "mp"] = "ray"
+    fallback_mode: Literal["none", "mp_on_failure"] = Field(
+        default="mp_on_failure", alias="fallbackMode"
+    )
+    ray_scope: Literal["per-site", "per-cell", "shared"] = Field(
+        default="per-site", alias="rayScope"
+    )
+    ray_auth_token_ref: str | None = Field(default=None, alias="rayAuthTokenRef")
+    ray_ports: InferenceRayPorts = Field(default_factory=InferenceRayPorts, alias="rayPorts")
+    ray_image: str = Field(default="rayproject/ray:latest", alias="rayImage")
+    mp_image: str = Field(default="vllm/vllm-openai:latest", alias="mpImage")
+    launcher_image: str = Field(default="python:3.12-slim", alias="launcherImage")
+    runtime_class_name: str | None = Field(default=None, alias="runtimeClassName")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceMemberSpec(BaseModel):
+    """Candidate node for stage placement."""
+
+    site_id: str = Field(alias="siteId")
+    node_id: str = Field(alias="nodeId")
+    gpu_count: int = Field(alias="gpuCount", ge=1)
+
+    model_config = {"populate_by_name": True}
+
+
+class InferencePlacementPolicy(BaseModel):
+    """Placement policy knobs."""
+
+    pack_stages_by_site: bool = Field(default=True, alias="packStagesBySite")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceFabricSpec(BaseModel):
+    """Per-cell fabric policy."""
+
+    provider: Literal["wg_ephemeral"] = "wg_ephemeral"
+    mode: Literal["lan_direct", "wg_ephemeral"] = "lan_direct"
+    policy_mode: Literal["strict_membership", "strict_ports"] = Field(
+        default="strict_membership", alias="policyMode"
+    )
+    ttl_seconds: int = Field(default=300, alias="ttlSeconds", ge=30)
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceRendezvousSpec(BaseModel):
+    """Port ranges and master stage."""
+
+    master_stage: int = Field(default=0, alias="masterStage", ge=0)
+    master_port_min: int = Field(default=22000, alias="masterPortMin")
+    master_port_max: int = Field(default=22100, alias="masterPortMax")
+    api_port_min: int = Field(default=18080, alias="apiPortMin")
+    api_port_max: int = Field(default=18180, alias="apiPortMax")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceHealthSpec(BaseModel):
+    """Lifecycle deadlines and restart policy."""
+
+    workers_deadline_s: int = Field(default=180, alias="workersDeadlineSeconds")
+    leader_deadline_s: int = Field(default=180, alias="leaderDeadlineSeconds")
+    join_deadline_s: int = Field(default=120, alias="joinDeadlineSeconds")
+    max_restarts: int = Field(default=5, alias="maxRestarts", ge=0)
+    backoff_initial_s: float = Field(default=3.0, alias="backoffInitialSeconds")
+    backoff_multiplier: float = Field(default=2.0, alias="backoffMultiplier")
+    backoff_max_s: float = Field(default=60.0, alias="backoffMaxSeconds")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceLinkBudget(BaseModel):
+    """Hard link caps for admission."""
+
+    rtt_p95_ms_max: float = Field(default=30.0, alias="rttP95MsMax")
+    jitter_p95_ms_max: float = Field(default=3.0, alias="jitterP95MsMax")
+    loss_pct_max: float = Field(default=0.01, alias="lossPctMax")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferencePerfBudget(BaseModel):
+    """Relative latency budget for network overhead."""
+
+    compute_token_ms_p50: float | None = Field(default=None, alias="computeTokenMsP50")
+    alpha_net: float = Field(default=0.25, alias="alphaNet")
+    beta_jitter: float = Field(default=0.05, alias="betaJitter")
+    loss_pct_max: float = Field(default=0.01, alias="lossPctMax")
+
+    model_config = {"populate_by_name": True}
+
+
+class LinkMetricSample(BaseModel):
+    """Observed site-to-site metric sample used for admission."""
+
+    from_site: str = Field(alias="fromSite")
+    to_site: str = Field(alias="toSite")
+    rtt_p95_ms: float = Field(alias="rttP95Ms")
+    jitter_p95_ms: float = Field(default=0.0, alias="jitterP95Ms")
+    loss_pct: float = Field(default=0.0, alias="lossPct")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceCellSpec(BaseModel):
+    """Inference cell desired state."""
+
+    model: InferenceModelRef
+    parallelism: InferenceParallelismSpec = Field(default_factory=InferenceParallelismSpec)
+    executor: InferenceExecutorSpec = Field(default_factory=InferenceExecutorSpec)
+    members: List[InferenceMemberSpec] = Field(default_factory=list)
+    placement_policy: InferencePlacementPolicy = Field(
+        default_factory=InferencePlacementPolicy, alias="placementPolicy"
+    )
+    fabric: InferenceFabricSpec = Field(default_factory=InferenceFabricSpec)
+    rendezvous: InferenceRendezvousSpec = Field(default_factory=InferenceRendezvousSpec)
+    health: InferenceHealthSpec = Field(default_factory=InferenceHealthSpec)
+    link_budget: InferenceLinkBudget = Field(
+        default_factory=InferenceLinkBudget, alias="linkBudget"
+    )
+    perf_budget: InferencePerfBudget = Field(
+        default_factory=InferencePerfBudget, alias="perfBudget"
+    )
+    link_metrics: List[LinkMetricSample] = Field(default_factory=list, alias="linkMetrics")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceCellManifest(BaseModel):
+    """Top-level inference cell manifest."""
+
+    api_version: Literal["ae.dev/v1alpha1"] = Field(alias="apiVersion")
+    kind: Literal["InferenceCell"]
+    metadata: Metadata
+    spec: InferenceCellSpec
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _normalize_kind(cls, v: str):  # noqa: D401 - simple guard
+        if isinstance(v, str) and v.strip().lower() == "inferencecell":
+            return "InferenceCell"
+        return v
+
+
+class InferenceCellSetSpec(BaseModel):
+    """Replica-set style template for inference cells."""
+
+    replicas: int = Field(default=1, ge=0)
+    template: InferenceCellSpec
+    name_format: str = Field(default="{set}-{i:03d}", alias="nameFormat")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceCellSetManifest(BaseModel):
+    """Top-level inference cellset manifest."""
+
+    api_version: Literal["ae.dev/v1alpha1"] = Field(alias="apiVersion")
+    kind: Literal["InferenceCellSet"]
+    metadata: Metadata
+    spec: InferenceCellSetSpec
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _normalize_kind(cls, v: str):  # noqa: D401 - simple guard
+        if isinstance(v, str) and v.strip().lower() == "inferencecellset":
+            return "InferenceCellSet"
+        return v
+
+
+ManifestDocument = AppManifest | InferenceCellManifest | InferenceCellSetManifest
+
+
+def parse_manifest_document(data: dict, *, source: str = "manifest") -> ManifestDocument:
+    """Parse any supported ae.dev/v1alpha1 manifest kind."""
+
+    kind = str(data.get("kind") or "").strip().lower()
+    try:
+        if kind == "deployment":
+            return AppManifest.model_validate(data)
+        if kind == "inferencecell":
+            return InferenceCellManifest.model_validate(data)
+        if kind == "inferencecellset":
+            return InferenceCellSetManifest.model_validate(data)
+    except ValidationError as exc:
+        raise ManifestError(f"{source} failed validation: {exc}") from exc
+    raise ManifestError(
+        f"{source} has unsupported kind {data.get('kind')!r}; expected Deployment, InferenceCell, or InferenceCellSet"
+    )
+
+
 def load_manifest(path: Path) -> AppManifest:
     """Load a Deployment manifest from YAML."""
 
@@ -571,10 +808,25 @@ def load_manifest(path: Path) -> AppManifest:
     if not isinstance(data, dict):
         raise ManifestError(f"Manifest {path} must be a YAML mapping")
 
+    manifest = parse_manifest_document(data, source=f"Manifest {path}")
+    if not isinstance(manifest, AppManifest):
+        raise ManifestError(f"Manifest {path} must have kind Deployment")
+    return manifest
+
+
+def load_any_manifest(path: Path) -> ManifestDocument:
+    """Load any supported ae.dev/v1alpha1 manifest kind from YAML."""
+
     try:
-        return AppManifest.model_validate(data)
-    except ValidationError as exc:
-        raise ManifestError(f"Manifest {path} failed validation: {exc}") from exc
+        data = yaml.safe_load(path.read_text())
+    except FileNotFoundError as exc:
+        raise ManifestError(f"Manifest {path} not found") from exc
+    except yaml.YAMLError as exc:
+        raise ManifestError(f"Failed to parse YAML for manifest {path}: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ManifestError(f"Manifest {path} must be a YAML mapping")
+    return parse_manifest_document(data, source=f"Manifest {path}")
 
 
 def normalize_namespace(namespace: str | None) -> str | None:

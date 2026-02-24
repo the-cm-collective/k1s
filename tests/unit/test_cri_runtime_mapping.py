@@ -1,5 +1,7 @@
 """CRI runtime config mapping tests."""
 
+from types import SimpleNamespace
+
 from ae.controller.spec import AppManifest
 from ae.runtime.cri_runtime import CRIRuntime
 
@@ -66,3 +68,36 @@ def test_cri_container_config_separates_command_args_and_mounts():
         m.host_path == "/tmp/ae-proj/config/db" and m.container_path == "/etc/db"
         for m in mounts
     )
+
+
+def test_run_pod_sets_runtime_handler_from_runtime_class_name(monkeypatch) -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "gpu-demo", "namespace": "default"},
+            "spec": {
+                "image": "nvidia/cuda:12.4.1-base-ubuntu22.04",
+                "replicas": 1,
+                "runtimeClassName": "nvidia",
+            },
+        }
+    )
+    runtime = CRIRuntime()
+    captured: dict[str, object] = {}
+
+    def fake_runtime_call(method: str, req):
+        captured["method"] = method
+        captured["req"] = req
+        return SimpleNamespace(pod_sandbox_id="pod-1")
+
+    monkeypatch.setattr(runtime, "_runtime_call", fake_runtime_call)
+    monkeypatch.setattr(runtime, "_create_main_container", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_ensure_sidecars", lambda *_args, **_kwargs: None)
+
+    runtime._run_pod(manifest, "gpu-demo-rev1-0", 1)
+
+    assert captured.get("method") == "RunPodSandbox"
+    req = captured.get("req")
+    assert req is not None
+    assert str(getattr(req, "runtime_handler", "")) == "nvidia"

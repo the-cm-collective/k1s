@@ -1,0 +1,25 @@
+apiVersion: ae.dev/v1alpha1
+kind: InferenceCell
+metadata:
+  name: cell-c-single
+  namespace: default
+spec:
+  model:
+    modelId: llama-3.1-8b
+    localPath: /models/llama-3.1-8b
+  parallelism:
+    tp: 1
+    pp: 1
+  executor:
+    type: ray
+    fallbackMode: mp_on_failure
+    runtimeClassName: nvidia
+  fabric:
+    mode: lan_direct
+    policyMode: strict_membership
+    ttlSeconds: 300
+  members:
+    - siteId: edge-c
+      nodeId: edge-c--gpu-1
+      gpuCount: 1
+  linkMetrics: []
