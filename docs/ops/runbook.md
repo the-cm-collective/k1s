@@ -26,6 +26,12 @@ Setup
   - Seal sample secret: `make secrets-seal-demo` (uses `AE_AGE_RECIPIENT` or your keys.txt)
   - Convenience for demos: run `./scripts/init_demo.sh --with-secrets-env` to export both `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE` automatically.
 
+VM GPU Fabric Lab
+- Golden image build/verify/transfer: `docs/ops/vm-golden-image-pipeline.md`
+- Variant orchestration and bootstrap: `docs/ops/vm-variant-runbook.md`
+- Baseline metrics and throughput gates: `docs/ops/vm-metrics-and-gates.md`
+- Primary command entrypoint: `scripts/lab/vm/labctl.sh`
+
 NATS + etcd dev stack (Mode A)
 - Start hub + etcd + edge NATS: `docker compose -f ops/dev/docker-compose.nats-etcd.yaml up -d`
 - Stop stack: `docker compose -f ops/dev/docker-compose.nats-etcd.yaml down`

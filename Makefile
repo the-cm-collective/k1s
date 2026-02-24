@@ -4,6 +4,9 @@
 .PHONY: edge-site
 .PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy dev-local
 .PHONY: shim-helm-demo
+.PHONY: lab-vm-image-build lab-vm-image-verify lab-vm-image-transfer
+.PHONY: lab-vm-host-prepare lab-vm-up lab-vm-validate lab-vm-bootstrap
+.PHONY: lab-vm-baseline lab-vm-throughput lab-vm-gate lab-vm-collect lab-vm-down
 
 install:
 	python -m pip install -e .[dev]
@@ -226,6 +229,48 @@ labs-apishim-env:
 	fi
 	@echo "[labs] apishim tokens (dev only):"
 	@cat state/profiles/dev-etcd/apishim.env
+
+# VM GPU lab -------------------------------------------------------------
+# Required env:
+# - VARIANT: path under lab/variants/*.yaml
+# Optional env:
+# - RUN_ID, INFERENCE_URL, BASELINE_RUN_ID
+
+lab-vm-image-build:
+	@./scripts/lab/vm/labctl.sh image build --variant $${VARIANT_KIND:-all}
+
+lab-vm-image-verify:
+	@./scripts/lab/vm/labctl.sh image verify --variant $${VARIANT_KIND:-all}
+
+lab-vm-image-transfer:
+	@./scripts/lab/vm/labctl.sh image transfer --host $${DEST_HOST:?set DEST_HOST} --dest $${DEST_DIR:?set DEST_DIR} --variant $${VARIANT_KIND:-all}
+
+lab-vm-host-prepare:
+	@./scripts/lab/vm/labctl.sh host prepare $${LAB_HOST_PREPARE_ARGS:-}
+
+lab-vm-up:
+	@./scripts/lab/vm/labctl.sh variant up --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-validate:
+	@./scripts/lab/vm/labctl.sh variant validate --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-bootstrap:
+	@./scripts/lab/vm/k1s_bootstrap.sh --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID} $${EXECUTE:+--execute}
+
+lab-vm-baseline:
+	@./scripts/lab/vm/labctl.sh variant baseline --variant $${VARIANT:?set VARIANT} --endpoint $${INFERENCE_URL:?set INFERENCE_URL} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-throughput:
+	@./scripts/lab/vm/labctl.sh variant throughput --variant $${VARIANT:?set VARIANT} --endpoint $${INFERENCE_URL:?set INFERENCE_URL} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-gate:
+	@./scripts/lab/vm/labctl.sh variant gate --variant $${VARIANT:?set VARIANT} --baseline-run-id $${BASELINE_RUN_ID:?set BASELINE_RUN_ID} --current-run-id $${RUN_ID:?set RUN_ID}
+
+lab-vm-collect:
+	@./scripts/lab/vm/labctl.sh collect --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-down:
+	@./scripts/lab/vm/labctl.sh variant down --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID} $${LAB_VM_DOWN_ARGS:-}
 
 .PHONY: demo demo-legacy demo-down integ-test labs
 demo:
