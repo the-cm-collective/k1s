@@ -1,0 +1,61 @@
+name: test3-abc-no-gpu
+test_id: 3
+description: Full A/B/C transport fabric validation on single host without GPU requirements.
+network:
+  bridge: k1s-br0
+  cidr: 192.168.152.0/24
+  gateway: 192.168.152.1
+  dns:
+  - 1.1.1.1
+  - 8.8.8.8
+vm:
+  memory_mb: 6144
+  vcpus: 4
+  disk_gb: 50
+images:
+  base: /home/m4xx3d0ut/git/k1s-wt/dev-fabric-0/artifacts/images/ubuntu-22.04-k1s-base.qcow2
+  gpu: /home/m4xx3d0ut/git/k1s-wt/dev-fabric-0/artifacts/images/ubuntu-22.04-k1s-gpu.qcow2
+hosts:
+- name: a-core
+  ip: 192.168.152.10
+  role: k1s-core
+  gpu: false
+  node_id: core-a-gw
+- name: b-edge-core
+  ip: 192.168.152.20
+  role: k1s-edge-core
+  gpu: false
+  site_id: edge-b
+  node_id: edge-b-gw
+- name: b-edge-node-1
+  ip: 192.168.152.21
+  role: k1s-edge-node
+  gpu: false
+  site_id: edge-b
+  node_id: edge-b--node-1
+  node_labels: role=worker,site=edge-b
+- name: c-edge-core
+  ip: 192.168.152.30
+  role: k1s-edge-core
+  gpu: false
+  site_id: edge-c
+  node_id: edge-c-gw
+- name: c-edge-node-1
+  ip: 192.168.152.31
+  role: k1s-edge-node
+  gpu: false
+  site_id: edge-c
+  node_id: edge-c--node-1
+  node_labels: role=worker,site=edge-c
+k1s:
+  agent_token: devtoken
+  controller_port: 9108
+  inference_experimental: false
+baseline:
+  duration_minutes: 10
+  concurrency: 4
+  max_error_rate: 0.001
+throughput_gate:
+  min_tps_ratio: 0.9
+  max_p95_ratio: 1.2
+  max_error_rate: 0.001

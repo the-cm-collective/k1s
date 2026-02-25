@@ -9,6 +9,32 @@ from typing import Any
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_SMOKE_LANES = [
+    "single_non_gpu",
+    "single_gpu",
+    "multi_non_gpu",
+    "multi_gpu",
+]
+DEFAULT_PHASE_TIMEOUTS = {
+    "provision": 1800,
+    "bootstrap": 1800,
+    "service_ready": 900,
+    "fabric_validate": 600,
+    "functional_basic": 300,
+}
+DEFAULT_RETRY_POLICY = {
+    "initial_backoff_s": 2.0,
+    "max_backoff_s": 15.0,
+    "jitter_s": 1.0,
+}
+DEFAULT_SMOKE_CHECKS = {
+    "service_ready": True,
+    "fabric_validate": True,
+    "functional_basic": True,
+    "functional_advanced": False,
+}
+
 
 def _must(obj: dict[str, Any], key: str, t: type, path: str) -> Any:
     if key not in obj:
@@ -17,6 +43,13 @@ def _must(obj: dict[str, Any], key: str, t: type, path: str) -> Any:
     if not isinstance(value, t):
         raise ValueError(f"{path}.{key} must be {t.__name__}")
     return value
+
+
+def _resolve_repo_path(raw_path: str) -> str:
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = REPO_ROOT / candidate
+    return str(candidate.resolve())
 
 
 def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
@@ -39,7 +72,91 @@ def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
     }
 
 
-def parse_variant(path: Path) -> dict[str, Any]:
+def _parse_smoke(raw: dict[str, Any]) -> dict[str, Any]:
+    lanes = list(DEFAULT_SMOKE_LANES)
+    phase_timeouts = dict(DEFAULT_PHASE_TIMEOUTS)
+    retry_policy = dict(DEFAULT_RETRY_POLICY)
+    checks = dict(DEFAULT_SMOKE_CHECKS)
+
+    if not raw:
+        return {
+            "lanes": lanes,
+            "defaults": {
+                "phase_timeouts": phase_timeouts,
+                "retry_policy": retry_policy,
+            },
+            "checks": checks,
+        }
+
+    if not isinstance(raw, dict):
+        raise ValueError("smoke must be a mapping")
+
+    raw_lanes = raw.get("lanes")
+    if raw_lanes is not None:
+        if not isinstance(raw_lanes, list):
+            raise ValueError("smoke.lanes must be a list")
+        lanes = []
+        for entry in raw_lanes:
+            if not isinstance(entry, str):
+                raise ValueError("smoke.lanes entries must be strings")
+            lane = entry.strip()
+            if lane not in DEFAULT_SMOKE_LANES:
+                raise ValueError(f"smoke.lanes contains unsupported lane: {lane}")
+            lanes.append(lane)
+        if not lanes:
+            raise ValueError("smoke.lanes must not be empty")
+
+    defaults = raw.get("defaults")
+    if defaults is not None:
+        if not isinstance(defaults, dict):
+            raise ValueError("smoke.defaults must be a mapping")
+
+        raw_timeouts = defaults.get("phase_timeouts")
+        if raw_timeouts is not None:
+            if not isinstance(raw_timeouts, dict):
+                raise ValueError("smoke.defaults.phase_timeouts must be a mapping")
+            for key, value in raw_timeouts.items():
+                if key not in phase_timeouts:
+                    raise ValueError(f"unsupported smoke phase timeout key: {key}")
+                seconds = int(value)
+                if seconds <= 0:
+                    raise ValueError(
+                        f"smoke.defaults.phase_timeouts.{key} must be > 0"
+                    )
+                phase_timeouts[key] = seconds
+
+        raw_retry = defaults.get("retry_policy")
+        if raw_retry is not None:
+            if not isinstance(raw_retry, dict):
+                raise ValueError("smoke.defaults.retry_policy must be a mapping")
+            for key in retry_policy:
+                if key in raw_retry:
+                    retry_policy[key] = float(raw_retry[key])
+                    if retry_policy[key] < 0:
+                        raise ValueError(
+                            f"smoke.defaults.retry_policy.{key} must be >= 0"
+                        )
+
+    raw_checks = raw.get("checks")
+    if raw_checks is not None:
+        if not isinstance(raw_checks, dict):
+            raise ValueError("smoke.checks must be a mapping")
+        for key, value in raw_checks.items():
+            if key not in checks:
+                raise ValueError(f"unsupported smoke.checks key: {key}")
+            checks[key] = bool(value)
+
+    return {
+        "lanes": lanes,
+        "defaults": {
+            "phase_timeouts": phase_timeouts,
+            "retry_policy": retry_policy,
+        },
+        "checks": checks,
+    }
+
+
+def parse_variant(path: Path, *, validate_images: bool = False) -> dict[str, Any]:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("variant root must be a mapping")
@@ -58,8 +175,12 @@ def parse_variant(path: Path) -> dict[str, Any]:
     disk_gb = int(vm.get("disk_gb", 30))
 
     images = _must(raw, "images", dict, "variant")
-    base_img = _must(images, "base", str, "images")
-    gpu_img = _must(images, "gpu", str, "images")
+    base_img = _resolve_repo_path(_must(images, "base", str, "images"))
+    gpu_img = _resolve_repo_path(_must(images, "gpu", str, "images"))
+    if validate_images:
+        for image_name, image_path in (("base", base_img), ("gpu", gpu_img)):
+            if not Path(image_path).is_file():
+                raise ValueError(f"images.{image_name} not found: {image_path}")
 
     hosts_raw = _must(raw, "hosts", list, "variant")
     if not hosts_raw:
@@ -77,6 +198,47 @@ def parse_variant(path: Path) -> dict[str, Any]:
     gate = raw.get("throughput_gate") or {}
     if not isinstance(gate, dict):
         raise ValueError("throughput_gate must be a mapping")
+
+    transport = raw.get("transport") or {}
+    if not isinstance(transport, dict):
+        raise ValueError("transport must be a mapping")
+    leaf_uplink_mode = str(transport.get("leaf_uplink_mode", "direct_ip")).strip().lower()
+    if leaf_uplink_mode not in {"direct_ip", "local_tunnel"}:
+        raise ValueError("transport.leaf_uplink_mode must be direct_ip or local_tunnel")
+    hub_host = str(transport.get("hub_host", "")).strip() or None
+    hub_leaf_port = int(transport.get("hub_leaf_port", 7422))
+    if hub_leaf_port <= 0:
+        raise ValueError("transport.hub_leaf_port must be > 0")
+
+    smoke = _parse_smoke(raw.get("smoke") or {})
+
+    environments = raw.get("environments") or {}
+    if not isinstance(environments, dict):
+        raise ValueError("environments must be a mapping")
+    local_vm = environments.get("local_vm") or {}
+    remote_lab = environments.get("remote_lab") or {}
+    if not isinstance(local_vm, dict):
+        raise ValueError("environments.local_vm must be a mapping")
+    if not isinstance(remote_lab, dict):
+        raise ValueError("environments.remote_lab must be a mapping")
+
+    secrets = raw.get("secrets") or {}
+    if not isinstance(secrets, dict):
+        raise ValueError("secrets must be a mapping")
+    refs = secrets.get("refs") or {}
+    if not isinstance(refs, dict):
+        raise ValueError("secrets.refs must be a mapping")
+    secret_refs = {}
+    for key, value in refs.items():
+        if not isinstance(key, str):
+            raise ValueError("secrets.refs keys must be strings")
+        if not isinstance(value, str):
+            raise ValueError("secrets.refs values must be strings")
+        clean_key = key.strip()
+        clean_value = value.strip()
+        if not clean_key or not clean_value:
+            raise ValueError("secrets.refs entries must be non-empty strings")
+        secret_refs[clean_key] = clean_value
 
     return {
         "name": name,
@@ -100,7 +262,7 @@ def parse_variant(path: Path) -> dict[str, Any]:
         "hosts": hosts,
         "k1s": {
             "agent_token": str(k1s.get("agent_token", "devtoken")),
-            "controller_port": int(k1s.get("controller_port", 9110)),
+            "controller_port": int(k1s.get("controller_port", 9108)),
             "controller_host": str(k1s.get("controller_host", "")) or None,
             "inference_experimental": bool(k1s.get("inference_experimental", True)),
         },
@@ -114,6 +276,19 @@ def parse_variant(path: Path) -> dict[str, Any]:
             "max_p95_ratio": float(gate.get("max_p95_ratio", 1.20)),
             "max_error_rate": float(gate.get("max_error_rate", 0.001)),
         },
+        "transport": {
+            "leaf_uplink_mode": leaf_uplink_mode,
+            "hub_host": hub_host,
+            "hub_leaf_port": hub_leaf_port,
+        },
+        "smoke": smoke,
+        "environments": {
+            "local_vm": local_vm,
+            "remote_lab": remote_lab,
+        },
+        "secrets": {
+            "refs": secret_refs,
+        },
     }
 
 
@@ -122,9 +297,14 @@ def main() -> int:
     parser.add_argument("--variant", required=True, help="Path to variant yaml")
     parser.add_argument("--print-json", action="store_true", help="Print normalized JSON")
     parser.add_argument("--get", default="", help="Dot path lookup")
+    parser.add_argument(
+        "--validate-images",
+        action="store_true",
+        help="Validate that resolved image paths exist on disk",
+    )
     args = parser.parse_args()
 
-    variant = parse_variant(Path(args.variant))
+    variant = parse_variant(Path(args.variant), validate_images=args.validate_images)
 
     if args.get:
         value: Any = variant
