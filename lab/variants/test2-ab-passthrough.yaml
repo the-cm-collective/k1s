@@ -36,8 +36,12 @@ hosts:
     node_labels: role=worker,site=edge-b,gpu.sku=rtx-6000
 k1s:
   agent_token: devtoken
-  controller_port: 9110
+  controller_port: 9108
   inference_experimental: true
+transport:
+  leaf_uplink_mode: direct_ip
+  hub_host: 192.168.152.10
+  hub_leaf_port: 7422
 baseline:
   duration_minutes: 20
   concurrency: 16

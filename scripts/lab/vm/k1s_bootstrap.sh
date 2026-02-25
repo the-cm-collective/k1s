@@ -42,6 +42,16 @@ controller_host="$(printf '%s' "$controller_row" | base64 -d)"
 controller_ip="$(echo "$controller_host" | jq -r '.ip')"
 controller_port="$(echo "$variant_json" | jq -r '.k1s.controller_port')"
 token="$(echo "$variant_json" | jq -r '.k1s.agent_token')"
+leaf_uplink_mode="$(echo "$variant_json" | jq -r '.transport.leaf_uplink_mode')"
+transport_hub_host="$(echo "$variant_json" | jq -r '.transport.hub_host // empty')"
+edge_hub_leaf_port="$(echo "$variant_json" | jq -r '.transport.hub_leaf_port')"
+edge_hub_leaf_host="127.0.0.1"
+if [[ "$leaf_uplink_mode" == "direct_ip" ]]; then
+  edge_hub_leaf_host="${transport_hub_host:-$controller_ip}"
+fi
+edge_core_site_ids="$(
+  echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-core" and (.site_id // "") != "") | .site_id' | sort -u | tr '\n' ' '
+)"
 
 mapfile -t rows < <(echo "$variant_json" | jq -r '.hosts[] | @base64')
 plan_file="$(run_dir "$RUN_ID")/bootstrap/plan.txt"
@@ -60,14 +70,38 @@ build_command() {
 
   case "$role" in
     k1s-core)
+      local register_edge_sites_snippet=""
+      if [[ -n "$edge_core_site_ids" ]]; then
+        register_edge_sites_snippet="$(cat <<CMD
+if command -v bash >/dev/null 2>&1; then
+  for _ in \$(seq 1 90); do
+    if bash -c 'exec 3<>/dev/tcp/127.0.0.1/7422' >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+fi
+for site in ${edge_core_site_ids}; do
+  (cd /mnt/host && sudo -E AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} REGISTER_ONLY=1 SITE_ID="\$site" ./scripts/dev/add_edge_site.sh)
+done
+CMD
+)"
+      fi
       cat <<CMD
 cd /mnt/host
-python3 -m pip install -e .[dev] --break-system-packages
-nohup sudo -E \
+bootstrap_pip_install
+nohup sudo env \
+  PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
+  AE_CRI_DATA_ROOT=\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri} \
   AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
+  AE_CRI_REGISTRY_TRUST_SYSTEM=\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1} \
+  AE_CRI_REGISTRY_PRELOAD=\${AE_CRI_REGISTRY_PRELOAD:-1} \
+  AE_APISHIM_MODE=\${AE_APISHIM_MODE:-host} \
   make k1s-core-cri > /home/ae/k1s-core.log 2>&1 &
+${register_edge_sites_snippet}
 CMD
       ;;
     k1s-edge-core)
@@ -77,12 +111,17 @@ CMD
       fi
       cat <<CMD
 cd /mnt/host
-python3 -m pip install -e .[dev] --break-system-packages
-nohup sudo -E \
+bootstrap_pip_install
+nohup sudo env \
+  PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
+  AE_CRI_DATA_ROOT=\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri} \
+  AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
   AE_SITE_ID=${site_id} \
   AE_NODE_ID=${node_id} \
+  AE_NATS_HUB_LEAF_HOST=${edge_hub_leaf_host} \
+  AE_NATS_HUB_LEAF_PORT=${edge_hub_leaf_port} \
   make k1s-edge-core-cri > /home/ae/k1s-edge-core.log 2>&1 &
 CMD
       ;;
@@ -92,8 +131,9 @@ CMD
       fi
       cat <<CMD
 cd /mnt/host
-python3 -m pip install -e .[dev] --break-system-packages
-nohup sudo -E \
+bootstrap_pip_install
+nohup sudo env \
+  PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_NODE_ID=${node_id} \
@@ -120,9 +160,27 @@ for row in "${rows[@]}"; do
   {
     echo "#!/usr/bin/env bash"
     echo "set -euo pipefail"
+    echo "bootstrap_pip_install() {"
+    echo "  local req='requirements.in'"
+    echo "  if sudo python3 -m pip install --help 2>/dev/null | grep -q -- --break-system-packages; then"
+    echo "    sudo python3 -m pip install -r \"\$req\" --break-system-packages"
+    echo "  else"
+    echo "    sudo python3 -m pip install -r \"\$req\""
+    echo "  fi"
+    echo "}"
+    echo "bootstrap_runtime_prereqs() {"
+    echo "  if ! command -v python >/dev/null 2>&1; then"
+    echo "    sudo env DEBIAN_FRONTEND=noninteractive apt-get update"
+    echo "    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y python-is-python3"
+    echo "  fi"
+    echo "  if [[ ! -S /run/containerd/containerd.sock ]]; then"
+    echo "    (cd /mnt/host && sudo -E DEBIAN_FRONTEND=noninteractive AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock ./scripts/cri_ci_setup.sh)"
+    echo "  fi"
+    echo "}"
     echo "cloud-init status --wait"
     echo "sudo mkdir -p /mnt/host"
     echo "sudo mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host || true"
+    echo "bootstrap_runtime_prereqs"
     build_command "$host_json"
     echo "echo bootstrap-complete"
   } >"$script_path"

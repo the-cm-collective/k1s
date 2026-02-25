@@ -125,6 +125,14 @@ acquire_profile_lock() {
   local profile="$1"
   local lock_dir="$ROOT_DIR/state/profiles/$profile"
   local lock_file="$lock_dir/.profile.lock"
+
+  # Shared /mnt/host across VMs: allow concurrent edge profiles by site.
+  if [[ "$profile" == "k1s-edge" ]]; then
+    local lock_scope="${AE_SITE_ID:-${AE_NODE_ID:-$(hostname -s 2>/dev/null || hostname)}}"
+    lock_scope="${lock_scope//\//_}"
+    lock_file="$lock_dir/.profile.${lock_scope}.lock"
+  fi
+
   mkdir -p "$lock_dir"
   if ! command -v flock >/dev/null 2>&1; then
     return 0
@@ -275,9 +283,11 @@ ensure_cri_registry_defaults() {
   local preset mode
   local insecure_explicit=0
   local trust_explicit=0
+  local trust_system_explicit=0
 
   [[ -n "${AE_CRI_REGISTRY_INSECURE+x}" ]] && insecure_explicit=1
   [[ -n "${AE_CRI_REGISTRY_TRUST+x}" ]] && trust_explicit=1
+  [[ -n "${AE_CRI_REGISTRY_TRUST_SYSTEM+x}" ]] && trust_system_explicit=1
 
   preset="$(printf '%s' "${AE_CRI_REGISTRY_PRESET:-}" | tr '[:upper:]' '[:lower:]')"
   case "$preset" in
@@ -359,6 +369,9 @@ ensure_cri_registry_defaults() {
     ensure_managed_registry_tls_material
     if [[ "$trust_explicit" -eq 0 ]]; then
       export AE_CRI_REGISTRY_TRUST=1
+    fi
+    if [[ "$trust_system_explicit" -eq 0 ]]; then
+      export AE_CRI_REGISTRY_TRUST_SYSTEM=1
     fi
     if [[ -z "${AE_CRI_REGISTRY_TRUST_CA:-}" && -n "${AE_CRI_MANAGED_REGISTRY_TLS_CA:-}" ]]; then
       export AE_CRI_REGISTRY_TRUST_CA="${AE_CRI_MANAGED_REGISTRY_TLS_CA}"
@@ -621,6 +634,124 @@ ensure_cri_preflight() {
   fi
 }
 
+cri_ref_has_registry_prefix() {
+  local ref="${1:-}"
+  [[ "$ref" == */* ]] || return 1
+  local first="${ref%%/*}"
+  [[ "$first" == *.* || "$first" == *:* || "$first" == "localhost" ]]
+}
+
+resolve_cri_registry_target_ref() {
+  local source_ref="$1"
+  local registry_host="$2"
+  local namespace="${3:-}"
+
+  local ref="$source_ref"
+  local digest=""
+  local tag=""
+  local last_segment
+  if [[ "$ref" == *@* ]]; then
+    digest="@${ref##*@}"
+    ref="${ref%@*}"
+  fi
+
+  last_segment="${ref##*/}"
+  if [[ "$last_segment" == *:* ]]; then
+    tag=":${last_segment##*:}"
+    ref="${ref%:*}"
+  fi
+
+  if cri_ref_has_registry_prefix "$ref"; then
+    ref="${ref#*/}"
+  fi
+
+  ref="${ref#/}"
+  namespace="${namespace#/}"
+  namespace="${namespace%/}"
+  if [[ -n "$namespace" ]]; then
+    ref="${namespace}/${ref}"
+  fi
+  printf '%s/%s%s%s' "${registry_host%/}" "$ref" "$tag" "$digest"
+}
+
+ensure_cri_registry_preload_images() {
+  if ! is_strict_cri; then
+    return 0
+  fi
+  if [[ "${PROFILE:-}" != "k1s-core" && "${PROFILE:-}" != "k1s-edge" ]]; then
+    return 0
+  fi
+  if [[ "${AE_CRI_REGISTRY_MODE:-managed}" == "off" ]]; then
+    return 0
+  fi
+
+  local preload_default=0
+  if [[ "${AE_CRI_REGISTRY_MODE:-managed}" == "managed" ]]; then
+    preload_default=1
+  fi
+  if ! is_truthy "${AE_CRI_REGISTRY_PRELOAD:-$preload_default}"; then
+    return 0
+  fi
+
+  local registry_host="${AE_CRI_REGISTRY:-${AE_REGISTRY_HOST:-}}"
+  if [[ -z "$registry_host" ]]; then
+    return 0
+  fi
+  registry_host="${registry_host#http://}"
+  registry_host="${registry_host#https://}"
+  registry_host="${registry_host%%/*}"
+
+  local mirror_script="$ROOT_DIR/scripts/dev/cri_image_mirror.sh"
+  if [[ ! -x "$mirror_script" ]]; then
+    echo "error: missing CRI image mirror helper: $mirror_script" >&2
+    exit 1
+  fi
+
+  local -a source_images=()
+  if [[ -n "${AE_CRI_REGISTRY_PRELOAD_IMAGES:-}" ]]; then
+    local raw_item
+    while IFS= read -r raw_item; do
+      raw_item="${raw_item#"${raw_item%%[![:space:]]*}"}"
+      raw_item="${raw_item%"${raw_item##*[![:space:]]}"}"
+      [[ -n "$raw_item" ]] && source_images+=("$raw_item")
+    done < <(printf '%s' "${AE_CRI_REGISTRY_PRELOAD_IMAGES}" | tr ',' '\n')
+  else
+    if [[ "${PROFILE:-}" == "k1s-edge" ]]; then
+      source_images=(
+        "docker.io/library/nats:2.10"
+        "${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
+      )
+    else
+      source_images=(
+        "quay.io/coreos/etcd:v3.5.13"
+        "docker.io/library/nats:2.10"
+        "docker.io/library/postgres:16"
+        "${AE_ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}"
+        "${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
+      )
+    fi
+  fi
+
+  if [[ "${#source_images[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  local namespace="${AE_CRI_REGISTRY_NAMESPACE:-}"
+  local source target
+  for source in "${source_images[@]}"; do
+    target="$(resolve_cri_registry_target_ref "$source" "$registry_host" "$namespace")"
+    echo "[cri] preloading strict-CRI image: source=${source} target=${target}" >&2
+    if ! bash "$mirror_script" \
+      --source "$source" \
+      --target "$target" \
+      --cri-endpoint "${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}" \
+      --pull-cri; then
+      echo "error: failed to preload strict-CRI image '${source}' into '${target}'" >&2
+      exit 1
+    fi
+  done
+}
+
 ensure_backend_not_mixed_with_core_cri() {
   if is_strict_cri; then
     return 0
@@ -690,27 +821,66 @@ prepare_strict_edge_nats_config() {
   local site_id="$1"
   local edge_port="${2:-4224}"
   local edge_http_port="${3:-8224}"
+  local hub_leaf_host="${4:-127.0.0.1}"
+  local hub_leaf_port="${5:-7422}"
   local src="$ROOT_DIR/ops/dev/nats-edge.conf"
   local out="$ROOT_DIR/ops/dev/nats-edge-${site_id}.conf"
   if [[ ! -f "$src" ]]; then
     echo "error: missing nats edge template: $src" >&2
     exit 1
   fi
-  "$PYTHON_BIN" - <<PY "$src" "$out" "$site_id" "$edge_port" "$edge_http_port"
+  "$PYTHON_BIN" - <<PY "$src" "$out" "$site_id" "$edge_port" "$edge_http_port" "$hub_leaf_host" "$hub_leaf_port"
 from pathlib import Path
 import re
 import sys
 
-src, out, site, port, http_port = sys.argv[1:6]
+src, out, site, port, http_port, hub_host, hub_port = sys.argv[1:8]
 text = Path(src).read_text(encoding="utf-8")
 text = text.replace("sfo-edge-01", site)
 text = text.replace("edge-sfo-01", f"edge-{site}")
-text = re.sub(r'@nats-hub:7422"', '@127.0.0.1:7422"', text)
+text = re.sub(r'@nats-hub:\d+"', f'@{hub_host}:{hub_port}"', text)
 text = re.sub(r"(?m)^port:\\s*\\d+\\s*$", f"port: {port}", text)
 text = re.sub(r"(?m)^http:\\s*\\d+\\s*$", f"http: {http_port}", text)
 Path(out).write_text(text, encoding="utf-8")
 print(out)
 PY
+}
+
+resolve_strict_edge_hub_leaf_host() {
+  if [[ -n "${AE_NATS_HUB_LEAF_HOST:-}" ]]; then
+    printf '%s' "${AE_NATS_HUB_LEAF_HOST}"
+    return 0
+  fi
+  if [[ -n "${AE_CONTROLLER_URL:-}" ]]; then
+    local controller_host
+    controller_host="$(
+      "$PYTHON_BIN" - <<'PY' "${AE_CONTROLLER_URL}"
+from urllib.parse import urlparse
+import sys
+
+url = (sys.argv[1] or "").strip()
+try:
+    parsed = urlparse(url)
+except Exception:
+    print("")
+    raise SystemExit(0)
+print(parsed.hostname or "")
+PY
+    )"
+    if [[ -n "$controller_host" ]]; then
+      printf '%s' "$controller_host"
+      return 0
+    fi
+  fi
+  printf '127.0.0.1'
+}
+
+resolve_strict_edge_hub_leaf_port() {
+  if [[ -n "${AE_NATS_HUB_LEAF_PORT:-}" ]]; then
+    printf '%s' "${AE_NATS_HUB_LEAF_PORT}"
+    return 0
+  fi
+  printf '7422'
 }
 
 resolve_strict_edge_port() {
@@ -1384,7 +1554,11 @@ start_apishim() {
   fi
 
   if [[ "$mode" == "host" ]]; then
-    nohup "$PYTHON_BIN" -m ae.apishim serve --host "$host" --port "$port" --tls \
+    local apishim_pythonpath="$ROOT_DIR/src"
+    if [[ -n "${PYTHONPATH:-}" ]]; then
+      apishim_pythonpath="${apishim_pythonpath}:${PYTHONPATH}"
+    fi
+    nohup env PYTHONPATH="$apishim_pythonpath" "$PYTHON_BIN" -m ae.apishim serve --host "$host" --port "$port" --tls \
       >"$profile_dir/apishim.log" 2>&1 &
     echo $! > "$pid_file"
     if ! apishim_wait_healthy "$port" "$health_token" "$startup_timeout"; then
@@ -1810,6 +1984,7 @@ case "$PROFILE" in
     ;;
   k1s-core)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
+    PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/k1s-core}")"
     POSTGRES_BIND_IP="${POSTGRES_BIND_IP:-127.0.0.1}"
     POSTGRES_PORT="${POSTGRES_PORT:-5432}"
     export POSTGRES_BIND_IP POSTGRES_PORT
@@ -1826,11 +2001,15 @@ case "$PROFILE" in
     fi
     export AE_APISHIM_DSN
     if is_strict_cri; then
+      generated_hub_conf="${PROFILE_DIR}/generated/nats-hub.generated.conf"
+      if [[ -z "${AE_NATS_HUB_CONFIG:-}" && -f "$generated_hub_conf" ]]; then
+        export AE_NATS_HUB_CONFIG="$generated_hub_conf"
+      fi
+      ensure_cri_registry_preload_images
       run_cri_stack up-core-base --profile k1s-core
     else
       compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d etcd nats-hub postgres
     fi
-    PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/k1s-core}")"
     SPECS_DIR="$(abs_path "${SPECS_DIR:-$PROFILE_DIR/specs}")"
     ensure_specs_dir "$SPECS_DIR"
     export DEV_PROFILE_DIR="$PROFILE_DIR"
@@ -1951,9 +2130,12 @@ case "$PROFILE" in
     EDGE_START_NATS="${EDGE_START_NATS:-1}"
     if [[ "$EDGE_START_NATS" == "1" ]]; then
       if is_strict_cri; then
+        ensure_cri_registry_preload_images
         strict_edge_port="$(resolve_strict_edge_port)"
         strict_edge_http_port="$(resolve_strict_edge_http_port)"
-        strict_edge_conf="$(prepare_strict_edge_nats_config "$AE_SITE_ID" "$strict_edge_port" "$strict_edge_http_port")"
+        strict_hub_host="$(resolve_strict_edge_hub_leaf_host)"
+        strict_hub_port="$(resolve_strict_edge_hub_leaf_port)"
+        strict_edge_conf="$(prepare_strict_edge_nats_config "$AE_SITE_ID" "$strict_edge_port" "$strict_edge_http_port" "$strict_hub_host" "$strict_hub_port")"
         run_cri_stack up-edge-nats --profile "${EDGE_PROFILE:-k1s-edge}" --site-id "$AE_SITE_ID" --config "$strict_edge_conf" --recreate
       else
         compose "$ENGINE_BIN" -f "$COMPOSE_FILE" up -d nats-edge

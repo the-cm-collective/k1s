@@ -26,6 +26,16 @@ def _truthy(value: str | None) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _cri_data_root() -> Path:
+    raw = str(os.getenv("AE_CRI_DATA_ROOT", "")).strip()
+    if not raw:
+        return ROOT / "state"
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (ROOT / path).resolve()
+    return path
+
+
 def _resolve_runtime_handler(runtime_handler: str | None = None) -> str | None:
     value = runtime_handler
     if value is None:
@@ -870,7 +880,7 @@ def _start_apishim(
 def _start_etcd(
     profile: str, *, runtime_handler: str | None = None, recreate: bool = False
 ) -> None:
-    etcd_data = ROOT / "state" / "etcd"
+    etcd_data = _cri_data_root() / "etcd"
     etcd_data.mkdir(parents=True, exist_ok=True)
     _start_component(
         profile=profile,
@@ -894,9 +904,20 @@ def _start_etcd(
 
 
 def _start_nats_hub(
-    profile: str, *, runtime_handler: str | None = None, recreate: bool = False
+    profile: str,
+    *,
+    runtime_handler: str | None = None,
+    recreate: bool = False,
+    config: Path | None = None,
 ) -> None:
-    nats_data = ROOT / "state" / "nats-hub"
+    if config is None:
+        config = ROOT / "ops" / "dev" / "nats-hub.conf"
+    config = config.resolve()
+    if not config.is_file():
+        raise FileNotFoundError(f"nats hub config not found: {config}")
+
+    rollout_key = _stable_hash(["nats-hub-config", str(config), _file_sha256(config)])
+    nats_data = _cri_data_root() / "nats-hub"
     nats_data.mkdir(parents=True, exist_ok=True)
     _start_component(
         profile=profile,
@@ -906,20 +927,21 @@ def _start_nats_hub(
         command=["nats-server", "-c", "/etc/nats/nats-hub.conf"],
         mounts=[
             _mount(
-                ROOT / "ops" / "dev" / "nats-hub.conf",
+                config,
                 "/etc/nats/nats-hub.conf",
                 readonly=True,
             ),
             _mount(nats_data, "/data"),
         ],
         recreate=recreate,
+        rollout_key=rollout_key,
     )
 
 
 def _start_postgres(
     profile: str, *, runtime_handler: str | None = None, recreate: bool = False
 ) -> None:
-    pg_data = ROOT / "state" / "postgres"
+    pg_data = _cri_data_root() / "postgres"
     pg_data.mkdir(parents=True, exist_ok=True)
     _start_component(
         profile=profile,
@@ -946,7 +968,7 @@ def _start_registry(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
-    registry_data = ROOT / "state" / "registry"
+    registry_data = _cri_data_root() / "registry"
     registry_data.mkdir(parents=True, exist_ok=True)
 
     if (tls_cert is None) != (tls_key is None):
@@ -983,8 +1005,15 @@ def _start_registry(
 def _core_base(
     profile: str, *, runtime_handler: str | None = None, recreate: bool = False
 ) -> None:
+    hub_cfg_raw = str(os.getenv("AE_NATS_HUB_CONFIG", "")).strip()
+    hub_cfg = Path(hub_cfg_raw).resolve() if hub_cfg_raw else None
     _start_etcd(profile, runtime_handler=runtime_handler, recreate=recreate)
-    _start_nats_hub(profile, runtime_handler=runtime_handler, recreate=recreate)
+    _start_nats_hub(
+        profile,
+        runtime_handler=runtime_handler,
+        recreate=recreate,
+        config=hub_cfg,
+    )
     _start_postgres(profile, runtime_handler=runtime_handler, recreate=recreate)
 
 
@@ -996,8 +1025,8 @@ def _start_caddy(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
-    caddy_data = ROOT / "state" / "caddy-data"
-    caddy_sites = ROOT / "state" / "caddy"
+    caddy_data = _cri_data_root() / "caddy-data"
+    caddy_sites = _cri_data_root() / "caddy"
     caddy_data.mkdir(parents=True, exist_ok=True)
     caddy_sites.mkdir(parents=True, exist_ok=True)
     _start_component(
@@ -1024,7 +1053,7 @@ def _start_caddy(
                 "/etc/caddy/Caddyfile",
                 readonly=True,
             ),
-            _mount(ROOT / "state" / "caddy-cri", "/etc/caddy/sites", readonly=True),
+            _mount(_cri_data_root() / "caddy-cri", "/etc/caddy/sites", readonly=True),
             _mount(caddy_data, "/data"),
             _mount(caddy_sites, "/etc/caddy/dynsites", readonly=True),
             _mount(ROOT / "docs" / "site", "/srv/docs", readonly=True),
@@ -1256,8 +1285,9 @@ def main(argv: list[str] | None = None) -> int:
     registry.add_argument("--tls-key")
     registry.add_argument("--recreate", action="store_true")
 
-    nh = sub.add_parser("up-nats-hub", help="start/reload hub nats")
+    nh = sub.add_parser("up-nats-hub", help="start/reconcile hub nats")
     nh.add_argument("--profile", default="k1s-core")
+    nh.add_argument("--config", default="")
     nh.add_argument("--recreate", action="store_true")
 
     apishim = sub.add_parser("up-apishim", help="start/reload apishim")
@@ -1331,6 +1361,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.profile,
                 runtime_handler=args.runtime_handler,
                 recreate=bool(args.recreate),
+                config=Path(args.config).resolve() if args.config else None,
             )
             return 0
         if args.cmd == "up-apishim":
