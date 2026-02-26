@@ -44,3 +44,6 @@ rosenpass*.key
 rosenpass*.pub
 rosenpass*.conf
 rosenpass-status.json
+artifacts/
+runs/
+scripts/dev/*.bak.*
