@@ -7,12 +7,19 @@ import os
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from enum import StrEnum
+from datetime import datetime, timedelta
+from enum import Enum
+
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11 compatibility
+    class StrEnum(str, Enum):
+        """Backport-compatible StrEnum shim."""
 from typing import Protocol
 
 import requests
 
+from ae._utc import UTC
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,

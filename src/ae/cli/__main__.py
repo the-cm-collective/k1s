@@ -8,13 +8,14 @@ import logging
 import os
 import shutil
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
+from ae._utc import UTC
 from ae.config.manager import ConfigManager
 from ae.controller.health import HealthManager
 from ae.controller.inference_cell import InferenceCellController, InferenceCellSetController
@@ -5356,7 +5357,7 @@ def _parse_rfc3339_to_epoch(value: str | None) -> int | None:
             s = s[:-1] + "+00:00"
         dt = _dt.datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_dt.UTC)
+            dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp())
     except Exception:
         return None

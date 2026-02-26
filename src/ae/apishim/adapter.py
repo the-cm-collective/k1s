@@ -9,10 +9,11 @@ import os
 import subprocess
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ae._utc import UTC
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
     AppManifest,
