@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for cmd in qemu-system-x86_64 cloud-localds qemu-img ip ssh jq packer crictl; do
+for cmd in qemu-system-x86_64 cloud-localds qemu-img ip ssh jq crictl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "[host-prepare] missing command: $cmd" >&2
     exit 2
@@ -44,8 +44,12 @@ if [[ "$APPLY" -eq 0 ]]; then
 fi
 
 sudo ip link show "$BRIDGE" >/dev/null 2>&1 || {
+  prefix="${NET_CIDR#*/}"
+  if [[ "$prefix" == "$NET_CIDR" ]]; then
+    prefix="24"
+  fi
   sudo ip link add name "$BRIDGE" type bridge
-  sudo ip addr add "$GATEWAY"/24 dev "$BRIDGE"
+  sudo ip addr add "$GATEWAY/$prefix" dev "$BRIDGE"
   sudo ip link set "$BRIDGE" up
 }
 

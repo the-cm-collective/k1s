@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SITE_ID="${SITE_ID:-${1:-}}"
 EDGE_PORT="${EDGE_PORT:-4224}"
 EDGE_HTTP_PORT="${EDGE_HTTP_PORT:-8224}"
+REGISTER_ONLY="${REGISTER_ONLY:-0}"
+HUB_PROFILE="${HUB_PROFILE:-k1s-core}"
 ENGINE_BIN="${ENGINE_BIN:-}"
 RUNTIME_BACKEND_EXPLICIT=1
 if [[ -z "${AE_RUNTIME_BACKEND:-}" ]]; then
@@ -21,7 +23,9 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 if [[ -z "$SITE_ID" ]]; then
-  echo "usage: SITE_ID=<site-id> [EDGE_PORT=4224 EDGE_HTTP_PORT=8224] $0" >&2
+  cat >&2 <<USAGE
+usage: SITE_ID=<site-id> [EDGE_PORT=4224 EDGE_HTTP_PORT=8224] [REGISTER_ONLY=0|1] $0
+USAGE
   exit 1
 fi
 
@@ -108,6 +112,42 @@ run_cri_stack() {
   PYTHONPATH=src "$PYTHON_BIN" "$ROOT_DIR/scripts/dev/cri_stack.py" "$@"
 }
 
+resolve_hub_leaf_host() {
+  if [[ -n "${AE_NATS_HUB_LEAF_HOST:-}" ]]; then
+    printf '%s' "${AE_NATS_HUB_LEAF_HOST}"
+    return 0
+  fi
+  if [[ -n "${AE_CONTROLLER_URL:-}" ]]; then
+    local controller_host
+    controller_host="$($PYTHON_BIN - <<'PY' "${AE_CONTROLLER_URL}"
+from urllib.parse import urlparse
+import sys
+
+url = (sys.argv[1] or "").strip()
+try:
+    parsed = urlparse(url)
+except Exception:
+    print("")
+    raise SystemExit(0)
+print(parsed.hostname or "")
+PY
+    )"
+    if [[ -n "$controller_host" ]]; then
+      printf '%s' "$controller_host"
+      return 0
+    fi
+  fi
+  printf '127.0.0.1'
+}
+
+resolve_hub_leaf_port() {
+  if [[ -n "${AE_NATS_HUB_LEAF_PORT:-}" ]]; then
+    printf '%s' "${AE_NATS_HUB_LEAF_PORT}"
+    return 0
+  fi
+  printf '7422'
+}
+
 ENGINE_BIN="${ENGINE_BIN:-$(detect_engine)}"
 INFRA_BACKEND="$(resolve_infra_backend)"
 if [[ "$INFRA_BACKEND" == "cri" ]]; then
@@ -115,46 +155,61 @@ if [[ "$INFRA_BACKEND" == "cri" ]]; then
     export AE_RUNTIME_BACKEND="cri"
   fi
   export AE_CRI_RUNTIME_HANDLER="${AE_CRI_RUNTIME_HANDLER:-runc}"
+  export AE_CRI_IMAGE_POLICY="${AE_CRI_IMAGE_POLICY:-pull}"
   export AE_CRI_SET_HOSTNAME="${AE_CRI_SET_HOSTNAME:-0}"
 fi
-HUB_CONF="$ROOT_DIR/ops/dev/nats-hub.conf"
+
+HUB_CONF_TEMPLATE="$ROOT_DIR/ops/dev/nats-hub.conf"
+HUB_GENERATED_DIR="${AE_HUB_CONFIG_DIR:-$ROOT_DIR/state/profiles/${HUB_PROFILE}/generated}"
+HUB_SITE_REGISTRY="$HUB_GENERATED_DIR/nats-sites.txt"
+HUB_CONF_GENERATED="$HUB_GENERATED_DIR/nats-hub.generated.conf"
 EDGE_TEMPLATE="$ROOT_DIR/ops/dev/nats-edge.conf"
 EDGE_CONF="$ROOT_DIR/ops/dev/nats-edge-${SITE_ID}.conf"
+HUB_LEAF_HOST="$(resolve_hub_leaf_host)"
+HUB_LEAF_PORT="$(resolve_hub_leaf_port)"
+
+mkdir -p "$HUB_GENERATED_DIR"
 
 if [[ ! -f "$EDGE_TEMPLATE" ]]; then
   echo "missing template: $EDGE_TEMPLATE" >&2
   exit 1
 fi
+if [[ ! -f "$HUB_CONF_TEMPLATE" ]]; then
+  echo "missing hub template: $HUB_CONF_TEMPLATE" >&2
+  exit 1
+fi
 
-"$PYTHON_BIN" - <<'PY' "$EDGE_TEMPLATE" "$EDGE_CONF" "$SITE_ID" "$EDGE_PORT" "$EDGE_HTTP_PORT" "$INFRA_BACKEND"
+"$PYTHON_BIN" - <<'PY' "$EDGE_TEMPLATE" "$EDGE_CONF" "$SITE_ID" "$EDGE_PORT" "$EDGE_HTTP_PORT" "$INFRA_BACKEND" "$HUB_LEAF_HOST" "$HUB_LEAF_PORT"
 from pathlib import Path
 import re
 import sys
 
-tmpl, out, site_id, edge_port, edge_http_port, infra_backend = sys.argv[1:7]
+tmpl, out, site_id, edge_port, edge_http_port, infra_backend, hub_host, hub_port = sys.argv[1:9]
 text = Path(tmpl).read_text(encoding="utf-8")
 if "sfo-edge-01" not in text:
     raise SystemExit("template missing sfo-edge-01 marker")
 text = text.replace("sfo-edge-01", site_id)
 text = text.replace("edge-sfo-01", f"edge-{site_id}")
 if infra_backend == "cri":
-    text = re.sub(r'@nats-hub:7422"', '@127.0.0.1:7422"', text)
+    text = re.sub(r'@nats-hub:\d+"', f'@{hub_host}:{hub_port}"', text)
     text = re.sub(r"(?m)^port:\s*\d+\s*$", f"port: {edge_port}", text)
     text = re.sub(r"(?m)^http:\s*\d+\s*$", f"http: {edge_http_port}", text)
 Path(out).write_text(text, encoding="utf-8")
 print(f"[edge-site] wrote {out}")
 PY
 
-hub_updated="$(
-"$PYTHON_BIN" - <<'PY' "$HUB_CONF" "$SITE_ID"
+hub_updated="$($PYTHON_BIN - <<'PY' "$HUB_CONF_TEMPLATE" "$HUB_CONF_GENERATED" "$HUB_SITE_REGISTRY" "$SITE_ID"
 from pathlib import Path
+import hashlib
 import sys
 
-path = Path(sys.argv[1])
-site_id = sys.argv[2]
-text = path.read_text(encoding="utf-8")
-marker = "# --- site uplink users (managed by scripts/dev/add_edge_site.sh)"
-user_block = f'''
+def file_hash(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def user_block(site_id: str) -> str:
+    return f'''
       {{
         user: "site-{site_id}-uplink"
         password: "dev"
@@ -170,63 +225,98 @@ user_block = f'''
         }}
       }}
 '''
-if f'user: "site-{site_id}-uplink"' in text:
-    print("noop")
-    raise SystemExit(0)
+
+def load_sites(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    items: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        site = raw.strip()
+        if not site or site.startswith("#"):
+            continue
+        items.append(site)
+    return sorted(set(items))
+
+template_path, out_path, registry_path, site_id = [Path(arg) if i < 3 else arg for i, arg in enumerate(sys.argv[1:5])]
+text = template_path.read_text(encoding="utf-8")
+marker = "# --- site uplink users (managed by scripts/dev/add_edge_site.sh)"
 if marker not in text:
     raise SystemExit("hub config missing marker; rebase ops/dev/nats-hub.conf")
-parts = text.split(marker)
-if len(parts) != 2:
-    raise SystemExit("unexpected hub config marker layout")
-text = parts[0] + marker + user_block + parts[1]
-path.write_text(text, encoding="utf-8")
-print("updated")
+
+sites = load_sites(registry_path)
+sites.append(site_id)
+sites = sorted(set(sites))
+
+rendered = text
+for site in sites:
+    needle = f'user: "site-{site}-uplink"'
+    if needle in rendered:
+        continue
+    rendered = rendered.replace(marker, marker + user_block(site), 1)
+
+prev_hash = file_hash(out_path)
+out_path.write_text(rendered, encoding="utf-8")
+registry_path.write_text("\n".join(sites) + "\n", encoding="utf-8")
+next_hash = file_hash(out_path)
+print("updated" if prev_hash != next_hash else "noop")
 PY
 )"
+
 if [[ "$hub_updated" == "updated" ]]; then
-  echo "[edge-site] updated ${HUB_CONF}"
+  echo "[edge-site] rendered ${HUB_CONF_GENERATED}"
 else
-  echo "[edge-site] hub already configured for site"
+  echo "[edge-site] hub runtime config unchanged: ${HUB_CONF_GENERATED}"
 fi
 
 if [[ "$INFRA_BACKEND" == "cri" ]]; then
   CRI_EDGE_PROFILE="${EDGE_PROFILE:-k1s-core}"
   if [[ "$hub_updated" == "updated" ]]; then
-    run_cri_stack up-nats-hub --profile k1s-core --recreate
+    run_cri_stack up-nats-hub --profile "$HUB_PROFILE" --config "$HUB_CONF_GENERATED" --recreate
   else
-    run_cri_stack up-nats-hub --profile k1s-core
+    run_cri_stack up-nats-hub --profile "$HUB_PROFILE" --config "$HUB_CONF_GENERATED"
   fi
-  run_cri_stack up-edge-nats --profile "$CRI_EDGE_PROFILE" --site-id "$SITE_ID" --config "$EDGE_CONF" --recreate
-  EDGE_CONTAINER="k1s-edge-nats-${SITE_ID}"
-else
-  # Ensure hub is up and reload to pick up new user.
-  if "$ENGINE_BIN" ps --format '{{.Names}}' 2>/dev/null | grep -q '^dev-nats-hub-1$'; then
-    if [[ "$hub_updated" == "updated" ]]; then
-      if ! "$ENGINE_BIN" exec -T dev-nats-hub-1 nats-server --signal reload >/dev/null 2>&1; then
-        "$ENGINE_BIN" restart dev-nats-hub-1 >/dev/null 2>&1 || true
-      fi
-    fi
+
+  if [[ "$REGISTER_ONLY" == "1" ]]; then
+    EDGE_CONTAINER="(register-only)"
   else
+    run_cri_stack up-edge-nats --profile "$CRI_EDGE_PROFILE" --site-id "$SITE_ID" --config "$EDGE_CONF" --recreate
+    EDGE_CONTAINER="k1s-edge-nats-${SITE_ID}"
+  fi
+else
+  if ! "$ENGINE_BIN" ps --format '{{.Names}}' 2>/dev/null | grep -q '^dev-nats-hub-1$'; then
     "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml" up -d nats-hub >/dev/null 2>&1 || true
   fi
 
-  # Ensure compose network exists (dev_default) so edge can reach nats-hub by DNS.
-  if ! "$ENGINE_BIN" network inspect dev_default >/dev/null 2>&1; then
-    "$ENGINE_BIN" network create dev_default >/dev/null 2>&1 || true
+  "$ENGINE_BIN" cp "$HUB_CONF_GENERATED" dev-nats-hub-1:/etc/nats/nats-hub.conf >/dev/null
+  if ! "$ENGINE_BIN" exec -T dev-nats-hub-1 nats-server --signal reload >/dev/null 2>&1; then
+    "$ENGINE_BIN" restart dev-nats-hub-1 >/dev/null 2>&1 || true
   fi
 
-  EDGE_CONTAINER="dev-nats-edge-${SITE_ID}"
-  "$ENGINE_BIN" rm -f "$EDGE_CONTAINER" >/dev/null 2>&1 || true
-  "$ENGINE_BIN" run -d --name "$EDGE_CONTAINER" \
-    --network dev_default \
-    -p "${EDGE_PORT}:4223" \
-    -p "${EDGE_HTTP_PORT}:8223" \
-    -v "${EDGE_CONF}:/etc/nats/nats-edge.conf:ro" \
-    docker.io/library/nats:2.10 \
-    -c /etc/nats/nats-edge.conf >/dev/null
+  if [[ "$REGISTER_ONLY" == "1" ]]; then
+    EDGE_CONTAINER="(register-only)"
+  else
+    if ! "$ENGINE_BIN" network inspect dev_default >/dev/null 2>&1; then
+      "$ENGINE_BIN" network create dev_default >/dev/null 2>&1 || true
+    fi
+
+    EDGE_CONTAINER="dev-nats-edge-${SITE_ID}"
+    "$ENGINE_BIN" rm -f "$EDGE_CONTAINER" >/dev/null 2>&1 || true
+    "$ENGINE_BIN" run -d --name "$EDGE_CONTAINER" \
+      --network dev_default \
+      -p "${EDGE_PORT}:4223" \
+      -p "${EDGE_HTTP_PORT}:8223" \
+      -v "${EDGE_CONF}:/etc/nats/nats-edge.conf:ro" \
+      docker.io/library/nats:2.10 \
+      -c /etc/nats/nats-edge.conf >/dev/null
+  fi
 fi
 
-if [[ "$INFRA_BACKEND" == "cri" ]]; then
+if [[ "$REGISTER_ONLY" == "1" ]]; then
+  cat <<EOF
+[edge-site] registered site credentials for ${SITE_ID}
+[edge-site] hub config: ${HUB_CONF_GENERATED}
+EOF
+elif [[ "$INFRA_BACKEND" == "cri" ]]; then
   EDGE_TARGET_HINT="k1s-edge-core-cri"
   if [[ "${EDGE_PROFILE:-k1s-core}" != "k1s-core" ]]; then
     EDGE_TARGET_HINT="k1s-edge-cri"

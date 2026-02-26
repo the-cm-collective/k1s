@@ -78,6 +78,27 @@ def test_start_rathole_client_uses_image_entrypoint_args(monkeypatch) -> None:
     assert captured["args"] == ["--client", "/etc/rathole/client.toml"]
 
 
+def test_start_etcd_uses_ae_cri_data_root(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_start_component(**kwargs):
+        captured.update(kwargs)
+
+    data_root = (tmp_path / "cri-data").resolve()
+    monkeypatch.setenv("AE_CRI_DATA_ROOT", str(data_root))
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+
+    cri_stack._start_etcd("k1s-core", runtime_handler="runc", recreate=False)
+
+    mounts = captured["mounts"]
+    assert isinstance(mounts, list)
+    assert {
+        "host_path": str(data_root / "etcd"),
+        "container_path": "/etcd-data",
+        "readonly": False,
+    } in mounts
+
+
 def test_start_envoy_mounts_state_paths_for_tls_resolution(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 

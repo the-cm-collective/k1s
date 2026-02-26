@@ -2,6 +2,7 @@
 set -euo pipefail
 
 variant="${1:-base}"
+seed_manifest="${2:-/tmp/cri_seed_images.lock.json}"
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
@@ -41,14 +42,35 @@ fi
 systemctl enable containerd qemu-guest-agent
 systemctl restart containerd qemu-guest-agent
 
+seed_version=""
+if [[ -f "$seed_manifest" ]]; then
+  seed_version="$(jq -r '.seed_version // empty' "$seed_manifest" 2>/dev/null || true)"
+  echo "[image-bootstrap] pre-seeding CRI cache from $seed_manifest"
+  mapfile -t seed_images < <(jq -r '[.images.core[]?, .images.edge[]?] | unique[]' "$seed_manifest")
+  for image in "${seed_images[@]}"; do
+    [[ -n "$image" ]] || continue
+    if ctr -n k8s.io images inspect "$image" >/dev/null 2>&1; then
+      echo "[image-bootstrap] CRI image already cached: $image"
+      continue
+    fi
+    echo "[image-bootstrap] pull CRI image: $image"
+    ctr -n k8s.io images pull --platform linux/amd64 "$image"
+  done
+fi
+
 mkdir -p /etc/k1s-image
 cat >/etc/k1s-image/build-info.json <<JSON
 {
   "variant": "${variant}",
   "distro": "ubuntu-22.04",
-  "kernel_track": "ga-5.15"
+  "kernel_track": "ga-5.15",
+  "cri_seed_version": "${seed_version}"
 }
 JSON
+
+if [[ -f "$seed_manifest" ]]; then
+  cp "$seed_manifest" /etc/k1s-image/cri_seed_images.lock.json
+fi
 
 apt-get autoremove -y
 apt-get clean

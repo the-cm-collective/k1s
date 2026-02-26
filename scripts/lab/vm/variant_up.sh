@@ -34,7 +34,7 @@ require_cmd jq
 require_cmd ssh
 ensure_ssh_key
 
-variant_json="$(variant_to_json "$VARIANT")"
+variant_json="$(variant_to_json "$VARIANT" --validate-images)"
 bridge="$(echo "$variant_json" | jq -r '.network.bridge')"
 cidr="$(echo "$variant_json" | jq -r '.network.cidr')"
 gateway="$(echo "$variant_json" | jq -r '.network.gateway')"
@@ -88,7 +88,7 @@ users:
   - name: ae
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
-    ssh-authorized-keys:
+    ssh_authorized_keys:
       - ${pubkey}
 package_update: true
 packages:
@@ -96,11 +96,10 @@ packages:
   - jq
   - python3-pip
 runcmd:
-  - cloud-init status --wait
   - mkdir -p /mnt/host
   - mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host || true
-  - systemctl enable qemu-guest-agent
-  - systemctl start qemu-guest-agent
+  - systemctl enable qemu-guest-agent || true
+  - systemctl start qemu-guest-agent || true
 CFG
 
   cat >"$tmp/network-config" <<CFG
@@ -147,7 +146,7 @@ start_one() {
   fi
 
   if [[ ! -f "$overlay" ]]; then
-    qemu-img create -f qcow2 -b "$img" "$overlay" "${disk_gb}G" >/dev/null
+    qemu-img create -f qcow2 -F qcow2 -b "$img" "$overlay" "${disk_gb}G" >/dev/null
   fi
 
   make_seed "$name" "$ip" "$seed" "$dns_csv"
@@ -169,6 +168,17 @@ start_one() {
     -daemonize \
     -pidfile "$pid" \
     -D "$log"
+
+  if [[ ! -s "$pid" ]]; then
+    err "qemu failed to start ${name}; missing pidfile ${pid} (see ${log})"
+    return 1
+  fi
+  local qemu_pid
+  qemu_pid="$(cat "$pid" 2>/dev/null || true)"
+  if [[ -z "$qemu_pid" ]] || ! kill -0 "$qemu_pid" >/dev/null 2>&1; then
+    err "qemu failed to stay up for ${name}; invalid pid '${qemu_pid}' (see ${log})"
+    return 1
+  fi
 
   jq -n \
     --arg name "$name" \

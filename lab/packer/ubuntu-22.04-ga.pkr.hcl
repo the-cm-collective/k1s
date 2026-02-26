@@ -84,11 +84,16 @@ build {
     destination = "/tmp/gpu-bootstrap.sh"
   }
 
+  provisioner "file" {
+    source      = "lab/variants/cri_seed_images.lock.json"
+    destination = "/tmp/cri_seed_images.lock.json"
+  }
+
   provisioner "shell" {
     execute_command = "echo 'packer' | {{.Vars}} sudo -S -E bash '{{.Path}}'"
     inline = [
       "chmod +x /tmp/common-bootstrap.sh /tmp/gpu-bootstrap.sh",
-      "/tmp/common-bootstrap.sh ${var.variant}",
+      "/tmp/common-bootstrap.sh ${var.variant} /tmp/cri_seed_images.lock.json",
       "if [ '${var.variant}' = 'gpu' ]; then /tmp/gpu-bootstrap.sh; fi",
       "cloud-init clean --logs",
       "truncate -s 0 /etc/machine-id",
