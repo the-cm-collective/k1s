@@ -24,7 +24,7 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
   - strict `k1s-core` now supports `AE_APISHIM_MODE=cri` (`k1s-core-apishim` CRI pod)
   - missing strict-CRI images support interactive build/pull prompt (`AE_CRI_IMAGE_POLICY`)
   - strict-CRI fallback action `b` uses local build + registry push + CRI pull verify
-    (backend order: nerdctl, podman, docker; override via `AE_CRI_LOCAL_BUILD_BACKEND`)
+    (backend order: nerdctl, podman, docker, ctr; override via `AE_CRI_LOCAL_BUILD_BACKEND`)
   - strict-CRI image refs can target existing dev registries via `AE_CRI_REGISTRY`
 
 ## P0: Required for CRI as default backend (dev/labs)

@@ -10,6 +10,7 @@ Usage:
   $0 image verify [args]
   $0 image transfer [args]
   $0 host prepare [args]
+  $0 smoke [args]
   $0 variant up [args]
   $0 variant validate [args]
   $0 variant baseline [args]
@@ -46,6 +47,9 @@ case "$subject" in
       prepare) exec "$SCRIPT_DIR/host_prepare.sh" "$@" ;;
       *) usage; exit 2 ;;
     esac
+    ;;
+  smoke)
+    exec "$SCRIPT_DIR/smoke.sh" "$@"
     ;;
   variant)
     action="${1:-}"

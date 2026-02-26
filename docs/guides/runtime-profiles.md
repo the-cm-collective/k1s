@@ -55,8 +55,8 @@ Notes:
   - strict fallback action `b`:
     - apishim image (`k1s-core-apishim`): local build + registry push + CRI pull verify
     - other strict-CRI managed images (etcd/nats/postgres/envoy/rathole/caddy): mirror source image into `AE_CRI_REGISTRY` + CRI pull verify
-  - local build backend order: `nerdctl`, then `podman`, then `docker`
-  - optional override: `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker`
+  - local build backend order: `nerdctl`, then `podman`, then `docker`, then `ctr`
+  - optional override: `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr`
 - Registry mapping in strict CRI:
   - `AE_CRI_REGISTRY=<host:port>` rewrites CRI-managed image refs to that registry
   - optional path prefix: `AE_CRI_REGISTRY_NAMESPACE=<prefix>`

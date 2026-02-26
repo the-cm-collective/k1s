@@ -167,6 +167,7 @@ Containerd requires explicit trust config for insecure registries or custom CA.
 Use the helper to write `/etc/containerd/certs.d/<host>/hosts.toml`:
 
 The helper also ensures containerd CRI registry `config_path` points to `/etc/containerd/certs.d` and restarts containerd automatically when that setting changes.
+For strict-CRI managed TLS lanes, `run_profile.sh` now defaults `AE_CRI_REGISTRY_TRUST_SYSTEM=1` so the managed CA is also installed into system trust.
 
 ```
 scripts/containerd_registry_trust.sh \
@@ -273,12 +274,17 @@ Kubernetes clusters.
 - Managed TLS material defaults under `state/profiles/<profile>/registry/tls` and is auto-generated when missing.
 - `AE_CRI_REGISTRY_INSECURE=1` is a dev-only opt-out for plaintext/insecure registry access.
 - `AE_CRI_REGISTRY_TRUST=1` to apply trust configuration during strict CRI startup (auto-enabled for managed TLS).
+- `AE_CRI_REGISTRY_TRUST_SYSTEM=1|0` controls system trust installation (`/usr/local/share/ca-certificates` + `update-ca-certificates`).
+  - Default in managed TLS lanes is `1` unless explicitly overridden.
 - `AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt` or `AE_CRI_REGISTRY_TRUST_INSECURE=1` (dev).
 - `AE_CRI_REGISTRY_TRUST_SCHEME=http` to override scheme (default `https`).
 - `AE_CRI_REGISTRY_AUTO_RESTART=1|0` (default `1`) restarts containerd automatically when registry trust scheme flips (`http` <-> `https`).
 - `AE_CRI_REGISTRY_TRUST_RESTART=1` forces restart after trust write, even without scheme transition.
+- `AE_CRI_REGISTRY_PRELOAD=1|0` enables/disables strict-CRI registry preloading before `k1s-core` startup.
+  - Default is `1` for managed mode, `0` for external mode.
+- `AE_CRI_REGISTRY_PRELOAD_IMAGES=<csv>` overrides preload sources (default: etcd, nats, postgres, envoy, rathole strict-CRI core images).
 - `AE_CRI_IMAGE_POLICY=prompt|pull|fail` for strict-CRI missing-image behavior.
-- `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker` to pick strict-CRI local build backend for fallback action `b`.
+- `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr` to pick strict-CRI local build backend for fallback action `b`.
 - `AE_APISHIM_IMAGE=<image-ref>` to override strict-CRI apishim image.
 - `AE_CRI_SET_HOSTNAME=1` to request explicit hostname wiring for CRI stack components.
 - `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default).

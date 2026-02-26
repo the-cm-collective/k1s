@@ -6,7 +6,7 @@
 .PHONY: shim-helm-demo
 .PHONY: lab-vm-image-build lab-vm-image-verify lab-vm-image-transfer
 .PHONY: lab-vm-host-prepare lab-vm-up lab-vm-validate lab-vm-bootstrap
-.PHONY: lab-vm-baseline lab-vm-throughput lab-vm-gate lab-vm-collect lab-vm-down
+.PHONY: lab-vm-baseline lab-vm-throughput lab-vm-gate lab-vm-collect lab-vm-down lab-vm-smoke
 
 install:
 	python -m pip install -e .[dev]
@@ -256,6 +256,9 @@ lab-vm-validate:
 
 lab-vm-bootstrap:
 	@./scripts/lab/vm/k1s_bootstrap.sh --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID} $${EXECUTE:+--execute}
+
+lab-vm-smoke:
+	@./scripts/lab/vm/labctl.sh smoke --variant $${VARIANT:-lab/variants/test3-abc-pp2.yaml} $${RUN_ID:+--run-id $$RUN_ID} $${LAB_VM_SMOKE_ARGS:-}
 
 lab-vm-baseline:
 	@./scripts/lab/vm/labctl.sh variant baseline --variant $${VARIANT:?set VARIANT} --endpoint $${INFERENCE_URL:?set INFERENCE_URL} $${RUN_ID:+--run-id $$RUN_ID}

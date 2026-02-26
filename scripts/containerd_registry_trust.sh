@@ -145,12 +145,12 @@ ensure_containerd_registry_config_path() {
   awk -v desired="$desired" '
     BEGIN { in_table=0; done=0 }
     {
-      if ($0 ~ /^\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\][[:space:]]*$/) {
+      if ($0 ~ /^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\][[:space:]]*$/) {
         print
         in_table=1
         next
       }
-      if (in_table && $0 ~ /^\[/) {
+      if (in_table && $0 ~ /^[[:space:]]*\[/) {
         if (!done) {
           print "  config_path = \"" desired "\""
           done=1
@@ -167,6 +167,10 @@ ensure_containerd_registry_config_path() {
       print
     }
     END {
+      if (in_table && !done) {
+        print "  config_path = \"" desired "\""
+        done=1
+      }
       if (!done) {
         if (NR > 0) {
           print ""
@@ -193,7 +197,7 @@ ensure_containerd_runc_runtime() {
   local config_file="/etc/containerd/config.toml"
   [[ -f "$config_file" ]] || return 1
 
-  if grep -Eq '^\[plugins\."io\.containerd\.grpc\.v1\.cri"\.containerd\.runtimes\.runc\][[:space:]]*$' "$config_file"; then
+  if grep -Eq '^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"\.containerd\.runtimes\.runc\][[:space:]]*$' "$config_file"; then
     return 1
   fi
 

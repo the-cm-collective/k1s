@@ -43,7 +43,8 @@ ensure_run_dir() {
 
 variant_to_json() {
   local variant_path="$1"
-  PYTHONPATH="$ROOT_DIR/src" python "$ROOT_DIR/scripts/lab/vm/lib/variant.py" --variant "$variant_path" --print-json
+  shift || true
+  PYTHONPATH="$ROOT_DIR/src" python "$ROOT_DIR/scripts/lab/vm/lib/variant.py" --variant "$variant_path" --print-json "$@"
 }
 
 variant_value() {
