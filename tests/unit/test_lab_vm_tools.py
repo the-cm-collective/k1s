@@ -13,6 +13,9 @@ GATE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "throughput_gate.py"
 SMOKE_V2_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "smoke_v2.py"
 BOOTSTRAP_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "k1s_bootstrap.sh"
 RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
+CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
+CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
+CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
 
 _SMOKE_V2_SPEC = spec_from_file_location("smoke_v2_script", SMOKE_V2_SCRIPT)
@@ -263,12 +266,49 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_CRI_REGISTRY_TRUST_SYSTEM=\\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1}" in text
     assert "AE_CRI_REGISTRY_PRELOAD=\\${AE_CRI_REGISTRY_PRELOAD:-1}" in text
     assert "AE_APISHIM_MODE=\\${AE_APISHIM_MODE:-host}" in text
+    assert "bootstrap_seed_cri_cache core" in text
+    assert "bootstrap_seed_cri_cache edge" in text
+    assert "AE_CRI_CACHE_SEED_MODE" in text
+    assert "AE_CRI_CACHE_SEED_BUNDLE" in text
 
 
 def test_run_profile_host_apishim_uses_src_pythonpath() -> None:
     text = RUN_PROFILE_SCRIPT.read_text(encoding="utf-8")
     assert 'local apishim_pythonpath="$ROOT_DIR/src"' in text
     assert 'nohup env PYTHONPATH="$apishim_pythonpath" "$PYTHON_BIN" -m ae.apishim serve' in text
+
+
+def test_cri_image_mirror_prefers_local_cache() -> None:
+    text = CRI_IMAGE_MIRROR_SCRIPT.read_text(encoding="utf-8")
+    assert "AE_CRI_IMAGE_MIRROR_ALWAYS_PULL" in text
+    assert '[cri-image-mirror] source already cached: ${image}' in text
+    assert 'ctr -n "$ctr_namespace" images ls -q' in text
+    assert 'grep -Fx -- "$image"' in text
+
+
+def test_cri_seed_bundle_script_accepts_run_id_and_profile() -> None:
+    text = CRI_SEED_BUNDLE_SCRIPT.read_text(encoding="utf-8")
+    assert "--run-id <id>" in text
+    assert "--profile <name>" in text
+    assert "AE_CRI_CACHE_SEED_ENGINE" in text
+    assert '[cri-seed] source already cached: $image' in text
+    assert "images export" in text or "save -o" in text
+
+
+def test_cri_seed_lock_contains_core_and_edge_images() -> None:
+    payload = json.loads(CRI_SEED_LOCK_FILE.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert "seed_version" in payload
+    assert "core" in payload["images"]
+    assert "edge" in payload["images"]
+    assert "docker.io/library/registry:2" in payload["images"]["core"]
+    assert "docker.io/library/registry:2" in payload["images"]["edge"]
+    assert "quay.io/coreos/etcd:v3.5.13" in payload["images"]["core"]
+    assert "docker.io/library/nats:2.10" in payload["images"]["edge"]
+
+
+def test_smoke_v2_includes_seed_cache_phase_timeout() -> None:
+    assert "seed_cache" in smoke_v2.DEFAULT_PHASE_TIMEOUTS
 
 
 def test_smoke_with_retry_handles_check_exceptions() -> None:
@@ -342,6 +382,71 @@ def test_nats_hub_logs_returns_log_output_with_logpath_status() -> None:
     assert status == "logpath_ok"
 
 
+def test_nats_edge_logs_parses_status_marker() -> None:
+    original = smoke_v2.run_remote
+    seen: dict[str, str] = {}
+
+    def _fake_run_remote(
+        ip: str,
+        command: str,
+        *,
+        timeout: int = 30,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = timeout
+        seen["ip"] = ip
+        seen["command"] = command
+        return subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="",
+            stderr="__NATS_EDGE_LOG_STATUS__:empty_logs\n",
+        )
+
+    smoke_v2.run_remote = _fake_run_remote  # type: ignore[assignment]
+    try:
+        edge = {
+            "name": "b-edge-core",
+            "role": "k1s-edge-core",
+            "site_id": "edge-b",
+            "ip": "192.168.152.20",
+        }
+        logs, status = smoke_v2.nats_edge_logs(edge)
+    finally:
+        smoke_v2.run_remote = original
+
+    assert logs == ""
+    assert status == "empty_logs"
+    assert seen["ip"] == "192.168.152.20"
+    assert "cids=$({" in seen["command"]
+    assert "} 2>/dev/null" in seen["command"]
+    assert "}} 2>/dev/null" not in seen["command"]
+
+
+def test_nats_edge_logs_returns_unsupported_role_for_non_edge_host() -> None:
+    edge = {"name": "b-edge-node-1", "role": "k1s-edge-node", "ip": "192.168.152.21"}
+    logs, status = smoke_v2.nats_edge_logs(edge)
+    assert logs == ""
+    assert status == "unsupported_role"
+
+
+def test_leaf_matches_edge_by_ip() -> None:
+    edge = {"name": "b-edge-core", "ip": "192.168.152.20", "site_id": "edge-b"}
+    leaf = {"ip": "192.168.152.20", "name": "edge-edge-b"}
+    assert smoke_v2.leaf_matches_edge(leaf, edge) is True
+
+
+def test_leaf_matches_edge_by_site_alias_suffix() -> None:
+    edge = {"name": "b-edge-core", "ip": "192.168.152.20", "site_id": "edge-b"}
+    leaf = {"ip": "10.0.0.2", "name": "edge-edge-b"}
+    assert smoke_v2.leaf_matches_edge(leaf, edge) is True
+
+
+def test_leaf_matches_edge_false_for_unrelated_leaf() -> None:
+    edge = {"name": "b-edge-core", "ip": "192.168.152.20", "site_id": "edge-b"}
+    leaf = {"ip": "192.168.152.30", "name": "edge-edge-c"}
+    assert smoke_v2.leaf_matches_edge(leaf, edge) is False
+
+
 def test_lane_status_rollup_mixed_pass_and_skip_is_passed() -> None:
     phase_status = [
         {"phase": "service_ready", "status": "passed"},
@@ -367,3 +472,9 @@ def test_lane_status_rollup_failed_takes_precedence() -> None:
         {"phase": "functional_advanced", "status": "skipped"},
     ]
     assert smoke_v2.lane_status_from_phases(phase_status) == "failed"
+
+
+def test_smoke_v2_removes_partial_log_note_text() -> None:
+    text = SMOKE_V2_SCRIPT.read_text(encoding="utf-8")
+    assert "ok (leafz+partial-log-signals)" not in text
+    assert "signal_gaps_resolved_by_leafz" not in text

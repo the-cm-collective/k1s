@@ -22,6 +22,7 @@ VARIANT_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "variant.py"
 DEFAULT_LANES = ["single_non_gpu", "single_gpu", "multi_non_gpu", "multi_gpu"]
 DEFAULT_PHASE_TIMEOUTS = {
     "provision": 1800,
+    "seed_cache": 1200,
     "bootstrap": 1800,
     "service_ready": 900,
     "fabric_validate": 600,
@@ -33,6 +34,8 @@ DEFAULT_RETRY_POLICY = {
     "jitter_s": 1.0,
 }
 EP = "unix:///run/containerd/containerd.sock"
+CRI_SEED_MANIFEST = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
+CRI_SEED_BUNDLE_NAME = "cri-seed-images.oci.tar"
 
 
 @dataclass
@@ -152,6 +155,7 @@ def run_cmd(
     timeout: int | None = None,
     check: bool = False,
     capture: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(  # noqa: S603
@@ -160,6 +164,7 @@ def run_cmd(
             capture_output=capture,
             timeout=timeout,
             check=check,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:  # pragma: no cover - defensive
         raise SmokeError(f"command timed out: {' '.join(cmd)}") from exc
@@ -412,6 +417,76 @@ def nats_hub_logs(core_ip: str, *, lines: int = 4000) -> tuple[str, str]:
     return "", status
 
 
+def nats_edge_logs(edge: dict[str, Any], *, lines: int = 2500) -> tuple[str, str]:
+    component = host_component_name(edge)
+    if not component:
+        return "", "unsupported_role"
+    cmd = (
+        f"EP='{EP}'; "
+        f"cids=$({{ "
+        f"sudo crictl --runtime-endpoint \"$EP\" ps --label ae.stack.component={component} -q; "
+        f"sudo crictl --runtime-endpoint \"$EP\" ps -a --label ae.stack.component={component} -q; "
+        f"sudo crictl --runtime-endpoint \"$EP\" ps --name {component} -q; "
+        f"sudo crictl --runtime-endpoint \"$EP\" ps -a --name {component} -q; "
+        "} 2>/dev/null | awk 'NF && !seen[$1]++'); "
+        "if [ -z \"$cids\" ]; then echo '__NATS_EDGE_LOG_STATUS__:cid_not_found' 1>&2; exit 0; fi; "
+        "had_log_error=0; "
+        "had_log_path=0; "
+        "had_log_path_file=0; "
+        "for cid in $cids; do "
+        "  if out=$(sudo crictl --runtime-endpoint \"$EP\" logs \"$cid\" 2>/dev/null); then "
+        "    if [ -n \"$out\" ]; then "
+        f"      printf '%s\\n' \"$out\" | tail -n {lines}; "
+        "      echo '__NATS_EDGE_LOG_STATUS__:ok' 1>&2; "
+        "      exit 0; "
+        "    fi; "
+        "  else "
+        "    had_log_error=1; "
+        "  fi; "
+        "  log_path=$(sudo crictl --runtime-endpoint \"$EP\" inspect \"$cid\" 2>/dev/null "
+        "    | sed -n 's/.*\"logPath\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' | head -n1); "
+        "  if [ -z \"$log_path\" ]; then continue; fi; "
+        "  had_log_path=1; "
+        "  if ! sudo test -f \"$log_path\"; then continue; fi; "
+        "  had_log_path_file=1; "
+        f"  out=$(sudo tail -n {lines} \"$log_path\" 2>/dev/null || true); "
+        "  if [ -n \"$out\" ]; then "
+        "    printf '%s\\n' \"$out\"; "
+        "    echo '__NATS_EDGE_LOG_STATUS__:logpath_ok' 1>&2; "
+        "    exit 0; "
+        "  fi; "
+        "done; "
+        "if [ \"$had_log_error\" -eq 1 ]; then echo '__NATS_EDGE_LOG_STATUS__:logs_cmd_failed' 1>&2; exit 0; fi; "
+        "if [ \"$had_log_path\" -eq 1 ] && [ \"$had_log_path_file\" -eq 0 ]; then "
+        "  echo '__NATS_EDGE_LOG_STATUS__:logpath_missing' 1>&2; exit 0; "
+        "fi; "
+        "if [ \"$had_log_path_file\" -eq 1 ]; then echo '__NATS_EDGE_LOG_STATUS__:logpath_empty' 1>&2; exit 0; fi; "
+        "echo '__NATS_EDGE_LOG_STATUS__:empty_logs' 1>&2; "
+        "exit 0"
+    )
+    res = run_remote(edge["ip"], cmd, timeout=35)
+    markers = re.findall(r"__NATS_EDGE_LOG_STATUS__:([a-z_]+)", (res.stderr or ""))
+    status = markers[-1] if markers else ("ssh_failed" if res.returncode != 0 else "unknown")
+    logs = res.stdout or ""
+    if logs.strip():
+        return logs, status
+    return "", status
+
+
+def nats_signal_counts(lines: list[str], *, edge_ip: str = "") -> tuple[int, int, int]:
+    scoped = lines
+    if edge_ip:
+        scoped = [line for line in lines if edge_ip in line]
+    leaf_created = sum(1 for line in scoped if "Leafnode connection created" in line)
+    jetstream_domains = sum(1 for line in scoped if "JetStream using domains" in line)
+    auth_failures = sum(
+        1
+        for line in scoped
+        if "authentication error" in line.lower() or "Authentication Failure" in line
+    )
+    return leaf_created, jetstream_domains, auth_failures
+
+
 def fetch_leafz(core_ip: str) -> dict[str, Any] | None:
     cmd = (
         "python3 - <<'PY'\n"
@@ -441,6 +516,28 @@ def leaf_count(leafz: dict[str, Any]) -> int:
     if isinstance(leafs, list):
         return len(leafs)
     return 0
+
+
+def leaf_matches_edge(leaf: dict[str, Any], edge: dict[str, Any]) -> bool:
+    edge_ip = str(edge.get("ip") or "").strip()
+    leaf_ip = str(leaf.get("ip") or "").strip()
+    if edge_ip and leaf_ip and edge_ip == leaf_ip:
+        return True
+
+    leaf_name = str(leaf.get("name") or "").strip().lower()
+    if not leaf_name:
+        return False
+
+    aliases: set[str] = set()
+    edge_site = str(edge.get("site_id") or "").strip().lower()
+    edge_name = str(edge.get("name") or "").strip().lower()
+    if edge_site:
+        aliases.add(edge_site)
+        aliases.add(f"edge-{edge_site}")
+    if edge_name:
+        aliases.add(edge_name)
+
+    return any(alias and (leaf_name == alias or leaf_name.endswith(alias)) for alias in aliases)
 
 
 def status_rank(status: str) -> int:
@@ -568,9 +665,15 @@ def smoke_v2(args: argparse.Namespace) -> int:
 
     global_phases: list[dict[str, Any]] = []
 
-    def run_global_phase(phase: str, command: list[str], timeout_s: int) -> bool:
+    def run_global_phase(
+        phase: str,
+        command: list[str],
+        timeout_s: int,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> bool:
         started = utc_now()
-        res = run_cmd(command, timeout=timeout_s, check=False)
+        res = run_cmd(command, timeout=timeout_s, check=False, env=env)
         ended = utc_now()
         ok = res.returncode == 0
         detail = "ok" if ok else ((res.stderr or res.stdout or "command failed").strip().splitlines()[:1] or ["failed"])[0]
@@ -619,6 +722,45 @@ def smoke_v2(args: argparse.Namespace) -> int:
 
     bootstrap_completed_at = utc_now()
     if not args.skip_bootstrap:
+        seed_bundle_path = ROOT / "state" / "lab-vm" / run_id / "seeds" / CRI_SEED_BUNDLE_NAME
+        seed_manifest_path = Path(
+            os.environ.get("AE_CRI_CACHE_SEED_MANIFEST", str(CRI_SEED_MANIFEST))
+        ).expanduser()
+        seed_profile = os.environ.get("AE_CRI_CACHE_SEED_PROFILE", "all")
+        seed_ok = run_global_phase(
+            "seed_cache",
+            [
+                str(ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"),
+                "--run-id",
+                run_id,
+                "--manifest",
+                str(seed_manifest_path),
+                "--profile",
+                seed_profile,
+            ],
+            timeout_s=phase_timeouts["seed_cache"],
+        )
+        if not seed_ok:
+            write_json(run_dir / "global_phases.json", global_phases)
+            write_json(
+                run_dir / "summary.json",
+                {
+                    "run_id": run_id,
+                    "variant_name": variant["name"],
+                    "status": "failed",
+                    "reason": "seed_cache failed",
+                    "global_phases": global_phases,
+                },
+            )
+            return 1
+
+        bootstrap_env = dict(os.environ)
+        bootstrap_env["AE_CRI_CACHE_SEED_MODE"] = os.environ.get("AE_CRI_CACHE_SEED_MODE", "required")
+        bootstrap_env["AE_CRI_CACHE_SEED_MANIFEST"] = str(seed_manifest_path)
+        bootstrap_env["AE_CRI_CACHE_SEED_BUNDLE"] = os.environ.get(
+            "AE_CRI_CACHE_SEED_BUNDLE",
+            str(seed_bundle_path),
+        )
         bootstrap_ok = run_global_phase(
             "bootstrap",
             [
@@ -630,6 +772,7 @@ def smoke_v2(args: argparse.Namespace) -> int:
                 "--execute",
             ],
             timeout_s=phase_timeouts["bootstrap"],
+            env=bootstrap_env,
         )
         bootstrap_completed_at = utc_now()
         if not bootstrap_ok:
@@ -793,6 +936,7 @@ def smoke_v2(args: argparse.Namespace) -> int:
                     logs_available = bool(logs.strip())
                     failing_edges: list[dict[str, Any]] = []
                     signal_gaps: list[dict[str, Any]] = []
+                    edge_log_status: dict[str, str] = {}
                     if logs_available:
                         recent_cutoff = bootstrap_at - timedelta(seconds=60)
                         filtered: list[str] = []
@@ -800,35 +944,38 @@ def smoke_v2(args: argparse.Namespace) -> int:
                             ts = parse_log_time(line)
                             if ts is None or ts >= recent_cutoff:
                                 filtered.append(line)
+                    else:
+                        filtered = []
 
-                        for edge in edges:
-                            ip = edge["ip"]
-                            created = sum(1 for ln in filtered if ip in ln and "Leafnode connection created" in ln)
-                            js_ok = sum(1 for ln in filtered if ip in ln and "JetStream using domains" in ln)
-                            auth_fail = sum(
-                                1
-                                for ln in filtered
-                                if ip in ln
-                                and (
-                                    "authentication error" in ln.lower()
-                                    or "Authentication Failure" in ln
-                                )
-                            )
-                            edge_signal = {
-                                "name": edge["name"],
-                                "ip": ip,
-                                "leaf_created": created,
-                                "jetstream_domains": js_ok,
-                                "auth_failures": auth_fail,
-                            }
-                            if auth_fail > 0:
-                                failing_edges.append(edge_signal)
-                                continue
-                            if created <= 0 or js_ok <= 0:
-                                signal_gaps.append(edge_signal)
+                    for edge in edges:
+                        ip = edge["ip"]
+                        created, js_ok, auth_fail = nats_signal_counts(filtered, edge_ip=ip)
+
+                        edge_logs, edge_logs_reason = nats_edge_logs(edge, lines=2500)
+                        edge_log_status[edge["name"]] = edge_logs_reason
+                        if edge_logs.strip():
+                            edge_filtered = edge_logs.splitlines()
+                            edge_created, edge_js_ok, edge_auth_fail = nats_signal_counts(edge_filtered)
+                            created = max(created, edge_created)
+                            js_ok = max(js_ok, edge_js_ok)
+                            auth_fail = max(auth_fail, edge_auth_fail)
+
+                        edge_signal = {
+                            "name": edge["name"],
+                            "ip": ip,
+                            "leaf_created": created,
+                            "jetstream_domains": js_ok,
+                            "auth_failures": auth_fail,
+                        }
+                        if auth_fail > 0:
+                            failing_edges.append(edge_signal)
+                            continue
+                        if created <= 0 or js_ok <= 0:
+                            signal_gaps.append(edge_signal)
 
                     leafz = fetch_leafz(core["ip"])
                     leafz_count = leaf_count(leafz) if isinstance(leafz, dict) else -1
+
                     if leafz_count >= 0 and leafz_count < len(edges):
                         failing_edges.append(
                             {
@@ -849,18 +996,24 @@ def smoke_v2(args: argparse.Namespace) -> int:
                         "logs_reason": logs_reason,
                         "failing_edges": failing_edges,
                         "signal_gaps": signal_gaps,
+                        "edge_logs": edge_log_status,
                     }
                     if failing_edges:
                         return False, "fabric_not_stable", payload
-                    if logs_available and signal_gaps:
-                        if leafz_count < 0:
+
+                    # leafz is authoritative when available and healthy.
+                    if leafz_count >= len(edges):
+                        payload["signal_gaps"] = []
+                        return True, "ok", payload
+
+                    # If leafz is unavailable, fall back to log-only evidence.
+                    if leafz_count < 0:
+                        if signal_gaps:
                             return False, "leafz_unavailable_with_partial_log_signals", payload
-                        if leafz_count >= len(edges):
-                            return True, "ok (leafz+partial-log-signals)", payload
-                    if not logs_available:
-                        if leafz_count < 0:
-                            return False, "hub_nats_logs_and_leafz_unavailable", payload
-                        return True, "ok (leafz-only)", payload
+                        if not logs_available and all(reason in {"empty_logs", "cid_not_found", "ssh_failed", "unknown"} for reason in edge_log_status.values()):
+                            return False, "hub_and_edge_nats_logs_unavailable", payload
+                        return True, "ok (logs-only)", payload
+
                     return True, "ok", payload
 
                 ok, fab_attempts, fab_detail, fab_payload = with_retry(

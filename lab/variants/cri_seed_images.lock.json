@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "seed_version": "2026-02-26-v2",
+  "platform": "linux/amd64",
+  "images": {
+    "core": [
+      "docker.io/library/registry:2",
+      "quay.io/coreos/etcd:v3.5.13",
+      "docker.io/library/nats:2.10",
+      "docker.io/library/postgres:16",
+      "docker.io/envoyproxy/envoy:v1.29-latest",
+      "docker.io/rapiz1/rathole:v0.5.0"
+    ],
+    "edge": [
+      "docker.io/library/registry:2",
+      "docker.io/library/nats:2.10",
+      "docker.io/rapiz1/rathole:v0.5.0"
+    ]
+  }
+}

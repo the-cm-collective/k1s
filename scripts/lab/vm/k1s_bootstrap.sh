@@ -49,6 +49,8 @@ edge_hub_leaf_host="127.0.0.1"
 if [[ "$leaf_uplink_mode" == "direct_ip" ]]; then
   edge_hub_leaf_host="${transport_hub_host:-$controller_ip}"
 fi
+seed_manifest_default="/mnt/host/lab/variants/cri_seed_images.lock.json"
+seed_bundle_default="/mnt/host/state/lab-vm/${RUN_ID}/seeds/cri-seed-images.oci.tar"
 edge_core_site_ids="$(
   echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-core" and (.site_id // "") != "") | .site_id' | sort -u | tr '\n' ' '
 )"
@@ -90,6 +92,7 @@ CMD
       cat <<CMD
 cd /mnt/host
 bootstrap_pip_install
+bootstrap_seed_cri_cache core
 nohup sudo env \
   PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
@@ -112,6 +115,7 @@ CMD
       cat <<CMD
 cd /mnt/host
 bootstrap_pip_install
+bootstrap_seed_cri_cache edge
 nohup sudo env \
   PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
@@ -176,6 +180,53 @@ for row in "${rows[@]}"; do
     echo "  if [[ ! -S /run/containerd/containerd.sock ]]; then"
     echo "    (cd /mnt/host && sudo -E DEBIAN_FRONTEND=noninteractive AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock ./scripts/cri_ci_setup.sh)"
     echo "  fi"
+    echo "}"
+    echo "bootstrap_seed_cri_cache() {"
+    echo "  local profile=\"\${1:-}\""
+    echo "  if [[ -z \"\$profile\" ]]; then"
+    echo "    echo \"[cri-seed] missing profile argument\" >&2"
+    echo "    return 1"
+    echo "  fi"
+    echo "  local mode_raw=\"\${AE_CRI_CACHE_SEED_MODE:-best_effort}\""
+    echo "  local mode=\"\$(printf '%s' \"\$mode_raw\" | tr '[:upper:]' '[:lower:]')\""
+    echo "  local manifest=\"\${AE_CRI_CACHE_SEED_MANIFEST:-${seed_manifest_default}}\""
+    echo "  local bundle=\"\${AE_CRI_CACHE_SEED_BUNDLE:-${seed_bundle_default}}\""
+    echo "  case \"\$mode\" in"
+    echo "    off|0|false|no)"
+    echo "      echo \"[cri-seed] mode=off profile=\$profile\""
+    echo "      return 0"
+    echo "      ;;"
+    echo "  esac"
+    echo "  if [[ ! -f \"\$manifest\" ]]; then"
+    echo "    echo \"[cri-seed] manifest missing: \$manifest\" >&2"
+    echo "    [[ \"\$mode\" == \"required\" ]] && return 1"
+    echo "    return 0"
+    echo "  fi"
+    echo "  if [[ -f \"\$bundle\" ]]; then"
+    echo "    echo \"[cri-seed] import bundle=\$bundle profile=\$profile\""
+    echo "    if ! sudo ctr -n k8s.io images import \"\$bundle\" >/dev/null 2>&1; then"
+    echo "      echo \"[cri-seed] import failed: \$bundle\" >&2"
+    echo "      [[ \"\$mode\" == \"required\" ]] && return 1"
+    echo "    fi"
+    echo "  else"
+    echo "    echo \"[cri-seed] bundle missing: \$bundle\" >&2"
+    echo "    [[ \"\$mode\" == \"required\" ]] && return 1"
+    echo "  fi"
+    echo "  mapfile -t required_images < <(jq -r --arg p \"\$profile\" '.images[\$p][]?' \"\$manifest\")"
+    echo "  mapfile -t image_refs < <(sudo ctr -n k8s.io images ls -q 2>/dev/null || true)"
+    echo "  local missing=()"
+    echo "  local image"
+    echo "  for image in \"\${required_images[@]}\"; do"
+    echo "    if ! printf '%s\n' \"\${image_refs[@]}\" | grep -Fx -- \"\$image\" >/dev/null 2>&1; then"
+    echo "      missing+=(\"\$image\")"
+    echo "    fi"
+    echo "  done"
+    echo "  if [[ \"\${#missing[@]}\" -gt 0 ]]; then"
+    echo "    echo \"[cri-seed] missing_images profile=\$profile: \${missing[*]}\" >&2"
+    echo "    [[ \"\$mode\" == \"required\" ]] && return 1"
+    echo "  fi"
+    echo "  echo \"[cri-seed] ready profile=\$profile missing=\${#missing[@]}\""
+    echo "  return 0"
     echo "}"
     echo "cloud-init status --wait"
     echo "sudo mkdir -p /mnt/host"
