@@ -10,14 +10,18 @@ Mirror an image into the configured OCI registry and optionally verify CRI pull.
 Options:
   --source <ref>            Source image reference to pull
   --target <ref>            Target image reference to push
-  --engine <name>           Local engine backend (nerdctl|podman|docker)
+  --engine <name>           Local engine backend (nerdctl|podman|docker|ctr)
   --pull-cri                Pull target image via CRI after push (default: enabled)
   --no-pull-cri             Disable CRI pull verification
   --cri-endpoint <uri>      CRI endpoint (default: AE_CRI_ENDPOINT)
   -h, --help                Show this help
 
 Environment:
-  AE_CRI_LOCAL_BUILD_BACKEND  Preferred backend (nerdctl|podman|docker)
+  AE_CRI_LOCAL_BUILD_BACKEND  Preferred backend (nerdctl|podman|docker|ctr)
+  AE_CRI_IMAGE_MIRROR_ALWAYS_PULL  Set truthy to force remote pull even when source exists locally
+  AE_CTR_NAMESPACE            ctr namespace (default: k8s.io)
+  AE_CTR_HOSTS_DIR            ctr hosts dir (default: /etc/containerd/certs.d)
+  AE_CTR_PLATFORM             ctr platform override (default: host arch, e.g. linux/amd64)
 USAGE
 }
 
@@ -26,6 +30,9 @@ target_image=""
 engine=""
 pull_cri=1
 cri_endpoint="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
+ctr_namespace="${AE_CTR_NAMESPACE:-k8s.io}"
+ctr_hosts_dir="${AE_CTR_HOSTS_DIR:-/etc/containerd/certs.d}"
+ctr_platform="${AE_CTR_PLATFORM:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,18 +83,38 @@ resolve_engine() {
     return 0
   fi
   local candidate
-  for candidate in nerdctl podman docker; do
+  for candidate in nerdctl podman docker ctr; do
     if command -v "$candidate" >/dev/null 2>&1; then
       engine="$candidate"
       return 0
     fi
   done
-  echo "No supported backend found (nerdctl/podman/docker)" >&2
+  echo "No supported backend found (nerdctl/podman/docker/ctr)" >&2
   exit 1
 }
 
 engine_pull() {
   local image="$1"
+  if ! is_truthy "${AE_CRI_IMAGE_MIRROR_ALWAYS_PULL:-0}" && engine_has_image "$image"; then
+    echo "[cri-image-mirror] source already cached: ${image}"
+    return
+  fi
+
+  if [[ "$engine" == "ctr" ]]; then
+    local -a cmd=(ctr -n "$ctr_namespace" images pull)
+    if [[ -n "$ctr_platform" ]]; then
+      cmd+=(--platform "$ctr_platform")
+    fi
+    if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
+      cmd+=(--plain-http)
+    fi
+    if [[ -d "$ctr_hosts_dir" ]]; then
+      cmd+=(--hosts-dir "$ctr_hosts_dir")
+    fi
+    cmd+=("$image")
+    "${cmd[@]}"
+    return
+  fi
   if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
     case "$engine" in
       nerdctl) "$engine" --insecure-registry pull "$image"; return ;;
@@ -98,8 +125,44 @@ engine_pull() {
   "$engine" pull "$image"
 }
 
+engine_has_image() {
+  local image="$1"
+  case "$engine" in
+    ctr)
+      ctr -n "$ctr_namespace" images ls -q 2>/dev/null | grep -Fx -- "$image" >/dev/null 2>&1
+      ;;
+    nerdctl)
+      nerdctl image inspect "$image" >/dev/null 2>&1
+      ;;
+    podman)
+      podman image inspect "$image" >/dev/null 2>&1
+      ;;
+    docker)
+      docker image inspect "$image" >/dev/null 2>&1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 engine_push() {
   local image="$1"
+  if [[ "$engine" == "ctr" ]]; then
+    local -a cmd=(ctr -n "$ctr_namespace" images push)
+    if [[ -n "$ctr_platform" ]]; then
+      cmd+=(--platform "$ctr_platform")
+    fi
+    if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
+      cmd+=(--plain-http)
+    fi
+    if [[ -d "$ctr_hosts_dir" ]]; then
+      cmd+=(--hosts-dir "$ctr_hosts_dir")
+    fi
+    cmd+=("$image")
+    "${cmd[@]}"
+    return
+  fi
   if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
     case "$engine" in
       nerdctl) "$engine" --insecure-registry push "$image"; return ;;
@@ -117,6 +180,28 @@ is_truthy() {
   esac
 }
 
+default_ctr_platform() {
+  case "$(uname -m 2>/dev/null || true)" in
+    x86_64|amd64) printf '%s' "linux/amd64" ;;
+    aarch64|arm64) printf '%s' "linux/arm64" ;;
+    armv7l|armv7) printf '%s' "linux/arm/v7" ;;
+    *)
+      # Fallback keeps behavior deterministic on uncommon architectures.
+      printf '%s' "linux/amd64"
+      ;;
+  esac
+}
+
+engine_tag() {
+  local source="$1"
+  local target="$2"
+  if [[ "$engine" == "ctr" ]]; then
+    ctr -n "$ctr_namespace" images tag --force "$source" "$target"
+    return
+  fi
+  "$engine" tag "$source" "$target"
+}
+
 if ! has_registry_prefix "$target_image"; then
   echo "Target image '$target_image' is not registry-qualified." >&2
   exit 1
@@ -127,11 +212,14 @@ if [[ "$target_image" == localhost/* && "$target_image" != localhost:*/* ]]; the
 fi
 
 resolve_engine
+if [[ "$engine" == "ctr" && -z "$ctr_platform" ]]; then
+  ctr_platform="$(default_ctr_platform)"
+fi
 echo "[cri-image-mirror] backend=${engine} source=${source_image} target=${target_image}"
 
 engine_pull "$source_image"
 if [[ "$source_image" != "$target_image" ]]; then
-  "$engine" tag "$source_image" "$target_image"
+  engine_tag "$source_image" "$target_image"
 fi
 echo "[cri-image-mirror] pushing ${target_image}"
 engine_push "$target_image"
