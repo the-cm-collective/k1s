@@ -9,11 +9,16 @@ import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import requests
+
+try:  # Python 3.11+
+    from datetime import UTC as UTC
+except ImportError:  # pragma: no cover - hit on Python < 3.11
+    UTC = timezone.utc  # noqa: UP017
 
 PROMPTS = [
     "Summarize what pipeline parallelism means in one paragraph.",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import os
 import shutil
@@ -9,14 +11,12 @@ import threading
 import time
 import uuid
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ae._utc import UTC
 from ae.apishim.store import ObjectStore
-
-import base64
-import binascii
 
 try:  # pragma: no cover - optional dependency
     import grpc

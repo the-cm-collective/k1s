@@ -7,8 +7,10 @@ import binascii
 import threading
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Protocol
+
+from ae._utc import UTC
 
 from .types import NetFSMount, PvcRef, PvRef
 

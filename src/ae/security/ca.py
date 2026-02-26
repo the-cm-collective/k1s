@@ -18,6 +18,8 @@ import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ae._utc import UTC
+
 DEFAULT_ROOT = Path("state/tls")
 CA_KEY = "agent-ca.key"
 CA_CRT = "agent-ca.crt"
@@ -164,8 +166,8 @@ def _record_issue(root: Path, crt_path: Path, node_id: str, days: int) -> None:
         "node_id": node_id,
         "serial": serial,
         "cert": crt_path.name,
-        "issued_at": datetime.now(datetime.UTC).isoformat(),
-        "expires_at": (datetime.now(datetime.UTC) + timedelta(days=days)).isoformat(),
+        "issued_at": datetime.now(UTC).isoformat(),
+        "expires_at": (datetime.now(UTC) + timedelta(days=days)).isoformat(),
     }
     data = []
     if issued_path.exists():
