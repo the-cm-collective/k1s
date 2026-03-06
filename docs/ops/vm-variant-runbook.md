@@ -6,40 +6,50 @@ Purpose
 Reference variants
 - `lab/variants/test1-a-only-passthrough.yaml`
 - `lab/variants/test2-ab-passthrough.yaml`
-- `lab/variants/test3-abc-pp2.yaml`
+- `lab/variants/test3-abc-no-gpu.yaml` (validated non-GPU baseline)
+- `lab/variants/test3-abc-pp2.yaml` (passthrough profile)
 
 Transport defaults
 - Variants default to `transport.leaf_uplink_mode: direct_ip`.
 - Edge-core bootstrap resolves hub leaf endpoint from `transport.hub_host` (or core host IP) and `transport.hub_leaf_port` (default `7422`).
 - Use `local_tunnel` only when each edge host intentionally forwards hub leaf traffic to localhost.
 
-## 0) Single-command smoke (A/B/C on one host)
+## 0) Single-command smoke (recommended seeded v2 flow)
 
 ```bash
 sudo -v
-export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_smoke
-make lab-vm-smoke VARIANT=lab/variants/test3-abc-pp2.yaml RUN_ID="$RUN_ID"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_multi_non_gpu"
+export RUN_ID
+
+LAB_VM_SMOKE_V2=1 \
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+scripts/lab/vm/smoke.sh \
+  --variant lab/variants/test3-abc-no-gpu.yaml \
+  --run-id "$RUN_ID" \
+  --lanes multi_non_gpu \
+  --keep-on-fail
 ```
 
 What this runs:
-- `variant up`
-- `k1s_bootstrap --execute`
-- `variant validate` (fails if any host is not ready)
+- `provision` (`variant up`)
+- `seed_cache` (`image_seed_bundle.sh`)
+- `bootstrap` (`k1s_bootstrap.sh --execute` with seeded cache import enabled)
+- lane checks (`service_ready`, `fabric_validate`, `functional_basic`, `functional_advanced`)
 
-To run the phased lane-aware harness (v2) in parallel with the legacy flow:
+Notes:
+- `AE_CRI_CACHE_SEED_ENGINE=docker` uses host Docker credentials/tokens for seed pulls.
+- `AE_CRI_CACHE_SEED_MODE=required` fails early if seed bundle import/coverage is incomplete.
+- `AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0` prefers cached source images and avoids unnecessary remote pulls.
 
-```bash
-sudo -v
-export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_smoke
-LAB_VM_SMOKE_V2=1 make lab-vm-smoke \
-  VARIANT=lab/variants/test3-abc-pp2.yaml \
-  RUN_ID="$RUN_ID"
-```
-
-`smoke_v2` writes:
+Key artifacts (`smoke_v2`):
 - `runs/<RUN_ID>/plan.json`
 - `runs/<RUN_ID>/global_phases.json`
 - `runs/<RUN_ID>/lanes/<lane>/phase_status.json`
+- `runs/<RUN_ID>/lanes/<lane>/checks/service_ready.json`
+- `runs/<RUN_ID>/lanes/<lane>/checks/fabric_validate.json`
+- `runs/<RUN_ID>/lanes/<lane>/checks/functional_basic.json`
 - `runs/<RUN_ID>/summary.json`
 
 Optional automatic teardown in the same run:
@@ -47,10 +57,24 @@ Optional automatic teardown in the same run:
 ```bash
 sudo -v
 export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_smoke
+LAB_VM_SMOKE_V2=1 \
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
 make lab-vm-smoke \
-  VARIANT=lab/variants/test3-abc-pp2.yaml \
+  VARIANT=lab/variants/test3-abc-no-gpu.yaml \
   RUN_ID="$RUN_ID" \
   LAB_VM_SMOKE_ARGS="--down --purge"
+```
+
+Or explicit teardown after result inspection:
+
+```bash
+scripts/lab/vm/labctl.sh variant down \
+  --variant lab/variants/test3-abc-no-gpu.yaml \
+  --run-id "$RUN_ID" \
+  --purge \
+  --destroy-network
 ```
 
 ## 1) Host prerequisite check
@@ -70,7 +94,7 @@ scripts/lab/vm/labctl.sh host prepare --apply
 ```bash
 export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_test3
 scripts/lab/vm/labctl.sh variant up \
-  --variant lab/variants/test3-abc-pp2.yaml \
+  --variant lab/variants/test3-abc-no-gpu.yaml \
   --run-id "$RUN_ID"
 ```
 
@@ -84,7 +108,7 @@ Generate host bootstrap scripts:
 
 ```bash
 scripts/lab/vm/k1s_bootstrap.sh \
-  --variant lab/variants/test3-abc-pp2.yaml \
+  --variant lab/variants/test3-abc-no-gpu.yaml \
   --run-id "$RUN_ID"
 ```
 
@@ -92,7 +116,7 @@ Execute bootstrap directly over SSH:
 
 ```bash
 scripts/lab/vm/k1s_bootstrap.sh \
-  --variant lab/variants/test3-abc-pp2.yaml \
+  --variant lab/variants/test3-abc-no-gpu.yaml \
   --run-id "$RUN_ID" \
   --execute
 ```
@@ -100,13 +124,16 @@ scripts/lab/vm/k1s_bootstrap.sh \
 Default strict-CRI core bootstrap behavior now includes:
 - `AE_CRI_REGISTRY_TRUST_SYSTEM=1` for managed-registry CA installation into system trust.
 - `AE_CRI_REGISTRY_PRELOAD=1` so core strict-CRI images are mirrored/pulled before `k1s-core` starts.
+- `AE_CRI_CACHE_SEED_MODE=required` (when run via `smoke_v2`) to enforce pre-seeded image availability during bootstrap.
 
 Override when needed:
 
 ```bash
-AE_CRI_REGISTRY_TRUST_SYSTEM=0 AE_CRI_REGISTRY_PRELOAD=0 \
+AE_CRI_REGISTRY_TRUST_SYSTEM=0 \
+AE_CRI_REGISTRY_PRELOAD=0 \
+AE_CRI_CACHE_SEED_MODE=best_effort \
 scripts/lab/vm/k1s_bootstrap.sh \
-  --variant lab/variants/test3-abc-pp2.yaml \
+  --variant lab/variants/test3-abc-no-gpu.yaml \
   --run-id "$RUN_ID" \
   --execute
 ```
@@ -124,7 +151,7 @@ sudo -E REGISTER_ONLY=1 SITE_ID=edge-c ./scripts/dev/add_edge_site.sh
 
 ```bash
 scripts/lab/vm/labctl.sh variant validate \
-  --variant lab/variants/test3-abc-pp2.yaml \
+  --variant lab/variants/test3-abc-no-gpu.yaml \
   --run-id "$RUN_ID"
 ```
 
@@ -135,7 +162,7 @@ Validation report:
 
 ```bash
 scripts/lab/vm/labctl.sh variant down \
-  --variant lab/variants/test3-abc-pp2.yaml \
+  --variant lab/variants/test3-abc-no-gpu.yaml \
   --run-id "$RUN_ID"
 ```
 
@@ -143,8 +170,20 @@ Optional full cleanup:
 
 ```bash
 scripts/lab/vm/labctl.sh variant down \
-  --variant lab/variants/test3-abc-pp2.yaml \
+  --variant lab/variants/test3-abc-no-gpu.yaml \
   --run-id "$RUN_ID" \
   --purge \
   --destroy-network
 ```
+
+## 6) Troubleshooting and result interpretation
+
+Common failures:
+- `inventory not found for run_id=...` during `variant down`: run ID is stale/missing. Use an existing run ID from `state/lab-vm/` or skip teardown.
+- `qemu failed to start ... missing pidfile`: inspect `state/lab-vm/<RUN_ID>/logs/<host>.qemu.log`, clear stale processes/resources, then retry.
+- `toomanyrequests` / `429 Too Many Requests` during image preload: ensure `AE_CRI_CACHE_SEED_ENGINE=docker` is set, Docker auth is configured (`docker login`), and keep `AE_CRI_CACHE_SEED_MODE=required`.
+
+`fabric_validate` interpretation:
+- Healthy pass: `status=passed`, `leafz_count` meets expected edge count, `failing_edges=[]`.
+- Telemetry-only note: `detail=ok (leafz+partial-log-signals)` can still be acceptable when `leafz_count` is correct and `failing_edges=[]`.
+- Fabric failure: `detail=fabric_not_stable`, `leafz_count` below expected, or non-empty `failing_edges`.
