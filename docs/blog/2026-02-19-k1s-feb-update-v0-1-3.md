@@ -19,7 +19,27 @@ That framing only matters if it shows up in defaults and operator workflows. In 
 
 ## What is now official in v0.1.3
 
-This post reflects the shipped release in `CHANGELOG.md` (`0.1.3 - 2026-02-19`) and the finalized release posture.
+This post reflects the shipped release in `CHANGELOG.md` (`0.1.3 - 2026-02-19`) and the finalized release posture. Compared to v0.1.2 (storage/CRI foundations), v0.1.3 adds major control-plane and data-plane depth for hub/edge deployments with intermittent nodes.
+
+Control plane:
+- (Core) NATS/JetStream control channel and durable queue, with Etcd state store SoT
+- (Edge) NATS core control channel with local spool, state sync SoT via WG data plane egress tunnel
+- strict CRI lane orchestration across core/edge profiles + fail-fast pairing checks
+- expanded single-host + multi-site ingress validation matrices (deep/perf)
+- richer matrix evidence (lb_policy_passed, lb_strict_proof_passed, lb_observability_passed)
+- hardened route-bundle publishing + controller/etcd edge-ingress state alignment
+
+Data plane:
+- policy-driven LB + cookie stickiness in core-proxy
+- stronger startup/readiness/path-aware/HTTP2 checks across ingress modes
+- new site-to-site WireGuard tunnel flow with Rosenpass-managed PSK mode
+- overlay visibility now includes WG peer/handshake health + Rosenpass status
+
+Security/testing:
+- security baseline + staged active authn/authz test patterns integrated into ingress lanes
+- TLS/trust-first registry behavior in strict CRI flows
+
+Why this matters: WireGuard + Rosenpass gives us a practical path to post-quantum-resilient PSK rotation across site-to-site data-plane traffic. 😎
 
 ## TL;DR Highlights
 
