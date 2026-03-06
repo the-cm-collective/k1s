@@ -62,6 +62,10 @@ _JS_STREAM_STATS: dict[str, dict[str, float]] = {}
 _JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
 _GATEWAY_WORK_METRICS: dict[str, dict[str, float]] = {}
 _ROUTE_BUNDLE_METRICS: dict[str, dict[str, float]] = {}
+_HEARTBEAT_WRITES_TOTAL: float = 0.0
+_HEARTBEAT_NODE_REWRITES_TOTAL: float = 0.0
+_ETCD_MAINTENANCE_RUNS_TOTAL: float = 0.0
+_ETCD_MAINTENANCE_TRIGGERED_TOTAL: float = 0.0
 
 
 def _read_env_file_var(path: str, key: str) -> str:
@@ -190,6 +194,20 @@ def record_route_bundle_apply(
         metrics["apply_fail_total"] = metrics.get("apply_fail_total", 0.0) + 1.0
     if latency_seconds is not None:
         metrics["last_latency_s"] = float(latency_seconds)
+
+
+def record_heartbeat_write(*, node_rewrite: bool) -> None:
+    global _HEARTBEAT_WRITES_TOTAL, _HEARTBEAT_NODE_REWRITES_TOTAL
+    _HEARTBEAT_WRITES_TOTAL += 1.0
+    if node_rewrite:
+        _HEARTBEAT_NODE_REWRITES_TOTAL += 1.0
+
+
+def record_etcd_maintenance_run(*, triggered: bool) -> None:
+    global _ETCD_MAINTENANCE_RUNS_TOTAL, _ETCD_MAINTENANCE_TRIGGERED_TOTAL
+    _ETCD_MAINTENANCE_RUNS_TOTAL += 1.0
+    if triggered:
+        _ETCD_MAINTENANCE_TRIGGERED_TOTAL += 1.0
 
 
 def record_js_stream_stats(
@@ -3100,6 +3118,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 labels = f'site="{site_id}"'
                 lines.append(f"ae_site_last_seen_seconds{{{labels}}} {last_age}")
                 lines.append(f"ae_site_stale{{{labels}}} {stale}")
+        except Exception:
+            pass
+        # Etcd maintenance + heartbeat churn metrics
+        try:
+            lines += [
+                "# HELP ae_heartbeat_writes_total Node heartbeat status writes to state",
+                "# TYPE ae_heartbeat_writes_total counter",
+                f"ae_heartbeat_writes_total {_HEARTBEAT_WRITES_TOTAL}",
+                "# HELP ae_heartbeat_node_rewrites_total Node metadata rewrites during heartbeat refresh",
+                "# TYPE ae_heartbeat_node_rewrites_total counter",
+                f"ae_heartbeat_node_rewrites_total {_HEARTBEAT_NODE_REWRITES_TOTAL}",
+                "# HELP ae_etcd_maintenance_runs_total Etcd watchdog runs executed by controller",
+                "# TYPE ae_etcd_maintenance_runs_total counter",
+                f"ae_etcd_maintenance_runs_total {_ETCD_MAINTENANCE_RUNS_TOTAL}",
+                "# HELP ae_etcd_maintenance_triggered_total Etcd watchdog runs that triggered compact/defrag",
+                "# TYPE ae_etcd_maintenance_triggered_total counter",
+                f"ae_etcd_maintenance_triggered_total {_ETCD_MAINTENANCE_TRIGGERED_TOTAL}",
+            ]
         except Exception:
             pass
         # Route bundle apply metrics

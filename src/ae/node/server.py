@@ -742,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--heartbeat-interval",
         type=int,
-        default=int(os.getenv("AE_AGENT_HEARTBEAT_SECONDS", "10") or 10),
+        default=int(os.getenv("AE_AGENT_HEARTBEAT_SECONDS", "30") or 30),
         help="seconds between heartbeats to the controller",
     )
     parser.add_argument(
@@ -826,11 +826,11 @@ def main(argv: list[str] | None = None) -> int:
             peers_from_controller = cfg_raw.lower() == "controller"
             cfg_path = None if peers_from_controller or not cfg_raw else Path(cfg_raw)
             backend = runtime.__class__.__name__.replace("Runtime", "").lower()
-            refresh_raw = os.getenv("AE_ROSENPASS_PEER_REFRESH_SEC", "30")
+            refresh_raw = os.getenv("AE_ROSENPASS_PEER_REFRESH_SEC", "60")
             try:
                 refresh_sec = float(refresh_raw)
             except Exception:
-                refresh_sec = 30.0
+                refresh_sec = 60.0
             if refresh_sec < 0:
                 refresh_sec = 0.0
             bootstrap_payload = {

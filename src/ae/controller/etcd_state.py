@@ -312,6 +312,24 @@ class EtcdHttpClient:
         payload = {"ID": int(lease_id)}
         self._post("/lease/revoke", payload)
 
+    def maintenance_status(self) -> dict[str, Any]:
+        return self._post("/maintenance/status", {})
+
+    def maintenance_alarms(self, *, action: str = "GET", member_id: str | None = None, alarm: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"action": str(action).upper()}
+        if member_id is not None:
+            payload["memberID"] = str(member_id)
+        if alarm is not None:
+            payload["alarm"] = str(alarm).upper()
+        return self._post("/maintenance/alarm", payload)
+
+    def compact(self, revision: int, *, physical: bool = True) -> None:
+        payload = {"revision": str(int(revision)), "physical": bool(physical)}
+        self._post("/kv/compaction", payload)
+
+    def defragment(self) -> None:
+        self._post("/maintenance/defragment", {})
+
 
 class EtcdStateStore(SQLiteStateStore):
     """Etcd-backed state store (dev-etcd)."""
@@ -335,6 +353,9 @@ class EtcdStateStore(SQLiteStateStore):
         op_timeout = _parse_duration_seconds(env.get("AE_ETCD_OP_TIMEOUT"), 3.0)
         timeout_s = float(timeout_s if timeout_s is not None else op_timeout)
         self._lease_ttl_seconds = int(env.get("AE_ETCD_LEASE_TTL_SECONDS", "60") or 60)
+        refresh_ratio = float(env.get("AE_ETCD_LEASE_REFRESH_RATIO", "0.5") or 0.5)
+        self._lease_refresh_ratio = max(0.05, min(0.95, refresh_ratio))
+        self._node_leases: dict[str, tuple[int, float]] = {}
         ca_cert = env.get("AE_ETCD_CA") or None
         cert = env.get("AE_ETCD_CERT") or None
         key = env.get("AE_ETCD_KEY") or None
@@ -373,6 +394,73 @@ class EtcdStateStore(SQLiteStateStore):
             return json.loads(raw)
         except Exception:
             return {}
+
+    @staticmethod
+    def _is_lease_not_found_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "lease not found" in msg or "requested lease not found" in msg
+
+    def _lease_refresh_after_seconds(self) -> float:
+        ttl_s = max(2.0, float(self._lease_ttl_seconds))
+        refresh_after = ttl_s * self._lease_refresh_ratio
+        return max(1.0, min(ttl_s - 1.0, refresh_after))
+
+    def _grant_node_lease(self, node_id: str, *, force_new: bool = False) -> tuple[int, bool]:
+        now = time.monotonic()
+        current = self._node_leases.get(node_id)
+        if not force_new and current is not None and now < current[1]:
+            return current[0], False
+        lease_id = self._client.grant_lease(self._lease_ttl_seconds)
+        refresh_at = now + self._lease_refresh_after_seconds()
+        self._node_leases[node_id] = (lease_id, refresh_at)
+        return lease_id, True
+
+    def _put_with_node_lease(
+        self,
+        *,
+        key: str,
+        payload: dict,
+        node_id: str,
+        lease_id: int,
+    ) -> tuple[int, bool]:
+        try:
+            self._put_json(key, payload, lease_id=lease_id)
+            return lease_id, False
+        except Exception as exc:
+            if not self._is_lease_not_found_error(exc):
+                raise
+        lease_id, _ = self._grant_node_lease(node_id, force_new=True)
+        self._put_json(key, payload, lease_id=lease_id)
+        return lease_id, True
+
+    @staticmethod
+    def _node_payload_changed(existing: dict | None, payload: dict) -> bool:
+        if not existing:
+            return True
+        for key in (
+            "node_id",
+            "name",
+            "labels",
+            "taints",
+            "backend",
+            "endpoint",
+            "pod_cidr",
+            "wg_pubkey",
+            "rp_pubkey",
+            "cordoned",
+        ):
+            if existing.get(key) != payload.get(key):
+                return True
+        return False
+
+    @staticmethod
+    def _record_heartbeat_metrics(*, node_rewrite: bool) -> None:
+        try:
+            from ae.observability.http_api import record_heartbeat_write
+
+            record_heartbeat_write(node_rewrite=node_rewrite)
+        except Exception:
+            pass
 
     def _get_json(self, key: str) -> tuple[dict | None, int]:
         resp = self._client.range(key, limit=1)
@@ -1618,7 +1706,8 @@ class EtcdStateStore(SQLiteStateStore):
         rp_pubkey: str | None = None,
         cordoned: bool | None = None,
     ) -> None:
-        existing, _ = self._get_json(self._k("nodes", self._site_id, node_id))
+        node_key = self._k("nodes", self._site_id, node_id)
+        existing, _ = self._get_json(node_key)
         if cordoned is None:
             cordoned = bool(existing.get("cordoned", False)) if existing else False
         created_at = existing.get("created_at") if existing else _now_iso()
@@ -1636,17 +1725,86 @@ class EtcdStateStore(SQLiteStateStore):
             "created_at": created_at,
             "updated_at": _now_iso(),
         }
-        lease_id = self._client.grant_lease(self._lease_ttl_seconds)
-        self._put_json(self._k("nodes", self._site_id, node_id), payload, lease_id=lease_id)
+        lease_id, lease_rotated = self._grant_node_lease(node_id)
+        should_write = self._node_payload_changed(existing, payload) or lease_rotated
+        if not should_write:
+            return
+        self._put_with_node_lease(key=node_key, payload=payload, node_id=node_id, lease_id=lease_id)
 
     def record_heartbeat(self, node_id: str, status: str) -> None:
-        lease_id = self._client.grant_lease(self._lease_ttl_seconds)
+        lease_id, lease_rotated = self._grant_node_lease(node_id)
         now_iso = _now_iso()
         payload = {"node_id": node_id, "status": status, "seen_at": now_iso}
-        self._put_json(self._k("node_status", self._site_id, node_id), payload, lease_id=lease_id)
-        existing, _ = self._get_json(self._k("nodes", self._site_id, node_id))
-        if existing:
-            self._put_json(self._k("nodes", self._site_id, node_id), existing, lease_id=lease_id)
+        status_key = self._k("node_status", self._site_id, node_id)
+        lease_id, retry_rotated = self._put_with_node_lease(
+            key=status_key,
+            payload=payload,
+            node_id=node_id,
+            lease_id=lease_id,
+        )
+        lease_rotated = lease_rotated or retry_rotated
+        node_rewrite = False
+        if lease_rotated:
+            node_key = self._k("nodes", self._site_id, node_id)
+            existing, _ = self._get_json(node_key)
+            if existing:
+                lease_id, _ = self._put_with_node_lease(
+                    key=node_key,
+                    payload=existing,
+                    node_id=node_id,
+                    lease_id=lease_id,
+                )
+                node_rewrite = True
+        self._record_heartbeat_metrics(node_rewrite=node_rewrite)
+
+    def run_maintenance_watchdog(
+        self,
+        *,
+        threshold_pct: int | None = None,
+        quota_backend_bytes: int | None = None,
+    ) -> bool:
+        threshold = int(
+            threshold_pct
+            if threshold_pct is not None
+            else os.getenv("AE_ETCD_MAINTENANCE_THRESHOLD_PCT", "80") or 80
+        )
+        quota = int(
+            quota_backend_bytes
+            if quota_backend_bytes is not None
+            else os.getenv("AE_ETCD_QUOTA_BACKEND_BYTES", "2147483648") or 2147483648
+        )
+        quota = max(1, quota)
+        status = self._client.maintenance_status()
+        alarms = self._client.maintenance_alarms(action="GET")
+        header = status.get("header") if isinstance(status, dict) else {}
+        header = header if isinstance(header, dict) else {}
+        revision = int(header.get("revision") or 0)
+        db_size = int(status.get("dbSize") or 0) if isinstance(status, dict) else 0
+        usage_pct = int((db_size * 100) / quota)
+        alarm_items = alarms.get("alarms") if isinstance(alarms, dict) else []
+        alarm_items = alarm_items if isinstance(alarm_items, list) else []
+        nospace = any(str((item or {}).get("alarm") or "").upper() == "NOSPACE" for item in alarm_items)
+        should_reclaim = nospace or usage_pct >= threshold
+        if not should_reclaim:
+            return False
+        if revision <= 0:
+            raise RuntimeError("etcd maintenance watchdog refused compaction: revision is zero")
+        self._client.compact(revision, physical=True)
+        self._client.defragment()
+        for item in alarm_items:
+            alarm = str((item or {}).get("alarm") or "").upper()
+            member_id = str((item or {}).get("memberID") or (item or {}).get("memberId") or "0")
+            if not alarm:
+                continue
+            try:
+                self._client.maintenance_alarms(
+                    action="DEACTIVATE",
+                    member_id=member_id,
+                    alarm=alarm,
+                )
+            except Exception:
+                pass
+        return True
 
     def _get_node_cordoned(self, node_id: str) -> bool:
         rec, _ = self._get_json(self._k("nodes", self._site_id, node_id))
