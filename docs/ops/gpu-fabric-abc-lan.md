@@ -12,6 +12,7 @@ Related VM Lab Docs
 - Golden image pipeline (Ubuntu 22.04 GA / kernel 5.15): `docs/ops/vm-golden-image-pipeline.md`
 - Variant orchestration and bootstrap runbook: `docs/ops/vm-variant-runbook.md`
 - Baseline + throughput gating workflow: `docs/ops/vm-metrics-and-gates.md`
+- Remote GPU VM bring-up precursor (A+B over SSH): `docs/ops/gpu-vm-remote-host-validation.md`
 
 Current capability baseline
 - Node agent auto-discovers GPU labels from `nvidia-smi` (`gpu.present`, `gpu.count`, `gpu.models`).
