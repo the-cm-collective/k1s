@@ -291,37 +291,31 @@ kubectl get ingressroute.traefik.io -n default k3s-parity-sticky-cookie
 
 # k3d helper exposes k3s ingress on host :443
 K3S_BASE_URL="https://127.0.0.1"
+mkdir -p "$ROOT/k3s"
 
-python scripts/dev/ingress_deep_probe.py ws_soak \\
-  --url "\$K3S_BASE_URL/ws" \\
-  --host "ws-echo-core-proxy.home.arpa" \\
-  --duration-seconds 600 \\
-  --connections 50 \\
-  --heartbeat-seconds 5 \\
-  > "$ROOT/k3s/k3s-r1-ws-echo-deep.json"
+python scripts/dev/ingress_deep_probe.py ws_soak --url "\$K3S_BASE_URL/ws" --host "ws-echo-core-proxy.home.arpa" --duration-seconds 600 --connections 50 --heartbeat-seconds 5 > "$ROOT/k3s/k3s-r1-ws-echo-deep.json"
+python scripts/dev/ingress_deep_probe.py lb_sample --url "\$K3S_BASE_URL/id" --host "lb-distribution-core-proxy.home.arpa" --strategy round_robin --requests 5000 --min-backends 2 --max-skew-ratio 0.35 > "$ROOT/k3s/k3s-r1-lb-distribution-deep.json"
+python scripts/dev/ingress_deep_probe.py sticky_probe --url "\$K3S_BASE_URL/id" --host "sticky-cookie-core-proxy.home.arpa" --requests-per-client 100 > "$ROOT/k3s/k3s-r1-sticky-deep.json"
 
 for c in 30 50 70; do
-  python scripts/dev/ingress_deep_probe.py http_bench \\
-    --url "\$K3S_BASE_URL/id" \\
-    --host "lb-distribution-core-proxy.home.arpa" \\
-    --duration-seconds 180 \\
-    --warmup-seconds 20 \\
-    --concurrency "\$c" \\
-    > "$ROOT/k3s/k3s-r1-lb-c\${c}.json"
+  python scripts/dev/ingress_deep_probe.py http_bench --url "\$K3S_BASE_URL/id" --host "ws-echo-core-proxy.home.arpa" --duration-seconds 180 --warmup-seconds 20 --concurrency "\$c" > "$ROOT/k3s/k3s-r1-ws-echo-c\${c}.json"
+  python scripts/dev/ingress_deep_probe.py http_bench --url "\$K3S_BASE_URL/id" --host "lb-distribution-core-proxy.home.arpa" --duration-seconds 180 --warmup-seconds 20 --concurrency "\$c" > "$ROOT/k3s/k3s-r1-lb-c\${c}.json"
+  python scripts/dev/ingress_deep_probe.py http_bench --url "\$K3S_BASE_URL/id" --host "sticky-cookie-core-proxy.home.arpa" --duration-seconds 180 --warmup-seconds 20 --concurrency "\$c" > "$ROOT/k3s/k3s-r1-sticky-c\${c}.json"
 done
-
-python scripts/dev/ingress_deep_probe.py sticky_probe \\
-  --url "\$K3S_BASE_URL/id" \\
-  --host "sticky-cookie-core-proxy.home.arpa" \\
-  --requests-per-client 100 \\
-  > "$ROOT/k3s/k3s-r1-sticky.json"
 
 Expected Step 3 artifacts:
 - $ROOT/k3s/k3s-r1-ws-echo-deep.json
+- $ROOT/k3s/k3s-r1-lb-distribution-deep.json
+- $ROOT/k3s/k3s-r1-sticky-deep.json
+- $ROOT/k3s/k3s-r1-ws-echo-c30.json
+- $ROOT/k3s/k3s-r1-ws-echo-c50.json
+- $ROOT/k3s/k3s-r1-ws-echo-c70.json
 - $ROOT/k3s/k3s-r1-lb-c30.json
 - $ROOT/k3s/k3s-r1-lb-c50.json
 - $ROOT/k3s/k3s-r1-lb-c70.json
-- $ROOT/k3s/k3s-r1-sticky.json
+- $ROOT/k3s/k3s-r1-sticky-c30.json
+- $ROOT/k3s/k3s-r1-sticky-c50.json
+- $ROOT/k3s/k3s-r1-sticky-c70.json
 
 EOF2
 

@@ -55,6 +55,7 @@ Etcd maintenance (dev/CI)
 - Startup defaults in `k1s-core`/`dev-etcd` profiles:
   - `AE_ETCD_MAINTENANCE_ENABLE=1`
   - `AE_ETCD_MAINTENANCE_THRESHOLD_PCT=80`
+  - `AE_ETCD_MAINTENANCE_INTERVAL_SEC=900` (controller loop watchdog cadence)
 - Override/disable behavior when needed:
   - `AE_ETCD_MAINTENANCE_ENABLE=0 make k1s-core-cri`
   - `AE_ETCD_MAINTENANCE_THRESHOLD_PCT=70 make k1s-core-cri`
@@ -67,7 +68,7 @@ Rosenpass WireGuard PSK (Option C)
 - Hub/spoke discovery: hub node labels `role=controller` or `role=hub`; hub site override `AE_OVERLAY_HUB_SITE=<site-id>` (fallback `AE_SITE_ID`); hub WG endpoint label `wg_endpoint=<public-ip:port>` or `AE_OVERLAY_HUB_ENDPOINT`.
 - WireGuard interface override: `AE_WG_INTERFACE=wg0` (default).
 - Optional Rosenpass command override (if default fails): `AE_ROSENPASS_COMMAND="rosenpass exchange-config {config}"`.
-- Peer refresh interval (controller-managed peers): `AE_ROSENPASS_PEER_REFRESH_SEC=30` (set to `0` to disable).
+- Peer refresh interval (controller-managed peers): `AE_ROSENPASS_PEER_REFRESH_SEC=60` (set to `0` to disable).
 - Status file: `${AE_ROSENPASS_DIR}/rosenpass-status.json` (or `AE_ROSENPASS_STATUS_PATH`).
 
 Manual bringup (hub + edge, controller-managed peers)
@@ -148,6 +149,7 @@ Ingress validation lanes (CRI, mode-isolated)
   - `lb_observability_passed=true`: core-proxy LB row emitted usable backend-observation evidence.
   - `lb_strict_proof_passed=true`: strict edge-local distribution proof passed.
 - Cross-platform parity benchmark: `docs/ops/perf-parity-k1s-vs-k3s.md`
+- Dev-host gate policy and auto recheck: `docs/ops/ingress-gate-policy-devhost.md`
 
 Rollouts
 - Pause/resume:
