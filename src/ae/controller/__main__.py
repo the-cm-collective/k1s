@@ -35,7 +35,11 @@ from ae.controller.spec import (
     load_manifest,
     DEFAULT_NAMESPACE,
 )
-from ae.observability.http_api import start_http_api, set_reconcile_metrics
+from ae.observability.http_api import (
+    record_etcd_maintenance_run,
+    set_reconcile_metrics,
+    start_http_api,
+)
 from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
 from ae.config.transport import TransportConfig, check_nats_connectivity
@@ -2792,6 +2796,25 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         heartbeat_grace = 40
     heartbeat_interval = max(5, min(20, max(1, heartbeat_grace // 2)))
     last_heartbeat = 0.0
+    etcd_maintenance_enabled = (
+        getattr(store, "backend", "").lower() == "etcd"
+        and _truthy_env("AE_ETCD_MAINTENANCE_ENABLE", "1")
+    )
+    etcd_maintenance_interval = _parse_duration_seconds(
+        os.getenv("AE_ETCD_MAINTENANCE_INTERVAL_SEC", "900"),
+        default=900.0,
+    )
+    if etcd_maintenance_interval <= 0:
+        etcd_maintenance_enabled = False
+    last_etcd_maintenance = 0.0
+    if etcd_maintenance_enabled:
+        import logging as _logging
+
+        _logging.getLogger(__name__).info(
+            "etcd watchdog enabled (interval=%.1fs threshold_pct=%s)",
+            etcd_maintenance_interval,
+            os.getenv("AE_ETCD_MAINTENANCE_THRESHOLD_PCT", "80"),
+        )
 
     def _graceful(*_):
         nonlocal stop
@@ -2843,6 +2866,19 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     try:
         while not stop:
             now = time.time()
+            if etcd_maintenance_enabled and (now - last_etcd_maintenance) >= etcd_maintenance_interval:
+                triggered = False
+                try:
+                    watchdog_fn = getattr(store, "run_maintenance_watchdog", None)
+                    if callable(watchdog_fn):
+                        triggered = bool(watchdog_fn())
+                except Exception as exc:  # noqa: BLE001
+                    import logging as _logging
+
+                    _logging.getLogger(__name__).warning("etcd watchdog run failed: %s", exc)
+                finally:
+                    record_etcd_maintenance_run(triggered=triggered)
+                    last_etcd_maintenance = now
             if now - last_heartbeat >= heartbeat_interval:
                 try:
                     store.record_heartbeat(_local_node_id(), "Ready")
