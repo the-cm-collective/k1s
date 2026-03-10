@@ -1,0 +1,111 @@
+{
+  "canvas": {
+    "width": 1600,
+    "height": 900,
+    "fps": 24,
+    "duration_seconds": 12,
+    "gif_width": 1200
+  },
+  "titles": {
+    "main": "K1S + Hyperon - Regional Cognitive Mesh",
+    "beats": [
+      {
+        "label": "Regional topology reveal",
+        "summary": "two cities, two DCs, and distributed edge compute across the state"
+      },
+      {
+        "label": "Local-first query",
+        "summary": "hot + warm neighborhoods satisfy most of the graph request"
+      },
+      {
+        "label": "Summary pull + selective fetch",
+        "summary": "bounded remote expansion moves only the needed graph neighborhoods"
+      },
+      {
+        "label": "Inference on warmed mesh",
+        "summary": "regional inference reuses warmed graph chunks with fewer remote hops"
+      }
+    ]
+  },
+  "legend": [
+    "cyan rings = live query motion",
+    "amber packets = graph chunk / cache movement",
+    "magenta pulses = inference calls",
+    "gold halos = warm neighborhoods / cache retention"
+  ],
+  "phase_labels": [
+    "Topology",
+    "Query",
+    "Chunk/cache",
+    "Inference"
+  ],
+  "layout": {
+    "state_outline": [
+      [170, 145],
+      [305, 110],
+      [545, 132],
+      [720, 92],
+      [925, 118],
+      [1150, 150],
+      [1350, 270],
+      [1290, 460],
+      [1415, 635],
+      [1285, 760],
+      [1075, 708],
+      [880, 785],
+      [650, 748],
+      [440, 772],
+      [255, 665],
+      [170, 505],
+      [138, 325]
+    ],
+    "cities": {
+      "west": {
+        "label": "City West",
+        "point": [420, 470]
+      },
+      "east": {
+        "label": "City East",
+        "point": [1165, 355]
+      }
+    },
+    "dcs": {
+      "west": {
+        "label": "DC West",
+        "point": [540, 430]
+      },
+      "east": {
+        "label": "DC East",
+        "point": [1085, 320]
+      }
+    }
+  },
+  "colors": {
+    "background": "#02111f",
+    "background_alt": "#05233d",
+    "state_fill": "#0a2339",
+    "state_stroke": "#3a6c91",
+    "metro_glow_west": "#16324f",
+    "metro_glow_east": "#173a62",
+    "corridor_glow": "#0f1e33",
+    "link_idle": "#173149",
+    "link_backbone": "#21486d",
+    "query": "#8fe8ff",
+    "query_glow": "#cff7ff",
+    "chunk": "#ffd56e",
+    "chunk_glow": "#fff0b6",
+    "warm": "#f6c96f",
+    "inference": "#ff7ab8",
+    "inference_glow": "#ffb6dc",
+    "dc_fill": "#d6f4ff",
+    "residence_fill": "#7ab0d9",
+    "business_fill": "#88d8ff",
+    "colo_fill": "#9fb8ce",
+    "pop_fill": "#6de1ff",
+    "mixed_fill": "#81c2ba",
+    "text_primary": "#f6fbff",
+    "text_secondary": "#a4bfd3",
+    "phase_idle": "#17374f",
+    "phase_active": "#7bdcff"
+  }
+}
