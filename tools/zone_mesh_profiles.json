@@ -1,0 +1,68 @@
+{
+  "low": {
+    "seed": 11,
+    "counts": {
+      "residence": 8,
+      "business": 8,
+      "colo": 4,
+      "pop": 4,
+      "mixed": 6
+    },
+    "links": {
+      "local_mesh_per_node": 1,
+      "cross_city_budget": 5,
+      "corridor_nodes": 4
+    },
+    "activity": {
+      "query_targets": 8,
+      "remote_targets": 3,
+      "warm_targets": 6,
+      "inference_targets": 10,
+      "chunk_groups": 3
+    }
+  },
+  "medium": {
+    "seed": 29,
+    "counts": {
+      "residence": 18,
+      "business": 18,
+      "colo": 8,
+      "pop": 8,
+      "mixed": 14
+    },
+    "links": {
+      "local_mesh_per_node": 2,
+      "cross_city_budget": 8,
+      "corridor_nodes": 8
+    },
+    "activity": {
+      "query_targets": 18,
+      "remote_targets": 5,
+      "warm_targets": 12,
+      "inference_targets": 24,
+      "chunk_groups": 6
+    }
+  },
+  "high": {
+    "seed": 53,
+    "counts": {
+      "residence": 34,
+      "business": 34,
+      "colo": 14,
+      "pop": 14,
+      "mixed": 24
+    },
+    "links": {
+      "local_mesh_per_node": 3,
+      "cross_city_budget": 14,
+      "corridor_nodes": 12
+    },
+    "activity": {
+      "query_targets": 36,
+      "remote_targets": 8,
+      "warm_targets": 20,
+      "inference_targets": 44,
+      "chunk_groups": 10
+    }
+  }
+}
