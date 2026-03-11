@@ -1,5 +1,9 @@
 # Storage Parity Architecture Plan
 
+Status: active WIP tracker
+Owner area: storage/apishim/export
+Intended destination: `docs/design/` or `docs/reference/` once the active scope is reduced to committed storage semantics
+
 Goal: reach a "complete" level where most Kubernetes YAML and Helm charts that use
 PVCs and StatefulSets work against k1s with minimal or no chart changes.
 

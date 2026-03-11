@@ -1,5 +1,9 @@
 # Sonobuoy Harness (WIP)
 
+Status: active WIP tracker
+Owner area: ops/testing
+Intended destination: `docs/ops/runbook.md` plus tooling docs once the harness is implemented
+
 This document defines the build and implementation plan for a Sonobuoy-based
 conformance harness for k1s. The goal is to produce a repeatable baseline,
 track deltas over time, and evolve toward a curated “conformance-lite” profile

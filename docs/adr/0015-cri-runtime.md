@@ -500,7 +500,7 @@ Exit criteria:
   - `src/ae/apishim/adapter.py` and `src/ae/apishim/server.py`
   - Use backend values aligned with Kubernetes terminology: `cri` or `containerd`, not `kubelet`.
   - Persist node backend as `cri` to reflect the CRI runtime (Kubernetes uses CRI as the contract).
-- Doc: `docs/wip/cri-runtime.md` (this file) + `docs/ops/runbook.md` snippet for node preflight
+- Docs: `docs/reference/cri-containerd.md`, `docs/wip/cri-parity.md`, and `docs/ops/runbook.md`
   - Use Kubernetes terms: CRI endpoint, sandbox image, CNI bin/conf dirs, and cgroup driver alignment.
   - Match kubelet endpoint format: `unix:///run/containerd/containerd.sock` (note triple slash).
 
