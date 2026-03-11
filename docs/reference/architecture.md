@@ -15,13 +15,14 @@ This document describes k1s in depth: components, data model, reconcile algorith
 - Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring `nodeSelector`, taints/tolerations, topology spread, and storage pinning.
 - Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.
 - Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.
-- Transport/gateway (src/ae/gateway + NATS): supports both NATS + JetStream (`nats-js`) and NATS Core (`nats-core`) control-plane lanes for core/edge operation.
+- Transport/gateway (src/ae/gateway + NATS): supports both NATS + JetStream (`nats-js`) and NATS Core (`nats-core`) control-plane lanes for core/edge operation. The true HA target keeps this as the transport plane behind `etcd` authority.
 - Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).
 - Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).
 - Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).
-- State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables), with Postgres and etcd-backed durable lanes available for multi-node/strict CRI setups.
+- State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables), with Postgres and etcd-backed durable lanes available for multi-node/strict CRI setups. The HA control-plane target uses `etcd` as the authority store.
 - Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.
 - API shim (src/ae/apishim): Kubernetes-compatible API for kubectl/helm with SSA/patch and port-forward.
+- Inference fabric (src/ae/controller/inference_cell + node fabric endpoints): experimental distributed-inference lane with stage placement, admission budgets, fabric-session orchestration, and cell lifecycle control. The formal roadmap targets AI Max+ 395 cells behind a provider-facing HA edge, with an exact public node baseline documented separately.
 - Observability (src/ae/observability): metrics snapshot, HTTP API, dashboard, logging helpers.
 - CLI (src/ae/cli) + kubectl‑like wrapper (src/ae/kctl).
 
@@ -104,6 +105,27 @@ sequenceDiagram
   C->>S: record_snapshot + events
   C-->>CLI: report(created/updated/removed, status)
 ```
+
+## Inference Fabric (Experimental)
+
+The repo also includes a controller-owned distributed-inference lane built around `InferenceCell` and `InferenceCellSet`.
+
+Current behavior:
+
+- explicit member selection and stage placement
+- boundary and budget admission checks
+- GPU, port, and optional node-lock reservation
+- fabric-session creation before worker and leader launch
+- controller-tracked cell lifecycle with restart and teardown handling
+
+The formal roadmap turns this lane into an AI Max+ 395-first fabric program. The near-term deployment shape is a provider-facing HA edge in front of a `k1s` AMD cell fabric; the current `InferenceCell` implementation is the controller-owned precursor to that model.
+
+The current lane is documented in `docs/reference/inference-fabric.md`.
+The current node baseline and cluster-prep sequence are documented in `docs/reference/ai-max-395-hardware-baseline.md` and `docs/ops/ai-max-395-cluster-prep.md`.
+The backend HA authority model that precedes provider-edge work is documented in `docs/roadmap/high-availability-control-plane.md`.
+The formal authority split and provider model are documented in `docs/design/fabric-control-plane.md`.
+The target deployment layout is documented in `docs/design/fabric-deployment-topology.md`.
+The staged development path is documented in `docs/roadmap/distributed-compute-fabric.md`.
 
 ## Spec (ae.dev/v1alpha1)
 
