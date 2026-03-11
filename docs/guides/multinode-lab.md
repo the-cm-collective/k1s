@@ -250,12 +250,12 @@ AE_POD_CIDR_POOL=10.42.0.0/16 \
 AE_POD_CIDR_MASK=24 \
 AE_AGENT_API_PORT=9110 \
 AE_AGENT_API_TOKEN=devtoken \
-python -m ae.controller --loop --interval 10 --specs .local/spec/ --metrics-port 9108
+python -m ae.controller --loop --interval 10 --specs state/specs-lab/ --metrics-port 9108
 ```
 Notes:
 - Ensure the overlay network exists (`AE_OVERLAY_NET`) before starting the controller.
 - Optional ingress DNS reachability: set `AE_PODMAN_NETWORK=<net>` (Podman) or `AE_DOCKER_NETWORK=<net>` (Docker) so multi-replica ingress can target container DNS.
-- Prefer a dedicated specs directory (for example `.local/spec/`) to avoid reconciling every manifest under `specs/examples/`.
+- Prefer a dedicated specs directory (for example `state/specs-lab/`) to avoid reconciling every manifest under `specs/examples/`.
 - `--interval` controls the reconcile loop cadence (default is 2s). For ops, set a higher value (for example 10–30s) to reduce noisy logs and churn.
 - The controller imports manifests from `--specs` into the registry but always reconciles from the registry. An empty specs dir does not clear existing workloads; use `ae delete <app>` or clean the state DB to start fresh.
 - Keep `AE_AGENT_API_TOKEN` private; nodes need it for registration.
@@ -753,7 +753,7 @@ Production default in this guide:
 
 Related references:
 - `docs/reference/storage.md` (NetFS behavior and event reasons)
-- `docs/wip/site-to-site-storage.md` (CSI-oriented architecture and phases)
+- `docs/design/site-to-site-csi-storage.md` (CSI-oriented architecture and phases)
 - `docs/ops/core-edge-wg-psk.md` (overlay and Rosenpass runbook)
 
 ### Production Pattern (split hosts, hybrid storage lanes)

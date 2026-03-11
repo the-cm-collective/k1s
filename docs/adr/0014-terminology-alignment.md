@@ -25,4 +25,4 @@ Owners: controller/cli/docs/observability
 ## References
 - `src/ae/k8s/convert.py`
 - `src/ae/controller/spec.py`
-- `docs/wip/conformance.md`
+- `docs/reference/apishim-roadmap.md`

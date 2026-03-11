@@ -2,6 +2,8 @@
 
 Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.
 
+For staged implementation work and open gaps, see [API Shim Roadmap](apishim-roadmap.html).
+
 ## Core resources
 - Namespaces, ConfigMaps, Secrets, ServiceAccounts: ✅ CRUD, watch, managedFields apply/patch.
 - Services: ✅ ClusterIP/NodePort allocation; LB status projection; EndpointSlice + topology hints; svc port-forward.
