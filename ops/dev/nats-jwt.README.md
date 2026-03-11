@@ -15,10 +15,10 @@ ops/dev/install-nsc.sh
 ## 1) Generate operator/account/users (dev bootstrap)
 
 ```bash
-ops/dev/nsc-bootstrap.sh
+STATE_DIR=$PWD/state/nats-jwt ops/dev/nsc-bootstrap.sh
 ```
 
-Outputs (gitignored) are written to `.local/nats-jwt/`:
+This example keeps gitignored lab state under `state/nats-jwt/`:
 - `operator.jwt`
 - `accounts/` (account JWTs)
 - `creds/` (user `.creds`)
@@ -35,7 +35,7 @@ docker compose -f ops/dev/docker-compose.nats-etcd.jwt.yaml up -d
 Examples:
 
 ```bash
-export AE_NATS_CREDS=.local/nats-jwt/creds/hub-controller.creds
+export AE_NATS_CREDS=$PWD/state/nats-jwt/creds/hub-controller.creds
 ```
 
 Gateway/worker should point to `gateway.creds` / `worker.creds`.
@@ -51,7 +51,7 @@ Use the helper:
 
 ```bash
 NATS_URL=nats://127.0.0.1:4222 \
-SYS_CREDS=.local/nats-jwt/creds/sys.creds \
+SYS_CREDS=$PWD/state/nats-jwt/creds/sys.creds \
 ops/dev/nsc-push.sh
 ```
 
@@ -59,17 +59,17 @@ ops/dev/nsc-push.sh
 
 - Add a new user and push updates:
 ```bash
-nsc add user --name gateway --account K1S --dir .local/nats-jwt/nsc
-nsc generate creds --account K1S --name gateway --dir .local/nats-jwt/nsc > .local/nats-jwt/creds/gateway.creds
+nsc add user --name gateway --account K1S --dir $PWD/state/nats-jwt/nsc
+nsc generate creds --account K1S --name gateway --dir $PWD/state/nats-jwt/nsc > $PWD/state/nats-jwt/creds/gateway.creds
 ops/dev/nsc-push.sh
 ```
 
 - Revoke a user and push:
 ```bash
-nsc revoke user --name gateway --account K1S --dir .local/nats-jwt/nsc
+nsc revoke user --name gateway --account K1S --dir $PWD/state/nats-jwt/nsc
 ops/dev/nsc-push.sh
 ```
 
 ## Notes
 - The system account (`SYS`) is used for `nsc push`.
-- For production, store the `.local/nats-jwt/nsc` directory securely (it contains signing keys).
+- For production, store the signing directory securely (for example `state/nats-jwt/nsc`).

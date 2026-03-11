@@ -95,13 +95,13 @@ Troubleshooting
 Exercise JetStream dispatch from core to edge via gateway/worker.
 
 ```
-K1S_E2E_DIR=$PWD/.local/e2e-core-edge-latest .venv/bin/python scripts/e2e_k1s_core_edge.py
+K1S_E2E_DIR=$PWD/state/e2e-core-edge-latest .venv/bin/python scripts/e2e_k1s_core_edge.py
 ```
 
 Logs live under:
-- `.local/e2e-core-edge-latest/logs/controller.log`
-- `.local/e2e-core-edge-latest/logs/gateway.log`
-- `.local/e2e-core-edge-latest/logs/worker.log`
+- `state/e2e-core-edge-latest/logs/controller.log`
+- `state/e2e-core-edge-latest/logs/gateway.log`
+- `state/e2e-core-edge-latest/logs/worker.log`
 
 Optional pytest wrapper:
 ```
