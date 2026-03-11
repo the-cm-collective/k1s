@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -697,6 +697,9 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -709,7 +712,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -737,6 +740,7 @@
 <li>State: SQLite remains the lightweight local default; etcd durable state is supported and is the default backing lane in strict CRI core profiles; Postgres remains supported for shim HA and externalized persistence (<code>AE_STATE_DSN</code> / <code>AE_APISHIM_DSN</code>).</li>
 <li>Runtime backends: Podman (default), Docker fallback, and CRI/containerd for CRI-native nodes (recommended via <code>make k1s-core-cri</code> and related <code>k1s-*-cri</code> profile targets).</li>
 <li>API surface: native HTTP API plus the Kubernetes API shim (<code>AE_APISHIM_ENABLE=1 python -m ae.apishim serve</code>) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
+<li>Inference fabric: experimental <code>InferenceCell</code> and <code>InferenceCellSet</code> controllers provide a controller-owned lane for distributed inference placement, reservation, and session orchestration across named members and sites. The formal roadmap targets AI Max+ 395-first execution cells behind a provider-facing HA edge, with an exact public hardware baseline and cluster-prep guide documented separately.</li>
 <li>Tooling: <code>k1s</code> kubectl‑style wrapper, <code>ae nodes</code> for inventory/cordon, <code>ae plan</code> for placement hints, <code>export-k8s</code> and <code>k8s-report</code> for parity/compliance, dashboard at <code>/dashboard</code> (direct on <code>:9108</code>, or <code>https://dash.home.arpa:8443/dashboard</code> in demos), and <code>/nodes</code> + enriched <code>/metrics</code> for node/service visibility.</li>
 <li>Footprint: recent Feb 2026 idle benchmarks continue to show ~85-90 MiB PSS for controller+API on Podman+crun rootless, and ~170-180 MiB PSS for k1nd (Docker + Caddy). See <code>docs/benchmarks/memory.md</code> for the latest numbers.</li>
 </ul>
@@ -754,6 +758,7 @@
 <li>Observability: Prometheus metrics with node/service gauges, events, <code>/nodes</code>, <code>/system</code>, dashboard.</li>
 <li>CLIs: <code>ae</code> (native), <code>k1s</code> (kubectl‑like wrapper), <code>ae nodes</code> for inventory, <code>ae plan</code> for placement, <code>ae tls</code> helpers.</li>
 <li>Kubernetes API shim: <code>ae.apishim serve</code> with RBAC/SSA/patch, OpenAPI v2/v3, port-forward for pods/services, compatibility matrix.</li>
+<li>Inference fabric: <code>ae cell</code>, <code>ae cellset</code>, and <code>ae fabric</code> for distributed inference execution and session inspection.</li>
 <li>K8s helpers: <code>export-k8s</code>, <code>k8s-check</code>, and <code>k8s-report</code> for parity/compliance.</li>
 </ul>
 <h3 id="architecture-at-a-glance-diagram">Architecture at a Glance (Diagram)</h3>
@@ -848,12 +853,15 @@
 </ul>
 <h2 id="further-reading">Further Reading</h2>
 <ul>
+<li>Project philosophy and cognitive safeguards: <code>docs/design/project-philosophy.md</code>, <code>docs/design/cognitive-welfare-and-continuity.md</code></li>
 <li>Runbook: <code>docs/ops/runbook.md</code></li>
 <li>End-to-End Guide: <code>docs/guides/e2e.md</code></li>
 <li>Runtime Profiles: <code>docs/guides/runtime-profiles.md</code></li>
 <li>Multi-node + ingress mode validation: <code>docs/guides/multinode-lab.md</code>, <code>docs/guides/ingress-capability-test-sequence.md</code></li>
 <li>HTTP API: <code>docs/reference/http-api.md</code></li>
-<li>Kubernetes API shim + compatibility matrix: <code>docs/wip/conformance.md</code>, <code>docs/reference/apishim-compatibility-matrix.md</code></li>
+<li>Kubernetes API shim + compatibility matrix: <code>docs/reference/apishim-roadmap.md</code>, <code>docs/reference/apishim-compatibility-matrix.md</code></li>
+<li>Inference fabric current state: <code>docs/reference/inference-fabric.md</code></li>
+<li>Fabric design and phase path: <code>docs/roadmap/high-availability-control-plane.md</code>, <code>docs/design/fabric-deployment-topology.md</code>, <code>docs/design/fabric-control-plane.md</code>, <code>docs/roadmap/distributed-compute-fabric.md</code></li>
 <li>Architecture (detailed): <code>docs/reference/architecture.md</code></li>
 </ul>
     </div>
@@ -863,7 +871,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-19 16:37:17</span>
+        <span>Built 2026-03-11 15:27:58</span>
       </div>
     </footer>
     <script>

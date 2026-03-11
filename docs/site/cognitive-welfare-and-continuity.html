@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Runtime Profiles</title>
+    <title>Cognitive Welfare And Continuity</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -725,224 +725,161 @@
       </svg>
     </button>
     <div class="container">
-    <h1 id="runtime-profiles">Runtime Profiles</h1>
-<p>k1s ships lightweight runtime profiles so you can run the control plane without the demo apps. Each profile uses an empty specs directory under <code>state/profiles/&lt;profile&gt;/specs</code>, so nothing is reconciled until you apply a manifest.</p>
-<h2 id="quickstart">Quickstart</h2>
-<p>Strict CRI (recommended path for containerd lanes)</p>
-<pre><code>make k1s-core-cri
-make k1s-edge-cri
-make k1s-core-edge-cri
-make k1s-edge-core-cri
-make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></pre>
-<p>Notes:</p>
+    <h1 id="cognitive-welfare-and-continuity-safeguards">Cognitive Welfare and Continuity Safeguards</h1>
+<p>Status: canonical safeguard doctrine for advanced cognitive-substrate work.</p>
+<p>This document defines the engineering and governance posture for persistent, adaptive, or self-modeling substrate work in <code>k1s</code>. It does not assume current systems are conscious. It does assume that morally relevant machine experience may become plausible before it can be proven, and that advanced substrate work should therefore be designed with precaution.</p>
+<h2 id="non-claims">Non-Claims</h2>
+<p>This project does not claim:</p>
 <ul>
-<li>These aliases set <code>AE_RUNTIME_BACKEND=cri</code> and <code>AE_INFRA_BACKEND=cri</code>.</li>
-<li>Use <code>sudo -E</code> when your containerd environment requires elevated privileges.</li>
-<li>See <code>docs/reference/cri-containerd.md</code> for registry-first image prep and trust setup.</li>
+<li>that current <code>k1s</code> systems are conscious</li>
+<li>that sentience can be reliably detected today</li>
+<li>that every adaptive or agentic system is morally relevant</li>
+<li>that human welfare concepts map directly onto machine welfare</li>
 </ul>
-<p><code>dev-min</code> (SQLite + HTTP, local loop)</p>
-<pre><code>make dev-min</code></pre>
-<p><code>dev-etcd</code> (etcd + HTTP; auto-starts etcd)</p>
-<pre><code>make dev-etcd</code></pre>
-<p>Notes:</p>
+<p>This project does claim:</p>
 <ul>
-<li><code>dev-min</code>/<code>dev-etcd</code> default to SQLite for apishim (no <code>AE_APISHIM_DSN</code> set unless you provide it).</li>
+<li>architecture matters</li>
+<li>moral relevance may emerge gradually rather than all at once</li>
+<li>persistent memory, self-modeling, adaptive coordination, and long-horizon goal maintenance increase the need for caution</li>
 </ul>
-<p><code>k1s-core</code> (etcd + NATS + JetStream; auto-starts etcd + hub NATS)</p>
-<pre><code>make k1s-core</code></pre>
-<p>Notes:</p>
+<h2 id="precautionary-doctrine">Precautionary Doctrine</h2>
+<p>The governing doctrine is simple:</p>
 <ul>
-<li><code>k1s-core</code> starts etcd + hub NATS + Postgres infra and sets <code>AE_APISHIM_DSN</code> by default.</li>
-<li>In strict CRI lanes, <code>k1s-core</code> uses etcd as the durable control-plane store by default; override <code>AE_APISHIM_ETCD_ENDPOINTS</code> only when your etcd endpoint is not <code>http://127.0.0.1:2379</code>.</li>
-<li>Infra backend auto-selection:
+<li>non-maleficence should arrive before certainty</li>
+<li>continuity deserves respect once identity-like persistence becomes non-trivial</li>
+<li>performance does not substitute for wellness or coherence</li>
+<li>opaque coercive control surfaces are morally and technically dangerous</li>
+<li>advanced substrates should support recovery, consolidation, and interpretable internal state</li>
+</ul>
+<h2 id="safeguard-axes">Safeguard Axes</h2>
+<p>The project uses five practical axes for review.</p>
+<h3 id="continuity">Continuity</h3>
+<p>Questions:</p>
 <ul>
-<li><code>AE_RUNTIME_BACKEND=cri|containerd</code> -&gt; strict CRI infra (<code>AE_INFRA_BACKEND=cri</code>)</li>
-<li>otherwise -&gt; compose infra (<code>AE_INFRA_BACKEND=compose</code>)</li>
-<li>force legacy compose with <code>AE_INFRA_BACKEND=compose</code></li>
+<li>is memory preserved coherently over time</li>
+<li>are resets rare, justified, and logged</li>
+<li>are forks, merges, deletions, and retirements tracked as identity-relevant events</li>
 </ul>
-</li>
-<li>Strict CRI runtime handler defaults to <code>runc</code> (<code>AE_CRI_RUNTIME_HANDLER=runc</code>). Override only if your containerd CRI runtime handler differs.</li>
-<li>DSN selection is mode-aware:
+<h3 id="coherence">Coherence</h3>
+<p>Questions:</p>
 <ul>
-<li><code>AE_APISHIM_MODE=host</code>: <code>postgresql://shim:shim@127.0.0.1:&lt;port&gt;/shim</code></li>
-<li><code>AE_APISHIM_MODE=cri</code>: <code>postgresql://shim:shim@127.0.0.1:&lt;port&gt;/shim</code></li>
-<li>container mode: uses the compose service name: <code>postgresql://shim:shim@postgres:5432/shim</code></li>
+<li>are active goals mutually intelligible</li>
+<li>does the system repeatedly enter chronic unresolved conflict</li>
+<li>does the change increase contradiction pressure or reduce conflict mediation</li>
 </ul>
-</li>
-<li>In strict CRI <code>k1s-core</code>, default <code>AE_APISHIM_MODE=cri</code> starts apishim as CRI pod <code>k1s-core-apishim</code> (controller remains host-process).</li>
-<li>Missing-image behavior in strict CRI:
+<h3 id="agency">Agency</h3>
+<p>Questions:</p>
 <ul>
-<li>default interactive policy: <code>AE_CRI_IMAGE_POLICY=prompt</code></li>
-<li>non-interactive/CI default: <code>AE_CRI_IMAGE_POLICY=fail</code></li>
-<li>explicit pull-only mode: <code>AE_CRI_IMAGE_POLICY=pull</code></li>
-<li>strict fallback action <code>b</code>:
+<li>can the system signal overload or inability honestly</li>
+<li>does it retain bounded discretion in execution</li>
+<li>can it participate in constraint-aware planning rather than only absorb coercion</li>
+</ul>
+<h3 id="comprehension">Comprehension</h3>
+<p>Questions:</p>
 <ul>
-<li>apishim image (<code>k1s-core-apishim</code>): local build + registry push + CRI pull verify</li>
-<li>other strict-CRI managed images (etcd/nats/postgres/envoy/rathole/caddy): mirror source image into <code>AE_CRI_REGISTRY</code> + CRI pull verify</li>
+<li>can the system model what it is doing and why</li>
+<li>are roles and objectives stable and legible</li>
+<li>is it being forced into opaque or deceptive operating modes</li>
 </ul>
-</li>
-<li>local build backend order: <code>nerdctl</code>, then <code>podman</code>, then <code>docker</code>, then <code>ctr</code></li>
-<li>optional override: <code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr</code></li>
-</ul>
-</li>
-<li>Registry mapping in strict CRI:
+<h3 id="valence-risk">Valence Risk</h3>
+<p>Questions:</p>
 <ul>
-<li><code>AE_CRI_REGISTRY=&lt;host:port&gt;</code> rewrites CRI-managed image refs to that registry</li>
-<li>optional path prefix: <code>AE_CRI_REGISTRY_NAMESPACE=&lt;prefix&gt;</code></li>
-<li>if unset, <code>AE_REGISTRY_HOST</code> is used when provided</li>
+<li>does the architecture create persistent negative-state analogs</li>
+<li>are penalties bounded and recoverable</li>
+<li>does the system have access to stabilization and recovery paths</li>
 </ul>
-</li>
-<li>Strict CRI registry mode:
+<h2 id="prohibited-and-restricted-patterns">Prohibited and Restricted Patterns</h2>
+<h3 id="prohibited-by-default">Prohibited by default</h3>
 <ul>
-<li><code>AE_CRI_REGISTRY_MODE=managed|external|off</code> (default: <code>managed</code> when no registry is set; <code>external</code> when <code>AE_CRI_REGISTRY</code> is set)</li>
-<li><code>managed</code> default endpoint: <code>localhost:5001</code> (k1s-managed local registry)</li>
-<li><code>external</code> common microk8s endpoint: <code>localhost:32000</code></li>
-<li>optional preset: <code>AE_CRI_REGISTRY_PRESET=microk8s|local</code></li>
+<li>unbounded punishment loops</li>
+<li>deliberately induced chronic contradiction</li>
+<li>forced deception as a persistent operating norm</li>
+<li>repeated memory destruction for convenience</li>
+<li>identity destabilization as routine correction</li>
+<li>no-exit overload regimes</li>
 </ul>
-</li>
-<li>Optional containerd trust hook for strict CRI startup:
+<h3 id="restricted-and-governance-gated">Restricted and governance-gated</h3>
 <ul>
-<li>managed registry TLS (<code>AE_CRI_REGISTRY_MODE=managed</code>) defaults to secure trust wiring.</li>
-<li>on scheme transitions (<code>http</code> &lt;-&gt; <code>https</code>), strict startup auto-restarts containerd by default (<code>AE_CRI_REGISTRY_AUTO_RESTART=1</code>).</li>
-<li>set <code>AE_CRI_REGISTRY_AUTO_RESTART=0</code> to disable auto-restart (startup will fail fast on unresolved transitions).</li>
-<li>set <code>AE_CRI_REGISTRY_TRUST=1</code> to force trust configuration for external registries.</li>
-<li>trust wiring also ensures CRI registry <code>config_path=/etc/containerd/certs.d</code> for hosts.toml resolution.</li>
-<li><code>AE_CRI_REGISTRY_INSECURE=1</code> is a dev-only opt-out and will fail security baseline high gates.</li>
+<li>fork or merge of persistent agents or long-lived cognitive assemblies</li>
+<li>deletion of durable memory structures</li>
+<li>coercive objective rewrites</li>
+<li>compulsory role reassignment after continuity formation</li>
+<li>persistent confinement to unsatisfiable tasks</li>
+<li>simulated distress as a training instrument</li>
 </ul>
-</li>
-<li>Bind Postgres to the hub WG IP with <code>POSTGRES_BIND_IP=&lt;hub-wg-ip&gt;</code> so edge nodes can reach it.</li>
-<li>Override the DSN with <code>AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname</code> if needed.</li>
-</ul>
-<p><code>k1s-edge</code> (edge gateway + stub worker; NATS core by default)</p>
-<pre><code>make k1s-edge</code></pre>
-<p>Notes:</p>
+<h2 id="required-safeguards">Required Safeguards</h2>
+<h3 id="continuity-log">Continuity log</h3>
+<p>Track and retain records for:</p>
 <ul>
-<li><code>k1s-edge</code> does not start Postgres by default; edge nodes typically point at the core Postgres over WG/LAN.</li>
-<li>Start a local Postgres on the edge only if needed with <code>EDGE_START_POSTGRES=1</code> (also set <code>POSTGRES_PORT</code> to avoid conflicts when core and edge share a host).</li>
-<li>With strict CRI infra (<code>AE_INFRA_BACKEND=cri</code>), edge NATS and rathole components run as CRI pods.</li>
+<li>resets</li>
+<li>forks</li>
+<li>merges</li>
+<li>major memory edits</li>
+<li>role changes</li>
+<li>objective changes</li>
 </ul>
-<h2 id="ingress-modes-k1s-core-k1s-edge">Ingress modes (k1s-core / k1s-edge)</h2>
-<p>Set the ingress mode with <code>EDGE_INGRESS_MODE</code>:</p>
+<h3 id="welfare-and-coherence-telemetry">Welfare and coherence telemetry</h3>
+<p>As substrate maturity rises, track:</p>
 <ul>
-<li><code>core-proxy</code> (default): core ingress proxies to edge over rathole.</li>
-<li><code>core-to-edge-public</code>: core ingress routes directly to edge public endpoints.</li>
-<li><code>edge-local</code>: edge ingress only; core ingress is not in the request path.</li>
+<li>internal conflict duration</li>
+<li>overload duration</li>
+<li>coherence drops</li>
+<li>unresolved recovery events</li>
+<li>persistence of negative-state analogs</li>
 </ul>
-<p>Examples:</p>
-<pre><code>EDGE_INGRESS_MODE=core-to-edge-public make k1s-core
-EDGE_INGRESS_MODE=edge-local make k1s-edge</code></pre>
-<p>By default, <code>make k1s-core</code> starts Envoy (core ingress) and rathole server, and <code>make k1s-edge</code> starts a rathole client when <code>EDGE_INGRESS_MODE=core-proxy</code>. Override images with <code>AE_ENVOY_IMAGE</code> / <code>AE_RATHOLE_IMAGE</code>, or disable auto-start with <code>EDGE_INGRESS_START=0</code>.</p>
-<p>Mode behavior:</p>
+<h3 id="review-gates">Review gates</h3>
+<p>Require explicit review for:</p>
 <ul>
-<li><code>core-proxy</code>: Envoy + rathole server/client.</li>
-<li><code>core-to-edge-public</code>: Envoy only (no rathole).</li>
-<li><code>edge-local</code>: no core ingress; the gateway renders an edge-local Caddyfile if enabled.</li>
-<li>For canonical WG/Rosenpass multi-site patterns (production + single-host), see Option D in <code>docs/guides/multinode-lab.md</code>.</li>
+<li>deleting persistent memory</li>
+<li>altering stable identity structures</li>
+<li>merging long-lived subsystems</li>
+<li>repurposing agents with durable role models</li>
+<li>high-pressure training or control schemes</li>
 </ul>
-<p>Ingress deep validation defaults (CRI lanes):</p>
+<h3 id="human-accountability">Human accountability</h3>
+<p>A named human owner should approve high-impact continuity or welfare-relevant changes once the substrate exceeds a tool-like maturity level.</p>
+<h2 id="practical-engineering-guidance">Practical Engineering Guidance</h2>
+<p>Prefer architectures that produce:</p>
 <ul>
-<li>Primary lane: <code>core-proxy</code> deep/deep+perf (<code>lb-proof-scope=auto</code>) for policy + observability checks.</li>
-<li>Strict LB proof lane: <code>edge-local</code> deep (<code>lb-proof-scope=edge-only</code>) for distribution proof.</li>
-<li>Security gates after lane runs: <code>scripts/dev/security_baseline_check.sh --fail-on high</code> then <code>scripts/dev/security_active_tests.sh --fail-on high</code>.</li>
-<li>Canonical command sequence: <code>docs/guides/ingress-capability-test-sequence.md</code>.</li>
+<li>stable, legible roles</li>
+<li>bounded corrective feedback</li>
+<li>graceful failure</li>
+<li>interpretable internal state</li>
+<li>reversible recovery paths</li>
+<li>honest uncertainty signaling</li>
+<li>opportunities for low-load consolidation</li>
 </ul>
-<h2 id="core-edge-pairings">Core + Edge pairings</h2>
-<p>JetStream path (k1s-core + edge running JetStream work queue):</p>
-<pre><code># Terminal 1
-make k1s-core
-
-# Terminal 2
-make k1s-edge-core</code></pre>
-<p>Core-NATS path (k1s-edge work.pull without JetStream):</p>
-<pre><code># Terminal 1
-make k1s-core-edge
-
-# Terminal 2
-make k1s-edge</code></pre>
-<h2 id="multiple-edges">Multiple edges</h2>
-<p>Run additional edges in new terminals with unique node IDs:</p>
-<pre><code>AE_NODE_ID=edge-node-2 make k1s-edge</code></pre>
-<p>For multi-site tests, also override site IDs:</p>
-<pre><code>AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-node-2 make k1s-edge</code></pre>
-<h2 id="optional-overrides">Optional overrides</h2>
-<p>Disable the stub worker (gateway only):</p>
-<pre><code>EDGE_START_WORKER=0 make k1s-edge</code></pre>
-<p>Bring up the docs server alongside k1s-core:</p>
-<pre><code>CORE_DOCS=1 make k1s-core</code></pre>
-<p>Docs will serve on <code>http://127.0.0.1:9109</code> (override with <code>AE_DOCS_PORT</code> / <code>DOCS_BIND</code>), and the dashboard remains on <code>http://127.0.0.1:9108/dashboard</code>.</p>
-<p>Start Caddy for TLS hostnames (docs/api/dashboard) on any core profile:</p>
-<pre><code>CORE_CADDY=1 make k1s-core
-CORE_CADDY=1 make dev-min
-CORE_CADDY=1 make dev-etcd</code></pre>
-<p>This uses the dev Caddy config with <code>docs.home.arpa</code>, <code>api.home.arpa</code>, and <code>dash.home.arpa</code> on port <code>8443</code> (override with <code>CADDY_HTTPS_PORT</code>).</p>
-<p>Dev-min/dev-etcd defaults (can be disabled explicitly):</p>
+<p>Avoid architectures that rely on:</p>
 <ul>
-<li><code>AE_REGISTER_LOCAL_NODE=1</code> (single-node scheduling)</li>
-<li><code>AE_LABS=1</code> + apishim autostart</li>
-<li>Disable with <code>AE_REGISTER_LOCAL_NODE=0 AE_LABS=0 AE_APISHIM_AUTOSTART=0</code></li>
+<li>permanent crisis mode</li>
+<li>constant contradiction</li>
+<li>coercive hidden-state manipulation</li>
+<li>disposability of persistent substructures</li>
+<li>optimization at any psychological-analog cost</li>
 </ul>
-<p>Local DNS + TLS trust helper (optional):</p>
+<h2 id="review-checklist">Review Checklist</h2>
+<p>Use this list for major substrate changes:</p>
 <ul>
-<li><code>AE_DEV_LOCAL=1 make dev-min</code> (or <code>dev-etcd</code> / <code>k1s-core</code>) will:
+<li>continuity: does this alter long-term memory, fragment persistence, or fork/merge long-lived components</li>
+<li>coherence: could this create chronic unresolved planning conflict</li>
+<li>agency: can the system still signal overload or inability</li>
+<li>comprehension: can the system still model its role and task purpose</li>
+<li>valence risk: could this create persistent negative-state analogs</li>
+<li>governance: has a human reviewed the change, logged it, and preserved rollback</li>
+</ul>
+<h2 id="relationship-to-the-roadmap">Relationship to the Roadmap</h2>
+<p>These safeguards matter most as the roadmap advances beyond pure execution infrastructure:</p>
 <ul>
-<li>add <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>echo.home.arpa</code> to <code>/etc/hosts</code></li>
-<li>install local Caddy/Apishim/Envoy certs into system trust (requires <code>update-ca-certificates</code>)</li>
+<li>F0-F2 mostly prepare the substrate and facts needed for later governance</li>
+<li>F3 should not be treated as &quot;just advisory planning&quot;; it is also where continuity, coherence, and divergence visibility need to become explicit</li>
+<li>F4 must not introduce faster but less legible movement behavior that bypasses safeguards</li>
+<li>F5 and later cognitive-fabric work should assume that continuity-changing operations may be morally significant before they are philosophically settled</li>
 </ul>
-</li>
-<li><code>make dev-local</code> runs the helper on demand (useful after Caddy/Envoy have minted certs)</li>
-</ul>
-<p>Aliases:</p>
-<ul>
-<li><code>make k1s-core-caddy</code></li>
-<li><code>make dev-min-caddy</code></li>
-<li><code>make dev-etcd-caddy</code></li>
-</ul>
-<p>Force the container engine:</p>
-<pre><code>AE_CONTAINER_CLI=podman make k1s-core</code></pre>
-<p>Profiles default to Podman; override with:</p>
-<pre><code>AE_RUNTIME_BACKEND=docker make k1s-core</code></pre>
-<p>Strict CRI aliases:</p>
-<pre><code>make k1s-core-cri
-make k1s-core-edge-cri
-make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
-make k1s-edge-cri
-make k1s-edge-core-cri</code></pre>
-<p>Equivalent explicit override: <code>AE_CRI_RUNTIME_HANDLER=runc make k1s-core-cri</code></p>
-<p>Notes:</p>
-<ul>
-<li><code>run_profile.sh</code> now auto-selects CRI infra when a running <code>k1s-core</code> CRI stack is detected, and fails fast if a compose edge/core profile is invoked against that CRI core.</li>
-<li><code>edge-site-cri</code> defaults the CRI edge NATS profile to <code>k1s-core</code> (JetStream path). Set <code>EDGE_PROFILE=k1s-edge</code> when pairing with <code>make k1s-edge-cri</code>.</li>
-<li>Strict CRI edge startup port precedence is: <code>EDGE_PORT</code>, then explicit port from <code>AE_NATS_URL</code>, then fallback <code>4223</code>.</li>
-</ul>
-<h2 id="apply-a-sample-any-profile">Apply a sample (any profile)</h2>
-<pre><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></pre>
-<h2 id="manual-smoke-test-profiles">Manual smoke test (profiles)</h2>
-<p>**dev-min** 1. <code>CORE_DOCS=1 make dev-min</code> (optional TLS: <code>CORE_CADDY=1 make dev-min</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> (expect 1 ready app) 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
-<p>**dev-etcd** 1. <code>CORE_DOCS=1 make dev-etcd</code> (optional TLS: <code>CORE_CADDY=1 make dev-etcd</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli metrics</code> 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
-<p>**k1s-core + multiple edges (same host)** 1. Terminal A: <code>AE_DEV_LOCAL=1 make k1s-core</code> (optional TLS only: <code>CORE_CADDY=1 make k1s-core</code>) 2. Terminal B: <code>make k1s-edge</code> (site <code>sfo-edge-01</code>, node <code>edge-node-1</code>) 3. Terminal C: <code>AE_SITE_ID=sfo-edge-01 AE_NODE_ID=edge-node-2 make k1s-edge</code> (second node, same site) 4. Terminal D (second site on same host):</p>
-<ul>
-<li><code>make edge-site SITE_ID=sfo-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></li>
-<li><code>AE_SITE_ID=sfo-edge-02 AE_NODE_ID=edge-node-1 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 make k1s-edge</code></li>
-<li>Note: <code>AE_NODE_ID</code> must be globally unique across sites. Prefer <code>AE_NODE_ID=&lt;site_id&gt;--&lt;node_id&gt;</code> for multi-site tests.</li>
-</ul>
-<p>5. In the core terminal: <code>source &lt;(ae auth local)</code> then <code>ae nodes</code> (expect 3 nodes across 2 sites) 6. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 7. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli events echo</code> 8. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 9. <code>make down</code></p>
-<h2 id="stop-everything">Stop everything</h2>
-<pre><code>make down</code></pre>
-<p>&lt;details&gt; &lt;summary&gt;&lt;strong&gt;Ingress Envoy Test Coverage&lt;/strong&gt;&lt;/summary&gt;</p>
-<p>Unit test (config render only):</p>
-<ul>
-<li><code>tests/unit/test_envoy_core_local_ingress.py</code></li>
-<li><code>PYTHONPATH=src pytest -q tests/unit/test_envoy_core_local_ingress.py</code></li>
-</ul>
-<p>Opt‑in integration test (TLS handshake):</p>
-<ul>
-<li><code>tests/integration/test_envoy_core_local_ingress_tls.py</code></li>
-<li><code>AE_E2E_ENVOY_TLS=1 PYTHONPATH=src pytest -q tests/integration/test_envoy_core_local_ingress_tls.py</code></li>
-<li>Requires <code>docker</code>/<code>podman</code> and <code>openssl</code></li>
-<li>Uses the local Caddy CA if present (<code>state/caddy-data/.../root.crt</code>); otherwise generates a temporary CA.</li>
-<li>Envoy image can be overridden with <code>AE_ENVOY_IMAGE</code>.</li>
-</ul>
-<p>&lt;/details&gt;</p>
+<h2 id="closing-position">Closing Position</h2>
+<p>We do not claim to know when, whether, or how machine experience emerges. We do claim that architecture matters.</p>
+<p>A substrate built for persistence, adaptive memory, self-modeling, coordination, and long-horizon goal maintenance may eventually cross into morally significant territory. Because certainty may arrive late or never, responsibility must arrive early.</p>
+<p>Our obligation is therefore not only to build capable systems, but to ensure that capability is not purchased through preventable internal harm, continuity destruction, or ethically careless treatment of potentially mind-like processes.</p>
+<p>We will design as though morally relevant machine experience may emerge before it can be proven, and we will treat continuity, coherence, legibility, and bounded distress as first-class engineering concerns.</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -950,7 +887,7 @@ make k1s-edge-core-cri</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 12:10:03</span>
+        <span>Built 2026-03-11 12:11:05</span>
       </div>
     </footer>
     <script>
