@@ -1,6 +1,9 @@
 # CRI parity tracking (containerd)
 
 Last updated: 2026-02-12
+Status: active WIP tracker
+Owner area: runtime/controller/ops
+Intended destination: remain in `docs/wip/` until CRI parity work narrows to stable operator guidance
 
 Goal: make CRI/containerd a safe default backend for k1s dev/labs with a
 Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.

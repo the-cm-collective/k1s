@@ -1,5 +1,9 @@
 # CSI integration plan
 
+Status: active WIP tracker
+Owner area: storage/controller
+Intended destination: `docs/design/` when the implementation contract stabilizes
+
 This document tracks the next steps to turn the current CSI compatibility layer into
 production-grade CSI support that adheres to Kubernetes semantics and is suitable for
 CNCF conformance testing.
