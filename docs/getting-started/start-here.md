@@ -42,6 +42,8 @@ Note: k1s is pre-1.0 and still evolving. v0.1.3 expands operational validation (
 
 Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.
 
+Project philosophy: `TENETS.md` captures the core project stance, and `docs/design/project-philosophy.md` plus `docs/design/cognitive-welfare-and-continuity.md` define the precautionary position for later cognitive-substrate work.
+
 ## Prerequisites
 - Python 3.11+
 - Podman (preferred) or Docker installed and running

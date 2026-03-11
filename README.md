@@ -10,7 +10,7 @@ The goal is to make private, self-hosted, federated compute feasible without sur
 
 k1s borrows Kubernetes mental models and API shapes where useful, but it is not a full Kubernetes clone. The focus is a compact surface area with a lightweight control plane and lower resource requirements.
 
-Project principles and non-goals: `TENETS.md`.
+Project principles and non-goals: `TENETS.md`. Cognitive-substrate philosophy and safeguards: `docs/design/project-philosophy.md`, `docs/design/cognitive-welfare-and-continuity.md`.
 
 ## Status & Production Use
 
@@ -34,10 +34,14 @@ Production guidance:
 - Start here onboarding: `docs/getting-started/start-here.md`
 - High-level overview and getting started: `docs/getting-started/overview.md`
 - Technical architecture and reference: `docs/reference/architecture.md`
+- Project philosophy and cognitive safeguards: `docs/design/project-philosophy.md`, `docs/design/cognitive-welfare-and-continuity.md`
+- Current inference-fabric behavior: `docs/reference/inference-fabric.md`
+- Distributed compute fabric roadmap: `docs/roadmap/distributed-compute-fabric.md`, `docs/roadmap/status.md`
+- Fabric deployment and control-plane design: `docs/design/fabric-deployment-topology.md`, `docs/design/fabric-control-plane.md`
 - Multi-node architecture and lab: `docs/adr/0007-multinode-architecture-scope.md`, `docs/guides/multinode-lab.md`
 - Runtime profile targets (including strict CRI aliases): `docs/guides/runtime-profiles.md`
 - CRI/containerd workflows and registry-first image prep: `docs/reference/cri-containerd.md`
-- API compatibility and shim status: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
+- API compatibility and shim status: `docs/reference/apishim-compatibility-matrix.md`, `docs/reference/apishim-roadmap.md`
 - HTTP API reference and UI docs: `docs/reference/http-api.md`
 - Configs & Secrets: `docs/reference/configs-secrets.md`
 - Ingress and TLS reference: `docs/reference/ingress.md`
@@ -138,7 +142,16 @@ Kubernetes API shim (kubectl/helm):
 - Start shim (Postgres or SQLite): `AE_APISHIM_TOKEN=devtoken python -m ae.apishim serve --host 127.0.0.1 --port 8445`
 - Point kubectl: `kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods`
 - Port-forward and apply work for Deployments/Services/Ingress/HPA/StatefulSet/DaemonSet/Job/CronJob.
-- Compatibility matrix and open gaps: `docs/reference/apishim-compatibility-matrix.md`, `docs/wip/conformance.md`.
+- Compatibility matrix and open gaps: `docs/reference/apishim-compatibility-matrix.md`, `docs/reference/apishim-roadmap.md`.
+
+Inference fabric (experimental):
+- Apply a cell manifest: `ae cell apply -f specs/examples/inference/cell-bc-pp2-ray.yaml`
+- Inspect cell state: `ae cell status cell-bc-pp2-ray --json`
+- Inspect fabric sessions: `ae fabric sessions --json`
+- Current behavior and limits: `docs/reference/inference-fabric.md`
+- Hardware baseline and cluster prep: `docs/reference/ai-max-395-hardware-baseline.md`, `docs/ops/ai-max-395-cluster-prep.md`
+- Formal design and roadmap: `docs/design/fabric-deployment-topology.md`, `docs/design/fabric-control-plane.md`, `docs/roadmap/distributed-compute-fabric.md`
+- Formal target shape: AI Max+ 395-first execution cells behind a provider-facing HA edge, with an exact public node baseline today and Hyperon entering later as an advisory planning layer
 
 ## Kubernetes Alignment Matrix (Operator View)
 
