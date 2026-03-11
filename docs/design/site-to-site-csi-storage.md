@@ -1,9 +1,9 @@
-# Site-to-Site Storage (Chosen Path: CSI gRPC Client)
+# Site-to-Site CSI Storage
+
+Status: proposed design.
 
 This document reframes site-to-site storage around the selected entry point:
-Option 2 (native CSI gRPC client integration). It documents scope, architecture,
-and the phased implementation steps required to land cross-site CSI storage.
-Alternate paths are preserved in the legacy section at the end.
+native CSI gRPC client integration. It documents scope, architecture, and the phased implementation steps required to land cross-site CSI storage.
 
 ## Goals
 

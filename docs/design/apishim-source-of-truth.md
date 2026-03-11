@@ -1,4 +1,6 @@
-# Shim Store Source-of-Truth: Reset Drift + Path to B
+# API Shim Source of Truth
+
+Status: proposed design.
 
 Date: 2026-01-17
 
