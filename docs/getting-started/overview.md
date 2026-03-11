@@ -15,6 +15,7 @@ Status: k1s is under very active development and has not reached a fully stable 
 - State: SQLite remains the lightweight local default; etcd durable state is supported and is the default backing lane in strict CRI core profiles; Postgres remains supported for shim HA and externalized persistence (`AE_STATE_DSN` / `AE_APISHIM_DSN`).
 - Runtime backends: Podman (default), Docker fallback, and CRI/containerd for CRI-native nodes (recommended via `make k1s-core-cri` and related `k1s-*-cri` profile targets).
 - API surface: native HTTP API plus the Kubernetes API shim (`AE_APISHIM_ENABLE=1 python -m ae.apishim serve`) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see `docs/reference/apishim-compatibility-matrix.md`).
+- Inference fabric: experimental `InferenceCell` and `InferenceCellSet` controllers provide a controller-owned lane for distributed inference placement, reservation, and session orchestration across named members and sites. The formal roadmap targets AI Max+ 395-first execution cells behind a provider-facing HA edge, with an exact public hardware baseline and cluster-prep guide documented separately.
 - Tooling: `k1s` kubectl‑style wrapper, `ae nodes` for inventory/cordon, `ae plan` for placement hints, `export-k8s` and `k8s-report` for parity/compliance, dashboard at `/dashboard` (direct on `:9108`, or `https://dash.home.arpa:8443/dashboard` in demos), and `/nodes` + enriched `/metrics` for node/service visibility.
 - Footprint: recent Feb 2026 idle benchmarks continue to show ~85-90 MiB PSS for controller+API on Podman+crun rootless, and ~170-180 MiB PSS for k1nd (Docker + Caddy). See `docs/benchmarks/memory.md` for the latest numbers.
 
@@ -32,6 +33,7 @@ Status: k1s is under very active development and has not reached a fully stable 
 - Observability: Prometheus metrics with node/service gauges, events, `/nodes`, `/system`, dashboard.
 - CLIs: `ae` (native), `k1s` (kubectl‑like wrapper), `ae nodes` for inventory, `ae plan` for placement, `ae tls` helpers.
 - Kubernetes API shim: `ae.apishim serve` with RBAC/SSA/patch, OpenAPI v2/v3, port-forward for pods/services, compatibility matrix.
+- Inference fabric: `ae cell`, `ae cellset`, and `ae fabric` for distributed inference execution and session inspection.
 - K8s helpers: `export-k8s`, `k8s-check`, and `k8s-report` for parity/compliance.
 
 ### Architecture at a Glance (Diagram)
@@ -132,10 +134,13 @@ Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/de
 
 ## Further Reading
 
+- Project philosophy and cognitive safeguards: `docs/design/project-philosophy.md`, `docs/design/cognitive-welfare-and-continuity.md`
 - Runbook: `docs/ops/runbook.md`
 - End-to-End Guide: `docs/guides/e2e.md`
 - Runtime Profiles: `docs/guides/runtime-profiles.md`
 - Multi-node + ingress mode validation: `docs/guides/multinode-lab.md`, `docs/guides/ingress-capability-test-sequence.md`
 - HTTP API: `docs/reference/http-api.md`
-- Kubernetes API shim + compatibility matrix: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
+- Kubernetes API shim + compatibility matrix: `docs/reference/apishim-roadmap.md`, `docs/reference/apishim-compatibility-matrix.md`
+- Inference fabric current state: `docs/reference/inference-fabric.md`
+- Fabric design and phase path: `docs/roadmap/high-availability-control-plane.md`, `docs/design/fabric-deployment-topology.md`, `docs/design/fabric-control-plane.md`, `docs/roadmap/distributed-compute-fabric.md`
 - Architecture (detailed): `docs/reference/architecture.md`
