@@ -17,7 +17,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 BEAT_DURATIONS = (2.0, 3.0, 3.5, 3.5)
-DEFAULT_OUTPUT_DIR = Path(".local/zone_mesh_outputs")
+DEFAULT_OUTPUT_DIR = Path("state/zone_mesh_outputs")
 
 
 @dataclass(frozen=True)

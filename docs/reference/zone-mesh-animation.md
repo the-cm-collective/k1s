@@ -8,7 +8,7 @@ Source files:
 - `tools/zone_mesh_scene.json`
 - `tools/zone_mesh_profiles.json`
 
-Default outputs land in `.local/zone_mesh_outputs/`:
+Default outputs land in `state/zone_mesh_outputs/`:
 
 - `zone_mesh_density_low.mp4`
 - `zone_mesh_density_low.webm`
