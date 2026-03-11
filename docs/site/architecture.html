@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -697,6 +697,9 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -709,7 +712,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -737,13 +740,14 @@
 <li>Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning.</li>
 <li>Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.</li>
 <li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.</li>
-<li>Transport/gateway (src/ae/gateway + NATS): supports both NATS + JetStream (<code>nats-js</code>) and NATS Core (<code>nats-core</code>) control-plane lanes for core/edge operation.</li>
+<li>Transport/gateway (src/ae/gateway + NATS): supports both NATS + JetStream (<code>nats-js</code>) and NATS Core (<code>nats-core</code>) control-plane lanes for core/edge operation. The true HA target keeps this as the transport plane behind <code>etcd</code> authority.</li>
 <li>Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).</li>
 <li>Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).</li>
 <li>Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).</li>
-<li>State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables), with Postgres and etcd-backed durable lanes available for multi-node/strict CRI setups.</li>
+<li>State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables), with Postgres and etcd-backed durable lanes available for multi-node/strict CRI setups. The HA control-plane target uses <code>etcd</code> as the authority store.</li>
 <li>Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.</li>
 <li>API shim (src/ae/apishim): Kubernetes-compatible API for kubectl/helm with SSA/patch and port-forward.</li>
+<li>Inference fabric (src/ae/controller/inference_cell + node fabric endpoints): experimental distributed-inference lane with stage placement, admission budgets, fabric-session orchestration, and cell lifecycle control. The formal roadmap targets AI Max+ 395 cells behind a provider-facing HA edge, with an exact public node baseline documented separately.</li>
 <li>Observability (src/ae/observability): metrics snapshot, HTTP API, dashboard, logging helpers.</li>
 <li>CLI (src/ae/cli) + kubectl‑like wrapper (src/ae/kctl).</li>
 </ul>
@@ -822,6 +826,18 @@
   end
   C-&gt;&gt;S: record_snapshot + events
   C--&gt;&gt;CLI: report(created/updated/removed, status)</pre>
+<h2 id="inference-fabric-experimental">Inference Fabric (Experimental)</h2>
+<p>The repo also includes a controller-owned distributed-inference lane built around <code>InferenceCell</code> and <code>InferenceCellSet</code>.</p>
+<p>Current behavior:</p>
+<ul>
+<li>explicit member selection and stage placement</li>
+<li>boundary and budget admission checks</li>
+<li>GPU, port, and optional node-lock reservation</li>
+<li>fabric-session creation before worker and leader launch</li>
+<li>controller-tracked cell lifecycle with restart and teardown handling</li>
+</ul>
+<p>The formal roadmap turns this lane into an AI Max+ 395-first fabric program. The near-term deployment shape is a provider-facing HA edge in front of a <code>k1s</code> AMD cell fabric; the current <code>InferenceCell</code> implementation is the controller-owned precursor to that model.</p>
+<p>The current lane is documented in <code>docs/reference/inference-fabric.md</code>. The current node baseline and cluster-prep sequence are documented in <code>docs/reference/ai-max-395-hardware-baseline.md</code> and <code>docs/ops/ai-max-395-cluster-prep.md</code>. The backend HA authority model that precedes provider-edge work is documented in <code>docs/roadmap/high-availability-control-plane.md</code>. The formal authority split and provider model are documented in <code>docs/design/fabric-control-plane.md</code>. The target deployment layout is documented in <code>docs/design/fabric-deployment-topology.md</code>. The staged development path is documented in <code>docs/roadmap/distributed-compute-fabric.md</code>.</p>
 <h2 id="spec-ae-dev-v1alpha1">Spec (ae.dev/v1alpha1)</h2>
 <p>Top‑level</p>
 <ul>
@@ -844,6 +860,7 @@
 <li><code>resources</code>: requests/limits for cpu/memory.</li>
 <li><code>volumes</code>: hostPath bind mounts; <code>storage</code>: named volumes with <code>retention</code>; <code>emptyDirs</code> with medium selection.</li>
 <li><code>imagePullPolicy</code>, <code>imagePullSecrets[]</code>.</li>
+<li><code>runtimeClassName</code> (maps to CRI runtime handler and passes through in K8s export).</li>
 <li>Scheduling: <code>nodeSelector</code>, <code>tolerations[]</code>, <code>affinity</code>, <code>topologySpreadConstraints</code>, <code>priorityClassName</code>.</li>
 <li>Policy/export: <code>networkPolicy</code>, <code>podSecurity</code>, <code>dnsPolicy/config</code>, <code>hostname</code>, <code>subdomain</code>, <code>hostAliases</code>, <code>enableServiceLinks</code>, <code>shareProcessNamespace</code>, <code>hostNetwork|PID|IPC</code>, <code>setHostnameAsFQDN</code>.</li>
 <li><code>terminationGracePeriodSeconds</code> (default 10).</li>
@@ -1059,7 +1076,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-19 16:55:24</span>
+        <span>Built 2026-03-11 15:27:58</span>
       </div>
     </footer>
     <script>

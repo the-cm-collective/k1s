@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -697,6 +697,9 @@
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
       <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -709,7 +712,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -824,7 +827,7 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <pre><code>scripts/containerd_registry_trust.sh --host localhost:32000 --scheme http --insecure --restart</code></pre>
 <h2 id="trust-and-auth-containerd">Trust and auth (containerd)</h2>
 <p>Containerd requires explicit trust config for insecure registries or custom CA. Use the helper to write <code>/etc/containerd/certs.d/&lt;host&gt;/hosts.toml</code>:</p>
-<p>The helper also ensures containerd CRI registry <code>config_path</code> points to <code>/etc/containerd/certs.d</code> and restarts containerd automatically when that setting changes.</p>
+<p>The helper also ensures containerd CRI registry <code>config_path</code> points to <code>/etc/containerd/certs.d</code> and restarts containerd automatically when that setting changes. For strict-CRI managed TLS lanes, <code>run_profile.sh</code> now defaults <code>AE_CRI_REGISTRY_TRUST_SYSTEM=1</code> so the managed CA is also installed into system trust.</p>
 <pre><code>scripts/containerd_registry_trust.sh \
   --host registry.k1s.home.arpa:32000 \
   --ca /tmp/registry.crt \
@@ -872,6 +875,7 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <ul>
 <li><code>AE_CRI_ENDPOINT</code> for CRI endpoint selection.</li>
 <li><code>AE_CRI_RUNTIME_HANDLER</code> for CRI runtime handler selection (default <code>runc</code> in strict profile targets).</li>
+<li>Per-workload runtime handler: set <code>spec.runtimeClassName</code> in the Deployment manifest (for example <code>nvidia</code>) to drive CRI <code>runtime_handler</code> at pod sandbox creation.</li>
 <li><code>AE_CRI_REGISTRY=&lt;host:port&gt;</code> to rewrite strict-CRI managed image refs to a registry.</li>
 <li><code>AE_CRI_REGISTRY_NAMESPACE=&lt;prefix&gt;</code> to prepend a registry path segment (for example <code>k1s</code>).</li>
 <li><code>AE_CRI_REGISTRY_MODE=managed|external|off</code>
@@ -891,12 +895,23 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <li>Managed TLS material defaults under <code>state/profiles/&lt;profile&gt;/registry/tls</code> and is auto-generated when missing.</li>
 <li><code>AE_CRI_REGISTRY_INSECURE=1</code> is a dev-only opt-out for plaintext/insecure registry access.</li>
 <li><code>AE_CRI_REGISTRY_TRUST=1</code> to apply trust configuration during strict CRI startup (auto-enabled for managed TLS).</li>
+<li><code>AE_CRI_REGISTRY_TRUST_SYSTEM=1|0</code> controls system trust installation (<code>/usr/local/share/ca-certificates</code> + <code>update-ca-certificates</code>).
+<ul>
+<li>Default in managed TLS lanes is <code>1</code> unless explicitly overridden.</li>
+</ul>
+</li>
 <li><code>AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt</code> or <code>AE_CRI_REGISTRY_TRUST_INSECURE=1</code> (dev).</li>
 <li><code>AE_CRI_REGISTRY_TRUST_SCHEME=http</code> to override scheme (default <code>https</code>).</li>
 <li><code>AE_CRI_REGISTRY_AUTO_RESTART=1|0</code> (default <code>1</code>) restarts containerd automatically when registry trust scheme flips (<code>http</code> &lt;-&gt; <code>https</code>).</li>
 <li><code>AE_CRI_REGISTRY_TRUST_RESTART=1</code> forces restart after trust write, even without scheme transition.</li>
+<li><code>AE_CRI_REGISTRY_PRELOAD=1|0</code> enables/disables strict-CRI registry preloading before <code>k1s-core</code> startup.
+<ul>
+<li>Default is <code>1</code> for managed mode, <code>0</code> for external mode.</li>
+</ul>
+</li>
+<li><code>AE_CRI_REGISTRY_PRELOAD_IMAGES=&lt;csv&gt;</code> overrides preload sources (default: etcd, nats, postgres, envoy, rathole strict-CRI core images).</li>
 <li><code>AE_CRI_IMAGE_POLICY=prompt|pull|fail</code> for strict-CRI missing-image behavior.</li>
-<li><code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker</code> to pick strict-CRI local build backend for fallback action <code>b</code>.</li>
+<li><code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr</code> to pick strict-CRI local build backend for fallback action <code>b</code>.</li>
 <li><code>AE_APISHIM_IMAGE=&lt;image-ref&gt;</code> to override strict-CRI apishim image.</li>
 <li><code>AE_CRI_SET_HOSTNAME=1</code> to request explicit hostname wiring for CRI stack components.</li>
 <li><code>AE_CRI_ALLOW_HOST_NS=1</code> to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default).</li>
@@ -1003,7 +1018,7 @@ export AE_AGENT_SERVICE_PROXY_TOKEN=$AE_API_READ_TOKEN</code></pre>
   --registry registry.k1s.home.arpa:32000
 
 kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
-<p>Update the manifest to set <code>AE_CONTROLLER_URL</code> (controller agent API) and <code>AE_AGENT_TOKEN</code> (shared secret). The manifest defaults to CRI containerd; for Podman/Docker nodes, change <code>AE_RUNTIME_BACKEND</code> and remove the socket mount.</p>
+<p>Update the manifest to set <code>AE_CONTROLLER_URL</code> (controller agent API) and <code>AE_AGENT_TOKEN</code> (shared secret). On same-LAN deployments, <code>AE_CONTROLLER_URL</code> and <code>AE_AGENT_ENDPOINT</code> can use either IP or resolvable hostname. The manifest defaults to CRI containerd; for Podman/Docker nodes, change <code>AE_RUNTIME_BACKEND</code> and remove the socket mount.</p>
 <h2 id="cri-command-helpers">CRI command helpers</h2>
 <p>Profile and stack orchestration:</p>
 <ul>
@@ -1035,7 +1050,7 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-19 16:37:17</span>
+        <span>Built 2026-03-11 12:10:03</span>
       </div>
     </footer>
     <script>

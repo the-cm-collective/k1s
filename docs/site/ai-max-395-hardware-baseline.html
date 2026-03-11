@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Runtime Profiles</title>
+    <title>Ai Max 395 Hardware Baseline</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -725,224 +725,87 @@
       </svg>
     </button>
     <div class="container">
-    <h1 id="runtime-profiles">Runtime Profiles</h1>
-<p>k1s ships lightweight runtime profiles so you can run the control plane without the demo apps. Each profile uses an empty specs directory under <code>state/profiles/&lt;profile&gt;/specs</code>, so nothing is reconciled until you apply a manifest.</p>
-<h2 id="quickstart">Quickstart</h2>
-<p>Strict CRI (recommended path for containerd lanes)</p>
-<pre><code>make k1s-core-cri
-make k1s-edge-cri
-make k1s-core-edge-cri
-make k1s-edge-core-cri
-make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></pre>
-<p>Notes:</p>
+    <h1 id="ai-max-395-hardware-baseline">AI Max+ 395 Hardware Baseline</h1>
+<p>Status: canonical public node baseline for the first AMD fabric cell.</p>
+<p>This page defines the exact public hardware baseline for the near-term AI Max+ 395 fabric path. It complements <a href="inference-fabric.html">Inference Fabric</a>, the <a href="distributed-compute-fabric.html">Distributed Compute Fabric Roadmap</a>, and <a href="ai-max-395-cluster-prep.html">AI Max+ 395 Cluster Prep</a>.</p>
+<h2 id="summary">Summary</h2>
+<p>The first public hardware target for the fabric program is one 4-node AI Max+ 395 cell built from a repeatable node profile.</p>
+<p>AMD&#x27;s public AI Max cluster guidance for local large-model inference is the main public reason this baseline uses a 4-node cell shape. See AMD&#x27;s article: <a href="https://www.amd.com/en/developer/resources/technical-articles/2026/how-to-run-a-one-trillion-parameter-llm-locally-an-amd.html">How to run a one-trillion-parameter LLM locally on an AMD Ryzen AI Max+ cluster</a>.</p>
+<p>This baseline makes four rules explicit:</p>
 <ul>
-<li>These aliases set <code>AE_RUNTIME_BACKEND=cri</code> and <code>AE_INFRA_BACKEND=cri</code>.</li>
-<li>Use <code>sudo -E</code> when your containerd environment requires elevated privileges.</li>
-<li>See <code>docs/reference/cri-containerd.md</code> for registry-first image prep and trust setup.</li>
+<li>standard Ethernet remains the correctness baseline for the current substrate</li>
+<li>the RoCE path is documented now, but it remains a formal F4 acceleration target rather than a D0 requirement</li>
+<li>one storage class is preferred for the baseline cell so node behavior is easier to compare</li>
+<li>exact SKU choices live here, while control-plane logic remains capability-driven</li>
 </ul>
-<p><code>dev-min</code> (SQLite + HTTP, local loop)</p>
-<pre><code>make dev-min</code></pre>
-<p><code>dev-etcd</code> (etcd + HTTP; auto-starts etcd)</p>
-<pre><code>make dev-etcd</code></pre>
-<p>Notes:</p>
+<h2 id="canonical-node-profile">Canonical Node Profile</h2>
+<table><thead><tr><th>Area</th><th>Canonical choice</th><th>Notes</th></tr></thead><tbody><tr><td>Compute node</td><td>Framework Desktop mainboard with AMD Ryzen AI Max+ 395</td><td>Mini-ITX form factor with a PCIe x4 slot; current public target is the Framework Desktop platform</td></tr><tr><td>Cell size</td><td>4 nodes</td><td>The near-term execution unit follows AMD&#x27;s published AI Max cluster proof point</td></tr><tr><td>Baseline NVMe</td><td>Micron 7450 MAX M.2 2280</td><td>Canonical cluster-wide SSD class when one NVMe type is used</td></tr><tr><td>Management NIC</td><td>onboard 5GbE</td><td>Management, provisioning, and fallback path</td></tr><tr><td>Fabric NIC</td><td>Intel E810-XXVDA2</td><td>Canonical RoCE development NIC</td></tr><tr><td>First interconnect medium</td><td>SFP28 DAC</td><td>Start with DACs before optics</td></tr><tr><td>OS posture</td><td>modern Linux distro</td><td>Use a kernel/userspace combination that supports <code>ice</code>, <code>irdma</code>, and <code>rdma-core</code> cleanly</td></tr></tbody></table>
+<h2 id="network-role-split">Network Role Split</h2>
+<p>The node networking split is intentional:</p>
 <ul>
-<li><code>dev-min</code>/<code>dev-etcd</code> default to SQLite for apishim (no <code>AE_APISHIM_DSN</code> set unless you provide it).</li>
+<li>onboard 5GbE handles management, provisioning, and fallback access</li>
+<li>E810 port 1 is the primary fabric / RoCE development port</li>
+<li>E810 port 2 stays disabled at first and is reserved for later role split, storage, uplink, or a second traffic domain</li>
 </ul>
-<p><code>k1s-core</code> (etcd + NATS + JetStream; auto-starts etcd + hub NATS)</p>
-<pre><code>make k1s-core</code></pre>
-<p>Notes:</p>
+<p>This keeps the first hardware story simple and prevents the early fabric path from depending on dual-port saturation assumptions.</p>
+<h2 id="storage-baseline">Storage Baseline</h2>
+<p>If one SSD class is used across the first public cell, it should be the <a href="https://www.micron.com/products/storage/ssd/data-center-ssd/7450-ssd">Micron 7450 SSD</a> in the <code>7450 MAX M.2 2280</code> form factor. Micron&#x27;s published product material lists <code>7450 MAX M.2 2280</code> variants in its <a href="https://www.micron.com/content/dam/micron/global/public/documents/products/technical-marketing-brief/7450-nvme-ssd-tech-prod-spec.pdf">technical product specification</a>.</p>
+<p>Why this is the baseline:</p>
 <ul>
-<li><code>k1s-core</code> starts etcd + hub NATS + Postgres infra and sets <code>AE_APISHIM_DSN</code> by default.</li>
-<li>In strict CRI lanes, <code>k1s-core</code> uses etcd as the durable control-plane store by default; override <code>AE_APISHIM_ETCD_ENDPOINTS</code> only when your etcd endpoint is not <code>http://127.0.0.1:2379</code>.</li>
-<li>Infra backend auto-selection:
+<li>it is a data-center SSD family rather than a consumer scratch drive</li>
+<li>the form factor aligns with the Framework Desktop storage path</li>
+<li>using one SSD class across the first cell improves repeatability for boot, cache, and restart testing</li>
+</ul>
+<p>This document does not require every future node family to use the same SSD. It only fixes the first public AI Max cell baseline.</p>
+<h2 id="roce-development-baseline">RoCE Development Baseline</h2>
+<p>The current RoCE development target is the <a href="https://www.intel.com/content/www/us/en/products/sku/189760/intel-ethernet-network-adapter-e810xxvda2/specifications.html">Intel E810-XXVDA2 product family</a>. Intel&#x27;s product brief documents the adapter as a PCIe 4.0 x8, dual-port 25/10/1GbE SFP28 adapter with both <a href="https://cdrdv2-public.intel.com/641674/Intel%20Ethernet%20Network%20Adapter%20E810-XXVDA2%20Product%20Brief.pdf">iWARP and RoCEv2 support</a>.</p>
+<p>Framework&#x27;s public Desktop materials describe the platform as Mini-ITX with a <a href="https://frame.work/desktop/?tab=specs">PCIe x4 slot and 2x NVMe PCIe 4.0 x4 M.2 2280 sockets</a>. Framework&#x27;s <a href="https://guides.frame.work/Guide/Secondary%2BStorage/504">Secondary Storage guide</a> covers the Desktop storage path directly.</p>
+<p>Intel support has also stated in an official Intel community thread that the E810 can negotiate down on PCIe 4.0 x4 hosts in supported cases and can negotiate to <code>x4</code> or <code>x1</code> when constrained by slot width. Treat that as a supported constrained mode, not as evidence that an x4 host behaves like a native x8 host under all dual-port load patterns. See the Intel support thread: <a href="https://community.intel.com/t5/Ethernet-Products/E810-XXVDA2-running-at-PCIe-x4/m-p/1451852">E810-XXVDA2 running at PCIe x4</a>.</p>
+<p>Public hardware guidance for this path is therefore:</p>
 <ul>
-<li><code>AE_RUNTIME_BACKEND=cri|containerd</code> -&gt; strict CRI infra (<code>AE_INFRA_BACKEND=cri</code>)</li>
-<li>otherwise -&gt; compose infra (<code>AE_INFRA_BACKEND=compose</code>)</li>
-<li>force legacy compose with <code>AE_INFRA_BACKEND=compose</code></li>
+<li>one E810 per node is the canonical RoCE development option</li>
+<li>DAC first, optics later</li>
+<li>one RoCE port first, second port later</li>
+<li>do not claim guaranteed full dual-port 25Gb saturation on the x4 host link</li>
 </ul>
-</li>
-<li>Strict CRI runtime handler defaults to <code>runc</code> (<code>AE_CRI_RUNTIME_HANDLER=runc</code>). Override only if your containerd CRI runtime handler differs.</li>
-<li>DSN selection is mode-aware:
+<h2 id="mechanical-and-thermal-constraints">Mechanical and Thermal Constraints</h2>
+<p>The baseline build assumes:</p>
 <ul>
-<li><code>AE_APISHIM_MODE=host</code>: <code>postgresql://shim:shim@127.0.0.1:&lt;port&gt;/shim</code></li>
-<li><code>AE_APISHIM_MODE=cri</code>: <code>postgresql://shim:shim@127.0.0.1:&lt;port&gt;/shim</code></li>
-<li>container mode: uses the compose service name: <code>postgresql://shim:shim@postgres:5432/shim</code></li>
+<li>a standard Mini-ITX enclosure or equivalent open test layout</li>
+<li>physical clearance for the E810 card and bracket</li>
+<li>directed airflow across the NIC heatsink</li>
+<li>room for the Framework-provided storage heatspreaders</li>
 </ul>
-</li>
-<li>In strict CRI <code>k1s-core</code>, default <code>AE_APISHIM_MODE=cri</code> starts apishim as CRI pod <code>k1s-core-apishim</code> (controller remains host-process).</li>
-<li>Missing-image behavior in strict CRI:
+<p>This page does not lock a specific case or riser SKU because none has been canonized yet. The requirement is fit, cooling, and repeatability, not a particular enclosure vendor.</p>
+<h2 id="software-stack-expectations">Software Stack Expectations</h2>
+<p>The RoCE development stack is expected to follow Intel&#x27;s published Linux guidance:</p>
 <ul>
-<li>default interactive policy: <code>AE_CRI_IMAGE_POLICY=prompt</code></li>
-<li>non-interactive/CI default: <code>AE_CRI_IMAGE_POLICY=fail</code></li>
-<li>explicit pull-only mode: <code>AE_CRI_IMAGE_POLICY=pull</code></li>
-<li>strict fallback action <code>b</code>:
+<li>bring up the <code>ice</code> LAN driver first</li>
+<li>load <code>irdma</code> only after the LAN path is healthy</li>
+<li>use <code>rdma-core</code> userspace tools for verification</li>
+<li>isolate RDMA traffic into an intentional VLAN or traffic class when moving beyond direct-connect testing</li>
+</ul>
+<p>Relevant Intel references:</p>
 <ul>
-<li>apishim image (<code>k1s-core-apishim</code>): local build + registry push + CRI pull verify</li>
-<li>other strict-CRI managed images (etcd/nats/postgres/envoy/rathole/caddy): mirror source image into <code>AE_CRI_REGISTRY</code> + CRI pull verify</li>
+<li><a href="https://cdrdv2-public.intel.com/788116/788116_Intel%C2%AE%20Ethernet%20800%20Series%20RDMA%20Ease%20of%20Use%20Application%20Note_rev1_2.pdf">Intel Ethernet 800 Series RDMA Ease of Use for Linux</a></li>
+<li><a href="https://cdrdv2-public.intel.com/635330/635330_800%20Series%20Linux%20Flow%20Control%20for%20RDMA%20Use%20Cases_rev1_4.pdf">Intel Ethernet 800 Series Linux Flow Control for RDMA Use Cases</a></li>
 </ul>
-</li>
-<li>local build backend order: <code>nerdctl</code>, then <code>podman</code>, then <code>docker</code>, then <code>ctr</code></li>
-<li>optional override: <code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr</code></li>
-</ul>
-</li>
-<li>Registry mapping in strict CRI:
+<h2 id="optane-exploratory-annex">Optane Exploratory Annex</h2>
+<p>Intel Optane M.2 118G modules remain interesting as a possible second storage class for later persistent or warm-tier experiments, but they are not part of the canonical public baseline.</p>
+<p>Current public position:</p>
 <ul>
-<li><code>AE_CRI_REGISTRY=&lt;host:port&gt;</code> rewrites CRI-managed image refs to that registry</li>
-<li>optional path prefix: <code>AE_CRI_REGISTRY_NAMESPACE=&lt;prefix&gt;</code></li>
-<li>if unset, <code>AE_REGISTRY_HOST</code> is used when provided</li>
+<li>Optane is exploratory only</li>
+<li>availability and sourcing are unstable enough that it should not appear in D0 exit criteria</li>
+<li>any future Optane path belongs to later typed-fact and locality work, not the initial cell baseline</li>
 </ul>
-</li>
-<li>Strict CRI registry mode:
+<h2 id="relationship-to-the-roadmap">Relationship to the Roadmap</h2>
+<p>This hardware baseline does not change the phase order:</p>
 <ul>
-<li><code>AE_CRI_REGISTRY_MODE=managed|external|off</code> (default: <code>managed</code> when no registry is set; <code>external</code> when <code>AE_CRI_REGISTRY</code> is set)</li>
-<li><code>managed</code> default endpoint: <code>localhost:5001</code> (k1s-managed local registry)</li>
-<li><code>external</code> common microk8s endpoint: <code>localhost:32000</code></li>
-<li>optional preset: <code>AE_CRI_REGISTRY_PRESET=microk8s|local</code></li>
+<li>D0 remains the first repeatable AI Max+ 395 cell on standard transport</li>
+<li>F1 is where the controller should learn typed facts about storage media, PCIe state, RNIC family, and RDMA capability</li>
+<li>F4 is where RoCE becomes a formal acceleration milestone instead of a prep note</li>
 </ul>
-</li>
-<li>Optional containerd trust hook for strict CRI startup:
-<ul>
-<li>managed registry TLS (<code>AE_CRI_REGISTRY_MODE=managed</code>) defaults to secure trust wiring.</li>
-<li>on scheme transitions (<code>http</code> &lt;-&gt; <code>https</code>), strict startup auto-restarts containerd by default (<code>AE_CRI_REGISTRY_AUTO_RESTART=1</code>).</li>
-<li>set <code>AE_CRI_REGISTRY_AUTO_RESTART=0</code> to disable auto-restart (startup will fail fast on unresolved transitions).</li>
-<li>set <code>AE_CRI_REGISTRY_TRUST=1</code> to force trust configuration for external registries.</li>
-<li>trust wiring also ensures CRI registry <code>config_path=/etc/containerd/certs.d</code> for hosts.toml resolution.</li>
-<li><code>AE_CRI_REGISTRY_INSECURE=1</code> is a dev-only opt-out and will fail security baseline high gates.</li>
-</ul>
-</li>
-<li>Bind Postgres to the hub WG IP with <code>POSTGRES_BIND_IP=&lt;hub-wg-ip&gt;</code> so edge nodes can reach it.</li>
-<li>Override the DSN with <code>AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname</code> if needed.</li>
-</ul>
-<p><code>k1s-edge</code> (edge gateway + stub worker; NATS core by default)</p>
-<pre><code>make k1s-edge</code></pre>
-<p>Notes:</p>
-<ul>
-<li><code>k1s-edge</code> does not start Postgres by default; edge nodes typically point at the core Postgres over WG/LAN.</li>
-<li>Start a local Postgres on the edge only if needed with <code>EDGE_START_POSTGRES=1</code> (also set <code>POSTGRES_PORT</code> to avoid conflicts when core and edge share a host).</li>
-<li>With strict CRI infra (<code>AE_INFRA_BACKEND=cri</code>), edge NATS and rathole components run as CRI pods.</li>
-</ul>
-<h2 id="ingress-modes-k1s-core-k1s-edge">Ingress modes (k1s-core / k1s-edge)</h2>
-<p>Set the ingress mode with <code>EDGE_INGRESS_MODE</code>:</p>
-<ul>
-<li><code>core-proxy</code> (default): core ingress proxies to edge over rathole.</li>
-<li><code>core-to-edge-public</code>: core ingress routes directly to edge public endpoints.</li>
-<li><code>edge-local</code>: edge ingress only; core ingress is not in the request path.</li>
-</ul>
-<p>Examples:</p>
-<pre><code>EDGE_INGRESS_MODE=core-to-edge-public make k1s-core
-EDGE_INGRESS_MODE=edge-local make k1s-edge</code></pre>
-<p>By default, <code>make k1s-core</code> starts Envoy (core ingress) and rathole server, and <code>make k1s-edge</code> starts a rathole client when <code>EDGE_INGRESS_MODE=core-proxy</code>. Override images with <code>AE_ENVOY_IMAGE</code> / <code>AE_RATHOLE_IMAGE</code>, or disable auto-start with <code>EDGE_INGRESS_START=0</code>.</p>
-<p>Mode behavior:</p>
-<ul>
-<li><code>core-proxy</code>: Envoy + rathole server/client.</li>
-<li><code>core-to-edge-public</code>: Envoy only (no rathole).</li>
-<li><code>edge-local</code>: no core ingress; the gateway renders an edge-local Caddyfile if enabled.</li>
-<li>For canonical WG/Rosenpass multi-site patterns (production + single-host), see Option D in <code>docs/guides/multinode-lab.md</code>.</li>
-</ul>
-<p>Ingress deep validation defaults (CRI lanes):</p>
-<ul>
-<li>Primary lane: <code>core-proxy</code> deep/deep+perf (<code>lb-proof-scope=auto</code>) for policy + observability checks.</li>
-<li>Strict LB proof lane: <code>edge-local</code> deep (<code>lb-proof-scope=edge-only</code>) for distribution proof.</li>
-<li>Security gates after lane runs: <code>scripts/dev/security_baseline_check.sh --fail-on high</code> then <code>scripts/dev/security_active_tests.sh --fail-on high</code>.</li>
-<li>Canonical command sequence: <code>docs/guides/ingress-capability-test-sequence.md</code>.</li>
-</ul>
-<h2 id="core-edge-pairings">Core + Edge pairings</h2>
-<p>JetStream path (k1s-core + edge running JetStream work queue):</p>
-<pre><code># Terminal 1
-make k1s-core
-
-# Terminal 2
-make k1s-edge-core</code></pre>
-<p>Core-NATS path (k1s-edge work.pull without JetStream):</p>
-<pre><code># Terminal 1
-make k1s-core-edge
-
-# Terminal 2
-make k1s-edge</code></pre>
-<h2 id="multiple-edges">Multiple edges</h2>
-<p>Run additional edges in new terminals with unique node IDs:</p>
-<pre><code>AE_NODE_ID=edge-node-2 make k1s-edge</code></pre>
-<p>For multi-site tests, also override site IDs:</p>
-<pre><code>AE_SITE_ID=sea-edge-02 AE_NODE_ID=edge-node-2 make k1s-edge</code></pre>
-<h2 id="optional-overrides">Optional overrides</h2>
-<p>Disable the stub worker (gateway only):</p>
-<pre><code>EDGE_START_WORKER=0 make k1s-edge</code></pre>
-<p>Bring up the docs server alongside k1s-core:</p>
-<pre><code>CORE_DOCS=1 make k1s-core</code></pre>
-<p>Docs will serve on <code>http://127.0.0.1:9109</code> (override with <code>AE_DOCS_PORT</code> / <code>DOCS_BIND</code>), and the dashboard remains on <code>http://127.0.0.1:9108/dashboard</code>.</p>
-<p>Start Caddy for TLS hostnames (docs/api/dashboard) on any core profile:</p>
-<pre><code>CORE_CADDY=1 make k1s-core
-CORE_CADDY=1 make dev-min
-CORE_CADDY=1 make dev-etcd</code></pre>
-<p>This uses the dev Caddy config with <code>docs.home.arpa</code>, <code>api.home.arpa</code>, and <code>dash.home.arpa</code> on port <code>8443</code> (override with <code>CADDY_HTTPS_PORT</code>).</p>
-<p>Dev-min/dev-etcd defaults (can be disabled explicitly):</p>
-<ul>
-<li><code>AE_REGISTER_LOCAL_NODE=1</code> (single-node scheduling)</li>
-<li><code>AE_LABS=1</code> + apishim autostart</li>
-<li>Disable with <code>AE_REGISTER_LOCAL_NODE=0 AE_LABS=0 AE_APISHIM_AUTOSTART=0</code></li>
-</ul>
-<p>Local DNS + TLS trust helper (optional):</p>
-<ul>
-<li><code>AE_DEV_LOCAL=1 make dev-min</code> (or <code>dev-etcd</code> / <code>k1s-core</code>) will:
-<ul>
-<li>add <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>echo.home.arpa</code> to <code>/etc/hosts</code></li>
-<li>install local Caddy/Apishim/Envoy certs into system trust (requires <code>update-ca-certificates</code>)</li>
-</ul>
-</li>
-<li><code>make dev-local</code> runs the helper on demand (useful after Caddy/Envoy have minted certs)</li>
-</ul>
-<p>Aliases:</p>
-<ul>
-<li><code>make k1s-core-caddy</code></li>
-<li><code>make dev-min-caddy</code></li>
-<li><code>make dev-etcd-caddy</code></li>
-</ul>
-<p>Force the container engine:</p>
-<pre><code>AE_CONTAINER_CLI=podman make k1s-core</code></pre>
-<p>Profiles default to Podman; override with:</p>
-<pre><code>AE_RUNTIME_BACKEND=docker make k1s-core</code></pre>
-<p>Strict CRI aliases:</p>
-<pre><code>make k1s-core-cri
-make k1s-core-edge-cri
-make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
-make k1s-edge-cri
-make k1s-edge-core-cri</code></pre>
-<p>Equivalent explicit override: <code>AE_CRI_RUNTIME_HANDLER=runc make k1s-core-cri</code></p>
-<p>Notes:</p>
-<ul>
-<li><code>run_profile.sh</code> now auto-selects CRI infra when a running <code>k1s-core</code> CRI stack is detected, and fails fast if a compose edge/core profile is invoked against that CRI core.</li>
-<li><code>edge-site-cri</code> defaults the CRI edge NATS profile to <code>k1s-core</code> (JetStream path). Set <code>EDGE_PROFILE=k1s-edge</code> when pairing with <code>make k1s-edge-cri</code>.</li>
-<li>Strict CRI edge startup port precedence is: <code>EDGE_PORT</code>, then explicit port from <code>AE_NATS_URL</code>, then fallback <code>4223</code>.</li>
-</ul>
-<h2 id="apply-a-sample-any-profile">Apply a sample (any profile)</h2>
-<pre><code>python -m ae.cli apply -f specs/examples/echo.yaml</code></pre>
-<h2 id="manual-smoke-test-profiles">Manual smoke test (profiles)</h2>
-<p>**dev-min** 1. <code>CORE_DOCS=1 make dev-min</code> (optional TLS: <code>CORE_CADDY=1 make dev-min</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> (expect 1 ready app) 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
-<p>**dev-etcd** 1. <code>CORE_DOCS=1 make dev-etcd</code> (optional TLS: <code>CORE_CADDY=1 make dev-etcd</code>) 2. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 3. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli metrics</code> 4. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 5. <code>make down</code></p>
-<p>**k1s-core + multiple edges (same host)** 1. Terminal A: <code>AE_DEV_LOCAL=1 make k1s-core</code> (optional TLS only: <code>CORE_CADDY=1 make k1s-core</code>) 2. Terminal B: <code>make k1s-edge</code> (site <code>sfo-edge-01</code>, node <code>edge-node-1</code>) 3. Terminal C: <code>AE_SITE_ID=sfo-edge-01 AE_NODE_ID=edge-node-2 make k1s-edge</code> (second node, same site) 4. Terminal D (second site on same host):</p>
-<ul>
-<li><code>make edge-site SITE_ID=sfo-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></li>
-<li><code>AE_SITE_ID=sfo-edge-02 AE_NODE_ID=edge-node-1 AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 make k1s-edge</code></li>
-<li>Note: <code>AE_NODE_ID</code> must be globally unique across sites. Prefer <code>AE_NODE_ID=&lt;site_id&gt;--&lt;node_id&gt;</code> for multi-site tests.</li>
-</ul>
-<p>5. In the core terminal: <code>source &lt;(ae auth local)</code> then <code>ae nodes</code> (expect 3 nodes across 2 sites) 6. <code>python -m ae.cli apply -f specs/examples/echo.yaml</code> 7. <code>python -m ae.cli status --verbose</code> and <code>python -m ae.cli events echo</code> 8. Open <code>http://127.0.0.1:9108/dashboard</code> and <code>http://127.0.0.1:9109/playground/</code> 9. <code>make down</code></p>
-<h2 id="stop-everything">Stop everything</h2>
-<pre><code>make down</code></pre>
-<p>&lt;details&gt; &lt;summary&gt;&lt;strong&gt;Ingress Envoy Test Coverage&lt;/strong&gt;&lt;/summary&gt;</p>
-<p>Unit test (config render only):</p>
-<ul>
-<li><code>tests/unit/test_envoy_core_local_ingress.py</code></li>
-<li><code>PYTHONPATH=src pytest -q tests/unit/test_envoy_core_local_ingress.py</code></li>
-</ul>
-<p>Opt‑in integration test (TLS handshake):</p>
-<ul>
-<li><code>tests/integration/test_envoy_core_local_ingress_tls.py</code></li>
-<li><code>AE_E2E_ENVOY_TLS=1 PYTHONPATH=src pytest -q tests/integration/test_envoy_core_local_ingress_tls.py</code></li>
-<li>Requires <code>docker</code>/<code>podman</code> and <code>openssl</code></li>
-<li>Uses the local Caddy CA if present (<code>state/caddy-data/.../root.crt</code>); otherwise generates a temporary CA.</li>
-<li>Envoy image can be overridden with <code>AE_ENVOY_IMAGE</code>.</li>
-</ul>
-<p>&lt;/details&gt;</p>
+<p>For the actionable bring-up sequence, use <a href="ai-max-395-cluster-prep.html">AI Max+ 395 Cluster Prep</a>.</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -950,7 +813,7 @@ make k1s-edge-core-cri</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 12:10:03</span>
+        <span>Built 2026-03-11 14:45:16</span>
       </div>
     </footer>
     <script>
