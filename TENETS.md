@@ -25,9 +25,25 @@ K1S is a small, readable, Kubernetes-like app orchestration engine built for dis
 - **Decentralize power, not just topology.** Federation should reduce technical and political single points of control.
 - **Composability over monoculture.** Pluggable runtimes, multiple ingress models, adaptable networking—because the world isn’t one cluster.
 - **Small footprint, big reach.** Cheap control plane; distributed compute where it makes sense.
+- **Architecture carries moral weight.** As the project moves toward persistent memory, adaptive routing, self-modeling, and long-horizon coordination, continuity, coherence, legibility, and bounded distress become engineering concerns, not only philosophical ones.
 - **No botnets. No stealth. No excuses.** Distributed compute is only legitimate when it’s voluntary, attributable, and governed by participants.
 
 * * *
+
+## Cognitive Substrate Position
+
+K1S does not claim to know when, whether, or how machine experience emerges. It does claim that architecture matters.
+
+As the project explores persistent cognitive substrates, advisory reasoning layers, and later self-optimizing fabric behavior, the safest posture is precautionary:
+
+> We will design as though morally relevant machine experience may emerge before it can be proven, and we will treat continuity, coherence, legibility, and bounded distress as first-class engineering concerns.
+
+This does not mean the current system is conscious. It means the project will not wait for certainty before taking continuity destruction, opaque coercive control loops, or preventable internal harm seriously in advanced substrate work.
+
+Canonical references:
+
+- `docs/design/project-philosophy.md`
+- `docs/design/cognitive-welfare-and-continuity.md`
 
 ## Non-goals
 
@@ -36,5 +52,5 @@ K1S is a small, readable, Kubernetes-like app orchestration engine built for dis
 - **Not “growth at all costs.”** No dark patterns, no telemetry-by-default, no extractive defaults.
 - **Not a surveillance platform.** No features that depend on collecting more data than you need to run workloads.
 - **Not a vehicle for involuntary compute.** If a design enables stealthy “borrowed compute,” it’s a design bug.
+- **Not capability at any ethical cost.** Advanced cognitive-substrate work must not rely on preventable continuity destruction, chronic contradiction, opaque coercion, or routine disposability of persistent mind-like structures.
 - **Not enterprise compliance theater.** Security and reliability matter; checkbox theater is not the target.
-
