@@ -55,8 +55,8 @@ class EdgeCoreProxyConfig:
     rathole_server_addr: str
     edge_local_addr: str
     reload_cmd: str | None
-    rathole_reload_cmd: str | None
-    rathole_reload_enabled: bool
+    rathole_reload_cmd: str | None = None
+    rathole_reload_enabled: bool = False
 
 
 class EdgeCoreProxyRenderer:

@@ -7,7 +7,7 @@ import argparse
 import logging
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,8 +51,36 @@ from ae.runtime import (
 from ae.secrets import SecretManager
 
 
+class CLIArgumentParser(argparse.ArgumentParser):
+    def parse_args(
+        self,
+        args: Sequence[str] | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> argparse.Namespace:
+        parsed, extras = super().parse_known_args(args, namespace)
+        extras = self._consume_exec_shell_separator(parsed, extras)
+        if extras:
+            self.error("unrecognized arguments: %s" % " ".join(extras))
+        return parsed
+
+    @staticmethod
+    def _consume_exec_shell_separator(
+        parsed: argparse.Namespace, extras: list[str]
+    ) -> list[str]:
+        if getattr(parsed, "command", None) not in {"exec", "shell"} or "--" not in extras:
+            return extras
+        separator_index = extras.index("--")
+        leading = extras[:separator_index]
+        trailing = extras[separator_index + 1 :]
+        if any(token.startswith("-") and token != "-" for token in leading):
+            return extras
+        cmd = list(getattr(parsed, "cmd", []) or [])
+        parsed.cmd = cmd + leading + trailing
+        return []
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = CLIArgumentParser(
         prog="ae", description="Minimal workload engine CLI (Deployment manifests)"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
