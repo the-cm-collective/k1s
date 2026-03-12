@@ -155,21 +155,25 @@ def _container_pod_id(item: dict) -> str:
 def _component_running_container(pod_id: str, component: str) -> bool:
     if not pod_id:
         return False
-    pod_has_running = False
+    pod_has_unlabeled_running = False
+    pod_has_component_labels = False
     for c in _list_containers():
         if _container_pod_id(c) != pod_id:
             continue
         state = str(c.get("state") or "").upper()
-        if state == "CONTAINER_RUNNING":
-            pod_has_running = True
         labels = _labels(c)
+        if "ae.stack.component" in labels:
+            pod_has_component_labels = True
         if labels.get("ae.stack.component") != component:
+            if state == "CONTAINER_RUNNING" and "ae.stack.component" not in labels:
+                pod_has_unlabeled_running = True
             continue
         if state == "CONTAINER_RUNNING":
             return True
-    # Fallback for transient label/list races: if the pod has a running container,
-    # treat the component as running to avoid false container-not-running churn.
-    return pod_has_running
+    # Fallback for transient label/list races: if the pod has an unlabeled running
+    # container and no stack component labels yet, treat the component as running
+    # to avoid false churn during label propagation.
+    return pod_has_unlabeled_running and not pod_has_component_labels
 
 
 def _component_running_elsewhere(profile: str, component: str, exclude_pod_id: str = "") -> str | None:

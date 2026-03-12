@@ -44,32 +44,36 @@ def test_pod_payload_includes_hostname_when_enabled(monkeypatch) -> None:
     assert payload["hostname"] == "k1s-core-etcd"
 
 
-def test_start_rathole_server_uses_image_entrypoint_args(monkeypatch) -> None:
+def test_start_rathole_server_uses_image_entrypoint_args(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
     def fake_start_component(**kwargs):
         captured.update(kwargs)
 
+    cfg = tmp_path / "server.toml"
+    cfg.write_text("[server]\n", encoding="utf-8")
     monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
-    cri_stack._start_rathole_server("k1s-core", Path("server.toml"), runtime_handler="runc")
+    cri_stack._start_rathole_server("k1s-core", cfg, runtime_handler="runc")
 
     assert captured["runtime_handler"] == "runc"
     assert captured.get("command") is None
     assert captured["args"] == ["--server", "/etc/rathole/server.toml"]
 
 
-def test_start_rathole_client_uses_image_entrypoint_args(monkeypatch) -> None:
+def test_start_rathole_client_uses_image_entrypoint_args(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
     def fake_start_component(**kwargs):
         captured.update(kwargs)
 
+    cfg = tmp_path / "client.toml"
+    cfg.write_text("[client]\n", encoding="utf-8")
     monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
     cri_stack._start_rathole_client(
         "k1s-edge",
         "sea-edge-02",
         "edge-1",
-        Path("client.toml"),
+        cfg,
         runtime_handler="runc",
     )
 

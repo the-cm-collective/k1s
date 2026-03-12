@@ -14,7 +14,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+except ModuleNotFoundError:  # pragma: no cover - exercised via CLI smoke
+    Image = None
+    ImageDraw = None
+    ImageFilter = None
+    ImageFont = None
 
 BEAT_DURATIONS = (2.0, 3.0, 3.5, 3.5)
 DEFAULT_OUTPUT_DIR = Path("state/zone_mesh_outputs")
@@ -115,6 +121,7 @@ def node_key(a: str, b: str) -> tuple[str, str]:
 
 
 def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    _require_pillow()
     candidates = []
     if bold:
         candidates.extend(
@@ -1033,12 +1040,18 @@ def ensure_command(name: str) -> str:
     return path
 
 
+def _require_pillow() -> None:
+    if Image is None or ImageDraw is None or ImageFilter is None or ImageFont is None:
+        raise SystemExit("Pillow is required for render; install it with the repo dev extras.")
+
+
 def render_profile(
     scene: SceneGraph,
     formats: set[str],
     output_dir: Path,
     frame_limit: int | None = None,
 ) -> None:
+    _require_pillow()
     output_dir.mkdir(parents=True, exist_ok=True)
     total_frames = scene.duration_seconds * scene.fps
     if frame_limit is not None:

@@ -24,6 +24,10 @@ Use this page to track the control-plane HA phases (`H*`) as the foundation for 
 | D3 | Deployment | Planned | D2, F1, F2, H5 | Multi-cell locality-aware service operation | Multi-cell placement, degradation, locality-aware execution, and control-plane recovery behavior are explicit and repeatable | [Distributed Compute Fabric Roadmap](distributed-compute-fabric.html), [Fabric Control Plane](fabric-control-plane.html), [HA Control Plane Roadmap](high-availability-control-plane.html) | future broker, cache manager, controller state, node services | Shows a path from one cell to scalable service capacity with operational discipline |
 | D4 | Deployment | Planned | D3, F3, H5 | Domain operations and partner-readiness package | Domain deployment shape, milestone evidence, recovery posture, and partner-facing operational boundaries are stable | [Distributed Compute Fabric Roadmap](distributed-compute-fabric.html), [Fabric Deployment Topology](fabric-deployment-topology.html), [HA Control Plane Roadmap](high-availability-control-plane.html) | future deployment bundles, ops artifacts, partner runbooks | Converts technical progress into grant, partner, and pilot readiness |
 
+## Decision Checkpoints
+
+- 2026-03-11: `roadmap-dev-fabric-0-20260311` marks the merge of `feat/dev-fabric-0` into `dev` as the fabric roadmap decision checkpoint. Scope: F0/D0 substrate hardening, inference fabric control-plane work, VM/lab validation tooling, and HA/fabric roadmap publication. Type: non-release tag; package version remains `0.1.3.dev0`. Evidence: annotated tag `roadmap-dev-fabric-0-20260311` and validation gates recorded at merge time.
+
 ## Update Rules
 
 - Update `Status` when a milestone or phase becomes active, blocked, or complete.
