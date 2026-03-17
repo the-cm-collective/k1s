@@ -3119,6 +3119,32 @@ class ShimHandler(BaseHTTPRequestHandler):
         )
         return False
 
+    def _ha_mode_enabled(self) -> bool:
+        return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _ha_mutation_exempt(self, method: str, path: str) -> bool:
+        if path == "/api/v1/sessiontokens":
+            return True
+        if path.startswith("/apis/authorization.k8s.io/"):
+            return True
+        if method == "POST" and re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path):
+            return True
+        if method == "POST" and re.match(
+            r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path
+        ):
+            return True
+        return False
+
+    def _reject_ha_workload_mutation(self, method: str, path: str) -> bool:
+        if not self._ha_mode_enabled() or self._ha_mutation_exempt(method, path):
+            return False
+        self._json_status(
+            HTTPStatus.CONFLICT,
+            reason="HAUnsupported",
+            message="HA workload mutation via apishim is disabled until H4",
+        )
+        return True
+
     def _audit(self, action: str, **fields: Any) -> None:
         try:
             principal = self._parse_principal()
@@ -8201,6 +8227,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             else:
                 if not self._authz(role="write"):
                     return
+        if self._reject_ha_workload_mutation("POST", path):
+            return
 
         # Pod exec (kubectl uses POST + SPDY upgrade)
         m_exec_spdy = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
@@ -9432,6 +9460,8 @@ class ShimHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         self.path = path
+        if self._reject_ha_workload_mutation("PUT", path):
+            return
         body = self._read_body()
         doc = _read_json(body)
         plural, ns, name = _ns_name(self.path)
@@ -9865,6 +9895,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         path = parsed.path
+        if self._reject_ha_workload_mutation("PATCH", path):
+            return
         q = parse_qs(parsed.query)
         field_manager = q.get("fieldManager", ["kubectl"])[0] or "kubectl"
         force_flag = (q.get("force", ["false"])[0] or "").lower() in {"1", "true", "yes"}
@@ -10614,6 +10646,8 @@ class ShimHandler(BaseHTTPRequestHandler):
         if not self._authz():
             return
         path = urlparse(self.path).path
+        if self._reject_ha_workload_mutation("DELETE", path):
+            return
         plural, ns, name = _ns_name(path)
         if (
             plural
