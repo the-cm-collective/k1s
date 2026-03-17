@@ -7,11 +7,14 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
+
 from ae.config.transport import GatewayJetStreamConfig, check_nats_connectivity
 from ae.gateway.spool import GatewaySpool
+from ae.ha.fencing import MutationEnvelope, SQLiteFenceStore, merge_envelope, parse_envelope
 from ae.ingress.edge_local import build_edge_local_renderer
 from ae.observability.http_api import record_route_bundle_apply
 from ae.transport import (
@@ -75,11 +78,14 @@ class SiteGateway:
         self._node_labels = _merge_node_labels(self._site_id, self._node_id)
         self._js_stream = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
         self._spool = GatewaySpool(self._js_config.spool_path)
+        self._fence = SQLiteFenceStore(_gateway_fence_db_path(self._js_config.spool_path))
+        self._fence_scope = f"site:{self._site_id}"
         self._spool_enabled = True
         self._keep_spool = _truthy_env("AE_GATEWAY_KEEP_SPOOL")
         self._inflight: dict[str, JetStreamMessage] = {}
         self._inflight_progress: dict[str, float] = {}
         self._inflight_heartbeat: dict[str, float] = {}
+        self._inflight_envelopes: dict[str, MutationEnvelope] = {}
         self._completed: dict[str, float] = {}
         self._running_sent: dict[str, float] = {}
         self._js_enabled = False
@@ -93,6 +99,8 @@ class SiteGateway:
         self._nak_delay_s = self._resolve_nak_delay()
         self._session_id = str(uuid.uuid4())
         self._lease_id: str | None = None
+        self._lease_acquire_request_id: str | None = None
+        self._lease_renew_request_id: str | None = None
         self._lease_ttl_ms = 0
         self._renew_after_ms = 0
         self._next_renew_at = 0.0
@@ -220,6 +228,7 @@ class SiteGateway:
     def start(self, *, once: bool = False) -> None:
         self._log_config()
         self._log_connectivity()
+        self._fence.init()
         try:
             self._spool.init()
         except Exception as exc:  # noqa: BLE001
@@ -308,6 +317,11 @@ class SiteGateway:
         payload.setdefault("site_id", self._site_id)
         payload.setdefault("node_id", self._node_id)
         work_key = _work_key(payload)
+        envelope = self._resolve_result_envelope(payload, work_key)
+        if envelope is None:
+            LOGGER.warning("dropping local result without fencing envelope site=%s", self._site_id)
+            return
+        payload = merge_envelope(payload, envelope)
         if self._spool_enabled and work_key:
             try:
                 self._spool.record_result(
@@ -341,6 +355,7 @@ class SiteGateway:
             msg_js = self._inflight.pop(work_key)
             self._inflight_progress.pop(work_key, None)
             self._inflight_heartbeat.pop(work_key, None)
+            self._inflight_envelopes.pop(work_key, None)
             self._running_sent.pop(work_key, None)
             self._completed[work_key] = time.monotonic()
             try:
@@ -365,6 +380,18 @@ class SiteGateway:
         payload = _safe_json(msg.data)
         if not isinstance(payload, dict):
             return
+        envelope = parse_envelope(payload)
+        if envelope is None:
+            LOGGER.warning("route bundle missing fencing envelope site=%s", self._site_id)
+            return
+        decision = self._fence.begin(self._fence_scope, envelope)
+        if decision.stale:
+            LOGGER.warning(
+                "route bundle rejected stale epoch site=%s op=%s",
+                self._site_id,
+                envelope.operation_id,
+            )
+            return
         site_id = payload.get("site_id") or self._site_id
         if str(site_id) != str(self._site_id):
             return
@@ -372,7 +399,9 @@ class SiteGateway:
         bundle_hash = payload.get("hash")
         ok = True
         error = None
-        if bundle_rev < self._route_bundle_rev:
+        if decision.duplicate:
+            ok = True
+        elif bundle_rev < self._route_bundle_rev:
             ok = True
         elif bundle_rev == self._route_bundle_rev:
             if self._route_bundle_hash and bundle_hash != self._route_bundle_hash:
@@ -389,14 +418,20 @@ class SiteGateway:
             record_route_bundle_apply(self._site_id, ok=ok, latency_seconds=latency_s)
         except Exception:
             pass
-        ack = {
-            "site_id": self._site_id,
-            "bundle_rev": bundle_rev,
-            "hash": bundle_hash,
-            "applied_at": time.time(),
-            "ok": ok,
-            "error": error,
-        }
+        if ok and not decision.duplicate:
+            self._fence.commit(self._fence_scope, envelope)
+        ack = merge_envelope(
+            {
+                "site_id": self._site_id,
+                "bundle_rev": bundle_rev,
+                "hash": bundle_hash,
+                "applied_at": time.time(),
+                "ok": ok,
+                "error": error,
+                "duplicate": decision.duplicate,
+            },
+            envelope,
+        )
         try:
             if self._nats_client is not None:
                 self._nats_client.publish_json(hub_route_ack_subject(self._site_id), ack)
@@ -410,6 +445,8 @@ class SiteGateway:
             return
         self._last_result_retry = now
         for record in self._spool.list_undelivered_results(limit=100):
+            if record.operation_id is None:
+                continue
             try:
                 self._nats_client.publish_json(
                     hub_result_subject(self._site_id), record.payload
@@ -440,18 +477,36 @@ class SiteGateway:
             return
         work_items = resp.get("work") or []
         lease_ids = resp.get("lease_ids") or []
-        accepted_leases: list[str] = []
+        ack_items: list[dict[str, object]] = []
         for idx, item in enumerate(work_items):
             if not isinstance(item, dict):
                 continue
-            if self._dispatch_work(item):
-                if idx < len(lease_ids) and lease_ids[idx]:
-                    accepted_leases.append(str(lease_ids[idx]))
-        if accepted_leases:
+            envelope = parse_envelope(item)
+            if envelope is None:
+                LOGGER.warning("work.pull item missing fencing envelope site=%s", self._site_id)
+                continue
+            decision = self._fence.begin(self._fence_scope, envelope)
+            lease_id = str(lease_ids[idx]) if idx < len(lease_ids) and lease_ids[idx] else ""
+            if decision.accepted:
+                if not self._dispatch_work(item, envelope):
+                    continue
+                self._fence.commit(self._fence_scope, envelope)
+            if decision.accepted or decision.duplicate or decision.stale:
+                if lease_id:
+                    ack_items.append(
+                        {
+                            "lease_id": lease_id,
+                            "work_id": item.get("work_id"),
+                            "attempt": item.get("attempt"),
+                            **envelope.as_dict(),
+                        }
+                    )
+        if ack_items:
             ack_req = {
                 "site_id": self._site_id,
                 "gateway_id": self._node_id,
-                "lease_ids": accepted_leases,
+                "lease_ids": [str(item["lease_id"]) for item in ack_items],
+                "ack_items": ack_items,
                 "accepted_at": time.time(),
                 "timestamp": time.time(),
             }
@@ -479,6 +534,20 @@ class SiteGateway:
         for js_msg in msgs:
             payload = _safe_json(js_msg.data)
             if not isinstance(payload, dict):
+                continue
+            envelope = parse_envelope(payload)
+            if envelope is None:
+                try:
+                    js_msg.ack_sync()
+                except Exception:
+                    pass
+                continue
+            decision = self._fence.begin(self._fence_scope, envelope)
+            if decision.stale or decision.duplicate:
+                try:
+                    js_msg.ack_sync()
+                except Exception:
+                    pass
                 continue
             work_key = _work_key(payload)
             work_id = payload.get("work_id")
@@ -535,6 +604,7 @@ class SiteGateway:
                     self._inflight.pop(work_key, None)
                     self._inflight_progress.pop(work_key, None)
                     self._inflight_heartbeat.pop(work_key, None)
+                    self._inflight_envelopes.pop(work_key, None)
                     self._running_sent.pop(work_key, None)
                     self._stats.inflight = len(self._inflight)
                 else:
@@ -559,24 +629,27 @@ class SiteGateway:
                         js_seq=int(js_msg.seq or 0),
                         node_id=None,
                         state="accepted",
+                        payload=payload,
                     )
                 except Exception:
                     pass
-            if not self._dispatch_work(payload):
+            if not self._dispatch_work(payload, envelope):
                 try:
                     js_msg.nak(self._nak_delay_s)
                     self._stats.nacked += 1
                 except Exception:
                     pass
                 continue
+            self._fence.commit(self._fence_scope, envelope)
             if work_key:
                 self._inflight[work_key] = js_msg
                 self._inflight_progress[work_key] = now
                 self._inflight_heartbeat[work_key] = now
+                self._inflight_envelopes[work_key] = envelope
                 self._stats.inflight = len(self._inflight)
                 self._stats.accepted += 1
 
-    def _dispatch_work(self, payload: dict) -> bool:
+    def _dispatch_work(self, payload: dict, envelope: MutationEnvelope) -> bool:
         if self._nats_client is None:
             return False
         node_id = payload.get("preferred_node") or payload.get("node_id") or self._node_id
@@ -585,10 +658,27 @@ class SiteGateway:
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("local work dispatch failed: %s", exc)
             return False
-        self._emit_running(payload, str(node_id))
+        if self._spool_enabled and not self._js_enabled:
+            try:
+                self._spool.record_inflight(
+                    work_id=str(payload.get("work_id")),
+                    attempt=int(payload.get("attempt") or 0),
+                    js_stream="WORK_PULL",
+                    js_consumer=f"WORK_PULL_{self._site_id}",
+                    js_seq=0,
+                    node_id=str(node_id),
+                    state="accepted",
+                    payload=payload,
+                )
+            except Exception:
+                pass
+        work_key = _work_key(payload)
+        if work_key:
+            self._inflight_envelopes[work_key] = envelope
+        self._emit_running(payload, str(node_id), envelope)
         return True
 
-    def _emit_running(self, payload: dict, node_id: str) -> None:
+    def _emit_running(self, payload: dict, node_id: str, envelope: MutationEnvelope) -> None:
         if self._nats_client is None:
             return
         work_key = _work_key(payload)
@@ -604,15 +694,18 @@ class SiteGateway:
                 )
             except Exception:
                 pass
-        running = {
-            "work_id": payload.get("work_id"),
-            "attempt": payload.get("attempt"),
-            "site_id": self._site_id,
-            "node_id": node_id,
-            "status": "running",
-            "observed_generation": payload.get("desired_generation"),
-            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
+        running = merge_envelope(
+            {
+                "work_id": payload.get("work_id"),
+                "attempt": payload.get("attempt"),
+                "site_id": self._site_id,
+                "node_id": node_id,
+                "status": "running",
+                "observed_generation": payload.get("desired_generation"),
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+            envelope,
+        )
         try:
             self._nats_client.publish_json(hub_result_subject(self._site_id), running)
             self._running_sent[work_key] = time.monotonic()
@@ -641,6 +734,7 @@ class SiteGateway:
                 self._inflight.pop(work_key, None)
                 self._inflight_progress.pop(work_key, None)
                 self._inflight_heartbeat.pop(work_key, None)
+                self._inflight_envelopes.pop(work_key, None)
                 self._running_sent.pop(work_key, None)
                 self._stats.inflight = len(self._inflight)
                 continue
@@ -664,6 +758,8 @@ class SiteGateway:
             return False
         if now is None:
             now = time.monotonic()
+        request_id = self._lease_acquire_request_id or self._lease_request_id("lease.acquire")
+        self._lease_acquire_request_id = request_id
         req = {
             "site_id": self._site_id,
             "node_id": self._node_id,
@@ -671,6 +767,7 @@ class SiteGateway:
             "timestamp": time.time(),
             "backend": self._gateway_backend,
             "labels": dict(self._node_labels or {}),
+            "request_id": request_id,
         }
         try:
             resp = self._nats_client.request_json(
@@ -684,12 +781,29 @@ class SiteGateway:
             return False
         if not resp or not resp.get("accepted"):
             LOGGER.warning("lease acquire rejected: %s", resp.get("reason"))
+            self._lease_acquire_request_id = None
             self._schedule_lease_retry(now, str(resp.get("reason") or "rejected"))
             return False
+        envelope = parse_envelope(resp)
+        if envelope is None or envelope.operation_id != request_id:
+            LOGGER.warning("lease acquire missing/invalid fencing envelope")
+            self._schedule_lease_retry(now, "missing_envelope")
+            return False
+        decision = self._fence.begin(self._fence_scope, envelope)
+        if decision.stale:
+            LOGGER.warning("lease acquire rejected stale epoch op=%s", envelope.operation_id)
+            self._lease_acquire_request_id = None
+            self._schedule_lease_retry(now, "stale_epoch")
+            return False
+        if decision.duplicate:
+            self._lease_acquire_request_id = None
+            return True
         self._lease_id = str(resp.get("lease_id") or "")
         self._lease_ttl_ms = int(resp.get("lease_ttl_ms") or 0)
         self._renew_after_ms = int(resp.get("renew_after_ms") or 0)
         self._next_renew_at = time.monotonic() + max(1.0, self._renew_after_ms / 1000.0)
+        self._fence.commit(self._fence_scope, envelope)
+        self._lease_acquire_request_id = None
         self._reset_lease_retry()
         LOGGER.info("lease acquired id=%s ttl_ms=%s", self._lease_id, self._lease_ttl_ms)
         return True
@@ -701,12 +815,15 @@ class SiteGateway:
             return
         if now < self._next_renew_at:
             return
+        request_id = self._lease_renew_request_id or self._lease_request_id("lease.renew")
+        self._lease_renew_request_id = request_id
         req = {
             "site_id": self._site_id,
             "node_id": self._node_id,
             "session_id": self._session_id,
             "lease_id": self._lease_id,
             "timestamp": time.time(),
+            "request_id": request_id,
         }
         try:
             resp = self._nats_client.request_json(
@@ -720,13 +837,32 @@ class SiteGateway:
             return
         if not resp or not resp.get("accepted"):
             LOGGER.warning("lease renew rejected: %s", resp.get("reason"))
+            self._lease_renew_request_id = None
             self._lease_id = None
             self._next_renew_at = now + 1.0
             self._schedule_lease_retry(now, str(resp.get("reason") or "rejected"))
             return
+        envelope = parse_envelope(resp)
+        if envelope is None or envelope.operation_id != request_id:
+            LOGGER.warning("lease renew missing/invalid fencing envelope")
+            self._next_renew_at = now + 1.0
+            return
+        decision = self._fence.begin(self._fence_scope, envelope)
+        if decision.stale:
+            LOGGER.warning("lease renew rejected stale epoch op=%s", envelope.operation_id)
+            self._lease_renew_request_id = None
+            self._lease_id = None
+            self._next_renew_at = now + 1.0
+            self._schedule_lease_retry(now, "stale_epoch")
+            return
+        if decision.duplicate:
+            self._lease_renew_request_id = None
+            return
         self._lease_ttl_ms = int(resp.get("lease_ttl_ms") or self._lease_ttl_ms)
         self._renew_after_ms = int(resp.get("renew_after_ms") or self._renew_after_ms)
         self._next_renew_at = now + max(1.0, self._renew_after_ms / 1000.0)
+        self._fence.commit(self._fence_scope, envelope)
+        self._lease_renew_request_id = None
 
     def _maybe_acquire(self, now: float) -> None:
         if self._lease_id:
@@ -753,6 +889,40 @@ class SiteGateway:
             LOGGER.warning("lease retry in %.1fs (reason=%s)", delay, reason)
         else:
             LOGGER.warning("lease retry in %.1fs", delay)
+
+    def _lease_request_id(self, prefix: str) -> str:
+        return f"{prefix}:{uuid.uuid4().hex}"
+
+    def _resolve_result_envelope(
+        self,
+        payload: dict,
+        work_key: str | None,
+    ) -> MutationEnvelope | None:
+        envelope = parse_envelope(payload)
+        if envelope is not None:
+            return envelope
+        if work_key:
+            cached = self._inflight_envelopes.get(work_key)
+            if cached is not None:
+                return cached
+        work_id = str(payload.get("work_id") or "")
+        attempt = int(payload.get("attempt") or 0)
+        if not work_id or attempt <= 0 or not self._spool_enabled:
+            return None
+        try:
+            record = self._spool.get_inflight_record(work_id, attempt)
+        except Exception:
+            record = None
+        if record is None or not record.operation_id or not record.controller_id:
+            return None
+        epoch = int(record.controller_epoch or 0)
+        if epoch <= 0:
+            return None
+        return MutationEnvelope(
+            controller_id=record.controller_id,
+            controller_epoch=epoch,
+            operation_id=record.operation_id,
+        )
 
     def _publish_telemetry(self, now: float) -> None:
         if self._nats_client is None:
@@ -831,6 +1001,13 @@ def _bundle_latency_seconds(payload: dict) -> float | None:
         return max(0.0, (now - ts).total_seconds())
     except Exception:
         return None
+
+
+def _gateway_fence_db_path(spool_path: Path) -> Path:
+    raw = os.getenv("AE_GATEWAY_FENCE_DB")
+    if raw:
+        return Path(raw)
+    return Path(spool_path).with_name("fence.db")
 
 
 def _work_key(payload: dict) -> str | None:
