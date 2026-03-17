@@ -13,8 +13,15 @@ from typing import Any
 
 from ae.controller.state import SQLiteStateStore
 from ae.controller.spec import app_key
-from ae.ha.fencing import MutationEnvelope, merge_envelope, resolve_controller_identity, route_operation
+from ae.ha.fencing import (
+    MutationEnvelope,
+    merge_envelope,
+    parse_envelope,
+    resolve_controller_identity,
+    route_operation,
+)
 from ae.ingress.edge_docs import normalize_policy_doc, normalize_route_doc
+from ae.observability.http_api import record_ha_fence_event
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 from ae.transport.subjects import hub_route_ack_subject, hub_route_bundle_subject
 
@@ -138,6 +145,14 @@ class RouteBundlePublisher:
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         if not site_id:
             return
+        state = self._state.get(site_id)
+        if state is None or not state.operation_id or not state.controller_id:
+            return
+        envelope = parse_envelope(payload)
+        if envelope is None:
+            record_ha_fence_event("route_bundle_publisher.ack", stale=True)
+            LOGGER.warning("route ack missing fencing envelope site=%s", site_id)
+            return
         try:
             bundle_rev = int(payload.get("bundle_rev") or 0)
         except Exception:
@@ -145,11 +160,25 @@ class RouteBundlePublisher:
         ok = payload.get("ok", True)
         if not ok:
             return
-        state = self._state.setdefault(site_id, _BundleState())
+        if not _route_ack_matches_state(state, bundle_rev=bundle_rev, envelope=envelope):
+            duplicate = (
+                bundle_rev == state.acked_rev
+                and envelope.operation_id == state.operation_id
+                and envelope.controller_id == state.controller_id
+                and envelope.controller_epoch == state.controller_epoch
+            )
+            record_ha_fence_event(
+                "route_bundle_publisher.ack",
+                duplicate=duplicate,
+                stale=not duplicate,
+            )
+            return
         if bundle_rev > state.acked_rev:
             state.acked_rev = bundle_rev
             state.backoff_s = 1.0
             state.next_send_at = 0.0
+        elif bundle_rev == state.acked_rev:
+            record_ha_fence_event("route_bundle_publisher.ack", duplicate=True)
 
 
 def _build_bundle(
@@ -212,6 +241,23 @@ def _collect_bundle_payload(
     policies = _sorted_docs(policies)
     service_endpoints = _collect_service_endpoints(store, service_map)
     return routes, policies, service_endpoints
+
+
+def _route_ack_matches_state(
+    state: _BundleState,
+    *,
+    bundle_rev: int,
+    envelope: MutationEnvelope,
+) -> bool:
+    if int(bundle_rev) != int(state.rev):
+        return False
+    if envelope.operation_id != state.operation_id:
+        return False
+    if envelope.controller_id != state.controller_id:
+        return False
+    if int(envelope.controller_epoch) != int(state.controller_epoch):
+        return False
+    return True
 
 
 def _route_is_edge_local(doc: dict) -> bool:

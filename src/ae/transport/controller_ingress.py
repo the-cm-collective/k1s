@@ -12,7 +12,8 @@ import threading
 
 from ae.controller.node_identity import scoped_node_id
 from ae.controller.state import SQLiteStateStore
-from ae.ha.fencing import lease_operation, resolve_controller_identity
+from ae.ha.fencing import lease_operation, parse_envelope, resolve_controller_identity
+from ae.observability.http_api import record_ha_fence_event
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 
 LOGGER = logging.getLogger(__name__)
@@ -412,6 +413,17 @@ class NatsControllerIngress:
             try:
                 attempt = int(payload.get("attempt") or 0)
                 if attempt:
+                    envelope = parse_envelope(payload)
+                    ledger = self._store.get_work_ledger(str(work_id))
+                    if not _result_matches_ledger(ledger, attempt=attempt, envelope=envelope):
+                        record_ha_fence_event("controller_ingress.result", stale=True)
+                        LOGGER.warning(
+                            "ignoring stale work result site=%s work_id=%s attempt=%s",
+                            site_id,
+                            work_id,
+                            attempt,
+                        )
+                        return
                     status_norm = str(status or "").lower()
                     node_id = payload.get("node_id")
                     observed_generation = payload.get("observed_generation")
@@ -524,9 +536,18 @@ class NatsControllerIngress:
         payload = self._safe_json(msg)
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         lease_ids = payload.get("lease_ids") or []
+        ack_items = payload.get("ack_items") or []
         LOGGER.debug("work.ack site=%s leases=%s", site_id, lease_ids)
         try:
-            updated = self._store.ack_work([str(x) for x in lease_ids if x])
+            if ack_items and hasattr(self._store, "ack_work_items"):
+                updated = self._store.ack_work_items(
+                    [item for item in ack_items if isinstance(item, dict)]
+                )
+                stale_count = max(0, len([item for item in ack_items if isinstance(item, dict)]) - updated)
+                if stale_count:
+                    record_ha_fence_event("controller_ingress.work_ack", stale=stale_count)
+            else:
+                updated = self._store.ack_work([str(x) for x in lease_ids if x])
         except Exception:
             updated = 0
         self._reply(msg, {"accepted": True, "reason": None, "acked": updated})
@@ -631,6 +652,20 @@ def _site_id_from_subject(subject: str) -> str | None:
     if parts[0] != "k1s" or parts[1] != "v1" or parts[2] != "site":
         return None
     return parts[3]
+
+
+def _result_matches_ledger(ledger, *, attempt: int, envelope) -> bool:
+    if ledger is None or envelope is None:
+        return False
+    if int(getattr(ledger, "attempt", 0) or 0) != int(attempt):
+        return False
+    if str(getattr(ledger, "controller_id", "") or "") != envelope.controller_id:
+        return False
+    if int(getattr(ledger, "controller_epoch", 0) or 0) != int(envelope.controller_epoch):
+        return False
+    if str(getattr(ledger, "operation_id", "") or "") != envelope.operation_id:
+        return False
+    return True
 
 
 __all__ = ["NatsControllerIngress"]

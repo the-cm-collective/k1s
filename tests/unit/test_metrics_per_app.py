@@ -7,7 +7,7 @@ from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata
 from ae.controller.state import SQLiteStateStore
 from ae.observability import MetricsService
-from ae.observability.http_api import _ApiHandler
+from ae.observability.http_api import _ApiHandler, _HA_FENCE_METRICS, record_ha_fence_event
 from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
 
 
@@ -85,3 +85,31 @@ def test_metrics_expose_per_app_series(tmp_path: Path) -> None:
     assert 'ae_app_status{app="demo",status="ready"} 1' in txt
     # Alias families kept for compatibility
     assert 'ae_ready_replicas{app="demo"} 2' in txt
+
+
+def test_metrics_expose_ha_fence_counters(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    handler = object.__new__(_ApiHandler)
+    handler.store = store  # type: ignore[attr-defined]
+    handler.metrics = MetricsService(store)  # type: ignore[attr-defined]
+    handler.wfile = io.BytesIO()  # type: ignore[attr-defined]
+
+    def _noop(*_args, **_kwargs):
+        return None
+
+    handler.send_response = _noop  # type: ignore[attr-defined]
+    handler.send_header = _noop  # type: ignore[attr-defined]
+    handler.end_headers = _noop  # type: ignore[attr-defined]
+
+    _HA_FENCE_METRICS.clear()
+    record_ha_fence_event("gateway.lease_acquire", stale=True)
+    record_ha_fence_event("gateway.lease_acquire", duplicate=True, epoch_advanced=True)
+    try:
+        _ApiHandler._handle_metrics(handler)  # type: ignore[arg-type]
+        txt = handler.wfile.getvalue().decode("utf-8", "replace")
+    finally:
+        _HA_FENCE_METRICS.clear()
+
+    assert 'ae_ha_fence_stale_total{surface="gateway.lease_acquire"} 1.0' in txt
+    assert 'ae_ha_fence_duplicate_total{surface="gateway.lease_acquire"} 1.0' in txt
+    assert 'ae_ha_fence_epoch_advance_total{surface="gateway.lease_acquire"} 1.0' in txt

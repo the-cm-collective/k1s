@@ -64,6 +64,7 @@ _JS_STREAM_STATS: dict[str, dict[str, float]] = {}
 _JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
 _GATEWAY_WORK_METRICS: dict[str, dict[str, float]] = {}
 _ROUTE_BUNDLE_METRICS: dict[str, dict[str, float]] = {}
+_HA_FENCE_METRICS: dict[str, dict[str, float]] = {}
 _HEARTBEAT_WRITES_TOTAL: float = 0.0
 _HEARTBEAT_NODE_REWRITES_TOTAL: float = 0.0
 _ETCD_MAINTENANCE_RUNS_TOTAL: float = 0.0
@@ -196,6 +197,40 @@ def record_route_bundle_apply(
         metrics["apply_fail_total"] = metrics.get("apply_fail_total", 0.0) + 1.0
     if latency_seconds is not None:
         metrics["last_latency_s"] = float(latency_seconds)
+
+
+def record_ha_fence_event(
+    surface: str,
+    *,
+    stale: bool | int | float = False,
+    duplicate: bool | int | float = False,
+    epoch_advanced: bool | int | float = False,
+) -> None:
+    if not surface:
+        return
+    metrics = _HA_FENCE_METRICS.setdefault(
+        surface,
+        {
+            "stale_total": 0.0,
+            "duplicate_total": 0.0,
+            "epoch_advance_total": 0.0,
+        },
+    )
+
+    def _add(field: str, value: bool | int | float) -> None:
+        if isinstance(value, bool):
+            amount = 1.0 if value else 0.0
+        else:
+            try:
+                amount = float(value)
+            except Exception:
+                amount = 0.0
+        if amount > 0:
+            metrics[field] = metrics.get(field, 0.0) + amount
+
+    _add("stale_total", stale)
+    _add("duplicate_total", duplicate)
+    _add("epoch_advance_total", epoch_advanced)
 
 
 def record_heartbeat_write(*, node_rewrite: bool) -> None:
@@ -3407,6 +3442,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 lines.append(f"ae_gateway_work_stale_total{{{labels}}} {stale}")
                 lines.append(f"ae_gateway_work_nak_total{{{labels}}} {nacked}")
                 lines.append(f"ae_gateway_lease_retry_total{{{labels}}} {retries}")
+        if _HA_FENCE_METRICS:
+            lines.append("# HELP ae_ha_fence_stale_total HA fence stale-envelope rejects")
+            lines.append("# TYPE ae_ha_fence_stale_total counter")
+            lines.append("# HELP ae_ha_fence_duplicate_total HA fence duplicate-operation no-ops")
+            lines.append("# TYPE ae_ha_fence_duplicate_total counter")
+            lines.append("# HELP ae_ha_fence_epoch_advance_total HA fence scope epoch advances")
+            lines.append("# TYPE ae_ha_fence_epoch_advance_total counter")
+            for surface, stats in sorted(_HA_FENCE_METRICS.items()):
+                labels = f'surface="{surface}"'
+                lines.append(
+                    f"ae_ha_fence_stale_total{{{labels}}} {float(stats.get('stale_total', 0.0) or 0.0)}"
+                )
+                lines.append(
+                    f"ae_ha_fence_duplicate_total{{{labels}}} {float(stats.get('duplicate_total', 0.0) or 0.0)}"
+                )
+                lines.append(
+                    f"ae_ha_fence_epoch_advance_total{{{labels}}} {float(stats.get('epoch_advance_total', 0.0) or 0.0)}"
+                )
         if _JS_STREAM_STATS:
             lines.append("# HELP ae_js_stream_bytes JetStream stream bytes in use")
             lines.append("# TYPE ae_js_stream_bytes gauge")
@@ -3610,6 +3663,20 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     "bundle_fail_total": fail_total,
                     "last_latency_s": last_latency,
                     "sites": int(len(_ROUTE_BUNDLE_METRICS)),
+                }
+            if _HA_FENCE_METRICS:
+                stale_total = 0.0
+                duplicate_total = 0.0
+                epoch_advance_total = 0.0
+                for stats in _HA_FENCE_METRICS.values():
+                    stale_total += float(stats.get("stale_total", 0.0) or 0.0)
+                    duplicate_total += float(stats.get("duplicate_total", 0.0) or 0.0)
+                    epoch_advance_total += float(stats.get("epoch_advance_total", 0.0) or 0.0)
+                transport["ha_fence"] = {
+                    "stale_total": stale_total,
+                    "duplicate_total": duplicate_total,
+                    "epoch_advance_total": epoch_advance_total,
+                    "surfaces": int(len(_HA_FENCE_METRICS)),
                 }
         except Exception:
             transport = {}

@@ -742,7 +742,7 @@
 <li>NATS Core and JetStream transport modes</li>
 <li>outbox-based dispatch and gateway spool durability</li>
 </ul>
-<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes apishim workload mutation explicitly read-only until <code>H4</code>. What it does not yet have is one complete fenced HA authority model: executors do not yet reject stale epochs, and apishim still does not share the same <code>etcd</code> revision/watch backend as the controller. This roadmap closes those remaining gaps in a fixed order.</p>
+<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes apishim workload mutation explicitly read-only until <code>H4</code>. <code>H2</code> is now in progress: mutation envelopes are emitted across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs. What remains in <code>H2</code> is finishing the stale-result and replay closure around all controller ingress paths, then carrying that model into the later transport-hardening and apishim convergence phases.</p>
 <p>The two design rules for the whole program are:</p>
 <ul>
 <li>watches and messages trigger work; only <code>etcd</code> transactions authorize work</li>
@@ -825,6 +825,14 @@
 <li>stale epochs are rejected and duplicate <code>operation_id</code> replays become no-ops</li>
 <li>destructive and allocative paths become epoch-aware, including container lifecycle, route publication, service updates, and fabric reservation work</li>
 </ul>
+<p>Current implementation status:</p>
+<ul>
+<li>controller work attempts, route bundles, remote runtime calls, and fabric session mutations now emit fenced mutation envelopes</li>
+<li>site gateways persist fence state, reject stale lease/work/route commands, and echo accepted envelopes on results and route acknowledgements</li>
+<li>node agents reject stale runtime and fabric mutations and treat duplicate <code>operation_id</code> requests as successful no-ops</li>
+<li>controller ingress now validates work acknowledgements and rejects stale work results and stale route acknowledgements instead of trusting transport ordering</li>
+<li><code>/metrics</code> exposes <code>ae_ha_fence_stale_total</code>, <code>ae_ha_fence_duplicate_total</code>, and <code>ae_ha_fence_epoch_advance_total</code> so failover and stale-command behavior are visible during rollout</li>
+</ul>
 <h3 id="h3-transport-hardening-around-etcd-authority">H3: Transport hardening around <code>etcd</code> authority</h3>
 <p>Goal:</p>
 <ul>
@@ -888,7 +896,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-17 15:08:41</span>
+        <span>Built 2026-03-17 16:13:59</span>
       </div>
     </footer>
     <script>

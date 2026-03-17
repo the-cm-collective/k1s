@@ -27,7 +27,7 @@ from ae.controller.spec import (
     app_key,
     app_key_for_manifest,
 )
-from ae.ha.fencing import work_operation
+from ae.ha.fencing import parse_envelope, work_operation
 from ae.resources import loader as resource_loader
 from ae.runtime import RuntimeResult
 
@@ -2231,6 +2231,63 @@ class SQLiteStateStore:
         updated = 0
         with self._connect() as conn:
             for lease_id in lease_ids:
+                cursor = conn.execute(
+                    """
+                    UPDATE work_queue
+                    SET state = ?, acked_at = ?, updated_at = ?
+                    WHERE lease_id = ?
+                    """,
+                    ("Acked", now, now, lease_id),
+                )
+                try:
+                    updated += int(getattr(cursor, "rowcount", 0) or 0)
+                except Exception:
+                    pass
+            conn.commit()
+        return updated
+
+    def ack_work_items(self, ack_items: list[dict]) -> int:
+        if not ack_items:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        updated = 0
+        with self._connect() as conn:
+            for item in ack_items:
+                if not isinstance(item, dict):
+                    continue
+                lease_id = str(item.get("lease_id") or "").strip()
+                if not lease_id:
+                    continue
+                envelope = parse_envelope(item)
+                if envelope is None:
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT work_id, attempt, payload_json
+                    FROM work_queue
+                    WHERE lease_id = ?
+                    """,
+                    (lease_id,),
+                ).fetchone()
+                if not row:
+                    continue
+                work_id = str(row[0] or "")
+                attempt = int(row[1] or 0)
+                try:
+                    payload = json.loads(row[2]) if row[2] else {}
+                except Exception:
+                    payload = {}
+                queued_envelope = parse_envelope(payload)
+                if queued_envelope != envelope:
+                    continue
+                if item.get("work_id") not in {None, "", work_id}:
+                    continue
+                try:
+                    ack_attempt = int(item.get("attempt") or 0)
+                except Exception:
+                    ack_attempt = 0
+                if ack_attempt not in {0, attempt}:
+                    continue
                 cursor = conn.execute(
                     """
                     UPDATE work_queue

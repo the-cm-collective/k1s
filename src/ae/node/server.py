@@ -16,6 +16,7 @@ from pathlib import Path
 from ae.config.transport import TransportConfig, check_nats_connectivity
 from ae.controller.spec import AppManifest
 from ae.ha.fencing import SQLiteFenceStore, parse_envelope
+from ae.observability.http_api import record_ha_fence_event
 from ae.runtime import PodState, RuntimeAdapter, RuntimeResult
 import requests
 
@@ -65,6 +66,12 @@ def _agent_fence_db_path() -> Path:
     return Path("/var/lib/ae/node/fence.db")
 
 
+def _fence_surface(scope: str) -> str:
+    if str(scope).startswith("fabric:"):
+        return "node_agent.fabric"
+    return "node_agent.runtime"
+
+
 class AgentHandler(BaseHTTPRequestHandler):
     runtime: RuntimeAdapter = None  # type: ignore[assignment]
     volume_manager = None
@@ -103,9 +110,25 @@ class AgentHandler(BaseHTTPRequestHandler):
             _json_response(self, 409, {"error": "missing_fencing_envelope"})
             return "reject", None, None
         decision = self._ensure_fence_store().begin(scope, envelope)
+        surface = _fence_surface(scope)
+        current = getattr(decision, "current", None)
+        current_epoch = int(getattr(current, "controller_epoch", 0) or 0)
         if decision.stale:
+            record_ha_fence_event(surface, stale=True)
             self._stale_response(decision)
             return "reject", envelope, decision
+        if decision.duplicate:
+            record_ha_fence_event(surface, duplicate=True)
+        elif decision.accepted and int(envelope.controller_epoch) > current_epoch:
+            record_ha_fence_event(surface, epoch_advanced=True)
+            LOGGER.info(
+                "ha fence epoch advanced surface=%s scope=%s from=%s to=%s controller=%s",
+                surface,
+                scope,
+                current_epoch,
+                envelope.controller_epoch,
+                envelope.controller_id,
+            )
         return decision.status, envelope, decision
 
     def _commit_mutation(self, scope: str, envelope) -> None:

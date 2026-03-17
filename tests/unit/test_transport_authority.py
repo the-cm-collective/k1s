@@ -209,3 +209,101 @@ def test_route_bundle_publisher_skips_publish_until_leader(monkeypatch) -> None:
     authority.is_leader = True
     publisher.run_once()
     assert len(publisher._client.published) == 1  # type: ignore[attr-defined]
+
+
+def test_nats_controller_ingress_uses_validated_ack_items(monkeypatch) -> None:
+    monkeypatch.setattr("ae.transport.controller_ingress.NatsClient", _FakeNatsClient)
+
+    class _Store:
+        def __init__(self) -> None:
+            self.ack_items = None
+
+        def ack_work_items(self, items):
+            self.ack_items = items
+            return 1
+
+    store = _Store()
+    ingress = NatsControllerIngress(
+        store,
+        url="nats://127.0.0.1:4222",
+        authority=_FakeAuthority(is_leader=True, epoch=15),
+    )
+
+    ingress._on_work_ack(  # type: ignore[attr-defined]
+        NatsMessage(
+            subject="k1s.v1.site.sea.work.ack",
+            reply="reply.inbox",
+            data=json.dumps(
+                {
+                    "site_id": "sea",
+                    "ack_items": [
+                        {
+                            "lease_id": "lease-1",
+                            "work_id": "w1",
+                            "attempt": 1,
+                            "controller_id": "ctrl-a",
+                            "controller_epoch": 15,
+                            "operation_id": "work:w1:1",
+                        }
+                    ],
+                }
+            ).encode("utf-8"),
+        )
+    )
+
+    assert store.ack_items is not None
+    _subject, payload = ingress._client.published[0]  # type: ignore[attr-defined]
+    assert payload["accepted"] is True
+    assert payload["acked"] == 1
+
+
+def test_nats_controller_ingress_ignores_stale_work_results(monkeypatch) -> None:
+    monkeypatch.setattr("ae.transport.controller_ingress.NatsClient", _FakeNatsClient)
+
+    class _Store:
+        def __init__(self) -> None:
+            self.updated = 0
+            self.done = 0
+
+        def get_work_ledger(self, work_id: str):
+            assert work_id == "w1"
+            return SimpleNamespace(
+                attempt=2,
+                controller_id="ctrl-b",
+                controller_epoch=11,
+                operation_id="work:w1:2",
+            )
+
+        def update_work_state(self, **kwargs) -> None:
+            self.updated += 1
+
+        def mark_work_done(self, work_id: str, attempt: int) -> None:
+            self.done += 1
+
+    store = _Store()
+    ingress = NatsControllerIngress(
+        store,
+        url="nats://127.0.0.1:4222",
+        authority=_FakeAuthority(is_leader=True, epoch=15),
+    )
+
+    ingress._on_result(  # type: ignore[attr-defined]
+        NatsMessage(
+            subject="k1s.v1.site.sea.result",
+            reply=None,
+            data=json.dumps(
+                {
+                    "site_id": "sea",
+                    "work_id": "w1",
+                    "attempt": 1,
+                    "status": "succeeded",
+                    "controller_id": "ctrl-a",
+                    "controller_epoch": 10,
+                    "operation_id": "work:w1:1",
+                }
+            ).encode("utf-8"),
+        )
+    )
+
+    assert store.updated == 0
+    assert store.done == 0

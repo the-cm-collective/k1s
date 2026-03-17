@@ -16,7 +16,7 @@ from ae.config.transport import GatewayJetStreamConfig, check_nats_connectivity
 from ae.gateway.spool import GatewaySpool
 from ae.ha.fencing import MutationEnvelope, SQLiteFenceStore, merge_envelope, parse_envelope
 from ae.ingress.edge_local import build_edge_local_renderer
-from ae.observability.http_api import record_route_bundle_apply
+from ae.observability.http_api import record_ha_fence_event, record_route_bundle_apply
 from ae.transport import (
     hub_caps_subject,
     hub_lease_acquire_subject,
@@ -385,6 +385,13 @@ class SiteGateway:
             LOGGER.warning("route bundle missing fencing envelope site=%s", self._site_id)
             return
         decision = self._fence.begin(self._fence_scope, envelope)
+        _record_fence_decision(
+            "gateway.route_bundle",
+            decision,
+            envelope,
+            site_id=self._site_id,
+            scope=self._fence_scope,
+        )
         if decision.stale:
             LOGGER.warning(
                 "route bundle rejected stale epoch site=%s op=%s",
@@ -486,6 +493,13 @@ class SiteGateway:
                 LOGGER.warning("work.pull item missing fencing envelope site=%s", self._site_id)
                 continue
             decision = self._fence.begin(self._fence_scope, envelope)
+            _record_fence_decision(
+                "gateway.work_pull",
+                decision,
+                envelope,
+                site_id=self._site_id,
+                scope=self._fence_scope,
+            )
             lease_id = str(lease_ids[idx]) if idx < len(lease_ids) and lease_ids[idx] else ""
             if decision.accepted:
                 if not self._dispatch_work(item, envelope):
@@ -543,6 +557,13 @@ class SiteGateway:
                     pass
                 continue
             decision = self._fence.begin(self._fence_scope, envelope)
+            _record_fence_decision(
+                "gateway.work_js",
+                decision,
+                envelope,
+                site_id=self._site_id,
+                scope=self._fence_scope,
+            )
             if decision.stale or decision.duplicate:
                 try:
                     js_msg.ack_sync()
@@ -790,6 +811,13 @@ class SiteGateway:
             self._schedule_lease_retry(now, "missing_envelope")
             return False
         decision = self._fence.begin(self._fence_scope, envelope)
+        _record_fence_decision(
+            "gateway.lease_acquire",
+            decision,
+            envelope,
+            site_id=self._site_id,
+            scope=self._fence_scope,
+        )
         if decision.stale:
             LOGGER.warning("lease acquire rejected stale epoch op=%s", envelope.operation_id)
             self._lease_acquire_request_id = None
@@ -848,6 +876,13 @@ class SiteGateway:
             self._next_renew_at = now + 1.0
             return
         decision = self._fence.begin(self._fence_scope, envelope)
+        _record_fence_decision(
+            "gateway.lease_renew",
+            decision,
+            envelope,
+            site_id=self._site_id,
+            scope=self._fence_scope,
+        )
         if decision.stale:
             LOGGER.warning("lease renew rejected stale epoch op=%s", envelope.operation_id)
             self._lease_renew_request_id = None
@@ -1008,6 +1043,35 @@ def _gateway_fence_db_path(spool_path: Path) -> Path:
     if raw:
         return Path(raw)
     return Path(spool_path).with_name("fence.db")
+
+
+def _record_fence_decision(
+    surface: str,
+    decision,
+    envelope: MutationEnvelope,
+    *,
+    site_id: str,
+    scope: str,
+) -> None:
+    current = getattr(decision, "current", None)
+    current_epoch = int(getattr(current, "controller_epoch", 0) or 0)
+    if decision.stale:
+        record_ha_fence_event(surface, stale=True)
+        return
+    if decision.duplicate:
+        record_ha_fence_event(surface, duplicate=True)
+        return
+    if decision.accepted and int(envelope.controller_epoch) > current_epoch:
+        record_ha_fence_event(surface, epoch_advanced=True)
+        LOGGER.info(
+            "ha fence epoch advanced surface=%s site=%s scope=%s from=%s to=%s controller=%s",
+            surface,
+            site_id,
+            scope,
+            current_epoch,
+            envelope.controller_epoch,
+            envelope.controller_id,
+        )
 
 
 def _work_key(payload: dict) -> str | None:

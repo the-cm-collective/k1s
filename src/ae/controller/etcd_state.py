@@ -38,7 +38,7 @@ from ae.controller.state import (
     WorkQueueLease,
     SQLiteStateStore,
 )
-from ae.ha.fencing import work_operation
+from ae.ha.fencing import parse_envelope, work_operation
 from ae.runtime import RuntimeResult
 
 
@@ -1187,6 +1187,50 @@ class EtcdStateStore(SQLiteStateStore):
                 rec["updated_at"] = now_iso
                 self._put_json(key, rec)
                 updated += 1
+        return updated
+
+    def ack_work_items(self, ack_items: list[dict]) -> int:
+        if not ack_items:
+            return 0
+        now_iso = _now_iso()
+        updated = 0
+        rows = self._list_prefix(self._k("work_queue"))
+        by_lease_id: dict[str, tuple[str, dict[str, Any], int]] = {}
+        for key, rec, rev in rows:
+            lease_id = str(rec.get("lease_id") or "").strip()
+            if lease_id:
+                by_lease_id[lease_id] = (key, rec, rev)
+        for item in ack_items:
+            if not isinstance(item, dict):
+                continue
+            lease_id = str(item.get("lease_id") or "").strip()
+            if not lease_id:
+                continue
+            envelope = parse_envelope(item)
+            if envelope is None:
+                continue
+            queued = by_lease_id.get(lease_id)
+            if queued is None:
+                continue
+            key, rec, _rev = queued
+            queued_envelope = parse_envelope(rec.get("payload") or {})
+            if queued_envelope != envelope:
+                continue
+            work_id = str(rec.get("work_id") or "")
+            if item.get("work_id") not in {None, "", work_id}:
+                continue
+            try:
+                ack_attempt = int(item.get("attempt") or 0)
+            except Exception:
+                ack_attempt = 0
+            attempt = int(rec.get("attempt") or 0)
+            if ack_attempt not in {0, attempt}:
+                continue
+            rec["state"] = "Acked"
+            rec["acked_at"] = now_iso
+            rec["updated_at"] = now_iso
+            self._put_json(key, rec)
+            updated += 1
         return updated
 
     # --- Site ingress endpoints ----------------------------------------
