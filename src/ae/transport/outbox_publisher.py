@@ -28,10 +28,12 @@ class OutboxPublisher:
         nats_url: str,
         nats_creds=None,
         config: OutboxPublisherConfig | None = None,
+        authority=None,
     ) -> None:
         self._store = store
         self._client = NatsClient(url=nats_url, creds=nats_creds, name="k1s-outbox")
         self._config = config or OutboxPublisherConfig(interval_s=0.5, batch_size=100)
+        self._authority = authority
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._started = False
         self._stop = False
@@ -63,10 +65,14 @@ class OutboxPublisher:
             time.sleep(self._config.interval_s)
 
     def run_once(self) -> None:
+        if self._authority is not None and not self._authority.snapshot().is_leader:
+            return
         entries = self._store.list_outbox_unpublished(limit=self._config.batch_size)
         if not entries:
             return
         for entry in entries:
+            if self._authority is not None and not self._authority.snapshot().is_leader:
+                return
             msg_id = f"{entry.work_id}:{entry.attempt}"
             headers = {"Nats-Msg-Id": msg_id}
             subject = f"k1s.v1.work.site.{entry.site_id}"

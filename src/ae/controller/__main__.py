@@ -1751,6 +1751,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 creds=transport.nats_creds,
                 js_provision=transport.backend == "nats-js",
                 edge_renderer=_edge_renderer,
+                authority=authority,
             )
             _nats_ingress.start()
         except Exception as exc:  # noqa: BLE001
@@ -1778,6 +1779,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     nats_url=transport.nats_url,
                     nats_creds=transport.nats_creds,
                     config=OutboxPublisherConfig(interval_s=interval_s, batch_size=batch_size),
+                    authority=authority,
                 )
                 _outbox_publisher.start()
             except Exception as exc:  # noqa: BLE001
@@ -1849,6 +1851,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                         nats_url=transport.nats_url,
                         nats_creds=transport.nats_creds,
                         config=RouteBundlePublisherConfig(interval_s=bundle_interval),
+                        authority=authority,
                     )
                     _route_bundle.start()
             except Exception as exc:  # noqa: BLE001
@@ -3040,6 +3043,28 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     except KeyboardInterrupt:
         pass
     finally:
+        for component in (
+            _route_bundle,
+            _outbox_publisher,
+            _nats_ingress,
+            _telemetry_ingress,
+            _js_monitor,
+            _work_watchdog,
+        ):
+            if component is None:
+                continue
+            try:
+                stop_fn = getattr(component, "stop", None) or getattr(component, "close", None)
+                if callable(stop_fn):
+                    stop_fn()
+            except Exception:
+                pass
+        if _agent_api_server is not None:
+            try:
+                _agent_api_server.shutdown()
+                _agent_api_server.server_close()
+            except Exception:
+                pass
         if authority is not None:
             authority.stop()
         if api_server is not None:

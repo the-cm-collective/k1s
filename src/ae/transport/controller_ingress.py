@@ -49,6 +49,7 @@ class NatsControllerIngress:
         renew_after_ms: int | None = None,
         js_provision: bool = False,
         edge_renderer=None,
+        authority=None,
     ) -> None:
         self._store = store
         self._client = NatsClient(url=url, creds=creds, name="k1s-controller-ingress")
@@ -77,6 +78,13 @@ class NatsControllerIngress:
         self._core_proxy_port_min = int(os.getenv("AE_CORE_PROXY_PORT_MIN", "18080") or 18080)
         self._core_proxy_port_max = int(os.getenv("AE_CORE_PROXY_PORT_MAX", "18999") or 18999)
         self._edge_renderer = edge_renderer
+        self._authority = authority
+        self._authority_poll_s = max(
+            0.1,
+            float(os.getenv("AE_CONTROLLER_INGRESS_AUTHORITY_POLL_SECONDS", "0.5") or 0.5),
+        )
+        self._authority_stop = threading.Event()
+        self._authority_thread: threading.Thread | None = None
         self._subs: list[str] = []
 
     def start(self) -> None:
@@ -85,6 +93,52 @@ class NatsControllerIngress:
         except NatsClientError as exc:
             LOGGER.warning("nats ingress connect failed: %s", exc)
             return
+        self.sync_authority()
+        if self._authority is not None:
+            self._authority_thread = threading.Thread(target=self._watch_authority, daemon=True)
+            self._authority_thread.start()
+        LOGGER.info("nats ingress started (%s subs)", len(self._subs))
+
+    def close(self) -> None:
+        self._authority_stop.set()
+        if self._authority_thread is not None:
+            try:
+                self._authority_thread.join(timeout=1.0)
+            except Exception:
+                pass
+        for sid in self._subs:
+            try:
+                self._client.unsubscribe(sid)
+            except Exception:
+                pass
+        self._subs = []
+        try:
+            self._client.close()
+        except Exception:
+            pass
+
+    def sync_authority(self) -> None:
+        if self._authority is None:
+            if not self._subs:
+                self._subscribe_mutating()
+            return
+        snapshot = self._authority.snapshot()
+        if snapshot.leader_info is not None and snapshot.leader_info.controller_epoch:
+            self._epoch = int(snapshot.leader_info.controller_epoch)
+        if snapshot.is_leader:
+            if not self._subs:
+                self._subscribe_mutating()
+        elif self._subs:
+            self._unsubscribe_mutating()
+
+    def _watch_authority(self) -> None:
+        while not self._authority_stop.wait(self._authority_poll_s):
+            try:
+                self.sync_authority()
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("nats ingress authority sync failed: %s", exc)
+
+    def _subscribe_mutating(self) -> None:
         self._subs.append(
             self._client.subscribe("k1s.v1.site.*.lease.acquire", self._on_lease_acquire)
         )
@@ -98,21 +152,50 @@ class NatsControllerIngress:
             self._client.subscribe("k1s.v1.site.*.work.ack", self._on_work_ack)
         )
         self._subs.append(self._client.subscribe("k1s.v1.site.*.result", self._on_result))
-        LOGGER.info("nats ingress started (%s subs)", len(self._subs))
 
-    def close(self) -> None:
+    def _unsubscribe_mutating(self) -> None:
         for sid in self._subs:
             try:
                 self._client.unsubscribe(sid)
             except Exception:
                 pass
         self._subs = []
-        try:
-            self._client.close()
-        except Exception:
-            pass
+
+    def _is_leader(self) -> bool:
+        if self._authority is None:
+            return True
+        snapshot = self._authority.snapshot()
+        if snapshot.leader_info is not None and snapshot.leader_info.controller_epoch:
+            self._epoch = int(snapshot.leader_info.controller_epoch)
+        return bool(snapshot.is_leader)
+
+    def _leader_hint(self) -> dict[str, object]:
+        if self._authority is None:
+            return {}
+        snapshot = self._authority.snapshot()
+        info = snapshot.leader_info
+        if info is None:
+            return {}
+        payload: dict[str, object] = {
+            "controller_id": info.controller_id,
+            "controller_epoch": info.controller_epoch,
+        }
+        if info.advertise_addr:
+            payload["advertise_addr"] = info.advertise_addr
+        return payload
 
     def _on_lease_acquire(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            self._reply(
+                msg,
+                {
+                    "accepted": False,
+                    "reason": "not_leader",
+                    "controller_epoch": self._epoch,
+                    **self._leader_hint(),
+                },
+            )
+            return
         payload = self._safe_json(msg)
         site_id = _site_id_from_subject(msg.subject) or str(payload.get("site_id") or "")
         node_id = str(payload.get("node_id") or "").strip()
@@ -191,6 +274,17 @@ class NatsControllerIngress:
         self._reply(msg, resp.as_dict())
 
     def _on_lease_renew(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            self._reply(
+                msg,
+                {
+                    "accepted": False,
+                    "reason": "not_leader",
+                    "controller_epoch": self._epoch,
+                    **self._leader_hint(),
+                },
+            )
+            return
         payload = self._safe_json(msg)
         site_id = _site_id_from_subject(msg.subject) or str(payload.get("site_id") or "")
         node_id = str(payload.get("node_id") or "").strip()
@@ -250,6 +344,8 @@ class NatsControllerIngress:
         self._reply(msg, resp.as_dict())
 
     def _on_result(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            return
         payload = self._safe_json(msg)
         work_id = payload.get("work_id")
         status = payload.get("status")
@@ -314,6 +410,17 @@ class NatsControllerIngress:
             LOGGER.info("site_result site=%s payload=%s", site_id, payload)
 
     def _on_work_pull(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            self._reply(
+                msg,
+                {
+                    "accepted": False,
+                    "reason": "not_leader",
+                    "controller_epoch": self._epoch,
+                    **self._leader_hint(),
+                },
+            )
+            return
         payload = self._safe_json(msg)
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         if not msg.reply:
@@ -346,6 +453,17 @@ class NatsControllerIngress:
             self._reply(msg, {"accepted": False, "reason": str(exc)})
 
     def _on_work_ack(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            self._reply(
+                msg,
+                {
+                    "accepted": False,
+                    "reason": "not_leader",
+                    "controller_epoch": self._epoch,
+                    **self._leader_hint(),
+                },
+            )
+            return
         payload = self._safe_json(msg)
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         lease_ids = payload.get("lease_ids") or []

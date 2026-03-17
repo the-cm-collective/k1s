@@ -42,10 +42,12 @@ class RouteBundlePublisher:
         nats_url: str,
         nats_creds=None,
         config: RouteBundlePublisherConfig | None = None,
+        authority=None,
     ) -> None:
         self._store = store
         self._client = NatsClient(url=nats_url, creds=nats_creds, name="k1s-route-bundle")
         self._config = config or RouteBundlePublisherConfig()
+        self._authority = authority
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._started = False
         self._stop = False
@@ -79,10 +81,14 @@ class RouteBundlePublisher:
             time.sleep(self._config.interval_s)
 
     def run_once(self) -> None:
+        if self._authority is not None and not self._authority.snapshot().is_leader:
+            return
         site_ids = self._store.list_route_bundle_site_ids()
         LOGGER.debug("route bundle discovered sites=%s", site_ids)
         now = time.monotonic()
         for site_id in site_ids:
+            if self._authority is not None and not self._authority.snapshot().is_leader:
+                return
             state = self._state.setdefault(site_id, _BundleState())
             routes, policies, service_endpoints = _collect_bundle_payload(
                 self._store, site_id
