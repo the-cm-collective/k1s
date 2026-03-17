@@ -11,9 +11,11 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 from ae.config.transport import TransportConfig, check_nats_connectivity
 from ae.controller.spec import AppManifest
+from ae.ha.fencing import SQLiteFenceStore, parse_envelope
 from ae.runtime import PodState, RuntimeAdapter, RuntimeResult
 import requests
 
@@ -52,15 +54,64 @@ def _parse_manifest(payload: dict) -> AppManifest:
     return AppManifest.model_validate(payload)
 
 
+def _ha_mode_enabled() -> bool:
+    return str(os.getenv("AE_HA_MODE", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _agent_fence_db_path() -> Path:
+    raw = os.getenv("AE_AGENT_FENCE_DB")
+    if raw:
+        return Path(raw)
+    return Path("/var/lib/ae/node/fence.db")
+
+
 class AgentHandler(BaseHTTPRequestHandler):
     runtime: RuntimeAdapter = None  # type: ignore[assignment]
     volume_manager = None
     node_id: str | None = None
     fabric_sessions: dict[str, dict] = {}
     fabric_lock = threading.Lock()
+    fence_store: SQLiteFenceStore | None = None
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
         LOGGER.info("%s - %s", self.address_string(), format % args)
+
+    @classmethod
+    def _ensure_fence_store(cls) -> SQLiteFenceStore:
+        if cls.fence_store is None:
+            cls.fence_store = SQLiteFenceStore(_agent_fence_db_path())
+            cls.fence_store.init()
+        return cls.fence_store
+
+    def _fence_scope(self, kind: str) -> str:
+        node_id = str(self.node_id or "").strip() or str(os.getenv("AE_NODE_ID") or "unknown-node")
+        return f"{kind}:{node_id}"
+
+    def _stale_response(self, decision) -> None:
+        current = decision.current
+        body = {"error": "stale_epoch"}
+        if current is not None:
+            body["controller_id"] = current.controller_id
+            body["controller_epoch"] = current.controller_epoch
+        _json_response(self, 409, body)
+
+    def _begin_mutation(self, payload: dict, scope: str):
+        if not _ha_mode_enabled():
+            return "accept", None, None
+        envelope = parse_envelope(payload)
+        if envelope is None:
+            _json_response(self, 409, {"error": "missing_fencing_envelope"})
+            return "reject", None, None
+        decision = self._ensure_fence_store().begin(scope, envelope)
+        if decision.stale:
+            self._stale_response(decision)
+            return "reject", envelope, decision
+        return decision.status, envelope, decision
+
+    def _commit_mutation(self, scope: str, envelope) -> None:
+        if envelope is None:
+            return
+        self._ensure_fence_store().commit(scope, envelope)
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib naming
         length = int(self.headers.get("Content-Length", "0"))
@@ -75,6 +126,10 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         try:
             if self.path == "/v1/fabric/ensure_session":
+                scope = self._fence_scope("fabric")
+                status, envelope, _decision = self._begin_mutation(payload, scope)
+                if status == "reject":
+                    return
                 session = payload.get("session")
                 if not isinstance(session, dict):
                     _json_response(self, 400, {"error": "session payload required"})
@@ -96,6 +151,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                         {"error": "wg_ephemeral mode disabled (set AE_FABRIC_WG_ENABLE=1)"},
                     )
                     return
+                if status == "duplicate":
+                    with self.fabric_lock:
+                        self.fabric_sessions[session_id] = {
+                            "session_id": session_id,
+                            "node_id": str(payload.get("node_id") or self.node_id or ""),
+                            "mode": mode,
+                            "policy_mode": str(session.get("policy_mode") or ""),
+                            "ifname": str(session.get("ifname") or ""),
+                            "member_ips": dict(session.get("member_ips") or {}),
+                            "allowed_rules": list(session.get("allowed_rules") or []),
+                            "expires_at": str(session.get("expires_at") or ""),
+                            "updated_at": time.time(),
+                        }
+                    _json_response(
+                        self,
+                        200,
+                        {"ok": True, "session_id": session_id, "mode": mode, "duplicate": True},
+                    )
+                    return
                 with self.fabric_lock:
                     self.fabric_sessions[session_id] = {
                         "session_id": session_id,
@@ -108,19 +182,48 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "expires_at": str(session.get("expires_at") or ""),
                         "updated_at": time.time(),
                     }
+                self._commit_mutation(scope, envelope)
                 _json_response(self, 200, {"ok": True, "session_id": session_id, "mode": mode})
                 return
             if self.path == "/v1/fabric/teardown_session":
+                scope = self._fence_scope("fabric")
+                status, envelope, _decision = self._begin_mutation(payload, scope)
+                if status == "reject":
+                    return
                 session_id = str(payload.get("session_id") or "").strip()
                 if not session_id:
                     _json_response(self, 400, {"error": "session_id required"})
                     return
+                if status == "duplicate":
+                    _json_response(self, 200, {"ok": True, "removed": False, "duplicate": True})
+                    return
                 removed = False
                 with self.fabric_lock:
                     removed = self.fabric_sessions.pop(session_id, None) is not None
+                self._commit_mutation(scope, envelope)
                 _json_response(self, 200, {"ok": True, "removed": removed})
                 return
             if self.path == "/v1/ensure_app":
+                scope = self._fence_scope("runtime")
+                status, envelope, _decision = self._begin_mutation(payload, scope)
+                if status == "reject":
+                    return
+                if status == "duplicate":
+                    _json_response(
+                        self,
+                        200,
+                        {
+                            "revision": int(payload.get("revision", 0)),
+                            "created": 0,
+                            "updated": 0,
+                            "removed": 0,
+                            "pod_states": [],
+                            "replica_states": [],
+                            "ok": True,
+                            "duplicate": True,
+                        },
+                    )
+                    return
                 manifest = _parse_manifest(payload.get("manifest", {}))
                 pod_names = payload.get("pod_names") or payload.get("replica_ids")
                 replica_id = None
@@ -155,6 +258,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                                 removed=0,
                                 pod_states=pending_states,
                             )
+                            self._commit_mutation(scope, envelope)
                             _json_response(self, 200, _result_to_dict(result))
                             return
                         raise
@@ -166,16 +270,33 @@ class AgentHandler(BaseHTTPRequestHandler):
                     pod_names=pod_names,
                     node_id=payload.get("node_id"),
                 )
+                self._commit_mutation(scope, envelope)
                 _json_response(self, 200, _result_to_dict(result))
                 return
             if self.path == "/v1/remove_app":
+                scope = self._fence_scope("runtime")
+                status, envelope, _decision = self._begin_mutation(payload, scope)
+                if status == "reject":
+                    return
+                if status == "duplicate":
+                    _json_response(self, 200, {"removed": 0, "ok": True, "duplicate": True})
+                    return
                 removed = self.runtime.remove_app(payload.get("app", ""))
+                self._commit_mutation(scope, envelope)
                 _json_response(self, 200, {"removed": removed})
                 return
             if self.path == "/v1/remove_old":
+                scope = self._fence_scope("runtime")
+                status, envelope, _decision = self._begin_mutation(payload, scope)
+                if status == "reject":
+                    return
+                if status == "duplicate":
+                    _json_response(self, 200, {"removed": 0, "ok": True, "duplicate": True})
+                    return
                 removed = self.runtime.remove_old_revisions(
                     payload.get("app", ""), int(payload.get("keep_revision", 0))
                 )
+                self._commit_mutation(scope, envelope)
                 _json_response(self, 200, {"removed": removed})
                 return
             if self.path == "/v1/exec":
@@ -756,6 +877,8 @@ def serve(
     )
     AgentHandler.runtime = runtime
     AgentHandler.node_id = node_id or socket.gethostname()
+    AgentHandler.fence_store = SQLiteFenceStore(_agent_fence_db_path())
+    AgentHandler.fence_store.init()
     if os.getenv("AE_ENABLE_NETFS", "0") == "1":
         try:
             from pathlib import Path
