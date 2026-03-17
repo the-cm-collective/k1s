@@ -204,3 +204,40 @@ def test_authority_service_acquires_after_existing_leader_disappears(monkeypatch
     assert snapshot.is_leader is True
     assert snapshot.leader_info is not None
     assert snapshot.leader_info.controller_id == "ctrl-a"
+
+
+def test_authority_service_fails_over_between_two_controllers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("ae.controller.authority.random.uniform", lambda low, high: low)
+    kv = _FakeKvClient()
+    leases = _FakeLeaseClient()
+    leader = ControllerAuthorityService(config=_config(), kv_client=kv, lease_client=leases)
+    standby = ControllerAuthorityService(
+        config=_config(controller_id="ctrl-b", advertise_addr="http://ctrl-b:9000"),
+        kv_client=kv,
+        lease_client=leases,
+    )
+
+    leader.run_once(now_monotonic=0.0)
+    standby.run_once(now_monotonic=0.0)
+    leader_initial = leader.snapshot()
+    standby_initial = standby.snapshot()
+
+    assert leader_initial.is_leader is True
+    assert leader_initial.leader_info is not None
+    assert standby_initial.is_leader is False
+    assert standby_initial.leader_info is not None
+    assert standby_initial.leader_info.controller_id == "ctrl-a"
+
+    leases.fail_keepalive.add(leader_initial.leader_info.lease_id)
+    leader.run_once(now_monotonic=6.0)
+    kv.delete("k1s/test/controlplane/leader")
+    standby.run_once(now_monotonic=6.0)
+    failed_over = standby.snapshot()
+
+    assert leader.leader_lost.is_set() is True
+    assert failed_over.is_leader is True
+    assert failed_over.leader_info is not None
+    assert failed_over.leader_info.controller_id == "ctrl-b"
+    assert failed_over.leader_info.controller_epoch > leader_initial.leader_info.controller_epoch

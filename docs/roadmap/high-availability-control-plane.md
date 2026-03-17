@@ -19,7 +19,7 @@ The repo already contains several of the primitives needed for this path:
 - NATS Core and JetStream transport modes
 - outbox-based dispatch and gateway spool durability
 
-What it does not yet have is one complete HA authority model. Today the controller still imports local `specs/` files into the shared registry, mutating paths are not fenced end-to-end, and transport participants do not yet reject stale leaders. This roadmap closes those gaps in a fixed order.
+The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes apishim workload mutation explicitly read-only until `H4`. What it does not yet have is one complete fenced HA authority model: executors do not yet reject stale epochs, and apishim still does not share the same `etcd` revision/watch backend as the controller. This roadmap closes those remaining gaps in a fixed order.
 
 The two design rules for the whole program are:
 
@@ -78,7 +78,8 @@ Primary outcomes:
 
 - `etcd`-backed shared controller state is the only authoritative desired-state registry in HA mode
 - file import from `specs/` is explicitly documented as dev-only for HA deployments
-- shim, CLI, and future provider-edge writers all land intent into the same shared registry
+- controller-native CLI and controller API writers land intent into the same shared registry in HA mode
+- apishim remains read/list/watch-capable in HA mode, but workload mutation is rejected until `H4`
 - revision and generation semantics are shared across controller replicas
 
 ### H1: Leader election and controller epochs
@@ -92,6 +93,7 @@ Primary outcomes:
 - the winner becomes the only mutating controller until its lease expires or is revoked
 - every leadership win yields a monotonically increasing controller epoch derived from `etcd`
 - non-leaders remain hot standbys and never publish mutating work
+- followers reject leader-only controller mutations with leader hints and stop mutating background loops on authority loss
 
 ### H2: Fencing and idempotent mutation envelopes
 
@@ -116,6 +118,7 @@ Primary outcomes:
 - outbox dispatch re-checks leadership before publish and after failover
 - JetStream remains the durable hub path with `R=3` streams for critical subjects
 - transport degradation may pause or delay work, but it does not corrupt ownership because truth remains in `etcd`
+- the first HA slice already moves mutating NATS request/reply bindings to the active leader; full replay safety still depends on `H2`
 
 ### H4: Shared API and apishim convergence
 
@@ -128,6 +131,7 @@ Primary outcomes:
 - the current Postgres-backed HA story is treated as transitional rather than the target end state
 - list/watch behavior aligns with the same monotonic revision model used by the core controller
 - controller and shim no longer depend on different durable authority backends in HA mode
+- before `H4`, apishim workload mutation in HA mode stays intentionally read-only rather than pretending to share controller authority
 
 ### H5: Control-plane operations and recovery patterns
 

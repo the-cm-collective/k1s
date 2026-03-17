@@ -222,6 +222,13 @@ Controller state store
 - Default: SQLite at `state/controller.db`.
 - Postgres: set `AE_STATE_DSN=postgresql://user:pass@host:5432/dbname` (shim and controller share the same DSN when present). SQLite path can still be overridden via `AE_STATE_DB` for single-node dev.
 
+HA control-plane first slice
+- Enable HA with `AE_HA_MODE=1`, a stable `AE_CONTROLLER_ID`, `AE_CONTROLLER_ADVERTISE_ADDR`, shared `AE_ETCD_ENDPOINTS`, and the same `AE_ETCD_PREFIX` on every controller.
+- In HA mode, controllers stop importing local `specs/` files and follower replicas reject leader-only controller mutations with `not_leader`.
+- Controller-native writes update shared desired state only; followers do not reconcile, publish outbox work, or bind mutating NATS request/reply subjects.
+- API shim remains usable for read/list/watch, exec, port-forward, session token minting, and authorization review endpoints, but workload create/update/patch/delete is rejected until `H4`.
+- If controller authority is uncertain or `etcd` quorum is lost, the control plane degrades to read-only.
+
 Release notes quick links
 - Compatibility matrix: `docs/reference/apishim-compatibility-matrix.md` (uploaded with releases)
 - OpenAPI artifacts: `/openapi/v2` and `/openapi/v3` are exported during release and attached as `openapi-schemas`.

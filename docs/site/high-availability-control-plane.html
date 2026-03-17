@@ -742,7 +742,7 @@
 <li>NATS Core and JetStream transport modes</li>
 <li>outbox-based dispatch and gateway spool durability</li>
 </ul>
-<p>What it does not yet have is one complete HA authority model. Today the controller still imports local <code>specs/</code> files into the shared registry, mutating paths are not fenced end-to-end, and transport participants do not yet reject stale leaders. This roadmap closes those gaps in a fixed order.</p>
+<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes apishim workload mutation explicitly read-only until <code>H4</code>. What it does not yet have is one complete fenced HA authority model: executors do not yet reject stale epochs, and apishim still does not share the same <code>etcd</code> revision/watch backend as the controller. This roadmap closes those remaining gaps in a fixed order.</p>
 <p>The two design rules for the whole program are:</p>
 <ul>
 <li>watches and messages trigger work; only <code>etcd</code> transactions authorize work</li>
@@ -796,7 +796,8 @@
 <ul>
 <li><code>etcd</code>-backed shared controller state is the only authoritative desired-state registry in HA mode</li>
 <li>file import from <code>specs/</code> is explicitly documented as dev-only for HA deployments</li>
-<li>shim, CLI, and future provider-edge writers all land intent into the same shared registry</li>
+<li>controller-native CLI and controller API writers land intent into the same shared registry in HA mode</li>
+<li>apishim remains read/list/watch-capable in HA mode, but workload mutation is rejected until <code>H4</code></li>
 <li>revision and generation semantics are shared across controller replicas</li>
 </ul>
 <h3 id="h1-leader-election-and-controller-epochs">H1: Leader election and controller epochs</h3>
@@ -810,6 +811,7 @@
 <li>the winner becomes the only mutating controller until its lease expires or is revoked</li>
 <li>every leadership win yields a monotonically increasing controller epoch derived from <code>etcd</code></li>
 <li>non-leaders remain hot standbys and never publish mutating work</li>
+<li>followers reject leader-only controller mutations with leader hints and stop mutating background loops on authority loss</li>
 </ul>
 <h3 id="h2-fencing-and-idempotent-mutation-envelopes">H2: Fencing and idempotent mutation envelopes</h3>
 <p>Goal:</p>
@@ -834,6 +836,7 @@
 <li>outbox dispatch re-checks leadership before publish and after failover</li>
 <li>JetStream remains the durable hub path with <code>R=3</code> streams for critical subjects</li>
 <li>transport degradation may pause or delay work, but it does not corrupt ownership because truth remains in <code>etcd</code></li>
+<li>the first HA slice already moves mutating NATS request/reply bindings to the active leader; full replay safety still depends on <code>H2</code></li>
 </ul>
 <h3 id="h4-shared-api-and-apishim-convergence">H4: Shared API and apishim convergence</h3>
 <p>Goal:</p>
@@ -846,6 +849,7 @@
 <li>the current Postgres-backed HA story is treated as transitional rather than the target end state</li>
 <li>list/watch behavior aligns with the same monotonic revision model used by the core controller</li>
 <li>controller and shim no longer depend on different durable authority backends in HA mode</li>
+<li>before <code>H4</code>, apishim workload mutation in HA mode stays intentionally read-only rather than pretending to share controller authority</li>
 </ul>
 <h3 id="h5-control-plane-operations-and-recovery-patterns">H5: Control-plane operations and recovery patterns</h3>
 <p>Goal:</p>
@@ -884,7 +888,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 15:27:58</span>
+        <span>Built 2026-03-17 15:08:41</span>
       </div>
     </footer>
     <script>
