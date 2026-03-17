@@ -223,7 +223,11 @@ class WorkOutboxEntry:
     attempt: int
     site_id: str
     payload: dict
+    publish_subject: str
+    publish_msg_id: str
     publish_attempts: int
+    last_publish_at: datetime | None = None
+    last_publish_error: str | None = None
 
 
 @dataclass(slots=True)
@@ -630,6 +634,9 @@ class SQLiteStateStore:
             self._ensure_column(conn, "work_ledger", "controller_id", "TEXT")
             self._ensure_column(conn, "work_ledger", "controller_epoch", "INTEGER")
             self._ensure_column(conn, "work_ledger", "operation_id", "TEXT")
+            self._ensure_column(conn, "work_outbox", "publish_subject", "TEXT")
+            self._ensure_column(conn, "work_outbox", "publish_msg_id", "TEXT")
+            self._ensure_column(conn, "work_outbox", "last_publish_error", "TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS inference_cells (
@@ -2802,6 +2809,8 @@ class SQLiteStateStore:
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         payload_json = json.dumps(payload)
+        publish_subject = _outbox_publish_subject(site_id)
+        publish_msg_id = _outbox_publish_msg_id(work_id, attempt, payload)
         with self._connect() as conn:
             conn.execute(
                 "DELETE FROM work_outbox WHERE work_id = ? AND attempt = ?",
@@ -2810,17 +2819,20 @@ class SQLiteStateStore:
             conn.execute(
                 """
                 INSERT INTO work_outbox
-                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
-                   last_publish_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (work_id, attempt, site_id, payload_json, publish_subject, publish_msg_id,
+                   state, publish_attempts, last_publish_at, last_publish_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     work_id,
                     int(attempt),
                     site_id,
                     payload_json,
+                    publish_subject,
+                    publish_msg_id,
                     "Unpublished",
                     0,
+                    None,
                     None,
                     now,
                     now,
@@ -2832,7 +2844,8 @@ class SQLiteStateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT work_id, attempt, site_id, payload_json, publish_attempts
+                SELECT work_id, attempt, site_id, payload_json, publish_subject,
+                       publish_msg_id, publish_attempts, last_publish_at, last_publish_error
                 FROM work_outbox
                 WHERE state = 'Unpublished'
                 ORDER BY created_at
@@ -2849,7 +2862,15 @@ class SQLiteStateStore:
                     attempt=int(row[1]),
                     site_id=str(row[2]),
                     payload=payload,
-                    publish_attempts=int(row[4] or 0),
+                    publish_subject=str(row[4] or _outbox_publish_subject(str(row[2]))),
+                    publish_msg_id=str(
+                        row[5] or _outbox_publish_msg_id(str(row[0]), int(row[1]), payload)
+                    ),
+                    publish_attempts=int(row[6] or 0),
+                    last_publish_at=(
+                        datetime.fromisoformat(str(row[7])) if row[7] else None
+                    ),
+                    last_publish_error=str(row[8]) if row[8] else None,
                 )
             )
         return entries
@@ -2878,23 +2899,30 @@ class SQLiteStateStore:
                 """
                 UPDATE work_outbox
                 SET state = ?, publish_attempts = publish_attempts + 1,
-                    last_publish_at = ?, updated_at = ?
+                    last_publish_at = ?, last_publish_error = NULL, updated_at = ?
                 WHERE work_id = ? AND attempt = ?
                 """,
                 ("Published", now, now, work_id, int(attempt)),
             )
             conn.commit()
 
-    def record_outbox_publish_attempt(self, work_id: str, attempt: int) -> None:
+    def record_outbox_publish_attempt(
+        self,
+        work_id: str,
+        attempt: int,
+        *,
+        error: str | None = None,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE work_outbox
-                SET publish_attempts = publish_attempts + 1, last_publish_at = ?, updated_at = ?
+                SET publish_attempts = publish_attempts + 1, last_publish_at = ?,
+                    last_publish_error = ?, updated_at = ?
                 WHERE work_id = ? AND attempt = ?
                 """,
-                (now, now, work_id, int(attempt)),
+                (now, error, now, work_id, int(attempt)),
             )
             conn.commit()
 
@@ -3154,17 +3182,20 @@ class SQLiteStateStore:
             conn.execute(
                 """
                 INSERT INTO work_outbox
-                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
-                   last_publish_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (work_id, attempt, site_id, payload_json, publish_subject, publish_msg_id,
+                   state, publish_attempts, last_publish_at, last_publish_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     work_id,
                     new_attempt,
                     site_id,
                     json.dumps(payload),
+                    _outbox_publish_subject(site_id),
+                    _outbox_publish_msg_id(work_id, new_attempt, payload),
                     "Unpublished",
                     0,
+                    None,
                     None,
                     now_iso,
                     now_iso,
@@ -3172,6 +3203,14 @@ class SQLiteStateStore:
             )
             conn.commit()
             return new_attempt
+
+
+def _outbox_publish_subject(site_id: str) -> str:
+    return f"k1s.v1.work.site.{site_id}"
+
+
+def _outbox_publish_msg_id(work_id: str, attempt: int, payload: dict) -> str:
+    return str(payload.get("operation_id") or f"{work_id}:{attempt}")
 
     # --- Canary rollout state ----------------------------------------------
 

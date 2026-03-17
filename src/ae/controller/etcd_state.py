@@ -37,6 +37,8 @@ from ae.controller.state import (
     WorkOutboxEntry,
     WorkQueueLease,
     SQLiteStateStore,
+    _outbox_publish_msg_id,
+    _outbox_publish_subject,
 )
 from ae.ha.fencing import parse_envelope, work_operation
 from ae.runtime import RuntimeResult
@@ -1527,9 +1529,12 @@ class EtcdStateStore(SQLiteStateStore):
             "attempt": int(attempt),
             "site_id": site_id,
             "payload": payload,
+            "publish_subject": _outbox_publish_subject(site_id),
+            "publish_msg_id": _outbox_publish_msg_id(work_id, attempt, payload),
             "state": "Unpublished",
             "publish_attempts": 0,
             "last_publish_at": None,
+            "last_publish_error": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -1546,7 +1551,25 @@ class EtcdStateStore(SQLiteStateStore):
                 attempt=int(rec.get("attempt", 0)),
                 site_id=str(rec.get("site_id", "")),
                 payload=rec.get("payload") or {},
+                publish_subject=str(
+                    rec.get("publish_subject")
+                    or _outbox_publish_subject(str(rec.get("site_id", "")))
+                ),
+                publish_msg_id=str(
+                    rec.get("publish_msg_id")
+                    or _outbox_publish_msg_id(
+                        str(rec.get("work_id", "")),
+                        int(rec.get("attempt", 0)),
+                        rec.get("payload") or {},
+                    )
+                ),
                 publish_attempts=int(rec.get("publish_attempts", 0)),
+                last_publish_at=_dt_from_iso(rec.get("last_publish_at")),
+                last_publish_error=(
+                    str(rec.get("last_publish_error"))
+                    if rec.get("last_publish_error") is not None
+                    else None
+                ),
             )
             entries.append((str(rec.get("created_at", "")), entry))
         entries.sort(key=lambda e: (e[0], e[1].work_id, e[1].attempt))
@@ -1567,10 +1590,17 @@ class EtcdStateStore(SQLiteStateStore):
         rec["state"] = "Published"
         rec["publish_attempts"] = int(rec.get("publish_attempts", 0)) + 1
         rec["last_publish_at"] = now
+        rec["last_publish_error"] = None
         rec["updated_at"] = now
         self._put_json(key, rec)
 
-    def record_outbox_publish_attempt(self, work_id: str, attempt: int) -> None:
+    def record_outbox_publish_attempt(
+        self,
+        work_id: str,
+        attempt: int,
+        *,
+        error: str | None = None,
+    ) -> None:
         key = self._k("outbox", "work", work_id, str(attempt))
         rec, _ = self._get_json(key)
         if not rec:
@@ -1578,6 +1608,7 @@ class EtcdStateStore(SQLiteStateStore):
         now = _now_iso()
         rec["publish_attempts"] = int(rec.get("publish_attempts", 0)) + 1
         rec["last_publish_at"] = now
+        rec["last_publish_error"] = error
         rec["updated_at"] = now
         self._put_json(key, rec)
 

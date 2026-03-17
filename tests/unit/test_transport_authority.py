@@ -152,7 +152,16 @@ def test_outbox_publisher_skips_publish_until_leader(monkeypatch) -> None:
 
     class _Store:
         def list_outbox_unpublished(self, limit: int):
-            return [SimpleNamespace(work_id="w1", attempt=1, site_id="sea", payload={"ok": True})]
+            return [
+                SimpleNamespace(
+                    work_id="w1",
+                    attempt=1,
+                    site_id="sea",
+                    payload={"ok": True, "operation_id": "work:w1:1"},
+                    publish_subject="k1s.v1.work.site.sea",
+                    publish_msg_id="work:w1:1",
+                )
+            ]
 
         def mark_outbox_published(self, work_id: str, attempt: int) -> None:
             calls["published"] += 1
@@ -160,7 +169,7 @@ def test_outbox_publisher_skips_publish_until_leader(monkeypatch) -> None:
         def update_work_state(self, **kwargs) -> None:
             calls["state_updates"] += 1
 
-        def record_outbox_publish_attempt(self, work_id: str, attempt: int) -> None:
+        def record_outbox_publish_attempt(self, work_id: str, attempt: int, *, error=None) -> None:
             raise AssertionError("should not record failure in this test")
 
     publisher = OutboxPublisher(
@@ -176,8 +185,72 @@ def test_outbox_publisher_skips_publish_until_leader(monkeypatch) -> None:
     authority.is_leader = True
     publisher.run_once()
     assert len(publisher._client.published_js) == 1  # type: ignore[attr-defined]
+    _subject, _payload, headers = publisher._client.published_js[0]  # type: ignore[attr-defined]
+    assert headers == {"Nats-Msg-Id": "work:w1:1"}
     assert calls["published"] == 1
     assert calls["state_updates"] == 1
+
+
+def test_outbox_publisher_leaves_entry_unpublished_when_authority_lost_after_publish(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("ae.transport.outbox_publisher.NatsClient", _FakeNatsClient)
+
+    class _Authority:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def snapshot(self):
+            self.calls += 1
+            is_leader = self.calls < 3
+            return SimpleNamespace(
+                is_leader=is_leader,
+                leader_info=LeaderInfo(
+                    controller_id="ctrl-a" if is_leader else "ctrl-b",
+                    controller_epoch=9 if is_leader else 10,
+                    lease_id=501,
+                    advertise_addr="http://ctrl-a:9108",
+                    acquired_at=None,
+                    version="v1",
+                ),
+            )
+
+    authority = _Authority()
+    calls = {"published": 0, "state_updates": 0, "attempt_errors": []}
+
+    class _Store:
+        def list_outbox_unpublished(self, limit: int):
+            return [
+                SimpleNamespace(
+                    work_id="w1",
+                    attempt=1,
+                    site_id="sea",
+                    payload={"ok": True, "operation_id": "work:w1:1"},
+                    publish_subject="k1s.v1.work.site.sea",
+                    publish_msg_id="work:w1:1",
+                )
+            ]
+
+        def mark_outbox_published(self, work_id: str, attempt: int) -> None:
+            calls["published"] += 1
+
+        def update_work_state(self, **kwargs) -> None:
+            calls["state_updates"] += 1
+
+        def record_outbox_publish_attempt(self, work_id: str, attempt: int, *, error=None) -> None:
+            calls["attempt_errors"].append(error)
+
+    publisher = OutboxPublisher(
+        _Store(),
+        nats_url="nats://127.0.0.1:4222",
+        authority=authority,
+    )
+    publisher.run_once()
+
+    assert len(publisher._client.published_js) == 1  # type: ignore[attr-defined]
+    assert calls["published"] == 0
+    assert calls["state_updates"] == 0
+    assert calls["attempt_errors"] == []
 
 
 def test_route_bundle_publisher_skips_publish_until_leader(monkeypatch) -> None:
