@@ -348,6 +348,7 @@ class NatsClient:
         subjects: list[str],
         storage: str = "file",
         retention: str = "workqueue",
+        replicas: int = 1,
     ) -> None:
         self._ensure_connected()
         if StreamConfig is None:
@@ -360,6 +361,7 @@ class NatsClient:
                 subjects=subjects,
                 retention=_retention_policy(retention),
                 storage=_storage_type(storage),
+                num_replicas=max(1, int(replicas or 1)),
             )
             try:
                 await js.stream_info(name)
@@ -367,6 +369,7 @@ class NatsClient:
                     await js.update_stream(cfg)
                     return
                 except Exception:
+                    await js.stream_info(name)
                     return
             except Exception:
                 pass
@@ -384,6 +387,7 @@ class NatsClient:
         max_ack_pending: int,
         max_deliver: int,
         max_waiting: int,
+        replicas: int = 1,
     ) -> None:
         self._ensure_connected()
         if ConsumerConfig is None:
@@ -400,6 +404,7 @@ class NatsClient:
                 max_waiting=max_waiting,
                 filter_subject=filter_subject,
                 deliver_policy=DeliverPolicy.ALL,
+                num_replicas=max(1, int(replicas or 1)),
             )
             try:
                 await js.consumer_info(stream, durable)
@@ -407,6 +412,7 @@ class NatsClient:
                     await js.update_consumer(stream, cfg)
                     return
                 except Exception:
+                    await js.consumer_info(stream, durable)
                     return
             except Exception:
                 pass
@@ -437,6 +443,51 @@ class NatsClient:
             return self._run(_info(), 2.5)
         except Exception as exc:  # noqa: BLE001
             raise NatsClientError(f"js consumer info failed: {exc}") from exc
+
+    def validate_stream(
+        self,
+        *,
+        name: str,
+        subjects: list[str],
+        storage: str,
+        retention: str,
+        replicas: int,
+    ) -> None:
+        info = self.stream_info(name)
+        drift = _stream_config_drift(
+            info,
+            subjects=subjects,
+            storage=storage,
+            retention=retention,
+            replicas=replicas,
+        )
+        if drift:
+            raise NatsClientError(f"js stream {name} drift: {', '.join(drift)}")
+
+    def validate_consumer(
+        self,
+        *,
+        stream: str,
+        durable: str,
+        filter_subject: str,
+        ack_wait_s: float,
+        max_ack_pending: int,
+        max_deliver: int,
+        max_waiting: int,
+        replicas: int,
+    ) -> None:
+        info = self.consumer_info(stream, durable)
+        drift = _consumer_config_drift(
+            info,
+            filter_subject=filter_subject,
+            ack_wait_s=ack_wait_s,
+            max_ack_pending=max_ack_pending,
+            max_deliver=max_deliver,
+            max_waiting=max_waiting,
+            replicas=replicas,
+        )
+        if drift:
+            raise NatsClientError(f"js consumer {durable} drift: {', '.join(drift)}")
 
     def _wrap_js_msg(self, msg: Msg) -> JetStreamMessage:  # type: ignore[misc]
         def _ack() -> None:
@@ -543,6 +594,118 @@ def _retention_policy(value: str):
     return RetentionPolicy.LIMITS
 
 
+def _read(obj, *names: str, default=None):  # type: ignore[no-untyped-def]
+    for name in names:
+        try:
+            if isinstance(obj, dict) and name in obj:
+                return obj[name]
+            if hasattr(obj, name):
+                return getattr(obj, name)
+        except Exception:
+            continue
+    return default
+
+
+def _enum_text(value) -> str:  # type: ignore[no-untyped-def]
+    if value is None:
+        return ""
+    try:
+        if hasattr(value, "name"):
+            return str(value.name).lower()
+    except Exception:
+        pass
+    try:
+        raw = getattr(value, "value")
+        if raw is not None:
+            return str(raw).split(".")[-1].lower()
+    except Exception:
+        pass
+    return str(value).split(".")[-1].lower()
+
+
+def _normalize_token(value: str) -> str:
+    return str(value).strip().lower().replace("-", "").replace("_", "")
+
+
+def _seconds_value(value) -> float | None:  # type: ignore[no-untyped-def]
+    if value is None:
+        return None
+    if isinstance(value, timedelta):
+        return float(value.total_seconds())
+    try:
+        if hasattr(value, "total_seconds"):
+            return float(value.total_seconds())
+    except Exception:
+        pass
+    try:
+        raw = float(value)
+    except Exception:
+        return None
+    if raw > 1_000_000:
+        return raw / 1_000_000_000.0
+    return raw
+
+
+def _stream_config_drift(
+    info,
+    *,
+    subjects: list[str],
+    storage: str,
+    retention: str,
+    replicas: int,
+) -> list[str]:
+    config = _read(info, "config")
+    if config is None:
+        return ["missing_config"]
+    drift: list[str] = []
+    actual_subjects = sorted(str(v) for v in (_read(config, "subjects", default=[]) or []))
+    if sorted(str(v) for v in subjects) != actual_subjects:
+        drift.append("subjects")
+    if _normalize_token(_enum_text(_read(config, "storage"))) != _normalize_token(storage):
+        drift.append("storage")
+    if _normalize_token(_enum_text(_read(config, "retention"))) != _normalize_token(retention):
+        drift.append("retention")
+    actual_replicas = int(_read(config, "num_replicas", default=1) or 1)
+    if actual_replicas != max(1, int(replicas or 1)):
+        drift.append("replicas")
+    return drift
+
+
+def _consumer_config_drift(
+    info,
+    *,
+    filter_subject: str,
+    ack_wait_s: float,
+    max_ack_pending: int,
+    max_deliver: int,
+    max_waiting: int,
+    replicas: int,
+) -> list[str]:
+    config = _read(info, "config")
+    if config is None:
+        return ["missing_config"]
+    drift: list[str] = []
+    if str(_read(config, "filter_subject", default="") or "") != filter_subject:
+        drift.append("filter_subject")
+    actual_ack_wait = _seconds_value(_read(config, "ack_wait"))
+    if actual_ack_wait is None or abs(float(actual_ack_wait) - float(ack_wait_s)) > 0.25:
+        drift.append("ack_wait")
+    if _enum_text(_read(config, "ack_policy")) != "explicit":
+        drift.append("ack_policy")
+    if _enum_text(_read(config, "deliver_policy")) != "all":
+        drift.append("deliver_policy")
+    if int(_read(config, "max_ack_pending", default=0) or 0) != int(max_ack_pending):
+        drift.append("max_ack_pending")
+    if int(_read(config, "max_deliver", default=0) or 0) != int(max_deliver):
+        drift.append("max_deliver")
+    if int(_read(config, "max_waiting", default=0) or 0) != int(max_waiting):
+        drift.append("max_waiting")
+    actual_replicas = int(_read(config, "num_replicas", default=1) or 1)
+    if actual_replicas != max(1, int(replicas or 1)):
+        drift.append("replicas")
+    return drift
+
+
 def _ack_wait_value(seconds: float):
     ann = getattr(ConsumerConfig, "__annotations__", {}) if ConsumerConfig else {}
     raw = ann.get("ack_wait")
@@ -556,5 +719,7 @@ __all__ = [
     "NatsClient",
     "NatsClientError",
     "NatsMessage",
+    "_consumer_config_drift",
+    "_stream_config_drift",
     "connect_once",
 ]

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import threading
 
+from ae.config.transport import desired_js_replicas
 from ae.controller.node_identity import scoped_node_id
 from ae.controller.state import SQLiteStateStore
 from ae.ha.fencing import lease_operation, parse_envelope, resolve_controller_identity
@@ -581,12 +582,21 @@ class NatsControllerIngress:
 
         def _provision() -> None:
             try:
+                replicas = desired_js_replicas()
                 if not self._js_stream_ready:
                     self._client.ensure_stream(
                         name=self._js_stream_name,
                         subjects=[self._js_work_subject],
                         storage=self._js_storage,
                         retention="workqueue",
+                        replicas=replicas,
+                    )
+                    self._client.validate_stream(
+                        name=self._js_stream_name,
+                        subjects=[self._js_work_subject],
+                        storage=self._js_storage,
+                        retention="workqueue",
+                        replicas=replicas,
                     )
                     self._js_stream_ready = True
                 self._client.ensure_consumer(
@@ -597,6 +607,17 @@ class NatsControllerIngress:
                     max_ack_pending=self._js_max_ack_pending,
                     max_deliver=self._js_max_deliver,
                     max_waiting=self._js_max_waiting,
+                    replicas=replicas,
+                )
+                self._client.validate_consumer(
+                    stream=self._js_stream_name,
+                    durable=f"WORK_SITE_{site_id}",
+                    filter_subject=f"k1s.v1.work.site.{site_id}",
+                    ack_wait_s=self._js_ack_wait_s,
+                    max_ack_pending=self._js_max_ack_pending,
+                    max_deliver=self._js_max_deliver,
+                    max_waiting=self._js_max_waiting,
+                    replicas=replicas,
                 )
                 self._js_sites.add(site_id)
             except Exception as exc:  # noqa: BLE001

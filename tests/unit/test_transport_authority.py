@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 
 from ae.controller.authority import LeaderInfo
+from ae.controller.__main__ import _bootstrap_jetstream
+from ae.config.transport import TransportConfig
 from ae.transport.controller_ingress import NatsControllerIngress
 from ae.transport.nats_client import NatsMessage
 from ae.transport.outbox_publisher import OutboxPublisher
@@ -55,6 +57,18 @@ class _FakeNatsClient:
 
     def close(self) -> None:
         return None
+
+    def ensure_stream(self, **kwargs) -> None:
+        self.ensure_stream_kwargs = kwargs
+
+    def validate_stream(self, **kwargs) -> None:
+        self.validate_stream_kwargs = kwargs
+
+    def ensure_consumer(self, **kwargs) -> None:
+        self.ensure_consumer_kwargs = kwargs
+
+    def validate_consumer(self, **kwargs) -> None:
+        self.validate_consumer_kwargs = kwargs
 
 
 def test_nats_controller_ingress_only_subscribes_when_leader(monkeypatch) -> None:
@@ -380,3 +394,111 @@ def test_nats_controller_ingress_ignores_stale_work_results(monkeypatch) -> None
 
     assert store.updated == 0
     assert store.done == 0
+
+
+def test_bootstrap_jetstream_uses_ha_replicas(monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    class _BootstrapClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def connect(self) -> None:
+            return None
+
+        def ensure_stream(self, **kwargs) -> None:
+            calls.append(("ensure_stream", kwargs))
+
+        def validate_stream(self, **kwargs) -> None:
+            calls.append(("validate_stream", kwargs))
+
+        def ensure_consumer(self, **kwargs) -> None:
+            calls.append(("ensure_consumer", kwargs))
+
+        def validate_consumer(self, **kwargs) -> None:
+            calls.append(("validate_consumer", kwargs))
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("ae.controller.__main__.NatsClient", _BootstrapClient)
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    monkeypatch.setenv("AE_JS_REPLICAS", "3")
+    monkeypatch.setenv("AE_SITE_IDS", "sea")
+
+    _bootstrap_jetstream(
+        TransportConfig(
+            backend="nats-js",
+            nats_url="nats://127.0.0.1:4222",
+            nats_creds=None,
+            site_id=None,
+        )
+    )
+
+    assert calls[0][0] == "ensure_stream"
+    assert calls[0][1]["replicas"] == 3
+    assert calls[2][0] == "ensure_consumer"
+    assert calls[2][1]["replicas"] == 3
+
+
+def test_bootstrap_jetstream_rejects_drift_in_ha(monkeypatch) -> None:
+    class _BootstrapClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def connect(self) -> None:
+            return None
+
+        def ensure_stream(self, **kwargs) -> None:
+            return None
+
+        def validate_stream(self, **kwargs) -> None:
+            raise RuntimeError("replica drift")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("ae.controller.__main__.NatsClient", _BootstrapClient)
+    monkeypatch.setenv("AE_HA_MODE", "1")
+
+    try:
+        _bootstrap_jetstream(
+            TransportConfig(
+                backend="nats-js",
+                nats_url="nats://127.0.0.1:4222",
+                nats_creds=None,
+                site_id=None,
+            )
+        )
+    except RuntimeError as exc:
+        assert "replica drift" in str(exc)
+    else:
+        raise AssertionError("expected HA bootstrap drift failure")
+
+
+def test_nats_controller_ingress_provisions_js_consumer_with_ha_replicas(monkeypatch) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    monkeypatch.setenv("AE_JS_REPLICAS", "3")
+
+    class _InlineThread:
+        def __init__(self, *, target, daemon=True) -> None:
+            self._target = target
+
+        def start(self) -> None:
+            self._target()
+
+    monkeypatch.setattr("ae.transport.controller_ingress.NatsClient", _FakeNatsClient)
+    monkeypatch.setattr("ae.transport.controller_ingress.threading.Thread", _InlineThread)
+
+    ingress = NatsControllerIngress(
+        SimpleNamespace(),
+        url="nats://127.0.0.1:4222",
+        js_provision=True,
+        authority=_FakeAuthority(is_leader=True, epoch=15),
+    )
+    ingress._client.connect()  # type: ignore[attr-defined]
+    ingress._ensure_js_consumer("sea")  # type: ignore[attr-defined]
+
+    assert ingress._client.ensure_stream_kwargs["replicas"] == 3  # type: ignore[attr-defined]
+    assert ingress._client.ensure_consumer_kwargs["replicas"] == 3  # type: ignore[attr-defined]
+    assert ingress._client.validate_consumer_kwargs["durable"] == "WORK_SITE_sea"  # type: ignore[attr-defined]

@@ -43,7 +43,7 @@ from ae.observability.http_api import (
 )
 from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
-from ae.config.transport import TransportConfig, check_nats_connectivity
+from ae.config.transport import TransportConfig, check_nats_connectivity, desired_js_replicas, ha_mode_enabled
 from ae.transport.nats_client import NatsClient, NatsClientError
 from ae.transport.controller_ingress import NatsControllerIngress
 from ae.transport.telemetry_ingress import TelemetryIngress
@@ -217,6 +217,7 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
     max_ack_pending = int(os.getenv("AE_GATEWAY_JS_MAX_ACK_PENDING", "32") or 32)
     max_deliver = int(os.getenv("AE_GATEWAY_JS_MAX_DELIVER", "20") or 20)
     max_waiting = int(os.getenv("AE_GATEWAY_JS_MAX_WAITING", "512") or 512)
+    replicas = desired_js_replicas()
     client = None
     try:
         client = NatsClient(
@@ -230,6 +231,14 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
             subjects=[work_subject],
             storage=storage,
             retention="workqueue",
+            replicas=replicas,
+        )
+        client.validate_stream(
+            name=stream_name,
+            subjects=[work_subject],
+            storage=storage,
+            retention="workqueue",
+            replicas=replicas,
         )
         if not site_ids:
             logger.info(
@@ -245,8 +254,21 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
                     max_ack_pending=max_ack_pending,
                     max_deliver=max_deliver,
                     max_waiting=max_waiting,
+                    replicas=replicas,
+                )
+                client.validate_consumer(
+                    stream=stream_name,
+                    durable=f"WORK_SITE_{site_id}",
+                    filter_subject=f"k1s.v1.work.site.{site_id}",
+                    ack_wait_s=ack_wait_s,
+                    max_ack_pending=max_ack_pending,
+                    max_deliver=max_deliver,
+                    max_waiting=max_waiting,
+                    replicas=replicas,
                 )
     except Exception as exc:  # noqa: BLE001
+        if ha_mode_enabled():
+            raise
         logger.warning("jetstream bootstrap failed: %s", exc)
     finally:
         if client is not None:
