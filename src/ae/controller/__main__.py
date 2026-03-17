@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 import json, hashlib
 import yaml
 
+from ae.controller.authority import AuthorityConfig, ControllerAuthorityService
 from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
@@ -1568,7 +1569,7 @@ def _merge_file_and_db_manifests(
     return merged
 
 
-def _make_reconciler() -> Reconciler:
+def _make_reconciler(*, authority_config: AuthorityConfig | None = None) -> Reconciler:
     store = state_store_from_env()
     registry_auth = registry_auth_factory()
     base_runtime = runtime_factory(registry_auth=registry_auth)
@@ -1584,7 +1585,9 @@ def _make_reconciler() -> Reconciler:
     secrets = secret_manager_factory()
     configs = config_manager_factory()
     svc_controller = service_controller_factory(store)
-    if _truthy_env("AE_REGISTER_LOCAL_NODE"):
+    if _truthy_env("AE_REGISTER_LOCAL_NODE") and not (
+        authority_config is not None and authority_config.enabled
+    ):
         _register_local_node(store, runtime.__class__.__name__.lower())
     return Reconciler(
         runtime,
@@ -1597,12 +1600,20 @@ def _make_reconciler() -> Reconciler:
     )
 
 
-def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> None:
+def _reconcile_all(
+    reconciler: Reconciler,
+    manifests: Iterable[AppManifest],
+    *,
+    should_continue=None,
+) -> None:
     import time as _t
     from ae.observability.http_api import record_app_reconcile, _labs_is_blocked
     import logging as _log
 
     for m in manifests:
+        if should_continue is not None and not should_continue():
+            _log.getLogger(__name__).info("authority changed; stopping reconcile sweep")
+            break
         app_name = app_key_for_manifest(m)
         if _labs_is_blocked(app_name):
             try:
@@ -1642,6 +1653,8 @@ def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via unit test paths)
     args = build_parser().parse_args(argv)
     specs_dir = Path(args.specs)
+    authority_config = AuthorityConfig.from_env()
+    authority = None
     # logging setup
     if args.verbose:
         configure_logging("DEBUG")
@@ -1703,11 +1716,22 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     except Exception:
         pass
 
+    if authority_config.enabled:
+        try:
+            authority = ControllerAuthorityService.from_env()
+            authority.start()
+            authority.wait_until_ready(timeout=max(1.0, authority_config.follower_poll_seconds))
+        except Exception as exc:
+            import logging as _log
+
+            _log.getLogger(__name__).error("failed to start HA controller authority: %s", exc)
+            return 1
+
     if transport:
         _bootstrap_jetstream(transport)
 
     # Build reconciler (runtime, ingress, secrets, store)
-    reconciler = _make_reconciler()
+    reconciler = _make_reconciler(authority_config=authority_config)
     store = state_store_from_env()
     _nats_ingress = None
     _telemetry_ingress = None
@@ -2768,24 +2792,47 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     if args.once:
         try:
-            _import_specs(specs_dir, store, source="specs")
-            _import_edge_ingress_specs(specs_dir, store, source="specs")
+            if authority_config.enabled:
+                snapshot = authority.snapshot() if authority is not None else None
+                if snapshot is None or not snapshot.is_leader:
+                    import logging as _logging
+
+                    _logging.getLogger(__name__).info(
+                        "HA standby/unknown authority in --once mode; skipping reconcile"
+                    )
+                    if authority is not None:
+                        authority.stop()
+                    return 0
+            else:
+                _import_specs(specs_dir, store, source="specs")
+                _import_edge_ingress_specs(specs_dir, store, source="specs")
             _reconcile_edge_ingress(store, _edge_renderer)
         except Exception:
             pass
-        try:
-            _sync_apishim_registry(store, reconciler)
-        except Exception:
-            pass
+        if not authority_config.enabled:
+            try:
+                _sync_apishim_registry(store, reconciler)
+            except Exception:
+                pass
         try:
             entries = store.list_registered_apps()
         except Exception:
             entries = []
-        _reconcile_all(reconciler, [entry.manifest for entry in entries])
+        _reconcile_all(
+            reconciler,
+            [entry.manifest for entry in entries],
+            should_continue=(
+                (lambda: authority is None or authority.snapshot().is_leader)
+                if authority_config.enabled
+                else None
+            ),
+        )
         try:
             _prune_orphan_status(store, entries)
         except Exception:
             pass
+        if authority is not None:
+            authority.stop()
         return 0
 
     # loop mode
@@ -2827,7 +2874,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     changed = True  # force initial reconcile
     observer = None
     last_full = 0.0
-    if args.watch:
+    last_is_leader = authority is None
+    if args.watch and authority_config.enabled:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "HA mode disables local specs watch; using shared desired state only"
+        )
+    elif args.watch:
         try:
             from watchdog.observers import Observer  # type: ignore
             from watchdog.events import FileSystemEventHandler  # type: ignore
@@ -2866,6 +2920,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     try:
         while not stop:
             now = time.time()
+            is_leader = True
+            if authority is not None:
+                is_leader = authority.snapshot().is_leader
+            if is_leader and not last_is_leader:
+                changed = True
+            last_is_leader = is_leader
             if etcd_maintenance_enabled and (now - last_etcd_maintenance) >= etcd_maintenance_interval:
                 triggered = False
                 try:
@@ -2879,33 +2939,44 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 finally:
                     record_etcd_maintenance_run(triggered=triggered)
                     last_etcd_maintenance = now
-            if now - last_heartbeat >= heartbeat_interval:
+            if not authority_config.enabled and now - last_heartbeat >= heartbeat_interval:
                 try:
                     store.record_heartbeat(_local_node_id(), "Ready")
                 except Exception:
                     pass
                 else:
                     last_heartbeat = now
-            do_full = changed or (now - last_full) >= max(1, int(args.interval))
+            do_full = is_leader and (changed or (now - last_full) >= max(1, int(args.interval)))
             if do_full:
                 t0 = time.time()
                 try:
-                    _import_specs(specs_dir, store, source="specs")
-                    _import_edge_ingress_specs(specs_dir, store, source="specs")
+                    if not authority_config.enabled:
+                        _import_specs(specs_dir, store, source="specs")
+                        _import_edge_ingress_specs(specs_dir, store, source="specs")
                     _reconcile_edge_ingress(store, _edge_renderer)
                 except Exception:
                     pass
-                try:
-                    _sync_apishim_registry(store, reconciler)
-                except Exception:
-                    pass
+                if not authority_config.enabled:
+                    try:
+                        _sync_apishim_registry(store, reconciler)
+                    except Exception:
+                        pass
                 try:
                     entries = store.list_registered_apps()
                 except Exception:
                     entries = []
-                _reconcile_all(reconciler, [entry.manifest for entry in entries])
+                _reconcile_all(
+                    reconciler,
+                    [entry.manifest for entry in entries],
+                    should_continue=(
+                        (lambda: authority is None or authority.snapshot().is_leader)
+                        if authority_config.enabled
+                        else None
+                    ),
+                )
                 try:
-                    _prune_orphan_status(store, entries)
+                    if authority is None or authority.snapshot().is_leader:
+                        _prune_orphan_status(store, entries)
                 except Exception:
                     pass
                 t1 = time.time()
@@ -2919,6 +2990,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     except KeyboardInterrupt:
         pass
     finally:
+        if authority is not None:
+            authority.stop()
         if api_server is not None:
             api_server.shutdown()
             api_server.server_close()
