@@ -13,6 +13,7 @@ from typing import Any
 
 from ae.controller.state import SQLiteStateStore
 from ae.controller.spec import app_key
+from ae.ha.fencing import MutationEnvelope, merge_envelope, resolve_controller_identity, route_operation
 from ae.ingress.edge_docs import normalize_policy_doc, normalize_route_doc
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 from ae.transport.subjects import hub_route_ack_subject, hub_route_bundle_subject
@@ -32,6 +33,9 @@ class _BundleState:
     acked_rev: int = 0
     backoff_s: float = 1.0
     next_send_at: float = 0.0
+    operation_id: str | None = None
+    controller_id: str | None = None
+    controller_epoch: int = 0
 
 
 class RouteBundlePublisher:
@@ -103,8 +107,21 @@ class RouteBundlePublisher:
                 continue
             if now < state.next_send_at:
                 continue
+            identity = resolve_controller_identity(self._authority)
+            operation_id = route_operation(site_id, state.rev, identity.controller_epoch)
+            state.operation_id = operation_id
+            state.controller_id = identity.controller_id
+            state.controller_epoch = identity.controller_epoch
             bundle = _build_bundle(
-                site_id, state.rev, state.hash, routes, policies, service_endpoints
+                site_id,
+                state.rev,
+                state.hash,
+                routes,
+                policies,
+                service_endpoints,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=operation_id,
             )
             self._publish(site_id, bundle)
             state.backoff_s = _next_backoff(state.backoff_s)
@@ -142,6 +159,10 @@ def _build_bundle(
     routes: list[dict],
     policies: list[dict],
     service_endpoints: dict[str, list[dict[str, Any]]],
+    *,
+    controller_id: str,
+    controller_epoch: int,
+    operation_id: str,
 ) -> dict:
     bundle = {
         "site_id": site_id,
@@ -152,7 +173,14 @@ def _build_bundle(
         "service_endpoints": service_endpoints,
     }
     bundle["hash"] = bundle_hash
-    return bundle
+    return merge_envelope(
+        bundle,
+        MutationEnvelope(
+            controller_id=controller_id,
+            controller_epoch=controller_epoch,
+            operation_id=operation_id,
+        ),
+    )
 
 
 def _collect_bundle_payload(

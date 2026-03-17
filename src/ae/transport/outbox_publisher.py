@@ -73,7 +73,7 @@ class OutboxPublisher:
         for entry in entries:
             if self._authority is not None and not self._authority.snapshot().is_leader:
                 return
-            msg_id = f"{entry.work_id}:{entry.attempt}"
+            msg_id = str(entry.payload.get("operation_id") or f"{entry.work_id}:{entry.attempt}")
             headers = {"Nats-Msg-Id": msg_id}
             subject = f"k1s.v1.work.site.{entry.site_id}"
             try:

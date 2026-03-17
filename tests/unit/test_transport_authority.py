@@ -104,6 +104,47 @@ def test_nats_controller_ingress_replies_not_leader(monkeypatch) -> None:
     assert payload["controller_id"] == "ctrl-b"
 
 
+def test_nats_controller_ingress_echoes_request_id_on_lease_reply(monkeypatch) -> None:
+    monkeypatch.setattr("ae.transport.controller_ingress.NatsClient", _FakeNatsClient)
+
+    class _Store:
+        def acquire_lease(self, **kwargs):
+            return SimpleNamespace(lease_id="lease-1", lease_ttl_ms=60000, renew_after_ms=20000)
+
+        def upsert_node(self, *args, **kwargs) -> None:
+            return None
+
+        def record_heartbeat(self, *args, **kwargs) -> None:
+            return None
+
+    ingress = NatsControllerIngress(
+        _Store(),
+        url="nats://127.0.0.1:4222",
+        authority=_FakeAuthority(is_leader=True, epoch=15),
+    )
+
+    ingress._on_lease_acquire(  # type: ignore[attr-defined]
+        NatsMessage(
+            subject="k1s.v1.site.sea.lease.acquire",
+            reply="reply.inbox",
+            data=json.dumps(
+                {
+                    "site_id": "sea",
+                    "node_id": "node-a",
+                    "session_id": "sess-1",
+                    "request_id": "req-1",
+                }
+            ).encode("utf-8"),
+        )
+    )
+
+    _subject, payload = ingress._client.published[0]  # type: ignore[attr-defined]
+    assert payload["accepted"] is True
+    assert payload["controller_id"] == "ctrl-a"
+    assert payload["controller_epoch"] == 15
+    assert payload["operation_id"] == "req-1"
+
+
 def test_outbox_publisher_skips_publish_until_leader(monkeypatch) -> None:
     monkeypatch.setattr("ae.transport.outbox_publisher.NatsClient", _FakeNatsClient)
     authority = _FakeAuthority(is_leader=False)

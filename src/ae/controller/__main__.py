@@ -1569,7 +1569,11 @@ def _merge_file_and_db_manifests(
     return merged
 
 
-def _make_reconciler(*, authority_config: AuthorityConfig | None = None) -> Reconciler:
+def _make_reconciler(
+    *,
+    authority_config: AuthorityConfig | None = None,
+    authority=None,
+) -> Reconciler:
     store = state_store_from_env()
     registry_auth = registry_auth_factory()
     base_runtime = runtime_factory(registry_auth=registry_auth)
@@ -1577,7 +1581,7 @@ def _make_reconciler(*, authority_config: AuthorityConfig | None = None) -> Reco
     try:
         from ae.runtime import RemoteRuntime
 
-        runtime = RemoteRuntime(agent_url, base_runtime)
+        runtime = RemoteRuntime(agent_url, base_runtime, authority=authority)
     except Exception:
         runtime = base_runtime
     health = health_manager_factory()
@@ -1597,6 +1601,7 @@ def _make_reconciler(*, authority_config: AuthorityConfig | None = None) -> Reco
         secret_manager=secrets,
         config_manager=configs,
         service_controller=svc_controller,
+        authority=authority,
     )
 
 
@@ -1731,7 +1736,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         _bootstrap_jetstream(transport)
 
     # Build reconciler (runtime, ingress, secrets, store)
-    reconciler = _make_reconciler(authority_config=authority_config)
+    reconciler = _make_reconciler(authority_config=authority_config, authority=authority)
     store = state_store_from_env()
     _nats_ingress = None
     _telemetry_ingress = None
@@ -1807,6 +1812,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                             dispatched_max_s=dispatched_max,
                             running_max_s=running_max,
                         ),
+                        authority=authority,
                     )
                     _work_watchdog.start()
             except Exception as exc:  # noqa: BLE001

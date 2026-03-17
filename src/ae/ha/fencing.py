@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +35,12 @@ class MutationEnvelope:
             "controller_epoch": int(self.controller_epoch),
             "operation_id": self.operation_id,
         }
+
+
+def merge_envelope(payload: dict[str, object], envelope: MutationEnvelope) -> dict[str, object]:
+    out = dict(payload)
+    out.update(envelope.as_dict())
+    return out
 
 
 @dataclass(slots=True, frozen=True)
@@ -224,6 +232,41 @@ def parse_envelope(payload: dict | None) -> MutationEnvelope | None:
         controller_id=controller_id,
         controller_epoch=controller_epoch,
         operation_id=operation_id,
+    )
+
+
+def resolve_controller_identity(
+    authority=None,
+    *,
+    controller_id: str | None = None,
+    controller_epoch: int | None = None,
+) -> ControllerMutationIdentity:
+    if authority is not None:
+        try:
+            snapshot = authority.snapshot()
+        except Exception:
+            snapshot = None
+        if snapshot is not None and getattr(snapshot, "is_leader", False):
+            info = getattr(snapshot, "leader_info", None)
+            if info is not None:
+                leader_id = str(getattr(info, "controller_id", "") or "").strip()
+                try:
+                    leader_epoch = int(getattr(info, "controller_epoch", 0) or 0)
+                except Exception:
+                    leader_epoch = 0
+                if leader_id and leader_epoch > 0:
+                    return ControllerMutationIdentity(
+                        controller_id=leader_id,
+                        controller_epoch=leader_epoch,
+                    )
+    resolved_id = str(controller_id or os.getenv("AE_CONTROLLER_ID") or socket.gethostname())
+    try:
+        resolved_epoch = int(controller_epoch or os.getenv("AE_CONTROLLER_EPOCH", "1") or 1)
+    except Exception:
+        resolved_epoch = 1
+    return ControllerMutationIdentity(
+        controller_id=resolved_id,
+        controller_epoch=max(1, resolved_epoch),
     )
 
 

@@ -27,6 +27,7 @@ from ae.controller.spec import (
     app_key,
     app_key_for_manifest,
 )
+from ae.ha.fencing import work_operation
 from ae.resources import loader as resource_loader
 from ae.runtime import RuntimeResult
 
@@ -231,6 +232,9 @@ class WorkLedgerEntry:
     attempt: int
     site_id: str
     state: str
+    controller_id: str | None
+    controller_epoch: int | None
+    operation_id: str | None
     desired_generation: int | None
     assigned_node_id: str | None
     observed_generation: int | None
@@ -623,6 +627,9 @@ class SQLiteStateStore:
             self._ensure_column(conn, "edge_ingress_routes", "status_json", "TEXT")
             self._ensure_column(conn, "edge_ingress_policies", "status_json", "TEXT")
             self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
+            self._ensure_column(conn, "work_ledger", "controller_id", "TEXT")
+            self._ensure_column(conn, "work_ledger", "controller_epoch", "INTEGER")
+            self._ensure_column(conn, "work_ledger", "operation_id", "TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS inference_cells (
@@ -2842,6 +2849,9 @@ class SQLiteStateStore:
         attempt: int,
         site_id: str,
         state: str,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
+        operation_id: str | None = None,
         desired_generation: int | None = None,
     ) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -2854,7 +2864,8 @@ class SQLiteStateStore:
                 conn.execute(
                     """
                     UPDATE work_ledger
-                    SET attempt = ?, site_id = ?, state = ?, desired_generation = ?,
+                    SET attempt = ?, site_id = ?, state = ?, controller_id = ?,
+                        controller_epoch = ?, operation_id = ?, desired_generation = ?,
                         updated_at = ?, state_updated_at = ?
                     WHERE work_id = ?
                     """,
@@ -2862,6 +2873,9 @@ class SQLiteStateStore:
                         int(attempt),
                         site_id,
                         state,
+                        controller_id,
+                        controller_epoch,
+                        operation_id,
                         desired_generation,
                         now_iso,
                         now_iso,
@@ -2872,16 +2886,20 @@ class SQLiteStateStore:
                 conn.execute(
                     """
                     INSERT INTO work_ledger
-                      (work_id, attempt, site_id, state, desired_generation,
+                      (work_id, attempt, site_id, state, controller_id, controller_epoch,
+                       operation_id, desired_generation,
                        assigned_node_id, observed_generation, result_json,
                        created_at, updated_at, state_updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         work_id,
                         int(attempt),
                         site_id,
                         state,
+                        controller_id,
+                        controller_epoch,
+                        operation_id,
                         desired_generation,
                         None,
                         None,
@@ -2897,7 +2915,8 @@ class SQLiteStateStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT work_id, attempt, site_id, state, desired_generation,
+                SELECT work_id, attempt, site_id, state, controller_id,
+                       controller_epoch, operation_id, desired_generation,
                        assigned_node_id, observed_generation, result_json,
                        created_at, updated_at, state_updated_at
                 FROM work_ledger
@@ -2908,9 +2927,9 @@ class SQLiteStateStore:
             if not row:
                 return None
             result = None
-            if row[7]:
+            if row[10]:
                 try:
-                    result = json.loads(row[7])
+                    result = json.loads(row[10])
                 except Exception:
                     result = None
             return WorkLedgerEntry(
@@ -2918,13 +2937,16 @@ class SQLiteStateStore:
                 attempt=int(row[1]),
                 site_id=str(row[2]),
                 state=str(row[3]),
-                desired_generation=int(row[4]) if row[4] is not None else None,
-                assigned_node_id=str(row[5]) if row[5] else None,
-                observed_generation=int(row[6]) if row[6] is not None else None,
+                controller_id=str(row[4]) if row[4] else None,
+                controller_epoch=int(row[5]) if row[5] is not None else None,
+                operation_id=str(row[6]) if row[6] else None,
+                desired_generation=int(row[7]) if row[7] is not None else None,
+                assigned_node_id=str(row[8]) if row[8] else None,
+                observed_generation=int(row[9]) if row[9] is not None else None,
                 result=result,
-                created_at=datetime.fromisoformat(row[8]),
-                updated_at=datetime.fromisoformat(row[9]),
-                state_updated_at=datetime.fromisoformat(row[10]),
+                created_at=datetime.fromisoformat(row[11]),
+                updated_at=datetime.fromisoformat(row[12]),
+                state_updated_at=datetime.fromisoformat(row[13]),
             )
 
     def update_work_state(
@@ -2973,7 +2995,8 @@ class SQLiteStateStore:
         with self._connect() as conn:
             results = conn.execute(
                 """
-                SELECT work_id, attempt, site_id, state, desired_generation,
+                SELECT work_id, attempt, site_id, state, controller_id,
+                       controller_epoch, operation_id, desired_generation,
                        assigned_node_id, observed_generation, result_json,
                        created_at, updated_at, state_updated_at
                 FROM work_ledger
@@ -2984,9 +3007,9 @@ class SQLiteStateStore:
             ).fetchall()
             for row in results:
                 result = None
-                if row[7]:
+                if row[10]:
                     try:
-                        result = json.loads(row[7])
+                        result = json.loads(row[10])
                     except Exception:
                         result = None
                 rows.append(
@@ -2995,13 +3018,16 @@ class SQLiteStateStore:
                         attempt=int(row[1]),
                         site_id=str(row[2]),
                         state=str(row[3]),
-                        desired_generation=int(row[4]) if row[4] is not None else None,
-                        assigned_node_id=str(row[5]) if row[5] else None,
-                        observed_generation=int(row[6]) if row[6] is not None else None,
+                        controller_id=str(row[4]) if row[4] else None,
+                        controller_epoch=int(row[5]) if row[5] is not None else None,
+                        operation_id=str(row[6]) if row[6] else None,
+                        desired_generation=int(row[7]) if row[7] is not None else None,
+                        assigned_node_id=str(row[8]) if row[8] else None,
+                        observed_generation=int(row[9]) if row[9] is not None else None,
                         result=result,
-                        created_at=datetime.fromisoformat(row[8]),
-                        updated_at=datetime.fromisoformat(row[9]),
-                        state_updated_at=datetime.fromisoformat(row[10]),
+                        created_at=datetime.fromisoformat(row[11]),
+                        updated_at=datetime.fromisoformat(row[12]),
+                        state_updated_at=datetime.fromisoformat(row[13]),
                     )
                 )
         return rows
@@ -3011,6 +3037,8 @@ class SQLiteStateStore:
         *,
         work_id: str,
         attempt: int,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
     ) -> int | None:
         now_iso = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
@@ -3034,15 +3062,25 @@ class SQLiteStateStore:
             payload.setdefault("work_id", work_id)
             payload.setdefault("site_id", site_id)
             payload["created_at"] = now_iso
+            if controller_id:
+                payload["controller_id"] = controller_id
+            if controller_epoch is not None:
+                payload["controller_epoch"] = int(controller_epoch)
+            if payload.get("controller_id") and payload.get("controller_epoch") is not None:
+                payload["operation_id"] = work_operation(work_id, new_attempt)
             cursor = conn.execute(
                 """
                 UPDATE work_ledger
-                SET attempt = ?, state = ?, updated_at = ?, state_updated_at = ?
+                SET attempt = ?, state = ?, controller_id = ?, controller_epoch = ?,
+                    operation_id = ?, updated_at = ?, state_updated_at = ?
                 WHERE work_id = ? AND attempt = ?
                 """,
                 (
                     new_attempt,
                     "Pending",
+                    payload.get("controller_id"),
+                    payload.get("controller_epoch"),
+                    payload.get("operation_id"),
                     now_iso,
                     now_iso,
                     work_id,

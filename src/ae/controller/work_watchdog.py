@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from ae.ha.fencing import resolve_controller_identity
 from ae.controller.state import SQLiteStateStore
 
 LOGGER = logging.getLogger(__name__)
@@ -21,9 +22,16 @@ class WorkWatchdogConfig:
 
 
 class WorkWatchdog:
-    def __init__(self, store: SQLiteStateStore, *, config: WorkWatchdogConfig | None = None) -> None:
+    def __init__(
+        self,
+        store: SQLiteStateStore,
+        *,
+        config: WorkWatchdogConfig | None = None,
+        authority=None,
+    ) -> None:
         self._store = store
         self._config = config or WorkWatchdogConfig()
+        self._authority = authority
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._stop = False
         self._started = False
@@ -57,7 +65,13 @@ class WorkWatchdog:
                 self._reschedule(entry.work_id, entry.attempt, "running_timeout")
 
     def _reschedule(self, work_id: str, attempt: int, reason: str) -> None:
-        new_attempt = self._store.reschedule_work(work_id=work_id, attempt=attempt)
+        identity = resolve_controller_identity(self._authority)
+        new_attempt = self._store.reschedule_work(
+            work_id=work_id,
+            attempt=attempt,
+            controller_id=identity.controller_id,
+            controller_epoch=identity.controller_epoch,
+        )
         if new_attempt is None:
             return
         LOGGER.warning(

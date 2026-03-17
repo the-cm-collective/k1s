@@ -88,6 +88,9 @@ def test_etcd_route_bundle_site_ids_include_routes_and_leases() -> None:
 
 
 def test_route_bundle_publisher_uses_route_bundle_site_ids(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTROLLER_ID", "ctrl-a")
+    monkeypatch.setenv("AE_CONTROLLER_EPOCH", "9")
+
     class FakeNatsClient:
         def __init__(self, *args, **kwargs) -> None:
             self.subscriptions = []
@@ -147,6 +150,9 @@ def test_route_bundle_publisher_uses_route_bundle_site_ids(monkeypatch) -> None:
     subject, payload = publisher._client.published[0]  # type: ignore[attr-defined]
     assert subject == hub_route_bundle_subject("sea-edge-02")
     assert payload.get("site_id") == "sea-edge-02"
+    assert payload.get("controller_id") == "ctrl-a"
+    assert payload.get("controller_epoch") == 9
+    assert payload.get("operation_id") == "route:sea-edge-02:1:9"
     assert payload.get("routes")
     assert payload.get("service_endpoints") == {
         "default/app-svc": [
@@ -167,6 +173,9 @@ def test_route_bundle_publisher_uses_route_bundle_site_ids(monkeypatch) -> None:
 
 
 def test_route_bundle_publisher_hash_changes_when_endpoints_change(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTROLLER_ID", "ctrl-a")
+    monkeypatch.setenv("AE_CONTROLLER_EPOCH", "9")
+
     class FakeNatsClient:
         def __init__(self, *args, **kwargs) -> None:
             self.published = []
@@ -229,3 +238,49 @@ def test_route_bundle_publisher_hash_changes_when_endpoints_change(monkeypatch) 
     assert second_hash != first_hash
     assert second_rev == first_rev + 1
     assert len(publisher._client.published) == 2  # type: ignore[attr-defined]
+
+
+def test_route_bundle_publish_reuses_operation_id_on_retry(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTROLLER_ID", "ctrl-a")
+    monkeypatch.setenv("AE_CONTROLLER_EPOCH", "9")
+
+    class FakeNatsClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.published = []
+
+        def connect(self) -> None:
+            return None
+
+        def subscribe(self, subject, callback) -> None:
+            return None
+
+        def publish_json(self, subject, payload) -> None:
+            self.published.append((subject, payload))
+
+        def close(self) -> None:
+            return None
+
+    class FakeStore:
+        def list_route_bundle_site_ids(self):
+            return ["sea-edge-02"]
+
+        def list_edge_ingress_routes_for_site(self, site_id: str):
+            return [_edge_local_route_record(site_id)]
+
+        def get_edge_ingress_policy(self, *, name: str, namespace: str):
+            return None
+
+        def list_service_endpoints(self, app_name: str):
+            return []
+
+    monkeypatch.setattr("ae.transport.route_bundle_publisher.NatsClient", FakeNatsClient)
+
+    publisher = RouteBundlePublisher(FakeStore(), nats_url="nats://127.0.0.1:4222")
+    publisher.run_once()
+    publisher._state["sea-edge-02"].next_send_at = 0.0  # type: ignore[attr-defined]
+    publisher.run_once()
+
+    first = publisher._client.published[0][1]  # type: ignore[attr-defined]
+    second = publisher._client.published[1][1]  # type: ignore[attr-defined]
+    assert first["operation_id"] == "route:sea-edge-02:1:9"
+    assert second["operation_id"] == first["operation_id"]

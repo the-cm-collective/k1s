@@ -12,7 +12,9 @@ from .fencing import (
     fabric_teardown_operation,
     gc_operation,
     lease_operation,
+    merge_envelope,
     parse_envelope,
+    resolve_controller_identity,
     route_operation,
     work_operation,
 )
@@ -29,7 +31,9 @@ __all__ = [
     "fabric_teardown_operation",
     "gc_operation",
     "lease_operation",
+    "merge_envelope",
     "parse_envelope",
+    "resolve_controller_identity",
     "route_operation",
     "work_operation",
 ]

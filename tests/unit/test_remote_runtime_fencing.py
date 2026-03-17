@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+from ae.controller.inference_cell import FabricSessionInfo, HttpFabricAgentClient
+from ae.controller.spec import AppManifest
+from ae.runtime import StubRuntime
+from ae.runtime.remote_runtime import RemoteRuntime
+
+
+class _Authority:
+    def __init__(self, controller_id: str = "ctrl-a", epoch: int = 11) -> None:
+        self._controller_id = controller_id
+        self._epoch = epoch
+
+    def snapshot(self):
+        return SimpleNamespace(
+            is_leader=True,
+            leader_info=SimpleNamespace(
+                controller_id=self._controller_id,
+                controller_epoch=self._epoch,
+            ),
+        )
+
+
+def _manifest() -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo"},
+            "spec": {
+                "image": "alpine:3.20",
+                "replicas": 1,
+            },
+        }
+    )
+
+
+def test_remote_runtime_includes_fencing_envelope_on_ensure() -> None:
+    captured: dict[str, object] = {}
+    runtime = RemoteRuntime(
+        "http://agent:9112",
+        StubRuntime(),
+        authority=_Authority("ctrl-a", 11),
+        node_id="node-a",
+    )
+
+    def _fake_request(method: str, path: str, *, json=None, timeout: int = 30, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = json
+        return SimpleNamespace(
+            json=lambda: {
+                "revision": 3,
+                "created": 1,
+                "updated": 0,
+                "removed": 0,
+                "pod_states": [],
+            }
+        )
+
+    runtime._request = _fake_request  # type: ignore[method-assign]
+    runtime.ensure_app(_manifest(), 3, node_id="node-a")
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["controller_id"] == "ctrl-a"
+    assert payload["controller_epoch"] == 11
+    assert payload["operation_id"] == "ensure:demo:3:node-a"
+
+
+def test_fabric_agent_client_includes_fencing_envelope(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _Store:
+        def get_node(self, node_id: str):
+            return SimpleNamespace(endpoint="http://agent:9112"), None
+
+    def _fake_post(url, *, json=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        return SimpleNamespace(status_code=200, content=b'{"ok": true}', json=lambda: {"ok": True})
+
+    monkeypatch.setattr("ae.controller.inference_cell.requests.post", _fake_post)
+    client = HttpFabricAgentClient(_Store(), authority=_Authority("ctrl-b", 14))
+    session = FabricSessionInfo(
+        session_id="s-1234",
+        ifname="wg-cell-test",
+        member_ips={"node-a": "10.250.1.1"},
+        expires_at=datetime.now(timezone.utc),
+        policy_mode="strict_membership",
+        allowed_rules=[{"proto": "tcp", "port": 18080}],
+    )
+
+    assert client.ensure_session("node-a", session) is True
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["controller_id"] == "ctrl-b"
+    assert payload["controller_epoch"] == 14
+    assert payload["operation_id"] == "fabric.ensure:s-1234:node-a"

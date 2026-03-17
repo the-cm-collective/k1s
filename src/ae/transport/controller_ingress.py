@@ -12,6 +12,7 @@ import threading
 
 from ae.controller.node_identity import scoped_node_id
 from ae.controller.state import SQLiteStateStore
+from ae.ha.fencing import lease_operation, resolve_controller_identity
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 
 LOGGER = logging.getLogger(__name__)
@@ -20,7 +21,9 @@ LOGGER = logging.getLogger(__name__)
 @dataclass(slots=True)
 class LeaseResponse:
     accepted: bool
+    controller_id: str
     controller_epoch: int
+    operation_id: str | None
     lease_id: str | None
     lease_ttl_ms: int
     renew_after_ms: int
@@ -29,7 +32,9 @@ class LeaseResponse:
     def as_dict(self) -> dict:
         return {
             "accepted": self.accepted,
+            "controller_id": self.controller_id,
             "controller_epoch": self.controller_epoch,
+            "operation_id": self.operation_id,
             "lease_id": self.lease_id,
             "lease_ttl_ms": self.lease_ttl_ms,
             "renew_after_ms": self.renew_after_ms,
@@ -184,6 +189,12 @@ class NatsControllerIngress:
             payload["advertise_addr"] = info.advertise_addr
         return payload
 
+    def _mutation_identity(self):
+        return resolve_controller_identity(
+            self._authority,
+            controller_epoch=self._epoch,
+        )
+
     def _on_lease_acquire(self, msg: NatsMessage) -> None:
         if not self._is_leader():
             self._reply(
@@ -197,13 +208,30 @@ class NatsControllerIngress:
             )
             return
         payload = self._safe_json(msg)
+        request_id = lease_operation(str(payload.get("request_id") or "").strip())
         site_id = _site_id_from_subject(msg.subject) or str(payload.get("site_id") or "")
         node_id = str(payload.get("node_id") or "").strip()
         session_id = str(payload.get("session_id") or "").strip()
+        identity = self._mutation_identity()
+        if not request_id:
+            resp = LeaseResponse(
+                accepted=False,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=None,
+                lease_id=None,
+                lease_ttl_ms=self._lease_ttl_ms,
+                renew_after_ms=self._renew_after_ms,
+                reason="request_id required",
+            )
+            self._reply(msg, resp.as_dict())
+            return
         if not site_id or not node_id:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -214,7 +242,9 @@ class NatsControllerIngress:
         if payload.get("site_id") and str(payload.get("site_id")) != site_id:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -254,7 +284,9 @@ class NatsControllerIngress:
             LOGGER.warning("lease acquire store update failed: %s", exc)
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -264,7 +296,9 @@ class NatsControllerIngress:
             return
         resp = LeaseResponse(
             accepted=True,
-            controller_epoch=self._epoch,
+            controller_id=identity.controller_id,
+            controller_epoch=identity.controller_epoch,
+            operation_id=request_id,
             lease_id=lease.lease_id,
             lease_ttl_ms=lease.lease_ttl_ms,
             renew_after_ms=lease.renew_after_ms,
@@ -286,12 +320,29 @@ class NatsControllerIngress:
             )
             return
         payload = self._safe_json(msg)
+        request_id = lease_operation(str(payload.get("request_id") or "").strip())
         site_id = _site_id_from_subject(msg.subject) or str(payload.get("site_id") or "")
         node_id = str(payload.get("node_id") or "").strip()
+        identity = self._mutation_identity()
+        if not request_id:
+            resp = LeaseResponse(
+                accepted=False,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=None,
+                lease_id=None,
+                lease_ttl_ms=self._lease_ttl_ms,
+                renew_after_ms=self._renew_after_ms,
+                reason="request_id required",
+            )
+            self._reply(msg, resp.as_dict())
+            return
         if not site_id or not node_id:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -303,7 +354,9 @@ class NatsControllerIngress:
         if not lease_id:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -320,7 +373,9 @@ class NatsControllerIngress:
         if lease is None:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=lease_id,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -334,7 +389,9 @@ class NatsControllerIngress:
             LOGGER.warning("lease renew heartbeat failed: %s", exc)
         resp = LeaseResponse(
             accepted=True,
-            controller_epoch=self._epoch,
+            controller_id=identity.controller_id,
+            controller_epoch=identity.controller_epoch,
+            operation_id=request_id,
             lease_id=lease.lease_id,
             lease_ttl_ms=lease.lease_ttl_ms,
             renew_after_ms=lease.renew_after_ms,

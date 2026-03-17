@@ -2587,6 +2587,13 @@ def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
             print(f"invalid --target json: {exc}")
             return 2
     payload.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    if not payload.get("controller_id") or not payload.get("controller_epoch"):
+        from ae.ha.fencing import resolve_controller_identity, work_operation
+
+        identity = resolve_controller_identity(None)
+        payload.setdefault("controller_id", identity.controller_id)
+        payload.setdefault("controller_epoch", identity.controller_epoch)
+        payload.setdefault("operation_id", work_operation(work_id, attempt))
     desired_generation = payload.get("desired_generation")
     try:
         desired_generation = int(desired_generation) if desired_generation is not None else None
@@ -2597,6 +2604,13 @@ def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
         attempt=attempt,
         site_id=site_id,
         state="Pending",
+        controller_id=str(payload.get("controller_id") or "") or None,
+        controller_epoch=(
+            int(payload.get("controller_epoch"))
+            if payload.get("controller_epoch") is not None
+            else None
+        ),
+        operation_id=str(payload.get("operation_id") or "") or None,
         desired_generation=desired_generation,
     )
     if ns.mode == "queue":

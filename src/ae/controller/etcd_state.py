@@ -38,6 +38,7 @@ from ae.controller.state import (
     WorkQueueLease,
     SQLiteStateStore,
 )
+from ae.ha.fencing import work_operation
 from ae.runtime import RuntimeResult
 
 
@@ -1544,6 +1545,9 @@ class EtcdStateStore(SQLiteStateStore):
         attempt: int,
         site_id: str,
         state: str,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
+        operation_id: str | None = None,
         desired_generation: int | None = None,
     ) -> None:
         key = self._k("work", "ledger", work_id)
@@ -1555,6 +1559,9 @@ class EtcdStateStore(SQLiteStateStore):
                     "attempt": int(attempt),
                     "site_id": site_id,
                     "state": state,
+                    "controller_id": controller_id,
+                    "controller_epoch": controller_epoch,
+                    "operation_id": operation_id,
                     "desired_generation": desired_generation,
                     "updated_at": now,
                     "state_updated_at": now,
@@ -1566,6 +1573,9 @@ class EtcdStateStore(SQLiteStateStore):
                 "attempt": int(attempt),
                 "site_id": site_id,
                 "state": state,
+                "controller_id": controller_id,
+                "controller_epoch": controller_epoch,
+                "operation_id": operation_id,
                 "desired_generation": desired_generation,
                 "assigned_node_id": None,
                 "observed_generation": None,
@@ -1585,6 +1595,17 @@ class EtcdStateStore(SQLiteStateStore):
             attempt=int(rec.get("attempt", 0)),
             site_id=str(rec.get("site_id", "")),
             state=str(rec.get("state", "")),
+            controller_id=(
+                str(rec.get("controller_id")) if rec.get("controller_id") is not None else None
+            ),
+            controller_epoch=(
+                int(rec.get("controller_epoch"))
+                if rec.get("controller_epoch") is not None
+                else None
+            ),
+            operation_id=(
+                str(rec.get("operation_id")) if rec.get("operation_id") is not None else None
+            ),
             desired_generation=rec.get("desired_generation"),
             assigned_node_id=rec.get("assigned_node_id"),
             observed_generation=rec.get("observed_generation"),
@@ -1635,6 +1656,21 @@ class EtcdStateStore(SQLiteStateStore):
                         attempt=int(rec.get("attempt", 0)),
                         site_id=str(rec.get("site_id", "")),
                         state=str(rec.get("state", "")),
+                        controller_id=(
+                            str(rec.get("controller_id"))
+                            if rec.get("controller_id") is not None
+                            else None
+                        ),
+                        controller_epoch=(
+                            int(rec.get("controller_epoch"))
+                            if rec.get("controller_epoch") is not None
+                            else None
+                        ),
+                        operation_id=(
+                            str(rec.get("operation_id"))
+                            if rec.get("operation_id") is not None
+                            else None
+                        ),
                         desired_generation=rec.get("desired_generation"),
                         assigned_node_id=rec.get("assigned_node_id"),
                         observed_generation=rec.get("observed_generation"),
@@ -1646,7 +1682,14 @@ class EtcdStateStore(SQLiteStateStore):
                 )
         return out
 
-    def reschedule_work(self, *, work_id: str, attempt: int) -> int | None:
+    def reschedule_work(
+        self,
+        *,
+        work_id: str,
+        attempt: int,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
+    ) -> int | None:
         outbox_key = self._k("outbox", "work", work_id, str(attempt))
         outbox, _ = self._get_json(outbox_key)
         if not outbox:
@@ -1667,6 +1710,15 @@ class EtcdStateStore(SQLiteStateStore):
         payload.setdefault("work_id", work_id)
         payload.setdefault("site_id", outbox.get("site_id"))
         payload["created_at"] = now
+        if controller_id:
+            payload["controller_id"] = controller_id
+        if controller_epoch is not None:
+            payload["controller_epoch"] = int(controller_epoch)
+        if payload.get("controller_id") and payload.get("controller_epoch") is not None:
+            payload["operation_id"] = work_operation(work_id, new_attempt)
+            ledger["controller_id"] = payload.get("controller_id")
+            ledger["controller_epoch"] = payload.get("controller_epoch")
+            ledger["operation_id"] = payload.get("operation_id")
         self.enqueue_work_outbox(work_id, new_attempt, outbox.get("site_id", ""), payload)
         return new_attempt
 

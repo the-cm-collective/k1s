@@ -15,6 +15,13 @@ from urllib.parse import urlparse
 
 import requests
 
+from ae.ha.fencing import (
+    delete_operation,
+    ensure_operation,
+    gc_operation,
+    merge_envelope,
+    resolve_controller_identity,
+)
 from ae.controller.spec import AppManifest
 
 from .base import PodState, RuntimeAdapter, RuntimeResult
@@ -25,9 +32,18 @@ LOGGER = logging.getLogger(__name__)
 class RemoteRuntime(RuntimeAdapter):
     """RuntimeAdapter that forwards calls to an ae.node agent over HTTP."""
 
-    def __init__(self, agent_url: str | None, local_runtime: RuntimeAdapter) -> None:
+    def __init__(
+        self,
+        agent_url: str | None,
+        local_runtime: RuntimeAdapter,
+        *,
+        authority=None,
+        node_id: str | None = None,
+    ) -> None:
         self._agent_url = agent_url.rstrip("/") if agent_url else None
         self._local = local_runtime
+        self._authority = authority
+        self._node_id = str(node_id or "")
         import os
 
         self._verify = os.getenv("AE_AGENT_CA_FILE") or True
@@ -154,6 +170,16 @@ class RemoteRuntime(RuntimeAdapter):
         resp.raise_for_status()
         return resp
 
+    def _mutation_payload(
+        self,
+        payload: dict[str, object],
+        operation_id: str,
+        *,
+        identity=None,
+    ) -> dict[str, object]:
+        identity = identity or resolve_controller_identity(self._authority)
+        return merge_envelope(payload, identity.envelope(operation_id))
+
     # --- RuntimeAdapter API --------------------------------------------
     def ensure_app(
         self,
@@ -183,6 +209,16 @@ class RemoteRuntime(RuntimeAdapter):
             "replica_ids": pod_names,
             "node_id": node_id,
         }
+        identity = resolve_controller_identity(self._authority)
+        payload = self._mutation_payload(
+            payload,
+            ensure_operation(
+                str(manifest.metadata.name),
+                revision,
+                str(node_id or self._node_id or ""),
+            ),
+            identity=identity,
+        )
         resp = self._request("POST", "/v1/ensure_app", json=payload, timeout=30)
         data = resp.json()
         return _runtime_result_from_json(data)
@@ -190,16 +226,28 @@ class RemoteRuntime(RuntimeAdapter):
     def remove_app(self, app_name: str) -> int:
         if self._use_local():
             return self._local.remove_app(app_name)
-        resp = self._request("POST", "/v1/remove_app", json={"app": app_name}, timeout=15)
+        identity = resolve_controller_identity(self._authority)
+        payload = self._mutation_payload(
+            {"app": app_name},
+            delete_operation(app_name, self._node_id, identity.controller_epoch),
+            identity=identity,
+        )
+        resp = self._request("POST", "/v1/remove_app", json=payload, timeout=15)
         return int(resp.json().get("removed", 0))
 
     def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
         if self._use_local():
             return self._local.remove_old_revisions(app_name, keep_revision)
+        identity = resolve_controller_identity(self._authority)
+        payload = self._mutation_payload(
+            {"app": app_name, "keep_revision": keep_revision},
+            gc_operation(app_name, keep_revision, self._node_id),
+            identity=identity,
+        )
         resp = self._request(
             "POST",
             "/v1/remove_old",
-            json={"app": app_name, "keep_revision": keep_revision},
+            json=payload,
             timeout=15,
         )
         return int(resp.json().get("removed", 0))

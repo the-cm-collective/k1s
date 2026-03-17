@@ -77,6 +77,7 @@ class Reconciler:
         secret_manager: SecretManager | None = None,
         config_manager: ConfigManager | None = None,
         service_controller=None,
+        authority=None,
     ) -> None:
         self._runtime = runtime
         self._state_store = state_store
@@ -86,8 +87,9 @@ class Reconciler:
         self._config_manager = config_manager or ConfigManager()
         self._service_controller = service_controller
         self._scheduler = Scheduler(self._state_store)
-        self._runtime_cache: dict[str, RuntimeAdapter] = {}
+        self._runtime_cache: dict[tuple[str, str], RuntimeAdapter] = {}
         self._base_runtime = getattr(runtime, "_local", runtime)
+        self._mutation_authority = authority
         # Inject exec callback for exec probes
         try:
             self._health_manager.set_exec_callback(self._exec_across_runtimes)
@@ -107,19 +109,25 @@ class Reconciler:
         self._default_sc_name: str | None = None
         self._register_local_node = _truthy_env("AE_REGISTER_LOCAL_NODE")
 
-    def _runtime_for_agent(self, agent_url: str | None) -> RuntimeAdapter:
+    def _runtime_for_agent(self, agent_url: str | None, node_id: str | None = None) -> RuntimeAdapter:
         """Return a runtime bound to the target agent URL (cached)."""
         if not agent_url:
             return self._runtime
-        cached = self._runtime_cache.get(agent_url)
+        key = (agent_url, str(node_id or ""))
+        cached = self._runtime_cache.get(key)
         if cached:
             return cached
         try:
             from ae.runtime import RemoteRuntime
 
             base = getattr(self._runtime, "_local", self._base_runtime)
-            rt = RemoteRuntime(agent_url, base)
-            self._runtime_cache[agent_url] = rt
+            rt = RemoteRuntime(
+                agent_url,
+                base,
+                authority=self._mutation_authority,
+                node_id=node_id,
+            )
+            self._runtime_cache[key] = rt
             return rt
         except Exception:
             return self._runtime
@@ -385,7 +393,10 @@ class Reconciler:
         for placement in placements:
             # Ensure pod_names are unique per app/revision (avoid duplicate scheduling across nodes)
             pod_names = list(dict.fromkeys(getattr(placement, "pod_names", []) or []))
-            runtime = self._runtime_for_agent(getattr(placement, "agent_url", None))
+            runtime = self._runtime_for_agent(
+                getattr(placement, "agent_url", None),
+                node_id=getattr(getattr(placement, "node", None), "node_id", None),
+            )
             if runtime not in runtimes_used:
                 runtimes_used.append(runtime)
             per_limit = None
