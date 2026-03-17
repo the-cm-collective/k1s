@@ -236,3 +236,41 @@ def test_gateway_reconnect_resets_replay_schedule(tmp_path: Path) -> None:
     ready = gateway._spool.list_replay_ready_results()  # type: ignore[attr-defined]
     assert len(ready) == 1
     assert ready[0].work_id == "w1"
+
+
+def test_gateway_replays_buffered_result_after_restart(tmp_path: Path) -> None:
+    first = _gateway(tmp_path)
+    first._spool.record_result(  # type: ignore[attr-defined]
+        "w1",
+        1,
+        "succeeded",
+        {
+            "work_id": "w1",
+            "attempt": 1,
+            "status": "succeeded",
+            "controller_id": "ctrl-a",
+            "controller_epoch": 7,
+            "operation_id": "work:w1:1",
+        },
+    )
+
+    nats = _FakeNatsClient()
+    second = _gateway(tmp_path, nats=nats)
+    second._replay_spool_results(100.0)  # type: ignore[attr-defined]
+
+    assert nats.published == [
+        (
+            "k1s.v1.site.sea.result",
+            {
+                "work_id": "w1",
+                "attempt": 1,
+                "status": "succeeded",
+                "controller_id": "ctrl-a",
+                "controller_epoch": 7,
+                "operation_id": "work:w1:1",
+            },
+        )
+    ]
+    record = second._spool.get_result("w1", 1)  # type: ignore[attr-defined]
+    assert record is not None
+    assert record.delivered_to_controller_at is not None

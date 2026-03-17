@@ -260,6 +260,8 @@ NATS edge drills (Mode A)
 - Gateway reconnect: restart gateway and ensure `ae_site_last_seen_seconds` drops back near 0.
 - JS consumer lag: enqueue a batch of work and watch `ae_outbox_publish_success_total` advance; use NATS tooling to inspect consumer pending/ack if needed.
 - Hub NATS restart: restart the hub NATS process and ensure outbox publishing resumes without manual intervention.
+- Gateway replay health: during hub loss or restart, watch `ae_gateway_result_replay_backlog` grow, then confirm it drains and `ae_gateway_result_replay_fail_total` stops increasing after reconnect.
+- Route convergence: after a gateway reconnect, confirm `ae_route_bundle_pending` returns to `0` and `ae_route_bundle_ack_age_seconds` falls back near `0`.
 - Site disconnect/reconnect: stop the edge leader + gateway, confirm stale metrics, then restart and confirm the site recovers.
 - Worker crash mid-work: kill the worker stub during execution and confirm the gateway stops progress acks; message should be NAKed and redelivered once the gateway sees stale heartbeats.
 - etcd leader change: force a leader move and ensure controller reconciliation continues without errors.

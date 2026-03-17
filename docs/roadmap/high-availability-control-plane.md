@@ -19,7 +19,7 @@ The repo already contains several of the primitives needed for this path:
 - NATS Core and JetStream transport modes
 - outbox-based dispatch and gateway spool durability
 
-The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes apishim workload mutation explicitly read-only until `H4`. `H2` is now in progress: mutation envelopes are emitted across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs. What remains in `H2` is finishing the stale-result and replay closure around all controller ingress paths, then carrying that model into the later transport-hardening and apishim convergence phases.
+The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes apishim workload mutation explicitly read-only until `H4`. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate `R=3`, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age.
 
 The two design rules for the whole program are:
 
@@ -124,9 +124,20 @@ Primary outcomes:
 
 - work dispatch, route bundles, and async reconcile messages publish only from the active leader
 - outbox dispatch re-checks leadership before publish and after failover
-- JetStream remains the durable hub path with `R=3` streams for critical subjects
+- JetStream remains the durable hub path with `R=3` streams for critical work subjects
+- gateway result replay is restart-safe and uses bounded retry/backoff instead of a hot loop
+- route bundles remain on the current periodic publish/ack path in this phase; reconnect forces immediate resend and metrics expose pending ack age
 - transport degradation may pause or delay work, but it does not corrupt ownership because truth remains in `etcd`
 - the first HA slice already moves mutating NATS request/reply bindings to the active leader; full replay safety still depends on `H2`
+
+Current implementation status:
+
+- outbox entries persist deterministic publish subject and `Nats-Msg-Id`, and the publisher re-checks authority before publish and before marking rows published
+- HA mode validates JetStream work stream and consumer replicas at bootstrap instead of silently accepting topology drift
+- gateway spool results now persist replay attempts, next retry time, and last replay error so buffered results can survive restart and replay with bounded backoff
+- gateway reconnect resets replay scheduling immediately instead of waiting for a fixed retry interval
+- route bundles still use periodic publish/ack, but reconnect now resets pending sites for immediate resend and `/metrics` exposes route publish counters, pending state, and `ae_route_bundle_ack_age_seconds`
+- gateway telemetry now exposes `ae_gateway_result_replay_total`, `ae_gateway_result_replay_fail_total`, and `ae_gateway_result_replay_backlog`
 
 ### H4: Shared API and apishim convergence
 

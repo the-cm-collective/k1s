@@ -742,7 +742,7 @@
 <li>NATS Core and JetStream transport modes</li>
 <li>outbox-based dispatch and gateway spool durability</li>
 </ul>
-<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes apishim workload mutation explicitly read-only until <code>H4</code>. <code>H2</code> is now in progress: mutation envelopes are emitted across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs. What remains in <code>H2</code> is finishing the stale-result and replay closure around all controller ingress paths, then carrying that model into the later transport-hardening and apishim convergence phases.</p>
+<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes apishim workload mutation explicitly read-only until <code>H4</code>. <code>H2</code> fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. <code>H3</code> is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate <code>R=3</code>, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age.</p>
 <p>The two design rules for the whole program are:</p>
 <ul>
 <li>watches and messages trigger work; only <code>etcd</code> transactions authorize work</li>
@@ -842,9 +842,20 @@
 <ul>
 <li>work dispatch, route bundles, and async reconcile messages publish only from the active leader</li>
 <li>outbox dispatch re-checks leadership before publish and after failover</li>
-<li>JetStream remains the durable hub path with <code>R=3</code> streams for critical subjects</li>
+<li>JetStream remains the durable hub path with <code>R=3</code> streams for critical work subjects</li>
+<li>gateway result replay is restart-safe and uses bounded retry/backoff instead of a hot loop</li>
+<li>route bundles remain on the current periodic publish/ack path in this phase; reconnect forces immediate resend and metrics expose pending ack age</li>
 <li>transport degradation may pause or delay work, but it does not corrupt ownership because truth remains in <code>etcd</code></li>
 <li>the first HA slice already moves mutating NATS request/reply bindings to the active leader; full replay safety still depends on <code>H2</code></li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>outbox entries persist deterministic publish subject and <code>Nats-Msg-Id</code>, and the publisher re-checks authority before publish and before marking rows published</li>
+<li>HA mode validates JetStream work stream and consumer replicas at bootstrap instead of silently accepting topology drift</li>
+<li>gateway spool results now persist replay attempts, next retry time, and last replay error so buffered results can survive restart and replay with bounded backoff</li>
+<li>gateway reconnect resets replay scheduling immediately instead of waiting for a fixed retry interval</li>
+<li>route bundles still use periodic publish/ack, but reconnect now resets pending sites for immediate resend and <code>/metrics</code> exposes route publish counters, pending state, and <code>ae_route_bundle_ack_age_seconds</code></li>
+<li>gateway telemetry now exposes <code>ae_gateway_result_replay_total</code>, <code>ae_gateway_result_replay_fail_total</code>, and <code>ae_gateway_result_replay_backlog</code></li>
 </ul>
 <h3 id="h4-shared-api-and-apishim-convergence">H4: Shared API and apishim convergence</h3>
 <p>Goal:</p>
@@ -896,7 +907,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-17 16:13:59</span>
+        <span>Built 2026-03-17 16:45:30</span>
       </div>
     </footer>
     <script>
