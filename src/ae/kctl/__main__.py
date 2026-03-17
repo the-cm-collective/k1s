@@ -7,6 +7,7 @@ that map onto the existing `ae.cli` functionality. k1s Apps are Deployment-like 
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Tuple
@@ -25,7 +26,7 @@ from ae.cli.__main__ import (
 from ae.controller.spec import app_key, format_app_ref, parse_app_ref
 from ae.observability.logging import configure_logging
 from ae.controller.reconciler import Reconciler
-from ae.controller.state import SQLiteStateStore, state_store_from_env
+from ae.controller.state import RegistryConflictError, SQLiteStateStore, state_store_from_env
 from ae.ingress.service import IngressService
 from ae.controller.__main__ import service_controller_factory
 
@@ -48,6 +49,10 @@ def _resolve_app_name(raw: str) -> str:
 
 def _display_app_name(app_name: str) -> str:
     return format_app_ref(app_name)
+
+
+def _ha_mode_enabled() -> bool:
+    return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def parse_ref(arg: str, expected: tuple[str, ...]) -> ParsedRef:
@@ -371,6 +376,29 @@ def handle_describe(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
 
 
 def handle_apply(ns: argparse.Namespace, reconciler: Reconciler) -> int:
+    if _ha_mode_enabled():
+        from ae.controller.spec import load_manifest
+
+        manifest = load_manifest(Path(ns.file))
+        store = state_store_from_env()
+        existing = store.get_registered_entry(app_key(manifest.metadata.name, manifest.metadata.namespace))
+        src = existing.source if existing else "kctl"
+        lbls = existing.labels if existing else getattr(manifest.metadata, "labels", None)
+        try:
+            rv = store.register_app(
+                manifest,
+                source=src,
+                labels=lbls,
+                expected_resource_version=(existing.resource_version if existing else None),
+            )
+        except RegistryConflictError as exc:
+            print(f"apply conflict: {exc}")
+            return 1
+        print(
+            f"applied desired state for {_display_app_name(app_key(manifest.metadata.name, manifest.metadata.namespace))} "
+            f"resourceVersion={rv}"
+        )
+        return 0
     report = reconciler.reconcile_manifest_path(ns.file)
     print(
         f"applied {_display_app_name(report.app_name)} rev={report.revision}({report.revision_status}) "
@@ -454,6 +482,19 @@ def handle_delete_k1s(
     runtime,
 ) -> int:
     ref = parse_ref(ns.ref, ("app",))
+    if _ha_mode_enabled():
+        print("local delete is not supported in HA mode; target a controller API with --server")
+        return 2
+    existing = store.get_registered_entry(ref.name)
+    try:
+        if existing is not None:
+            store.delete_registered_app(
+                ref.name,
+                expected_resource_version=existing.resource_version,
+            )
+    except RegistryConflictError as exc:
+        print(f"delete conflict: {exc}")
+        return 1
     removed = runtime.remove_app(ref.name)
     ingress: IngressService | None = reconciler._ingress_service  # type: ignore[attr-defined]
     if ingress is not None:
@@ -462,10 +503,6 @@ def handle_delete_k1s(
             ingress.reload()
         except Exception:
             pass
-    try:
-        store.delete_registered_app(ref.name)
-    except Exception:
-        pass
     store.delete_app_state(ref.name, purge_history=bool(getattr(ns, "purge", False)))
     print(f"deleted {_display_app_name(ref.name)}: removed={removed} containers")
     return 0
@@ -488,7 +525,21 @@ def handle_scale_k1s(
         existing = store.get_registered_entry(ref.name)
         src = existing.source if existing else "kctl"
         lbls = existing.labels if existing else getattr(updated.metadata, "labels", None)
-        store.register_app(updated, source=src, labels=lbls)
+        rv = store.register_app(
+            updated,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"scaled desired state for {_display_app_name(ref.name)} to replicas={ns.replicas}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"scale conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(updated)

@@ -27,6 +27,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ae.controller.authority import NotLeaderError
+from ae.controller.state import RegistryConflictError
 from ae.controller.state import SQLiteStateStore
 from ae.observability.metrics import MetricsService
 from ae.resources import loader as resource_loader
@@ -1581,6 +1583,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 report = self._call_apply(payload, source="api")
                 self._json_ok(report)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -1606,6 +1620,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 report = self.scale_fn(app, replicas)  # type: ignore[misc]
                 self._json_ok(report)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover - defensive
                 self._json_error(500, str(exc))
             return
@@ -1630,6 +1656,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 result = self.delete_fn(app, purge)  # type: ignore[misc]
                 self._json_ok(result)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -1645,6 +1683,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 out = self.rollout_pause_fn(app)  # type: ignore[misc]
                 self._json_ok(out)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -1660,6 +1710,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 out = self.rollout_resume_fn(app)  # type: ignore[misc]
                 self._json_ok(out)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -4152,7 +4214,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _json_error(self, code: int, message: str) -> None:
-        payload = json.dumps({"error": message}).encode("utf-8")
+        self._json_error_obj(code, {"error": message})
+
+    def _json_error_obj(self, code: int, obj: dict) -> None:
+        payload = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))

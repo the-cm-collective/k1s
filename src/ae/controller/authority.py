@@ -149,6 +149,31 @@ class AuthoritySnapshot:
         return int(self.leader_info.controller_epoch)
 
 
+class NotLeaderError(RuntimeError):
+    """Raised when a follower receives a leader-only mutation."""
+
+    def __init__(self, leader_info: LeaderInfo | None) -> None:
+        self.leader_info = leader_info
+        message = "not_leader"
+        if leader_info is not None:
+            details = [f"controller_id={leader_info.controller_id}"]
+            if leader_info.advertise_addr:
+                details.append(f"advertise_addr={leader_info.advertise_addr}")
+            if leader_info.controller_epoch:
+                details.append(f"controller_epoch={leader_info.controller_epoch}")
+            message = f"{message}: {' '.join(details)}"
+        super().__init__(message)
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"error": "not_leader"}
+        if self.leader_info is not None:
+            payload["controller_id"] = self.leader_info.controller_id
+            payload["controller_epoch"] = self.leader_info.controller_epoch
+            if self.leader_info.advertise_addr:
+                payload["advertise_addr"] = self.leader_info.advertise_addr
+        return payload
+
+
 @dataclass(slots=True)
 class _LeaseState:
     lease_id: int
@@ -511,4 +536,5 @@ __all__ = [
     "AuthoritySnapshot",
     "ControllerAuthorityService",
     "LeaderInfo",
+    "NotLeaderError",
 ]

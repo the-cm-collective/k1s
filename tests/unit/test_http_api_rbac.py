@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from ae.controller.authority import LeaderInfo, NotLeaderError
+from ae.controller.state import RegistryConflictError
 from ae.observability import http_api
 
 
@@ -174,6 +176,66 @@ def test_delete_denied_for_reader(monkeypatch):
     handler.do_POST()
     assert called.get("app") is None
     assert 403 in req.responses
+
+
+def test_apply_returns_not_leader_payload(monkeypatch):
+    monkeypatch.setenv("AE_API_RBAC", "1")
+    monkeypatch.setenv("AE_API_ADMIN_TOKEN", "a")
+    req = make_handler(
+        "/apply", headers={"Authorization": "Bearer a"}, body={"metadata": {"name": "app"}}
+    )
+    handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
+    handler.headers = {
+        "Authorization": "Bearer a",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
+    handler.rfile = BytesIO(req._payload)
+
+    def _apply(_payload):
+        raise NotLeaderError(
+            LeaderInfo(
+                controller_id="ctrl-b",
+                controller_epoch=12,
+                lease_id=501,
+                advertise_addr="http://ctrl-b:9108",
+                acquired_at=None,
+                version="v1",
+            )
+        )
+
+    handler.apply_fn = _apply
+    handler.do_POST()
+
+    body = bytes(req._wbuf).decode("utf-8", errors="ignore")
+    assert 409 in req.responses
+    assert '"error": "not_leader"' in body
+    assert '"controller_id": "ctrl-b"' in body
+
+
+def test_scale_returns_resource_version_conflict(monkeypatch):
+    monkeypatch.setenv("AE_API_RBAC", "1")
+    monkeypatch.setenv("AE_API_SCALER_TOKEN", "s")
+    req = make_handler("/scale/app", headers={"Authorization": "Bearer s"}, body={"replicas": 2})
+    handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
+    handler.headers = {
+        "Authorization": "Bearer s",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
+    handler.rfile = BytesIO(req._payload)
+
+    def _scale(_app, _replicas):
+        raise RegistryConflictError("app", expected=3, actual=4)
+
+    handler.scale_fn = _scale
+    handler.do_POST()
+
+    body = bytes(req._wbuf).decode("utf-8", errors="ignore")
+    assert 409 in req.responses
+    assert '"error": "resource_version_conflict"' in body
+    assert '"expected": 3' in body
+    assert '"actual": 4' in body
 
 
 # ruff: noqa: E501

@@ -32,7 +32,12 @@ from ae.controller.spec import (
     parse_app_ref,
     split_app_key,
 )
-from ae.controller.state import AppStatus, SQLiteStateStore, state_store_from_env
+from ae.controller.state import (
+    AppStatus,
+    RegistryConflictError,
+    SQLiteStateStore,
+    state_store_from_env,
+)
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.k8s.check import k8s_portability_issues
 from ae.k8s.exporter import ExportOptions, export_k8s_yaml
@@ -77,6 +82,10 @@ class CLIArgumentParser(argparse.ArgumentParser):
         cmd = list(getattr(parsed, "cmd", []) or [])
         parsed.cmd = cmd + leading + trailing
         return []
+
+
+def _ha_mode_enabled() -> bool:
+    return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1751,10 +1760,16 @@ def handle_apply(
                     raise ValueError("expected a single Deployment manifest document")
                 payload = docs[0]
             resp = _http_post_json(base, "/apply", payload, tok)
-            print(
-                f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
-                f"ops=+{resp.get('created')}/~{resp.get('updated')}/-{resp.get('removed')}"
-            )
+            if str(resp.get("status", "")).lower() == "accepted":
+                print(
+                    f"applied desired state for {resp.get('app')} "
+                    f"resourceVersion={resp.get('resourceVersion')}"
+                )
+            else:
+                print(
+                    f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
+                    f"ops=+{resp.get('created')}/~{resp.get('updated')}/-{resp.get('removed')}"
+                )
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"remote apply failed: {exc}")
@@ -1790,7 +1805,21 @@ def handle_apply(
         existing = store.get_registered_entry(app_key_for_manifest(manifest))
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(manifest.metadata, "labels", None)
-        store.register_app(manifest, source=src, labels=lbls)
+        rv = store.register_app(
+            manifest,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"Applied desired state for {_display_app_name(app_key_for_manifest(manifest))}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"apply conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(manifest)
@@ -2025,6 +2054,19 @@ def handle_delete(
             print(f"remote delete failed: {exc}")
             return 1
     name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
+    if _ha_mode_enabled():
+        print("local delete is not supported in HA mode; target a controller API with --server")
+        return 2
+    existing = store.get_registered_entry(name)
+    try:
+        if existing is not None:
+            store.delete_registered_app(
+                name,
+                expected_resource_version=existing.resource_version,
+            )
+    except RegistryConflictError as exc:
+        print(f"delete conflict: {exc}")
+        return 1
     removed = runtime.remove_app(name)
     if ingress_service:
         try:
@@ -2050,10 +2092,6 @@ def handle_delete(
                         pass
         except Exception:
             pass
-    try:
-        store.delete_registered_app(name)
-    except Exception:
-        pass
     store.delete_app_state(name, purge_history=bool(args.purge))
     print(
         f"deleted {_display_app_name(name)}: removed={removed} containers{' (purged history)' if args.purge else ''}"
@@ -2075,9 +2113,15 @@ def handle_scale(
             resp = _http_post_json(
                 base, f"/scale/{app_name}", {"replicas": int(args.replicas)}, tok
             )
-            print(
-                f"scaled {_display_app_name(app_name)} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
-            )
+            if str(resp.get("status", "")).lower() == "accepted":
+                print(
+                    f"scaled desired state for {_display_app_name(app_name)} to replicas={resp.get('replicas')} "
+                    f"resourceVersion={resp.get('resourceVersion')}"
+                )
+            else:
+                print(
+                    f"scaled {_display_app_name(app_name)} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
+                )
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"remote scale failed: {exc}")
@@ -2094,7 +2138,21 @@ def handle_scale(
         existing = store.get_registered_entry(name)
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(new_manifest.metadata, "labels", None)
-        store.register_app(new_manifest, source=src, labels=lbls)
+        rv = store.register_app(
+            new_manifest,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"scaled desired state for {_display_app_name(name)} to replicas={args.replicas}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"scale conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(new_manifest)
@@ -3207,7 +3265,21 @@ def handle_rollout(
         existing = store.get_registered_entry(app)
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(updated.metadata, "labels", None)
-        store.register_app(updated, source=src, labels=lbls)
+        rv = store.register_app(
+            updated,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"rollout {args.rollout_cmd} desired state for {_display_app_name(app)}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"rollout conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(updated)

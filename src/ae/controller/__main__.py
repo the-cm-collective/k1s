@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 import json, hashlib
 import yaml
 
-from ae.controller.authority import AuthorityConfig, ControllerAuthorityService
+from ae.controller.authority import AuthorityConfig, ControllerAuthorityService, NotLeaderError
 from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
@@ -1883,20 +1883,39 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     api_server = None
     if args.metrics_port and args.metrics_port > 0:
         # Optional mutators wired via closures and gated at handler level
+        def _require_mutation_authority() -> None:
+            if not authority_config.enabled:
+                return
+            snapshot = authority.snapshot() if authority is not None else None
+            leader_info = snapshot.leader_info if snapshot is not None else None
+            if snapshot is None or not snapshot.is_leader:
+                raise NotLeaderError(leader_info)
+
         def _scale(app: str, replicas: int):  # noqa: ANN001
+            _require_mutation_authority()
             revs = store.list_revisions(app, limit=1)
             if not revs:
                 raise RuntimeError(f"no revisions recorded for {app}")
             manifest = store.get_revision_manifest(app, revs[0].revision)
             new_spec = manifest.spec.model_copy(update={"replicas": int(replicas)})
             updated = manifest.model_copy(update={"spec": new_spec})
-            try:
-                existing = store.get_registered_entry(app)
-                src = existing.source if existing else "api"
-                lbls = existing.labels if existing else None
-                store.register_app(updated, source=src, labels=lbls)
-            except Exception:
-                pass
+            existing = store.get_registered_entry(app)
+            src = existing.source if existing else "api"
+            lbls = existing.labels if existing else None
+            resource_version = store.register_app(
+                updated,
+                source=src,
+                labels=lbls,
+                expected_resource_version=(existing.resource_version if existing else None),
+            )
+
+            if authority_config.enabled:
+                return {
+                    "app": app,
+                    "replicas": int(replicas),
+                    "status": "accepted",
+                    "resourceVersion": resource_version,
+                }
 
             # First reconcile immediately
             report = reconciler.reconcile(updated)
@@ -1929,6 +1948,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             }
 
         def _delete(app: str, purge: bool):  # noqa: ANN001
+            _require_mutation_authority()
+            existing = store.get_registered_entry(app)
+            if existing is not None:
+                store.delete_registered_app(
+                    app,
+                    expected_resource_version=existing.resource_version,
+                )
             # Remove runtime containers
             runtime = reconciler._runtime  # type: ignore[attr-defined]
             removed = runtime.remove_app(app)
@@ -1940,14 +1966,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     ingress.reload()
                 except Exception:
                     pass
-            try:
-                store.delete_registered_app(app)
-            except Exception:
-                pass
             store.delete_app_state(app, purge_history=bool(purge))
             return {"app": app, "removed": removed, "purged": bool(purge)}
 
         def _apply(payload: dict, source: str | None = None, labels: dict | None = None):  # noqa: ANN001
+            _require_mutation_authority()
             # Accept a Deployment manifest JSON and reconcile
             from ae.controller.spec import AppManifest
 
@@ -1956,14 +1979,23 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"invalid manifest: {exc}")
             warnings: list[str] = []
-            try:
-                app_name = app_key_for_manifest(manifest)
-                existing = store.get_registered_entry(app_name)
-                src = source or (existing.source if existing else "api")
-                lbls = labels if labels is not None else (existing.labels if existing else None)
-                store.register_app(manifest, source=src, labels=lbls)
-            except Exception:
-                pass
+            app_name = app_key_for_manifest(manifest)
+            existing = store.get_registered_entry(app_name)
+            src = source or (existing.source if existing else "api")
+            lbls = labels if labels is not None else (existing.labels if existing else None)
+            resource_version = store.register_app(
+                manifest,
+                source=src,
+                labels=lbls,
+                expected_resource_version=(existing.resource_version if existing else None),
+            )
+            if authority_config.enabled:
+                return {
+                    "app": app_name,
+                    "status": "accepted",
+                    "resourceVersion": resource_version,
+                    "warnings": warnings,
+                }
             # First reconcile immediately
             report = reconciler.reconcile(manifest)
 
@@ -2698,6 +2730,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 }
 
             def _rollout_pause(app: str) -> dict:
+                _require_mutation_authority()
                 revs = store.list_revisions(app, limit=1)
                 if not revs:
                     raise RuntimeError(f"no revisions recorded for {app}")
@@ -2706,13 +2739,21 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 ro["pause"] = True
                 new_spec = man.spec.model_copy(update={"rollout": ro})
                 updated = man.model_copy(update={"spec": new_spec})
-                try:
-                    existing = store.get_registered_entry(app)
-                    src = existing.source if existing else "api"
-                    lbls = existing.labels if existing else None
-                    store.register_app(updated, source=src, labels=lbls)
-                except Exception:
-                    pass
+                existing = store.get_registered_entry(app)
+                src = existing.source if existing else "api"
+                lbls = existing.labels if existing else None
+                resource_version = store.register_app(
+                    updated,
+                    source=src,
+                    labels=lbls,
+                    expected_resource_version=(existing.resource_version if existing else None),
+                )
+                if authority_config.enabled:
+                    return {
+                        "app": app,
+                        "status": "accepted",
+                        "resourceVersion": resource_version,
+                    }
                 report = reconciler.reconcile(updated)
                 # Best-effort fast-follow burst to surface "paused" promptly
                 try:
@@ -2731,6 +2772,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 return {"app": app, "revision": report.revision, "status": report.revision_status}
 
             def _rollout_resume(app: str) -> dict:
+                _require_mutation_authority()
                 revs = store.list_revisions(app, limit=1)
                 if not revs:
                     raise RuntimeError(f"no revisions recorded for {app}")
@@ -2739,13 +2781,21 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 ro["pause"] = False
                 new_spec = man.spec.model_copy(update={"rollout": ro})
                 updated = man.model_copy(update={"spec": new_spec})
-                try:
-                    existing = store.get_registered_entry(app)
-                    src = existing.source if existing else "api"
-                    lbls = existing.labels if existing else None
-                    store.register_app(updated, source=src, labels=lbls)
-                except Exception:
-                    pass
+                existing = store.get_registered_entry(app)
+                src = existing.source if existing else "api"
+                lbls = existing.labels if existing else None
+                resource_version = store.register_app(
+                    updated,
+                    source=src,
+                    labels=lbls,
+                    expected_resource_version=(existing.resource_version if existing else None),
+                )
+                if authority_config.enabled:
+                    return {
+                        "app": app,
+                        "status": "accepted",
+                        "resourceVersion": resource_version,
+                    }
                 report = reconciler.reconcile(updated)
                 try:
                     store.record_event(app, report.revision, "RolloutResumed", "Rollout resumed")

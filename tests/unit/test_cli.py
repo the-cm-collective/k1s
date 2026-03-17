@@ -1,8 +1,13 @@
 """CLI integration smoke tests."""
 
+import argparse
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
-from ae.cli.__main__ import main
+from ae.cli.__main__ import handle_scale, main
+from ae.controller.spec import AppManifest, AppSpec, Metadata
+from ae.controller.state import RegistryConflictError, RegistryEntry
 
 
 def write_manifest(path: Path) -> None:
@@ -185,3 +190,62 @@ def test_examples_write_multiport(tmp_path):
     text = out_path.read_text()
     assert "echo-multi" in text
     assert "kind: Deployment" in text
+
+
+def test_apply_in_ha_mode_writes_registry_without_reconcile(tmp_path, monkeypatch, capsys):
+    manifest_path = tmp_path / "echo.yaml"
+    write_manifest(manifest_path)
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setenv("AE_STATE_DB", str(db_path))
+    monkeypatch.setenv("AE_RUNTIME_BACKEND", "stub")
+    monkeypatch.setenv("AE_CADDY_SITES", "")
+    monkeypatch.setenv("AE_HA_MODE", "1")
+
+    exit_code = main(["apply", "-f", str(manifest_path)])
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Applied desired state for default/echo" in output
+
+    from ae.controller.state import SQLiteStateStore
+
+    store = SQLiteStateStore(db_path)
+    entry = store.get_registered_entry("echo")
+    assert entry is not None
+    assert entry.resource_version == 1
+    assert store.list_status() == []
+
+
+def test_handle_scale_reports_registry_conflict(capsys):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="echo"),
+        spec=AppSpec(image="alpine:3.20", replicas=1),
+    )
+
+    class _Store:
+        def list_revisions(self, _name, limit=1):
+            return [SimpleNamespace(revision=1)]
+
+        def get_revision_manifest(self, _name, _revision):
+            return manifest
+
+        def get_registered_entry(self, _name):
+            return RegistryEntry(
+                app_name="echo",
+                manifest=manifest,
+                spec_hash="hash",
+                source="cli",
+                labels={},
+                updated_at=datetime.now(timezone.utc),
+                resource_version=1,
+            )
+
+        def register_app(self, *_args, **_kwargs):
+            raise RegistryConflictError("echo", expected=1, actual=2)
+
+    args = argparse.Namespace(name="echo", replicas=2, namespace=None)
+    result = handle_scale(args, _Store(), SimpleNamespace())
+    assert result == 1
+    assert "scale conflict" in capsys.readouterr().out

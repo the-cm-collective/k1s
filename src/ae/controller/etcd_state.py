@@ -24,6 +24,7 @@ from ae.controller.state import (
     NodeStatus,
     PodStatus,
     ProbeHistoryEntry,
+    RegistryConflictError,
     RegistryEntry,
     RevisionInfo,
     ServiceEndpoint,
@@ -788,13 +789,16 @@ class EtcdStateStore(SQLiteStateStore):
         *,
         source: str | None = None,
         labels: dict | None = None,
-    ) -> None:
+        expected_resource_version: int | None = None,
+    ) -> int:
         app_name = app_key_for_manifest(manifest)
-        existing = self.get_registered_entry(app_name)
+        key = self._k("apps", app_name, "registry")
+        existing, current_rv = self._get_json(key)
         if source is None and existing is not None:
-            source = existing.source
+            source = str(existing.get("source", ""))
         if labels is None and existing is not None:
-            labels = existing.labels
+            current_labels = existing.get("labels") or {}
+            labels = current_labels if isinstance(current_labels, dict) else {}
         spec_hash = self._manifest_hash(manifest)
         updated_at = _now_iso()
         payload = {
@@ -805,7 +809,44 @@ class EtcdStateStore(SQLiteStateStore):
             "labels": labels or {},
             "updated_at": updated_at,
         }
-        self._put_json(self._k("apps", app_name, "registry"), payload)
+        if expected_resource_version is None:
+            self._put_json(key, payload)
+            return self._get_json(key)[1]
+        compare: list[dict]
+        if int(expected_resource_version) == 0:
+            compare = [
+                {
+                    "key": _b64encode(key),
+                    "target": "CREATE",
+                    "createRevision": "0",
+                }
+            ]
+        else:
+            compare = [
+                {
+                    "key": _b64encode(key),
+                    "target": "MOD",
+                    "modRevision": str(int(expected_resource_version)),
+                }
+            ]
+        success = [
+            {
+                "requestPut": {
+                    "key": _b64encode(key),
+                    "value": _b64encode(self._encode(payload)),
+                }
+            }
+        ]
+        failure = [{"requestRange": {"key": _b64encode(key), "limit": 1}}]
+        resp = self._client.txn(compare, success, failure)
+        if not bool(resp.get("succeeded")):
+            actual_rv = self._get_json(key)[1]
+            raise RegistryConflictError(
+                app_name,
+                expected=int(expected_resource_version),
+                actual=actual_rv,
+            )
+        return self._get_json(key)[1]
 
     def list_registered_apps(self) -> list[RegistryEntry]:
         rows = self._list_prefix(self._k("apps"))
@@ -824,6 +865,7 @@ class EtcdStateStore(SQLiteStateStore):
                     source=str(rec.get("source", "")),
                     labels=rec.get("labels") or {},
                     updated_at=updated or datetime.fromtimestamp(0, tz=timezone.utc),
+                    resource_version=int(_rev or 0),
                 )
             )
         return out
@@ -836,7 +878,7 @@ class EtcdStateStore(SQLiteStateStore):
         return [n for n in names if n]
 
     def get_registered_entry(self, app_name: str) -> RegistryEntry | None:
-        rec, _ = self._get_json(self._k("apps", app_name, "registry"))
+        rec, mod_rev = self._get_json(self._k("apps", app_name, "registry"))
         if not rec:
             return None
         spec = rec.get("spec") or {}
@@ -848,14 +890,44 @@ class EtcdStateStore(SQLiteStateStore):
             source=str(rec.get("source", "")),
             labels=rec.get("labels") or {},
             updated_at=updated or datetime.fromtimestamp(0, tz=timezone.utc),
+            resource_version=int(mod_rev or 0),
         )
 
     def get_registered_manifest(self, app_name: str) -> AppManifest | None:
         entry = self.get_registered_entry(app_name)
         return entry.manifest if entry else None
 
-    def delete_registered_app(self, app_name: str) -> None:
-        self._delete(self._k("apps", app_name, "registry"))
+    def delete_registered_app(
+        self,
+        app_name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        key = self._k("apps", app_name, "registry")
+        if expected_resource_version is None:
+            existing, _rv = self._get_json(key)
+            if existing is None:
+                return False
+            self._delete(key)
+            return True
+        compare = [
+            {
+                "key": _b64encode(key),
+                "target": "MOD",
+                "modRevision": str(int(expected_resource_version)),
+            }
+        ]
+        success = [{"requestDeleteRange": {"key": _b64encode(key)}}]
+        failure = [{"requestRange": {"key": _b64encode(key), "limit": 1}}]
+        resp = self._client.txn(compare, success, failure)
+        if not bool(resp.get("succeeded")):
+            actual_rv = self._get_json(key)[1]
+            raise RegistryConflictError(
+                app_name,
+                expected=int(expected_resource_version),
+                actual=actual_rv,
+            )
+        return True
 
     def _get_latest_revision(self, app_name: str) -> RevisionInfo | None:
         revs = self.list_revisions(app_name, limit=1_000_000)

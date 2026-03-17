@@ -61,6 +61,20 @@ class RegistryEntry:
     source: str
     labels: dict
     updated_at: datetime
+    resource_version: int = 0
+
+
+class RegistryConflictError(RuntimeError):
+    """Raised when a registry CAS write sees a stale resource version."""
+
+    def __init__(self, app_name: str, *, expected: int, actual: int) -> None:
+        self.app_name = str(app_name)
+        self.expected = int(expected)
+        self.actual = int(actual)
+        super().__init__(
+            f"registry resourceVersion conflict for {self.app_name}: "
+            f"expected={self.expected} actual={self.actual}"
+        )
 
 
 @dataclass(slots=True)
@@ -597,6 +611,15 @@ class SQLiteStateStore:
                 conn,
                 resource_loader.load_text("sql", "controller", "create_edge_ingress_policies.sql"),
             )
+            self._ensure_column(
+                conn,
+                "app_registry",
+                "resource_version",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            conn.execute(
+                "UPDATE app_registry SET resource_version = 1 WHERE COALESCE(resource_version, 0) < 1"
+            )
             self._ensure_column(conn, "edge_ingress_routes", "status_json", "TEXT")
             self._ensure_column(conn, "edge_ingress_policies", "status_json", "TEXT")
             self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
@@ -1058,37 +1081,42 @@ class SQLiteStateStore:
         *,
         source: str | None = None,
         labels: dict | None = None,
-    ) -> None:
+        expected_resource_version: int | None = None,
+    ) -> int:
         spec_json = json.dumps(manifest.model_dump(by_alias=True), sort_keys=True)
         spec_hash = self._manifest_hash(manifest)
         updated_at = datetime.now(timezone.utc).isoformat()
         app_name = app_key_for_manifest(manifest)
         existing_source = None
         existing_labels: dict | None = None
-        if source is None or labels is None:
-            try:
-                with self._connect() as conn:
-                    row = conn.execute(
-                        "SELECT source, labels FROM app_registry WHERE app_name = ?",
-                        (app_name,),
-                    ).fetchone()
-                if row is not None:
-                    existing_source = row[0]
-                    try:
-                        existing_labels = json.loads(row[1] or "{}")
-                        if not isinstance(existing_labels, dict):
-                            existing_labels = {}
-                    except Exception:
-                        existing_labels = {}
-            except Exception:
-                existing_source = None
-                existing_labels = None
-        labels_json = json.dumps(
-            labels if labels is not None else (existing_labels or {}),
-            sort_keys=True,
-        )
-        source_val = str(source or existing_source or "unknown")
+        current_rv = 0
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT source, labels, resource_version FROM app_registry WHERE app_name = ?",
+                (app_name,),
+            ).fetchone()
+            if row is not None:
+                existing_source = row[0]
+                current_rv = int(row[2] or 0)
+                try:
+                    existing_labels = json.loads(row[1] or "{}")
+                    if not isinstance(existing_labels, dict):
+                        existing_labels = {}
+                except Exception:
+                    existing_labels = {}
+            if expected_resource_version is not None:
+                if current_rv != int(expected_resource_version):
+                    raise RegistryConflictError(
+                        app_name,
+                        expected=int(expected_resource_version),
+                        actual=current_rv,
+                    )
+            labels_json = json.dumps(
+                labels if labels is not None else (existing_labels or {}),
+                sort_keys=True,
+            )
+            source_val = str(source or existing_source or "unknown")
+            next_resource_version = max(1, current_rv + 1)
             conn.execute(
                 resource_loader.load_text("sql", "controller", "insert_app_registry_upsert.sql"),
                 (
@@ -1098,9 +1126,11 @@ class SQLiteStateStore:
                     source_val,
                     labels_json,
                     updated_at,
+                    next_resource_version,
                 ),
             )
             conn.commit()
+        return next_resource_version
 
     def list_registered_apps(self) -> list[RegistryEntry]:
         with self._connect() as conn:
@@ -1142,10 +1172,30 @@ class SQLiteStateStore:
         except Exception:
             return None
 
-    def delete_registered_app(self, app_name: str) -> None:
+    def delete_registered_app(
+        self,
+        app_name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        deleted = False
         with self._connect() as conn:
+            if expected_resource_version is not None:
+                row = conn.execute(
+                    "SELECT resource_version FROM app_registry WHERE app_name = ?",
+                    (app_name,),
+                ).fetchone()
+                current_rv = int(row[0] or 0) if row is not None else 0
+                if current_rv != int(expected_resource_version):
+                    raise RegistryConflictError(
+                        app_name,
+                        expected=int(expected_resource_version),
+                        actual=current_rv,
+                    )
             conn.execute("DELETE FROM app_registry WHERE app_name = ?", (app_name,))
+            deleted = bool(getattr(conn, "total_changes", 0))
             conn.commit()
+        return deleted
 
     def _registry_entry_from_row(self, row) -> RegistryEntry | None:
         try:
@@ -1169,6 +1219,7 @@ class SQLiteStateStore:
             source=row[3],
             labels=labels,
             updated_at=updated,
+            resource_version=int(row[6] or 0),
         )
 
     def _get_latest_revision(self, app_name: str) -> Optional[RevisionInfo]:
