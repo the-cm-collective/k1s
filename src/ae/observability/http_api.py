@@ -169,16 +169,25 @@ def record_gateway_metrics(
     work_stale_total: float | int | None,
     work_nak_total: float | int | None,
     lease_retry_total: float | int | None,
+    result_replay_total: float | int | None = None,
+    result_replay_fail_total: float | int | None = None,
+    result_replay_backlog: float | int | None = None,
 ) -> None:
     if not site_id:
         return
     stale_val = float(work_stale_total or 0.0)
     nak_val = float(work_nak_total or 0.0)
     retry_val = float(lease_retry_total or 0.0)
+    replay_val = float(result_replay_total or 0.0)
+    replay_fail_val = float(result_replay_fail_total or 0.0)
+    replay_backlog_val = float(result_replay_backlog or 0.0)
     _GATEWAY_WORK_METRICS[site_id] = {
         "work_stale_total": stale_val,
         "work_nak_total": nak_val,
         "lease_retry_total": retry_val,
+        "result_replay_total": replay_val,
+        "result_replay_fail_total": replay_fail_val,
+        "result_replay_backlog": replay_backlog_val,
     }
 
 
@@ -189,7 +198,15 @@ def record_route_bundle_apply(
         return
     metrics = _ROUTE_BUNDLE_METRICS.setdefault(
         site_id,
-        {"apply_ok_total": 0.0, "apply_fail_total": 0.0, "last_latency_s": 0.0},
+        {
+            "apply_ok_total": 0.0,
+            "apply_fail_total": 0.0,
+            "last_latency_s": 0.0,
+            "publish_ok_total": 0.0,
+            "publish_fail_total": 0.0,
+            "pending": 0.0,
+            "ack_age_s": 0.0,
+        },
     )
     if ok:
         metrics["apply_ok_total"] = metrics.get("apply_ok_total", 0.0) + 1.0
@@ -197,6 +214,42 @@ def record_route_bundle_apply(
         metrics["apply_fail_total"] = metrics.get("apply_fail_total", 0.0) + 1.0
     if latency_seconds is not None:
         metrics["last_latency_s"] = float(latency_seconds)
+
+
+def record_route_bundle_publish_state(
+    site_id: str,
+    *,
+    pending: bool | None = None,
+    ack_age_seconds: float | None = None,
+    publish_ok: bool | int | float = False,
+    publish_fail: bool | int | float = False,
+) -> None:
+    if not site_id:
+        return
+    metrics = _ROUTE_BUNDLE_METRICS.setdefault(
+        site_id,
+        {
+            "apply_ok_total": 0.0,
+            "apply_fail_total": 0.0,
+            "last_latency_s": 0.0,
+            "publish_ok_total": 0.0,
+            "publish_fail_total": 0.0,
+            "pending": 0.0,
+            "ack_age_s": 0.0,
+        },
+    )
+    if pending is not None:
+        metrics["pending"] = 1.0 if pending else 0.0
+    if ack_age_seconds is not None:
+        metrics["ack_age_s"] = float(ack_age_seconds)
+    if publish_ok:
+        metrics["publish_ok_total"] = metrics.get("publish_ok_total", 0.0) + float(
+            1.0 if isinstance(publish_ok, bool) else publish_ok
+        )
+    if publish_fail:
+        metrics["publish_fail_total"] = metrics.get("publish_fail_total", 0.0) + float(
+            1.0 if isinstance(publish_fail, bool) else publish_fail
+        )
 
 
 def record_ha_fence_event(
@@ -3245,6 +3298,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     "# TYPE ae_route_bundle_apply_fail_total counter",
                     "# HELP ae_route_bundle_apply_latency_seconds Last route bundle apply latency",
                     "# TYPE ae_route_bundle_apply_latency_seconds gauge",
+                    "# HELP ae_route_bundle_publish_ok_total Route bundle publishes that succeeded",
+                    "# TYPE ae_route_bundle_publish_ok_total counter",
+                    "# HELP ae_route_bundle_publish_fail_total Route bundle publishes that failed",
+                    "# TYPE ae_route_bundle_publish_fail_total counter",
+                    "# HELP ae_route_bundle_pending Route bundle sites still awaiting acknowledgement",
+                    "# TYPE ae_route_bundle_pending gauge",
+                    "# HELP ae_route_bundle_ack_age_seconds Age of the oldest outstanding route bundle publish",
+                    "# TYPE ae_route_bundle_ack_age_seconds gauge",
                 ]
                 for site_id, metrics in sorted(_ROUTE_BUNDLE_METRICS.items()):
                     labels = f'site="{site_id}"'
@@ -3256,6 +3317,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     )
                     lines.append(
                         f"ae_route_bundle_apply_latency_seconds{{{labels}}} {metrics.get('last_latency_s', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_publish_ok_total{{{labels}}} {metrics.get('publish_ok_total', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_publish_fail_total{{{labels}}} {metrics.get('publish_fail_total', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_pending{{{labels}}} {metrics.get('pending', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_ack_age_seconds{{{labels}}} {metrics.get('ack_age_s', 0.0)}"
                     )
         except Exception:
             pass
@@ -3434,14 +3507,30 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             lines.append("# TYPE ae_gateway_work_nak_total counter")
             lines.append("# HELP ae_gateway_lease_retry_total Gateway lease acquire retries")
             lines.append("# TYPE ae_gateway_lease_retry_total counter")
+            lines.append("# HELP ae_gateway_result_replay_total Gateway result replays delivered")
+            lines.append("# TYPE ae_gateway_result_replay_total counter")
+            lines.append(
+                "# HELP ae_gateway_result_replay_fail_total Gateway result replay attempts that failed"
+            )
+            lines.append("# TYPE ae_gateway_result_replay_fail_total counter")
+            lines.append(
+                "# HELP ae_gateway_result_replay_backlog Gateway buffered results awaiting controller delivery"
+            )
+            lines.append("# TYPE ae_gateway_result_replay_backlog gauge")
             for site_id, stats in _GATEWAY_WORK_METRICS.items():
                 labels = f'site="{site_id}"'
                 stale = float(stats.get("work_stale_total", 0.0) or 0.0)
                 nacked = float(stats.get("work_nak_total", 0.0) or 0.0)
                 retries = float(stats.get("lease_retry_total", 0.0) or 0.0)
+                replay = float(stats.get("result_replay_total", 0.0) or 0.0)
+                replay_fail = float(stats.get("result_replay_fail_total", 0.0) or 0.0)
+                replay_backlog = float(stats.get("result_replay_backlog", 0.0) or 0.0)
                 lines.append(f"ae_gateway_work_stale_total{{{labels}}} {stale}")
                 lines.append(f"ae_gateway_work_nak_total{{{labels}}} {nacked}")
                 lines.append(f"ae_gateway_lease_retry_total{{{labels}}} {retries}")
+                lines.append(f"ae_gateway_result_replay_total{{{labels}}} {replay}")
+                lines.append(f"ae_gateway_result_replay_fail_total{{{labels}}} {replay_fail}")
+                lines.append(f"ae_gateway_result_replay_backlog{{{labels}}} {replay_backlog}")
         if _HA_FENCE_METRICS:
             lines.append("# HELP ae_ha_fence_stale_total HA fence stale-envelope rejects")
             lines.append("# TYPE ae_ha_fence_stale_total counter")
@@ -3631,24 +3720,50 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 gw_nak = 0.0
                 gw_stale = 0.0
                 gw_retries = 0.0
+                gw_replay = 0.0
+                gw_replay_fail = 0.0
+                gw_replay_backlog = 0.0
                 for stats in _GATEWAY_WORK_METRICS.values():
                     gw_nak += float(stats.get("work_nak_total", 0.0) or 0.0)
                     gw_stale += float(stats.get("work_stale_total", 0.0) or 0.0)
                     gw_retries += float(stats.get("lease_retry_total", 0.0) or 0.0)
+                    gw_replay += float(stats.get("result_replay_total", 0.0) or 0.0)
+                    gw_replay_fail += float(stats.get("result_replay_fail_total", 0.0) or 0.0)
+                    gw_replay_backlog += float(stats.get("result_replay_backlog", 0.0) or 0.0)
                 transport["gateway"] = {
                     "work_nak_total": gw_nak,
                     "work_stale_total": gw_stale,
                     "lease_retry_total": gw_retries,
+                    "result_replay_total": gw_replay,
+                    "result_replay_fail_total": gw_replay_fail,
+                    "result_replay_backlog": gw_replay_backlog,
                     "sites": int(len(_GATEWAY_WORK_METRICS)),
                 }
             # Route bundle apply summary
             if _ROUTE_BUNDLE_METRICS:
                 ok_total = 0.0
                 fail_total = 0.0
+                publish_ok_total = 0.0
+                publish_fail_total = 0.0
+                pending_sites = 0.0
+                max_ack_age = None
                 last_latency = None
                 for stats in _ROUTE_BUNDLE_METRICS.values():
                     ok_total += float(stats.get("apply_ok_total", 0.0) or 0.0)
                     fail_total += float(stats.get("apply_fail_total", 0.0) or 0.0)
+                    publish_ok_total += float(stats.get("publish_ok_total", 0.0) or 0.0)
+                    publish_fail_total += float(stats.get("publish_fail_total", 0.0) or 0.0)
+                    pending_sites += float(stats.get("pending", 0.0) or 0.0)
+                    ack_age = stats.get("ack_age_s")
+                    if ack_age is not None:
+                        try:
+                            ack_age_val = float(ack_age)
+                        except Exception:
+                            ack_age_val = None
+                        if ack_age_val is not None and (
+                            max_ack_age is None or ack_age_val > max_ack_age
+                        ):
+                            max_ack_age = ack_age_val
                     latency = stats.get("last_latency_s")
                     if latency is None:
                         continue
@@ -3661,6 +3776,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 transport["routes"] = {
                     "bundle_ok_total": ok_total,
                     "bundle_fail_total": fail_total,
+                    "publish_ok_total": publish_ok_total,
+                    "publish_fail_total": publish_fail_total,
+                    "pending_sites": pending_sites,
+                    "max_ack_age_s": max_ack_age,
                     "last_latency_s": last_latency,
                     "sites": int(len(_ROUTE_BUNDLE_METRICS)),
                 }

@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,6 +52,8 @@ class GatewayStats:
     stale: int = 0
     nacked: int = 0
     lease_retry_total: int = 0
+    result_replay_total: int = 0
+    result_replay_fail_total: int = 0
     last_report_at: float = 0.0
 
 
@@ -139,10 +141,17 @@ class SiteGateway:
         )
         self._lease_next_attempt_at = 0.0
         self._lease_backoff_s = self._lease_retry_min_s
-        self._last_result_retry = 0.0
-        self._result_retry_interval_s = max(
-            2.0,
-            float(os.getenv("AE_GATEWAY_RESULT_RETRY_INTERVAL", "5") or 5),
+        self._result_retry_min_s = max(
+            1.0,
+            _parse_duration_seconds(
+                os.getenv("AE_GATEWAY_RESULT_RETRY_MIN", "") or "", default=2.0
+            ),
+        )
+        self._result_retry_max_s = max(
+            self._result_retry_min_s,
+            _parse_duration_seconds(
+                os.getenv("AE_GATEWAY_RESULT_RETRY_MAX", "") or "", default=30.0
+            ),
         )
         self._route_bundle_rev = 0
         self._route_bundle_hash: str | None = None
@@ -241,6 +250,11 @@ class SiteGateway:
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("nats client connect failed: %s", exc)
             else:
+                if hasattr(self._nats_client, "add_reconnect_listener"):
+                    try:
+                        self._nats_client.add_reconnect_listener(self._on_transport_reconnect)
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.warning("failed to register reconnect listener: %s", exc)
                 self._js_enabled = self._backend == "nats-js"
                 try:
                     self._subscribe_local_results()
@@ -448,10 +462,8 @@ class SiteGateway:
     def _replay_spool_results(self, now: float) -> None:
         if not self._spool_enabled or self._nats_client is None:
             return
-        if now - self._last_result_retry < self._result_retry_interval_s:
-            return
-        self._last_result_retry = now
-        for record in self._spool.list_undelivered_results(limit=100):
+        _ = now
+        for record in self._spool.list_replay_ready_results(limit=100):
             if record.operation_id is None:
                 continue
             try:
@@ -459,7 +471,32 @@ class SiteGateway:
                     hub_result_subject(self._site_id), record.payload
                 )
                 self._spool.mark_result_delivered(record.work_id, record.attempt)
-            except Exception:
+                self._stats.result_replay_total += 1
+            except Exception as exc:
+                retry_delay_s = _next_result_retry_delay(
+                    record.replay_attempts + 1,
+                    min_delay_s=self._result_retry_min_s,
+                    max_delay_s=self._result_retry_max_s,
+                )
+                retry_at = datetime.now(timezone.utc) + timedelta(seconds=retry_delay_s)
+                self._stats.result_replay_fail_total += 1
+                LOGGER.debug(
+                    "gateway replay failed site=%s work=%s/%s retry_in=%.1fs: %s",
+                    self._site_id,
+                    record.work_id,
+                    record.attempt,
+                    retry_delay_s,
+                    exc,
+                )
+                try:
+                    self._spool.record_result_delivery_attempt(
+                        record.work_id,
+                        record.attempt,
+                        error=str(exc),
+                        retry_at=retry_at,
+                    )
+                except Exception:
+                    pass
                 continue
 
     def _poll_work_pull(self, now: float) -> None:
@@ -965,6 +1002,12 @@ class SiteGateway:
         if now - self._last_status_publish >= self._status_every_s:
             self._last_status_publish = now
             if _should_sample(self._status_sample_rate):
+                result_replay_backlog = 0
+                if self._spool_enabled:
+                    try:
+                        result_replay_backlog = self._spool.count_undelivered_results()
+                    except Exception:
+                        result_replay_backlog = 0
                 status = {
                     "site_id": self._site_id,
                     "node_id": self._node_id,
@@ -976,6 +1019,9 @@ class SiteGateway:
                         "work_stale_total": self._stats.stale,
                         "work_nak_total": self._stats.nacked,
                         "lease_retry_total": self._stats.lease_retry_total,
+                        "result_replay_total": self._stats.result_replay_total,
+                        "result_replay_fail_total": self._stats.result_replay_fail_total,
+                        "result_replay_backlog": result_replay_backlog,
                     },
                     "timestamp": time.time(),
                 }
@@ -999,6 +1045,16 @@ class SiteGateway:
                     self._nats_client.publish_json(hub_logs_subject(self._site_id), log)
                 except Exception:
                     pass
+
+    def _on_transport_reconnect(self) -> None:
+        if not self._spool_enabled:
+            return
+        try:
+            self._spool.reset_replay_schedule()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("gateway reconnect replay reset failed: %s", exc)
+            return
+        LOGGER.info("gateway reconnect reset replay schedule site=%s", self._site_id)
 
 
 def render_subjects(site_id: str, node_id: str) -> list[str]:
@@ -1080,6 +1136,18 @@ def _work_key(payload: dict) -> str | None:
     if work_id is None or attempt is None:
         return None
     return f"{work_id}:{attempt}"
+
+
+def _next_result_retry_delay(
+    attempt_number: int,
+    *,
+    min_delay_s: float,
+    max_delay_s: float,
+) -> float:
+    if attempt_number <= 1:
+        return min_delay_s
+    delay = min_delay_s * (2 ** (attempt_number - 1))
+    return min(delay, max_delay_s)
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:

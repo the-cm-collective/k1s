@@ -7,7 +7,15 @@ from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata
 from ae.controller.state import SQLiteStateStore
 from ae.observability import MetricsService
-from ae.observability.http_api import _ApiHandler, _HA_FENCE_METRICS, record_ha_fence_event
+from ae.observability.http_api import (
+    _ApiHandler,
+    _GATEWAY_WORK_METRICS,
+    _HA_FENCE_METRICS,
+    _ROUTE_BUNDLE_METRICS,
+    record_gateway_metrics,
+    record_ha_fence_event,
+    record_route_bundle_publish_state,
+)
 from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
 
 
@@ -113,3 +121,51 @@ def test_metrics_expose_ha_fence_counters(tmp_path: Path) -> None:
     assert 'ae_ha_fence_stale_total{surface="gateway.lease_acquire"} 1.0' in txt
     assert 'ae_ha_fence_duplicate_total{surface="gateway.lease_acquire"} 1.0' in txt
     assert 'ae_ha_fence_epoch_advance_total{surface="gateway.lease_acquire"} 1.0' in txt
+
+
+def test_metrics_expose_gateway_replay_and_route_publish_series(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    handler = object.__new__(_ApiHandler)
+    handler.store = store  # type: ignore[attr-defined]
+    handler.metrics = MetricsService(store)  # type: ignore[attr-defined]
+    handler.wfile = io.BytesIO()  # type: ignore[attr-defined]
+
+    def _noop(*_args, **_kwargs):
+        return None
+
+    handler.send_response = _noop  # type: ignore[attr-defined]
+    handler.send_header = _noop  # type: ignore[attr-defined]
+    handler.end_headers = _noop  # type: ignore[attr-defined]
+
+    _GATEWAY_WORK_METRICS.clear()
+    _ROUTE_BUNDLE_METRICS.clear()
+    record_gateway_metrics(
+        "sea",
+        work_stale_total=1,
+        work_nak_total=2,
+        lease_retry_total=3,
+        result_replay_total=4,
+        result_replay_fail_total=5,
+        result_replay_backlog=6,
+    )
+    record_route_bundle_publish_state(
+        "sea",
+        pending=True,
+        ack_age_seconds=7.5,
+        publish_ok=True,
+        publish_fail=True,
+    )
+    try:
+        _ApiHandler._handle_metrics(handler)  # type: ignore[arg-type]
+        txt = handler.wfile.getvalue().decode("utf-8", "replace")
+    finally:
+        _GATEWAY_WORK_METRICS.clear()
+        _ROUTE_BUNDLE_METRICS.clear()
+
+    assert 'ae_gateway_result_replay_total{site="sea"} 4.0' in txt
+    assert 'ae_gateway_result_replay_fail_total{site="sea"} 5.0' in txt
+    assert 'ae_gateway_result_replay_backlog{site="sea"} 6.0' in txt
+    assert 'ae_route_bundle_publish_ok_total{site="sea"} 1.0' in txt
+    assert 'ae_route_bundle_publish_fail_total{site="sea"} 1.0' in txt
+    assert 'ae_route_bundle_pending{site="sea"} 1.0' in txt
+    assert 'ae_route_bundle_ack_age_seconds{site="sea"} 7.5' in txt

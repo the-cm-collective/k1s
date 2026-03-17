@@ -100,6 +100,7 @@ class NatsClient:
         self._started = False
         self._js_subs: dict[tuple[str, str], object] = {}
         self._closing = False
+        self._reconnect_listeners: list[Callable[[], None]] = []
 
     async def _on_error(self, _exc) -> None:  # noqa: ANN001
         if self._closing:
@@ -114,6 +115,11 @@ class NatsClient:
     async def _on_reconnect(self) -> None:
         if self._closing:
             return
+        for callback in list(self._reconnect_listeners):
+            try:
+                callback()
+            except Exception:
+                continue
         return
 
     async def _on_closed(self) -> None:
@@ -443,6 +449,9 @@ class NatsClient:
             return self._run(_info(), 2.5)
         except Exception as exc:  # noqa: BLE001
             raise NatsClientError(f"js consumer info failed: {exc}") from exc
+
+    def add_reconnect_listener(self, callback: Callable[[], None]) -> None:
+        self._reconnect_listeners.append(callback)
 
     def validate_stream(
         self,

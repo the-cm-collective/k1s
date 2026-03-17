@@ -366,3 +366,54 @@ def test_route_bundle_ack_ignores_stale_envelope(monkeypatch) -> None:
     )
 
     assert state.acked_rev == 1
+
+
+def test_route_bundle_reconnect_resets_pending_send(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTROLLER_ID", "ctrl-a")
+    monkeypatch.setenv("AE_CONTROLLER_EPOCH", "9")
+
+    class FakeNatsClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.published = []
+
+        def connect(self) -> None:
+            return None
+
+        def subscribe(self, subject, callback) -> None:
+            return None
+
+        def add_reconnect_listener(self, callback) -> None:
+            self.callback = callback
+
+        def publish_json(self, subject, payload) -> None:
+            self.published.append((subject, payload))
+
+        def close(self) -> None:
+            return None
+
+    class FakeStore:
+        def list_route_bundle_site_ids(self):
+            return ["sea-edge-02"]
+
+        def list_edge_ingress_routes_for_site(self, site_id: str):
+            return [_edge_local_route_record(site_id)]
+
+        def get_edge_ingress_policy(self, *, name: str, namespace: str):
+            return None
+
+        def list_service_endpoints(self, app_name: str):
+            return []
+
+    monkeypatch.setattr("ae.transport.route_bundle_publisher.NatsClient", FakeNatsClient)
+
+    publisher = RouteBundlePublisher(FakeStore(), nats_url="nats://127.0.0.1:4222")
+    publisher.run_once()
+
+    state = publisher._state["sea-edge-02"]  # type: ignore[attr-defined]
+    assert state.next_send_at > 0.0
+
+    publisher._on_transport_reconnect()  # type: ignore[attr-defined]
+
+    assert state.next_send_at == 0.0
+    publisher.run_once()
+    assert len(publisher._client.published) == 2  # type: ignore[attr-defined]

@@ -14,8 +14,12 @@ class _FakeNatsClient:
         self.published: list[tuple[str, dict]] = []
         self.requests: list[tuple[str, dict]] = []
         self.request_responses: list[dict] = []
+        self.listeners: list[object] = []
+        self.fail_result_publish = False
 
     def publish_json(self, subject: str, payload: dict, headers=None) -> None:
+        if self.fail_result_publish and subject == "k1s.v1.site.sea.result":
+            raise RuntimeError("publish failed")
         self.published.append((subject, payload))
 
     def request_json(self, subject: str, payload: dict, timeout_s: float | None = None):
@@ -23,6 +27,9 @@ class _FakeNatsClient:
         if not self.request_responses:
             raise AssertionError("unexpected request")
         return self.request_responses.pop(0)
+
+    def add_reconnect_listener(self, callback) -> None:
+        self.listeners.append(callback)
 
     def subscribe(self, subject, callback):
         return "sid-1"
@@ -169,3 +176,63 @@ def test_gateway_reuses_lease_request_id_after_retry(tmp_path: Path) -> None:
     assert gateway._acquire_lease(1.0) is False  # type: ignore[attr-defined]
     assert gateway._acquire_lease(2.0) is True  # type: ignore[attr-defined]
     assert nats.requests[0][1]["request_id"] == nats.requests[1][1]["request_id"]
+
+
+def test_gateway_replay_failure_schedules_backoff(tmp_path: Path) -> None:
+    nats = _FakeNatsClient()
+    gateway = _gateway(tmp_path, nats=nats)
+    gateway._spool.record_result(  # type: ignore[attr-defined]
+        "w1",
+        1,
+        "failed",
+        {
+            "work_id": "w1",
+            "attempt": 1,
+            "status": "failed",
+            "controller_id": "ctrl-a",
+            "controller_epoch": 7,
+            "operation_id": "work:w1:1",
+        },
+    )
+    nats.fail_result_publish = True
+
+    gateway._replay_spool_results(100.0)  # type: ignore[attr-defined]
+
+    record = gateway._spool.get_result("w1", 1)  # type: ignore[attr-defined]
+    assert record is not None
+    assert record.delivered_to_controller_at is None
+    assert record.replay_attempts == 1
+    assert record.next_retry_at is not None
+    assert gateway._stats.result_replay_fail_total == 1  # type: ignore[attr-defined]
+
+
+def test_gateway_reconnect_resets_replay_schedule(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    gateway = _gateway(tmp_path)
+    gateway._spool.record_result(  # type: ignore[attr-defined]
+        "w1",
+        1,
+        "succeeded",
+        {
+            "work_id": "w1",
+            "attempt": 1,
+            "status": "succeeded",
+            "controller_id": "ctrl-a",
+            "controller_epoch": 7,
+            "operation_id": "work:w1:1",
+        },
+    )
+    gateway._spool.record_result_delivery_attempt(  # type: ignore[attr-defined]
+        "w1",
+        1,
+        error="nats down",
+        retry_at=datetime.now(timezone.utc) + timedelta(seconds=30),
+    )
+    assert gateway._spool.list_replay_ready_results() == []  # type: ignore[attr-defined]
+
+    gateway._on_transport_reconnect()  # type: ignore[attr-defined]
+
+    ready = gateway._spool.list_replay_ready_results()  # type: ignore[attr-defined]
+    assert len(ready) == 1
+    assert ready[0].work_id == "w1"

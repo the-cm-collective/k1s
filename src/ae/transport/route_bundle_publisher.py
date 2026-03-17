@@ -21,7 +21,7 @@ from ae.ha.fencing import (
     route_operation,
 )
 from ae.ingress.edge_docs import normalize_policy_doc, normalize_route_doc
-from ae.observability.http_api import record_ha_fence_event
+from ae.observability.http_api import record_ha_fence_event, record_route_bundle_publish_state
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 from ae.transport.subjects import hub_route_ack_subject, hub_route_bundle_subject
 
@@ -40,6 +40,7 @@ class _BundleState:
     acked_rev: int = 0
     backoff_s: float = 1.0
     next_send_at: float = 0.0
+    last_publish_at: float = 0.0
     operation_id: str | None = None
     controller_id: str | None = None
     controller_epoch: int = 0
@@ -72,6 +73,11 @@ class RouteBundlePublisher:
         except NatsClientError as exc:
             LOGGER.warning("route bundle connect failed: %s", exc)
             return
+        if hasattr(self._client, "add_reconnect_listener"):
+            try:
+                self._client.add_reconnect_listener(self._on_transport_reconnect)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("route bundle reconnect listener failed: %s", exc)
         self._client.subscribe("k1s.v1.site.*.routes.ack", self._on_ack)
         self._started = True
         self._thread.start()
@@ -111,8 +117,15 @@ class RouteBundlePublisher:
                 state.backoff_s = 1.0
                 state.next_send_at = 0.0
             if state.acked_rev >= state.rev:
+                record_route_bundle_publish_state(
+                    site_id, pending=False, ack_age_seconds=0.0
+                )
                 continue
             if now < state.next_send_at:
+                ack_age_s = max(0.0, now - state.last_publish_at) if state.last_publish_at > 0 else 0.0
+                record_route_bundle_publish_state(
+                    site_id, pending=True, ack_age_seconds=ack_age_s
+                )
                 continue
             identity = resolve_controller_identity(self._authority)
             operation_id = route_operation(site_id, state.rev, identity.controller_epoch)
@@ -130,15 +143,25 @@ class RouteBundlePublisher:
                 controller_epoch=identity.controller_epoch,
                 operation_id=operation_id,
             )
-            self._publish(site_id, bundle)
+            published = self._publish(site_id, bundle)
+            if published:
+                state.last_publish_at = now
             state.backoff_s = _next_backoff(state.backoff_s)
             state.next_send_at = now + state.backoff_s
+            ack_age_s = max(0.0, now - state.last_publish_at) if state.last_publish_at > 0 else 0.0
+            record_route_bundle_publish_state(
+                site_id, pending=True, ack_age_seconds=ack_age_s
+            )
 
-    def _publish(self, site_id: str, bundle: dict) -> None:
+    def _publish(self, site_id: str, bundle: dict) -> bool:
         try:
             self._client.publish_json(hub_route_bundle_subject(site_id), bundle)
+            record_route_bundle_publish_state(site_id, publish_ok=True)
+            return True
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("route bundle publish failed site=%s: %s", site_id, exc)
+            record_route_bundle_publish_state(site_id, publish_fail=True)
+            return False
 
     def _on_ack(self, msg: NatsMessage) -> None:
         payload = _safe_json(msg.data)
@@ -177,8 +200,20 @@ class RouteBundlePublisher:
             state.acked_rev = bundle_rev
             state.backoff_s = 1.0
             state.next_send_at = 0.0
+            record_route_bundle_publish_state(site_id, pending=False, ack_age_seconds=0.0)
         elif bundle_rev == state.acked_rev:
             record_ha_fence_event("route_bundle_publisher.ack", duplicate=True)
+
+    def _on_transport_reconnect(self) -> None:
+        pending = 0
+        for state in self._state.values():
+            if state.acked_rev >= state.rev:
+                continue
+            state.backoff_s = 1.0
+            state.next_send_at = 0.0
+            pending += 1
+        if pending:
+            LOGGER.info("route bundle reconnect reset pending_sites=%s", pending)
 
 
 def _build_bundle(
