@@ -3,11 +3,12 @@ from __future__ import annotations
 import io
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ae.ha.fencing import MutationEnvelope, SQLiteFenceStore
 from ae.node.server import AgentHandler, _json_response
-from ae.runtime import RuntimeResult
+from ae.runtime import RuntimeResult, WorkloadMetricSample
 
 
 class _BrokenPipeWriter:
@@ -47,6 +48,27 @@ class _JsonBodyHandler:
         return None
 
 
+class _GetHandler:
+    def __init__(self, *, path: str, wfile, runtime) -> None:
+        self.path = path
+        self.headers = {}
+        self.rfile = io.BytesIO()
+        self.wfile = wfile
+        self.runtime = runtime
+        self.volume_manager = None
+        self.node_id = "node-test"
+        self.status_codes: list[int] = []
+
+    def send_response(self, status: int, _message: str | None = None) -> None:
+        self.status_codes.append(int(status))
+
+    def send_header(self, _name: str, _value: str) -> None:
+        return None
+
+    def end_headers(self) -> None:
+        return None
+
+
 class _RuntimeStub:
     def __init__(self) -> None:
         self.resize_calls: list[tuple[str, int | None, int | None]] = []
@@ -54,6 +76,7 @@ class _RuntimeStub:
         self.ensure_calls = 0
         self.remove_calls = 0
         self.remove_old_calls = 0
+        self.workload_metrics: list[WorkloadMetricSample] = []
 
     def exec_resize(
         self,
@@ -79,6 +102,9 @@ class _RuntimeStub:
     def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
         self.remove_old_calls += 1
         return 2
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        return list(self.workload_metrics)
 
 
 def test_json_response_returns_false_on_broken_pipe() -> None:
@@ -209,3 +235,34 @@ def test_remove_app_rejects_stale_epoch(tmp_path: Path, monkeypatch) -> None:
     assert body["controller_id"] == "ctrl-b"
     assert body["controller_epoch"] == 9
     assert handler.status_codes == [409]
+
+
+def test_workload_metrics_endpoint_serializes_runtime_samples() -> None:
+    runtime = _RuntimeStub()
+    runtime.workload_metrics = [
+        WorkloadMetricSample(
+            app_name="default/demo",
+            node_id="node-test",
+            collected_at=datetime(2026, 3, 18, 12, 30, tzinfo=timezone.utc),
+            cpu_cores=0.75,
+            memory_bytes=134217728,
+            pod_count=2,
+        )
+    ]
+    wfile = io.BytesIO()
+    handler = _GetHandler(path="/v1/workload_metrics", wfile=wfile, runtime=runtime)
+
+    AgentHandler.do_GET(handler)  # type: ignore[arg-type]
+
+    body = json.loads(wfile.getvalue().decode("utf-8"))
+    assert handler.status_codes == [200]
+    assert body["items"] == [
+        {
+            "app_name": "default/demo",
+            "node_id": "node-test",
+            "collected_at": "2026-03-18T12:30:00+00:00",
+            "cpu_cores": 0.75,
+            "memory_bytes": 134217728,
+            "pod_count": 2,
+        }
+    ]

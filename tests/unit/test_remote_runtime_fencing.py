@@ -100,3 +100,41 @@ def test_fabric_agent_client_includes_fencing_envelope(monkeypatch) -> None:
     assert payload["controller_id"] == "ctrl-b"
     assert payload["controller_epoch"] == 14
     assert payload["operation_id"] == "fabric.ensure:s-1234:node-a"
+
+
+def test_remote_runtime_proxies_workload_metrics() -> None:
+    runtime = RemoteRuntime(
+        "http://agent:9112",
+        StubRuntime(),
+        authority=_Authority("ctrl-a", 11),
+        node_id="node-a",
+    )
+
+    def _fake_request(method: str, path: str, *, timeout: int = 30, **kwargs):
+        assert method == "GET"
+        assert path == "/v1/workload_metrics"
+        return SimpleNamespace(
+            json=lambda: {
+                "items": [
+                    {
+                        "app_name": "default/demo",
+                        "node_id": "node-a",
+                        "collected_at": "2026-03-18T12:00:00+00:00",
+                        "cpu_cores": 1.5,
+                        "memory_bytes": 268435456,
+                        "pod_count": 3,
+                    }
+                ]
+            }
+        )
+
+    runtime._request = _fake_request  # type: ignore[method-assign]
+
+    samples = runtime.list_workload_metrics()
+
+    assert len(samples) == 1
+    assert samples[0].app_name == "default/demo"
+    assert samples[0].node_id == "node-a"
+    assert samples[0].cpu_cores == 1.5
+    assert samples[0].memory_bytes == 268435456
+    assert samples[0].pod_count == 3

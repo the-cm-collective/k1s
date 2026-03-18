@@ -26,7 +26,7 @@ from ae.controller.spec import (
     split_app_key,
 )
 
-from .base import PodState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 from .ports import choose_host_port
 
 
@@ -1237,6 +1237,9 @@ class PodmanRuntime(RuntimeAdapter):
                 }
             )
         return out
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        return []
 
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
         # Locate container by label

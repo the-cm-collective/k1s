@@ -23,7 +23,7 @@ from ae.controller.spec import (
 )
 from ae.runtime.ports import choose_host_port
 
-from .base import PodState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 from .registry import RegistryAuthProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -1880,6 +1880,9 @@ class DockerRuntime(RuntimeAdapter):
                     }
                 )
         return out
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        return []
 
     # Storage volumes ---------------------------------------------------
 

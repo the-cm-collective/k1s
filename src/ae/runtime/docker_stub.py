@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from ae.controller.spec import AppManifest, app_key_for_manifest, runtime_labels_for_manifest
 
-from .base import PodState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 
 
 class StubRuntime(RuntimeAdapter):
@@ -129,3 +129,6 @@ class StubRuntime(RuntimeAdapter):
         for app_conts in self._containers.values():
             containers.extend(app_conts)
         return containers.copy()
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        return []

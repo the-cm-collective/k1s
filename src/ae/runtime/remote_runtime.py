@@ -24,7 +24,7 @@ from ae.ha.fencing import (
 )
 from ae.controller.spec import AppManifest
 
-from .base import PodState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 
 LOGGER = logging.getLogger(__name__)
 
@@ -257,6 +257,46 @@ class RemoteRuntime(RuntimeAdapter):
             return self._local.list_containers_info()
         resp = self._request("GET", "/v1/containers", timeout=10)
         return resp.json().get("containers", [])
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        if self._use_local():
+            return self._local.list_workload_metrics()
+        resp = self._request("GET", "/v1/workload_metrics", timeout=10)
+        payload = resp.json()
+        items = payload.get("items") if isinstance(payload, dict) else None
+        out: list[WorkloadMetricSample] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            collected_at = item.get("collected_at")
+            try:
+                ts = datetime.fromisoformat(str(collected_at))
+            except Exception:
+                ts = datetime.now()
+            try:
+                memory_bytes = int(item.get("memory_bytes", 0) or 0)
+            except Exception:
+                memory_bytes = 0
+            try:
+                pod_count = int(item.get("pod_count", 0) or 0)
+            except Exception:
+                pod_count = 0
+            cpu_raw = item.get("cpu_cores")
+            try:
+                cpu_cores = float(cpu_raw) if cpu_raw is not None else None
+            except Exception:
+                cpu_cores = None
+            out.append(
+                WorkloadMetricSample(
+                    app_name=str(item.get("app_name") or ""),
+                    node_id=str(item.get("node_id") or self._node_id or ""),
+                    collected_at=ts,
+                    cpu_cores=cpu_cores,
+                    memory_bytes=memory_bytes,
+                    pod_count=pod_count,
+                )
+            )
+        return out
 
     def read_logs(
         self,

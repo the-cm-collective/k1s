@@ -488,6 +488,21 @@ class AgentHandler(BaseHTTPRequestHandler):
                 items = self.runtime.list_containers_info()
                 _json_response(self, 200, {"containers": items})
                 return
+            if self.path.startswith("/v1/workload_metrics"):
+                items = []
+                for sample in self.runtime.list_workload_metrics():
+                    items.append(
+                        {
+                            "app_name": sample.app_name,
+                            "node_id": sample.node_id,
+                            "collected_at": sample.collected_at.isoformat(),
+                            "cpu_cores": sample.cpu_cores,
+                            "memory_bytes": sample.memory_bytes,
+                            "pod_count": sample.pod_count,
+                        }
+                    )
+                _json_response(self, 200, {"items": items})
+                return
             if self.path.startswith("/v1/logs"):
                 import urllib.parse as _u
 

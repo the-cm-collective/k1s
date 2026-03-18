@@ -30,7 +30,7 @@ from ae.controller.spec import (
 )
 from ae.runtime.ports import choose_host_port
 
-from .base import PodState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 from .registry import RegistryAuthProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -75,6 +75,7 @@ class CRIRuntime(RuntimeAdapter):
         self._apishim_store_checked = False
         self._apishim_store = None
         self._apishim_state = None
+        self._cpu_sample_cache: dict[str, tuple[int, int]] = {}
 
     # --- RuntimeAdapter API -----------------------------------------
     def ensure_app(
@@ -238,6 +239,56 @@ class CRIRuntime(RuntimeAdapter):
                         "pod_ip": pod_ip,
                     }
                 )
+        return out
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        self._ensure_clients()
+        pb2 = self._pb2()
+        req = pb2.ListPodSandboxStatsRequest()
+        resp = self._runtime_call("ListPodSandboxStats", req)
+        items = getattr(resp, "stats", None)
+        if items is None:
+            items = getattr(resp, "items", None)
+        node_id = str(
+            self._current_node_id or os.getenv("AE_NODE_ID") or socket.gethostname() or "unknown-node"
+        )
+        collected_at = datetime.now(UTC)
+        aggregates: dict[str, dict[str, object]] = {}
+        for item in list(items or []):
+            labels = self._stats_labels(item)
+            app_name = str(labels.get(self.APP_LABEL) or "").strip()
+            if not app_name:
+                continue
+            aggregate = aggregates.setdefault(
+                app_name,
+                {
+                    "cpu_cores": 0.0,
+                    "cpu_seen": False,
+                    "memory_bytes": 0,
+                    "pod_count": 0,
+                },
+            )
+            cpu_cores = self._stats_cpu_cores(item)
+            if cpu_cores is not None:
+                aggregate["cpu_cores"] = float(aggregate["cpu_cores"]) + float(cpu_cores)
+                aggregate["cpu_seen"] = True
+            aggregate["memory_bytes"] = int(aggregate["memory_bytes"]) + self._stats_memory_bytes(item)
+            aggregate["pod_count"] = int(aggregate["pod_count"]) + 1
+        out: list[WorkloadMetricSample] = []
+        for app_name, aggregate in sorted(aggregates.items()):
+            cpu_cores = (
+                float(aggregate["cpu_cores"]) if bool(aggregate.get("cpu_seen")) else None
+            )
+            out.append(
+                WorkloadMetricSample(
+                    app_name=app_name,
+                    node_id=node_id,
+                    collected_at=collected_at,
+                    cpu_cores=cpu_cores,
+                    memory_bytes=int(aggregate["memory_bytes"]),
+                    pod_count=int(aggregate["pod_count"]),
+                )
+            )
         return out
 
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:
@@ -802,6 +853,64 @@ class CRIRuntime(RuntimeAdapter):
             if container and getattr(container, "id", None):
                 return str(container.id)
         return None
+
+    def _stats_labels(self, stats: Any) -> dict[str, str]:
+        candidates = [
+            getattr(getattr(stats, "attributes", None), "labels", None),
+            getattr(stats, "labels", None),
+        ]
+        for labels in candidates:
+            if labels:
+                return {str(key): str(value) for key, value in labels.items()}
+        return {}
+
+    def _stats_cpu_cores(self, stats: Any) -> float | None:
+        cpu = getattr(stats, "cpu", None)
+        usage = getattr(cpu, "usage", None) if cpu is not None else None
+        instant = getattr(usage, "usage_nano_cores", None) if usage is not None else None
+        try:
+            if instant is not None:
+                return max(0.0, float(instant) / 1_000_000_000.0)
+        except Exception:
+            pass
+        total = getattr(usage, "usage_core_nano_seconds", None) if usage is not None else None
+        timestamp = getattr(cpu, "timestamp", None)
+        if timestamp is None:
+            timestamp = getattr(stats, "timestamp", None)
+        sample_id = str(
+            getattr(getattr(stats, "attributes", None), "id", None)
+            or getattr(stats, "id", None)
+            or getattr(stats, "pod_sandbox_id", None)
+            or ""
+        ).strip()
+        try:
+            if not sample_id or total is None or timestamp is None:
+                return None
+            total_i = int(total)
+            ts_i = int(timestamp)
+        except Exception:
+            return None
+        previous = self._cpu_sample_cache.get(sample_id)
+        self._cpu_sample_cache[sample_id] = (ts_i, total_i)
+        if previous is None:
+            return None
+        prev_ts, prev_total = previous
+        delta_ts = ts_i - prev_ts
+        delta_total = total_i - prev_total
+        if delta_ts <= 0 or delta_total < 0:
+            return None
+        return max(0.0, float(delta_total) / float(delta_ts))
+
+    def _stats_memory_bytes(self, stats: Any) -> int:
+        memory = getattr(stats, "memory", None)
+        for field in ("working_set_bytes", "usage_bytes"):
+            value = getattr(memory, field, None) if memory is not None else None
+            try:
+                if value is not None:
+                    return max(0, int(value))
+            except Exception:
+                continue
+        return 0
 
     def _ensure_image(self, image_ref: str) -> None:
         pb2 = self._pb2()

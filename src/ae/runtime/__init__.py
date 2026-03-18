@@ -1,6 +1,6 @@
 """Runtime adapters for container operations."""
 
-from .base import PodState, ReplicaState, RuntimeAdapter, RuntimeResult
+from .base import PodState, ReplicaState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 from .docker_runtime import DockerRuntime
 from .docker_stub import StubRuntime
 from .podman_runtime import PodmanRuntime
@@ -23,6 +23,7 @@ __all__ = [
     "RuntimeResult",
     "PodState",
     "ReplicaState",
+    "WorkloadMetricSample",
     "CRIRuntime",
     "DockerRuntime",
     "PodmanRuntime",

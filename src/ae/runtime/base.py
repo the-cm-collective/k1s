@@ -70,6 +70,18 @@ class RuntimeResult:
         return self.pod_states
 
 
+@dataclass(slots=True)
+class WorkloadMetricSample:
+    """Per-node workload metrics summary for autoscaling."""
+
+    app_name: str
+    node_id: str
+    collected_at: datetime
+    cpu_cores: float | None = None
+    memory_bytes: int = 0
+    pod_count: int = 0
+
+
 class RuntimeAdapter(Protocol):
     """Adapter that drives container runtime operations."""
 
@@ -132,6 +144,10 @@ class RuntimeAdapter(Protocol):
 
         Returns a list of dicts with at least: { name, labels, host_ports: [int] }.
         """
+        return []
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        """Return per-node workload metrics summaries for autoscaling."""
         return []
 
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:
