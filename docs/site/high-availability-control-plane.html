@@ -742,7 +742,7 @@
 <li>NATS Core and JetStream transport modes</li>
 <li>outbox-based dispatch and gateway spool durability</li>
 </ul>
-<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later <code>H4b*</code> slices. <code>H2</code> fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. <code>H3</code> now hardens outbox replay, gateway replay, and JetStream HA validation without turning transport into truth. <code>H4a</code> routes workload-core resources through shared controller authority in HA mode. <code>H4b1</code> converges <code>ConfigMap</code>, <code>Secret</code>, <code>ServiceAccount</code>, and <code>CronJob</code>, <code>H4b-hpa</code> runs leader-only HPA scaling from shared workload metrics, <code>H4b2a</code> extends shared authority to <code>Namespace</code>, RBAC, and <code>PodDisruptionBudget</code>, <code>H4b2b-crd</code> converges CRDs plus dynamic custom-resource routing, <code>H4b2c-core</code> routes <code>StorageClass</code>, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and <code>H4b2c-csi</code> now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state. <code>H5a-core</code>, <code>H5b1-etcd-recovery</code>, and <code>H5b2a-core-upgrades</code> now give that surface a real bootstrap, snapshot, drill, recovery, and rolling-upgrade story. The next active HA work is <code>H5b2b-hub-transport-upgrades</code>: operator-assisted shared hub NATS/JetStream upgrade and replacement procedures, with edge-site transport choreography deferred to a later slice.</p>
+<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later <code>H4b*</code> slices. <code>H2</code> fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. <code>H3</code> now hardens outbox replay, gateway replay, and JetStream HA validation without turning transport into truth. <code>H4a</code> routes workload-core resources through shared controller authority in HA mode. <code>H4b1</code> converges <code>ConfigMap</code>, <code>Secret</code>, <code>ServiceAccount</code>, and <code>CronJob</code>, <code>H4b-hpa</code> runs leader-only HPA scaling from shared workload metrics, <code>H4b2a</code> extends shared authority to <code>Namespace</code>, RBAC, and <code>PodDisruptionBudget</code>, <code>H4b2b-crd</code> converges CRDs plus dynamic custom-resource routing, <code>H4b2c-core</code> routes <code>StorageClass</code>, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and <code>H4b2c-csi</code> now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state. <code>H5a-core</code>, <code>H5b1-etcd-recovery</code>, and <code>H5b2a-core-upgrades</code> now give that surface a real bootstrap, snapshot, drill, recovery, and rolling-upgrade story. <code>H5b2b-hub-transport-upgrades</code> now covers shared hub NATS/JetStream upgrade and replacement procedures, and <code>H5b2c-edge-transport-upgrades</code> extends that posture to edge-site gateway-first / leader-last transport choreography with per-gateway build visibility and bounded leaf reconnect validation.</p>
 <p>The two design rules for the whole program are:</p>
 <ul>
 <li>watches and messages trigger work; only <code>etcd</code> transactions authorize work</li>
@@ -1072,8 +1072,17 @@
 <p>Primary outcomes:</p>
 <ul>
 <li>documented edge-site transport upgrade and replacement sequencing that builds on the finished shared hub procedures</li>
-<li>site-specific leader and reconnect expectations for leaf connectivity, backlog recovery, and route publication</li>
+<li>operator-assisted helper-driven gateway-first / leader-last choreography for one edge site at a time</li>
+<li>per-gateway visibility at the controller metrics surface so site recovery can be verified by node as well as by site</li>
 <li>explicit separation between shared hub transport operations and edge gateway/site transport operations</li>
+<li><code>k1s-edge-core</code> / <code>k1s-edge-core-cri</code> remain the milestone-defining HA lane; <code>k1s-edge</code> / <code>k1s-core-edge</code> remain secondary compatibility rather than exit criteria</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>scripts/dev/ha_edge_transport.py</code> now provides <code>precheck</code>, <code>gateway-plan</code>, <code>site-verify</code>, <code>leader-plan</code>, and <code>leader-replace-plan</code> for operator-assisted edge-site transport changes</li>
+<li><code>src/ae/ha/ops.py</code> now provides edge site target parsing, <code>/varz</code> and <code>/leafz</code> fetch helpers, site-health evaluation, and per-gateway status collection from controller metrics</li>
+<li>gateway status telemetry now includes build identity, and <code>/metrics</code> now exports <code>ae_site_gateway_last_seen_seconds{site,node}</code> plus <code>ae_site_gateway_build_info{site,node,version,sha,date}</code> alongside the existing site-wide replay and route convergence series</li>
+<li>the runbook now documents gateway-first / leader-last sequencing, helper usage, and the recovery checks required before moving on to the next gateway or edge leader step</li>
 </ul>
 <h2 id="dependency-model">Dependency Model</h2>
 <p>This HA track is the foundation for later deployment work:</p>
@@ -1099,7 +1108,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-18 12:34:18</span>
+        <span>Built 2026-03-18 13:08:23</span>
       </div>
     </footer>
     <script>
