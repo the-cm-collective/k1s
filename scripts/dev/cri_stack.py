@@ -12,8 +12,13 @@ import os
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+try:  # Python 3.11+
+    from datetime import UTC as UTC
+except ImportError:  # pragma: no cover - only hit on Python < 3.11
+    UTC = timezone.utc
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CRI_ENDPOINT = "unix:///run/containerd/containerd.sock"

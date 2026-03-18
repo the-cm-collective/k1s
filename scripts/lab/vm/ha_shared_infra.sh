@@ -195,7 +195,7 @@ PY
 set -euo pipefail
 sudo mkdir -p /mnt/host
 sudo mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host || true
-if [[ ! -S /run/containerd/containerd.sock ]]; then
+if [[ ! -S /run/containerd/containerd.sock ]] || ! command -v crictl >/dev/null 2>&1; then
   (cd /mnt/host && sudo -E DEBIAN_FRONTEND=noninteractive AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock ./scripts/cri_ci_setup.sh)
 fi
 sudo env \

@@ -216,7 +216,7 @@ for row in "${rows[@]}"; do
     echo "    sudo env DEBIAN_FRONTEND=noninteractive apt-get update"
     echo "    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y python-is-python3"
     echo "  fi"
-    echo "  if [[ ! -S /run/containerd/containerd.sock ]]; then"
+    echo "  if [[ ! -S /run/containerd/containerd.sock ]] || ! command -v crictl >/dev/null 2>&1; then"
     echo "    (cd /mnt/host && sudo -E DEBIAN_FRONTEND=noninteractive AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock ./scripts/cri_ci_setup.sh)"
     echo "  fi"
     echo "}"

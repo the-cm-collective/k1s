@@ -458,6 +458,7 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_CRI_DATA_ROOT=\\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri}" in text
     assert "AE_CRI_REGISTRY_TRUST_SYSTEM=\\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1}" in text
     assert "AE_CRI_REGISTRY_PRELOAD=\\${AE_CRI_REGISTRY_PRELOAD:-1}" in text
+    assert "|| ! command -v crictl >/dev/null 2>&1; then" in text
     assert "AE_APISHIM_MODE=\\${AE_APISHIM_MODE:-host}" in text
     assert "bootstrap_seed_cri_cache core" in text
     assert "bootstrap_seed_cri_cache edge" in text
@@ -472,6 +473,7 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
 def test_ha_shared_infra_script_bootstraps_clustered_backends() -> None:
     text = HA_SHARED_INFRA_SCRIPT.read_text(encoding="utf-8")
     assert "ha shared infra requires exactly 3 hosts with role=k1s-ha-core" in text
+    assert "|| ! command -v crictl >/dev/null 2>&1; then" in text
     assert "python3 /mnt/host/scripts/dev/cri_stack.py up-etcd \\" in text
     assert "--initial-cluster '" in text
     assert "python3 /mnt/host/scripts/dev/cri_stack.py up-nats-hub \\" in text
