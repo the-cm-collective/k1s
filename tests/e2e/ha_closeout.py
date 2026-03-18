@@ -25,6 +25,8 @@ from tests.e2e.core_edge import (
     _write_compose,
 )
 
+LOCAL_EDGE_SITE_ID = "sfo-edge-01"
+
 
 def _wait_http_ok(url: str, timeout_s: float = 30.0) -> None:
     deadline = time.time() + timeout_s
@@ -116,6 +118,7 @@ def run_ha_closeout_e2e() -> int:
 
     print(f"[ha-e2e] workspace={base_dir}")
     _write_compose(compose_path, root, state_dir)
+    edge_node_key = scoped_node_id(LOCAL_EDGE_SITE_ID, "edge-node-1")
     compose_cmd = ["docker", "compose", "-f", str(compose_path)]
     subprocess.run(  # noqa: S603 - fixed local e2e docker compose command
         [*compose_cmd, "up", "-d"],
@@ -241,7 +244,12 @@ def run_ha_closeout_e2e() -> int:
         assert int(ns_a["metadata"]["resourceVersion"]) >= 1
 
         worker_env = dict(env_base)
-        worker_env.update({"AE_NATS_URL": "nats://worker:dev@127.0.0.1:4223"})
+        worker_env.update(
+            {
+                "AE_NATS_URL": "nats://worker:dev@127.0.0.1:4223",
+                "AE_SITE_ID": LOCAL_EDGE_SITE_ID,
+            }
+        )
         worker = _start_proc(
             [
                 sys.executable,
@@ -263,7 +271,7 @@ def run_ha_closeout_e2e() -> int:
         gateway_env.update(
             {
                 "AE_NATS_URL": "nats://gateway:dev@127.0.0.1:4223",
-                "AE_SITE_ID": "sea-edge-01",
+                "AE_SITE_ID": LOCAL_EDGE_SITE_ID,
                 "AE_NODE_ID": "edge-node-1",
                 "AE_GATEWAY_SPOOL_PATH": str(base_dir / "gateway-spool.db"),
                 "AE_GATEWAY_FENCE_DB": str(base_dir / "gateway-fence.db"),
@@ -275,7 +283,6 @@ def run_ha_closeout_e2e() -> int:
             env=gateway_env,
             log_path=logs_dir / "gateway.log",
         )
-        edge_node_key = scoped_node_id("sea-edge-01", "edge-node-1")
         if not _wait_node_ready(store, edge_node_key, timeout_s=25):
             raise RuntimeError("gateway lease not acquired in HA e2e")
 
@@ -284,7 +291,10 @@ def run_ha_closeout_e2e() -> int:
             {
                 "work_id": work1,
                 "attempt": 1,
-                "site_id": "sea-edge-01",
+                "site_id": LOCAL_EDGE_SITE_ID,
+                "controller_id": first_leader.controller_id,
+                "controller_epoch": first_leader.controller_epoch,
+                "operation_id": f"work:{work1}:1",
                 "op": "deploy",
                 "desired_generation": 1,
                 "target": {"app": "ha-edge-demo", "replicas": 1},
@@ -298,13 +308,13 @@ def run_ha_closeout_e2e() -> int:
                 "work",
                 "enqueue",
                 "--site-id",
-                "sea-edge-01",
+                LOCAL_EDGE_SITE_ID,
                 "--work-id",
                 work1,
                 "--mode",
                 "outbox",
                 "--preferred-node",
-                "edge-node-1",
+                edge_node_key,
                 "--payload",
                 payload1,
             ],
@@ -349,7 +359,10 @@ def run_ha_closeout_e2e() -> int:
             {
                 "work_id": work2,
                 "attempt": 1,
-                "site_id": "sea-edge-01",
+                "site_id": LOCAL_EDGE_SITE_ID,
+                "controller_id": second_leader.controller_id,
+                "controller_epoch": second_leader.controller_epoch,
+                "operation_id": f"work:{work2}:1",
                 "op": "deploy",
                 "desired_generation": 2,
                 "target": {"app": "ha-edge-demo", "replicas": 2},
@@ -363,13 +376,13 @@ def run_ha_closeout_e2e() -> int:
                 "work",
                 "enqueue",
                 "--site-id",
-                "sea-edge-01",
+                LOCAL_EDGE_SITE_ID,
                 "--work-id",
                 work2,
                 "--mode",
                 "outbox",
                 "--preferred-node",
-                "edge-node-1",
+                edge_node_key,
                 "--payload",
                 payload2,
             ],
