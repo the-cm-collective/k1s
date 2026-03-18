@@ -96,6 +96,13 @@ CRI nodes (containerd)
   - `AE_RUNTIME_BACKEND=cri`
   - `AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock`
   - `AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9`
+- HA passive-resource reads:
+  - In HA mode, converged `Secret` and `ServiceAccount` reads come from the shim HTTP authority path rather than the local shim DB.
+  - Set `AE_APISHIM_URL` (or `AE_APISHIM_SERVER`) plus `AE_APISHIM_READ_TOKEN` and `AE_APISHIM_CA_BUNDLE`/`AE_APISHIM_CA` when CRI nodes need HA image-pull secret or ServiceAccount lookup.
+- Current HA boundary:
+  - H4b1 supports HA apishim mutation for `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob`.
+  - `HorizontalPodAutoscaler` remains read-only in HA mode until the later shared-metrics slice.
+  - The apishim storage controller stays disabled in HA mode until `H4b2`.
 - Service VIP (optional):
   - `AE_ENABLE_SERVICE_PROXY=1`
   - `AE_SERVICE_PROVIDER=iptables`

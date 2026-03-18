@@ -19,7 +19,7 @@ The repo already contains several of the primitives needed for this path:
 - NATS Core and JetStream transport modes
 - outbox-based dispatch and gateway spool durability
 
-The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate `R=3`, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. `H4a` has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode, while the remaining shim-native resource families stay read-only until `H4b1`, the later HPA slice, and `H4b2`.
+The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate `R=3`, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. `H4a` has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode. `H4b1` is now in progress: `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob` route through shared authority in HA mode, the apishim storage controller is disabled until `H4b2`, CRI reads for converged passive resources use the HA shim read path, and the elected controller owns CronJob execution.
 
 The two design rules for the whole program are:
 
@@ -170,6 +170,13 @@ Primary outcomes:
 - the elected controller owns `CronJob` execution in HA mode; schedule cursor and last-run status live in shared authority state
 - HA mode disables the apishim `StorageController` until `H4b2`, so storage watch loops do not keep mutating outside the converged authority boundary
 - containerd/CRI runtime reads for converged passive resources stop depending on local shim DB authority in HA mode
+
+Current implementation status:
+
+- HA mode now routes `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob` writes through the generic shared-authority apishim store instead of the legacy shim DB
+- the apishim `StorageController` no longer starts in HA mode, keeping PVC/PV/snapshot watch loops out of scope until `H4b2`
+- `CriRuntime` now prefers the HA apishim HTTP read client for converged `Secret` and `ServiceAccount` lookups in HA mode and does not fall back to local shim DB authority for that surface
+- the new controller-native `CronJobAuthorityController` runs only on the elected controller, creates deterministic child `Job` entries through workload authority, and persists `lastScheduleTime`/`lastSuccessfulTime` in shared authority state
 
 ### H4b-hpa: Shared-metrics HPA convergence
 

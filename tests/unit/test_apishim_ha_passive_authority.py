@@ -1,8 +1,10 @@
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from ae.apishim.ha_store import MultiplexApishimStore
 from ae.apishim.store import ObjectStore
+from ae.controller.cronjob_authority import CronJobAuthorityController
 from ae.controller.state import SQLiteStateStore
 from tests.unit.test_apishim_storage import _handler, _json_body
 
@@ -171,3 +173,64 @@ def test_apishim_ha_routes_cronjob_through_shared_authority(monkeypatch, tmp_pat
     entry = state.get_authority_object("batch", "v1", "cronjobs", "default", "demo-cron")
     assert entry is not None
     assert entry.spec["schedule"] == "*/5 * * * *"
+
+
+def test_apishim_ha_cronjob_write_executes_through_controller_authority(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    state, _legacy, store = _make_store(tmp_path)
+    body = json.dumps(
+        {
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "metadata": {
+                "name": "demo-cron",
+                "namespace": "default",
+                "annotations": {"cronjob.k1s.dev/intervalSeconds": "60"},
+            },
+            "spec": {
+                "jobTemplate": {
+                    "spec": {
+                        "template": {
+                            "metadata": {"labels": {"app": "demo-cron"}},
+                            "spec": {
+                                "containers": [{"name": "main", "image": "busybox"}],
+                                "restartPolicy": "Never",
+                            },
+                        }
+                    }
+                },
+            },
+        }
+    ).encode("utf-8")
+    handler, status = _ha_handler(
+        store,
+        state,
+        monkeypatch,
+        "/apis/batch/v1/namespaces/default/cronjobs/demo-cron",
+        method="PUT",
+        body=body,
+    )
+
+    handler.do_PUT()
+
+    assert status["code"] == 200
+    controller = CronJobAuthorityController(
+        state,
+        authority=SimpleNamespace(snapshot=lambda: SimpleNamespace(is_leader=True)),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_now",
+        lambda: datetime(2026, 3, 17, 12, 0, 5, tzinfo=timezone.utc),
+    )
+
+    controller.run_once()
+
+    jobs = store.list("batch", "v1", "jobs", "default")
+    assert len(jobs) == 1
+    assert jobs[0].metadata["ownerReferences"][0]["kind"] == "CronJob"
+    cronjob = store.get("batch", "v1", "cronjobs", "default", "demo-cron")
+    assert cronjob is not None
+    assert cronjob.status["lastScheduleTime"] == "2026-03-17T12:00:00Z"
