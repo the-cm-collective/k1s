@@ -742,7 +742,7 @@
 <li>NATS Core and JetStream transport modes</li>
 <li>outbox-based dispatch and gateway spool durability</li>
 </ul>
-<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until <code>H4b</code>. <code>H2</code> fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. <code>H3</code> is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate <code>R=3</code>, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. <code>H4a</code> has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode, while the remaining shim-native resource families stay read-only until <code>H4b</code>.</p>
+<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later <code>H4b*</code> slices. <code>H2</code> fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. <code>H3</code> is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate <code>R=3</code>, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. <code>H4a</code> has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode, while the remaining shim-native resource families stay read-only until <code>H4b1</code>, the later HPA slice, and <code>H4b2</code>.</p>
 <p>The two design rules for the whole program are:</p>
 <ul>
 <li>watches and messages trigger work; only <code>etcd</code> transactions authorize work</li>
@@ -797,7 +797,7 @@
 <li><code>etcd</code>-backed shared controller state is the only authoritative desired-state registry in HA mode</li>
 <li>file import from <code>specs/</code> is explicitly documented as dev-only for HA deployments</li>
 <li>controller-native CLI and controller API writers land intent into the same shared registry in HA mode</li>
-<li>apishim remains read/list/watch-capable in HA mode, but non-converged mutation is rejected until <code>H4b</code></li>
+<li>apishim remains read/list/watch-capable in HA mode, but non-converged mutation is rejected until the relevant later <code>H4b*</code> slice</li>
 <li>revision and generation semantics are shared across controller replicas</li>
 </ul>
 <h3 id="h1-leader-election-and-controller-epochs">H1: Leader election and controller epochs</h3>
@@ -868,7 +868,7 @@
 <li>the converged workload surface reads back from shared controller state instead of the adapter/mirror path in HA mode</li>
 <li>attached <code>Service</code> and <code>Ingress</code> writes are treated as workload-owned intent and fail closed on ambiguous mappings</li>
 <li>the current Postgres-backed shim store is treated as transitional and legacy-only for non-converged resources in HA mode</li>
-<li>non-converged shim resource families remain read/list/watch-capable, but mutation stays explicitly unsupported until <code>H4b</code></li>
+<li>non-converged shim resource families remain read/list/watch-capable, but mutation stays explicitly unsupported until the relevant later <code>H4b*</code> slice</li>
 </ul>
 <p>Current implementation status:</p>
 <ul>
@@ -877,16 +877,38 @@
 <li>HA apishim workload PUT/DELETE/scale flows now perform CAS writes against controller authority and return <code>409 Conflict</code> on stale <code>resourceVersion</code></li>
 <li>controller HA mode disables the old apishim mirror fallback and materializes converged <code>DaemonSet</code> desired replicas from controller-visible node count during reconcile</li>
 </ul>
-<h3 id="h4b-remaining-shim-resource-convergence">H4b: Remaining shim-resource convergence</h3>
+<h3 id="h4b1-cronjob-and-passive-shim-object-convergence">H4b1: CronJob and passive shim-object convergence</h3>
 <p>Goal:</p>
 <ul>
-<li>finish API-surface convergence for the shim-native resource families that are still outside workload-core authority</li>
+<li>converge <code>CronJob</code>, <code>ConfigMap</code>, <code>Secret</code>, and <code>ServiceAccount</code> onto shared HA authority without reopening storage or HPA side paths</li>
 </ul>
 <p>Primary outcomes:</p>
 <ul>
-<li>the remaining shim mutation surfaces converge on the same shared HA authority model instead of the transitional shim DB path</li>
-<li><code>CronJob</code>, <code>HorizontalPodAutoscaler</code>, PVC/storage resources, ConfigMaps, Secrets, RBAC, and other shim-native objects gain an explicit HA convergence plan</li>
-<li>watch/resourceVersion/compaction behavior for the non-converged shim surface aligns with the same monotonic revision model used by the controller and <code>H4a</code></li>
+<li><code>CronJob</code>, <code>ConfigMap</code>, <code>Secret</code>, and <code>ServiceAccount</code> gain shared-authority HA read/write/watch behavior</li>
+<li>the elected controller owns <code>CronJob</code> execution in HA mode; schedule cursor and last-run status live in shared authority state</li>
+<li>HA mode disables the apishim <code>StorageController</code> until <code>H4b2</code>, so storage watch loops do not keep mutating outside the converged authority boundary</li>
+<li>containerd/CRI runtime reads for converged passive resources stop depending on local shim DB authority in HA mode</li>
+</ul>
+<h3 id="h4b-hpa-shared-metrics-hpa-convergence">H4b-hpa: Shared-metrics HPA convergence</h3>
+<p>Goal:</p>
+<ul>
+<li>re-enable HA <code>HorizontalPodAutoscaler</code> mutation only after a controller-visible shared metrics source exists</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>HPA state and scale writes converge on the same shared HA authority model as <code>H4a</code> and <code>H4b1</code></li>
+<li>autoscaling decisions no longer depend on per-replica adapter-host runtime stats</li>
+<li>HPA remains read-only in HA mode until this shared-metrics slice lands</li>
+</ul>
+<h3 id="h4b2-storage-rbac-and-remaining-shim-resource-convergence">H4b2: Storage, RBAC, and remaining shim-resource convergence</h3>
+<p>Goal:</p>
+<ul>
+<li>finish the remaining shim-native convergence work after the lower-risk control-resource slices land</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>PVC/storage, RBAC, and the remaining shim-native mutation surfaces converge on the same shared HA authority model instead of the transitional shim DB path</li>
+<li>watch/resourceVersion/compaction behavior for the remaining shim surface aligns with the same monotonic revision model used by the controller and the earlier <code>H4*</code> slices</li>
 <li>Postgres and SQLite remain optional deployment backends, but they are no longer the HA authority story for public API behavior</li>
 </ul>
 <h3 id="h5-control-plane-operations-and-recovery-patterns">H5: Control-plane operations and recovery patterns</h3>
@@ -904,9 +926,9 @@
 </ul>
 <h2 id="dependency-model">Dependency Model</h2>
 <p>This HA track is the foundation for later deployment work:</p>
-<table><thead><tr><th>Phase</th><th>Depends on</th><th>Why</th></tr></thead><tbody><tr><td>H1</td><td>H0</td><td>Leader election only matters after desired-state authority is shared.</td></tr><tr><td>H2</td><td>H1</td><td>Fencing depends on a real elected leader and an <code>etcd</code>-issued epoch.</td></tr><tr><td>H3</td><td>H1, H2</td><td>Durable transport is only safe after mutations are leader-gated and fenced.</td></tr><tr><td>H4a</td><td>H0, H1, H2</td><td>Workload-core shim mutation can only converge after shared authority, leadership, and fencing exist.</td></tr><tr><td>H4b</td><td>H4a</td><td>The remaining shim-native resources should extend the same authority model instead of creating a parallel one.</td></tr><tr><td>H5</td><td>H1, H3, H4b</td><td>Recovery docs are only meaningful after authority, transport, and API convergence are defined.</td></tr></tbody></table>
+<table><thead><tr><th>Phase</th><th>Depends on</th><th>Why</th></tr></thead><tbody><tr><td>H1</td><td>H0</td><td>Leader election only matters after desired-state authority is shared.</td></tr><tr><td>H2</td><td>H1</td><td>Fencing depends on a real elected leader and an <code>etcd</code>-issued epoch.</td></tr><tr><td>H3</td><td>H1, H2</td><td>Durable transport is only safe after mutations are leader-gated and fenced.</td></tr><tr><td>H4a</td><td>H0, H1, H2</td><td>Workload-core shim mutation can only converge after shared authority, leadership, and fencing exist.</td></tr><tr><td>H4b1</td><td>H4a</td><td><code>CronJob</code> and passive shim objects can extend the same authority model without reopening storage or HPA metrics scope.</td></tr><tr><td>H4b-hpa</td><td>H4b1</td><td>HPA should only converge after the passive-resource cut and a controller-visible shared metrics source exist.</td></tr><tr><td>H4b2</td><td>H4b1, H4b-hpa</td><td>Storage, RBAC, and the remaining shim-native resources should converge only after the narrower control-resource slices land.</td></tr><tr><td>H5</td><td>H1, H3, H4b2</td><td>Recovery docs are only meaningful after authority, transport, and API convergence are defined.</td></tr></tbody></table>
 <p>The fabric deployment milestones depend on this track rather than re-stating it:</p>
-<table><thead><tr><th>Fabric milestone</th><th>Additional HA dependency</th><th>Why</th></tr></thead><tbody><tr><td>D1</td><td>H3</td><td>The HA edge and broker boundary should not front a single-process backend authority.</td></tr><tr><td>D2</td><td>H4b</td><td>Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model.</td></tr><tr><td>D3</td><td>H5</td><td>Multi-cell operation needs tested failover and recovery patterns, not only topology docs.</td></tr><tr><td>D4</td><td>H5</td><td>Partner and domain operations require operator-readable recovery and governance paths.</td></tr></tbody></table>
+<table><thead><tr><th>Fabric milestone</th><th>Additional HA dependency</th><th>Why</th></tr></thead><tbody><tr><td>D1</td><td>H3</td><td>The HA edge and broker boundary should not front a single-process backend authority.</td></tr><tr><td>D2</td><td>H4b2</td><td>Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model.</td></tr><tr><td>D3</td><td>H5</td><td>Multi-cell operation needs tested failover and recovery patterns, not only topology docs.</td></tr><tr><td>D4</td><td>H5</td><td>Partner and domain operations require operator-readable recovery and governance paths.</td></tr></tbody></table>
 <h2 id="failure-model">Failure Model</h2>
 <p>The desired failure behavior is simple and explicit:</p>
 <ul>
@@ -926,7 +948,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-17 17:31:26</span>
+        <span>Built 2026-03-17 18:13:13</span>
       </div>
     </footer>
     <script>

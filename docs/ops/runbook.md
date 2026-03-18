@@ -228,7 +228,7 @@ HA control-plane first slice
 - Controller-native writes update shared desired state only; followers do not reconcile, publish outbox work, or bind mutating NATS request/reply subjects.
 - API shim remains usable for read/list/watch, exec, port-forward, session token minting, and authorization review endpoints.
 - In HA mode, workload-core mutation now routes through shared controller authority for `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `Deployment/scale`, and attached `Service`/`Ingress`.
-- Non-converged shim-native resources remain read-only in HA mode until `H4b`.
+- Non-converged shim-native resources remain read-only in HA mode until the relevant later `H4b*` slice.
 - If controller authority is uncertain or `etcd` quorum is lost, the control plane degrades to read-only.
 
 Release notes quick links

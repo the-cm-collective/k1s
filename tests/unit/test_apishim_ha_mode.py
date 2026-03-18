@@ -1,4 +1,6 @@
 import json
+import sys
+import types
 
 from ae.apishim import server as shim_server
 from ae.apishim.store import ObjectStore
@@ -216,3 +218,37 @@ def test_apishim_ha_mode_keeps_authorization_reviews_available(monkeypatch, tmp_
     payload = _json_body(handler)
     assert payload["kind"] == "SelfSubjectAccessReview"
     assert "status" in payload
+
+
+def test_apishim_ha_mode_disables_storage_controller_startup(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    monkeypatch.setenv("AE_APISHIM_RUNTIME", "stub")
+    monkeypatch.setenv("AE_STATE_DB", str(tmp_path / "controller.db"))
+    monkeypatch.setenv("AE_APISHIM_DB", str(tmp_path / "apishim.db"))
+
+    calls: list[str] = []
+
+    class FakeStorageController:
+        def __init__(self, store) -> None:
+            calls.append("init")
+            self.store = store
+
+        def sync(self) -> int:
+            calls.append("sync")
+            return 1
+
+        def start(self) -> None:
+            calls.append("start")
+
+    fake_module = types.SimpleNamespace(StorageController=FakeStorageController)
+    monkeypatch.setitem(sys.modules, "ae.storage.controller", fake_module)
+
+    server = shim_server.ShimServer(("127.0.0.1", 0), token="a")
+    try:
+        assert server._storage_controller is None
+        assert calls == []
+    finally:
+        server.server_close()
+        store = getattr(server, "store", None)
+        if store is not None and hasattr(store, "close"):
+            store.close()

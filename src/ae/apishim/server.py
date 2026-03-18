@@ -12261,28 +12261,32 @@ class ShimServer(ThreadingHTTPServer):
         self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False
     ) -> None:
         super().__init__(server_address, ShimHandler)
+        ha_mode = str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
         dsn = os.getenv("AE_APISHIM_DSN")
         db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
         self.state = state_store_from_env()
         ShimHandler.state = self.state  # type: ignore[assignment]
         legacy_store = ObjectStore(db_path=db_path, dsn=dsn)
         self._legacy_store = legacy_store
-        if str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        if ha_mode:
             self.store = MultiplexApishimStore.from_state_and_legacy(self.state, legacy_store)
         else:
             self.store = legacy_store
         self._storage_controller = None
-        try:
-            from ae.storage.controller import StorageController
+        if ha_mode:
+            LOGGER.info("HA mode disables apishim storage controller until H4b2")
+        else:
+            try:
+                from ae.storage.controller import StorageController
 
-            self._storage_controller = StorageController(self.store)
-            seeded = self._storage_controller.sync()
-            self._storage_controller.start()
-            if seeded:
-                LOGGER.info("seeded %s StorageClass objects from config", seeded)
-        except Exception as exc:  # noqa: BLE001
-            self._storage_controller = None
-            LOGGER.warning("storage controller init failed: %s", exc)
+                self._storage_controller = StorageController(self.store)
+                seeded = self._storage_controller.sync()
+                self._storage_controller.start()
+                if seeded:
+                    LOGGER.info("seeded %s StorageClass objects from config", seeded)
+            except Exception as exc:  # noqa: BLE001
+                self._storage_controller = None
+                LOGGER.warning("storage controller init failed: %s", exc)
         ShimHandler.rehydrate_sa_tokens(self.store)
         ShimHandler.admin_token = token or os.getenv("AE_APISHIM_TOKEN")
         ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")
@@ -12318,7 +12322,7 @@ class ShimServer(ThreadingHTTPServer):
             "yes",
             "on",
         }
-        if str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        if ha_mode:
             adapter_enabled = False
         if sot_enabled:
             adapter_enabled = False
