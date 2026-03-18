@@ -61,7 +61,7 @@ Phase 5 action items:
 - Tests/CI: unit matrix for RBAC decisions and patch/SSA behavior; add integration smoke that exercises can-i, JSONPatch/mergePatch, and SSA apply flows against the stub runtime. *(covered by `apishim-ssa-rbac` CI workflow.)*
 
 ## Current Gaps and Next Steps
-- **Phase 6 rollout in progress:** Shim and controller can target Postgres via `AE_APISHIM_DSN`/`AE_STATE_DSN`; migrations preserve resourceVersions; HA shim with shared Postgres is validated in CI as a transitional path. The long-term HA authority target now follows the [HA Control Plane Roadmap](high-availability-control-plane.html): shared controller and shim authority converges on `etcd`. Remaining: production-grade watch propagation metrics across shim replicas and the storage convergence work needed for `etcd`-backed HA.
+- **Phase 6 rollout in progress:** Shim and controller can target Postgres via `AE_APISHIM_DSN`/`AE_STATE_DSN`; migrations preserve resourceVersions; HA shim with shared Postgres is validated in CI as a transitional path. The long-term HA authority target now follows the [HA Control Plane Roadmap](high-availability-control-plane.html): `H4a` routes workload-core HA mutation onto shared controller authority, while `H4b` finishes the remaining shim-native resource convergence onto `etcd`. Remaining: production-grade watch propagation metrics across shim replicas and the storage convergence work needed for full `etcd`-backed HA across the whole shim surface.
 - **Phase 7 polish in flight:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2/ v3 and schemas are richer with fixture validation and live gate coverage. Remaining polish: promote the live gate to release-blocking, wire compat/OpenAPI links into docs + release notes, and round out sample coverage.
 
 ### Auth defaults (dev toggle)
@@ -69,7 +69,7 @@ Phase 5 action items:
 - Requests without a bearer token receive `401 Unauthorized` (or `403` when RBAC blocks a verb). Document this flow in kubeconfig examples and keep dev overrides scoped to local testing.
 
 ## Phase 6 — Reliability, storage, and scale
-- Move shim object storage off SQLite to the primary HA authority store. Postgres remains a transitional externalized path, but the target HA end state aligns on `etcd` with the core controller.
+- Move shim object storage off SQLite to the primary HA authority store. Postgres remains a transitional externalized path, but the target HA end state aligns on `etcd` with the core controller; workload-core HA mutation is now on that path, while the remaining shim-native resources still need the `H4b` cutover.
 - Improve watch scalability (per‑resource queues, backpressure, timeouts) and add metrics/tracing.
 - Conformance subset: target the “Kubernetes API conformance lite” we define; document exclusions.
 - Deliverables: soak tests under churn; dashboard panel for shim health; failover of shim without object loss.

@@ -226,7 +226,9 @@ HA control-plane first slice
 - Enable HA with `AE_HA_MODE=1`, a stable `AE_CONTROLLER_ID`, `AE_CONTROLLER_ADVERTISE_ADDR`, shared `AE_ETCD_ENDPOINTS`, and the same `AE_ETCD_PREFIX` on every controller.
 - In HA mode, controllers stop importing local `specs/` files and follower replicas reject leader-only controller mutations with `not_leader`.
 - Controller-native writes update shared desired state only; followers do not reconcile, publish outbox work, or bind mutating NATS request/reply subjects.
-- API shim remains usable for read/list/watch, exec, port-forward, session token minting, and authorization review endpoints, but workload create/update/patch/delete is rejected until `H4`.
+- API shim remains usable for read/list/watch, exec, port-forward, session token minting, and authorization review endpoints.
+- In HA mode, workload-core mutation now routes through shared controller authority for `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `Deployment/scale`, and attached `Service`/`Ingress`.
+- Non-converged shim-native resources remain read-only in HA mode until `H4b`.
 - If controller authority is uncertain or `etcd` quorum is lost, the control plane degrades to read-only.
 
 Release notes quick links

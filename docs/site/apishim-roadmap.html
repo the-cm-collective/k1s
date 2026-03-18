@@ -794,7 +794,7 @@
 </ul>
 <h2 id="current-gaps-and-next-steps">Current Gaps and Next Steps</h2>
 <ul>
-<li>**Phase 6 rollout in progress:** Shim and controller can target Postgres via <code>AE_APISHIM_DSN</code>/<code>AE_STATE_DSN</code>; migrations preserve resourceVersions; HA shim with shared Postgres is validated in CI as a transitional path. The long-term HA authority target now follows the <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>: shared controller and shim authority converges on <code>etcd</code>. Remaining: production-grade watch propagation metrics across shim replicas and the storage convergence work needed for <code>etcd</code>-backed HA.</li>
+<li>**Phase 6 rollout in progress:** Shim and controller can target Postgres via <code>AE_APISHIM_DSN</code>/<code>AE_STATE_DSN</code>; migrations preserve resourceVersions; HA shim with shared Postgres is validated in CI as a transitional path. The long-term HA authority target now follows the <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>: <code>H4a</code> routes workload-core HA mutation onto shared controller authority, while <code>H4b</code> finishes the remaining shim-native resource convergence onto <code>etcd</code>. Remaining: production-grade watch propagation metrics across shim replicas and the storage convergence work needed for full <code>etcd</code>-backed HA across the whole shim surface.</li>
 <li>**Phase 7 polish in flight:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2/ v3 and schemas are richer with fixture validation and live gate coverage. Remaining polish: promote the live gate to release-blocking, wire compat/OpenAPI links into docs + release notes, and round out sample coverage.</li>
 </ul>
 <h3 id="auth-defaults-dev-toggle">Auth defaults (dev toggle)</h3>
@@ -804,7 +804,7 @@
 </ul>
 <h2 id="phase-6-reliability-storage-and-scale">Phase 6 — Reliability, storage, and scale</h2>
 <ul>
-<li>Move shim object storage off SQLite to the primary HA authority store. Postgres remains a transitional externalized path, but the target HA end state aligns on <code>etcd</code> with the core controller.</li>
+<li>Move shim object storage off SQLite to the primary HA authority store. Postgres remains a transitional externalized path, but the target HA end state aligns on <code>etcd</code> with the core controller; workload-core HA mutation is now on that path, while the remaining shim-native resources still need the <code>H4b</code> cutover.</li>
 <li>Improve watch scalability (per‑resource queues, backpressure, timeouts) and add metrics/tracing.</li>
 <li>Conformance subset: target the “Kubernetes API conformance lite” we define; document exclusions.</li>
 <li>Deliverables: soak tests under churn; dashboard panel for shim health; failover of shim without object loss.</li>
@@ -908,7 +908,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 15:27:58</span>
+        <span>Built 2026-03-17 17:31:26</span>
       </div>
     </footer>
     <script>

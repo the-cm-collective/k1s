@@ -19,7 +19,7 @@ The repo already contains several of the primitives needed for this path:
 - NATS Core and JetStream transport modes
 - outbox-based dispatch and gateway spool durability
 
-The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes apishim workload mutation explicitly read-only until `H4`. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate `R=3`, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age.
+The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until `H4b`. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate `R=3`, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. `H4a` has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode, while the remaining shim-native resource families stay read-only until `H4b`.
 
 The two design rules for the whole program are:
 
@@ -79,7 +79,7 @@ Primary outcomes:
 - `etcd`-backed shared controller state is the only authoritative desired-state registry in HA mode
 - file import from `specs/` is explicitly documented as dev-only for HA deployments
 - controller-native CLI and controller API writers land intent into the same shared registry in HA mode
-- apishim remains read/list/watch-capable in HA mode, but workload mutation is rejected until `H4`
+- apishim remains read/list/watch-capable in HA mode, but non-converged mutation is rejected until `H4b`
 - revision and generation semantics are shared across controller replicas
 
 ### H1: Leader election and controller epochs
@@ -139,18 +139,37 @@ Current implementation status:
 - route bundles still use periodic publish/ack, but reconnect now resets pending sites for immediate resend and `/metrics` exposes route publish counters, pending state, and `ae_route_bundle_ack_age_seconds`
 - gateway telemetry now exposes `ae_gateway_result_replay_total`, `ae_gateway_result_replay_fail_total`, and `ae_gateway_result_replay_backlog`
 
-### H4: Shared API and apishim convergence
+### H4a: Workload-core apishim convergence
 
 Goal:
-- eliminate the separate HA authority story for the Kubernetes-compatible API layer
+- restore HA mutation for converged workload-core resources without re-introducing a second truth store
 
 Primary outcomes:
 
-- apishim HA converges on `etcd`-backed revision, watch, compaction, and lease semantics
-- the current Postgres-backed HA story is treated as transitional rather than the target end state
-- list/watch behavior aligns with the same monotonic revision model used by the core controller
-- controller and shim no longer depend on different durable authority backends in HA mode
-- before `H4`, apishim workload mutation in HA mode stays intentionally read-only rather than pretending to share controller authority
+- apishim HA workload mutation for `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `Deployment/scale`, and attached `Service`/`Ingress` now lands in shared controller authority instead of the local shim DB
+- the converged workload surface reads back from shared controller state instead of the adapter/mirror path in HA mode
+- attached `Service` and `Ingress` writes are treated as workload-owned intent and fail closed on ambiguous mappings
+- the current Postgres-backed shim store is treated as transitional and legacy-only for non-converged resources in HA mode
+- non-converged shim resource families remain read/list/watch-capable, but mutation stays explicitly unsupported until `H4b`
+
+Current implementation status:
+
+- HA mode now uses a multiplex shim store that routes converged workload-core resources onto shared controller authority while leaving legacy resources on the existing object store
+- controller registry entries carry workload-kind and attached `Service`/`Ingress` identity labels so the shim can synthesize converged reads without consulting the legacy DB
+- HA apishim workload PUT/DELETE/scale flows now perform CAS writes against controller authority and return `409 Conflict` on stale `resourceVersion`
+- controller HA mode disables the old apishim mirror fallback and materializes converged `DaemonSet` desired replicas from controller-visible node count during reconcile
+
+### H4b: Remaining shim-resource convergence
+
+Goal:
+- finish API-surface convergence for the shim-native resource families that are still outside workload-core authority
+
+Primary outcomes:
+
+- the remaining shim mutation surfaces converge on the same shared HA authority model instead of the transitional shim DB path
+- `CronJob`, `HorizontalPodAutoscaler`, PVC/storage resources, ConfigMaps, Secrets, RBAC, and other shim-native objects gain an explicit HA convergence plan
+- watch/resourceVersion/compaction behavior for the non-converged shim surface aligns with the same monotonic revision model used by the controller and `H4a`
+- Postgres and SQLite remain optional deployment backends, but they are no longer the HA authority story for public API behavior
 
 ### H5: Control-plane operations and recovery patterns
 
@@ -174,15 +193,16 @@ This HA track is the foundation for later deployment work:
 | H1 | H0 | Leader election only matters after desired-state authority is shared. |
 | H2 | H1 | Fencing depends on a real elected leader and an `etcd`-issued epoch. |
 | H3 | H1, H2 | Durable transport is only safe after mutations are leader-gated and fenced. |
-| H4 | H0, H1, H2 | The shared API should converge on the same authority model, not invent another one. |
-| H5 | H1, H3, H4 | Recovery docs are only meaningful after authority, transport, and API convergence are defined. |
+| H4a | H0, H1, H2 | Workload-core shim mutation can only converge after shared authority, leadership, and fencing exist. |
+| H4b | H4a | The remaining shim-native resources should extend the same authority model instead of creating a parallel one. |
+| H5 | H1, H3, H4b | Recovery docs are only meaningful after authority, transport, and API convergence are defined. |
 
 The fabric deployment milestones depend on this track rather than re-stating it:
 
 | Fabric milestone | Additional HA dependency | Why |
 | --- | --- | --- |
 | D1 | H3 | The HA edge and broker boundary should not front a single-process backend authority. |
-| D2 | H4 | Provider-backed intake should not depend on a second HA truth store. |
+| D2 | H4b | Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model. |
 | D3 | H5 | Multi-cell operation needs tested failover and recovery patterns, not only topology docs. |
 | D4 | H5 | Partner and domain operations require operator-readable recovery and governance paths. |
 
