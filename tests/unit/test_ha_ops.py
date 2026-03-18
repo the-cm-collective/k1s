@@ -3,11 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from ae.ha.ops import (
+    EtcdRestoreMemberSpec,
     build_container_etcdctl_command,
     build_local_etcdctl_command,
+    build_local_etcdctl_recovery_command,
+    build_quorum_restore_plan,
+    derive_client_url,
+    format_quorum_restore_plan,
     ha_core_missing_env,
     leader_key,
     parse_etcd_leader_response,
+    parse_etcd_member_add_output,
     parse_nats_url,
     parse_prometheus_metric_value,
     split_csv,
@@ -129,3 +135,89 @@ def test_build_container_etcdctl_command_mounts_unique_paths(tmp_path: Path) -> 
         "status",
         str(mount_path / "snap.db"),
     ]
+
+
+def test_build_local_etcdctl_recovery_command_for_member_add_uses_learner() -> None:
+    cmd, env = build_local_etcdctl_recovery_command(
+        "member-add",
+        endpoints=["http://10.0.0.11:2379", "http://10.0.0.12:2379"],
+        member_name="etcd-c",
+        peer_urls="http://10.0.0.13:2380",
+    )
+
+    assert cmd == [
+        "etcdctl",
+        "--endpoints=http://10.0.0.11:2379,http://10.0.0.12:2379",
+        "member",
+        "add",
+        "etcd-c",
+        "--peer-urls=http://10.0.0.13:2380",
+        "--learner",
+    ]
+    assert env == {"ETCDCTL_API": "3"}
+
+
+def test_parse_etcd_member_add_output_extracts_join_settings() -> None:
+    raw = """
+Member 278c654c9a6dfd3b added to cluster 8e9e05c52164694d
+
+ETCD_NAME="etcd-c"
+ETCD_INITIAL_CLUSTER="etcd-a=http://10.0.0.11:2380,etcd-b=http://10.0.0.12:2380,etcd-c=http://10.0.0.13:2380"
+ETCD_INITIAL_ADVERTISE_PEER_URLS="http://10.0.0.13:2380"
+ETCD_INITIAL_CLUSTER_STATE="existing"
+"""
+
+    result = parse_etcd_member_add_output(raw)
+
+    assert result.member_id == "278c654c9a6dfd3b"
+    assert result.cluster_id == "8e9e05c52164694d"
+    assert result.member_name == "etcd-c"
+    assert result.initial_cluster_state == "existing"
+    assert result.initial_advertise_peer_urls == "http://10.0.0.13:2380"
+
+
+def test_derive_client_url_switches_peer_port_to_client_port() -> None:
+    assert derive_client_url("http://10.0.0.13:2380") == "http://10.0.0.13:2379"
+
+
+def test_build_quorum_restore_plan_renders_three_member_restore_commands(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot.db"
+    plan = build_quorum_restore_plan(
+        snapshot_path=snapshot,
+        cluster_token="k1s-ha",
+        members=[
+            EtcdRestoreMemberSpec(
+                name="etcd-a",
+                peer_url="http://10.0.0.11:2380",
+                client_url="http://10.0.0.11:2379",
+                data_dir="/var/lib/etcd",
+            ),
+            EtcdRestoreMemberSpec(
+                name="etcd-b",
+                peer_url="http://10.0.0.12:2380",
+                client_url="http://10.0.0.12:2379",
+                data_dir="/var/lib/etcd",
+            ),
+            EtcdRestoreMemberSpec(
+                name="etcd-c",
+                peer_url="http://10.0.0.13:2380",
+                client_url="http://10.0.0.13:2379",
+                data_dir="/var/lib/etcd",
+            ),
+        ],
+    )
+
+    assert plan.initial_cluster == (
+        "etcd-a=http://10.0.0.11:2380,"
+        "etcd-b=http://10.0.0.12:2380,"
+        "etcd-c=http://10.0.0.13:2380"
+    )
+    assert len(plan.members) == 3
+    assert plan.members[0].restore_command[0:3] == ["etcdctl", "snapshot", "restore"]
+    assert "--initial-cluster-token=k1s-ha" in plan.members[0].restore_command
+    assert "--initial-cluster-state=new" in plan.members[0].start_command
+
+    rendered = format_quorum_restore_plan(plan)
+    assert "Quorum restore plan from snapshot:" in rendered
+    assert "[etcd-b]" in rendered
+    assert "Initial cluster token: k1s-ha" in rendered

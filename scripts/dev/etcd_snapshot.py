@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
-import shutil
 import sys
 from pathlib import Path
 
@@ -16,7 +15,9 @@ if SRC not in sys.path:
 from ae.ha.ops import (  # noqa: E402
     build_container_etcdctl_command,
     build_local_etcdctl_command,
-    detect_container_cli,
+    detect_container_cli_or_die,
+    required_parent_mounts,
+    resolve_etcdctl_runner,
     split_csv,
     subprocess_run,
 )
@@ -116,7 +117,10 @@ def main(argv: list[str] | None = None) -> int:
         password=args.password,
     )
 
-    runner = resolve_runner(args.runner, args.etcdctl_bin)
+    try:
+        runner = resolve_etcdctl_runner(args.runner, args.etcdctl_bin)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     if runner == "local":
         cmd = local_cmd
     else:
@@ -140,7 +144,15 @@ def main(argv: list[str] | None = None) -> int:
             detect_container_cli_or_die(),
             args.image,
             container_cmd,
-            mounts=_required_mounts(snapshot_path, data_dir),
+            mounts=required_parent_mounts(
+                [
+                    snapshot_path,
+                    data_dir,
+                    args.cacert,
+                    args.cert,
+                    args.key,
+                ]
+            ),
             extra_env=container_env,
         )
         extra_env = {}
@@ -150,41 +162,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     subprocess_run(cmd, env=extra_env)
     return 0
-
-
-def resolve_runner(mode: str, etcdctl_bin: str) -> str:
-    if mode == "local":
-        if shutil.which(etcdctl_bin) is None:
-            raise SystemExit(f"local etcdctl not found: {etcdctl_bin}")
-        return "local"
-    if mode == "container":
-        detect_container_cli_or_die()
-        return "container"
-    if shutil.which(etcdctl_bin) is not None:
-        return "local"
-    detect_container_cli_or_die()
-    return "container"
-
-
-def detect_container_cli_or_die() -> str:
-    cli = detect_container_cli()
-    if not cli:
-        raise SystemExit("no container CLI found; install etcdctl or set AE_CONTAINER_CLI")
-    return cli
-
-
-def _required_mounts(snapshot_path: Path | None, data_dir: Path | None) -> list[Path]:
-    mounts: list[Path] = []
-    if snapshot_path is not None:
-        parent = snapshot_path.parent.resolve()
-        parent.mkdir(parents=True, exist_ok=True)
-        mounts.append(parent)
-    if data_dir is not None:
-        parent = data_dir.parent.resolve()
-        parent.mkdir(parents=True, exist_ok=True)
-        mounts.append(parent)
-    return mounts
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

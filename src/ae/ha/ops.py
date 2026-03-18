@@ -12,7 +12,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 HA_CORE_REQUIRED_ENV: tuple[str, ...] = (
     "AE_CONTROLLER_ID",
@@ -24,6 +24,11 @@ HA_CORE_REQUIRED_ENV: tuple[str, ...] = (
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 _PROM_LINE = re.compile(r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>\S+)$")
+_ETCD_ENV_LINE = re.compile(r'^(?P<key>ETCD_[A-Z0-9_]+)=(?:"(?P<quoted>.*)"|(?P<raw>.+))$')
+_ETCD_MEMBER_ADD = re.compile(
+    r"Member\s+(?P<member_id>[0-9a-fA-F]+)\s+added(?:\s+to\s+cluster\s+(?P<cluster_id>[0-9a-fA-F]+))?",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +38,43 @@ class EtcdLeaderRecord:
     advertise_addr: str | None
     lease_id: int
     raw: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class EtcdMemberAddResult:
+    member_id: str | None
+    cluster_id: str | None
+    member_name: str
+    initial_cluster: str
+    initial_cluster_state: str
+    initial_advertise_peer_urls: str | None
+    raw_env: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class EtcdRestoreMemberSpec:
+    name: str
+    peer_url: str
+    client_url: str
+    data_dir: str
+
+
+@dataclass(frozen=True, slots=True)
+class EtcdRestoreMemberPlan:
+    name: str
+    peer_url: str
+    client_url: str
+    data_dir: str
+    restore_command: list[str]
+    start_command: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class EtcdQuorumRestorePlan:
+    snapshot_path: str
+    initial_cluster: str
+    initial_cluster_token: str
+    members: list[EtcdRestoreMemberPlan]
 
 
 def split_csv(raw: str | None) -> list[str]:
@@ -192,16 +234,9 @@ def _parse_prometheus_labels(raw: str) -> dict[str, str]:
     return labels
 
 
-def build_local_etcdctl_command(
-    action: str,
+def _build_local_etcdctl_prefix(
     *,
     endpoints: list[str] | None = None,
-    snapshot_path: Path | None = None,
-    data_dir: Path | None = None,
-    name: str | None = None,
-    initial_cluster: str | None = None,
-    initial_advertise_peer_urls: str | None = None,
-    initial_cluster_token: str | None = None,
     binary: str = "etcdctl",
     ca_cert: str | None = None,
     cert: str | None = None,
@@ -220,7 +255,35 @@ def build_local_etcdctl_command(
         cmd.append(f"--key={key}")
     if user and password:
         cmd.append(f"--user={user}:{password}")
-    env = {"ETCDCTL_API": "3"}
+    return cmd, {"ETCDCTL_API": "3"}
+
+
+def build_local_etcdctl_command(
+    action: str,
+    *,
+    endpoints: list[str] | None = None,
+    snapshot_path: Path | None = None,
+    data_dir: Path | None = None,
+    name: str | None = None,
+    initial_cluster: str | None = None,
+    initial_advertise_peer_urls: str | None = None,
+    initial_cluster_token: str | None = None,
+    binary: str = "etcdctl",
+    ca_cert: str | None = None,
+    cert: str | None = None,
+    key: str | None = None,
+    user: str | None = None,
+    password: str | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    cmd, env = _build_local_etcdctl_prefix(
+        endpoints=endpoints,
+        binary=binary,
+        ca_cert=ca_cert,
+        cert=cert,
+        key=key,
+        user=user,
+        password=password,
+    )
     if action == "save":
         if snapshot_path is None:
             raise ValueError("snapshot_path required for save")
@@ -248,6 +311,58 @@ def build_local_etcdctl_command(
     return cmd, env
 
 
+def build_local_etcdctl_recovery_command(
+    action: str,
+    *,
+    endpoints: list[str] | None = None,
+    member_id: str | None = None,
+    member_name: str | None = None,
+    peer_urls: str | None = None,
+    output: str = "table",
+    cluster: bool = False,
+    binary: str = "etcdctl",
+    ca_cert: str | None = None,
+    cert: str | None = None,
+    key: str | None = None,
+    user: str | None = None,
+    password: str | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    cmd, env = _build_local_etcdctl_prefix(
+        endpoints=endpoints,
+        binary=binary,
+        ca_cert=ca_cert,
+        cert=cert,
+        key=key,
+        user=user,
+        password=password,
+    )
+    normalized_output = str(output or "table").strip().lower() or "table"
+    if action == "endpoint-status":
+        cmd += ["endpoint", "status"]
+        if cluster:
+            cmd.append("--cluster")
+        cmd.append(f"-w={normalized_output}")
+    elif action == "member-list":
+        cmd += ["member", "list", f"-w={normalized_output}"]
+    elif action == "member-remove":
+        if not member_id:
+            raise ValueError("member_id required for member-remove")
+        cmd += ["member", "remove", str(member_id)]
+    elif action == "member-add":
+        if not member_name:
+            raise ValueError("member_name required for member-add")
+        if not peer_urls:
+            raise ValueError("peer_urls required for member-add")
+        cmd += ["member", "add", str(member_name), f"--peer-urls={peer_urls}", "--learner"]
+    elif action == "member-promote":
+        if not member_id:
+            raise ValueError("member_id required for member-promote")
+        cmd += ["member", "promote", str(member_id)]
+    else:
+        raise ValueError(f"unsupported etcdctl recovery action: {action}")
+    return cmd, env
+
+
 def detect_container_cli() -> str | None:
     explicit = str(os.getenv("AE_CONTAINER_CLI") or "").strip()
     if explicit:
@@ -256,6 +371,27 @@ def detect_container_cli() -> str | None:
         if shutil.which(candidate):
             return candidate
     return None
+
+
+def resolve_etcdctl_runner(mode: str, etcdctl_bin: str) -> str:
+    if mode == "local":
+        if shutil.which(etcdctl_bin) is None:
+            raise RuntimeError(f"local etcdctl not found: {etcdctl_bin}")
+        return "local"
+    if mode == "container":
+        detect_container_cli_or_die()
+        return "container"
+    if shutil.which(etcdctl_bin) is not None:
+        return "local"
+    detect_container_cli_or_die()
+    return "container"
+
+
+def detect_container_cli_or_die() -> str:
+    cli = detect_container_cli()
+    if not cli:
+        raise RuntimeError("no container CLI found; install etcdctl or set AE_CONTAINER_CLI")
+    return cli
 
 
 def build_container_etcdctl_command(
@@ -281,35 +417,200 @@ def build_container_etcdctl_command(
     return cmd
 
 
+def required_parent_mounts(paths: list[str | Path | None]) -> list[Path]:
+    mounts: list[Path] = []
+    seen: set[Path] = set()
+    for item in paths:
+        if item is None:
+            continue
+        raw = str(item).strip()
+        if not raw:
+            continue
+        parent = Path(raw).expanduser().resolve().parent
+        if parent in seen:
+            continue
+        seen.add(parent)
+        parent.mkdir(parents=True, exist_ok=True)
+        mounts.append(parent)
+    return mounts
+
+
+def parse_etcd_member_add_output(
+    text: str,
+    *,
+    expected_name: str | None = None,
+    expected_peer_urls: str | None = None,
+) -> EtcdMemberAddResult:
+    member_id: str | None = None
+    cluster_id: str | None = None
+    env_map: dict[str, str] = {}
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        member_match = _ETCD_MEMBER_ADD.search(line)
+        if member_match:
+            member_id = member_match.group("member_id")
+            cluster_id = member_match.group("cluster_id")
+            continue
+        env_match = _ETCD_ENV_LINE.match(line)
+        if env_match:
+            env_map[env_match.group("key")] = env_match.group("quoted") or env_match.group("raw") or ""
+    member_name = str(env_map.get("ETCD_NAME") or expected_name or "").strip()
+    initial_cluster = str(env_map.get("ETCD_INITIAL_CLUSTER") or "").strip()
+    initial_cluster_state = str(env_map.get("ETCD_INITIAL_CLUSTER_STATE") or "").strip()
+    initial_peer_urls = (
+        str(env_map.get("ETCD_INITIAL_ADVERTISE_PEER_URLS") or expected_peer_urls or "").strip() or None
+    )
+    if not member_name or not initial_cluster or not initial_cluster_state:
+        raise ValueError(f"unable to parse etcd member add output: {text!r}")
+    return EtcdMemberAddResult(
+        member_id=member_id,
+        cluster_id=cluster_id,
+        member_name=member_name,
+        initial_cluster=initial_cluster,
+        initial_cluster_state=initial_cluster_state,
+        initial_advertise_peer_urls=initial_peer_urls,
+        raw_env=env_map,
+    )
+
+
+def derive_client_url(peer_url: str) -> str:
+    parsed = urlparse(str(peer_url or "").strip())
+    if not parsed.scheme or not parsed.hostname:
+        raise ValueError(f"invalid peer url: {peer_url!r}")
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
+    if parsed.username:
+        auth = parsed.username
+        if parsed.password:
+            auth = f"{auth}:{parsed.password}"
+        netloc = f"{auth}@{netloc}"
+    netloc = f"{netloc}:2379"
+    return urlunparse((parsed.scheme, netloc, "", "", "", ""))
+
+
+def build_quorum_restore_plan(
+    *,
+    snapshot_path: Path,
+    cluster_token: str,
+    members: list[EtcdRestoreMemberSpec],
+    binary: str = "etcdctl",
+) -> EtcdQuorumRestorePlan:
+    if len(members) != 3:
+        raise ValueError("exactly three members are required for quorum restore planning")
+    initial_cluster = ",".join(f"{member.name}={member.peer_url}" for member in members)
+    plans: list[EtcdRestoreMemberPlan] = []
+    for member in members:
+        restore_cmd, _env = build_local_etcdctl_command(
+            "restore",
+            snapshot_path=snapshot_path,
+            data_dir=Path(member.data_dir),
+            name=member.name,
+            initial_cluster=initial_cluster,
+            initial_advertise_peer_urls=member.peer_url,
+            initial_cluster_token=cluster_token,
+            binary=binary,
+        )
+        start_cmd = [
+            "etcd",
+            f"--name={member.name}",
+            f"--data-dir={member.data_dir}",
+            f"--listen-peer-urls={member.peer_url}",
+            f"--initial-advertise-peer-urls={member.peer_url}",
+            f"--listen-client-urls={member.client_url}",
+            f"--advertise-client-urls={member.client_url}",
+            f"--initial-cluster={initial_cluster}",
+            "--initial-cluster-state=new",
+            f"--initial-cluster-token={cluster_token}",
+        ]
+        plans.append(
+            EtcdRestoreMemberPlan(
+                name=member.name,
+                peer_url=member.peer_url,
+                client_url=member.client_url,
+                data_dir=member.data_dir,
+                restore_command=restore_cmd,
+                start_command=start_cmd,
+            )
+        )
+    return EtcdQuorumRestorePlan(
+        snapshot_path=str(snapshot_path),
+        initial_cluster=initial_cluster,
+        initial_cluster_token=cluster_token,
+        members=plans,
+    )
+
+
+def format_quorum_restore_plan(plan: EtcdQuorumRestorePlan) -> str:
+    lines = [
+        f"Quorum restore plan from snapshot: {plan.snapshot_path}",
+        f"Initial cluster: {plan.initial_cluster}",
+        f"Initial cluster token: {plan.initial_cluster_token}",
+        "",
+        "Assumption: each member listens and advertises on the same peer/client URLs shown below.",
+    ]
+    for member in plan.members:
+        lines.extend(
+            [
+                "",
+                f"[{member.name}]",
+                f"peer_url={member.peer_url}",
+                f"client_url={member.client_url}",
+                f"data_dir={member.data_dir}",
+                "restore:",
+                f"  {' '.join(member.restore_command)}",
+                "start:",
+                f"  {' '.join(member.start_command)}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def subprocess_run(
     cmd: list[str],
     *,
     env: dict[str, str] | None = None,
+    capture_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603
         cmd,
         check=True,
         text=True,
-        capture_output=False,
+        capture_output=capture_output,
         env={**os.environ, **(env or {})},
     )
 
 
 __all__ = [
+    "EtcdMemberAddResult",
+    "EtcdQuorumRestorePlan",
     "EtcdLeaderRecord",
+    "EtcdRestoreMemberPlan",
+    "EtcdRestoreMemberSpec",
     "HA_CORE_REQUIRED_ENV",
     "build_container_etcdctl_command",
     "build_local_etcdctl_command",
+    "build_local_etcdctl_recovery_command",
+    "build_quorum_restore_plan",
     "detect_container_cli",
+    "detect_container_cli_or_die",
+    "derive_client_url",
     "etcd_endpoint_healthy",
+    "format_quorum_restore_plan",
     "ha_core_missing_env",
     "healthy_etcd_endpoints",
     "is_loopback_host",
     "leader_key",
     "parse_etcd_leader_response",
+    "parse_etcd_member_add_output",
     "parse_nats_url",
     "parse_prometheus_metric_value",
     "read_etcd_leader",
+    "required_parent_mounts",
+    "resolve_etcdctl_runner",
     "split_csv",
     "subprocess_run",
     "tcp_connectable",
