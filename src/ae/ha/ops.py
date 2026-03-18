@@ -77,6 +77,21 @@ class EtcdQuorumRestorePlan:
     members: list[EtcdRestoreMemberPlan]
 
 
+@dataclass(frozen=True, slots=True)
+class BuildInfoRecord:
+    component: str
+    version: str
+    sha: str
+    date: str
+
+
+@dataclass(frozen=True, slots=True)
+class HaCoreNodeTarget:
+    name: str
+    controller_url: str
+    apishim_url: str
+
+
 def split_csv(raw: str | None) -> list[str]:
     if raw is None:
         return []
@@ -220,6 +235,26 @@ def parse_prometheus_metric_value(
         except ValueError:
             continue
     return None
+
+
+def collect_prometheus_metric_values(
+    text: str,
+    metric_name: str,
+) -> list[tuple[dict[str, str], float]]:
+    values: list[tuple[dict[str, str], float]] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _PROM_LINE.match(line)
+        if not match or match.group("name") != metric_name:
+            continue
+        try:
+            value = float(match.group("value"))
+        except ValueError:
+            continue
+        values.append((_parse_prometheus_labels(match.group("labels") or ""), value))
+    return values
 
 
 def _parse_prometheus_labels(raw: str) -> dict[str, str]:
@@ -569,6 +604,39 @@ def format_quorum_restore_plan(plan: EtcdQuorumRestorePlan) -> str:
     return "\n".join(lines)
 
 
+def parse_ha_core_node_target(raw: str) -> HaCoreNodeTarget:
+    text = str(raw or "").strip()
+    if "=" not in text:
+        raise ValueError(f"invalid node value {raw!r}; expected NAME=CONTROLLER_URL,APISHIM_URL")
+    name, urls_raw = text.split("=", 1)
+    node_name = name.strip()
+    urls = [item.strip() for item in urls_raw.split(",") if item.strip()]
+    if len(urls) != 2:
+        raise ValueError(f"invalid node value {raw!r}; expected NAME=CONTROLLER_URL,APISHIM_URL")
+    if not node_name:
+        raise ValueError(f"invalid node value {raw!r}; missing node name")
+    return HaCoreNodeTarget(
+        name=node_name,
+        controller_url=urls[0].rstrip("/"),
+        apishim_url=urls[1].rstrip("/"),
+    )
+
+
+def fetch_http_text(url: str, *, timeout_s: float = 3.0) -> str:
+    with urllib.request.urlopen(url, timeout=timeout_s) as resp:
+        return resp.read().decode("utf-8")
+
+
+def fetch_build_info(base_url: str, *, timeout_s: float = 3.0) -> BuildInfoRecord:
+    payload = _http_json(f"{str(base_url or '').rstrip('/')}/__ae/version", timeout_s=timeout_s)
+    return BuildInfoRecord(
+        component=str(payload.get("component") or ""),
+        version=str(payload.get("version") or ""),
+        sha=str(payload.get("sha") or ""),
+        date=str(payload.get("date") or ""),
+    )
+
+
 def subprocess_run(
     cmd: list[str],
     *,
@@ -585,20 +653,25 @@ def subprocess_run(
 
 
 __all__ = [
+    "BuildInfoRecord",
     "EtcdMemberAddResult",
     "EtcdQuorumRestorePlan",
     "EtcdLeaderRecord",
     "EtcdRestoreMemberPlan",
     "EtcdRestoreMemberSpec",
     "HA_CORE_REQUIRED_ENV",
+    "HaCoreNodeTarget",
     "build_container_etcdctl_command",
     "build_local_etcdctl_command",
     "build_local_etcdctl_recovery_command",
     "build_quorum_restore_plan",
+    "collect_prometheus_metric_values",
     "detect_container_cli",
     "detect_container_cli_or_die",
     "derive_client_url",
     "etcd_endpoint_healthy",
+    "fetch_build_info",
+    "fetch_http_text",
     "format_quorum_restore_plan",
     "ha_core_missing_env",
     "healthy_etcd_endpoints",
@@ -606,6 +679,7 @@ __all__ = [
     "leader_key",
     "parse_etcd_leader_response",
     "parse_etcd_member_add_output",
+    "parse_ha_core_node_target",
     "parse_nats_url",
     "parse_prometheus_metric_value",
     "read_etcd_leader",

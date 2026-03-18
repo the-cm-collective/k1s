@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ae.ha.ops import (
+    collect_prometheus_metric_values,
     EtcdRestoreMemberSpec,
     build_container_etcdctl_command,
     build_local_etcdctl_command,
@@ -14,6 +15,7 @@ from ae.ha.ops import (
     leader_key,
     parse_etcd_leader_response,
     parse_etcd_member_add_output,
+    parse_ha_core_node_target,
     parse_nats_url,
     parse_prometheus_metric_value,
     split_csv,
@@ -80,6 +82,29 @@ ae_gateway_result_replay_backlog{site="sfo"} 7
     )
 
     assert value == 7.0
+
+
+def test_collect_prometheus_metric_values_returns_all_samples() -> None:
+    text = """
+# HELP sample help
+ae_site_stale{site="sea"} 0
+ae_site_stale{site="sfo"} 1
+"""
+
+    values = collect_prometheus_metric_values(text, "ae_site_stale")
+
+    assert values == [
+        ({"site": "sea"}, 0.0),
+        ({"site": "sfo"}, 1.0),
+    ]
+
+
+def test_parse_ha_core_node_target_requires_controller_and_apishim_urls() -> None:
+    node = parse_ha_core_node_target("core-a=http://core-a:9108,https://core-a:8445")
+
+    assert node.name == "core-a"
+    assert node.controller_url == "http://core-a:9108"
+    assert node.apishim_url == "https://core-a:8445"
 
 
 def test_build_local_etcdctl_restore_command_includes_cluster_flags(tmp_path: Path) -> None:
