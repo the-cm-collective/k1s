@@ -34,7 +34,7 @@ def test_apishim_ha_mode_rejects_post_create_for_storage_resource(monkeypatch, t
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "later H4b" in payload["message"]
+    assert "later H4" in payload["message"]
     assert store.get("", "v1", "persistentvolumeclaims", "default", "demo") is None
 
 
@@ -65,7 +65,7 @@ def test_apishim_ha_mode_rejects_put_for_storage_resource(monkeypatch, tmp_path)
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "later H4b" in payload["message"]
+    assert "later H4" in payload["message"]
     assert store.get("", "v1", "persistentvolumeclaims", "default", "demo") is None
 
 
@@ -99,7 +99,7 @@ def test_apishim_ha_mode_rejects_patch_for_storage_resource(monkeypatch, tmp_pat
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "later H4b" in payload["message"]
+    assert "later H4" in payload["message"]
     obj = store.get("", "v1", "persistentvolumeclaims", "default", "demo")
     assert obj is not None
     assert obj.spec["resources"]["requests"]["storage"] == "1Gi"
@@ -133,7 +133,7 @@ def test_apishim_ha_mode_rejects_delete_for_storage_resource(monkeypatch, tmp_pa
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "later H4b" in payload["message"]
+    assert "later H4" in payload["message"]
     assert store.get("", "v1", "persistentvolumeclaims", "default", "demo") is not None
 
 
@@ -264,3 +264,67 @@ def test_apishim_ha_mode_disables_storage_controller_startup(monkeypatch, tmp_pa
         store = getattr(server, "store", None)
         if store is not None and hasattr(store, "close"):
             store.close()
+
+
+def test_apishim_ha_mode_rejects_crd_create_until_later_slice(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    store = ObjectStore(tmp_path / "apishim.db")
+    body = json.dumps(
+        {
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {"name": "apps.ae.dev"},
+            "spec": {
+                "group": "ae.dev",
+                "scope": "Namespaced",
+                "names": {"plural": "apps", "singular": "app", "kind": "Deployment"},
+                "versions": [{"name": "v1alpha1", "served": True, "storage": True}],
+            },
+        }
+    ).encode("utf-8")
+    handler, status = _handler(
+        store,
+        monkeypatch,
+        "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/apps.ae.dev",
+        method="PUT",
+        body=body,
+    )
+
+    handler.do_PUT()
+
+    assert status["code"] == 409
+    payload = _json_body(handler)
+    assert payload["reason"] == "HAUnsupported"
+    assert "later H4" in payload["message"]
+    assert store.get("apiextensions.k8s.io", "v1", "customresourcedefinitions", None, "apps.ae.dev") is None
+
+
+def test_apishim_ha_mode_rejects_custom_resource_create_until_later_slice(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    store = ObjectStore(tmp_path / "apishim.db")
+    body = json.dumps(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {"image": "busybox"},
+        }
+    ).encode("utf-8")
+    handler, status = _handler(
+        store,
+        monkeypatch,
+        "/apis/ae.dev/v1alpha1/namespaces/default/apps",
+        method="POST",
+        body=body,
+    )
+
+    handler.do_POST()
+
+    assert status["code"] == 409
+    payload = _json_body(handler)
+    assert payload["reason"] == "HAUnsupported"
+    assert "later H4" in payload["message"]
+    assert store.list_all("ae.dev", "v1alpha1", "apps") == []

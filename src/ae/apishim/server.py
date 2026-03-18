@@ -3150,7 +3150,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             return False
         supported = False
         plural, _ns, _name = _ns_name(path)
-        if plural in {"configmaps", "secrets", "serviceaccounts", "services"}:
+        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
             supported = True
         d_plural, _d_ns, _d_name = _apps_ns_name(path)
         if d_plural in {"deployments", "deployments/scale", "statefulsets", "daemonsets"}:
@@ -3166,12 +3166,27 @@ class ShimHandler(BaseHTTPRequestHandler):
         )
         if h_plural == "horizontalpodautoscalers":
             supported = True
+        for resource in ("roles", "rolebindings"):
+            r_plural, _r_ns, _r_name = _gv_ns_name(
+                path, "rbac.authorization.k8s.io", "v1", resource
+            )
+            if r_plural == resource:
+                supported = True
+        for resource in ("clusterroles", "clusterrolebindings"):
+            r_plural, _r_name = _gv_cluster_name(
+                path, "rbac.authorization.k8s.io", "v1", resource
+            )
+            if r_plural == resource:
+                supported = True
+        p_plural, _p_ns, _p_name = _gv_ns_name(path, "policy", "v1", "poddisruptionbudgets")
+        if p_plural == "poddisruptionbudgets":
+            supported = True
         if supported:
             return False
         self._json_status(
             HTTPStatus.CONFLICT,
             reason="HAUnsupported",
-            message="HA mutation via apishim is enabled only for converged H4a/H4b1 resources; this resource remains read-only until its later H4b* slice",
+            message="HA mutation via apishim is enabled only for converged H4 resources; this resource remains read-only until its later H4* slice",
         )
         return True
 
