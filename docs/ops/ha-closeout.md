@@ -40,6 +40,10 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 
 - Variant role model:
   - `scripts/lab/vm/lib/variant.py` now accepts explicit `k1s-ha-core` hosts.
+  - `lab/variants/ha-control-plane-core.yaml` is the checked-in HA closeout variant for the 3-core-plus-1-site topology.
+- Shared backend bootstrap:
+  - `scripts/lab/vm/ha_shared_infra.sh` now bootstraps shared `etcd` and shared hub NATS/JetStream on the three `k1s-ha-core` VMs before `k1s-ha-core` starts.
+  - `scripts/lab/vm/smoke_v2.py` runs that step as the `ha_shared_infra` global phase when the HA variant points its endpoints back at the three HA core VM IPs.
 - Bootstrap:
   - `scripts/lab/vm/k1s_bootstrap.sh` can launch `k1s-ha-core` nodes with HA env instead of assuming a singleton `k1s-core`.
 - Acceptance lane:
@@ -59,7 +63,7 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 - Scope:
   - 2 HA controllers
   - shared etcd
-  - shared hub NATS/JetStream
+  - single local hub NATS/JetStream for reduced regression only
   - 1 apishim
   - 1 edge site
   - 1 gateway / worker path
@@ -67,6 +71,7 @@ This document is the canonical closeout artifact for the HA control-plane roadma
   - shared-authority writes remain usable during HA mode
   - controller failover advances authority to a new leader
   - gateway replay stays bounded after restart under the new leader
+  - the reduced harness forces `AE_JS_REPLICAS=1`; it is not the milestone transport-fidelity lane
 
 ## Gap Register
 

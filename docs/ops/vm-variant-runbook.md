@@ -8,6 +8,7 @@ Reference variants
 - `lab/variants/test2-ab-passthrough.yaml`
 - `lab/variants/test3-abc-no-gpu.yaml` (validated non-GPU baseline)
 - `lab/variants/test3-abc-pp2.yaml` (passthrough profile)
+- `lab/variants/ha-control-plane-core.yaml` (HA closeout topology: 3 `k1s-ha-core` + 1 `k1s-edge-core` site)
 
 Transport defaults
 - Variants default to `transport.leaf_uplink_mode: direct_ip`.
@@ -35,6 +36,7 @@ scripts/lab/vm/smoke.sh \
 What this runs:
 - `provision` (`variant up`)
 - `seed_cache` (`image_seed_bundle.sh`)
+- `ha_shared_infra` (`ha_shared_infra.sh --execute`) when the variant points HA endpoints at the three `k1s-ha-core` VM IPs
 - `bootstrap` (`k1s_bootstrap.sh --execute` with seeded cache import enabled)
 - lane checks (`service_ready`, `fabric_validate`, `functional_basic`, `functional_advanced`)
 
@@ -51,6 +53,24 @@ Key artifacts (`smoke_v2`):
 - `runs/<RUN_ID>/lanes/<lane>/checks/fabric_validate.json`
 - `runs/<RUN_ID>/lanes/<lane>/checks/functional_basic.json`
 - `runs/<RUN_ID>/summary.json`
+
+HA closeout lane example:
+
+```bash
+sudo -v
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_control_plane"
+export RUN_ID
+
+LAB_VM_SMOKE_V2=1 \
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+scripts/lab/vm/smoke.sh \
+  --variant lab/variants/ha-control-plane-core.yaml \
+  --run-id "$RUN_ID" \
+  --lanes ha_control_plane \
+  --keep-on-fail
+```
 
 Optional automatic teardown in the same run:
 
@@ -145,6 +165,21 @@ If you need to register one site manually (without starting edge NATS), use:
 cd /mnt/host
 sudo -E REGISTER_ONLY=1 SITE_ID=edge-b ./scripts/dev/add_edge_site.sh
 sudo -E REGISTER_ONLY=1 SITE_ID=edge-c ./scripts/dev/add_edge_site.sh
+```
+
+For the HA closeout variant, do not use manual `REGISTER_ONLY` registration. The `ha_shared_infra` phase pre-renders the shared hub NATS configs with the required site uplink users before `k1s-ha-core` bootstrap begins.
+
+To generate or execute that HA shared-backend step directly:
+
+```bash
+scripts/lab/vm/ha_shared_infra.sh \
+  --variant lab/variants/ha-control-plane-core.yaml \
+  --run-id "$RUN_ID"
+
+scripts/lab/vm/ha_shared_infra.sh \
+  --variant lab/variants/ha-control-plane-core.yaml \
+  --run-id "$RUN_ID" \
+  --execute
 ```
 
 ## 4) Validate host readiness
