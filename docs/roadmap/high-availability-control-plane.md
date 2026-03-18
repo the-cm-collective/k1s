@@ -287,18 +287,37 @@ Current implementation status:
 - `etcd_snapshot.py` provides explicit etcd snapshot save/status/restore tooling instead of overloading the existing SQLite/specs `ae backup` path
 - `ha_core_drills.py` provides focused verification helpers for leader failover, transport recovery, and external-etcd restart drills
 
-### H5b-recovery: Member replacement, quorum loss, and rolling upgrades
+### H5b1-etcd-recovery: Member replacement, quorum loss, and stale-leader recovery
 
 Goal:
-- turn the HA control plane from bootstrap-ready into recovery-ready
+- turn the HA control plane from bootstrap-ready into operator-recoverable around `etcd` authority loss and recovery
 
 Primary outcomes:
 
-- documented etcd member replacement procedure
-- documented quorum-loss recovery path
-- documented rolling upgrade procedure for controller and transport components
-- split-brain drills and stale-leader recovery documented in operator terms
+- documented etcd member replacement procedure using the v3.5 learner workflow
+- documented quorum-loss recovery path from snapshot into a fresh 3-member cluster
+- stale-leader isolation, follower takeover, and safe rejoin documented in operator terms
 - control-plane node role separation documented for AMD fabric deployments
+- controller metrics expose leader state, authority health, and current epoch for recovery validation
+
+Current implementation status:
+
+- `scripts/dev/etcd_recovery.py` now exposes `endpoint-status`, `member-list`, `member-remove`, `member-add --learner`, `member-promote`, and `quorum-restore-plan`
+- `src/ae/ha/ops.py` now provides shared etcd recovery command builders, learner-add parsing, and 3-member quorum-restore plan rendering
+- controller metrics now expose `ae_controller_is_leader`, `ae_controller_epoch`, and `ae_controller_authority_healthy` for operator-visible recovery checks
+- the runbook now documents member replacement, quorum-loss restore, stale-leader isolation, and control-plane role separation on top of the `k1s-ha-core` bootstrap surface
+
+### H5b2-upgrades: Rolling upgrades and cluster-component replacement
+
+Goal:
+- turn the recovery-ready HA control plane into an upgrade-ready operating model
+
+Primary outcomes:
+
+- documented rolling upgrade procedure for controller and transport components
+- documented NATS/JetStream member replacement and upgrade sequencing
+- upgrade-safe validation for HA transport recovery and control-plane version skew
+- any later single-host 3x HA lab harness stays explicitly separate from production upgrade procedures
 
 ## Dependency Model
 
@@ -317,7 +336,8 @@ This HA track is the foundation for later deployment work:
 | H4b2c-core | H4b2b-crd | Core storage authority can converge before the riskier snapshot and CSI paths. |
 | H4b2c-csi | H4b2c-core | Snapshot and CSI convergence should wait until the core PVC/PV/StorageClass cut is stable. |
 | H5a-core | H1, H3, H4b2c-csi | HA bootstrap and drills are only meaningful after authority, transport, and API convergence are defined. |
-| H5b-recovery | H5a-core | Member replacement, quorum loss, and rolling upgrades should build on one real HA bootstrap and drill surface, not precede it. |
+| H5b1-etcd-recovery | H5a-core | Member replacement, quorum loss, and stale-leader recovery should build on one real HA bootstrap and drill surface, not precede it. |
+| H5b2-upgrades | H5b1-etcd-recovery | Rolling upgrades and transport-cluster replacement should build on the finished etcd recovery posture instead of redefining it. |
 
 The fabric deployment milestones depend on this track rather than re-stating it:
 
@@ -325,8 +345,8 @@ The fabric deployment milestones depend on this track rather than re-stating it:
 | --- | --- | --- |
 | D1 | H3 | The HA edge and broker boundary should not front a single-process backend authority. |
 | D2 | H4b2c-csi | Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model. |
-| D3 | H5b-recovery | Multi-cell operation needs tested failover and recovery patterns, not only topology docs. |
-| D4 | H5b-recovery | Partner and domain operations require operator-readable recovery and governance paths. |
+| D3 | H5b2-upgrades | Multi-cell operation needs tested failover, recovery, and upgrade patterns, not only topology docs. |
+| D4 | H5b2-upgrades | Partner and domain operations require operator-readable recovery, upgrade, and governance paths. |
 
 ## Failure Model
 

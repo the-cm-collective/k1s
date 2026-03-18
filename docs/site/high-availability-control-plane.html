@@ -1005,24 +1005,43 @@
 <li><code>etcd_snapshot.py</code> provides explicit etcd snapshot save/status/restore tooling instead of overloading the existing SQLite/specs <code>ae backup</code> path</li>
 <li><code>ha_core_drills.py</code> provides focused verification helpers for leader failover, transport recovery, and external-etcd restart drills</li>
 </ul>
-<h3 id="h5b-recovery-member-replacement-quorum-loss-and-rolling-upgrades">H5b-recovery: Member replacement, quorum loss, and rolling upgrades</h3>
+<h3 id="h5b1-etcd-recovery-member-replacement-quorum-loss-and-stale-leader-recovery">H5b1-etcd-recovery: Member replacement, quorum loss, and stale-leader recovery</h3>
 <p>Goal:</p>
 <ul>
-<li>turn the HA control plane from bootstrap-ready into recovery-ready</li>
+<li>turn the HA control plane from bootstrap-ready into operator-recoverable around <code>etcd</code> authority loss and recovery</li>
 </ul>
 <p>Primary outcomes:</p>
 <ul>
-<li>documented etcd member replacement procedure</li>
-<li>documented quorum-loss recovery path</li>
-<li>documented rolling upgrade procedure for controller and transport components</li>
-<li>split-brain drills and stale-leader recovery documented in operator terms</li>
+<li>documented etcd member replacement procedure using the v3.5 learner workflow</li>
+<li>documented quorum-loss recovery path from snapshot into a fresh 3-member cluster</li>
+<li>stale-leader isolation, follower takeover, and safe rejoin documented in operator terms</li>
 <li>control-plane node role separation documented for AMD fabric deployments</li>
+<li>controller metrics expose leader state, authority health, and current epoch for recovery validation</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>scripts/dev/etcd_recovery.py</code> now exposes <code>endpoint-status</code>, <code>member-list</code>, <code>member-remove</code>, <code>member-add --learner</code>, <code>member-promote</code>, and <code>quorum-restore-plan</code></li>
+<li><code>src/ae/ha/ops.py</code> now provides shared etcd recovery command builders, learner-add parsing, and 3-member quorum-restore plan rendering</li>
+<li>controller metrics now expose <code>ae_controller_is_leader</code>, <code>ae_controller_epoch</code>, and <code>ae_controller_authority_healthy</code> for operator-visible recovery checks</li>
+<li>the runbook now documents member replacement, quorum-loss restore, stale-leader isolation, and control-plane role separation on top of the <code>k1s-ha-core</code> bootstrap surface</li>
+</ul>
+<h3 id="h5b2-upgrades-rolling-upgrades-and-cluster-component-replacement">H5b2-upgrades: Rolling upgrades and cluster-component replacement</h3>
+<p>Goal:</p>
+<ul>
+<li>turn the recovery-ready HA control plane into an upgrade-ready operating model</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>documented rolling upgrade procedure for controller and transport components</li>
+<li>documented NATS/JetStream member replacement and upgrade sequencing</li>
+<li>upgrade-safe validation for HA transport recovery and control-plane version skew</li>
+<li>any later single-host 3x HA lab harness stays explicitly separate from production upgrade procedures</li>
 </ul>
 <h2 id="dependency-model">Dependency Model</h2>
 <p>This HA track is the foundation for later deployment work:</p>
-<table><thead><tr><th>Phase</th><th>Depends on</th><th>Why</th></tr></thead><tbody><tr><td>H1</td><td>H0</td><td>Leader election only matters after desired-state authority is shared.</td></tr><tr><td>H2</td><td>H1</td><td>Fencing depends on a real elected leader and an <code>etcd</code>-issued epoch.</td></tr><tr><td>H3</td><td>H1, H2</td><td>Durable transport is only safe after mutations are leader-gated and fenced.</td></tr><tr><td>H4a</td><td>H0, H1, H2</td><td>Workload-core shim mutation can only converge after shared authority, leadership, and fencing exist.</td></tr><tr><td>H4b1</td><td>H4a</td><td><code>CronJob</code> and passive shim objects can extend the same authority model without reopening storage or HPA metrics scope.</td></tr><tr><td>H4b-hpa</td><td>H4b1</td><td>HPA should only converge after the passive-resource cut and a controller-visible shared metrics source exist.</td></tr><tr><td>H4b2a</td><td>H4b1, H4b-hpa</td><td>Built-in passive resources should converge after the narrower CronJob/passive-object and shared-metrics HPA cuts land.</td></tr><tr><td>H4b2b-crd</td><td>H4b2a</td><td>CRD and custom-resource convergence should land before the remaining storage controller authority cut.</td></tr><tr><td>H4b2c-core</td><td>H4b2b-crd</td><td>Core storage authority can converge before the riskier snapshot and CSI paths.</td></tr><tr><td>H4b2c-csi</td><td>H4b2c-core</td><td>Snapshot and CSI convergence should wait until the core PVC/PV/StorageClass cut is stable.</td></tr><tr><td>H5a-core</td><td>H1, H3, H4b2c-csi</td><td>HA bootstrap and drills are only meaningful after authority, transport, and API convergence are defined.</td></tr><tr><td>H5b-recovery</td><td>H5a-core</td><td>Member replacement, quorum loss, and rolling upgrades should build on one real HA bootstrap and drill surface, not precede it.</td></tr></tbody></table>
+<table><thead><tr><th>Phase</th><th>Depends on</th><th>Why</th></tr></thead><tbody><tr><td>H1</td><td>H0</td><td>Leader election only matters after desired-state authority is shared.</td></tr><tr><td>H2</td><td>H1</td><td>Fencing depends on a real elected leader and an <code>etcd</code>-issued epoch.</td></tr><tr><td>H3</td><td>H1, H2</td><td>Durable transport is only safe after mutations are leader-gated and fenced.</td></tr><tr><td>H4a</td><td>H0, H1, H2</td><td>Workload-core shim mutation can only converge after shared authority, leadership, and fencing exist.</td></tr><tr><td>H4b1</td><td>H4a</td><td><code>CronJob</code> and passive shim objects can extend the same authority model without reopening storage or HPA metrics scope.</td></tr><tr><td>H4b-hpa</td><td>H4b1</td><td>HPA should only converge after the passive-resource cut and a controller-visible shared metrics source exist.</td></tr><tr><td>H4b2a</td><td>H4b1, H4b-hpa</td><td>Built-in passive resources should converge after the narrower CronJob/passive-object and shared-metrics HPA cuts land.</td></tr><tr><td>H4b2b-crd</td><td>H4b2a</td><td>CRD and custom-resource convergence should land before the remaining storage controller authority cut.</td></tr><tr><td>H4b2c-core</td><td>H4b2b-crd</td><td>Core storage authority can converge before the riskier snapshot and CSI paths.</td></tr><tr><td>H4b2c-csi</td><td>H4b2c-core</td><td>Snapshot and CSI convergence should wait until the core PVC/PV/StorageClass cut is stable.</td></tr><tr><td>H5a-core</td><td>H1, H3, H4b2c-csi</td><td>HA bootstrap and drills are only meaningful after authority, transport, and API convergence are defined.</td></tr><tr><td>H5b1-etcd-recovery</td><td>H5a-core</td><td>Member replacement, quorum loss, and stale-leader recovery should build on one real HA bootstrap and drill surface, not precede it.</td></tr><tr><td>H5b2-upgrades</td><td>H5b1-etcd-recovery</td><td>Rolling upgrades and transport-cluster replacement should build on the finished etcd recovery posture instead of redefining it.</td></tr></tbody></table>
 <p>The fabric deployment milestones depend on this track rather than re-stating it:</p>
-<table><thead><tr><th>Fabric milestone</th><th>Additional HA dependency</th><th>Why</th></tr></thead><tbody><tr><td>D1</td><td>H3</td><td>The HA edge and broker boundary should not front a single-process backend authority.</td></tr><tr><td>D2</td><td>H4b2c-csi</td><td>Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model.</td></tr><tr><td>D3</td><td>H5b-recovery</td><td>Multi-cell operation needs tested failover and recovery patterns, not only topology docs.</td></tr><tr><td>D4</td><td>H5b-recovery</td><td>Partner and domain operations require operator-readable recovery and governance paths.</td></tr></tbody></table>
+<table><thead><tr><th>Fabric milestone</th><th>Additional HA dependency</th><th>Why</th></tr></thead><tbody><tr><td>D1</td><td>H3</td><td>The HA edge and broker boundary should not front a single-process backend authority.</td></tr><tr><td>D2</td><td>H4b2c-csi</td><td>Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model.</td></tr><tr><td>D3</td><td>H5b2-upgrades</td><td>Multi-cell operation needs tested failover, recovery, and upgrade patterns, not only topology docs.</td></tr><tr><td>D4</td><td>H5b2-upgrades</td><td>Partner and domain operations require operator-readable recovery, upgrade, and governance paths.</td></tr></tbody></table>
 <h2 id="failure-model">Failure Model</h2>
 <p>The desired failure behavior is simple and explicit:</p>
 <ul>
@@ -1042,7 +1061,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-18 09:57:40</span>
+        <span>Built 2026-03-18 10:24:51</span>
       </div>
     </footer>
     <script>

@@ -278,6 +278,41 @@ HA control-plane mode (`k1s-ha-core`)
   - apishim remains usable for read/list/watch, exec, port-forward, session token minting, and authorization review endpoints during leader changes
   - if controller authority is uncertain or `etcd` quorum is lost, the control plane degrades to read-only
 
+HA etcd recovery (`H5b1-etcd-recovery`)
+- Controller authority metrics:
+  - `ae_controller_is_leader` is `1` only on the elected controller.
+  - `ae_controller_epoch` exposes the current etcd-issued controller epoch.
+  - `ae_controller_authority_healthy` is `1` when authority is visible and `0` when the controller has lost usable HA authority.
+- Failed member replacement (default learner workflow):
+  - Inspect cluster health first:
+    - `PYTHONPATH=src python scripts/dev/etcd_recovery.py endpoint-status`
+    - `PYTHONPATH=src python scripts/dev/etcd_recovery.py member-list`
+  - Remove the failed member:
+    - `PYTHONPATH=src python scripts/dev/etcd_recovery.py member-remove --member-id <member-id>`
+  - Add the replacement as a learner:
+    - `PYTHONPATH=src python scripts/dev/etcd_recovery.py member-add --name etcd-d --peer-url http://10.0.0.14:2380`
+  - Start the replacement node with the printed `ETCD_INITIAL_CLUSTER`, `ETCD_INITIAL_CLUSTER_STATE`, and `ETCD_INITIAL_ADVERTISE_PEER_URLS` values.
+  - Promote after catch-up:
+    - `PYTHONPATH=src python scripts/dev/etcd_recovery.py member-promote --member-id <learner-member-id>`
+  - Verify the control plane returns to healthy authority:
+    - `curl -fsS http://127.0.0.1:9108/metrics | rg 'ae_controller_is_leader|ae_controller_epoch|ae_controller_authority_healthy'`
+- Quorum-loss restore from snapshot:
+  - Use `scripts/dev/etcd_snapshot.py save` while any healthy member remains.
+  - Render the restore plan for a fresh 3-member cluster:
+    - `PYTHONPATH=src python scripts/dev/etcd_recovery.py quorum-restore-plan --input state/backups/ha-20260318-120000.db --cluster-token k1s-ha-restore --member etcd-a=http://10.0.0.11:2380 --member etcd-b=http://10.0.0.12:2380 --member etcd-c=http://10.0.0.13:2380`
+  - Run the printed restore commands on the three replacement members, then start them with the printed `initial-cluster` settings.
+  - Repoint `k1s-ha-core` nodes at the restored quorum and confirm `ae_controller_authority_healthy 1` appears again before resuming mutation.
+- Stale-leader isolation and safe rejoin:
+  - Isolate the suspected stale leader first; do not allow it to keep talking to nodes or gateways while authority is uncertain.
+  - Verify follower takeover with the existing drill surface:
+    - `PYTHONPATH=src python scripts/dev/ha_core_drills.py leader-failover --command 'systemctl restart ae-controller'`
+  - Confirm the old leader no longer reports `ae_controller_is_leader 1` and does not resume mutation until it rejoins as a follower.
+  - Rejoin the isolated node only after etcd membership and controller authority are healthy again.
+- Control-plane node role separation:
+  - Prefer dedicated control-plane nodes for controllers, shared etcd members, and shared NATS/JetStream members.
+  - Avoid placing etcd quorum roles only on ephemeral worker-focused nodes when the deployment has enough dedicated control-plane capacity.
+  - For AMD fabric deployments, keep recovery ownership explicit: controller operators own authority recovery, fabric operators consume the resulting health signals instead of improvising their own failover rules.
+
 Release notes quick links
 - Compatibility matrix: `docs/reference/apishim-compatibility-matrix.md` (uploaded with releases)
 - OpenAPI artifacts: `/openapi/v2` and `/openapi/v3` are exported during release and attached as `openapi-schemas`.
@@ -285,6 +320,10 @@ Release notes quick links
 Observability
 - Controller dashboard/API: `http://127.0.0.1:9108` when `--metrics-port` is set.
 - Prometheus metrics at `/metrics` (text), recent events via `/events/<app>`.
+- HA authority metrics:
+  - `ae_controller_is_leader`
+  - `ae_controller_epoch`
+  - `ae_controller_authority_healthy`
 
 Dashboard reload vs. restart
 - Code/UI changes only (e.g., edits in `src/ae/observability/http_api.py`): `make dashboard-reload`
