@@ -72,6 +72,39 @@ def _fence_surface(scope: str) -> str:
     return "node_agent.runtime"
 
 
+def _build_volume_manager(node_id: str):
+    if os.getenv("AE_ENABLE_NETFS", "0") != "1":
+        return None
+    try:
+        from ae.apishim.store import ObjectStore
+        from ae.storage import InMemoryStorageState, NetFSManager, NodeVolumeManager
+        from ae.storage.state import ApishimHttpStorageState, ApishimStorageState
+    except Exception:
+        return None
+
+    state = None
+    if _ha_mode_enabled():
+        state = ApishimHttpStorageState.from_env()
+        if state is None:
+            LOGGER.warning(
+                "failed to enable netfs volume manager: HA storage reads require AE_APISHIM_URL"
+            )
+            return None
+    else:
+        dsn = os.getenv("AE_APISHIM_DSN")
+        db_path = os.getenv("AE_APISHIM_DB")
+        if dsn or db_path:
+            store = ObjectStore(
+                db_path=Path(db_path) if db_path else Path("state/apishim.db"),
+                dsn=dsn,
+            )
+            state = ApishimStorageState(store)
+        if state is None:
+            state = InMemoryStorageState()
+    netfs = NetFSManager(state)
+    return NodeVolumeManager(netfs, node_id=node_id)
+
+
 class AgentHandler(BaseHTTPRequestHandler):
     runtime: RuntimeAdapter = None  # type: ignore[assignment]
     volume_manager = None
@@ -919,30 +952,9 @@ def serve(
     AgentHandler.fence_store.init()
     if os.getenv("AE_ENABLE_NETFS", "0") == "1":
         try:
-            from pathlib import Path
-
-            from ae.apishim.store import ObjectStore
-            from ae.storage import (
-                ApishimStorageState,
-                InMemoryStorageState,
-                NetFSManager,
-                NodeVolumeManager,
-            )
-
-            state = None
-            dsn = os.getenv("AE_APISHIM_DSN")
-            db_path = os.getenv("AE_APISHIM_DB")
-            if dsn or db_path:
-                store = ObjectStore(
-                    db_path=Path(db_path) if db_path else Path("state/apishim.db"),
-                    dsn=dsn,
-                )
-                state = ApishimStorageState(store)
-            if state is None:
-                state = InMemoryStorageState()
-            netfs = NetFSManager(state)
-            AgentHandler.volume_manager = NodeVolumeManager(netfs, node_id=AgentHandler.node_id)
-            LOGGER.info("netfs volume manager enabled on node %s", AgentHandler.node_id)
+            AgentHandler.volume_manager = _build_volume_manager(AgentHandler.node_id)
+            if AgentHandler.volume_manager is not None:
+                LOGGER.info("netfs volume manager enabled on node %s", AgentHandler.node_id)
         except Exception as exc:  # noqa: BLE001
             AgentHandler.volume_manager = None
             LOGGER.warning("failed to enable netfs volume manager: %s", exc)

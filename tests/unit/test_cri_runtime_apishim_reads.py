@@ -5,6 +5,7 @@ from ae.k8s.convert import manifest_from_k8s_workload
 from ae.k8s.exporter import ExportOptions, _deployment_from_manifest
 from ae.runtime.cri_runtime import CRIRuntime
 from ae.storage.state import ApishimHttpStorageState
+from ae.storage.types import PvcRef, PvRef
 
 
 class _FakeResponse:
@@ -76,6 +77,88 @@ def test_apishim_http_storage_state_reads_secret_and_serviceaccount(monkeypatch)
     assert service_account == {"imagePullSecrets": [{"name": "regcred"}]}
     assert calls[0][1] == "Bearer read-token"
     assert calls[0][2] == "/tmp/fake-ca.pem"
+
+
+def test_apishim_http_storage_state_reads_storage_and_csi_objects(monkeypatch) -> None:
+    monkeypatch.setenv("AE_APISHIM_URL", "https://apishim.example.test")
+
+    def fake_get(url, *, headers=None, timeout=None, verify=None):
+        _ = (headers, timeout, verify)
+        if url.endswith("/api/v1/namespaces/default/persistentvolumeclaims/demo-pvc"):
+            return _FakeResponse(
+                {
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolumeClaim",
+                    "metadata": {"name": "demo-pvc", "namespace": "default"},
+                    "spec": {"volumeName": "demo-pv"},
+                }
+            )
+        if url.endswith("/api/v1/persistentvolumes/demo-pv"):
+            return _FakeResponse(
+                {
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolume",
+                    "metadata": {"name": "demo-pv", "uid": "pv-uid"},
+                    "spec": {
+                        "storageClassName": "csi-fast",
+                        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+                    },
+                }
+            )
+        if url.endswith("/apis/storage.k8s.io/v1/storageclasses/csi-fast"):
+            return _FakeResponse(
+                {
+                    "apiVersion": "storage.k8s.io/v1",
+                    "kind": "StorageClass",
+                    "metadata": {"name": "csi-fast"},
+                    "spec": {"provisioner": "csi.example.com"},
+                }
+            )
+        if url.endswith("/apis/storage.k8s.io/v1/volumeattachments"):
+            return _FakeResponse(
+                {
+                    "apiVersion": "storage.k8s.io/v1",
+                    "kind": "VolumeAttachmentList",
+                    "items": [
+                        {
+                            "apiVersion": "storage.k8s.io/v1",
+                            "kind": "VolumeAttachment",
+                            "metadata": {"name": "demo-va"},
+                            "spec": {
+                                "nodeName": "node-a",
+                                "source": {"persistentVolumeName": "demo-pv"},
+                            },
+                        }
+                    ],
+                }
+            )
+        if url.endswith("/apis/storage.k8s.io/v1/csidrivers/csi.example.com"):
+            return _FakeResponse(
+                {
+                    "apiVersion": "storage.k8s.io/v1",
+                    "kind": "CSIDriver",
+                    "metadata": {"name": "csi.example.com"},
+                    "spec": {"attachRequired": True},
+                }
+            )
+        return _FakeResponse(None, status_code=404)
+
+    monkeypatch.setattr("ae.storage.state.requests.get", fake_get)
+
+    state = ApishimHttpStorageState.from_env()
+    assert state is not None
+
+    pv_ref = state.get_pv_for_pvc(PvcRef(namespace="default", name="demo-pvc"))
+    pv = state.get_pv(PvRef(name="demo-pv"))
+    storage_class = state.get_storage_class("csi-fast")
+    attachment = state.get_volume_attachment(PvRef(name="demo-pv"), "node-a")
+    driver = state.get_csi_driver("csi.example.com")
+
+    assert pv_ref == PvRef(name="demo-pv", uid="pv-uid", driver="csi.example.com")
+    assert (pv or {}).get("metadata", {}).get("name") == "demo-pv"
+    assert (storage_class or {}).get("spec", {}).get("provisioner") == "csi.example.com"
+    assert (attachment or {}).get("metadata", {}).get("name") == "demo-va"
+    assert (driver or {}).get("spec", {}).get("attachRequired") is True
 
 
 def test_cri_runtime_ha_prefers_http_serviceaccount_reads(monkeypatch, tmp_path) -> None:

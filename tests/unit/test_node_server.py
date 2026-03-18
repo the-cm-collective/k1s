@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ae.ha.fencing import MutationEnvelope, SQLiteFenceStore
-from ae.node.server import AgentHandler, _json_response
+from ae.node.server import AgentHandler, _build_volume_manager, _json_response
 from ae.runtime import RuntimeResult, WorkloadMetricSample
 
 
@@ -266,3 +266,40 @@ def test_workload_metrics_endpoint_serializes_runtime_samples() -> None:
             "pod_count": 2,
         }
     ]
+
+
+def test_build_volume_manager_prefers_http_storage_state_in_ha(monkeypatch) -> None:
+    monkeypatch.setenv("AE_ENABLE_NETFS", "1")
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    state = object()
+    seen: dict[str, object] = {}
+
+    class _FakeNetFSManager:
+        def __init__(self, storage_state) -> None:
+            seen["state"] = storage_state
+
+    class _FakeNodeVolumeManager:
+        def __init__(self, netfs, *, node_id: str) -> None:
+            seen["netfs"] = netfs
+            seen["node_id"] = node_id
+
+    monkeypatch.setattr(
+        "ae.storage.state.ApishimHttpStorageState.from_env",
+        classmethod(lambda cls: state),
+    )
+    monkeypatch.setattr("ae.storage.NetFSManager", _FakeNetFSManager)
+    monkeypatch.setattr("ae.storage.NodeVolumeManager", _FakeNodeVolumeManager)
+
+    manager = _build_volume_manager("node-a")
+
+    assert isinstance(manager, _FakeNodeVolumeManager)
+    assert seen["state"] is state
+    assert seen["node_id"] == "node-a"
+
+
+def test_build_volume_manager_disables_ha_local_db_fallback(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AE_ENABLE_NETFS", "1")
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    monkeypatch.setenv("AE_APISHIM_DB", str(tmp_path / "apishim.db"))
+
+    assert _build_volume_manager("node-a") is None

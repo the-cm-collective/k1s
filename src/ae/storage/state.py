@@ -335,6 +335,79 @@ class ApishimHttpStorageState(InMemoryStorageState):
         payload = resp.json()
         return payload if isinstance(payload, dict) else None
 
+    def _list_items(self, path: str) -> list[dict[str, Any]]:
+        payload = self._get_json(path)
+        if payload is None:
+            return []
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return []
+        return [item for item in items if isinstance(item, dict)]
+
+    def get_pv_for_pvc(self, pvc: PvcRef) -> PvRef | None:
+        if not pvc.namespace or not pvc.name:
+            return None
+        payload = self._get_json(
+            f"/api/v1/namespaces/{quote(pvc.namespace, safe='')}/persistentvolumeclaims/{quote(pvc.name, safe='')}"
+        )
+        if payload is None:
+            return None
+        spec = payload.get("spec")
+        if not isinstance(spec, dict):
+            return None
+        volume_name = spec.get("volumeName")
+        if not volume_name:
+            return None
+        pv = self.get_pv(PvRef(name=str(volume_name)))
+        if pv is None:
+            return None
+        pv_spec = pv.get("spec") if isinstance(pv.get("spec"), dict) else {}
+        driver = None
+        try:
+            if isinstance(pv_spec.get("csi"), dict):
+                driver = pv_spec["csi"].get("driver")
+            elif isinstance(pv_spec.get("nfs"), dict):
+                driver = "k1s.io/nfs"
+        except Exception:
+            driver = None
+        metadata = pv.get("metadata") if isinstance(pv.get("metadata"), dict) else {}
+        uid = None
+        if isinstance(metadata, dict):
+            uid = metadata.get("uid")
+        return PvRef(name=str(volume_name), uid=uid, driver=driver)
+
+    def get_pv(self, pv: PvRef) -> Any | None:
+        if not pv.name:
+            return None
+        return self._get_json(f"/api/v1/persistentvolumes/{quote(pv.name, safe='')}")
+
+    def get_storage_class(self, name: str) -> Any | None:
+        if not name:
+            return None
+        return self._get_json(f"/apis/storage.k8s.io/v1/storageclasses/{quote(name, safe='')}")
+
+    def get_volume_attachment(self, pv: PvRef, node_id: str) -> Any | None:
+        if not pv.name or not node_id:
+            return None
+        attachments = self._list_items("/apis/storage.k8s.io/v1/volumeattachments")
+        for attachment in attachments:
+            spec = attachment.get("spec")
+            if not isinstance(spec, dict):
+                continue
+            if spec.get("nodeName") != node_id:
+                continue
+            source = spec.get("source")
+            if not isinstance(source, dict):
+                continue
+            if source.get("persistentVolumeName") == pv.name:
+                return attachment
+        return None
+
+    def get_csi_driver(self, name: str) -> Any | None:
+        if not name:
+            return None
+        return self._get_json(f"/apis/storage.k8s.io/v1/csidrivers/{quote(name, safe='')}")
+
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None:
         if not namespace or not name:
             return None
