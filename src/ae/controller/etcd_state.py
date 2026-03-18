@@ -34,6 +34,7 @@ from ae.controller.state import (
     SiteIngressEndpoint,
     SiteIngressListItem,
     VolumeAttachment,
+    WorkloadMetricsSnapshot,
     WorkLedgerEntry,
     WorkOutboxEntry,
     WorkQueueLease,
@@ -1117,6 +1118,92 @@ class EtcdStateStore(SQLiteStateStore):
                 actual=actual_rv,
             )
         return True
+
+    def _workload_metrics_key(self, app_name: str) -> str:
+        return self._k("hpa", "workload_metrics", app_name)
+
+    def upsert_workload_metrics_snapshot(
+        self,
+        app_name: str,
+        *,
+        controller_id: str,
+        controller_epoch: int,
+        collected_at: datetime,
+        cpu_utilization: float | None,
+        memory_utilization: float | None,
+        memory_bytes: int,
+        pod_count: int,
+        node_count: int,
+    ) -> None:
+        payload = {
+            "app_name": str(app_name),
+            "controller_id": str(controller_id),
+            "controller_epoch": int(controller_epoch),
+            "collected_at": collected_at.astimezone(timezone.utc).isoformat(),
+            "cpu_utilization": float(cpu_utilization) if cpu_utilization is not None else None,
+            "memory_utilization": (
+                float(memory_utilization) if memory_utilization is not None else None
+            ),
+            "memory_bytes": int(memory_bytes),
+            "pod_count": int(pod_count),
+            "node_count": int(node_count),
+            "updated_at": _now_iso(),
+        }
+        self._put_json(self._workload_metrics_key(app_name), payload)
+
+    def get_workload_metrics_snapshot(self, app_name: str) -> WorkloadMetricsSnapshot | None:
+        rec, _mod_rev = self._get_json(self._workload_metrics_key(app_name))
+        return self._workload_metrics_snapshot_from_record(rec)
+
+    def list_workload_metrics_snapshots(self) -> list[WorkloadMetricsSnapshot]:
+        rows = self._list_prefix(self._k("hpa", "workload_metrics"))
+        out: list[WorkloadMetricsSnapshot] = []
+        for _key, rec, _mod_rev in rows:
+            entry = self._workload_metrics_snapshot_from_record(rec)
+            if entry is not None:
+                out.append(entry)
+        out.sort(key=lambda entry: entry.app_name)
+        return out
+
+    def delete_workload_metrics_snapshot(self, app_name: str) -> bool:
+        key = self._workload_metrics_key(app_name)
+        existing, _mod_rev = self._get_json(key)
+        if existing is None:
+            return False
+        self._delete(key)
+        return True
+
+    def _workload_metrics_snapshot_from_record(
+        self, rec: dict[str, Any] | None
+    ) -> WorkloadMetricsSnapshot | None:
+        if not rec:
+            return None
+        return WorkloadMetricsSnapshot(
+            app_name=str(rec.get("app_name", "")),
+            controller_id=str(rec.get("controller_id", "")),
+            controller_epoch=int(rec.get("controller_epoch", 0) or 0),
+            collected_at=_dt_from_iso(
+                rec.get("collected_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+            cpu_utilization=(
+                float(rec.get("cpu_utilization"))
+                if rec.get("cpu_utilization") is not None
+                else None
+            ),
+            memory_utilization=(
+                float(rec.get("memory_utilization"))
+                if rec.get("memory_utilization") is not None
+                else None
+            ),
+            memory_bytes=int(rec.get("memory_bytes", 0) or 0),
+            pod_count=int(rec.get("pod_count", 0) or 0),
+            node_count=int(rec.get("node_count", 0) or 0),
+            updated_at=_dt_from_iso(
+                rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+        )
 
     def _get_latest_revision(self, app_name: str) -> RevisionInfo | None:
         revs = self.list_revisions(app_name, limit=1_000_000)

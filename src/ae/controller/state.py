@@ -82,6 +82,22 @@ class AuthorityObjectEntry:
     resource_version: int = 0
 
 
+@dataclass(slots=True)
+class WorkloadMetricsSnapshot:
+    """Aggregated workload metrics used by the HA HPA controller."""
+
+    app_name: str
+    controller_id: str
+    controller_epoch: int
+    collected_at: datetime
+    cpu_utilization: float | None
+    memory_utilization: float | None
+    memory_bytes: int
+    pod_count: int
+    node_count: int
+    updated_at: datetime
+
+
 class RegistryConflictError(RuntimeError):
     """Raised when a registry CAS write sees a stale resource version."""
 
@@ -597,6 +613,22 @@ class SQLiteStateStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_authority_objects_gvr
                 ON authority_objects (grp, ver, resource, namespace, name)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workload_metrics_snapshots (
+                  app_name TEXT PRIMARY KEY,
+                  controller_id TEXT NOT NULL,
+                  controller_epoch INTEGER NOT NULL,
+                  collected_at TEXT NOT NULL,
+                  cpu_utilization REAL,
+                  memory_utilization REAL,
+                  memory_bytes INTEGER NOT NULL,
+                  pod_count INTEGER NOT NULL,
+                  node_count INTEGER NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
                 """
             )
             conn.execute(resource_loader.load_text("sql", "controller", "create_pod_status.sql"))
@@ -1495,6 +1527,131 @@ class SQLiteStateStore:
             status=status,
             updated_at=updated,
             resource_version=int(row[10] or 0),
+        )
+
+    def upsert_workload_metrics_snapshot(
+        self,
+        app_name: str,
+        *,
+        controller_id: str,
+        controller_epoch: int,
+        collected_at: datetime,
+        cpu_utilization: float | None,
+        memory_utilization: float | None,
+        memory_bytes: int,
+        pod_count: int,
+        node_count: int,
+    ) -> None:
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO workload_metrics_snapshots (
+                  app_name,
+                  controller_id,
+                  controller_epoch,
+                  collected_at,
+                  cpu_utilization,
+                  memory_utilization,
+                  memory_bytes,
+                  pod_count,
+                  node_count,
+                  updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(app_name) DO UPDATE SET
+                  controller_id = excluded.controller_id,
+                  controller_epoch = excluded.controller_epoch,
+                  collected_at = excluded.collected_at,
+                  cpu_utilization = excluded.cpu_utilization,
+                  memory_utilization = excluded.memory_utilization,
+                  memory_bytes = excluded.memory_bytes,
+                  pod_count = excluded.pod_count,
+                  node_count = excluded.node_count,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    str(app_name),
+                    str(controller_id),
+                    int(controller_epoch),
+                    collected_at.astimezone(timezone.utc).isoformat(),
+                    float(cpu_utilization) if cpu_utilization is not None else None,
+                    float(memory_utilization) if memory_utilization is not None else None,
+                    int(memory_bytes),
+                    int(pod_count),
+                    int(node_count),
+                    updated_at,
+                ),
+            )
+            conn.commit()
+
+    def get_workload_metrics_snapshot(self, app_name: str) -> WorkloadMetricsSnapshot | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT app_name, controller_id, controller_epoch, collected_at,
+                       cpu_utilization, memory_utilization, memory_bytes,
+                       pod_count, node_count, updated_at
+                  FROM workload_metrics_snapshots
+                 WHERE app_name = ?
+                """,
+                (str(app_name),),
+            ).fetchone()
+        return self._workload_metrics_snapshot_from_row(row)
+
+    def list_workload_metrics_snapshots(self) -> list[WorkloadMetricsSnapshot]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT app_name, controller_id, controller_epoch, collected_at,
+                       cpu_utilization, memory_utilization, memory_bytes,
+                       pod_count, node_count, updated_at
+                  FROM workload_metrics_snapshots
+                 ORDER BY app_name
+                """
+            ).fetchall()
+        out: list[WorkloadMetricsSnapshot] = []
+        for row in rows:
+            entry = self._workload_metrics_snapshot_from_row(row)
+            if entry is not None:
+                out.append(entry)
+        return out
+
+    def delete_workload_metrics_snapshot(self, app_name: str) -> bool:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM workload_metrics_snapshots WHERE app_name = ?",
+                (str(app_name),),
+            )
+            deleted = bool(getattr(conn, "total_changes", 0))
+            conn.commit()
+        return deleted
+
+    def _workload_metrics_snapshot_from_row(self, row) -> WorkloadMetricsSnapshot | None:
+        if row is None:
+            return None
+        try:
+            collected_at = (
+                datetime.fromisoformat(row[3]) if row[3] else datetime.fromtimestamp(0, timezone.utc)
+            )
+        except Exception:
+            collected_at = datetime.fromtimestamp(0, timezone.utc)
+        try:
+            updated_at = (
+                datetime.fromisoformat(row[9]) if row[9] else datetime.fromtimestamp(0, timezone.utc)
+            )
+        except Exception:
+            updated_at = datetime.fromtimestamp(0, timezone.utc)
+        return WorkloadMetricsSnapshot(
+            app_name=str(row[0] or ""),
+            controller_id=str(row[1] or ""),
+            controller_epoch=int(row[2] or 0),
+            collected_at=collected_at,
+            cpu_utilization=float(row[4]) if row[4] is not None else None,
+            memory_utilization=float(row[5]) if row[5] is not None else None,
+            memory_bytes=int(row[6] or 0),
+            pod_count=int(row[7] or 0),
+            node_count=int(row[8] or 0),
+            updated_at=updated_at,
         )
 
     def _get_latest_revision(self, app_name: str) -> Optional[RevisionInfo]:
