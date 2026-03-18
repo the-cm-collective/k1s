@@ -42,11 +42,17 @@ ATTACHED_RESOURCES: set[tuple[str, str, str]] = {
     ("networking.k8s.io", "v1", "ingresses"),
 }
 GENERIC_AUTHORITY_RESOURCES: set[tuple[str, str, str]] = {
+    ("", "v1", "namespaces"),
     ("", "v1", "configmaps"),
     ("", "v1", "secrets"),
     ("", "v1", "serviceaccounts"),
     ("batch", "v1", "cronjobs"),
     ("autoscaling", "v2", "horizontalpodautoscalers"),
+    ("rbac.authorization.k8s.io", "v1", "roles"),
+    ("rbac.authorization.k8s.io", "v1", "rolebindings"),
+    ("rbac.authorization.k8s.io", "v1", "clusterroles"),
+    ("rbac.authorization.k8s.io", "v1", "clusterrolebindings"),
+    ("policy", "v1", "poddisruptionbudgets"),
 }
 WORKLOAD_AUTHORITY_RESOURCES = WORKLOAD_RESOURCES | ATTACHED_RESOURCES
 AUTHORITY_RESOURCES = WORKLOAD_AUTHORITY_RESOURCES | GENERIC_AUTHORITY_RESOURCES
@@ -82,11 +88,17 @@ def is_generic_authority_resource(group: str, version: str, resource: str) -> bo
 
 def generic_kind_for_resource(resource: str) -> str:
     return {
+        "namespaces": "Namespace",
         "configmaps": "ConfigMap",
         "secrets": "Secret",
         "serviceaccounts": "ServiceAccount",
         "cronjobs": "CronJob",
         "horizontalpodautoscalers": "HorizontalPodAutoscaler",
+        "roles": "Role",
+        "rolebindings": "RoleBinding",
+        "clusterroles": "ClusterRole",
+        "clusterrolebindings": "ClusterRoleBinding",
+        "poddisruptionbudgets": "PodDisruptionBudget",
     }.get(resource, resource[:-1].capitalize())
 
 

@@ -253,3 +253,86 @@ def test_generic_authority_store_round_trips_passive_resources(tmp_path) -> None
     cron_entry = state.get_authority_object("batch", "v1", "cronjobs", "default", "demo-cron")
     assert cron_entry is not None
     assert cron_entry.status["lastScheduleTime"] == "2026-03-17T00:00:00Z"
+
+
+def test_generic_authority_store_round_trips_built_in_passive_resources(tmp_path) -> None:
+    state, legacy, store = _make_store(tmp_path)
+
+    namespace = store.upsert(
+        "",
+        "v1",
+        "namespaces",
+        None,
+        "team-a",
+        metadata={"name": "team-a"},
+        spec={},
+        status={},
+    )
+    assert namespace.name == "team-a"
+    assert legacy.get("", "v1", "namespaces", None, "team-a") is None
+
+    role = store.upsert(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "roles",
+        "team-a",
+        "reader",
+        metadata={"name": "reader", "namespace": "team-a"},
+        spec={"rules": [{"verbs": ["get", "list"], "resources": ["configmaps"]}]},
+        status={},
+    )
+    assert role.name == "reader"
+    assert legacy.get("rbac.authorization.k8s.io", "v1", "roles", "team-a", "reader") is None
+
+    cluster_role = store.upsert(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "clusterroles",
+        None,
+        "global-reader",
+        metadata={"name": "global-reader"},
+        spec={"rules": [{"verbs": ["get"], "resources": ["namespaces"]}]},
+        status={},
+    )
+    assert cluster_role.name == "global-reader"
+    assert (
+        legacy.get("rbac.authorization.k8s.io", "v1", "clusterroles", None, "global-reader")
+        is None
+    )
+
+    pdb = store.upsert(
+        "policy",
+        "v1",
+        "poddisruptionbudgets",
+        "team-a",
+        "web",
+        metadata={"name": "web", "namespace": "team-a"},
+        spec={
+            "minAvailable": 1,
+            "selector": {"matchLabels": {"app": "web"}},
+        },
+        status={},
+    )
+    assert pdb.name == "web"
+    assert legacy.get("policy", "v1", "poddisruptionbudgets", "team-a", "web") is None
+
+    ns_entry = state.get_authority_object("", "v1", "namespaces", None, "team-a")
+    assert ns_entry is not None
+    role_entry = state.get_authority_object(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "roles",
+        "team-a",
+        "reader",
+    )
+    assert role_entry is not None
+    cluster_role_entry = state.get_authority_object(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "clusterroles",
+        None,
+        "global-reader",
+    )
+    assert cluster_role_entry is not None
+    pdb_entry = state.get_authority_object("policy", "v1", "poddisruptionbudgets", "team-a", "web")
+    assert pdb_entry is not None
