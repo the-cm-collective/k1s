@@ -626,8 +626,9 @@ def _deployment_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str, 
     if getattr(m.spec, "host_ipc", None) is not None:
         pod_spec["hostIPC"] = bool(m.spec.host_ipc)
     # ServiceAccount
-    if opts.service_account_name:
-        pod_spec["serviceAccountName"] = opts.service_account_name
+    service_account_name = opts.service_account_name or getattr(m.spec, "service_account_name", None)
+    if service_account_name:
+        pod_spec["serviceAccountName"] = service_account_name
     # ImagePullSecrets
     if getattr(m.spec, "image_pull_secrets", None):
         pod_spec["imagePullSecrets"] = [{"name": s} for s in m.spec.image_pull_secrets]
@@ -949,8 +950,9 @@ def _statefulset_from_manifest(m: AppManifest, opts: ExportOptions) -> Dict[str,
         pod_spec["hostPID"] = bool(m.spec.host_pid)
     if getattr(m.spec, "host_ipc", None) is not None:
         pod_spec["hostIPC"] = bool(m.spec.host_ipc)
-    if opts.service_account_name:
-        pod_spec["serviceAccountName"] = opts.service_account_name
+    service_account_name = opts.service_account_name or getattr(m.spec, "service_account_name", None)
+    if service_account_name:
+        pod_spec["serviceAccountName"] = service_account_name
     # ImagePullSecrets
     if getattr(m.spec, "image_pull_secrets", None):
         pod_spec["imagePullSecrets"] = [{"name": s} for s in m.spec.image_pull_secrets]
@@ -1426,13 +1428,14 @@ def export_k8s_docs(
         if ing is not None:
             docs.append(ing)
     # Optional ServiceAccount
-    if opts.service_account_name:
+    service_account_name = opts.service_account_name or getattr(manifest.spec, "service_account_name", None)
+    if service_account_name:
         docs.append(
             {
                 "apiVersion": "v1",
                 "kind": "ServiceAccount",
                 "metadata": {
-                    "name": opts.service_account_name,
+                    "name": service_account_name,
                     "namespace": ns,
                     "labels": labels,
                 },
@@ -1469,7 +1472,7 @@ def export_k8s_docs(
                 "kind": "RoleBinding",
                 "metadata": {"name": rb_name, "namespace": ns, "labels": labels},
                 "subjects": [
-                    {"kind": "ServiceAccount", "name": opts.service_account_name, "namespace": ns}
+                    {"kind": "ServiceAccount", "name": service_account_name, "namespace": ns}
                 ],
                 "roleRef": {
                     "apiGroup": "rbac.authorization.k8s.io",

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import threading
 import time
 import uuid
 from datetime import datetime
 from typing import Any, Protocol
+from urllib.parse import quote
+
+import requests
 
 from ae._utc import UTC
 
@@ -54,6 +58,8 @@ class StorageState(Protocol):
     def get_csi_driver(self, name: str) -> Any | None: ...
 
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None: ...
+
+    def get_service_account(self, namespace: str, name: str) -> dict[str, Any] | None: ...
 
 
 class InMemoryStorageState:
@@ -122,6 +128,10 @@ class InMemoryStorageState:
         return None
 
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None:
+        _ = (namespace, name)
+        return None
+
+    def get_service_account(self, namespace: str, name: str) -> dict[str, Any] | None:
         _ = (namespace, name)
         return None
 
@@ -214,6 +224,20 @@ class ApishimStorageState(InMemoryStorageState):
             decoded[str(key)] = self._decode_secret_value(value)
         return decoded
 
+    def get_service_account(self, namespace: str, name: str) -> dict[str, Any] | None:
+        if not namespace or not name:
+            return None
+        try:
+            service_account = self._store.get(
+                CORE_GROUP, CORE_VERSION, "serviceaccounts", namespace, name
+            )
+        except Exception:
+            return None
+        if service_account is None:
+            return None
+        spec = service_account.spec or {}
+        return dict(spec) if isinstance(spec, dict) else None
+
     @staticmethod
     def _decode_secret_value(value: Any) -> str:
         if value is None:
@@ -256,3 +280,88 @@ class ApishimStorageState(InMemoryStorageState):
         }
         metadata = {"name": name, "namespace": pvc.namespace}
         self._store.upsert("", "v1", "events", pvc.namespace, name, metadata, spec, status={})
+
+
+class ApishimHttpStorageState(InMemoryStorageState):
+    """Storage/passive-resource reads backed by the apishim HTTP API."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str | None = None,
+        verify: bool | str = True,
+        timeout_s: float = 5.0,
+    ) -> None:
+        super().__init__()
+        self._base_url = base_url.rstrip("/")
+        self._token = token or None
+        self._verify = verify
+        self._timeout_s = float(timeout_s)
+
+    @classmethod
+    def from_env(cls) -> "ApishimHttpStorageState" | None:
+        base = (os.getenv("AE_APISHIM_URL") or os.getenv("AE_APISHIM_SERVER") or "").strip()
+        if not base:
+            return None
+        token = os.getenv("AE_APISHIM_READ_TOKEN") or os.getenv("AE_APISHIM_TOKEN")
+        verify: bool | str = True
+        ca_bundle = (
+            os.getenv("AE_APISHIM_CA_BUNDLE")
+            or os.getenv("AE_APISHIM_CA")
+            or os.getenv("AE_APISHIM_TLS_CA")
+        )
+        if ca_bundle:
+            verify = ca_bundle
+        timeout_s = float(os.getenv("AE_APISHIM_HTTP_TIMEOUT_S", "5") or "5")
+        return cls(base, token=token, verify=verify, timeout_s=timeout_s)
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        return headers
+
+    def _get_json(self, path: str) -> dict[str, Any] | None:
+        resp = requests.get(
+            f"{self._base_url}{path}",
+            headers=self._headers(),
+            timeout=self._timeout_s,
+            verify=self._verify,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else None
+
+    def get_secret(self, namespace: str, name: str) -> dict[str, str] | None:
+        if not namespace or not name:
+            return None
+        payload = self._get_json(
+            f"/api/v1/namespaces/{quote(namespace, safe='')}/secrets/{quote(name, safe='')}"
+        )
+        if payload is None:
+            return None
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return None
+        decoded: dict[str, str] = {}
+        for key, value in data.items():
+            decoded[str(key)] = ApishimStorageState._decode_secret_value(value)
+        return decoded
+
+    def get_service_account(self, namespace: str, name: str) -> dict[str, Any] | None:
+        if not namespace or not name:
+            return None
+        payload = self._get_json(
+            f"/api/v1/namespaces/{quote(namespace, safe='')}/serviceaccounts/{quote(name, safe='')}"
+        )
+        if payload is None:
+            return None
+        out: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key in {"apiVersion", "kind", "metadata", "status"}:
+                continue
+            out[str(key)] = value
+        return out

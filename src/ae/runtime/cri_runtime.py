@@ -865,8 +865,21 @@ class CRIRuntime(RuntimeAdapter):
             self._apishim_store = None
         return self._apishim_store
 
+    @staticmethod
+    def _ha_mode_enabled() -> bool:
+        return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
     def _get_apishim_state(self):
         if self._apishim_state is not None:
+            return self._apishim_state
+        try:
+            from ae.storage.state import ApishimHttpStorageState
+        except Exception:
+            ApishimHttpStorageState = None  # type: ignore[assignment]
+        if self._ha_mode_enabled():
+            if ApishimHttpStorageState is None:
+                return None
+            self._apishim_state = ApishimHttpStorageState.from_env()
             return self._apishim_state
         store = self._get_apishim_store()
         if store is not None:
@@ -876,9 +889,7 @@ class CRIRuntime(RuntimeAdapter):
                 return None
             self._apishim_state = ApishimStorageState(store)
             return self._apishim_state
-        try:
-            from ae.storage.state import ApishimHttpStorageState
-        except Exception:
+        if ApishimHttpStorageState is None:
             return None
         self._apishim_state = ApishimHttpStorageState.from_env()
         return self._apishim_state
@@ -1016,25 +1027,25 @@ class CRIRuntime(RuntimeAdapter):
     def _service_account_pull_secrets(
         self, manifest: AppManifest
     ) -> list[tuple[str | None, str | None]]:
-        store = self._get_apishim_store()
-        if store is None:
+        state = self._get_apishim_state()
+        if state is None:
             return []
         namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
-        sa_name = (
-            getattr(manifest.spec, "service_account_name", None)
-            or self._service_account_name_from_store(manifest, store)
-            or "default"
-        )
+        sa_name = getattr(manifest.spec, "service_account_name", None)
+        if not sa_name and not self._ha_mode_enabled():
+            store = self._get_apishim_store()
+            if store is not None:
+                sa_name = self._service_account_name_from_store(manifest, store)
+        sa_name = sa_name or "default"
         try:
-            sa = store.get("", "v1", "serviceaccounts", namespace, str(sa_name))
+            sa = state.get_service_account(namespace, str(sa_name))
         except Exception:
             sa = None
         if sa is None:
             return []
-        spec = getattr(sa, "spec", None) or {}
-        if not isinstance(spec, dict):
+        if not isinstance(sa, dict):
             return []
-        secrets = spec.get("imagePullSecrets") or []
+        secrets = sa.get("imagePullSecrets") or []
         out: list[tuple[str | None, str | None]] = []
         for entry in secrets:
             if isinstance(entry, dict):

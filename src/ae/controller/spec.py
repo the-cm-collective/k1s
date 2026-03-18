@@ -502,6 +502,7 @@ class AppSpec(BaseModel):
         default=None, alias="imagePullPolicy"
     )
     image_pull_secrets: List[str] = Field(default_factory=list, alias="imagePullSecrets")
+    service_account_name: Optional[str] = Field(default=None, alias="serviceAccountName")
     runtime_class_name: Optional[str] = Field(default=None, alias="runtimeClassName")
     # Scheduling (pass-through for K8s export)
     affinity: dict | None = None
