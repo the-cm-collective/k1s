@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from ae import build_info as AE_BUILD_INFO
 from ae.controller.state import (
     AppEvent,
     RegistryConflictError,
@@ -5729,7 +5730,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
         is_pf_path = re.match(r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path)
         # Allow unauthenticated discovery/OpenAPI for kubectl validation
-        if path not in {"/openapi/v2", "/openapi/v3", "/swagger.json", "/api", "/apis", "/version"}:
+        if path not in {"/openapi/v2", "/openapi/v3", "/swagger.json", "/api", "/apis", "/version", "/__ae/version"}:
             if is_exec_path and upgrade:
                 if not self._authz(role="exec"):
                     return
@@ -5756,6 +5757,11 @@ class ShimHandler(BaseHTTPRequestHandler):
             return
         if path == "/version":
             self._ok(K8S_VERSION)
+            return
+        if path == "/__ae/version":
+            payload = dict(AE_BUILD_INFO())
+            payload["component"] = "apishim"
+            self._ok(payload)
             return
         if path == "/api":
             self._ok({"versions": ["v1"]})

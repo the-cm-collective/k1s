@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ae import build_info as AE_BUILD_INFO
 from ae.controller.authority import NotLeaderError
 from ae.controller.state import RegistryConflictError
 from ae.controller.state import SQLiteStateStore
@@ -1295,6 +1296,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Public UI feature flags (non-sensitive)
         if path_only == "/ui/features":
             self._handle_ui_features()
+            return
+        if path_only in ("/__ae/version", "/__ae/version/"):
+            self._handle_version_info()
             return
         # Metrics allowed without auth
         if path_only.startswith("/metrics"):
@@ -3033,6 +3037,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_metrics(self) -> None:
         snap = self.metrics.snapshot()
+        build = AE_BUILD_INFO()
+        version = _prom_escape_label_value(str(build.get("version") or "unknown"))
+        sha = _prom_escape_label_value(str(build.get("sha") or "unknown"))
+        date = _prom_escape_label_value(str(build.get("date") or "unknown"))
         lines = [
             "# HELP ae_apps_total Total apps recorded",
             "# TYPE ae_apps_total gauge",
@@ -3094,6 +3102,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# HELP ae_overlay_configured Overlay/VIP dataplane enabled (1=yes)",
             "# TYPE ae_overlay_configured gauge",
             f"ae_overlay_configured {1 if os.getenv('AE_SERVICE_PROVIDER', '').lower() == 'overlay' and os.getenv('AE_ENABLE_SERVICE_PROXY', '0') == '1' else 0}",
+            "# HELP ae_controller_build_info Controller build metadata",
+            "# TYPE ae_controller_build_info gauge",
+            f'ae_controller_build_info{{version="{version}",sha="{sha}",date="{date}"}} 1',
         ]
         storage_used = getattr(snap, "storage_used_bytes", {}) or {}
         storage_quota = getattr(snap, "storage_quota_bytes", {}) or {}
@@ -4492,6 +4503,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_version_info(self) -> None:
+        payload = dict(AE_BUILD_INFO())
+        payload["component"] = "controller"
+        self._json_ok(payload)
+
     def _json_error(self, code: int, message: str) -> None:
         self._json_error_obj(code, {"error": message})
 
@@ -4904,6 +4920,10 @@ def start_http_api(
     thread = threading.Thread(target=httpd.serve_forever, name="ae-http-api", daemon=True)
     thread.start()
     return httpd, assigned, thread
+
+
+def _prom_escape_label_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 # ruff: noqa: E501,S603,S607,S110,S112,SIM105,SIM108,SIM118,SIM210,S104,UP017,UP038,E741,B023,C401,UP035,E402,UP034

@@ -265,3 +265,25 @@ def test_metrics_report_unhealthy_authority_when_no_leader_is_visible(tmp_path: 
     assert "ae_controller_is_leader 0" in txt
     assert "ae_controller_epoch 0" in txt
     assert "ae_controller_authority_healthy 0" in txt
+
+
+def test_metrics_expose_controller_build_info(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_BUILD_SHA", "abc123")
+    monkeypatch.setenv("AE_BUILD_DATE", "2026-03-18")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    handler = object.__new__(_ApiHandler)
+    handler.store = store  # type: ignore[attr-defined]
+    handler.metrics = MetricsService(store)  # type: ignore[attr-defined]
+    handler.wfile = io.BytesIO()  # type: ignore[attr-defined]
+
+    def _noop(*_args, **_kwargs):
+        return None
+
+    handler.send_response = _noop  # type: ignore[attr-defined]
+    handler.send_header = _noop  # type: ignore[attr-defined]
+    handler.end_headers = _noop  # type: ignore[attr-defined]
+
+    _ApiHandler._handle_metrics(handler)  # type: ignore[arg-type]
+    txt = handler.wfile.getvalue().decode("utf-8", "replace")
+
+    assert 'ae_controller_build_info{version="0.1.3.dev0",sha="abc123",date="2026-03-18"} 1' in txt
