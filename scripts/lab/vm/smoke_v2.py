@@ -1658,13 +1658,13 @@ def smoke_v2(args: argparse.Namespace) -> int:
     if ha_lane_summary is not None:
         lane_ha_summary = lanes_dir / "ha_control_plane" / "ha_summary.json"
         if lane_ha_summary.is_file():
+            payload = json.loads(lane_ha_summary.read_text(encoding="utf-8"))
             write_json(
                 run_dir / "ha_summary.json",
                 {
                     "run_id": run_id,
                     "variant_name": variant["name"],
-                    "status": ha_lane_summary["status"],
-                    "path": str(lane_ha_summary),
+                    **payload,
                 },
             )
 

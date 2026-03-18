@@ -446,6 +446,23 @@ HA edge transport upgrades (`H5b2c-edge-transport-upgrades`)
   - No remote SSH or multi-node orchestration is provided.
   - `k1s-edge` / `k1s-core-edge` are not the milestone-defining HA exit lane for this slice.
 
+HA closeout (`H5c-ha-closeout`)
+- Canonical audit artifact: `docs/ops/ha-closeout.md`
+- Primary evidence lane:
+  - VM/lab variants can now declare explicit `k1s-ha-core` hosts plus a `ha_control_plane` smoke lane.
+  - The lane writes `runs/<RUN_ID>/ha_summary.json` as the machine-readable HA evidence artifact.
+  - The lane reuses the existing HA helper family instead of inventing a second operator contract:
+    - `ha_core_preflight.py`
+    - `ha_core_upgrade.py`
+    - `ha_transport_upgrade.py`
+    - `ha_edge_transport.py`
+    - optional `ha_core_drills.py` commands when the variant supplies drill commands
+- Secondary evidence lane:
+  - `AE_E2E_HA_CLOSEOUT=1 PYTHONPATH=src pytest -q tests/integration/test_ha_closeout_e2e.py`
+  - This reduced harness is intended for nightly/manual regression, not as the milestone-defining HA lane.
+- Closeout rule:
+  - Do not mark the `H*` track complete until `docs/ops/ha-closeout.md` shows zero `must_fix_before_closeout` gaps and the primary VM/lab lane has been executed against the intended HA topology.
+
 Release notes quick links
 - Compatibility matrix: `docs/reference/apishim-compatibility-matrix.md` (uploaded with releases)
 - OpenAPI artifacts: `/openapi/v2` and `/openapi/v3` are exported during release and attached as `openapi-schemas`.

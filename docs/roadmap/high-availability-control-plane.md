@@ -19,7 +19,7 @@ The repo already contains several of the primitives needed for this path:
 - NATS Core and JetStream transport modes
 - outbox-based dispatch and gateway spool durability
 
-The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` now hardens outbox replay, gateway replay, and JetStream HA validation without turning transport into truth. `H4a` routes workload-core resources through shared controller authority in HA mode. `H4b1` converges `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob`, `H4b-hpa` runs leader-only HPA scaling from shared workload metrics, `H4b2a` extends shared authority to `Namespace`, RBAC, and `PodDisruptionBudget`, `H4b2b-crd` converges CRDs plus dynamic custom-resource routing, `H4b2c-core` routes `StorageClass`, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and `H4b2c-csi` now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state. `H5a-core`, `H5b1-etcd-recovery`, and `H5b2a-core-upgrades` now give that surface a real bootstrap, snapshot, drill, recovery, and rolling-upgrade story. `H5b2b-hub-transport-upgrades` now covers shared hub NATS/JetStream upgrade and replacement procedures, and `H5b2c-edge-transport-upgrades` extends that posture to edge-site gateway-first / leader-last transport choreography with per-gateway build visibility and bounded leaf reconnect validation.
+The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` now hardens outbox replay, gateway replay, and JetStream HA validation without turning transport into truth. `H4a` routes workload-core resources through shared controller authority in HA mode. `H4b1` converges `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob`, `H4b-hpa` runs leader-only HPA scaling from shared workload metrics, `H4b2a` extends shared authority to `Namespace`, RBAC, and `PodDisruptionBudget`, `H4b2b-crd` converges CRDs plus dynamic custom-resource routing, `H4b2c-core` routes `StorageClass`, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and `H4b2c-csi` now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state. `H5a-core`, `H5b1-etcd-recovery`, and `H5b2a-core-upgrades` now give that surface a real bootstrap, snapshot, drill, recovery, and rolling-upgrade story. `H5b2b-hub-transport-upgrades` now covers shared hub NATS/JetStream upgrade and replacement procedures, `H5b2c-edge-transport-upgrades` extends that posture to edge-site gateway-first / leader-last transport choreography with per-gateway build visibility and bounded leaf reconnect validation, and `H5c-ha-closeout` adds the final audit plus integrated evidence lanes needed before the `H*` track can close.
 
 The two design rules for the whole program are:
 
@@ -366,6 +366,26 @@ Current implementation status:
 - gateway status telemetry now includes build identity, and `/metrics` now exports `ae_site_gateway_last_seen_seconds{site,node}` plus `ae_site_gateway_build_info{site,node,version,sha,date}` alongside the existing site-wide replay and route convergence series
 - the runbook now documents gateway-first / leader-last sequencing, helper usage, and the recovery checks required before moving on to the next gateway or edge leader step
 
+### H5c-ha-closeout: Audit, integrated evidence, and track closure
+
+Goal:
+- turn the implemented `H0` through `H5` slices into a decision-complete HA track instead of leaving them as a long set of individually landed but never-audited slices
+
+Primary outcomes:
+
+- one canonical HA closeout artifact records the capability matrix, evidence map, open gaps, and closure criteria
+- the VM/lab harness now understands explicit `k1s-ha-core` hosts and a `ha_control_plane` smoke lane that drives the already-landed HA helper family against a real HA-oriented variant
+- a smaller reduced local HA e2e harness exists for nightly/manual regression outside the primary VM/lab evidence lane
+- the HA track only closes after the audit shows no `must_fix_before_closeout` gaps and the primary evidence lane is green
+
+Current implementation status:
+
+- `docs/ops/ha-closeout.md` now records the H0-H5 capability matrix, evidence map, gap register, and close criteria
+- `scripts/lab/vm/lib/variant.py`, `scripts/lab/vm/k1s_bootstrap.sh`, and `scripts/lab/vm/smoke_v2.py` now support explicit `k1s-ha-core` hosts plus a `ha_control_plane` lane that emits a machine-readable `ha_summary.json`
+- the VM lane uses the existing HA helper surfaces for precheck, cluster verification, hub transport validation, edge transport validation, and optional drills instead of inventing a second HA operator contract
+- `tests/e2e/ha_closeout.py` and `tests/integration/test_ha_closeout_e2e.py` now provide a reduced local HA topology with two controllers, one apishim, one edge site, and a failover-plus-replay check
+- current audit result: no new source-visible `must_fix_before_closeout` gaps were found, but the track remains open until the primary VM/lab lane is executed and reviewed
+
 ## Dependency Model
 
 This HA track is the foundation for later deployment work:
@@ -387,6 +407,7 @@ This HA track is the foundation for later deployment work:
 | H5b2a-core-upgrades | H5b1-etcd-recovery | Rolling upgrades for systemd-managed `k1s-ha-core` nodes should build on the finished etcd recovery posture instead of redefining it. |
 | H5b2b-hub-transport-upgrades | H5b2a-core-upgrades | Shared hub NATS/JetStream upgrade sequencing should build on the finished core-node upgrade surface instead of mixing the first operator contract with transport-cluster replacement. |
 | H5b2c-edge-transport-upgrades | H5b2b-hub-transport-upgrades | Edge-site NATS leader choreography should build on the shared hub upgrade posture instead of mixing shared-cluster and per-site recovery in one slice. |
+| H5c-ha-closeout | H5b2c-edge-transport-upgrades | The HA track should only close after edge transport is in place and one integrated audit plus acceptance lane proves the full operator contract. |
 
 The fabric deployment milestones depend on this track rather than re-stating it:
 
@@ -394,8 +415,8 @@ The fabric deployment milestones depend on this track rather than re-stating it:
 | --- | --- | --- |
 | D1 | H3 | The HA edge and broker boundary should not front a single-process backend authority. |
 | D2 | H4b2c-csi | Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model. |
-| D3 | H5b2c-edge-transport-upgrades | Multi-cell operation needs tested failover, recovery, and upgrade patterns, not only topology docs. |
-| D4 | H5b2c-edge-transport-upgrades | Partner and domain operations require operator-readable recovery, upgrade, and governance paths. |
+| D3 | H5c-ha-closeout | Multi-cell operation needs a closed HA evidence lane and audited operator contract, not only individual recovery and upgrade slices. |
+| D4 | H5c-ha-closeout | Partner and domain operations require the HA track to be decision-closed with auditable evidence and documented boundaries. |
 
 ## Failure Model
 
