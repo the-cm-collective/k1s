@@ -223,6 +223,21 @@ def ssh_base(ip: str) -> list[str]:
     ]
 
 
+def require_vm_host_prereqs(*, skip_up: bool, auto_down: bool) -> None:
+    if not skip_up or auto_down:
+        key_path = Path(
+            os.environ.get("SSH_KEY_PATH", str(Path.home() / ".ssh" / "id_rsa"))
+        ).expanduser()
+        if not key_path.is_file():
+            raise SmokeError(f"ssh key not found at {key_path}; set SSH_KEY_PATH")
+        pubkey_path = Path(f"{key_path}.pub")
+        if not pubkey_path.is_file():
+            raise SmokeError(f"ssh public key not found at {pubkey_path}")
+        res = run_cmd(["sudo", "-n", "true"], check=False)
+        if res.returncode != 0:
+            raise SmokeError("local sudo credentials are required; run 'sudo -v' and retry")
+
+
 def run_remote(ip: str, command: str, *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
     remote_cmd = f"bash -lc {shlex.quote(command)}"
     return run_cmd([*ssh_base(ip), remote_cmd], timeout=timeout, check=False)
@@ -1917,6 +1932,10 @@ def main() -> int:
             ]
         )
     try:
+        require_vm_host_prereqs(
+            skip_up=bool(args.skip_up),
+            auto_down=bool(args.down or args.auto_down_on_success or args.auto_down_on_fail),
+        )
         return smoke_v2(args)
     except Exception as exc:
         write_unhandled_failure_summary(args, args.run_id, exc)
