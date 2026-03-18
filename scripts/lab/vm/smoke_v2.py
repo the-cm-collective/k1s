@@ -18,8 +18,15 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from ae import build_info as ae_build_info
+
 VARIANT_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "variant.py"
 DEFAULT_LANES = ["single_non_gpu", "single_gpu", "multi_non_gpu", "multi_gpu"]
+SUPPORTED_LANES = [*DEFAULT_LANES, "ha_control_plane"]
 DEFAULT_PHASE_TIMEOUTS = {
     "provision": 1800,
     "seed_cache": 1200,
@@ -27,6 +34,7 @@ DEFAULT_PHASE_TIMEOUTS = {
     "service_ready": 900,
     "fabric_validate": 600,
     "functional_basic": 300,
+    "ha_acceptance": 900,
 }
 DEFAULT_RETRY_POLICY = {
     "initial_backoff_s": 2.0,
@@ -269,8 +277,13 @@ def core_host(hosts: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+def ha_core_hosts(hosts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [host for host in hosts if host["role"] == "k1s-ha-core"]
+
+
 def lane_hosts(lane: str, hosts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     core = core_host(hosts)
+    ha_cores = ha_core_hosts(hosts)
     if lane == "single_non_gpu":
         target = next((h for h in hosts if not h.get("gpu", False)), None)
         if target is None:
@@ -296,10 +309,69 @@ def lane_hosts(lane: str, hosts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         gpu_hosts = [h for h in hosts if h.get("gpu", False)]
         if not gpu_hosts:
             return []
-        control = [h for h in hosts if h["role"] in {"k1s-core", "k1s-edge-core"}]
+        control = [h for h in hosts if h["role"] in {"k1s-core", "k1s-ha-core", "k1s-edge-core"}]
         return ensure_unique_hosts([*control, *gpu_hosts])
 
+    if lane == "ha_control_plane":
+        if not ha_cores:
+            return []
+        return ensure_unique_hosts(list(hosts))
+
     raise SmokeError(f"unsupported lane: {lane}")
+
+
+def _ha_urls_for_host(host: dict[str, Any], variant: dict[str, Any]) -> tuple[str, str]:
+    ha_cfg = variant.get("ha") if isinstance(variant.get("ha"), dict) else {}
+    controller_scheme = str(ha_cfg.get("controller_scheme") or "http").strip()
+    apishim_scheme = str(ha_cfg.get("apishim_scheme") or "http").strip()
+    controller_port = int(variant["k1s"]["controller_port"])
+    apishim_port = int(variant["k1s"].get("apishim_port", 8445))
+    ip = str(host["ip"])
+    return (
+        f"{controller_scheme}://{ip}:{controller_port}",
+        f"{apishim_scheme}://{ip}:{apishim_port}",
+    )
+
+
+def build_ha_lane_config(variant: dict[str, Any], lane_hosts_full: list[dict[str, Any]]) -> dict[str, Any]:
+    ha_cfg = variant.get("ha") if isinstance(variant.get("ha"), dict) else {}
+    core_nodes = []
+    for host in lane_hosts_full:
+        if host["role"] != "k1s-ha-core":
+            continue
+        controller_url, apishim_url = _ha_urls_for_host(host, variant)
+        core_nodes.append(
+            {
+                "name": host["name"],
+                "node_id": host.get("node_id") or host["name"],
+                "ip": host["ip"],
+                "controller_url": controller_url,
+                "apishim_url": apishim_url,
+            }
+        )
+    controller_metrics_url = str(ha_cfg.get("controller_metrics_url") or "").strip()
+    if not controller_metrics_url and core_nodes:
+        controller_metrics_url = f"{core_nodes[0]['controller_url'].rstrip('/')}/metrics"
+    build = ae_build_info()
+    return {
+        "core_nodes": core_nodes,
+        "edge_core_sites": sorted(
+            {
+                str(host.get("site_id") or "").strip()
+                for host in lane_hosts_full
+                if host["role"] == "k1s-edge-core" and str(host.get("site_id") or "").strip()
+            }
+        ),
+        "controller_metrics_url": controller_metrics_url,
+        "etcd_endpoints": [str(item) for item in ha_cfg.get("etcd_endpoints") or []],
+        "etcd_prefix": str(ha_cfg.get("etcd_prefix") or "").strip(),
+        "nats_url": str(ha_cfg.get("nats_url") or "").strip(),
+        "hub_nodes": list(ha_cfg.get("hub_nodes") or []),
+        "edge_sites": list(ha_cfg.get("edge_sites") or []),
+        "drills": dict(ha_cfg.get("drills") or {}),
+        "expected_version": str(ha_cfg.get("expected_version") or build.get("version") or "").strip(),
+        "expected_sha": str(ha_cfg.get("expected_sha") or "").strip(),
+    }
 
 
 def parse_log_time(line: str) -> datetime | None:
@@ -325,7 +397,7 @@ def host_component_name(host: dict[str, Any]) -> str:
     return ""
 
 
-def host_service_check_command(host: dict[str, Any], controller_port: int) -> str:
+def host_service_check_command(host: dict[str, Any], controller_port: int, apishim_port: int) -> str:
     role = host["role"]
     if role == "k1s-core":
         return (
@@ -336,6 +408,15 @@ def host_service_check_command(host: dict[str, Any], controller_port: int) -> st
             "if ! ss -ltn | awk '$4 ~ /:7422$/ {f=1} END {exit(f?0:1)}'; then echo 'leaf_port_7422_not_listening'; exit 11; fi; "
             f"if ! ss -ltn | awk '$4 ~ /:{controller_port}$/ {{f=1}} END {{exit(f?0:1)}}'; then "
             "echo 'controller_port_not_listening'; exit 12; fi; "
+            "echo 'ok'"
+        )
+
+    if role == "k1s-ha-core":
+        return (
+            f"if ! ss -ltn | awk '$4 ~ /:{controller_port}$/ {{f=1}} END {{exit(f?0:1)}}'; then "
+            "echo 'controller_port_not_listening'; exit 40; fi; "
+            f"if ! ss -ltn | awk '$4 ~ /:{apishim_port}$/ {{f=1}} END {{exit(f?0:1)}}'; then "
+            "echo 'apishim_port_not_listening'; exit 41; fi; "
             "echo 'ok'"
         )
 
@@ -540,6 +621,325 @@ def leaf_matches_edge(leaf: dict[str, Any], edge: dict[str, Any]) -> bool:
     return any(alias and (leaf_name == alias or leaf_name.endswith(alias)) for alias in aliases)
 
 
+def _first_output_line(stdout: str | None, stderr: str | None) -> str:
+    for source in (stdout or "", stderr or ""):
+        lines = [line.strip() for line in source.splitlines() if line.strip()]
+        if lines:
+            return lines[0]
+    return ""
+
+
+def _run_helper_check(
+    name: str,
+    command: list[str],
+    *,
+    timeout_s: int,
+    env: dict[str, str] | None = None,
+    optional: bool = False,
+) -> dict[str, Any]:
+    started = utc_now()
+    try:
+        res = run_cmd(command, timeout=timeout_s, check=False, env=env)
+        ok = res.returncode == 0
+        detail = "ok" if ok else (_first_output_line(res.stdout, res.stderr) or "command failed")
+        payload = {
+            "command": command,
+            "stdout": res.stdout,
+            "stderr": res.stderr,
+            "returncode": res.returncode,
+        }
+    except SmokeError as exc:
+        ok = False
+        detail = str(exc)
+        payload = {"command": command, "error": str(exc)}
+    ended = utc_now()
+    return {
+        "name": name,
+        "status": "passed" if ok else "failed",
+        "detail": detail,
+        "optional": optional,
+        "started_at": iso(started),
+        "ended_at": iso(ended),
+        "duration_s": round((ended - started).total_seconds(), 3),
+        "payload": payload,
+    }
+
+
+def _skip_helper_check(name: str, detail: str, *, optional: bool = False) -> dict[str, Any]:
+    now = utc_now()
+    return {
+        "name": name,
+        "status": "skipped",
+        "detail": detail,
+        "optional": optional,
+        "started_at": iso(now),
+        "ended_at": iso(now),
+        "duration_s": 0.0,
+        "payload": {},
+    }
+
+
+def _ha_env(config: dict[str, Any]) -> dict[str, str]:
+    env = dict(os.environ)
+    controller = (config.get("core_nodes") or [None])[0]
+    if isinstance(controller, dict):
+        env["AE_CONTROLLER_ID"] = str(controller.get("node_id") or controller.get("name") or "")
+        env["AE_CONTROLLER_ADVERTISE_ADDR"] = str(controller.get("controller_url") or "")
+    env["AE_ETCD_ENDPOINTS"] = ",".join(str(item) for item in config.get("etcd_endpoints") or [])
+    env["AE_ETCD_PREFIX"] = str(config.get("etcd_prefix") or "")
+    env["AE_NATS_URL"] = str(config.get("nats_url") or "")
+    return env
+
+
+def _ha_node_args(config: dict[str, Any]) -> list[str]:
+    args: list[str] = []
+    for node in config.get("core_nodes") or []:
+        args.extend(
+            [
+                "--node",
+                f"{node['name']}={node['controller_url']},{node['apishim_url']}",
+            ]
+        )
+    return args
+
+
+def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    issues: list[str] = []
+    env = _ha_env(config)
+    scripts_dir = ROOT / "scripts" / "dev"
+
+    if not config.get("core_nodes"):
+        issues.append("no_k1s-ha-core_hosts")
+    if not config.get("controller_metrics_url"):
+        issues.append("missing_controller_metrics_url")
+    if not config.get("etcd_endpoints"):
+        issues.append("missing_etcd_endpoints")
+    if not config.get("etcd_prefix"):
+        issues.append("missing_etcd_prefix")
+    if not config.get("nats_url"):
+        issues.append("missing_nats_url")
+    if not config.get("hub_nodes"):
+        issues.append("missing_hub_nodes")
+    edge_core_sites = set(config.get("edge_core_sites") or [])
+    configured_sites = {str(site.get("site_id") or "").strip() for site in config.get("edge_sites") or []}
+    missing_edge_sites = sorted(site for site in edge_core_sites if site and site not in configured_sites)
+    for site_id in missing_edge_sites:
+        issues.append(f"missing_edge_site_config:{site_id}")
+
+    if issues:
+        return {
+            "status": "failed",
+            "detail": "; ".join(issues),
+            "checks": [_skip_helper_check("ha_acceptance", "; ".join(issues))],
+        }
+
+    checks.append(
+        _run_helper_check(
+            "ha_core_preflight",
+            [sys.executable, str(scripts_dir / "ha_core_preflight.py")],
+            timeout_s=timeout_s,
+            env=env,
+        )
+    )
+    checks.append(
+        _run_helper_check(
+            "ha_core_precheck",
+            [
+                sys.executable,
+                str(scripts_dir / "ha_core_upgrade.py"),
+                "precheck",
+                "--metrics-url",
+                str(config["controller_metrics_url"]),
+                "--etcd-endpoints",
+                ",".join(config["etcd_endpoints"]),
+                "--etcd-prefix",
+                str(config["etcd_prefix"]),
+                "--nats-urls",
+                str(config["nats_url"]),
+            ],
+            timeout_s=timeout_s,
+        )
+    )
+    cluster_cmd = [
+        sys.executable,
+        str(scripts_dir / "ha_core_upgrade.py"),
+        "cluster-verify",
+        *_ha_node_args(config),
+        "--expected-version",
+        str(config["expected_version"]),
+    ]
+    if config.get("expected_sha"):
+        cluster_cmd.extend(["--expected-sha", str(config["expected_sha"])])
+    checks.append(
+        _run_helper_check(
+            "ha_core_cluster_verify",
+            cluster_cmd,
+            timeout_s=timeout_s,
+        )
+    )
+
+    hub_cmd = [
+        sys.executable,
+        str(scripts_dir / "ha_transport_upgrade.py"),
+        "precheck",
+        "--controller-metrics-url",
+        str(config["controller_metrics_url"]),
+    ]
+    for node in config.get("hub_nodes") or []:
+        hub_cmd.extend(["--node", f"{node['name']}={node['monitor_url']}"])
+    checks.append(
+        _run_helper_check(
+            "ha_hub_transport_precheck",
+            hub_cmd,
+            timeout_s=timeout_s,
+        )
+    )
+
+    for site in config.get("edge_sites") or []:
+        expected_gateways = [str(item) for item in site.get("expected_gateways") or []]
+        precheck_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_edge_transport.py"),
+            "precheck",
+            "--site",
+            f"{site['site_id']}={site['monitor_url']}",
+            "--controller-metrics-url",
+            str(config["controller_metrics_url"]),
+        ]
+        verify_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_edge_transport.py"),
+            "site-verify",
+            "--site",
+            f"{site['site_id']}={site['monitor_url']}",
+            "--controller-metrics-url",
+            str(config["controller_metrics_url"]),
+            "--require-gateway-converged",
+        ]
+        for gateway in expected_gateways:
+            precheck_cmd.extend(["--expected-gateway", gateway])
+            verify_cmd.extend(["--expected-gateway", gateway])
+        checks.append(
+            _run_helper_check(
+                f"ha_edge_precheck:{site['site_id']}",
+                precheck_cmd,
+                timeout_s=timeout_s,
+            )
+        )
+        checks.append(
+            _run_helper_check(
+                f"ha_edge_verify:{site['site_id']}",
+                verify_cmd,
+                timeout_s=timeout_s,
+            )
+        )
+
+    drills = config.get("drills") if isinstance(config.get("drills"), dict) else {}
+    leader_failover_command = str(drills.get("leader_failover_command") or "").strip()
+    if leader_failover_command:
+        checks.append(
+            _run_helper_check(
+                "ha_drill_leader_failover",
+                [
+                    sys.executable,
+                    str(scripts_dir / "ha_core_drills.py"),
+                    "leader-failover",
+                    "--command",
+                    leader_failover_command,
+                    "--etcd-endpoints",
+                    ",".join(config["etcd_endpoints"]),
+                    "--etcd-prefix",
+                    str(config["etcd_prefix"]),
+                    "--require-controller-change",
+                ],
+                timeout_s=timeout_s,
+                optional=True,
+            )
+        )
+    else:
+        checks.append(
+            _skip_helper_check(
+                "ha_drill_leader_failover",
+                "not configured in variant.ha.drills.leader_failover_command",
+                optional=True,
+            )
+        )
+
+    etcd_restart_command = str(drills.get("etcd_restart_command") or "").strip()
+    if etcd_restart_command:
+        checks.append(
+            _run_helper_check(
+                "ha_drill_etcd_restart",
+                [
+                    sys.executable,
+                    str(scripts_dir / "ha_core_drills.py"),
+                    "etcd-restart",
+                    "--command",
+                    etcd_restart_command,
+                    "--metrics-url",
+                    str(config["controller_metrics_url"]),
+                    "--etcd-endpoints",
+                    ",".join(config["etcd_endpoints"]),
+                    "--etcd-prefix",
+                    str(config["etcd_prefix"]),
+                ],
+                timeout_s=timeout_s,
+                optional=True,
+            )
+        )
+    else:
+        checks.append(
+            _skip_helper_check(
+                "ha_drill_etcd_restart",
+                "not configured in variant.ha.drills.etcd_restart_command",
+                optional=True,
+            )
+        )
+
+    transport_recovery_command = str(drills.get("transport_recovery_command") or "").strip()
+    first_site = next(iter(config.get("edge_sites") or []), None)
+    if transport_recovery_command and isinstance(first_site, dict):
+        checks.append(
+            _run_helper_check(
+                "ha_drill_transport_recovery",
+                [
+                    sys.executable,
+                    str(scripts_dir / "ha_core_drills.py"),
+                    "transport-recovery",
+                    "--command",
+                    transport_recovery_command,
+                    "--metrics-url",
+                    str(config["controller_metrics_url"]),
+                    "--site",
+                    str(first_site["site_id"]),
+                ],
+                timeout_s=timeout_s,
+                optional=True,
+            )
+        )
+    else:
+        checks.append(
+            _skip_helper_check(
+                "ha_drill_transport_recovery",
+                "not configured in variant.ha.drills.transport_recovery_command",
+                optional=True,
+            )
+        )
+
+    required_failures = [check for check in checks if check["status"] == "failed" and not check["optional"]]
+    status = "failed" if required_failures else "passed"
+    detail = "ok" if status == "passed" else "; ".join(check["name"] for check in required_failures)
+    return {
+        "status": status,
+        "detail": detail,
+        "checks": checks,
+        "core_nodes": config["core_nodes"],
+        "hub_nodes": config["hub_nodes"],
+        "edge_sites": config["edge_sites"],
+    }
+
+
 def status_rank(status: str) -> int:
     if status == "failed":
         return 3
@@ -619,7 +1019,7 @@ def smoke_v2(args: argparse.Namespace) -> int:
     run_started = utc_now()
     lane_plans: list[dict[str, Any]] = []
     for lane_name in requested_lanes:
-        if lane_name not in DEFAULT_LANES:
+        if lane_name not in SUPPORTED_LANES:
             raise SmokeError(f"unknown lane: {lane_name}")
         selected_hosts = lane_hosts(lane_name, variant["hosts"])
         lane_plans.append(
@@ -646,6 +1046,7 @@ def smoke_v2(args: argparse.Namespace) -> int:
             "fabric_validate": True,
             "functional_basic": True,
             "functional_advanced": bool(parse_csv(args.enable_advanced_checks)),
+            "ha_acceptance": True,
             "advanced_enabled": parse_csv(args.enable_advanced_checks),
             "disabled": parse_csv(args.disable_checks),
         },
@@ -818,6 +1219,7 @@ def smoke_v2(args: argparse.Namespace) -> int:
 
         hosts_by_name = {h["name"]: h for h in variant["hosts"]}
         lane_hosts_full = [hosts_by_name[h["name"]] for h in lane["hosts"]]
+        is_ha_lane = lane_name == "ha_control_plane"
 
         # service_ready
         if "service_ready" in disabled_checks:
@@ -845,7 +1247,11 @@ def smoke_v2(args: argparse.Namespace) -> int:
                 ),
             )
             for host in lane_hosts_full:
-                command = host_service_check_command(host, int(variant["k1s"]["controller_port"]))
+                command = host_service_check_command(
+                    host,
+                    int(variant["k1s"]["controller_port"]),
+                    int(variant["k1s"].get("apishim_port", 8445)),
+                )
 
                 def _check_host(
                     host: dict[str, Any] = host, command: str = command
@@ -898,7 +1304,20 @@ def smoke_v2(args: argparse.Namespace) -> int:
             }
 
         # fabric_validate
-        if "fabric_validate" in disabled_checks:
+        if is_ha_lane:
+            phase_status.append(
+                {
+                    "phase": "fabric_validate",
+                    "status": "skipped",
+                    "detail": "ha_control_plane lane uses ha_acceptance instead",
+                    "attempts": 0,
+                    "started_at": iso(utc_now()),
+                    "ended_at": iso(utc_now()),
+                    "duration_s": 0.0,
+                }
+            )
+            check_outputs["fabric_validate"] = {"status": "skipped", "reason": "ha_control_plane lane"}
+        elif "fabric_validate" in disabled_checks:
             phase_status.append(
                 {
                     "phase": "fabric_validate",
@@ -1042,7 +1461,20 @@ def smoke_v2(args: argparse.Namespace) -> int:
             }
 
         # functional_basic
-        if "functional_basic" in disabled_checks:
+        if is_ha_lane:
+            phase_status.append(
+                {
+                    "phase": "functional_basic",
+                    "status": "skipped",
+                    "detail": "ha_control_plane lane uses ha_acceptance instead",
+                    "attempts": 0,
+                    "started_at": iso(utc_now()),
+                    "ended_at": iso(utc_now()),
+                    "duration_s": 0.0,
+                }
+            )
+            check_outputs["functional_basic"] = {"status": "skipped", "reason": "ha_control_plane lane"}
+        elif "functional_basic" in disabled_checks:
             phase_status.append(
                 {
                     "phase": "functional_basic",
@@ -1106,6 +1538,60 @@ def smoke_v2(args: argparse.Namespace) -> int:
             }
 
         # functional_advanced
+        ha_summary_payload: dict[str, Any] | None = None
+        if is_ha_lane:
+            ha_started = utc_now()
+            if "ha_acceptance" in disabled_checks:
+                ha_status = "skipped"
+                ha_detail = "disabled via --disable-checks"
+                ha_attempts = 0
+                ha_payload = {"status": "skipped"}
+            else:
+                ha_config = build_ha_lane_config(variant, lane_hosts_full)
+                ha_payload = run_ha_acceptance_checks(
+                    ha_config,
+                    timeout_s=phase_timeouts["ha_acceptance"],
+                )
+                ha_status = str(ha_payload.get("status") or "failed")
+                ha_detail = str(ha_payload.get("detail") or "")
+                ha_attempts = len(ha_payload.get("checks") or [])
+            ha_ended = utc_now()
+            phase_status.append(
+                {
+                    "phase": "ha_acceptance",
+                    "status": ha_status,
+                    "detail": ha_detail,
+                    "attempts": ha_attempts,
+                    "started_at": iso(ha_started),
+                    "ended_at": iso(ha_ended),
+                    "duration_s": round((ha_ended - ha_started).total_seconds(), 3),
+                }
+            )
+            ha_summary_payload = {
+                "lane": lane_name,
+                "status": ha_status,
+                "detail": ha_detail,
+                "checks": ha_payload.get("checks") if isinstance(ha_payload, dict) else [],
+                "core_nodes": ha_payload.get("core_nodes") if isinstance(ha_payload, dict) else [],
+                "hub_nodes": ha_payload.get("hub_nodes") if isinstance(ha_payload, dict) else [],
+                "edge_sites": ha_payload.get("edge_sites") if isinstance(ha_payload, dict) else [],
+            }
+            check_outputs["ha_acceptance"] = ha_summary_payload
+        else:
+            phase_status.append(
+                {
+                    "phase": "ha_acceptance",
+                    "status": "skipped",
+                    "detail": "non-HA lane",
+                    "attempts": 0,
+                    "started_at": iso(utc_now()),
+                    "ended_at": iso(utc_now()),
+                    "duration_s": 0.0,
+                }
+            )
+            check_outputs["ha_acceptance"] = {"status": "skipped", "reason": "non-HA lane"}
+
+        # functional_advanced
         adv_started = utc_now()
         if not advanced_checks or "functional_advanced" in disabled_checks:
             adv_status = "skipped"
@@ -1137,6 +1623,8 @@ def smoke_v2(args: argparse.Namespace) -> int:
 
         for check_name, payload in check_outputs.items():
             write_json(lane_path / "checks" / f"{check_name}.json", payload)
+        if ha_summary_payload is not None:
+            write_json(lane_path / "ha_summary.json", ha_summary_payload)
         write_json(lane_path / "phase_status.json", phase_status)
 
         lane_status = lane_status_from_phases(phase_status)
@@ -1166,6 +1654,19 @@ def smoke_v2(args: argparse.Namespace) -> int:
         "lanes": lane_summaries,
     }
     write_json(run_dir / "summary.json", summary_payload)
+    ha_lane_summary = next((lane for lane in lane_summaries if lane["name"] == "ha_control_plane"), None)
+    if ha_lane_summary is not None:
+        lane_ha_summary = lanes_dir / "ha_control_plane" / "ha_summary.json"
+        if lane_ha_summary.is_file():
+            write_json(
+                run_dir / "ha_summary.json",
+                {
+                    "run_id": run_id,
+                    "variant_name": variant["name"],
+                    "status": ha_lane_summary["status"],
+                    "path": str(lane_ha_summary),
+                },
+            )
 
     lines = [
         f"# Smoke Summary ({run_id})",
@@ -1266,7 +1767,14 @@ def main() -> int:
         args.run_id = os.environ.get("RUN_ID") or default_run_id()
     if args.skip_validate:
         args.disable_checks = ",".join(
-            [x for x in [args.disable_checks, "service_ready,fabric_validate,functional_basic,functional_advanced"] if x]
+            [
+                x
+                for x in [
+                    args.disable_checks,
+                    "service_ready,fabric_validate,functional_basic,ha_acceptance,functional_advanced",
+                ]
+                if x
+            ]
         )
     try:
         return smoke_v2(args)

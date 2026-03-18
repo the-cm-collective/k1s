@@ -34,17 +34,30 @@ ensure_run_dir "$RUN_ID"
 mkdir -p "$(run_dir "$RUN_ID")/bootstrap"
 
 controller_row="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core") | @base64' | head -n1)"
-if [[ -z "$controller_row" ]]; then
-  err "variant must include one host with role=k1s-core"
+ha_controller_row="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-ha-core") | @base64' | head -n1)"
+if [[ -z "$controller_row" && -z "$ha_controller_row" ]]; then
+  err "variant must include one host with role=k1s-core or k1s-ha-core"
   exit 2
 fi
-controller_host="$(printf '%s' "$controller_row" | base64 -d)"
+controller_host_row="$controller_row"
+if [[ -z "$controller_host_row" ]]; then
+  controller_host_row="$ha_controller_row"
+fi
+controller_host="$(printf '%s' "$controller_host_row" | base64 -d)"
 controller_ip="$(echo "$controller_host" | jq -r '.ip')"
+controller_host_override="$(echo "$variant_json" | jq -r '.k1s.controller_host // empty')"
+if [[ -n "$controller_host_override" ]]; then
+  controller_ip="$controller_host_override"
+fi
 controller_port="$(echo "$variant_json" | jq -r '.k1s.controller_port')"
+apishim_port="$(echo "$variant_json" | jq -r '.k1s.apishim_port')"
 token="$(echo "$variant_json" | jq -r '.k1s.agent_token')"
 leaf_uplink_mode="$(echo "$variant_json" | jq -r '.transport.leaf_uplink_mode')"
 transport_hub_host="$(echo "$variant_json" | jq -r '.transport.hub_host // empty')"
 edge_hub_leaf_port="$(echo "$variant_json" | jq -r '.transport.hub_leaf_port')"
+ha_etcd_endpoints="$(echo "$variant_json" | jq -r '.ha.etcd_endpoints | join(",")')"
+ha_etcd_prefix="$(echo "$variant_json" | jq -r '.ha.etcd_prefix // empty')"
+ha_nats_url="$(echo "$variant_json" | jq -r '.ha.nats_url // empty')"
 edge_hub_leaf_host="127.0.0.1"
 if [[ "$leaf_uplink_mode" == "direct_ip" ]]; then
   edge_hub_leaf_host="${transport_hub_host:-$controller_ip}"
@@ -54,6 +67,10 @@ seed_bundle_default="/mnt/host/state/lab-vm/${RUN_ID}/seeds/cri-seed-images.oci.
 edge_core_site_ids="$(
   echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-core" and (.site_id // "") != "") | .site_id' | sort -u | tr '\n' ' '
 )"
+first_ha_controller_name=""
+if [[ -n "$ha_controller_row" ]]; then
+  first_ha_controller_name="$(printf '%s' "$ha_controller_row" | base64 -d | jq -r '.name')"
+fi
 
 mapfile -t rows < <(echo "$variant_json" | jq -r '.hosts[] | @base64')
 plan_file="$(run_dir "$RUN_ID")/bootstrap/plan.txt"
@@ -104,6 +121,50 @@ nohup sudo env \
   AE_CRI_REGISTRY_PRELOAD=\${AE_CRI_REGISTRY_PRELOAD:-1} \
   AE_APISHIM_MODE=\${AE_APISHIM_MODE:-host} \
   make k1s-core-cri > /home/ae/k1s-core.log 2>&1 &
+${register_edge_sites_snippet}
+CMD
+      ;;
+    k1s-ha-core)
+      local register_edge_sites_snippet=""
+      if [[ "$name" == "$first_ha_controller_name" && -n "$edge_core_site_ids" ]]; then
+        register_edge_sites_snippet="$(cat <<CMD
+if command -v bash >/dev/null 2>&1; then
+  for _ in \$(seq 1 90); do
+    if bash -c 'exec 3<>/dev/tcp/127.0.0.1/${controller_port}' >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+fi
+for site in ${edge_core_site_ids}; do
+  (cd /mnt/host && sudo -E AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} REGISTER_ONLY=1 SITE_ID="\$site" ./scripts/dev/add_edge_site.sh)
+done
+CMD
+)"
+      fi
+      cat <<CMD
+cd /mnt/host
+bootstrap_pip_install
+bootstrap_seed_cri_cache core
+nohup sudo env \
+  PYTHON_BIN=python3 \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_DATA_ROOT=\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri} \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
+  AE_CRI_REGISTRY_TRUST_SYSTEM=\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1} \
+  AE_CRI_REGISTRY_PRELOAD=\${AE_CRI_REGISTRY_PRELOAD:-1} \
+  AE_APISHIM_MODE=\${AE_APISHIM_MODE:-cri} \
+  AE_HA_MODE=1 \
+  AE_CONTROLLER_ID=${node_id} \
+  AE_CONTROLLER_ADVERTISE_ADDR=http://${ip}:${controller_port} \
+  AE_ETCD_ENDPOINTS='${ha_etcd_endpoints}' \
+  AE_APISHIM_ETCD_ENDPOINTS='${ha_etcd_endpoints}' \
+  AE_ETCD_PREFIX='${ha_etcd_prefix}' \
+  AE_NATS_URL='${ha_nats_url}' \
+  APISHIM_PORT=${apishim_port} \
+  make k1s-ha-core > /home/ae/k1s-ha-core.log 2>&1 &
 ${register_edge_sites_snippet}
 CMD
       ;;

@@ -41,9 +41,12 @@ def test_variant_parser_prints_normalized_json() -> None:
     assert any(h["gpu"] for h in payload["hosts"])
     assert Path(payload["images"]["base"]).is_absolute()
     assert Path(payload["images"]["gpu"]).is_absolute()
+    assert payload["k1s"]["apishim_port"] == 8445
     assert payload["transport"]["leaf_uplink_mode"] == "direct_ip"
     assert payload["transport"]["hub_host"] == "192.168.152.10"
     assert payload["transport"]["hub_leaf_port"] == 7422
+    assert payload["ha"]["enabled"] is False
+    assert payload["ha"]["etcd_endpoints"] == []
     assert payload["smoke"]["lanes"] == [
         "single_non_gpu",
         "single_gpu",
@@ -130,6 +133,86 @@ transport:
     )
     assert res.returncode == 2
     assert "transport.leaf_uplink_mode must be direct_ip or local_tunnel" in res.stderr
+
+
+def test_variant_parser_accepts_ha_core_profile_shape(tmp_path: Path) -> None:
+    variant = tmp_path / "ha-variant.yaml"
+    variant.write_text(
+        """
+name: unit-test-ha-variant
+test_id: 104
+network:
+  bridge: k1s-br0
+  cidr: 192.168.154.0/24
+  gateway: 192.168.154.1
+images:
+  base: artifacts/images/base.qcow2
+  gpu: artifacts/images/gpu.qcow2
+hosts:
+  - name: core-a
+    ip: 192.168.154.10
+    role: k1s-ha-core
+    node_id: core-a
+  - name: core-b
+    ip: 192.168.154.11
+    role: k1s-ha-core
+    node_id: core-b
+  - name: edge-a
+    ip: 192.168.154.20
+    role: k1s-edge-core
+    site_id: sea
+  - name: edge-a-node
+    ip: 192.168.154.21
+    role: k1s-edge-node
+    site_id: sea
+vm:
+  memory_mb: 2048
+  vcpus: 2
+  disk_gb: 20
+k1s:
+  controller_port: 9208
+  apishim_port: 9445
+ha:
+  etcd_endpoints:
+    - http://192.168.154.100:2379
+    - http://192.168.154.101:2379
+  etcd_prefix: k1s/lab/ha
+  nats_url: nats://hub-controller:dev@192.168.154.110:4222
+  controller_scheme: http
+  apishim_scheme: http
+  hub_nodes:
+    - name: hub-a
+      monitor_url: http://192.168.154.110:8222
+  edge_sites:
+    - site_id: sea
+      monitor_url: http://192.168.154.20:8224
+      expected_gateways:
+        - edge-a
+smoke:
+  lanes:
+    - ha_control_plane
+""".strip(),
+        encoding="utf-8",
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [sys.executable, str(VARIANT_SCRIPT), "--variant", str(variant), "--print-json"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    payload = json.loads(res.stdout)
+    assert [host["role"] for host in payload["hosts"][:2]] == ["k1s-ha-core", "k1s-ha-core"]
+    assert payload["k1s"]["controller_port"] == 9208
+    assert payload["k1s"]["apishim_port"] == 9445
+    assert payload["ha"]["enabled"] is True
+    assert payload["ha"]["etcd_endpoints"] == [
+        "http://192.168.154.100:2379",
+        "http://192.168.154.101:2379",
+    ]
+    assert payload["ha"]["hub_nodes"][0]["name"] == "hub-a"
+    assert payload["ha"]["edge_sites"][0]["expected_gateways"] == ["edge-a"]
+    assert payload["smoke"]["lanes"] == ["ha_control_plane"]
 
 
 def test_throughput_gate_pass_and_fail(tmp_path: Path) -> None:
@@ -260,6 +343,89 @@ smoke:
     assert lane_map["multi_gpu"]["host_count"] == 3
 
 
+def test_smoke_v2_plan_only_supports_ha_control_plane_lane(tmp_path: Path) -> None:
+    variant = tmp_path / "smoke-ha-plan.yaml"
+    variant.write_text(
+        """
+name: unit-test-smoke-ha-plan
+test_id: 105
+network:
+  bridge: k1s-br0
+  cidr: 192.168.155.0/24
+  gateway: 192.168.155.1
+images:
+  base: artifacts/images/base.qcow2
+  gpu: artifacts/images/gpu.qcow2
+hosts:
+  - name: core-a
+    ip: 192.168.155.10
+    role: k1s-ha-core
+    gpu: false
+    node_id: core-a
+  - name: core-b
+    ip: 192.168.155.11
+    role: k1s-ha-core
+    gpu: false
+    node_id: core-b
+  - name: edge-sea
+    ip: 192.168.155.20
+    role: k1s-edge-core
+    gpu: false
+    site_id: sea
+  - name: edge-sea-node
+    ip: 192.168.155.21
+    role: k1s-edge-node
+    gpu: true
+    site_id: sea
+vm:
+  memory_mb: 2048
+  vcpus: 2
+  disk_gb: 20
+ha:
+  etcd_endpoints: http://192.168.155.100:2379
+  etcd_prefix: k1s/lab/ha
+  nats_url: nats://hub-controller:dev@192.168.155.110:4222
+  hub_nodes:
+    - name: hub-a
+      monitor_url: http://192.168.155.110:8222
+  edge_sites:
+    - site_id: sea
+      monitor_url: http://192.168.155.20:8224
+      expected_gateways:
+        - edge-sea
+smoke:
+  lanes:
+    - ha_control_plane
+""".strip(),
+        encoding="utf-8",
+    )
+    run_id = "20260318T120000Z_ha_unit"
+    out_root = tmp_path / "runs"
+
+    res = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(SMOKE_V2_SCRIPT),
+            "--variant",
+            str(variant),
+            "--run-id",
+            run_id,
+            "--plan-only",
+            "--output-root",
+            str(out_root),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr
+
+    plan = json.loads((out_root / run_id / "plan.json").read_text(encoding="utf-8"))
+    assert [lane["name"] for lane in plan["lanes"]] == ["ha_control_plane"]
+    lane = plan["lanes"][0]
+    assert lane["host_count"] == 4
+    assert lane["skipped"] is False
+
+
 def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     text = BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
     assert "AE_CRI_DATA_ROOT=\\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri}" in text
@@ -268,6 +434,9 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_APISHIM_MODE=\\${AE_APISHIM_MODE:-host}" in text
     assert "bootstrap_seed_cri_cache core" in text
     assert "bootstrap_seed_cri_cache edge" in text
+    assert "make k1s-ha-core" in text
+    assert "AE_CONTROLLER_ADVERTISE_ADDR=http://${ip}:${controller_port}" in text
+    assert "AE_APISHIM_ETCD_ENDPOINTS='${ha_etcd_endpoints}'" in text
     assert "AE_CRI_CACHE_SEED_MODE" in text
     assert "AE_CRI_CACHE_SEED_BUNDLE" in text
 
