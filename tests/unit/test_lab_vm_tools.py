@@ -647,3 +647,8 @@ def test_smoke_v2_removes_partial_log_note_text() -> None:
     text = SMOKE_V2_SCRIPT.read_text(encoding="utf-8")
     assert "ok (leafz+partial-log-signals)" not in text
     assert "signal_gaps_resolved_by_leafz" not in text
+
+
+def test_ha_closeout_reduced_lane_forces_single_replica_jetstream() -> None:
+    text = (ROOT / "tests" / "e2e" / "ha_closeout.py").read_text(encoding="utf-8")
+    assert '"AE_JS_REPLICAS": "1"' in text

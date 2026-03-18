@@ -143,6 +143,7 @@ def run_ha_closeout_e2e() -> int:
                 "AE_TRANSPORT_BACKEND": "nats-js",
                 "AE_NATS_URL": "nats://hub-controller:dev@127.0.0.1:4222",
                 "AE_JS_DOMAIN": "K1S",
+                "AE_JS_REPLICAS": "1",
                 "AE_OUTBOX_PUBLISH_INTERVAL_S": "0.2",
                 "AE_PROJECTION_ROOT": str(base_dir / "projections"),
                 "PYTHONUNBUFFERED": "1",
