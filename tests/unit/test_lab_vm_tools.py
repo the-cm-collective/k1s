@@ -15,6 +15,7 @@ BOOTSTRAP_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "k1s_bootstrap.sh"
 RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
+COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
 
@@ -462,6 +463,13 @@ def test_cri_seed_bundle_script_accepts_run_id_and_profile() -> None:
     assert "AE_CRI_CACHE_SEED_ENGINE" in text
     assert "[cri-seed] source already cached: $image" in text
     assert "images export" in text or "save -o" in text
+
+
+def test_lab_vm_scripts_prefer_repo_venv_python() -> None:
+    common_text = COMMON_SCRIPT.read_text(encoding="utf-8")
+    smoke_text = (ROOT / "scripts" / "lab" / "vm" / "smoke.sh").read_text(encoding="utf-8")
+    assert '$ROOT_DIR/.venv/bin/python' in common_text
+    assert 'exec "$(lab_python)" "$SCRIPT_DIR/smoke_v2.py" "$@"' in smoke_text
 
 
 def test_cri_seed_lock_contains_core_and_edge_images() -> None:

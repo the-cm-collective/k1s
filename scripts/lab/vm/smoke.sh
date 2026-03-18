@@ -4,7 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "${LAB_VM_SMOKE_V2:-0}" == "1" ]]; then
-  exec "$SCRIPT_DIR/smoke_v2.py" "$@"
+  # shellcheck source=scripts/lab/vm/lib/common.sh
+  source "$SCRIPT_DIR/lib/common.sh"
+  exec "$(lab_python)" "$SCRIPT_DIR/smoke_v2.py" "$@"
 fi
 
 # shellcheck source=scripts/lab/vm/lib/common.sh

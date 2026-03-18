@@ -19,6 +19,23 @@ require_cmd() {
   }
 }
 
+lab_python() {
+  if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    printf '%s' "$ROOT_DIR/.venv/bin/python"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$(command -v python3)"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    printf '%s' "$(command -v python)"
+    return 0
+  fi
+  err "missing required command: python3"
+  exit 2
+}
+
 default_run_id() {
   date -u +%Y%m%dT%H%M%SZ
 }
@@ -44,7 +61,9 @@ ensure_run_dir() {
 variant_to_json() {
   local variant_path="$1"
   shift || true
-  PYTHONPATH="$ROOT_DIR/src" python "$ROOT_DIR/scripts/lab/vm/lib/variant.py" --variant "$variant_path" --print-json "$@"
+  local python_bin
+  python_bin="$(lab_python)"
+  PYTHONPATH="$ROOT_DIR/src" "$python_bin" "$ROOT_DIR/scripts/lab/vm/lib/variant.py" --variant "$variant_path" --print-json "$@"
 }
 
 variant_value() {
