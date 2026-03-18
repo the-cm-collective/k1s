@@ -50,6 +50,7 @@ from .adapter import build_adapter
 from .ha_store import (
     AuthorityMutationError,
     MultiplexApishimStore,
+    is_controller_owned_storage_authority_resource,
 )
 from .store import K8sObject, ObjectStore
 
@@ -3150,6 +3151,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         if not self._ha_mode_enabled() or self._ha_mutation_exempt(method, path):
             return False
         supported = False
+        controller_owned = False
         plural, _ns, _name = _ns_name(path)
         if plural in {
             "namespaces",
@@ -3198,12 +3200,58 @@ class ShimHandler(BaseHTTPRequestHandler):
         s_plural, _s_name = _gv_cluster_name(path, "storage.k8s.io", "v1", "storageclasses")
         if s_plural == "storageclasses":
             supported = True
+        for resource in ("csidrivers", "csinodes"):
+            c_plural, _c_name = _gv_cluster_name(path, "storage.k8s.io", "v1", resource)
+            if c_plural == resource:
+                supported = True
+        for resource in ("volumeattachments",):
+            c_plural, _c_name = _gv_cluster_name(path, "storage.k8s.io", "v1", resource)
+            if c_plural == resource and is_controller_owned_storage_authority_resource(
+                "storage.k8s.io", "v1", resource
+            ):
+                controller_owned = True
+        for resource in ("csistoragecapacities",):
+            c_plural, _c_ns, _c_name = _gv_ns_name(path, "storage.k8s.io", "v1", resource)
+            if c_plural == resource and is_controller_owned_storage_authority_resource(
+                "storage.k8s.io", "v1", resource
+            ):
+                controller_owned = True
+        for resource in ("volumesnapshotclasses",):
+            snap_plural, _snap_name = _gv_cluster_name(
+                path, "snapshot.storage.k8s.io", "v1", resource
+            )
+            if snap_plural == resource:
+                supported = True
+        for resource in ("volumesnapshotcontents",):
+            snap_plural, _snap_name = _gv_cluster_name(
+                path, "snapshot.storage.k8s.io", "v1", resource
+            )
+            if snap_plural == resource and is_controller_owned_storage_authority_resource(
+                "snapshot.storage.k8s.io", "v1", resource
+            ):
+                controller_owned = True
+        for resource in ("volumesnapshots",):
+            snap_plural, _snap_ns, _snap_name = _gv_ns_name(
+                path, "snapshot.storage.k8s.io", "v1", resource
+            )
+            if snap_plural == resource:
+                supported = True
         self._refresh_crd_registry_from_state()
         custom = _parse_custom_resource_path(path)
         if custom is not None:
             group, version, _namespace, plural, _name = custom
             if self._lookup_crd(group, version, plural):
                 supported = True
+        if controller_owned:
+            self._json_status(
+                HTTPStatus.CONFLICT,
+                reason="HAUnsupported",
+                message=(
+                    "HA mutation via apishim is read-only for controller-owned storage "
+                    "resources; this resource is managed by the elected storage controller"
+                ),
+            )
+            return True
         if supported:
             return False
         self._json_status(

@@ -319,6 +319,86 @@ def test_generic_authority_store_round_trips_core_storage_resources(tmp_path) ->
     assert state.get_authority_object("", "v1", "persistentvolumes", None, "demo-pv") is not None
 
 
+def test_generic_authority_store_round_trips_snapshot_and_csi_resources(tmp_path) -> None:
+    state, legacy, store = _make_store(tmp_path)
+
+    driver = store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "csidrivers",
+        None,
+        "csi.example.com",
+        metadata={"name": "csi.example.com"},
+        spec={"attachRequired": True, "podInfoOnMount": False},
+        status={},
+    )
+    assert driver.spec["attachRequired"] is True
+    assert legacy.get("storage.k8s.io", "v1", "csidrivers", None, "csi.example.com") is None
+
+    node = store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "csinodes",
+        None,
+        "node-a",
+        metadata={"name": "node-a"},
+        spec={"drivers": [{"name": "csi.example.com", "nodeID": "node-a"}]},
+        status={},
+    )
+    assert node.spec["drivers"][0]["nodeID"] == "node-a"
+    assert legacy.get("storage.k8s.io", "v1", "csinodes", None, "node-a") is None
+
+    snapshot_class = store.upsert(
+        "snapshot.storage.k8s.io",
+        "v1",
+        "volumesnapshotclasses",
+        None,
+        "csi-snap",
+        metadata={"name": "csi-snap"},
+        spec={"driver": "csi.example.com", "deletionPolicy": "Retain"},
+        status={},
+    )
+    assert snapshot_class.spec["driver"] == "csi.example.com"
+    assert (
+        legacy.get("snapshot.storage.k8s.io", "v1", "volumesnapshotclasses", None, "csi-snap")
+        is None
+    )
+
+    snapshot = store.upsert(
+        "snapshot.storage.k8s.io",
+        "v1",
+        "volumesnapshots",
+        "default",
+        "snap-a",
+        metadata={"name": "snap-a", "namespace": "default"},
+        spec={
+            "source": {"persistentVolumeClaimName": "demo-pvc"},
+            "volumeSnapshotClassName": "csi-snap",
+        },
+        status={"readyToUse": False},
+    )
+    assert snapshot.spec["volumeSnapshotClassName"] == "csi-snap"
+    assert (
+        legacy.get("snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "snap-a")
+        is None
+    )
+
+    assert state.get_authority_object("storage.k8s.io", "v1", "csidrivers", None, "csi.example.com")
+    assert state.get_authority_object("storage.k8s.io", "v1", "csinodes", None, "node-a")
+    assert (
+        state.get_authority_object(
+            "snapshot.storage.k8s.io", "v1", "volumesnapshotclasses", None, "csi-snap"
+        )
+        is not None
+    )
+    assert (
+        state.get_authority_object(
+            "snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "snap-a"
+        )
+        is not None
+    )
+
+
 def test_generic_authority_store_round_trips_built_in_passive_resources(tmp_path) -> None:
     state, legacy, store = _make_store(tmp_path)
 

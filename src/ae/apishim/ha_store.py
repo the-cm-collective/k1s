@@ -60,6 +60,18 @@ STORAGE_AUTHORITY_RESOURCES: set[tuple[str, str, str]] = {
     ("", "v1", "persistentvolumeclaims"),
     ("", "v1", "persistentvolumes"),
     ("storage.k8s.io", "v1", "storageclasses"),
+    ("storage.k8s.io", "v1", "volumeattachments"),
+    ("storage.k8s.io", "v1", "csidrivers"),
+    ("storage.k8s.io", "v1", "csinodes"),
+    ("storage.k8s.io", "v1", "csistoragecapacities"),
+    ("snapshot.storage.k8s.io", "v1", "volumesnapshots"),
+    ("snapshot.storage.k8s.io", "v1", "volumesnapshotclasses"),
+    ("snapshot.storage.k8s.io", "v1", "volumesnapshotcontents"),
+}
+CONTROLLER_OWNED_STORAGE_AUTHORITY_RESOURCES: set[tuple[str, str, str]] = {
+    ("storage.k8s.io", "v1", "volumeattachments"),
+    ("storage.k8s.io", "v1", "csistoragecapacities"),
+    ("snapshot.storage.k8s.io", "v1", "volumesnapshotcontents"),
 }
 WORKLOAD_AUTHORITY_RESOURCES = WORKLOAD_RESOURCES | ATTACHED_RESOURCES
 PASSIVE_AUTHORITY_RESOURCES = GENERIC_AUTHORITY_RESOURCES | STORAGE_AUTHORITY_RESOURCES
@@ -99,6 +111,10 @@ def is_storage_authority_resource(group: str, version: str, resource: str) -> bo
     return (group, version, resource) in STORAGE_AUTHORITY_RESOURCES
 
 
+def is_controller_owned_storage_authority_resource(group: str, version: str, resource: str) -> bool:
+    return (group, version, resource) in CONTROLLER_OWNED_STORAGE_AUTHORITY_RESOURCES
+
+
 def generic_kind_for_resource(resource: str) -> str:
     return {
         "namespaces": "Namespace",
@@ -108,6 +124,13 @@ def generic_kind_for_resource(resource: str) -> str:
         "persistentvolumeclaims": "PersistentVolumeClaim",
         "persistentvolumes": "PersistentVolume",
         "storageclasses": "StorageClass",
+        "volumeattachments": "VolumeAttachment",
+        "csidrivers": "CSIDriver",
+        "csinodes": "CSINode",
+        "csistoragecapacities": "CSIStorageCapacity",
+        "volumesnapshots": "VolumeSnapshot",
+        "volumesnapshotclasses": "VolumeSnapshotClass",
+        "volumesnapshotcontents": "VolumeSnapshotContent",
         "customresourcedefinitions": "CustomResourceDefinition",
         "cronjobs": "CronJob",
         "horizontalpodautoscalers": "HorizontalPodAutoscaler",

@@ -73,32 +73,107 @@ def test_apishim_ha_mode_rejects_put_for_csi_storage_resource(monkeypatch, tmp_p
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "later H4" in payload["message"]
+    assert "controller-owned storage" in payload["message"]
     assert store.get("storage.k8s.io", "v1", "volumeattachments", None, "demo") is None
 
 
-def test_apishim_ha_mode_rejects_patch_for_snapshot_resource(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_routes_snapshot_create_through_shared_authority(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    state = SQLiteStateStore(tmp_path / "state.db")
+    legacy = ObjectStore(tmp_path / "apishim.db")
+    store = MultiplexApishimStore.from_state_and_legacy(state, legacy)
+    shim_server.ShimHandler.state = state
+    body = json.dumps(
+        {
+            "apiVersion": "snapshot.storage.k8s.io/v1",
+            "kind": "VolumeSnapshot",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "source": {"persistentVolumeClaimName": "demo-pvc"},
+                "volumeSnapshotClassName": "snapclass",
+            },
+        }
+    ).encode("utf-8")
+    handler, status = _handler(
+        store,
+        monkeypatch,
+        "/apis/snapshot.storage.k8s.io/v1/namespaces/default/volumesnapshots",
+        method="POST",
+        body=body,
+    )
+
+    handler.do_POST()
+
+    assert status["code"] == 201
+    payload = _json_body(handler)
+    assert payload["kind"] == "VolumeSnapshot"
+    assert legacy.get("snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "demo") is None
+    assert (
+        state.get_authority_object(
+            "snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "demo"
+        )
+        is not None
+    )
+
+
+def test_apishim_ha_mode_routes_csidriver_create_through_shared_authority(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    state = SQLiteStateStore(tmp_path / "state.db")
+    legacy = ObjectStore(tmp_path / "apishim.db")
+    store = MultiplexApishimStore.from_state_and_legacy(state, legacy)
+    shim_server.ShimHandler.state = state
+    body = json.dumps(
+        {
+            "apiVersion": "storage.k8s.io/v1",
+            "kind": "CSIDriver",
+            "metadata": {"name": "csi.example.com"},
+            "spec": {"attachRequired": True, "podInfoOnMount": False},
+        }
+    ).encode("utf-8")
+    handler, status = _handler(
+        store,
+        monkeypatch,
+        "/apis/storage.k8s.io/v1/csidrivers/csi.example.com",
+        method="PUT",
+        body=body,
+    )
+
+    handler.do_PUT()
+
+    assert status["code"] == 200
+    payload = _json_body(handler)
+    assert payload["kind"] == "CSIDriver"
+    assert legacy.get("storage.k8s.io", "v1", "csidrivers", None, "csi.example.com") is None
+    assert (
+        state.get_authority_object("storage.k8s.io", "v1", "csidrivers", None, "csi.example.com")
+        is not None
+    )
+
+
+def test_apishim_ha_mode_rejects_patch_for_controller_owned_snapshot_resource(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     store = ObjectStore(tmp_path / "apishim.db")
     store.upsert(
         "snapshot.storage.k8s.io",
         "v1",
-        "volumesnapshots",
-        "default",
+        "volumesnapshotcontents",
+        None,
         "demo",
-        metadata={"name": "demo", "namespace": "default"},
-        spec={
-            "source": {"persistentVolumeClaimName": "demo-pvc"},
-        },
+        metadata={"name": "demo"},
+        spec={"source": {"volumeHandle": "vol-1"}},
         status={},
     )
-    body = json.dumps({"spec": {"source": {"persistentVolumeClaimName": "demo-pvc-2"}}}).encode(
-        "utf-8"
-    )
+    body = json.dumps({"spec": {"source": {"volumeHandle": "vol-2"}}}).encode("utf-8")
     handler, status = _handler(
         store,
         monkeypatch,
-        "/apis/snapshot.storage.k8s.io/v1/namespaces/default/volumesnapshots/demo",
+        "/apis/snapshot.storage.k8s.io/v1/volumesnapshotcontents/demo",
         method="PATCH",
         body=body,
     )
@@ -108,31 +183,31 @@ def test_apishim_ha_mode_rejects_patch_for_snapshot_resource(monkeypatch, tmp_pa
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "later H4" in payload["message"]
-    obj = store.get("snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "demo")
+    assert "controller-owned storage" in payload["message"]
+    obj = store.get("snapshot.storage.k8s.io", "v1", "volumesnapshotcontents", None, "demo")
     assert obj is not None
-    assert obj.spec["source"]["persistentVolumeClaimName"] == "demo-pvc"
+    assert obj.spec["source"]["volumeHandle"] == "vol-1"
 
 
-def test_apishim_ha_mode_rejects_delete_for_snapshot_resource(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_rejects_delete_for_controller_owned_storage_capacity(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     store = ObjectStore(tmp_path / "apishim.db")
     store.upsert(
-        "snapshot.storage.k8s.io",
+        "storage.k8s.io",
         "v1",
-        "volumesnapshots",
+        "csistoragecapacities",
         "default",
         "demo",
         metadata={"name": "demo", "namespace": "default"},
-        spec={
-            "source": {"persistentVolumeClaimName": "demo-pvc"},
-        },
+        spec={"storageClassName": "csi-fast", "capacity": "1Gi"},
         status={},
     )
     handler, status = _handler(
         store,
         monkeypatch,
-        "/apis/snapshot.storage.k8s.io/v1/namespaces/default/volumesnapshots/demo",
+        "/apis/storage.k8s.io/v1/namespaces/default/csistoragecapacities/demo",
         method="DELETE",
     )
 
@@ -141,11 +216,8 @@ def test_apishim_ha_mode_rejects_delete_for_snapshot_resource(monkeypatch, tmp_p
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "later H4" in payload["message"]
-    assert (
-        store.get("snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "demo")
-        is not None
-    )
+    assert "controller-owned storage" in payload["message"]
+    assert store.get("storage.k8s.io", "v1", "csistoragecapacities", "default", "demo") is not None
 
 
 def test_apishim_ha_mode_keeps_get_available(monkeypatch, tmp_path) -> None:
