@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 import json, hashlib
 import yaml
 
+from ae.apishim.ha_store import materialize_registry_manifests
 from ae.controller.authority import AuthorityConfig, ControllerAuthorityService, NotLeaderError
 from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.controller.reconciler import Reconciler
@@ -973,6 +974,8 @@ def _apishim_sot_enabled() -> bool:
 
 
 def _apishim_mirror_enabled() -> bool:
+    if ha_mode_enabled():
+        return False
     if _apishim_sot_enabled():
         return True
     if os.getenv("AE_APISHIM_MIRROR") is not None:
@@ -2901,7 +2904,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             entries = []
         _reconcile_all(
             reconciler,
-            [entry.manifest for entry in entries],
+            materialize_registry_manifests(store, entries),
             should_continue=(
                 (lambda: authority is None or authority.snapshot().is_leader)
                 if authority_config.enabled
@@ -3048,7 +3051,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     entries = []
                 _reconcile_all(
                     reconciler,
-                    [entry.manifest for entry in entries],
+                    materialize_registry_manifests(store, entries),
                     should_continue=(
                         (lambda: authority is None or authority.snapshot().is_leader)
                         if authority_config.enabled
