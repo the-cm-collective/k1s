@@ -19,7 +19,7 @@ The repo already contains several of the primitives needed for this path:
 - NATS Core and JetStream transport modes
 - outbox-based dispatch and gateway spool durability
 
-The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate `R=3`, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. `H4a` has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode. `H4b1` is now in progress: `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob` route through shared authority in HA mode, the apishim-local storage controller is removed from the HA authority path, CRI reads for converged passive resources use the HA shim read path, and the elected controller owns CronJob execution. `H4b-hpa` now runs leader-only HPA scaling from shared workload metrics, `H4b2a` extends shared authority to `Namespace`, RBAC, and `PodDisruptionBudget`, `H4b2b-crd` is now in progress with shared-authority CRDs plus dynamic custom-resource routing, `H4b2c-core` now routes `StorageClass`, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and `H4b2c-csi` now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state.
+The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` now hardens outbox replay, gateway replay, and JetStream HA validation without turning transport into truth. `H4a` routes workload-core resources through shared controller authority in HA mode. `H4b1` converges `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob`, `H4b-hpa` runs leader-only HPA scaling from shared workload metrics, `H4b2a` extends shared authority to `Namespace`, RBAC, and `PodDisruptionBudget`, `H4b2b-crd` converges CRDs plus dynamic custom-resource routing, `H4b2c-core` routes `StorageClass`, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and `H4b2c-csi` now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state. The next active HA work is `H5a-core`: a real `k1s-ha-core` bootstrap path, snapshot tooling, and repeatable HA drills for the strict-CRI core profile.
 
 The two design rules for the whole program are:
 
@@ -267,16 +267,36 @@ Current implementation status:
 - the leader-owned storage authority runner now re-enables snapshot, CSI, and storage-capacity reconciliation from the main controller
 - CRI and node-agent storage reads now use the HA apishim HTTP path for PVC/PV/StorageClass/VolumeAttachment/CSIDriver lookups instead of falling back to local shim DB authority
 
-### H5: Control-plane operations and recovery patterns
+### H5a-core: HA bootstrap, snapshots, and first-line drills
 
 Goal:
-- make the HA core operationally repeatable, not only architecturally plausible
+- make the HA core operationally repeatable on the intended strict-CRI core profile, not only architecturally plausible
 
 Primary outcomes:
 
-- documented bootstrap for a 3-node control plane
-- backup, restore, member replacement, and rolling-upgrade procedures
-- clear behavior for controller loss, node loss, `etcd` quorum loss, and JetStream impairment
+- documented `k1s-ha-core` bootstrap contract for one HA core node in a shared 3-controller control plane
+- fail-fast validation for shared/external `etcd` and NATS dependencies before starting the core profile
+- etcd snapshot save/status/restore helper for HA backup workflows
+- repeatable drills for leader failover, transport recovery, and external-etcd restart validation
+- clear separation between `k1s-core` single-host dev behavior and `k1s-ha-core` shared-authority behavior
+
+Current implementation status:
+
+- `make k1s-ha-core` now starts a strict-CRI HA core node with `AE_HA_MODE=1` and refuses to bootstrap local singleton `etcd`, NATS, or Postgres
+- the new `ha_core_preflight.py` helper validates required HA env, shared `etcd` reachability, and NATS reachability before startup
+- `etcd_snapshot.py` provides explicit etcd snapshot save/status/restore tooling instead of overloading the existing SQLite/specs `ae backup` path
+- `ha_core_drills.py` provides focused verification helpers for leader failover, transport recovery, and external-etcd restart drills
+
+### H5b-recovery: Member replacement, quorum loss, and rolling upgrades
+
+Goal:
+- turn the HA control plane from bootstrap-ready into recovery-ready
+
+Primary outcomes:
+
+- documented etcd member replacement procedure
+- documented quorum-loss recovery path
+- documented rolling upgrade procedure for controller and transport components
 - split-brain drills and stale-leader recovery documented in operator terms
 - control-plane node role separation documented for AMD fabric deployments
 
@@ -296,7 +316,8 @@ This HA track is the foundation for later deployment work:
 | H4b2b-crd | H4b2a | CRD and custom-resource convergence should land before the remaining storage controller authority cut. |
 | H4b2c-core | H4b2b-crd | Core storage authority can converge before the riskier snapshot and CSI paths. |
 | H4b2c-csi | H4b2c-core | Snapshot and CSI convergence should wait until the core PVC/PV/StorageClass cut is stable. |
-| H5 | H1, H3, H4b2c-csi | Recovery docs are only meaningful after authority, transport, and API convergence are defined. |
+| H5a-core | H1, H3, H4b2c-csi | HA bootstrap and drills are only meaningful after authority, transport, and API convergence are defined. |
+| H5b-recovery | H5a-core | Member replacement, quorum loss, and rolling upgrades should build on one real HA bootstrap and drill surface, not precede it. |
 
 The fabric deployment milestones depend on this track rather than re-stating it:
 
@@ -304,8 +325,8 @@ The fabric deployment milestones depend on this track rather than re-stating it:
 | --- | --- | --- |
 | D1 | H3 | The HA edge and broker boundary should not front a single-process backend authority. |
 | D2 | H4b2c-csi | Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model. |
-| D3 | H5 | Multi-cell operation needs tested failover and recovery patterns, not only topology docs. |
-| D4 | H5 | Partner and domain operations require operator-readable recovery and governance paths. |
+| D3 | H5b-recovery | Multi-cell operation needs tested failover and recovery patterns, not only topology docs. |
+| D4 | H5b-recovery | Partner and domain operations require operator-readable recovery and governance paths. |
 
 ## Failure Model
 

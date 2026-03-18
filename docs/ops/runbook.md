@@ -100,9 +100,10 @@ CRI nodes (containerd)
   - In HA mode, converged `Secret` and `ServiceAccount` reads come from the shim HTTP authority path rather than the local shim DB.
   - Set `AE_APISHIM_URL` (or `AE_APISHIM_SERVER`) plus `AE_APISHIM_READ_TOKEN` and `AE_APISHIM_CA_BUNDLE`/`AE_APISHIM_CA` when CRI nodes need HA image-pull secret or ServiceAccount lookup.
 - Current HA boundary:
-  - H4b1 supports HA apishim mutation for `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob`.
-  - `HorizontalPodAutoscaler` remains read-only in HA mode until the later shared-metrics slice.
-  - The apishim storage controller stays disabled in HA mode until `H4b2`.
+  - HA apishim mutation/read/watch now converges on shared authority for workload-core resources, `ConfigMap`, `Secret`, `ServiceAccount`, `CronJob`, `HorizontalPodAutoscaler`, `Namespace`, RBAC resources, `PodDisruptionBudget`, CRDs/custom resources, `StorageClass`, PVC, PV, and the snapshot/CSI resource surface.
+  - Controller-owned storage resources remain readable but reject external mutation in HA mode: `VolumeAttachment`, `CSIStorageCapacity`, and `VolumeSnapshotContent`.
+  - The elected main controller owns `CronJob`, HPA, and storage reconciliation in HA mode; the apishim-local `StorageController` stays disabled.
+  - If controller authority is uncertain or `etcd` quorum is lost, the control plane degrades to read-only.
 - Service VIP (optional):
   - `AE_ENABLE_SERVICE_PROXY=1`
   - `AE_SERVICE_PROVIDER=iptables`
@@ -229,14 +230,53 @@ Controller state store
 - Default: SQLite at `state/controller.db`.
 - Postgres: set `AE_STATE_DSN=postgresql://user:pass@host:5432/dbname` (shim and controller share the same DSN when present). SQLite path can still be overridden via `AE_STATE_DB` for single-node dev.
 
-HA control-plane first slice
-- Enable HA with `AE_HA_MODE=1`, a stable `AE_CONTROLLER_ID`, `AE_CONTROLLER_ADVERTISE_ADDR`, shared `AE_ETCD_ENDPOINTS`, and the same `AE_ETCD_PREFIX` on every controller.
-- In HA mode, controllers stop importing local `specs/` files and follower replicas reject leader-only controller mutations with `not_leader`.
-- Controller-native writes update shared desired state only; followers do not reconcile, publish outbox work, or bind mutating NATS request/reply subjects.
-- API shim remains usable for read/list/watch, exec, port-forward, session token minting, and authorization review endpoints.
-- In HA mode, workload-core mutation now routes through shared controller authority for `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `Deployment/scale`, and attached `Service`/`Ingress`.
-- Non-converged shim-native resources remain read-only in HA mode until the relevant later `H4b*` slice.
-- If controller authority is uncertain or `etcd` quorum is lost, the control plane degrades to read-only.
+HA control-plane mode (`k1s-ha-core`)
+- `make k1s-ha-core` is the strict-CRI HA core-node profile. It is intended to be operationally interchangeable with `k1s-core` at the node role level, but it switches the node onto shared-authority HA mode instead of the single-host/dev bootstrap path.
+- `k1s-core` remains the single-host and dev-oriented profile. `k1s-ha-core` does not replace it.
+- Required env before startup:
+  - `AE_CONTROLLER_ID`
+  - `AE_CONTROLLER_ADVERTISE_ADDR`
+  - `AE_ETCD_ENDPOINTS`
+  - `AE_ETCD_PREFIX`
+  - `AE_NATS_URL`
+- `k1s-ha-core` defaults:
+  - `AE_HA_MODE=1`
+  - `AE_STATE_BACKEND=etcd`
+  - `AE_TRANSPORT_BACKEND=nats-js`
+  - `AE_RUNTIME_BACKEND=cri`
+  - `AE_INFRA_BACKEND=cri`
+  - `AE_APISHIM_MODE=cri`
+  - `AE_ETCD_MAINTENANCE_ENABLE=0`
+  - `AE_APISHIM_ETCD_ENDPOINTS` defaults from `AE_ETCD_ENDPOINTS` when unset
+- `k1s-ha-core` behavior:
+  - does not auto-start local singleton `etcd`, NATS, or Postgres
+  - does not start the controller with `--watch`
+  - treats shared `etcd` controller state as authority; local `specs/` import is not the HA desired-state path
+  - keeps `AE_APISHIM_DB` as compatibility storage only; it is not HA authority
+  - still starts the controller, apishim, and the core ingress/core-proxy sidecars expected on a core node
+  - allows `AE_DEV_LOCAL=1` for lab convenience, but defaults to operator-safe values with local singleton services and docs extras off
+- Example bootstrap:
+  - `export AE_CONTROLLER_ID=core-a`
+  - `export AE_CONTROLLER_ADVERTISE_ADDR=https://core-a.example.net:9108`
+  - `export AE_ETCD_ENDPOINTS=http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379`
+  - `export AE_ETCD_PREFIX=/k1s/prod`
+  - `export AE_NATS_URL=nats://10.0.0.21:4222,nats://10.0.0.22:4222,nats://10.0.0.23:4222`
+  - `make k1s-ha-core`
+- HA helpers for this profile:
+  - Preflight: `PYTHONPATH=src python scripts/dev/ha_core_preflight.py`
+  - Snapshot save: `PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto save --output state/backups/ha-$(date +%Y%m%d-%H%M%S).db`
+  - Snapshot status: `PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto status --input state/backups/ha-20260318-120000.db`
+  - Snapshot restore: `PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto restore --input state/backups/ha-20260318-120000.db --data-dir state/etcd-restore`
+  - Leader failover drill: `PYTHONPATH=src python scripts/dev/ha_core_drills.py leader-failover --command 'systemctl restart ae-controller'`
+  - External-etcd restart drill: `PYTHONPATH=src python scripts/dev/ha_core_drills.py etcd-restart --command 'ssh etcd-a sudo systemctl restart etcd' --metrics-url http://127.0.0.1:9108/metrics`
+  - Transport recovery drill: `PYTHONPATH=src python scripts/dev/ha_core_drills.py transport-recovery --command 'systemctl restart ae-gateway' --metrics-url http://127.0.0.1:9108/metrics --site sfo-edge-01`
+- Backup boundary:
+  - `ae backup` remains the SQLite/specs-oriented single-node backup path.
+  - HA etcd backup and restore should use `scripts/dev/etcd_snapshot.py`.
+- HA runtime behavior:
+  - in HA mode, controllers stop importing local `specs/`, followers reject leader-only mutation with `not_leader`, and only the elected controller reconciles or publishes mutating work
+  - apishim remains usable for read/list/watch, exec, port-forward, session token minting, and authorization review endpoints during leader changes
+  - if controller authority is uncertain or `etcd` quorum is lost, the control plane degrades to read-only
 
 Release notes quick links
 - Compatibility matrix: `docs/reference/apishim-compatibility-matrix.md` (uploaded with releases)
