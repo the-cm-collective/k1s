@@ -450,7 +450,7 @@ def test_run_profile_host_apishim_uses_src_pythonpath() -> None:
 def test_cri_image_mirror_prefers_local_cache() -> None:
     text = CRI_IMAGE_MIRROR_SCRIPT.read_text(encoding="utf-8")
     assert "AE_CRI_IMAGE_MIRROR_ALWAYS_PULL" in text
-    assert '[cri-image-mirror] source already cached: ${image}' in text
+    assert "[cri-image-mirror] source already cached: ${image}" in text
     assert 'ctr -n "$ctr_namespace" images ls -q' in text
     assert 'grep -Fx -- "$image"' in text
 
@@ -460,7 +460,7 @@ def test_cri_seed_bundle_script_accepts_run_id_and_profile() -> None:
     assert "--run-id <id>" in text
     assert "--profile <name>" in text
     assert "AE_CRI_CACHE_SEED_ENGINE" in text
-    assert '[cri-seed] source already cached: $image' in text
+    assert "[cri-seed] source already cached: $image" in text
     assert "images export" in text or "save -o" in text
 
 

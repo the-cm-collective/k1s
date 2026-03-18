@@ -30,7 +30,10 @@ def _wait_http_ok(url: str, timeout_s: float = 30.0) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=2) as resp:
+            with urllib.request.urlopen(  # noqa: S310 - local e2e readiness probe
+                url,
+                timeout=2,
+            ) as resp:
                 if 200 <= int(resp.status) < 500:
                     return
         except Exception:
@@ -73,8 +76,16 @@ def _apishim_request(
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, method=method, headers=headers)
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    req = urllib.request.Request(  # noqa: S310 - local apishim e2e request
+        url,
+        data=data,
+        method=method,
+        headers=headers,
+    )
+    with urllib.request.urlopen(  # noqa: S310 - local apishim e2e request
+        req,
+        timeout=5,
+    ) as resp:
         payload = resp.read().decode("utf-8")
     return json.loads(payload or "{}")
 
@@ -106,7 +117,10 @@ def run_ha_closeout_e2e() -> int:
     print(f"[ha-e2e] workspace={base_dir}")
     _write_compose(compose_path, root, state_dir)
     compose_cmd = ["docker", "compose", "-f", str(compose_path)]
-    subprocess.run([*compose_cmd, "up", "-d"], check=True)
+    subprocess.run(  # noqa: S603 - fixed local e2e docker compose command
+        [*compose_cmd, "up", "-d"],
+        check=True,
+    )
 
     controller_a = controller_b = gateway = worker = apishim = None
     try:
@@ -157,13 +171,33 @@ def run_ha_closeout_e2e() -> int:
                 "AE_CONTROLLER_ADVERTISE_ADDR": "http://127.0.0.1:9109",
             }
         )
+        controller_a_cmd = [
+            sys.executable,
+            "-m",
+            "ae.controller",
+            "--loop",
+            "--interval",
+            "2",
+            "--metrics-port",
+            "9108",
+        ]
+        controller_b_cmd = [
+            sys.executable,
+            "-m",
+            "ae.controller",
+            "--loop",
+            "--interval",
+            "2",
+            "--metrics-port",
+            "9109",
+        ]
         controller_a = _start_proc(
-            [sys.executable, "-m", "ae.controller", "--loop", "--interval", "2", "--metrics-port", "9108"],
+            controller_a_cmd,
             env=controller_a_env,
             log_path=logs_dir / "controller-a.log",
         )
         controller_b = _start_proc(
-            [sys.executable, "-m", "ae.controller", "--loop", "--interval", "2", "--metrics-port", "9109"],
+            controller_b_cmd,
             env=controller_b_env,
             log_path=logs_dir / "controller-b.log",
         )
@@ -360,7 +394,10 @@ def run_ha_closeout_e2e() -> int:
         for proc in [gateway, worker, apishim, controller_b, controller_a]:
             if proc is not None:
                 _terminate(proc)
-        subprocess.run([*compose_cmd, "down"], check=False)
+        subprocess.run(  # noqa: S603 - fixed local e2e docker compose command
+            [*compose_cmd, "down"],
+            check=False,
+        )
 
 
 __all__ = ["run_ha_closeout_e2e"]

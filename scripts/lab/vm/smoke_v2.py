@@ -22,7 +22,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from ae import build_info as ae_build_info
+from ae import build_info as ae_build_info  # noqa: E402
 
 VARIANT_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "variant.py"
 DEFAULT_LANES = ["single_non_gpu", "single_gpu", "multi_non_gpu", "multi_gpu"]
@@ -79,7 +79,9 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def write_unhandled_failure_summary(args: argparse.Namespace, run_id: str, exc: Exception) -> None:
-    output_root = Path(args.output_root).expanduser().resolve() if args.output_root else ROOT / "runs"
+    output_root = (
+        Path(args.output_root).expanduser().resolve() if args.output_root else ROOT / "runs"
+    )
     run_dir = output_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     summary = {
@@ -196,7 +198,9 @@ def load_variant(variant_path: Path) -> dict[str, Any]:
 
 
 def ssh_base(ip: str) -> list[str]:
-    key_path = Path(os.environ.get("SSH_KEY_PATH", str(Path.home() / ".ssh" / "id_rsa"))).expanduser()
+    key_path = Path(
+        os.environ.get("SSH_KEY_PATH", str(Path.home() / ".ssh" / "id_rsa"))
+    ).expanduser()
     return [
         "ssh",
         "-o",
@@ -333,7 +337,9 @@ def _ha_urls_for_host(host: dict[str, Any], variant: dict[str, Any]) -> tuple[st
     )
 
 
-def build_ha_lane_config(variant: dict[str, Any], lane_hosts_full: list[dict[str, Any]]) -> dict[str, Any]:
+def build_ha_lane_config(
+    variant: dict[str, Any], lane_hosts_full: list[dict[str, Any]]
+) -> dict[str, Any]:
     ha_cfg = variant.get("ha") if isinstance(variant.get("ha"), dict) else {}
     core_nodes = []
     for host in lane_hosts_full:
@@ -369,7 +375,9 @@ def build_ha_lane_config(variant: dict[str, Any], lane_hosts_full: list[dict[str
         "hub_nodes": list(ha_cfg.get("hub_nodes") or []),
         "edge_sites": list(ha_cfg.get("edge_sites") or []),
         "drills": dict(ha_cfg.get("drills") or {}),
-        "expected_version": str(ha_cfg.get("expected_version") or build.get("version") or "").strip(),
+        "expected_version": str(
+            ha_cfg.get("expected_version") or build.get("version") or ""
+        ).strip(),
         "expected_sha": str(ha_cfg.get("expected_sha") or "").strip(),
     }
 
@@ -397,13 +405,15 @@ def host_component_name(host: dict[str, Any]) -> str:
     return ""
 
 
-def host_service_check_command(host: dict[str, Any], controller_port: int, apishim_port: int) -> str:
+def host_service_check_command(
+    host: dict[str, Any], controller_port: int, apishim_port: int
+) -> str:
     role = host["role"]
     if role == "k1s-core":
         return (
             f"EP='{EP}'; "
-            "CID=$(sudo crictl --runtime-endpoint \"$EP\" ps --label ae.stack.component=k1s-core-nats-hub -q | head -n1); "
-            "if [ -z \"$CID\" ]; then CID=$(sudo crictl --runtime-endpoint \"$EP\" ps -a --label ae.stack.component=k1s-core-nats-hub -q | head -n1); fi; "
+            'CID=$(sudo crictl --runtime-endpoint "$EP" ps --label ae.stack.component=k1s-core-nats-hub -q | head -n1); '
+            'if [ -z "$CID" ]; then CID=$(sudo crictl --runtime-endpoint "$EP" ps -a --label ae.stack.component=k1s-core-nats-hub -q | head -n1); fi; '
             "if [ -z \"$CID\" ]; then echo 'nats_hub_not_running'; exit 10; fi; "
             "if ! ss -ltn | awk '$4 ~ /:7422$/ {f=1} END {exit(f?0:1)}'; then echo 'leaf_port_7422_not_listening'; exit 11; fi; "
             f"if ! ss -ltn | awk '$4 ~ /:{controller_port}$/ {{f=1}} END {{exit(f?0:1)}}'; then "
@@ -424,8 +434,8 @@ def host_service_check_command(host: dict[str, Any], controller_port: int, apish
         component = host_component_name(host)
         return (
             f"EP='{EP}'; "
-            f"CID=$(sudo crictl --runtime-endpoint \"$EP\" ps --label ae.stack.component={component} -q | head -n1); "
-            f"if [ -z \"$CID\" ]; then CID=$(sudo crictl --runtime-endpoint \"$EP\" ps -a --label ae.stack.component={component} -q | head -n1); fi; "
+            f'CID=$(sudo crictl --runtime-endpoint "$EP" ps --label ae.stack.component={component} -q | head -n1); '
+            f'if [ -z "$CID" ]; then CID=$(sudo crictl --runtime-endpoint "$EP" ps -a --label ae.stack.component={component} -q | head -n1); fi; '
             "if [ -z \"$CID\" ]; then echo 'edge_nats_not_running'; exit 20; fi; "
             "echo 'ok'"
         )
@@ -445,13 +455,13 @@ def nats_hub_logs(core_ip: str, *, lines: int = 4000) -> tuple[str, str]:
     cmd = (
         f"EP='{EP}'; "
         "cids=$({ "
-        "sudo crictl --runtime-endpoint \"$EP\" ps --label ae.stack.component=k1s-core-nats-hub -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps -a --label ae.stack.component=k1s-core-nats-hub -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps --name k1s-core-nats-hub -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps -a --name k1s-core-nats-hub -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps --name nats -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps -a --name nats -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps -a | "
+        'sudo crictl --runtime-endpoint "$EP" ps --label ae.stack.component=k1s-core-nats-hub -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps -a --label ae.stack.component=k1s-core-nats-hub -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps --name k1s-core-nats-hub -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps -a --name k1s-core-nats-hub -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps --name nats -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps -a --name nats -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps -a | '
         "awk 'NR>1 && ($0 ~ /k1s-core-nats-hub|[[:space:]]nats[[:space:]]|\\/nats:|\\/nats@/) {print $1}'; "
         "} 2>/dev/null | awk 'NF && !seen[$1]++'); "
         "if [ -z \"$cids\" ]; then echo '__NATS_LOG_STATUS__:cid_not_found' 1>&2; exit 0; fi; "
@@ -459,8 +469,8 @@ def nats_hub_logs(core_ip: str, *, lines: int = 4000) -> tuple[str, str]:
         "had_log_path=0; "
         "had_log_path_file=0; "
         "for cid in $cids; do "
-        "  if out=$(sudo crictl --runtime-endpoint \"$EP\" logs \"$cid\" 2>/dev/null); then "
-        "    if [ -n \"$out\" ]; then "
+        '  if out=$(sudo crictl --runtime-endpoint "$EP" logs "$cid" 2>/dev/null); then '
+        '    if [ -n "$out" ]; then '
         f"      printf '%s\\n' \"$out\" | tail -n {lines}; "
         "      echo '__NATS_LOG_STATUS__:ok' 1>&2; "
         "      exit 0; "
@@ -468,21 +478,21 @@ def nats_hub_logs(core_ip: str, *, lines: int = 4000) -> tuple[str, str]:
         "  else "
         "    had_log_error=1; "
         "  fi; "
-        "  log_path=$(sudo crictl --runtime-endpoint \"$EP\" inspect \"$cid\" 2>/dev/null "
-        "    | sed -n 's/.*\"logPath\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' | head -n1); "
-        "  if [ -z \"$log_path\" ]; then continue; fi; "
+        '  log_path=$(sudo crictl --runtime-endpoint "$EP" inspect "$cid" 2>/dev/null '
+        '    | sed -n \'s/.*"logPath"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' | head -n1); '
+        '  if [ -z "$log_path" ]; then continue; fi; '
         "  had_log_path=1; "
-        "  if ! sudo test -f \"$log_path\"; then continue; fi; "
+        '  if ! sudo test -f "$log_path"; then continue; fi; '
         "  had_log_path_file=1; "
-        f"  out=$(sudo tail -n {lines} \"$log_path\" 2>/dev/null || true); "
-        "  if [ -n \"$out\" ]; then "
+        f'  out=$(sudo tail -n {lines} "$log_path" 2>/dev/null || true); '
+        '  if [ -n "$out" ]; then '
         "    printf '%s\\n' \"$out\"; "
         "    echo '__NATS_LOG_STATUS__:logpath_ok' 1>&2; "
         "    exit 0; "
         "  fi; "
         "done; "
         "if [ \"$had_log_error\" -eq 1 ]; then echo '__NATS_LOG_STATUS__:logs_cmd_failed' 1>&2; exit 0; fi; "
-        "if [ \"$had_log_path\" -eq 1 ] && [ \"$had_log_path_file\" -eq 0 ]; then "
+        'if [ "$had_log_path" -eq 1 ] && [ "$had_log_path_file" -eq 0 ]; then '
         "  echo '__NATS_LOG_STATUS__:logpath_missing' 1>&2; exit 0; "
         "fi; "
         "if [ \"$had_log_path_file\" -eq 1 ]; then echo '__NATS_LOG_STATUS__:logpath_empty' 1>&2; exit 0; fi; "
@@ -505,18 +515,18 @@ def nats_edge_logs(edge: dict[str, Any], *, lines: int = 2500) -> tuple[str, str
     cmd = (
         f"EP='{EP}'; "
         f"cids=$({{ "
-        f"sudo crictl --runtime-endpoint \"$EP\" ps --label ae.stack.component={component} -q; "
-        f"sudo crictl --runtime-endpoint \"$EP\" ps -a --label ae.stack.component={component} -q; "
-        f"sudo crictl --runtime-endpoint \"$EP\" ps --name {component} -q; "
-        f"sudo crictl --runtime-endpoint \"$EP\" ps -a --name {component} -q; "
+        f'sudo crictl --runtime-endpoint "$EP" ps --label ae.stack.component={component} -q; '
+        f'sudo crictl --runtime-endpoint "$EP" ps -a --label ae.stack.component={component} -q; '
+        f'sudo crictl --runtime-endpoint "$EP" ps --name {component} -q; '
+        f'sudo crictl --runtime-endpoint "$EP" ps -a --name {component} -q; '
         "} 2>/dev/null | awk 'NF && !seen[$1]++'); "
         "if [ -z \"$cids\" ]; then echo '__NATS_EDGE_LOG_STATUS__:cid_not_found' 1>&2; exit 0; fi; "
         "had_log_error=0; "
         "had_log_path=0; "
         "had_log_path_file=0; "
         "for cid in $cids; do "
-        "  if out=$(sudo crictl --runtime-endpoint \"$EP\" logs \"$cid\" 2>/dev/null); then "
-        "    if [ -n \"$out\" ]; then "
+        '  if out=$(sudo crictl --runtime-endpoint "$EP" logs "$cid" 2>/dev/null); then '
+        '    if [ -n "$out" ]; then '
         f"      printf '%s\\n' \"$out\" | tail -n {lines}; "
         "      echo '__NATS_EDGE_LOG_STATUS__:ok' 1>&2; "
         "      exit 0; "
@@ -524,21 +534,21 @@ def nats_edge_logs(edge: dict[str, Any], *, lines: int = 2500) -> tuple[str, str
         "  else "
         "    had_log_error=1; "
         "  fi; "
-        "  log_path=$(sudo crictl --runtime-endpoint \"$EP\" inspect \"$cid\" 2>/dev/null "
-        "    | sed -n 's/.*\"logPath\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' | head -n1); "
-        "  if [ -z \"$log_path\" ]; then continue; fi; "
+        '  log_path=$(sudo crictl --runtime-endpoint "$EP" inspect "$cid" 2>/dev/null '
+        '    | sed -n \'s/.*"logPath"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' | head -n1); '
+        '  if [ -z "$log_path" ]; then continue; fi; '
         "  had_log_path=1; "
-        "  if ! sudo test -f \"$log_path\"; then continue; fi; "
+        '  if ! sudo test -f "$log_path"; then continue; fi; '
         "  had_log_path_file=1; "
-        f"  out=$(sudo tail -n {lines} \"$log_path\" 2>/dev/null || true); "
-        "  if [ -n \"$out\" ]; then "
+        f'  out=$(sudo tail -n {lines} "$log_path" 2>/dev/null || true); '
+        '  if [ -n "$out" ]; then '
         "    printf '%s\\n' \"$out\"; "
         "    echo '__NATS_EDGE_LOG_STATUS__:logpath_ok' 1>&2; "
         "    exit 0; "
         "  fi; "
         "done; "
         "if [ \"$had_log_error\" -eq 1 ]; then echo '__NATS_EDGE_LOG_STATUS__:logs_cmd_failed' 1>&2; exit 0; fi; "
-        "if [ \"$had_log_path\" -eq 1 ] && [ \"$had_log_path_file\" -eq 0 ]; then "
+        'if [ "$had_log_path" -eq 1 ] && [ "$had_log_path_file" -eq 0 ]; then '
         "  echo '__NATS_EDGE_LOG_STATUS__:logpath_missing' 1>&2; exit 0; "
         "fi; "
         "if [ \"$had_log_path_file\" -eq 1 ]; then echo '__NATS_EDGE_LOG_STATUS__:logpath_empty' 1>&2; exit 0; fi; "
@@ -722,8 +732,12 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
     if not config.get("hub_nodes"):
         issues.append("missing_hub_nodes")
     edge_core_sites = set(config.get("edge_core_sites") or [])
-    configured_sites = {str(site.get("site_id") or "").strip() for site in config.get("edge_sites") or []}
-    missing_edge_sites = sorted(site for site in edge_core_sites if site and site not in configured_sites)
+    configured_sites = {
+        str(site.get("site_id") or "").strip() for site in config.get("edge_sites") or []
+    }
+    missing_edge_sites = sorted(
+        site for site in edge_core_sites if site and site not in configured_sites
+    )
     for site_id in missing_edge_sites:
         issues.append(f"missing_edge_site_config:{site_id}")
 
@@ -927,7 +941,9 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             )
         )
 
-    required_failures = [check for check in checks if check["status"] == "failed" and not check["optional"]]
+    required_failures = [
+        check for check in checks if check["status"] == "failed" and not check["optional"]
+    ]
     status = "failed" if required_failures else "passed"
     detail = "ok" if status == "passed" else "; ".join(check["name"] for check in required_failures)
     return {
@@ -981,7 +997,9 @@ def smoke_v2(args: argparse.Namespace) -> int:
         raise SmokeError(f"variant not found: {variant_path}")
 
     run_id = args.run_id or os.environ.get("RUN_ID") or default_run_id()
-    output_root = Path(args.output_root).expanduser().resolve() if args.output_root else ROOT / "runs"
+    output_root = (
+        Path(args.output_root).expanduser().resolve() if args.output_root else ROOT / "runs"
+    )
     run_dir = output_root / run_id
     lanes_dir = run_dir / "lanes"
     logs_dir = run_dir / "logs"
@@ -992,8 +1010,14 @@ def smoke_v2(args: argparse.Namespace) -> int:
     variant = load_variant(variant_path)
 
     smoke_cfg = variant.get("smoke") if isinstance(variant.get("smoke"), dict) else {}
-    smoke_defaults = smoke_cfg.get("defaults") if isinstance(smoke_cfg.get("defaults"), dict) else {}
-    cfg_phase_timeouts = smoke_defaults.get("phase_timeouts") if isinstance(smoke_defaults.get("phase_timeouts"), dict) else {}
+    smoke_defaults = (
+        smoke_cfg.get("defaults") if isinstance(smoke_cfg.get("defaults"), dict) else {}
+    )
+    cfg_phase_timeouts = (
+        smoke_defaults.get("phase_timeouts")
+        if isinstance(smoke_defaults.get("phase_timeouts"), dict)
+        else {}
+    )
 
     phase_timeouts = dict(DEFAULT_PHASE_TIMEOUTS)
     for key in phase_timeouts:
@@ -1002,14 +1026,20 @@ def smoke_v2(args: argparse.Namespace) -> int:
     phase_timeouts.update(parse_phase_overrides(args.phase_timeout or []))
 
     retry_policy = dict(DEFAULT_RETRY_POLICY)
-    cfg_retry = smoke_defaults.get("retry_policy") if isinstance(smoke_defaults.get("retry_policy"), dict) else {}
+    cfg_retry = (
+        smoke_defaults.get("retry_policy")
+        if isinstance(smoke_defaults.get("retry_policy"), dict)
+        else {}
+    )
     for key in retry_policy:
         if key in cfg_retry:
             retry_policy[key] = float(cfg_retry[key])
     cli_retry = parse_retry_policy(args.retry_policy)
     retry_policy.update(cli_retry)
 
-    default_lanes = smoke_cfg.get("lanes") if isinstance(smoke_cfg.get("lanes"), list) else DEFAULT_LANES
+    default_lanes = (
+        smoke_cfg.get("lanes") if isinstance(smoke_cfg.get("lanes"), list) else DEFAULT_LANES
+    )
     requested_lanes = parse_csv(args.lanes) if args.lanes else [str(x) for x in default_lanes]
 
     if args.down:
@@ -1025,7 +1055,10 @@ def smoke_v2(args: argparse.Namespace) -> int:
         lane_plans.append(
             {
                 "name": lane_name,
-                "hosts": [{"name": h["name"], "role": h["role"], "gpu": bool(h.get("gpu", False))} for h in selected_hosts],
+                "hosts": [
+                    {"name": h["name"], "role": h["role"], "gpu": bool(h.get("gpu", False))}
+                    for h in selected_hosts
+                ],
                 "host_count": len(selected_hosts),
                 "skipped": len(selected_hosts) == 0,
                 "skip_reason": "no matching hosts in variant" if not selected_hosts else "",
@@ -1059,7 +1092,10 @@ def smoke_v2(args: argparse.Namespace) -> int:
             "run_id": run_id,
             "variant_name": variant["name"],
             "status": "planned",
-            "lanes": [{"name": lane["name"], "status": "skipped" if lane["skipped"] else "planned"} for lane in lane_plans],
+            "lanes": [
+                {"name": lane["name"], "status": "skipped" if lane["skipped"] else "planned"}
+                for lane in lane_plans
+            ],
         }
         write_json(run_dir / "summary.json", summary)
         return 0
@@ -1077,7 +1113,14 @@ def smoke_v2(args: argparse.Namespace) -> int:
         res = run_cmd(command, timeout=timeout_s, check=False, env=env)
         ended = utc_now()
         ok = res.returncode == 0
-        detail = "ok" if ok else ((res.stderr or res.stdout or "command failed").strip().splitlines()[:1] or ["failed"])[0]
+        detail = (
+            "ok"
+            if ok
+            else (
+                (res.stderr or res.stdout or "command failed").strip().splitlines()[:1]
+                or ["failed"]
+            )[0]
+        )
         global_phases.append(
             {
                 "phase": phase,
@@ -1156,7 +1199,9 @@ def smoke_v2(args: argparse.Namespace) -> int:
             return 1
 
         bootstrap_env = dict(os.environ)
-        bootstrap_env["AE_CRI_CACHE_SEED_MODE"] = os.environ.get("AE_CRI_CACHE_SEED_MODE", "required")
+        bootstrap_env["AE_CRI_CACHE_SEED_MODE"] = os.environ.get(
+            "AE_CRI_CACHE_SEED_MODE", "required"
+        )
         bootstrap_env["AE_CRI_CACHE_SEED_MANIFEST"] = str(seed_manifest_path)
         bootstrap_env["AE_CRI_CACHE_SEED_BUNDLE"] = os.environ.get(
             "AE_CRI_CACHE_SEED_BUNDLE",
@@ -1241,10 +1286,7 @@ def smoke_v2(args: argparse.Namespace) -> int:
             host_failures = 0
             host_service_timeout = max(
                 60,
-                int(
-                    phase_timeouts["service_ready"]
-                    / max(1, len(lane_hosts_full))
-                ),
+                int(phase_timeouts["service_ready"] / max(1, len(lane_hosts_full))),
             )
             for host in lane_hosts_full:
                 command = host_service_check_command(
@@ -1263,7 +1305,11 @@ def smoke_v2(args: argparse.Namespace) -> int:
                     ok = res.returncode == 0
                     detail = (res.stdout or res.stderr or "").strip().splitlines()
                     msg = detail[-1] if detail else "ok" if ok else "service_not_ready"
-                    return ok, msg, {"stdout": res.stdout, "stderr": res.stderr, "returncode": res.returncode}
+                    return (
+                        ok,
+                        msg,
+                        {"stdout": res.stdout, "stderr": res.stderr, "returncode": res.returncode},
+                    )
 
                 ok, attempts, detail, payload = with_retry(
                     _check_host,
@@ -1316,7 +1362,10 @@ def smoke_v2(args: argparse.Namespace) -> int:
                     "duration_s": 0.0,
                 }
             )
-            check_outputs["fabric_validate"] = {"status": "skipped", "reason": "ha_control_plane lane"}
+            check_outputs["fabric_validate"] = {
+                "status": "skipped",
+                "reason": "ha_control_plane lane",
+            }
         elif "fabric_validate" in disabled_checks:
             phase_status.append(
                 {
@@ -1374,7 +1423,9 @@ def smoke_v2(args: argparse.Namespace) -> int:
                         edge_log_status[edge["name"]] = edge_logs_reason
                         if edge_logs.strip():
                             edge_filtered = edge_logs.splitlines()
-                            edge_created, edge_js_ok, edge_auth_fail = nats_signal_counts(edge_filtered)
+                            edge_created, edge_js_ok, edge_auth_fail = nats_signal_counts(
+                                edge_filtered
+                            )
                             created = max(created, edge_created)
                             js_ok = max(js_ok, edge_js_ok)
                             auth_fail = max(auth_fail, edge_auth_fail)
@@ -1429,7 +1480,10 @@ def smoke_v2(args: argparse.Namespace) -> int:
                     if leafz_count < 0:
                         if signal_gaps:
                             return False, "leafz_unavailable_with_partial_log_signals", payload
-                        if not logs_available and all(reason in {"empty_logs", "cid_not_found", "ssh_failed", "unknown"} for reason in edge_log_status.values()):
+                        if not logs_available and all(
+                            reason in {"empty_logs", "cid_not_found", "ssh_failed", "unknown"}
+                            for reason in edge_log_status.values()
+                        ):
                             return False, "hub_and_edge_nats_logs_unavailable", payload
                         return True, "ok (logs-only)", payload
 
@@ -1473,7 +1527,10 @@ def smoke_v2(args: argparse.Namespace) -> int:
                     "duration_s": 0.0,
                 }
             )
-            check_outputs["functional_basic"] = {"status": "skipped", "reason": "ha_control_plane lane"}
+            check_outputs["functional_basic"] = {
+                "status": "skipped",
+                "reason": "ha_control_plane lane",
+            }
         elif "functional_basic" in disabled_checks:
             phase_status.append(
                 {
@@ -1654,7 +1711,9 @@ def smoke_v2(args: argparse.Namespace) -> int:
         "lanes": lane_summaries,
     }
     write_json(run_dir / "summary.json", summary_payload)
-    ha_lane_summary = next((lane for lane in lane_summaries if lane["name"] == "ha_control_plane"), None)
+    ha_lane_summary = next(
+        (lane for lane in lane_summaries if lane["name"] == "ha_control_plane"), None
+    )
     if ha_lane_summary is not None:
         lane_ha_summary = lanes_dir / "ha_control_plane" / "ha_summary.json"
         if lane_ha_summary.is_file():
@@ -1720,9 +1779,15 @@ def smoke_v2(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="VM smoke harness v2 (phased/lane-aware)")
     parser.add_argument("--variant", required=True, help="Path to variant yaml")
-    parser.add_argument("--run-id", default="", help="Run id (default: RUN_ID env or UTC timestamp)")
-    parser.add_argument("--profile", default="local-vm", help="Execution profile (local-vm|remote-lab)")
-    parser.add_argument("--overlay", default="", help="Optional overlay path (reserved for future use)")
+    parser.add_argument(
+        "--run-id", default="", help="Run id (default: RUN_ID env or UTC timestamp)"
+    )
+    parser.add_argument(
+        "--profile", default="local-vm", help="Execution profile (local-vm|remote-lab)"
+    )
+    parser.add_argument(
+        "--overlay", default="", help="Optional overlay path (reserved for future use)"
+    )
     parser.add_argument("--lanes", default="", help="Comma-separated lane override")
     parser.add_argument(
         "--phase-timeout",
@@ -1750,13 +1815,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-validate", action="store_true", help="Skip lane validation phases")
     parser.add_argument("--plan-only", action="store_true", help="Only write plan artifacts")
     parser.add_argument("--output-root", default="", help="Override run artifacts root directory")
-    parser.add_argument("--down", action="store_true", help="Compatibility shortcut for auto teardown")
-    parser.add_argument("--auto-down-on-success", action="store_true", help="Run variant down on success")
-    parser.add_argument("--auto-down-on-fail", action="store_true", help="Run variant down on failure")
+    parser.add_argument(
+        "--down", action="store_true", help="Compatibility shortcut for auto teardown"
+    )
+    parser.add_argument(
+        "--auto-down-on-success", action="store_true", help="Run variant down on success"
+    )
+    parser.add_argument(
+        "--auto-down-on-fail", action="store_true", help="Run variant down on failure"
+    )
     parser.add_argument("--keep-on-fail", dest="keep_on_fail", action="store_true", default=True)
     parser.add_argument("--no-keep-on-fail", dest="keep_on_fail", action="store_false")
     parser.add_argument("--purge", action="store_true", help="With teardown, purge state dir")
-    parser.add_argument("--destroy-network", action="store_true", help="With teardown, remove bridge/NAT")
+    parser.add_argument(
+        "--destroy-network", action="store_true", help="With teardown, remove bridge/NAT"
+    )
     return parser
 
 

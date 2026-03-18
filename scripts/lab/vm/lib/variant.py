@@ -63,8 +63,7 @@ def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
     role = _must(host, "role", str, f"hosts[{idx}]")
     if role not in ALLOWED_HOST_ROLES:
         raise ValueError(
-            "hosts[{idx}].role must be one of "
-            "k1s-core|k1s-ha-core|k1s-edge-core|k1s-edge-node".format(idx=idx)
+            f"hosts[{idx}].role must be one of k1s-core|k1s-ha-core|k1s-edge-core|k1s-edge-node"
         )
     return {
         "name": name,
@@ -165,10 +164,15 @@ def _parse_ha(raw: dict[str, Any], hosts: list[dict[str, Any]]) -> dict[str, Any
 
     if drills_raw and not isinstance(drills_raw, dict):
         raise ValueError("ha.drills must be a mapping")
+    leader_failover_command = str(drills_raw.get("leader_failover_command", "")).strip() or None
+    etcd_restart_command = str(drills_raw.get("etcd_restart_command", "")).strip() or None
+    transport_recovery_command = (
+        str(drills_raw.get("transport_recovery_command", "")).strip() or None
+    )
     drills = {
-        "leader_failover_command": str(drills_raw.get("leader_failover_command", "")).strip() or None,
-        "etcd_restart_command": str(drills_raw.get("etcd_restart_command", "")).strip() or None,
-        "transport_recovery_command": str(drills_raw.get("transport_recovery_command", "")).strip() or None,
+        "leader_failover_command": leader_failover_command,
+        "etcd_restart_command": etcd_restart_command,
+        "transport_recovery_command": transport_recovery_command,
     }
 
     return {
@@ -235,9 +239,7 @@ def _parse_smoke(raw: dict[str, Any]) -> dict[str, Any]:
                     raise ValueError(f"unsupported smoke phase timeout key: {key}")
                 seconds = int(value)
                 if seconds <= 0:
-                    raise ValueError(
-                        f"smoke.defaults.phase_timeouts.{key} must be > 0"
-                    )
+                    raise ValueError(f"smoke.defaults.phase_timeouts.{key} must be > 0")
                 phase_timeouts[key] = seconds
 
         raw_retry = defaults.get("retry_policy")
@@ -248,9 +250,7 @@ def _parse_smoke(raw: dict[str, Any]) -> dict[str, Any]:
                 if key in raw_retry:
                     retry_policy[key] = float(raw_retry[key])
                     if retry_policy[key] < 0:
-                        raise ValueError(
-                            f"smoke.defaults.retry_policy.{key} must be >= 0"
-                        )
+                        raise ValueError(f"smoke.defaults.retry_policy.{key} must be >= 0")
 
     raw_checks = raw.get("checks")
     if raw_checks is not None:
