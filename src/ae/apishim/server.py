@@ -12456,7 +12456,7 @@ class ShimServer(ThreadingHTTPServer):
         self._storage_controller = None
         if ha_mode:
             LOGGER.info(
-                "HA mode keeps the apishim storage controller disabled; leader-owned core storage reconcile runs from the main controller"
+                "HA mode keeps the apishim storage controller disabled; leader-owned storage reconcile runs from the main controller"
             )
         else:
             try:

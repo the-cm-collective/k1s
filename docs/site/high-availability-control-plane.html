@@ -742,7 +742,7 @@
 <li>NATS Core and JetStream transport modes</li>
 <li>outbox-based dispatch and gateway spool durability</li>
 </ul>
-<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later <code>H4b*</code> slices. <code>H2</code> fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. <code>H3</code> is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate <code>R=3</code>, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. <code>H4a</code> has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode. <code>H4b1</code> is now in progress: <code>ConfigMap</code>, <code>Secret</code>, <code>ServiceAccount</code>, and <code>CronJob</code> route through shared authority in HA mode, the apishim-local storage controller is removed from the HA authority path, CRI reads for converged passive resources use the HA shim read path, and the elected controller owns CronJob execution. <code>H4b-hpa</code> now runs leader-only HPA scaling from shared workload metrics, <code>H4b2a</code> extends shared authority to <code>Namespace</code>, RBAC, and <code>PodDisruptionBudget</code>, <code>H4b2b-crd</code> is now in progress with shared-authority CRDs plus dynamic custom-resource routing, and <code>H4b2c-core</code> now routes <code>StorageClass</code>, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop. Snapshot and CSI convergence remain deferred to <code>H4b2c-csi</code>.</p>
+<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later <code>H4b*</code> slices. <code>H2</code> fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. <code>H3</code> is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate <code>R=3</code>, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. <code>H4a</code> has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode. <code>H4b1</code> is now in progress: <code>ConfigMap</code>, <code>Secret</code>, <code>ServiceAccount</code>, and <code>CronJob</code> route through shared authority in HA mode, the apishim-local storage controller is removed from the HA authority path, CRI reads for converged passive resources use the HA shim read path, and the elected controller owns CronJob execution. <code>H4b-hpa</code> now runs leader-only HPA scaling from shared workload metrics, <code>H4b2a</code> extends shared authority to <code>Namespace</code>, RBAC, and <code>PodDisruptionBudget</code>, <code>H4b2b-crd</code> is now in progress with shared-authority CRDs plus dynamic custom-resource routing, <code>H4b2c-core</code> now routes <code>StorageClass</code>, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and <code>H4b2c-csi</code> now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state.</p>
 <p>The two design rules for the whole program are:</p>
 <ul>
 <li>watches and messages trigger work; only <code>etcd</code> transactions authorize work</li>
@@ -978,6 +978,13 @@
 <li>watch/resourceVersion/compaction behavior for the remaining HA storage surface aligns with the same monotonic revision model used by the controller and the earlier <code>H4*</code> slices</li>
 <li>Postgres and SQLite remain optional deployment backends, but they are no longer the HA authority story for public API behavior</li>
 </ul>
+<p>Current implementation status:</p>
+<ul>
+<li>HA apishim now routes snapshot and CSI storage resources through shared authority</li>
+<li>controller-owned storage resources (<code>VolumeAttachment</code>, <code>CSIStorageCapacity</code>, <code>VolumeSnapshotContent</code>) are read-only at the HA API edge and are written only by the elected storage controller</li>
+<li>the leader-owned storage authority runner now re-enables snapshot, CSI, and storage-capacity reconciliation from the main controller</li>
+<li>CRI and node-agent storage reads now use the HA apishim HTTP path for PVC/PV/StorageClass/VolumeAttachment/CSIDriver lookups instead of falling back to local shim DB authority</li>
+</ul>
 <h3 id="h5-control-plane-operations-and-recovery-patterns">H5: Control-plane operations and recovery patterns</h3>
 <p>Goal:</p>
 <ul>
@@ -1015,7 +1022,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-18 08:32:30</span>
+        <span>Built 2026-03-18 09:09:53</span>
       </div>
     </footer>
     <script>
