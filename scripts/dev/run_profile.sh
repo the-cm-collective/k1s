@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROFILE="${1:-}"
 
 if [[ -z "$PROFILE" ]]; then
-  echo "usage: $0 <dev-min|dev-etcd|k1s-core|k1s-edge>" >&2
+  echo "usage: $0 <dev-min|dev-etcd|k1s-core|k1s-ha-core|k1s-edge>" >&2
   exit 1
 fi
 
@@ -13,6 +13,13 @@ RUNTIME_BACKEND_EXPLICIT=1
 if [[ -z "${AE_RUNTIME_BACKEND:-}" ]]; then
   RUNTIME_BACKEND_EXPLICIT=0
   export AE_RUNTIME_BACKEND=podman
+fi
+
+if [[ "$PROFILE" == "k1s-ha-core" ]]; then
+  if [[ "$RUNTIME_BACKEND_EXPLICIT" -eq 0 ]]; then
+    export AE_RUNTIME_BACKEND=cri
+  fi
+  export AE_INFRA_BACKEND="${AE_INFRA_BACKEND:-cri}"
 fi
 
 detect_python() {
@@ -87,7 +94,7 @@ for item in payload.get("items") or []:
         namespace = str(meta.get("namespace") or "")
         if name.startswith("k1s-core-") and namespace in {"", "k1s-dev"}:
             raise SystemExit(0)
-    if labels.get("ae.stack.profile") != "k1s-core":
+    if labels.get("ae.stack.profile") not in {"k1s-core", "k1s-ha-core"}:
         continue
     if labels.get("ae.stack.backend") == "cri":
         raise SystemExit(0)
@@ -678,7 +685,7 @@ ensure_cri_registry_preload_images() {
   if ! is_strict_cri; then
     return 0
   fi
-  if [[ "${PROFILE:-}" != "k1s-core" && "${PROFILE:-}" != "k1s-edge" ]]; then
+  if [[ "${PROFILE:-}" != "k1s-core" && "${PROFILE:-}" != "k1s-ha-core" && "${PROFILE:-}" != "k1s-edge" ]]; then
     return 0
   fi
   if [[ "${AE_CRI_REGISTRY_MODE:-managed}" == "off" ]]; then
@@ -721,6 +728,12 @@ ensure_cri_registry_preload_images() {
         "docker.io/library/nats:2.10"
         "${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
       )
+    elif [[ "${PROFILE:-}" == "k1s-ha-core" ]]; then
+      source_images=(
+        "${AE_ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}"
+        "${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
+        "docker.io/library/caddy:2.8"
+      )
     else
       source_images=(
         "quay.io/coreos/etcd:v3.5.13"
@@ -757,12 +770,12 @@ ensure_backend_not_mixed_with_core_cri() {
     return 0
   fi
   case "$PROFILE" in
-    k1s-core|k1s-edge) ;;
+    k1s-core|k1s-ha-core|k1s-edge) ;;
     *) return 0 ;;
   esac
   if detect_running_core_cri; then
     echo "error: core CRI stack detected while compose infra is selected." >&2
-    echo "error: use 'make k1s-core-cri', 'make k1s-edge-cri', or 'make k1s-edge-core-cri'." >&2
+    echo "error: use 'make k1s-core-cri', 'make k1s-ha-core', 'make k1s-edge-cri', or 'make k1s-edge-core-cri'." >&2
     echo "error: alternatively set AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri." >&2
     exit 1
   fi
@@ -1681,6 +1694,10 @@ ensure_etcd_maintenance() {
   run_etcd_maintenance_cmd watchdog >/dev/null || echo "warning: etcd maintenance watchdog failed" >&2
 }
 
+run_ha_core_preflight() {
+  PYTHONPATH=src "$PYTHON_BIN" "$ROOT_DIR/scripts/dev/ha_core_preflight.py"
+}
+
 
 build_docs_with_labs_token() {
   if [[ "${AE_LABS:-0}" != "1" ]]; then
@@ -1884,7 +1901,7 @@ if [[ "${BENCH_MODE:-0}" == "1" ]]; then
 fi
 
 if [[ -z "${AE_APISHIM_MODE:-}" ]]; then
-  if is_strict_cri && [[ "$PROFILE" == "k1s-core" ]]; then
+  if is_strict_cri && [[ "$PROFILE" == "k1s-core" || "$PROFILE" == "k1s-ha-core" ]]; then
     AE_APISHIM_MODE="cri"
   elif is_strict_cri; then
     AE_APISHIM_MODE="host"
@@ -1912,8 +1929,8 @@ if is_strict_cri; then
     echo "error: strict CRI infra does not support AE_APISHIM_MODE=container; use AE_APISHIM_MODE=cri or host" >&2
     exit 1
   fi
-  if [[ "${AE_APISHIM_MODE:-host}" == "cri" && "$PROFILE" != "k1s-core" ]]; then
-    echo "error: AE_APISHIM_MODE=cri is currently supported only for k1s-core profile." >&2
+  if [[ "${AE_APISHIM_MODE:-host}" == "cri" && "$PROFILE" != "k1s-core" && "$PROFILE" != "k1s-ha-core" ]]; then
+    echo "error: AE_APISHIM_MODE=cri is currently supported only for k1s-core and k1s-ha-core profiles." >&2
     exit 1
   fi
 fi
@@ -2122,6 +2139,98 @@ case "$PROFILE" in
     fi
     ensure_dev_local "$PROFILE_DIR"
     PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
+    ;;
+  k1s-ha-core)
+    PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/k1s-ha-core}")"
+    mkdir -p "$PROFILE_DIR"
+    if ! is_strict_cri; then
+      echo "error: k1s-ha-core requires strict CRI infra (AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri)." >&2
+      exit 1
+    fi
+    export DEV_PROFILE_DIR="$PROFILE_DIR"
+    export AE_HA_MODE=1
+    export AE_STATE_BACKEND="${AE_STATE_BACKEND:-etcd}"
+    export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-nats-js}"
+    export AE_JS_DOMAIN="${AE_JS_DOMAIN:-K1S}"
+    export AE_NODE_PROFILE="${AE_NODE_PROFILE:-k1s-ha-core}"
+    export AE_APISHIM_MODE="${AE_APISHIM_MODE:-cri}"
+    export AE_ETCD_MAINTENANCE_ENABLE="${AE_ETCD_MAINTENANCE_ENABLE:-0}"
+    export AE_ETCD_MAINTENANCE_THRESHOLD_PCT="${AE_ETCD_MAINTENANCE_THRESHOLD_PCT:-80}"
+    export AE_APISHIM_ETCD_ENDPOINTS="${AE_APISHIM_ETCD_ENDPOINTS:-${AE_ETCD_ENDPOINTS:-}}"
+    export AE_PROJECTION_ROOT="${AE_PROJECTION_ROOT:-$PROFILE_DIR/projections}"
+    if [[ "${AE_DEV_LOCAL:-0}" == "1" ]]; then
+      export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
+      export AE_LABS="${AE_LABS:-1}"
+      export CORE_CADDY="${CORE_CADDY:-1}"
+      export CORE_DOCS="${CORE_DOCS:-1}"
+    else
+      export AE_LABS="${AE_LABS:-0}"
+      export CORE_CADDY="${CORE_CADDY:-0}"
+      export CORE_DOCS="${CORE_DOCS:-0}"
+    fi
+    ensure_cri_registry_preload_images
+    run_ha_core_preflight
+    INGRESS_MODE="$(normalize_ingress_mode "${EDGE_INGRESS_MODE:-${AE_EDGE_INGRESS_MODE:-core-proxy}}")"
+    EDGE_INGRESS_START="${EDGE_INGRESS_START:-1}"
+    EDGE_INGRESS_DIR="${EDGE_INGRESS_DIR:-$PROFILE_DIR/edge-ingress}"
+    EDGE_ENVOY_CONFIG="${EDGE_ENVOY_CONFIG:-$EDGE_INGRESS_DIR/envoy.yaml}"
+    EDGE_RATHOLE_SERVER="${EDGE_RATHOLE_SERVER:-$EDGE_INGRESS_DIR/rathole-server.toml}"
+    export AE_EDGE_INGRESS_CONFIG_DIR="${AE_EDGE_INGRESS_CONFIG_DIR:-$EDGE_INGRESS_DIR}"
+    export AE_EDGE_INGRESS_ENVOY_CONFIG="${AE_EDGE_INGRESS_ENVOY_CONFIG:-$EDGE_ENVOY_CONFIG}"
+    export AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX="${AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX:-edge.local}"
+    export AE_EDGE_INGRESS_LOCAL_ADDR="${AE_EDGE_INGRESS_LOCAL_ADDR:-127.0.0.1:18081}"
+    export AE_EDGE_INGRESS_HTTP_PORT="${AE_EDGE_INGRESS_HTTP_PORT:-10080}"
+    export AE_EDGE_INGRESS_TLS_PORT="${AE_EDGE_INGRESS_TLS_PORT:-10443}"
+    export AE_RATHOLE_BIND_ADDR="${AE_RATHOLE_BIND_ADDR:-0.0.0.0:2333}"
+    export AE_RATHOLE_DEFAULT_TOKEN="${AE_RATHOLE_DEFAULT_TOKEN:-dev}"
+    export AE_RATHOLE_SERVER_ADDR="${AE_RATHOLE_SERVER_ADDR:-127.0.0.1:2333}"
+    if [[ "$INGRESS_MODE" == "core-proxy" ]]; then
+      export AE_EDGE_INGRESS_CORE_PROXY=1
+      export AE_RATHOLE_CLIENT_DIR="${AE_RATHOLE_CLIENT_DIR:-$EDGE_INGRESS_DIR/clients}"
+      export AE_EDGE_INGRESS_RATHOLE_RELOAD="${AE_EDGE_INGRESS_RATHOLE_RELOAD:-1}"
+      export AE_RATHOLE_INOTIFY_AUTOTUNE="${AE_RATHOLE_INOTIFY_AUTOTUNE:-1}"
+      export AE_RATHOLE_INOTIFY_WARN_PCT="${AE_RATHOLE_INOTIFY_WARN_PCT:-95}"
+      export AE_RATHOLE_INOTIFY_MAX_WATCHES="${AE_RATHOLE_INOTIFY_MAX_WATCHES:-4194304}"
+    else
+      export AE_EDGE_INGRESS_CORE_PROXY=0
+      unset AE_EDGE_INGRESS_RATHOLE_RELOAD
+    fi
+    if [[ "$EDGE_INGRESS_START" == "1" ]]; then
+      write_envoy_bootstrap "$EDGE_ENVOY_CONFIG"
+      write_rathole_server_bootstrap "$EDGE_RATHOLE_SERVER" "$AE_RATHOLE_BIND_ADDR" "$AE_RATHOLE_DEFAULT_TOKEN"
+      ENVOY_CONTAINER="${ENVOY_CONTAINER:-k1s-ha-core-envoy}"
+      RATHOLE_SERVER_CONTAINER="${RATHOLE_SERVER_CONTAINER:-k1s-ha-core-rathole}"
+      if [[ "$INGRESS_MODE" == "core-proxy" ]]; then
+        export AE_EDGE_INGRESS_RELOAD_CMD="$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-ha-core --config $EDGE_ENVOY_CONFIG"
+        export AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD="$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-rathole-server --profile k1s-ha-core --config $EDGE_RATHOLE_SERVER"
+        run_cri_stack up-envoy --profile k1s-ha-core --config "$EDGE_ENVOY_CONFIG"
+        run_cri_stack up-rathole-server --profile k1s-ha-core --config "$EDGE_RATHOLE_SERVER"
+      elif [[ "$INGRESS_MODE" == "core-to-edge-public" ]]; then
+        export AE_EDGE_INGRESS_RELOAD_CMD="$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-ha-core --config $EDGE_ENVOY_CONFIG"
+        unset AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD
+        run_cri_stack up-envoy --profile k1s-ha-core --config "$EDGE_ENVOY_CONFIG"
+      fi
+    fi
+    METRICS_PORT="${METRICS_PORT:-9108}"
+    export APISHIM_PORT="${APISHIM_PORT:-8445}"
+    export APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$APISHIM_PORT}"
+    start_apishim "$PROFILE_DIR"
+    if [[ "${AE_LABS:-0}" == "1" ]]; then
+      build_docs_with_labs_token
+    fi
+    if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+      caddy_https_port="${CADDY_HTTPS_PORT:-8443}"
+      caddy_sites="$ROOT_DIR/state/caddy"
+      mkdir -p "$caddy_sites"
+      render_strict_caddy_sites "$caddy_https_port"
+      write_dash_caddy_site "127.0.0.1" "${caddy_sites}/dash.caddy" "$caddy_https_port"
+      run_cri_stack up-caddy --profile k1s-ha-core --metrics-port "$METRICS_PORT" --apishim-port "${APISHIM_PORT:-8445}" --recreate
+    fi
+    if [[ "${CORE_DOCS:-0}" == "1" ]]; then
+      start_docs_server
+    fi
+    ensure_dev_local "$PROFILE_DIR"
+    PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT"
     ;;
   k1s-edge)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"

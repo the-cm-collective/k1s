@@ -1,5 +1,5 @@
 .PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track
-.PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
+.PHONY: dev-min dev-etcd k1s-core k1s-ha-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
 .PHONY: k1s-core-cri k1s-edge-cri k1s-core-edge-cri k1s-edge-core-cri edge-site-cri
 .PHONY: edge-site
 .PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy dev-local
@@ -44,6 +44,9 @@ dev-etcd:
 
 k1s-core:
 	@./scripts/dev/run_profile.sh k1s-core
+
+k1s-ha-core:
+	@./scripts/dev/run_profile.sh k1s-ha-core
 
 k1s-edge:
 	@./scripts/dev/run_profile.sh k1s-edge
