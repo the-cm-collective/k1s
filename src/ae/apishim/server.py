@@ -3161,6 +3161,11 @@ class ShimHandler(BaseHTTPRequestHandler):
         b_plural, _b_ns, _b_name = _batch_ns_name(path)
         if b_plural in {"jobs", "cronjobs"}:
             supported = True
+        h_plural, _h_ns, _h_name = _gv_ns_name(
+            path, "autoscaling", "v2", "horizontalpodautoscalers"
+        )
+        if h_plural == "horizontalpodautoscalers":
+            supported = True
         if supported:
             return False
         self._json_status(
@@ -11303,7 +11308,8 @@ def _to_hpa(o: K8sObject, store: ObjectStore) -> dict[str, Any]:
     meta.setdefault("resourceVersion", str(o.resource_version))
     status = dict(o.status or {})
     # Best-effort scaleTargetRef resolution for status
-    spec = o.spec or {}
+    spec_data = o.spec or {}
+    spec = spec_data.get("spec", spec_data) if isinstance(spec_data, dict) else {}
     target = spec.get("scaleTargetRef", {}) if isinstance(spec, dict) else {}
     target_name = target.get("name")
     target_kind = (target.get("kind") or "").lower()
@@ -11641,7 +11647,7 @@ def _spec_payload(resource: str, merged: dict[str, Any]) -> dict[str, Any]:
     if resource == "poddisruptionbudgets":
         return {"spec": merged.get("spec", merged.get("body", {}))}
     if resource == "horizontalpodautoscalers":
-        return {"spec": merged.get("spec", merged.get("body", {}))}
+        return merged.get("spec") or {}
     return merged.get("spec") or {}
 
 

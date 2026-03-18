@@ -175,6 +175,146 @@ def test_apishim_ha_routes_cronjob_through_shared_authority(monkeypatch, tmp_pat
     assert entry.spec["schedule"] == "*/5 * * * *"
 
 
+def test_apishim_ha_routes_hpa_through_shared_authority(monkeypatch, tmp_path) -> None:
+    state, _legacy, store = _make_store(tmp_path)
+    body = json.dumps(
+        {
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "demo-hpa", "namespace": "default"},
+            "spec": {
+                "minReplicas": 1,
+                "maxReplicas": 5,
+                "scaleTargetRef": {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "demo",
+                },
+                "metrics": [
+                    {
+                        "type": "Resource",
+                        "resource": {
+                            "name": "cpu",
+                            "target": {"type": "Utilization", "averageUtilization": 70},
+                        },
+                    }
+                ],
+            },
+        }
+    ).encode("utf-8")
+    handler, status = _ha_handler(
+        store,
+        state,
+        monkeypatch,
+        "/apis/autoscaling/v2/namespaces/default/horizontalpodautoscalers/demo-hpa",
+        method="PUT",
+        body=body,
+    )
+
+    handler.do_PUT()
+
+    assert status["code"] == 200
+    payload = _json_body(handler)
+    assert payload["kind"] == "HorizontalPodAutoscaler"
+    assert payload["spec"]["maxReplicas"] == 5
+    entry = state.get_authority_object(
+        "autoscaling", "v2", "horizontalpodautoscalers", "default", "demo-hpa"
+    )
+    assert entry is not None
+    assert entry.spec["scaleTargetRef"]["kind"] == "Deployment"
+
+
+def test_apishim_ha_rejects_unsupported_hpa_metric_type(monkeypatch, tmp_path) -> None:
+    state, _legacy, store = _make_store(tmp_path)
+    body = json.dumps(
+        {
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "demo-hpa", "namespace": "default"},
+            "spec": {
+                "minReplicas": 1,
+                "maxReplicas": 5,
+                "scaleTargetRef": {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "demo",
+                },
+                "metrics": [
+                    {
+                        "type": "Pods",
+                        "pods": {
+                            "metric": {"name": "requests"},
+                            "target": {"type": "AverageValue", "averageValue": "1"},
+                        },
+                    }
+                ],
+            },
+        }
+    ).encode("utf-8")
+    handler, status = _ha_handler(
+        store,
+        state,
+        monkeypatch,
+        "/apis/autoscaling/v2/namespaces/default/horizontalpodautoscalers/demo-hpa",
+        method="PUT",
+        body=body,
+    )
+
+    handler.do_PUT()
+
+    assert status["code"] == 422
+    payload = _json_body(handler)
+    assert payload["reason"] == "Invalid"
+    assert "Resource metrics" in payload["message"]
+    assert state.get_authority_object(
+        "autoscaling", "v2", "horizontalpodautoscalers", "default", "demo-hpa"
+    ) is None
+
+
+def test_apishim_ha_rejects_unsupported_hpa_target_kind(monkeypatch, tmp_path) -> None:
+    state, _legacy, store = _make_store(tmp_path)
+    body = json.dumps(
+        {
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "demo-hpa", "namespace": "default"},
+            "spec": {
+                "minReplicas": 1,
+                "maxReplicas": 5,
+                "scaleTargetRef": {
+                    "apiVersion": "apps/v1",
+                    "kind": "ReplicaSet",
+                    "name": "demo",
+                },
+                "metrics": [
+                    {
+                        "type": "Resource",
+                        "resource": {
+                            "name": "cpu",
+                            "target": {"type": "Utilization", "averageUtilization": 70},
+                        },
+                    }
+                ],
+            },
+        }
+    ).encode("utf-8")
+    handler, status = _ha_handler(
+        store,
+        state,
+        monkeypatch,
+        "/apis/autoscaling/v2/namespaces/default/horizontalpodautoscalers/demo-hpa",
+        method="PUT",
+        body=body,
+    )
+
+    handler.do_PUT()
+
+    assert status["code"] == 422
+    payload = _json_body(handler)
+    assert payload["reason"] == "Invalid"
+    assert "Deployment, StatefulSet, and DaemonSet" in payload["message"]
+
+
 def test_apishim_ha_cronjob_write_executes_through_controller_authority(
     monkeypatch,
     tmp_path,

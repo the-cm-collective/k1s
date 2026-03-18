@@ -46,6 +46,7 @@ GENERIC_AUTHORITY_RESOURCES: set[tuple[str, str, str]] = {
     ("", "v1", "secrets"),
     ("", "v1", "serviceaccounts"),
     ("batch", "v1", "cronjobs"),
+    ("autoscaling", "v2", "horizontalpodautoscalers"),
 }
 WORKLOAD_AUTHORITY_RESOURCES = WORKLOAD_RESOURCES | ATTACHED_RESOURCES
 AUTHORITY_RESOURCES = WORKLOAD_AUTHORITY_RESOURCES | GENERIC_AUTHORITY_RESOURCES
@@ -85,7 +86,64 @@ def generic_kind_for_resource(resource: str) -> str:
         "secrets": "Secret",
         "serviceaccounts": "ServiceAccount",
         "cronjobs": "CronJob",
+        "horizontalpodautoscalers": "HorizontalPodAutoscaler",
     }.get(resource, resource[:-1].capitalize())
+
+
+_HPA_TARGET_RESOURCES: dict[str, tuple[str, str, str]] = {
+    "deployment": ("apps", "v1", "deployments"),
+    "statefulset": ("apps", "v1", "statefulsets"),
+    "daemonset": ("apps", "v1", "daemonsets"),
+}
+
+
+def _validate_hpa_spec(spec: dict[str, Any]) -> None:
+    normalized = spec
+    if isinstance(normalized, dict) and isinstance(normalized.get("spec"), dict):
+        normalized = normalized["spec"]
+    target = normalized.get("scaleTargetRef") if isinstance(normalized, dict) else None
+    if not isinstance(target, dict):
+        raise AuthorityMutationError(message="HPA spec.scaleTargetRef is required in HA mode")
+    target_kind = str(target.get("kind") or "").strip().lower()
+    if target_kind not in _HPA_TARGET_RESOURCES:
+        raise AuthorityMutationError(
+            message=(
+                "HA HPA supports only Deployment, StatefulSet, and DaemonSet targets"
+            )
+        )
+    metrics = normalized.get("metrics")
+    if not isinstance(metrics, list) or not metrics:
+        raise AuthorityMutationError(message="HPA spec.metrics must contain at least one resource metric")
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            raise AuthorityMutationError(message="HPA metrics entries must be objects")
+        if str(metric.get("type") or "").strip() != "Resource":
+            raise AuthorityMutationError(
+                message="HA HPA supports only Resource metrics"
+            )
+        resource_cfg = metric.get("resource")
+        if not isinstance(resource_cfg, dict):
+            raise AuthorityMutationError(message="HPA resource metric config is required")
+        resource_name = str(resource_cfg.get("name") or "").strip().lower()
+        if resource_name not in {"cpu", "memory"}:
+            raise AuthorityMutationError(
+                message="HA HPA supports only cpu and memory resource metrics"
+            )
+        target_cfg = resource_cfg.get("target")
+        if not isinstance(target_cfg, dict):
+            raise AuthorityMutationError(message="HPA resource metric target is required")
+        target_type = str(target_cfg.get("type") or "").strip()
+        if resource_name == "memory":
+            if target_type not in {"Utilization", "AverageValue"}:
+                raise AuthorityMutationError(
+                    message=(
+                        "HA HPA memory metrics support only Utilization and AverageValue targets"
+                    )
+                )
+        elif target_type != "Utilization":
+            raise AuthorityMutationError(
+                message="HA HPA cpu metrics support only Utilization targets"
+            )
 
 
 def workload_kind_for_entry(entry: RegistryEntry) -> str:
@@ -1081,6 +1139,8 @@ class GenericAuthorityStore:
     ) -> K8sObject:
         if not is_generic_authority_resource(group, version, resource):
             raise AuthorityMutationError(message=f"unsupported authority resource {group}/{version}/{resource}")
+        if (group, version, resource) == ("autoscaling", "v2", "horizontalpodautoscalers"):
+            _validate_hpa_spec(spec)
         existing = self._state.get_authority_object(group, version, resource, namespace, name)
         expected_rv = _rv_from_metadata(metadata)
         if expected_rv is None:
