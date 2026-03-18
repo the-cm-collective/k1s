@@ -7,21 +7,24 @@ from ae.apishim.store import ObjectStore
 from tests.unit.test_apishim_storage import _handler, _json_body
 
 
-def test_apishim_ha_mode_rejects_post_create(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_rejects_post_create_for_storage_resource(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     store = ObjectStore(tmp_path / "apishim.db")
     body = json.dumps(
         {
             "apiVersion": "v1",
-            "kind": "ConfigMap",
+            "kind": "PersistentVolumeClaim",
             "metadata": {"name": "demo", "namespace": "default"},
-            "data": {"hello": "world"},
+            "spec": {
+                "accessModes": ["ReadWriteOnce"],
+                "resources": {"requests": {"storage": "1Gi"}},
+            },
         }
     ).encode("utf-8")
     handler, status = _handler(
         store,
         monkeypatch,
-        "/api/v1/namespaces/default/configmaps",
+        "/api/v1/namespaces/default/persistentvolumeclaims",
         method="POST",
         body=body,
     )
@@ -31,25 +34,28 @@ def test_apishim_ha_mode_rejects_post_create(monkeypatch, tmp_path) -> None:
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "until H4b" in payload["message"]
-    assert store.get("", "v1", "configmaps", "default", "demo") is None
+    assert "later H4b" in payload["message"]
+    assert store.get("", "v1", "persistentvolumeclaims", "default", "demo") is None
 
 
-def test_apishim_ha_mode_rejects_put(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_rejects_put_for_storage_resource(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     store = ObjectStore(tmp_path / "apishim.db")
     body = json.dumps(
         {
             "apiVersion": "v1",
-            "kind": "ConfigMap",
+            "kind": "PersistentVolumeClaim",
             "metadata": {"name": "demo", "namespace": "default"},
-            "data": {"hello": "world"},
+            "spec": {
+                "accessModes": ["ReadWriteOnce"],
+                "resources": {"requests": {"storage": "1Gi"}},
+            },
         }
     ).encode("utf-8")
     handler, status = _handler(
         store,
         monkeypatch,
-        "/api/v1/namespaces/default/configmaps/demo",
+        "/api/v1/namespaces/default/persistentvolumeclaims/demo",
         method="PUT",
         body=body,
     )
@@ -59,28 +65,31 @@ def test_apishim_ha_mode_rejects_put(monkeypatch, tmp_path) -> None:
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "until H4b" in payload["message"]
-    assert store.get("", "v1", "configmaps", "default", "demo") is None
+    assert "later H4b" in payload["message"]
+    assert store.get("", "v1", "persistentvolumeclaims", "default", "demo") is None
 
 
-def test_apishim_ha_mode_rejects_patch(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_rejects_patch_for_storage_resource(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     store = ObjectStore(tmp_path / "apishim.db")
     store.upsert(
         "",
         "v1",
-        "configmaps",
+        "persistentvolumeclaims",
         "default",
         "demo",
         metadata={"name": "demo", "namespace": "default"},
-        spec={"hello": "world"},
+        spec={
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": "1Gi"}},
+        },
         status={},
     )
-    body = json.dumps({"data": {"hello": "again"}}).encode("utf-8")
+    body = json.dumps({"spec": {"resources": {"requests": {"storage": "2Gi"}}}}).encode("utf-8")
     handler, status = _handler(
         store,
         monkeypatch,
-        "/api/v1/namespaces/default/configmaps/demo",
+        "/api/v1/namespaces/default/persistentvolumeclaims/demo",
         method="PATCH",
         body=body,
     )
@@ -90,29 +99,32 @@ def test_apishim_ha_mode_rejects_patch(monkeypatch, tmp_path) -> None:
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "until H4b" in payload["message"]
-    obj = store.get("", "v1", "configmaps", "default", "demo")
+    assert "later H4b" in payload["message"]
+    obj = store.get("", "v1", "persistentvolumeclaims", "default", "demo")
     assert obj is not None
-    assert obj.spec == {"hello": "world"}
+    assert obj.spec["resources"]["requests"]["storage"] == "1Gi"
 
 
-def test_apishim_ha_mode_rejects_delete(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_rejects_delete_for_storage_resource(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     store = ObjectStore(tmp_path / "apishim.db")
     store.upsert(
         "",
         "v1",
-        "configmaps",
+        "persistentvolumeclaims",
         "default",
         "demo",
         metadata={"name": "demo", "namespace": "default"},
-        spec={"hello": "world"},
+        spec={
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": "1Gi"}},
+        },
         status={},
     )
     handler, status = _handler(
         store,
         monkeypatch,
-        "/api/v1/namespaces/default/configmaps/demo",
+        "/api/v1/namespaces/default/persistentvolumeclaims/demo",
         method="DELETE",
     )
 
@@ -121,8 +133,8 @@ def test_apishim_ha_mode_rejects_delete(monkeypatch, tmp_path) -> None:
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "until H4b" in payload["message"]
-    assert store.get("", "v1", "configmaps", "default", "demo") is not None
+    assert "later H4b" in payload["message"]
+    assert store.get("", "v1", "persistentvolumeclaims", "default", "demo") is not None
 
 
 def test_apishim_ha_mode_keeps_get_available(monkeypatch, tmp_path) -> None:

@@ -10,7 +10,7 @@ from typing import Any
 
 from ae.apishim.store import K8sObject, ObjectStore
 from ae.controller.spec import AppManifest, ServiceSpec, app_key, app_key_for_manifest
-from ae.controller.state import RegistryEntry, SQLiteStateStore
+from ae.controller.state import AuthorityObjectEntry, RegistryEntry, SQLiteStateStore
 from ae.k8s import convert as k8s_convert
 from ae.k8s.exporter import (
     ExportOptions,
@@ -36,7 +36,14 @@ ATTACHED_RESOURCES: set[tuple[str, str, str]] = {
     ("", "v1", "services"),
     ("networking.k8s.io", "v1", "ingresses"),
 }
-AUTHORITY_RESOURCES = WORKLOAD_RESOURCES | ATTACHED_RESOURCES
+GENERIC_AUTHORITY_RESOURCES: set[tuple[str, str, str]] = {
+    ("", "v1", "configmaps"),
+    ("", "v1", "secrets"),
+    ("", "v1", "serviceaccounts"),
+    ("batch", "v1", "cronjobs"),
+}
+WORKLOAD_AUTHORITY_RESOURCES = WORKLOAD_RESOURCES | ATTACHED_RESOURCES
+AUTHORITY_RESOURCES = WORKLOAD_AUTHORITY_RESOURCES | GENERIC_AUTHORITY_RESOURCES
 
 
 class AuthorityMutationError(RuntimeError):
@@ -57,6 +64,23 @@ class AuthorityMutationError(RuntimeError):
 
 def is_authority_resource(group: str, version: str, resource: str) -> bool:
     return (group, version, resource) in AUTHORITY_RESOURCES
+
+
+def is_workload_authority_resource(group: str, version: str, resource: str) -> bool:
+    return (group, version, resource) in WORKLOAD_AUTHORITY_RESOURCES
+
+
+def is_generic_authority_resource(group: str, version: str, resource: str) -> bool:
+    return (group, version, resource) in GENERIC_AUTHORITY_RESOURCES
+
+
+def generic_kind_for_resource(resource: str) -> str:
+    return {
+        "configmaps": "ConfigMap",
+        "secrets": "Secret",
+        "serviceaccounts": "ServiceAccount",
+        "cronjobs": "CronJob",
+    }.get(resource, resource[:-1].capitalize())
 
 
 def workload_kind_for_entry(entry: RegistryEntry) -> str:
@@ -419,6 +443,25 @@ def _entry_to_object(entry: RegistryEntry, resource: str, state: SQLiteStateStor
     return _k8s_object_from_doc(group, version, resolved_resource, doc, status=status)
 
 
+def _authority_object_to_k8s(entry: AuthorityObjectEntry) -> K8sObject:
+    metadata = dict(entry.metadata or {})
+    metadata.setdefault("name", entry.name)
+    if entry.namespace:
+        metadata.setdefault("namespace", entry.namespace)
+    metadata["resourceVersion"] = str(entry.resource_version)
+    return K8sObject(
+        entry.group,
+        entry.version,
+        entry.resource,
+        entry.namespace,
+        entry.name,
+        metadata,
+        dict(entry.spec or {}),
+        dict(entry.status or {}),
+        int(entry.resource_version or 0),
+    )
+
+
 class WorkloadAuthorityStore:
     """Store adapter exposing converged HA workload resources via controller state."""
 
@@ -498,7 +541,7 @@ class WorkloadAuthorityStore:
     def get(
         self, group: str, version: str, resource: str, namespace: str | None, name: str
     ) -> K8sObject | None:
-        if not is_authority_resource(group, version, resource):
+        if not is_workload_authority_resource(group, version, resource):
             return None
         if resource == "services":
             entry = self._find_attached_entry(SERVICE_NAME_LABEL, namespace, name)
@@ -519,7 +562,7 @@ class WorkloadAuthorityStore:
     def list(
         self, group: str, version: str, resource: str, namespace: str | None | None
     ) -> list[K8sObject]:
-        if not is_authority_resource(group, version, resource):
+        if not is_workload_authority_resource(group, version, resource):
             return []
         if resource == "services":
             return self._service_objects(namespace)
@@ -770,7 +813,7 @@ class WorkloadAuthorityStore:
         status: dict[str, Any] | None = None,
         resource_version: int | None = None,
     ) -> K8sObject:
-        if not is_authority_resource(group, version, resource):
+        if not is_workload_authority_resource(group, version, resource):
             raise AuthorityMutationError(message=f"unsupported authority resource {group}/{version}/{resource}")
         obj = K8sObject(
             group,
@@ -817,7 +860,7 @@ class WorkloadAuthorityStore:
     def delete(
         self, group: str, version: str, resource: str, namespace: str | None, name: str
     ) -> bool:
-        if not is_authority_resource(group, version, resource):
+        if not is_workload_authority_resource(group, version, resource):
             return False
         if resource == "services":
             entry = self._find_attached_entry(SERVICE_NAME_LABEL, namespace, name)
@@ -940,11 +983,216 @@ class WorkloadAuthorityStore:
                 last_heartbeat = time.time()
 
 
+class GenericAuthorityStore:
+    """Store adapter exposing non-workload HA resources via controller state."""
+
+    def __init__(self, state: SQLiteStateStore) -> None:
+        self._state = state
+        self.backend = "ha-controller-generic"
+        self._watch_poll_interval = max(
+            0.1, float(os.getenv("AE_APISHIM_HA_WATCH_POLL_SEC", "0.5") or "0.5")
+        )
+
+    def close(self) -> None:
+        return None
+
+    def export_all(self):
+        return iter(())
+
+    def render_metrics(self) -> str:
+        return ""
+
+    def get(
+        self, group: str, version: str, resource: str, namespace: str | None, name: str
+    ) -> K8sObject | None:
+        if not is_generic_authority_resource(group, version, resource):
+            return None
+        entry = self._state.get_authority_object(group, version, resource, namespace, name)
+        return _authority_object_to_k8s(entry) if entry is not None else None
+
+    def list(
+        self, group: str, version: str, resource: str, namespace: str | None | None
+    ) -> list[K8sObject]:
+        if not is_generic_authority_resource(group, version, resource):
+            return []
+        entries = self._state.list_authority_objects(group, version, resource, namespace)
+        return [_authority_object_to_k8s(entry) for entry in entries]
+
+    def list_all(self, group: str, version: str, resource: str) -> list[K8sObject]:
+        return self.list(group, version, resource, None)
+
+    def upsert(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        metadata: dict[str, Any],
+        spec: dict[str, Any],
+        status: dict[str, Any] | None = None,
+        resource_version: int | None = None,
+    ) -> K8sObject:
+        if not is_generic_authority_resource(group, version, resource):
+            raise AuthorityMutationError(message=f"unsupported authority resource {group}/{version}/{resource}")
+        existing = self._state.get_authority_object(group, version, resource, namespace, name)
+        expected_rv = _rv_from_metadata(metadata)
+        if expected_rv is None:
+            expected_rv = existing.resource_version if existing is not None else 0
+        kind = str((metadata or {}).get("kind") or (existing.kind if existing is not None else generic_kind_for_resource(resource)))
+        self._state.register_authority_object(
+            group,
+            version,
+            resource,
+            namespace,
+            name,
+            kind=kind,
+            metadata=metadata,
+            spec=spec,
+            status=status or {},
+            expected_resource_version=expected_rv,
+        )
+        fresh = self._state.get_authority_object(group, version, resource, namespace, name)
+        if fresh is None:
+            raise AuthorityMutationError(
+                status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                reason="InternalError",
+                message="failed to read back shared authority object",
+            )
+        return _authority_object_to_k8s(fresh)
+
+    def upsert_if_not_deleted(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        metadata: dict[str, Any],
+        spec: dict[str, Any],
+        status: dict[str, Any] | None = None,
+        resource_version: int | None = None,
+    ) -> K8sObject | None:
+        return self.upsert(
+            group,
+            version,
+            resource,
+            namespace,
+            name,
+            metadata,
+            spec,
+            status=status,
+            resource_version=resource_version,
+        )
+
+    def delete(
+        self, group: str, version: str, resource: str, namespace: str | None, name: str
+    ) -> bool:
+        if not is_generic_authority_resource(group, version, resource):
+            return False
+        entry = self._state.get_authority_object(group, version, resource, namespace, name)
+        if entry is None:
+            return False
+        return bool(
+            self._state.delete_authority_object(
+                group,
+                version,
+                resource,
+                namespace,
+                name,
+                expected_resource_version=entry.resource_version,
+            )
+        )
+
+    def watch(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        heartbeat_seconds: int | None = None,
+        allow_bookmarks: bool = False,
+        since_rv: int | None = None,
+    ) -> Iterator[tuple[str, K8sObject]]:
+        last_rv = int(since_rv or 0)
+        known: dict[tuple[str | None, str], K8sObject] = {}
+        last_heartbeat = time.time()
+
+        def _snapshot() -> list[K8sObject]:
+            if namespace is None:
+                return self.list_all(group, version, resource)
+            return self.list(group, version, resource, namespace)
+
+        initial = _snapshot()
+        if since_rv <= 0:
+            for obj in initial:
+                key = (obj.namespace, obj.name)
+                known[key] = obj
+                last_rv = max(last_rv, int(obj.resource_version))
+                yield ("ADDED", obj)
+        else:
+            for obj in initial:
+                key = (obj.namespace, obj.name)
+                known[key] = obj
+                if int(obj.resource_version) > last_rv:
+                    last_rv = max(last_rv, int(obj.resource_version))
+                    yield ("ADDED", obj)
+            last_heartbeat = time.time()
+
+        while True:
+            time.sleep(self._watch_poll_interval)
+            current = _snapshot()
+            current_map = {(obj.namespace, obj.name): obj for obj in current}
+            events: list[tuple[str, K8sObject]] = []
+            for key, obj in current_map.items():
+                prev = known.get(key)
+                if prev is None:
+                    events.append(("ADDED", obj))
+                    continue
+                if int(obj.resource_version) > int(prev.resource_version):
+                    events.append(("MODIFIED", obj))
+            for key, prev in known.items():
+                if key not in current_map:
+                    events.append(("DELETED", prev))
+            events.sort(key=lambda item: (int(item[1].resource_version), item[1].name))
+            if events:
+                for event_type, obj in events:
+                    known[(obj.namespace, obj.name)] = obj
+                    if event_type == "DELETED":
+                        known.pop((obj.namespace, obj.name), None)
+                    last_rv = max(last_rv, int(obj.resource_version))
+                    yield (event_type, obj)
+                last_heartbeat = time.time()
+                continue
+            if allow_bookmarks and heartbeat_seconds and (time.time() - last_heartbeat) >= heartbeat_seconds:
+                yield (
+                    "BOOKMARK",
+                    K8sObject(
+                        group,
+                        version,
+                        resource,
+                        namespace,
+                        "",
+                        {},
+                        {},
+                        {"resourceVersion": last_rv},
+                        last_rv,
+                    ),
+                )
+                last_heartbeat = time.time()
+
+
 class MultiplexApishimStore:
     """Route converged HA workload resources to controller state and everything else to legacy store."""
 
-    def __init__(self, authority: WorkloadAuthorityStore, legacy: ObjectStore) -> None:
+    def __init__(
+        self,
+        authority: WorkloadAuthorityStore,
+        generic_authority: GenericAuthorityStore,
+        legacy: ObjectStore,
+    ) -> None:
         self._authority = authority
+        self._generic_authority = generic_authority
         self._legacy = legacy
         self.backend = "mux"
 
@@ -952,22 +1200,29 @@ class MultiplexApishimStore:
     def from_state_and_legacy(
         cls, state: SQLiteStateStore, legacy: ObjectStore
     ) -> "MultiplexApishimStore":
-        return cls(WorkloadAuthorityStore(state), legacy)
+        return cls(WorkloadAuthorityStore(state), GenericAuthorityStore(state), legacy)
 
     def close(self) -> None:
         self._authority.close()
+        self._generic_authority.close()
         self._legacy.close()
 
     def export_all(self):
         return self._legacy.export_all()
 
     def render_metrics(self) -> str:
-        parts = [self._authority.render_metrics().rstrip(), self._legacy.render_metrics().rstrip()]
+        parts = [
+            self._authority.render_metrics().rstrip(),
+            self._generic_authority.render_metrics().rstrip(),
+            self._legacy.render_metrics().rstrip(),
+        ]
         return "\n".join(part for part in parts if part) + "\n"
 
     def _delegate(self, group: str, version: str, resource: str):
-        if is_authority_resource(group, version, resource):
+        if is_workload_authority_resource(group, version, resource):
             return self._authority
+        if is_generic_authority_resource(group, version, resource):
+            return self._generic_authority
         return self._legacy
 
     def get(self, group: str, version: str, resource: str, namespace: str | None, name: str):

@@ -65,6 +65,23 @@ class RegistryEntry:
     resource_version: int = 0
 
 
+@dataclass(slots=True)
+class AuthorityObjectEntry:
+    """Shared-authority shim object persisted outside the legacy apishim DB."""
+
+    group: str
+    version: str
+    resource: str
+    namespace: str | None
+    name: str
+    kind: str
+    metadata: dict
+    spec: dict
+    status: dict
+    updated_at: datetime
+    resource_version: int = 0
+
+
 class RegistryConflictError(RuntimeError):
     """Raised when a registry CAS write sees a stale resource version."""
 
@@ -558,6 +575,30 @@ class SQLiteStateStore:
             )
             conn.execute(resource_loader.load_text("sql", "controller", "create_app_status.sql"))
             conn.execute(resource_loader.load_text("sql", "controller", "create_app_registry.sql"))
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS authority_objects (
+                  grp TEXT NOT NULL,
+                  ver TEXT NOT NULL,
+                  resource TEXT NOT NULL,
+                  namespace TEXT NOT NULL,
+                  name TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  metadata_json TEXT NOT NULL,
+                  spec_json TEXT NOT NULL,
+                  status_json TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  resource_version INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY (grp, ver, resource, namespace, name)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_authority_objects_gvr
+                ON authority_objects (grp, ver, resource, namespace, name)
+                """
+            )
             conn.execute(resource_loader.load_text("sql", "controller", "create_pod_status.sql"))
             conn.execute(
                 resource_loader.render_text(
@@ -1234,6 +1275,226 @@ class SQLiteStateStore:
             labels=labels,
             updated_at=updated,
             resource_version=int(row[6] or 0),
+        )
+
+    @staticmethod
+    def _authority_object_conflict_key(
+        group: str, version: str, resource: str, namespace: str | None, name: str
+    ) -> str:
+        return "/".join(
+            [
+                group or "core",
+                version,
+                resource,
+                namespace or "_cluster",
+                name,
+            ]
+        )
+
+    def register_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        kind: str,
+        metadata: dict | None = None,
+        spec: dict | None = None,
+        status: dict | None = None,
+        expected_resource_version: int | None = None,
+    ) -> int:
+        metadata_json = json.dumps(metadata or {}, sort_keys=True)
+        spec_json = json.dumps(spec or {}, sort_keys=True)
+        status_json = json.dumps(status or {}, sort_keys=True)
+        updated_at = datetime.now(timezone.utc).isoformat()
+        ns_key = str(namespace or "")
+        current_rv = 0
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT resource_version
+                  FROM authority_objects
+                 WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                """,
+                (group, version, resource, ns_key, name),
+            ).fetchone()
+            if row is not None:
+                current_rv = int(row[0] or 0)
+            if expected_resource_version is not None and current_rv != int(expected_resource_version):
+                raise RegistryConflictError(
+                    self._authority_object_conflict_key(group, version, resource, namespace, name),
+                    expected=int(expected_resource_version),
+                    actual=current_rv,
+                )
+            next_resource_version = max(1, current_rv + 1)
+            conn.execute(
+                """
+                INSERT INTO authority_objects (
+                  grp,
+                  ver,
+                  resource,
+                  namespace,
+                  name,
+                  kind,
+                  metadata_json,
+                  spec_json,
+                  status_json,
+                  updated_at,
+                  resource_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(grp, ver, resource, namespace, name) DO UPDATE SET
+                  kind = excluded.kind,
+                  metadata_json = excluded.metadata_json,
+                  spec_json = excluded.spec_json,
+                  status_json = excluded.status_json,
+                  updated_at = excluded.updated_at,
+                  resource_version = excluded.resource_version
+                """,
+                (
+                    group,
+                    version,
+                    resource,
+                    ns_key,
+                    name,
+                    kind,
+                    metadata_json,
+                    spec_json,
+                    status_json,
+                    updated_at,
+                    next_resource_version,
+                ),
+            )
+            conn.commit()
+        return next_resource_version
+
+    def list_authority_objects(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None = None,
+    ) -> list[AuthorityObjectEntry]:
+        params: list[object] = [group, version, resource]
+        query = (
+            """
+            SELECT grp, ver, resource, namespace, name, kind,
+                   metadata_json, spec_json, status_json, updated_at, resource_version
+              FROM authority_objects
+             WHERE grp = ? AND ver = ? AND resource = ?
+            """
+        )
+        if namespace is not None:
+            query += " AND namespace = ?"
+            params.append(str(namespace))
+        query += " ORDER BY namespace, name"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[AuthorityObjectEntry] = []
+        for row in rows:
+            entry = self._authority_object_from_row(row)
+            if entry is not None:
+                out.append(entry)
+        return out
+
+    def get_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+    ) -> AuthorityObjectEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT grp, ver, resource, namespace, name, kind,
+                       metadata_json, spec_json, status_json, updated_at, resource_version
+                  FROM authority_objects
+                 WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                """,
+                (group, version, resource, str(namespace or ""), name),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._authority_object_from_row(row)
+
+    def delete_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        ns_key = str(namespace or "")
+        deleted = False
+        with self._connect() as conn:
+            if expected_resource_version is not None:
+                row = conn.execute(
+                    """
+                    SELECT resource_version
+                      FROM authority_objects
+                     WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                    """,
+                    (group, version, resource, ns_key, name),
+                ).fetchone()
+                current_rv = int(row[0] or 0) if row is not None else 0
+                if current_rv != int(expected_resource_version):
+                    raise RegistryConflictError(
+                        self._authority_object_conflict_key(group, version, resource, namespace, name),
+                        expected=int(expected_resource_version),
+                        actual=current_rv,
+                    )
+            conn.execute(
+                """
+                DELETE FROM authority_objects
+                 WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                """,
+                (group, version, resource, ns_key, name),
+            )
+            deleted = bool(getattr(conn, "total_changes", 0))
+            conn.commit()
+        return deleted
+
+    def _authority_object_from_row(self, row) -> AuthorityObjectEntry | None:
+        try:
+            metadata = json.loads(row[6] or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+        try:
+            spec = json.loads(row[7] or "{}")
+            if not isinstance(spec, dict):
+                spec = {}
+        except Exception:
+            spec = {}
+        try:
+            status = json.loads(row[8] or "{}")
+            if not isinstance(status, dict):
+                status = {}
+        except Exception:
+            status = {}
+        try:
+            updated = datetime.fromisoformat(row[9]) if row[9] else datetime.now(timezone.utc)
+        except Exception:
+            updated = datetime.now(timezone.utc)
+        return AuthorityObjectEntry(
+            group=str(row[0] or ""),
+            version=str(row[1] or ""),
+            resource=str(row[2] or ""),
+            namespace=(str(row[3]) if row[3] not in {None, ""} else None),
+            name=str(row[4] or ""),
+            kind=str(row[5] or ""),
+            metadata=metadata,
+            spec=spec,
+            status=status,
+            updated_at=updated,
+            resource_version=int(row[10] or 0),
         )
 
     def _get_latest_revision(self, app_name: str) -> Optional[RevisionInfo]:

@@ -185,3 +185,71 @@ def test_materialize_registry_manifests_expands_daemonset_replicas(tmp_path) -> 
     manifests = materialize_registry_manifests(FakeNodeState(), [entry])
     assert len(manifests) == 1
     assert manifests[0].spec.replicas == 3
+
+
+def test_generic_authority_store_round_trips_passive_resources(tmp_path) -> None:
+    state, legacy, store = _make_store(tmp_path)
+
+    configmap = store.upsert(
+        "",
+        "v1",
+        "configmaps",
+        "default",
+        "demo-config",
+        metadata={"name": "demo-config", "namespace": "default"},
+        spec={"app.yaml": "hello: world"},
+        status={},
+    )
+    assert configmap.spec["app.yaml"] == "hello: world"
+    assert legacy.get("", "v1", "configmaps", "default", "demo-config") is None
+
+    service_account = store.upsert(
+        "",
+        "v1",
+        "serviceaccounts",
+        "default",
+        "demo-sa",
+        metadata={"name": "demo-sa", "namespace": "default"},
+        spec={"imagePullSecrets": [{"name": "regcred"}]},
+        status={},
+    )
+    assert service_account.spec["imagePullSecrets"][0]["name"] == "regcred"
+    assert legacy.get("", "v1", "serviceaccounts", "default", "demo-sa") is None
+
+    cronjob = store.upsert(
+        "batch",
+        "v1",
+        "cronjobs",
+        "default",
+        "demo-cron",
+        metadata={"name": "demo-cron", "namespace": "default"},
+        spec={
+            "schedule": "*/5 * * * *",
+            "jobTemplate": {
+                "spec": {
+                    "template": {
+                        "metadata": {"labels": {"app": "demo-cron"}},
+                        "spec": {
+                            "containers": [{"name": "main", "image": "busybox"}],
+                            "restartPolicy": "Never",
+                        },
+                    }
+                }
+            },
+        },
+        status={"lastScheduleTime": "2026-03-17T00:00:00Z"},
+    )
+    assert cronjob.status["lastScheduleTime"] == "2026-03-17T00:00:00Z"
+    assert legacy.get("batch", "v1", "cronjobs", "default", "demo-cron") is None
+
+    config_entry = state.get_authority_object("", "v1", "configmaps", "default", "demo-config")
+    assert config_entry is not None
+    assert config_entry.spec["app.yaml"] == "hello: world"
+
+    sa_entry = state.get_authority_object("", "v1", "serviceaccounts", "default", "demo-sa")
+    assert sa_entry is not None
+    assert sa_entry.spec["imagePullSecrets"][0]["name"] == "regcred"
+
+    cron_entry = state.get_authority_object("batch", "v1", "cronjobs", "default", "demo-cron")
+    assert cron_entry is not None
+    assert cron_entry.status["lastScheduleTime"] == "2026-03-17T00:00:00Z"

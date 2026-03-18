@@ -3150,7 +3150,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             return False
         supported = False
         plural, _ns, _name = _ns_name(path)
-        if plural == "services":
+        if plural in {"configmaps", "secrets", "serviceaccounts", "services"}:
             supported = True
         d_plural, _d_ns, _d_name = _apps_ns_name(path)
         if d_plural in {"deployments", "deployments/scale", "statefulsets", "daemonsets"}:
@@ -3159,14 +3159,14 @@ class ShimHandler(BaseHTTPRequestHandler):
         if n_plural == "ingresses":
             supported = True
         b_plural, _b_ns, _b_name = _batch_ns_name(path)
-        if b_plural == "jobs":
+        if b_plural in {"jobs", "cronjobs"}:
             supported = True
         if supported:
             return False
         self._json_status(
             HTTPStatus.CONFLICT,
             reason="HAUnsupported",
-            message="HA mutation via apishim is enabled only for H4a workload-core resources; this resource remains read-only until H4b",
+            message="HA mutation via apishim is enabled only for converged H4a/H4b1 resources; this resource remains read-only until its later H4b* slice",
         )
         return True
 
@@ -8835,7 +8835,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             spec_in = (
-                doc.get("data") if plural in {"configmaps", "secrets"} else (doc.get("spec") or {})
+                doc.get("data")
+                if plural in {"configmaps", "secrets"}
+                else (
+                    _service_account_spec_payload(doc)
+                    if plural == "serviceaccounts"
+                    else (doc.get("spec") or {})
+                )
             )
             status_in = doc.get("status") or {}
             # Service enrichments: allocate clusterIP/nodePort if missing and validate collisions
@@ -9531,9 +9537,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                 ns_in,
                 name_in,
                 metadata=_normalize_metadata(md, name_in, ns_in, plural),
-                spec=doc.get("data")
-                if plural in {"configmaps", "secrets"}
-                else (doc.get("spec") or {}),
+                spec=(
+                    doc.get("data")
+                    if plural in {"configmaps", "secrets"}
+                    else (
+                        _service_account_spec_payload(doc)
+                        if plural == "serviceaccounts"
+                        else (doc.get("spec") or {})
+                    )
+                ),
                 status=doc.get("status") or {},
             )
             self._ok(_to_obj(updated))
@@ -9991,7 +10003,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             ):
                 md = _update_managed_fields(md, "v1", field_manager, "Update", fields=patch_paths)
             spec_or_data = (
-                merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
+                merged.get("data")
+                if plural in {"configmaps", "secrets"}
+                else (
+                    _service_account_spec_payload(merged)
+                    if plural == "serviceaccounts"
+                    else merged.get("spec")
+                )
             )
             name_eff = md.get("name") or name
             ns_eff = (
@@ -10977,6 +10995,16 @@ def _secret_type_from_meta(md: dict[str, Any]) -> str | None:
     return st or None
 
 
+def _service_account_spec_payload(doc: dict[str, Any]) -> dict[str, Any]:
+    spec = doc.get("spec")
+    out = dict(spec) if isinstance(spec, dict) else {}
+    for key, value in doc.items():
+        if key in {"apiVersion", "kind", "metadata", "status", "spec"}:
+            continue
+        out[key] = value
+    return out
+
+
 def _to_obj(o: K8sObject) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
@@ -10992,7 +11020,11 @@ def _to_obj(o: K8sObject) -> dict[str, Any]:
         **(
             {"data": o.spec}
             if o.resource in {"configmaps", "secrets"}
-            else ({} if not o.spec else {"spec": o.spec})
+            else (
+                ({} if not o.spec else dict(o.spec))
+                if o.resource == "serviceaccounts"
+                else ({} if not o.spec else {"spec": o.spec})
+            )
         ),
         **({} if not o.status else {"status": o.status}),
     }

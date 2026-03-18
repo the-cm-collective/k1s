@@ -15,6 +15,7 @@ import requests
 from ae.controller.health import HealthReport
 from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.controller.state import (
+    AuthorityObjectEntry,
     AppEvent,
     AppStatus,
     EdgeIngressPolicyRecord,
@@ -927,6 +928,191 @@ class EtcdStateStore(SQLiteStateStore):
             actual_rv = self._get_json(key)[1]
             raise RegistryConflictError(
                 app_name,
+                expected=int(expected_resource_version),
+                actual=actual_rv,
+            )
+        return True
+
+    @staticmethod
+    def _authority_ns_key(namespace: str | None) -> str:
+        return str(namespace or "_cluster")
+
+    def _authority_key(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+    ) -> str:
+        return self._k(
+            "apishim",
+            "authority",
+            group or "_core",
+            version,
+            resource,
+            self._authority_ns_key(namespace),
+            name,
+        )
+
+    def register_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        kind: str,
+        metadata: dict | None = None,
+        spec: dict | None = None,
+        status: dict | None = None,
+        expected_resource_version: int | None = None,
+    ) -> int:
+        key = self._authority_key(group, version, resource, namespace, name)
+        payload = {
+            "group": group,
+            "version": version,
+            "resource": resource,
+            "namespace": namespace or "",
+            "name": name,
+            "kind": kind,
+            "metadata": metadata or {},
+            "spec": spec or {},
+            "status": status or {},
+            "updated_at": _now_iso(),
+        }
+        conflict_key = self._authority_object_conflict_key(group, version, resource, namespace, name)
+        if expected_resource_version is None:
+            self._put_json(key, payload)
+            return self._get_json(key)[1]
+        compare: list[dict]
+        if int(expected_resource_version) == 0:
+            compare = [{"key": _b64encode(key), "target": "CREATE", "createRevision": "0"}]
+        else:
+            compare = [
+                {
+                    "key": _b64encode(key),
+                    "target": "MOD",
+                    "modRevision": str(int(expected_resource_version)),
+                }
+            ]
+        success = [
+            {
+                "requestPut": {
+                    "key": _b64encode(key),
+                    "value": _b64encode(self._encode(payload)),
+                }
+            }
+        ]
+        failure = [{"requestRange": {"key": _b64encode(key), "limit": 1}}]
+        resp = self._client.txn(compare, success, failure)
+        if not bool(resp.get("succeeded")):
+            actual_rv = self._get_json(key)[1]
+            raise RegistryConflictError(
+                conflict_key,
+                expected=int(expected_resource_version),
+                actual=actual_rv,
+            )
+        return self._get_json(key)[1]
+
+    def list_authority_objects(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None = None,
+    ) -> list[AuthorityObjectEntry]:
+        prefix = self._k("apishim", "authority", group or "_core", version, resource)
+        if namespace is not None:
+            prefix = self._k(prefix, self._authority_ns_key(namespace))
+        rows = self._list_prefix(prefix)
+        out: list[AuthorityObjectEntry] = []
+        for _key, rec, mod_rev in rows:
+            namespace_value = rec.get("namespace")
+            out.append(
+                AuthorityObjectEntry(
+                    group=str(rec.get("group", "")),
+                    version=str(rec.get("version", version)),
+                    resource=str(rec.get("resource", resource)),
+                    namespace=(str(namespace_value) if namespace_value not in {None, ""} else None),
+                    name=str(rec.get("name", "")),
+                    kind=str(rec.get("kind", "")),
+                    metadata=rec.get("metadata") if isinstance(rec.get("metadata"), dict) else {},
+                    spec=rec.get("spec") if isinstance(rec.get("spec"), dict) else {},
+                    status=rec.get("status") if isinstance(rec.get("status"), dict) else {},
+                    updated_at=_dt_from_iso(
+                        rec.get("updated_at"),
+                        default=datetime.fromtimestamp(0, tz=timezone.utc),
+                    )
+                    or datetime.fromtimestamp(0, tz=timezone.utc),
+                    resource_version=int(mod_rev or 0),
+                )
+            )
+        out.sort(key=lambda entry: ((entry.namespace or ""), entry.name))
+        return out
+
+    def get_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+    ) -> AuthorityObjectEntry | None:
+        rec, mod_rev = self._get_json(self._authority_key(group, version, resource, namespace, name))
+        if not rec:
+            return None
+        namespace_value = rec.get("namespace")
+        return AuthorityObjectEntry(
+            group=str(rec.get("group", "")),
+            version=str(rec.get("version", version)),
+            resource=str(rec.get("resource", resource)),
+            namespace=(str(namespace_value) if namespace_value not in {None, ""} else None),
+            name=str(rec.get("name", name)),
+            kind=str(rec.get("kind", "")),
+            metadata=rec.get("metadata") if isinstance(rec.get("metadata"), dict) else {},
+            spec=rec.get("spec") if isinstance(rec.get("spec"), dict) else {},
+            status=rec.get("status") if isinstance(rec.get("status"), dict) else {},
+            updated_at=_dt_from_iso(
+                rec.get("updated_at"),
+                default=datetime.fromtimestamp(0, tz=timezone.utc),
+            )
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+            resource_version=int(mod_rev or 0),
+        )
+
+    def delete_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        key = self._authority_key(group, version, resource, namespace, name)
+        if expected_resource_version is None:
+            existing, _rv = self._get_json(key)
+            if existing is None:
+                return False
+            self._delete(key)
+            return True
+        compare = [
+            {
+                "key": _b64encode(key),
+                "target": "MOD",
+                "modRevision": str(int(expected_resource_version)),
+            }
+        ]
+        success = [{"requestDeleteRange": {"key": _b64encode(key)}}]
+        failure = [{"requestRange": {"key": _b64encode(key), "limit": 1}}]
+        resp = self._client.txn(compare, success, failure)
+        if not bool(resp.get("succeeded")):
+            actual_rv = self._get_json(key)[1]
+            raise RegistryConflictError(
+                self._authority_object_conflict_key(group, version, resource, namespace, name),
                 expected=int(expected_resource_version),
                 actual=actual_rv,
             )
