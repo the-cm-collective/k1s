@@ -262,6 +262,15 @@ HA control-plane mode (`k1s-ha-core`)
   - `export AE_ETCD_PREFIX=/k1s/prod`
   - `export AE_NATS_URL=nats://10.0.0.21:4222,nats://10.0.0.22:4222,nats://10.0.0.23:4222`
   - `make k1s-ha-core`
+- Installed-service surface:
+  - `make install-ha-core-systemd` installs the HA node-role unit, env file, and wrapper.
+  - `make uninstall-ha-core-systemd` removes the unit and wrapper while leaving `/etc/ae/ha-core.env` in place.
+  - The install surface writes:
+    - `/etc/systemd/system/ae-ha-core.service`
+    - `/etc/ae/ha-core.env`
+    - `/usr/local/bin/ae-ha-core-service`
+  - The wrapper sources `/etc/ae/ha-core.env`, forces the operator-safe `k1s-ha-core` defaults, and launches the repo's `scripts/dev/run_profile.sh k1s-ha-core` path without enabling controller `--watch`.
+  - Under the hood the same actions are available as `bash scripts/install.sh ha-core-install` and `bash scripts/install.sh ha-core-uninstall`.
 - HA helpers for this profile:
   - Preflight: `PYTHONPATH=src python scripts/dev/ha_core_preflight.py`
   - Snapshot save: `PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto save --output state/backups/ha-$(date +%Y%m%d-%H%M%S).db`
@@ -312,6 +321,38 @@ HA etcd recovery (`H5b1-etcd-recovery`)
   - Prefer dedicated control-plane nodes for controllers, shared etcd members, and shared NATS/JetStream members.
   - Avoid placing etcd quorum roles only on ephemeral worker-focused nodes when the deployment has enough dedicated control-plane capacity.
   - For AMD fabric deployments, keep recovery ownership explicit: controller operators own authority recovery, fabric operators consume the resulting health signals instead of improvising their own failover rules.
+
+HA core rolling upgrades (`H5b2a-core-upgrades`)
+- Scope and contract:
+  - This slice covers systemd-managed `k1s-ha-core` nodes only.
+  - Upgrade one core node at a time.
+  - Followers first, leader last.
+  - The only supported mixed-build steady state is a temporary two-build window: the current build and one target build.
+  - There is no explicit leader-transfer command in this slice; the final leader restart relies on the existing etcd lease failover path.
+- Build/version visibility:
+  - Controller: `curl -fsS http://127.0.0.1:9108/__ae/version`
+  - Apishim: `curl -fsSk https://127.0.0.1:8445/__ae/version`
+  - Controller build metric: `curl -fsS http://127.0.0.1:9108/metrics | rg 'ae_controller_build_info|ae_controller_authority_healthy'`
+  - Kubernetes `/version` stays unchanged; the HA upgrade helper uses `/__ae/version`.
+- Upgrade helper surface:
+  - Precheck: `PYTHONPATH=src python scripts/dev/ha_core_upgrade.py precheck --metrics-url http://127.0.0.1:9108/metrics`
+  - Per-node plan: `PYTHONPATH=src python scripts/dev/ha_core_upgrade.py node-plan --node-name core-a --expected-version 0.1.3.dev0 --expected-sha <target-sha>`
+  - Cluster verify: `PYTHONPATH=src python scripts/dev/ha_core_upgrade.py cluster-verify --node core-a=http://10.0.0.11:9108,https://10.0.0.11:8445 --node core-b=http://10.0.0.12:9108,https://10.0.0.12:8445 --node core-c=http://10.0.0.13:9108,https://10.0.0.13:8445 --expected-version 0.1.3.dev0 --expected-sha <target-sha>`
+- Rolling procedure:
+  - Run `ha_core_upgrade.py precheck` before touching any node. It validates one visible leader, controller authority health, shared etcd/NATS reachability, and transport backlog/route-ack thresholds.
+  - For each follower node:
+    - Run `ha_core_upgrade.py node-plan --node-name <node> ...` and follow the printed sequence.
+    - Install the target build through the node's normal package or image delivery path.
+    - Restart the service: `sudo systemctl restart ae-ha-core.service`
+    - Verify controller and apishim `/__ae/version`, then verify `ae_controller_authority_healthy` and `ae_controller_build_info`.
+    - If core ingress sidecars are enabled, confirm listeners are back before treating the node as upgraded.
+    - Run `ha_core_upgrade.py cluster-verify ...` and confirm the cluster is still within the two-build window.
+  - Restart the elected leader last, using the same service restart flow and allowing lease failover to choose the next leader.
+  - After the final node restart, run `ha_core_upgrade.py cluster-verify ... --require-converged` and confirm every core node reports the same target build.
+- Non-goals in this slice:
+  - No remote SSH or multi-node orchestration is provided.
+  - No NATS/JetStream member replacement or transport-cluster upgrade sequencing is covered here; that is deferred to the later `H5b2b-transport-upgrades` slice.
+  - No single-host 3x HA harness is introduced here.
 
 Release notes quick links
 - Compatibility matrix: `docs/reference/apishim-compatibility-matrix.md` (uploaded with releases)

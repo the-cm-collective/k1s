@@ -19,7 +19,7 @@ The repo already contains several of the primitives needed for this path:
 - NATS Core and JetStream transport modes
 - outbox-based dispatch and gateway spool durability
 
-The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` now hardens outbox replay, gateway replay, and JetStream HA validation without turning transport into truth. `H4a` routes workload-core resources through shared controller authority in HA mode. `H4b1` converges `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob`, `H4b-hpa` runs leader-only HPA scaling from shared workload metrics, `H4b2a` extends shared authority to `Namespace`, RBAC, and `PodDisruptionBudget`, `H4b2b-crd` converges CRDs plus dynamic custom-resource routing, `H4b2c-core` routes `StorageClass`, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and `H4b2c-csi` now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state. The next active HA work is `H5a-core`: a real `k1s-ha-core` bootstrap path, snapshot tooling, and repeatable HA drills for the strict-CRI core profile.
+The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` now hardens outbox replay, gateway replay, and JetStream HA validation without turning transport into truth. `H4a` routes workload-core resources through shared controller authority in HA mode. `H4b1` converges `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob`, `H4b-hpa` runs leader-only HPA scaling from shared workload metrics, `H4b2a` extends shared authority to `Namespace`, RBAC, and `PodDisruptionBudget`, `H4b2b-crd` converges CRDs plus dynamic custom-resource routing, `H4b2c-core` routes `StorageClass`, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and `H4b2c-csi` now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state. `H5a-core` and `H5b1-etcd-recovery` now give that surface a real bootstrap, snapshot, drill, and etcd recovery story. The next active HA work is `H5b2a-core-upgrades`: operator-assisted rolling upgrades for systemd-managed `k1s-ha-core` nodes, with transport-cluster upgrades deferred to a later slice.
 
 The two design rules for the whole program are:
 
@@ -307,16 +307,36 @@ Current implementation status:
 - controller metrics now expose `ae_controller_is_leader`, `ae_controller_epoch`, and `ae_controller_authority_healthy` for operator-visible recovery checks
 - the runbook now documents member replacement, quorum-loss restore, stale-leader isolation, and control-plane role separation on top of the `k1s-ha-core` bootstrap surface
 
-### H5b2-upgrades: Rolling upgrades and cluster-component replacement
+### H5b2a-core-upgrades: Rolling upgrades for `k1s-ha-core`
 
 Goal:
-- turn the recovery-ready HA control plane into an upgrade-ready operating model
+- turn the recovery-ready HA core profile into a repeatable rolling-upgrade surface for controller, apishim, and core-node services
 
 Primary outcomes:
 
-- documented rolling upgrade procedure for controller and transport components
+- explicit installed-service surface for systemd-managed `k1s-ha-core` nodes
+- operator-assisted precheck, per-node plan, and cluster verification helpers for follower-first and leader-last upgrades
+- controller and apishim build/version visibility suitable for upgrade gating
+- narrow two-build skew contract for one-node-at-a-time upgrades
+- NATS/JetStream member replacement and transport-cluster upgrade sequencing stay explicitly deferred to a later slice
+
+Current implementation status:
+
+- `make install-ha-core-systemd` and `make uninstall-ha-core-systemd` now manage an explicit HA node-role service surface built around `ae-ha-core.service`, `/etc/ae/ha-core.env`, and `/usr/local/bin/ae-ha-core-service`
+- `scripts/install.sh` now exposes `ha-core-install` and `ha-core-uninstall` actions without changing the older single-node install path
+- `scripts/dev/ha_core_upgrade.py` now provides `precheck`, `node-plan`, and `cluster-verify` commands for operator-assisted rolling upgrades
+- controller and apishim now expose `GET /__ae/version`, and controller metrics now expose `ae_controller_build_info{version,sha,date} 1`
+- the runbook now documents follower-first, leader-last rolling upgrades with a strict two-build window for `k1s-ha-core`
+
+### H5b2b-transport-upgrades: Transport-cluster upgrade sequencing and replacement
+
+Goal:
+- extend the HA operating model from core-node upgrades to shared NATS/JetStream transport-cluster upgrades and member replacement
+
+Primary outcomes:
+
 - documented NATS/JetStream member replacement and upgrade sequencing
-- upgrade-safe validation for HA transport recovery and control-plane version skew
+- transport-cluster upgrade checks that build on the finished `k1s-ha-core` rolling-upgrade surface
 - any later single-host 3x HA lab harness stays explicitly separate from production upgrade procedures
 
 ## Dependency Model
@@ -337,7 +357,8 @@ This HA track is the foundation for later deployment work:
 | H4b2c-csi | H4b2c-core | Snapshot and CSI convergence should wait until the core PVC/PV/StorageClass cut is stable. |
 | H5a-core | H1, H3, H4b2c-csi | HA bootstrap and drills are only meaningful after authority, transport, and API convergence are defined. |
 | H5b1-etcd-recovery | H5a-core | Member replacement, quorum loss, and stale-leader recovery should build on one real HA bootstrap and drill surface, not precede it. |
-| H5b2-upgrades | H5b1-etcd-recovery | Rolling upgrades and transport-cluster replacement should build on the finished etcd recovery posture instead of redefining it. |
+| H5b2a-core-upgrades | H5b1-etcd-recovery | Rolling upgrades for systemd-managed `k1s-ha-core` nodes should build on the finished etcd recovery posture instead of redefining it. |
+| H5b2b-transport-upgrades | H5b2a-core-upgrades | Transport-cluster upgrade sequencing should build on the finished core-node upgrade surface instead of mixing the first operator contract with NATS/JetStream replacement. |
 
 The fabric deployment milestones depend on this track rather than re-stating it:
 
@@ -345,8 +366,8 @@ The fabric deployment milestones depend on this track rather than re-stating it:
 | --- | --- | --- |
 | D1 | H3 | The HA edge and broker boundary should not front a single-process backend authority. |
 | D2 | H4b2c-csi | Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model. |
-| D3 | H5b2-upgrades | Multi-cell operation needs tested failover, recovery, and upgrade patterns, not only topology docs. |
-| D4 | H5b2-upgrades | Partner and domain operations require operator-readable recovery, upgrade, and governance paths. |
+| D3 | H5b2b-transport-upgrades | Multi-cell operation needs tested failover, recovery, and upgrade patterns, not only topology docs. |
+| D4 | H5b2b-transport-upgrades | Partner and domain operations require operator-readable recovery, upgrade, and governance paths. |
 
 ## Failure Model
 
