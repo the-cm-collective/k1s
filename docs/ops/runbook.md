@@ -351,8 +351,53 @@ HA core rolling upgrades (`H5b2a-core-upgrades`)
   - After the final node restart, run `ha_core_upgrade.py cluster-verify ... --require-converged` and confirm every core node reports the same target build.
 - Non-goals in this slice:
   - No remote SSH or multi-node orchestration is provided.
-  - No NATS/JetStream member replacement or transport-cluster upgrade sequencing is covered here; that is deferred to the later `H5b2b-transport-upgrades` slice.
+  - No NATS/JetStream member replacement or transport-cluster upgrade sequencing is covered here; that is deferred to the later `H5b2b-hub-transport-upgrades` slice.
   - No single-host 3x HA harness is introduced here.
+
+HA hub transport upgrades (`H5b2b-hub-transport-upgrades`)
+- Scope and contract:
+  - This slice covers the shared hub NATS/JetStream cluster that `k1s-ha-core` depends on.
+  - Upgrade or replace one hub NATS node at a time.
+  - Non-meta-leader JetStream nodes first, JetStream meta leader last.
+  - The only supported mixed-build steady state is a temporary two-build window: the current hub build and one target build.
+  - Edge-site NATS leader upgrades and replacement choreography are not in scope here.
+  - The repo does not install or manage the shared NATS service surface in this slice.
+- Monitoring and validation surfaces:
+  - Per-node NATS monitoring endpoints:
+    - `/varz`
+    - `/routez`
+    - `/jsz?streams=true&consumers=true&config=true`
+    - optional `/leafz` when edge leaves are present
+  - Controller transport metrics:
+    - `ae_gateway_result_replay_backlog`
+    - `ae_route_bundle_ack_age_seconds`
+    - `ae_site_stale`
+    - `ae_js_stream_*`
+    - `ae_js_consumer_*`
+- Helper surface:
+  - Precheck:
+    - `PYTHONPATH=src python scripts/dev/ha_transport_upgrade.py precheck --node hub-a=http://10.0.0.21:8222 --node hub-b=http://10.0.0.22:8222 --node hub-c=http://10.0.0.23:8222 --controller-metrics-url http://10.0.0.11:9108/metrics`
+  - Per-node plan:
+    - `PYTHONPATH=src python scripts/dev/ha_transport_upgrade.py node-plan --node-name hub-a --monitor-url http://10.0.0.21:8222`
+  - Cluster verify:
+    - `PYTHONPATH=src python scripts/dev/ha_transport_upgrade.py cluster-verify --node hub-a=http://10.0.0.21:8222 --node hub-b=http://10.0.0.22:8222 --node hub-c=http://10.0.0.23:8222 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version <target-version> --expected-commit <target-commit>`
+  - Member replacement plan:
+    - `PYTHONPATH=src python scripts/dev/ha_transport_upgrade.py member-replace-plan --failed-node hub-b --replacement-node hub-d --replacement-monitor-url http://10.0.0.24:8222 --controller-metrics-url http://10.0.0.11:9108/metrics`
+- Rolling upgrade procedure:
+  - Run `ha_transport_upgrade.py precheck` before touching any hub node. It validates route mesh health, JetStream domain and replica posture, and controller-observed transport health.
+  - Restart one non-meta-leader hub node at a time, using the operator-managed NATS delivery path for that host.
+  - After each restart, confirm `/varz`, `/routez`, and `/jsz?streams=true&consumers=true&config=true` on the restarted node, then run `ha_transport_upgrade.py cluster-verify ...`.
+  - Keep controller transport metrics inside thresholds between node restarts; do not proceed while replay backlog, route-ack age, or site-stale signals remain out of bounds.
+  - Restart the JetStream meta leader last, using the same verification path.
+  - After the final node restart, run `ha_transport_upgrade.py cluster-verify ... --require-converged` and confirm the hub cluster is back to one target build.
+- Member replacement procedure:
+  - Use `ha_transport_upgrade.py member-replace-plan` to print the fixed checklist for a failed hub member.
+  - NATS cluster config, JWT/operator auth, and service restart mechanics remain operator-managed outside the repo.
+  - Validate the replacement through NATS monitoring endpoints and the controller transport metrics before treating the hub as healthy again.
+- Non-goals in this slice:
+  - No edge-site NATS leader upgrades or replacement choreography are included here; those are deferred to the later `H5b2c-edge-transport-upgrades` slice.
+  - No JWT/operator auth rotation or `nsc` workflow changes are introduced here.
+  - No remote SSH or repo-managed NATS install surface is added here.
 
 Release notes quick links
 - Compatibility matrix: `docs/reference/apishim-compatibility-matrix.md` (uploaded with releases)
