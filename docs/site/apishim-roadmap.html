@@ -794,7 +794,7 @@
 </ul>
 <h2 id="current-gaps-and-next-steps">Current Gaps and Next Steps</h2>
 <ul>
-<li>**Phase 6 rollout in progress:** Shim and controller can target Postgres via <code>AE_APISHIM_DSN</code>/<code>AE_STATE_DSN</code>; migrations preserve resourceVersions; HA shim with shared Postgres is validated in CI as a transitional path. The long-term HA authority target now follows the <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>: <code>H4a</code> routes workload-core HA mutation onto shared controller authority, and <code>H4b1</code> is now active with shared-authority routing for <code>CronJob</code>, <code>ConfigMap</code>, <code>Secret</code>, and <code>ServiceAccount</code>, controller-native CronJob execution, HA CRI reads for converged passive resources, and storage-controller disablement until <code>H4b2</code>. The later HPA slice still waits for a shared metrics source, and <code>H4b2</code> finishes storage/RBAC/remaining shim-native convergence onto <code>etcd</code>. Remaining: production-grade watch propagation metrics across shim replicas and the storage convergence work needed for full <code>etcd</code>-backed HA across the whole shim surface.</li>
+<li>**Phase 6 rollout in progress:** Shim and controller can target Postgres via <code>AE_APISHIM_DSN</code>/<code>AE_STATE_DSN</code>; migrations preserve resourceVersions; HA shim with shared Postgres is validated in CI as a transitional path. The long-term HA authority target now follows the <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>: <code>H4a</code> routes workload-core HA mutation onto shared controller authority, <code>H4b1</code> converges <code>CronJob</code>, <code>ConfigMap</code>, <code>Secret</code>, and <code>ServiceAccount</code>, <code>H4b-hpa</code> adds shared-metrics HPA control, and <code>H4b2a</code> now extends shared authority to <code>Namespace</code>, RBAC resources, and <code>PodDisruptionBudget</code>. Remaining: production-grade watch propagation metrics across shim replicas plus the later <code>H4b2b</code> storage, CRD, and dynamic custom-resource convergence work needed for full <code>etcd</code>-backed HA across the whole shim surface.</li>
 <li>**Phase 7 polish in flight:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2/ v3 and schemas are richer with fixture validation and live gate coverage. Remaining polish: promote the live gate to release-blocking, wire compat/OpenAPI links into docs + release notes, and round out sample coverage.</li>
 </ul>
 <h3 id="auth-defaults-dev-toggle">Auth defaults (dev toggle)</h3>
@@ -804,7 +804,7 @@
 </ul>
 <h2 id="phase-6-reliability-storage-and-scale">Phase 6 — Reliability, storage, and scale</h2>
 <ul>
-<li>Move shim object storage off SQLite to the primary HA authority store. Postgres remains a transitional externalized path, but the target HA end state aligns on <code>etcd</code> with the core controller; workload-core HA mutation is now on that path, while the remaining shim-native resources still need the <code>H4b1</code>, later HPA, and <code>H4b2</code> cutovers.</li>
+<li>Move shim object storage off SQLite to the primary HA authority store. Postgres remains a transitional externalized path, but the target HA end state aligns on <code>etcd</code> with the core controller; workload-core HA mutation is now on that path, and the remaining shim-native surface now narrows to the later <code>H4b2b</code> storage plus CRD/custom-resource cutover after the <code>H4b1</code>, <code>H4b-hpa</code>, and <code>H4b2a</code> slices.</li>
 <li>Improve watch scalability (per‑resource queues, backpressure, timeouts) and add metrics/tracing.</li>
 <li>Conformance subset: target the “Kubernetes API conformance lite” we define; document exclusions.</li>
 <li>Deliverables: soak tests under churn; dashboard panel for shim health; failover of shim without object loss.</li>
@@ -908,7 +908,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-17 18:41:17</span>
+        <span>Built 2026-03-18 07:15:17</span>
       </div>
     </footer>
     <script>

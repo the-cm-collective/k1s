@@ -19,7 +19,7 @@ The repo already contains several of the primitives needed for this path:
 - NATS Core and JetStream transport modes
 - outbox-based dispatch and gateway spool durability
 
-The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate `R=3`, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. `H4a` has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode. `H4b1` is now in progress: `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob` route through shared authority in HA mode, the apishim storage controller is disabled until `H4b2`, CRI reads for converged passive resources use the HA shim read path, and the elected controller owns CronJob execution.
+The first HA slice now removes local `specs/` authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later `H4b*` slices. `H2` fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. `H3` is now in progress: outbox rows persist deterministic publish metadata, HA JetStream work streams validate `R=3`, gateway spool replay uses bounded backoff and survives restart, route bundles stay on the periodic publish/ack path with reconnect-triggered resend, and transport metrics expose replay backlog and route ack age. `H4a` has started the shim convergence cutover: workload-core resources now route through shared controller authority in HA mode. `H4b1` is now in progress: `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob` route through shared authority in HA mode, the apishim storage controller is disabled until `H4b2b`, CRI reads for converged passive resources use the HA shim read path, and the elected controller owns CronJob execution. `H4b-hpa` now runs leader-only HPA scaling from shared workload metrics, and `H4b2a` extends shared authority to `Namespace`, RBAC, and `PodDisruptionBudget` without reopening storage or CRD/custom-resource authority yet.
 
 The two design rules for the whole program are:
 
@@ -168,13 +168,13 @@ Primary outcomes:
 
 - `CronJob`, `ConfigMap`, `Secret`, and `ServiceAccount` gain shared-authority HA read/write/watch behavior
 - the elected controller owns `CronJob` execution in HA mode; schedule cursor and last-run status live in shared authority state
-- HA mode disables the apishim `StorageController` until `H4b2`, so storage watch loops do not keep mutating outside the converged authority boundary
+- HA mode disables the apishim `StorageController` until `H4b2b`, so storage watch loops do not keep mutating outside the converged authority boundary
 - containerd/CRI runtime reads for converged passive resources stop depending on local shim DB authority in HA mode
 
 Current implementation status:
 
 - HA mode now routes `ConfigMap`, `Secret`, `ServiceAccount`, and `CronJob` writes through the generic shared-authority apishim store instead of the legacy shim DB
-- the apishim `StorageController` no longer starts in HA mode, keeping PVC/PV/snapshot watch loops out of scope until `H4b2`
+- the apishim `StorageController` no longer starts in HA mode, keeping PVC/PV/snapshot watch loops out of scope until `H4b2b`
 - `CriRuntime` now prefers the HA apishim HTTP read client for converged `Secret` and `ServiceAccount` lookups in HA mode and does not fall back to local shim DB authority for that surface
 - the new controller-native `CronJobAuthorityController` runs only on the elected controller, creates deterministic child `Job` entries through workload authority, and persists `lastScheduleTime`/`lastSuccessfulTime` in shared authority state
 
@@ -189,14 +189,38 @@ Primary outcomes:
 - autoscaling decisions no longer depend on per-replica adapter-host runtime stats
 - HPA remains read-only in HA mode until this shared-metrics slice lands
 
-### H4b2: Storage, RBAC, and remaining shim-resource convergence
+Current implementation status:
+
+- HA apishim now routes `autoscaling/v2` HPA CRUD/list/watch through shared authority with HA validation for supported resource metrics and converged target kinds
+- node agents expose `/v1/workload_metrics`, `CriRuntime` aggregates per-workload CRI metrics, and the elected controller writes shared workload-metrics snapshots before applying HPA decisions
+- the controller-native HPA authority loop now persists `lastScaleTime`, conditions, and current metrics in shared authority state and scales converged workloads through the existing CAS-protected workload authority path
+
+### H4b2a: Built-in passive resource convergence
+
+Goal:
+- converge the remaining built-in passive shim resources that do not need new active control loops
+
+Primary outcomes:
+
+- `Namespace`, RBAC resources, and `PodDisruptionBudget` gain shared-authority HA CRUD/list/watch behavior
+- RBAC evaluation becomes shared-authority-based across shim replicas instead of depending on local shim DB state
+- storage, CRDs, and dynamic custom resources stay explicitly read-only in HA mode during this slice
+- the storage controller remains disabled in HA mode; `H4b2a` does not reopen PVC/PV/snapshot watch loops
+
+Current implementation status:
+
+- HA apishim now routes `Namespace`, `Role`, `RoleBinding`, `ClusterRole`, `ClusterRoleBinding`, and `PodDisruptionBudget` through the generic shared-authority store instead of the legacy shim DB
+- the HA mutation guard now allows those built-in passive resources while keeping storage, CRDs, and dynamic custom resources explicitly unsupported in HA mode
+- RBAC authorization evaluation now reads shared-authority `Role`/`Binding` objects across shim replicas, so cross-replica auth decisions no longer depend on local DB contents
+
+### H4b2b: Storage, CRDs, custom resources, and remaining shim-resource convergence
 
 Goal:
 - finish the remaining shim-native convergence work after the lower-risk control-resource slices land
 
 Primary outcomes:
 
-- PVC/storage, RBAC, and the remaining shim-native mutation surfaces converge on the same shared HA authority model instead of the transitional shim DB path
+- PVC/storage, CRDs, dynamic custom resources, and the remaining shim-native mutation surfaces converge on the same shared HA authority model instead of the transitional shim DB path
 - watch/resourceVersion/compaction behavior for the remaining shim surface aligns with the same monotonic revision model used by the controller and the earlier `H4*` slices
 - Postgres and SQLite remain optional deployment backends, but they are no longer the HA authority story for public API behavior
 
@@ -225,15 +249,16 @@ This HA track is the foundation for later deployment work:
 | H4a | H0, H1, H2 | Workload-core shim mutation can only converge after shared authority, leadership, and fencing exist. |
 | H4b1 | H4a | `CronJob` and passive shim objects can extend the same authority model without reopening storage or HPA metrics scope. |
 | H4b-hpa | H4b1 | HPA should only converge after the passive-resource cut and a controller-visible shared metrics source exist. |
-| H4b2 | H4b1, H4b-hpa | Storage, RBAC, and the remaining shim-native resources should converge only after the narrower control-resource slices land. |
-| H5 | H1, H3, H4b2 | Recovery docs are only meaningful after authority, transport, and API convergence are defined. |
+| H4b2a | H4b1, H4b-hpa | Built-in passive resources should converge after the narrower CronJob/passive-object and shared-metrics HPA cuts land. |
+| H4b2b | H4b2a | Storage and CRD/custom-resource convergence should wait until the lower-risk built-in resource slices are complete. |
+| H5 | H1, H3, H4b2b | Recovery docs are only meaningful after authority, transport, and API convergence are defined. |
 
 The fabric deployment milestones depend on this track rather than re-stating it:
 
 | Fabric milestone | Additional HA dependency | Why |
 | --- | --- | --- |
 | D1 | H3 | The HA edge and broker boundary should not front a single-process backend authority. |
-| D2 | H4b2 | Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model. |
+| D2 | H4b2b | Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model. |
 | D3 | H5 | Multi-cell operation needs tested failover and recovery patterns, not only topology docs. |
 | D4 | H5 | Partner and domain operations require operator-readable recovery and governance paths. |
 
