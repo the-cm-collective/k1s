@@ -399,6 +399,53 @@ HA hub transport upgrades (`H5b2b-hub-transport-upgrades`)
   - No JWT/operator auth rotation or `nsc` workflow changes are introduced here.
   - No remote SSH or repo-managed NATS install surface is added here.
 
+HA edge transport upgrades (`H5b2c-edge-transport-upgrades`)
+- Scope and contract:
+  - This slice covers edge-site gateway restart sequencing plus edge NATS leader restart and replacement choreography after the shared hub transport posture is already healthy.
+  - The milestone-defining HA lane is `k1s-edge-core` / `k1s-edge-core-cri`; `k1s-edge` / `k1s-core-edge` remain secondary compatibility rather than exit criteria.
+  - Restart gateways one at a time first, then restart the edge NATS leader last.
+  - Temporary site degradation during the edge leader restart is acceptable, but bounded recovery is required before moving on.
+  - The repo does not install or manage an edge service surface in this slice.
+- Monitoring and validation surfaces:
+  - Edge NATS monitoring endpoints:
+    - `/varz`
+    - `/leafz`
+  - Controller transport metrics:
+    - `ae_site_stale`
+    - `ae_gateway_result_replay_backlog`
+    - `ae_route_bundle_ack_age_seconds`
+    - `ae_site_gateway_last_seen_seconds`
+    - `ae_site_gateway_build_info`
+- Helper surface:
+  - Precheck:
+    - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py precheck --site sea=http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b`
+  - Per-gateway plan:
+    - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py gateway-plan --site-id sea --gateway-node edge-a --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version 0.1.3.dev0 --expected-sha <target-sha>`
+  - Site verify:
+    - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py site-verify --site sea=http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b --expected-edge-version <target-version> --expected-edge-commit <target-commit> --expected-gateway-version 0.1.3.dev0 --expected-gateway-sha <target-sha> --require-gateway-converged`
+  - Leader plan:
+    - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py leader-plan --site-id sea --monitor-url http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version <target-version> --expected-commit <target-commit>`
+  - Leader replacement plan:
+    - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py leader-replace-plan --site-id sea --failed-node edge-nats-a --replacement-node edge-nats-b --replacement-monitor-url http://10.0.1.22:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b`
+- Rolling procedure:
+  - Run the shared hub precheck first. Do not start edge-site work while hub route mesh, JetStream replication, or controller-observed transport metrics remain out of bounds.
+  - Run `ha_edge_transport.py precheck` for the target site before touching any gateway or the edge leader.
+  - For each gateway in the site:
+    - Run `ha_edge_transport.py gateway-plan ...` and follow the printed sequence.
+    - Restart the operator-managed gateway through the node's existing edge profile/service path.
+    - Run `ha_edge_transport.py site-verify ...` and confirm the restarted gateway reports the expected build through `ae_site_gateway_build_info`, its `ae_site_gateway_last_seen_seconds` value is fresh, and site-wide replay plus route convergence metrics are back inside thresholds.
+  - After the gateways converge, run `ha_edge_transport.py leader-plan ...` and restart the edge NATS leader last.
+  - Run `ha_edge_transport.py site-verify ...` again and confirm `/leafz` reconnect, `ae_site_stale{site=...}` clears, replay backlog drains, and expected gateway builds remain visible before treating the site as healthy.
+- Leader replacement procedure:
+  - Use `ha_edge_transport.py leader-replace-plan` to print the fixed checklist for a failed edge NATS leader host.
+  - Bring up the replacement with the existing operator-managed edge NATS config and service delivery path; this slice does not generate NATS configs or install services.
+  - Verify the replacement through `/varz`, `/leafz`, per-gateway telemetry, and controller transport metrics before returning the site to service.
+- Non-goals in this slice:
+  - No installed edge service surface is added here.
+  - No repo-managed NATS config generation or auth rotation workflow is introduced here.
+  - No remote SSH or multi-node orchestration is provided.
+  - `k1s-edge` / `k1s-core-edge` are not the milestone-defining HA exit lane for this slice.
+
 Release notes quick links
 - Compatibility matrix: `docs/reference/apishim-compatibility-matrix.md` (uploaded with releases)
 - OpenAPI artifacts: `/openapi/v2` and `/openapi/v3` are exported during release and attached as `openapi-schemas`.
