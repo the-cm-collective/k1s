@@ -92,6 +92,32 @@ class HaCoreNodeTarget:
     apishim_url: str
 
 
+@dataclass(frozen=True, slots=True)
+class NatsHubNodeTarget:
+    name: str
+    monitor_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class NatsHubMonitorRecord:
+    name: str
+    monitor_url: str
+    server_name: str
+    server_id: str
+    version: str
+    git_commit: str
+    cluster_name: str | None
+    jetstream_domain: str | None
+    meta_leader: str | None
+    route_count: int
+    route_peers: tuple[str, ...]
+    leaf_count: int | None
+    stream_replicas: dict[str, int]
+    stream_offline: dict[str, tuple[str, ...]]
+    consumer_replicas: dict[str, int]
+    consumer_offline: dict[str, tuple[str, ...]]
+
+
 def split_csv(raw: str | None) -> list[str]:
     if raw is None:
         return []
@@ -622,6 +648,299 @@ def parse_ha_core_node_target(raw: str) -> HaCoreNodeTarget:
     )
 
 
+def parse_nats_hub_node_target(raw: str) -> NatsHubNodeTarget:
+    text = str(raw or "").strip()
+    if "=" not in text:
+        raise ValueError(f"invalid node value {raw!r}; expected NAME=MONITOR_URL")
+    name, monitor_url = text.split("=", 1)
+    node_name = name.strip()
+    base_url = monitor_url.strip().rstrip("/")
+    if not node_name or not base_url:
+        raise ValueError(f"invalid node value {raw!r}; expected NAME=MONITOR_URL")
+    return NatsHubNodeTarget(name=node_name, monitor_url=base_url)
+
+
+def fetch_nats_monitor_json(base_url: str, endpoint: str, *, timeout_s: float = 3.0) -> dict[str, Any]:
+    path = str(endpoint or "").strip()
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return _http_json(f"{str(base_url or '').rstrip('/')}{path}", timeout_s=timeout_s)
+
+
+def build_nats_hub_monitor_record(
+    target: NatsHubNodeTarget,
+    *,
+    varz: dict[str, Any],
+    routez: dict[str, Any],
+    jsz: dict[str, Any],
+    leafz: dict[str, Any] | None = None,
+) -> NatsHubMonitorRecord:
+    route_entries = routez.get("routes") if isinstance(routez.get("routes"), list) else []
+    route_peers = tuple(
+        sorted(
+            {
+                peer
+                for peer in (
+                    _clean_str(
+                        route.get("name")
+                        or route.get("remote_name")
+                        or route.get("server_name")
+                        or route.get("remote_id")
+                        or route.get("rid")
+                    )
+                    for route in route_entries
+                    if isinstance(route, dict)
+                )
+                if peer
+            }
+        )
+    )
+    route_count = int(routez.get("num_routes") or len(route_entries) or 0)
+
+    stream_replicas: dict[str, int] = {}
+    stream_offline: dict[str, tuple[str, ...]] = {}
+    consumer_replicas: dict[str, int] = {}
+    consumer_offline: dict[str, tuple[str, ...]] = {}
+    for stream in _iter_js_streams(jsz):
+        stream_name = _clean_str(_nested_get(stream, "config", "name")) or _clean_str(stream.get("name"))
+        if not stream_name:
+            continue
+        cluster = stream.get("cluster") if isinstance(stream.get("cluster"), dict) else {}
+        stream_replicas[stream_name] = _cluster_replica_total(cluster)
+        stream_offline[stream_name] = _cluster_offline_names(cluster)
+        for consumer in _iter_stream_consumers(stream):
+            consumer_name = _clean_str(_nested_get(consumer, "config", "durable_name")) or _clean_str(
+                _nested_get(consumer, "config", "name")
+            ) or _clean_str(consumer.get("name"))
+            if not consumer_name:
+                continue
+            consumer_cluster = (
+                consumer.get("cluster") if isinstance(consumer.get("cluster"), dict) else {}
+            )
+            consumer_replicas[consumer_name] = _cluster_replica_total(consumer_cluster)
+            consumer_offline[consumer_name] = _cluster_offline_names(consumer_cluster)
+
+    cluster_meta = jsz.get("meta_cluster") if isinstance(jsz.get("meta_cluster"), dict) else {}
+    return NatsHubMonitorRecord(
+        name=target.name,
+        monitor_url=target.monitor_url,
+        server_name=_clean_str(varz.get("server_name")) or target.name,
+        server_id=_clean_str(varz.get("server_id")) or _clean_str(varz.get("id")),
+        version=_clean_str(varz.get("version")),
+        git_commit=_clean_str(
+            varz.get("git_commit")
+            or varz.get("git_commit_hash")
+            or varz.get("commit")
+            or varz.get("build")
+        ),
+        cluster_name=_cluster_name_from_varz(varz),
+        jetstream_domain=_jetstream_domain(varz, jsz),
+        meta_leader=_clean_str(cluster_meta.get("leader")) or None,
+        route_count=route_count,
+        route_peers=route_peers,
+        leaf_count=_leaf_count(leafz),
+        stream_replicas=stream_replicas,
+        stream_offline=stream_offline,
+        consumer_replicas=consumer_replicas,
+        consumer_offline=consumer_offline,
+    )
+
+
+def fetch_nats_hub_monitor_record(
+    target: NatsHubNodeTarget,
+    *,
+    timeout_s: float = 3.0,
+    include_leafz: bool = False,
+) -> NatsHubMonitorRecord:
+    varz = fetch_nats_monitor_json(target.monitor_url, "/varz", timeout_s=timeout_s)
+    routez = fetch_nats_monitor_json(target.monitor_url, "/routez", timeout_s=timeout_s)
+    jsz = fetch_nats_monitor_json(
+        target.monitor_url,
+        "/jsz?streams=true&consumers=true&config=true",
+        timeout_s=timeout_s,
+    )
+    leafz = None
+    if include_leafz:
+        try:
+            leafz = fetch_nats_monitor_json(target.monitor_url, "/leafz", timeout_s=timeout_s)
+        except Exception:
+            leafz = None
+    return build_nats_hub_monitor_record(target, varz=varz, routez=routez, jsz=jsz, leafz=leafz)
+
+
+def evaluate_nats_hub_cluster(
+    records: list[NatsHubMonitorRecord],
+    *,
+    expected_domain: str,
+    expected_stream: str,
+    expected_replicas: int,
+    expected_consumers: list[str] | None = None,
+    expected_leaf_min: int | None = None,
+) -> list[str]:
+    issues: list[str] = []
+    if not records:
+        return ["no_records"]
+    cluster_names = sorted({name for name in (_clean_str(r.cluster_name) for r in records) if name})
+    if len(cluster_names) != 1:
+        issues.append("cluster_name_mismatch")
+    domains = sorted({name for name in (_clean_str(r.jetstream_domain) for r in records) if name})
+    if len(domains) != 1:
+        issues.append("jetstream_domain_mismatch")
+    elif domains[0] != str(expected_domain):
+        issues.append(f"jetstream_domain:{domains[0]}")
+
+    expected_routes = max(0, len(records) - 1)
+    for record in records:
+        if record.route_count < expected_routes:
+            issues.append(f"route_mesh:{record.name}:{record.route_count}/{expected_routes}")
+        stream_replica_total = int(record.stream_replicas.get(expected_stream, 0) or 0)
+        if stream_replica_total != int(expected_replicas):
+            issues.append(
+                f"stream_replicas:{record.name}:{expected_stream}:{stream_replica_total}/{int(expected_replicas)}"
+            )
+        offline_stream = record.stream_offline.get(expected_stream) or ()
+        if offline_stream:
+            issues.append(
+                f"stream_offline:{record.name}:{expected_stream}:{','.join(offline_stream)}"
+            )
+        if expected_leaf_min is not None and record.leaf_count is not None:
+            if int(record.leaf_count) < int(expected_leaf_min):
+                issues.append(
+                    f"leaf_count:{record.name}:{int(record.leaf_count)}/{int(expected_leaf_min)}"
+                )
+        for consumer in expected_consumers or []:
+            consumer_replica_total = int(record.consumer_replicas.get(consumer, 0) or 0)
+            if consumer_replica_total != int(expected_replicas):
+                issues.append(
+                    f"consumer_replicas:{record.name}:{consumer}:{consumer_replica_total}/{int(expected_replicas)}"
+                )
+            offline_consumer = record.consumer_offline.get(consumer) or ()
+            if offline_consumer:
+                issues.append(
+                    f"consumer_offline:{record.name}:{consumer}:{','.join(offline_consumer)}"
+                )
+    meta_leaders = sorted({name for name in (_clean_str(r.meta_leader) for r in records) if name})
+    if len(meta_leaders) != 1:
+        issues.append("meta_leader_mismatch")
+    return issues
+
+
+def nats_build_key(record: NatsHubMonitorRecord) -> tuple[str, str]:
+    return (record.version, record.git_commit)
+
+
+def _clean_str(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _nested_get(obj: Any, *path: str) -> Any:
+    current = obj
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _cluster_name_from_varz(varz: dict[str, Any]) -> str | None:
+    cluster = varz.get("cluster")
+    if isinstance(cluster, dict):
+        name = _clean_str(cluster.get("name") or cluster.get("cluster"))
+        return name or None
+    if isinstance(cluster, str):
+        name = _clean_str(cluster)
+        return name or None
+    return None
+
+
+def _jetstream_domain(varz: dict[str, Any], jsz: dict[str, Any]) -> str | None:
+    domain = _clean_str(_nested_get(varz, "jetstream", "config", "domain"))
+    if not domain:
+        domain = _clean_str(_nested_get(varz, "jetstream", "domain"))
+    if not domain:
+        domain = _clean_str(_nested_get(jsz, "config", "domain"))
+    if not domain:
+        domain = _clean_str(jsz.get("domain"))
+    return domain or None
+
+
+def _cluster_replica_total(cluster: dict[str, Any]) -> int:
+    if not isinstance(cluster, dict):
+        return 0
+    names: set[str] = set()
+    leader = _clean_str(cluster.get("leader"))
+    if leader:
+        names.add(leader)
+    replicas = cluster.get("replicas")
+    if isinstance(replicas, list):
+        for replica in replicas:
+            if not isinstance(replica, dict):
+                continue
+            name = _clean_str(replica.get("name") or replica.get("peer"))
+            if name:
+                names.add(name)
+    if names:
+        return len(names)
+    if isinstance(replicas, list):
+        return len(replicas)
+    return 0
+
+
+def _cluster_offline_names(cluster: dict[str, Any]) -> tuple[str, ...]:
+    if not isinstance(cluster, dict):
+        return ()
+    replicas = cluster.get("replicas")
+    if not isinstance(replicas, list):
+        return ()
+    offline: list[str] = []
+    for replica in replicas:
+        if not isinstance(replica, dict):
+            continue
+        if bool(replica.get("offline")):
+            name = _clean_str(replica.get("name") or replica.get("peer"))
+            offline.append(name or "unknown")
+    return tuple(sorted(offline))
+
+
+def _leaf_count(leafz: dict[str, Any] | None) -> int | None:
+    if not isinstance(leafz, dict):
+        return None
+    if isinstance(leafz.get("num_leafs"), int):
+        return int(leafz["num_leafs"])
+    if isinstance(leafz.get("num_leafnodes"), int):
+        return int(leafz["num_leafnodes"])
+    leafs = leafz.get("leafs")
+    if isinstance(leafs, list):
+        return len(leafs)
+    return None
+
+
+def _iter_js_streams(jsz: dict[str, Any]) -> list[dict[str, Any]]:
+    streams: list[dict[str, Any]] = []
+    direct = jsz.get("streams")
+    if isinstance(direct, list):
+        streams.extend(item for item in direct if isinstance(item, dict))
+    accounts = jsz.get("account_details")
+    if isinstance(accounts, list):
+        for account in accounts:
+            if not isinstance(account, dict):
+                continue
+            for key in ("stream_detail", "streams"):
+                value = account.get(key)
+                if isinstance(value, list):
+                    streams.extend(item for item in value if isinstance(item, dict))
+    return streams
+
+
+def _iter_stream_consumers(stream: dict[str, Any]) -> list[dict[str, Any]]:
+    consumers: list[dict[str, Any]] = []
+    for key in ("consumer_detail", "consumers"):
+        value = stream.get(key)
+        if isinstance(value, list):
+            consumers.extend(item for item in value if isinstance(item, dict))
+    return consumers
+
+
 def fetch_http_text(url: str, *, timeout_s: float = 3.0) -> str:
     with urllib.request.urlopen(url, timeout=timeout_s) as resp:
         return resp.read().decode("utf-8")
@@ -661,25 +980,33 @@ __all__ = [
     "EtcdRestoreMemberSpec",
     "HA_CORE_REQUIRED_ENV",
     "HaCoreNodeTarget",
+    "NatsHubMonitorRecord",
+    "NatsHubNodeTarget",
     "build_container_etcdctl_command",
+    "build_nats_hub_monitor_record",
     "build_local_etcdctl_command",
     "build_local_etcdctl_recovery_command",
     "build_quorum_restore_plan",
     "collect_prometheus_metric_values",
     "detect_container_cli",
     "detect_container_cli_or_die",
+    "evaluate_nats_hub_cluster",
     "derive_client_url",
     "etcd_endpoint_healthy",
     "fetch_build_info",
     "fetch_http_text",
+    "fetch_nats_hub_monitor_record",
+    "fetch_nats_monitor_json",
     "format_quorum_restore_plan",
     "ha_core_missing_env",
     "healthy_etcd_endpoints",
     "is_loopback_host",
     "leader_key",
+    "nats_build_key",
     "parse_etcd_leader_response",
     "parse_etcd_member_add_output",
     "parse_ha_core_node_target",
+    "parse_nats_hub_node_target",
     "parse_nats_url",
     "parse_prometheus_metric_value",
     "read_etcd_leader",

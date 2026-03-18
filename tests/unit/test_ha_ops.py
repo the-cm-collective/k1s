@@ -5,17 +5,21 @@ from pathlib import Path
 from ae.ha.ops import (
     collect_prometheus_metric_values,
     EtcdRestoreMemberSpec,
+    NatsHubNodeTarget,
+    build_nats_hub_monitor_record,
     build_container_etcdctl_command,
     build_local_etcdctl_command,
     build_local_etcdctl_recovery_command,
     build_quorum_restore_plan,
     derive_client_url,
+    evaluate_nats_hub_cluster,
     format_quorum_restore_plan,
     ha_core_missing_env,
     leader_key,
     parse_etcd_leader_response,
     parse_etcd_member_add_output,
     parse_ha_core_node_target,
+    parse_nats_hub_node_target,
     parse_nats_url,
     parse_prometheus_metric_value,
     split_csv,
@@ -105,6 +109,159 @@ def test_parse_ha_core_node_target_requires_controller_and_apishim_urls() -> Non
     assert node.name == "core-a"
     assert node.controller_url == "http://core-a:9108"
     assert node.apishim_url == "https://core-a:8445"
+
+
+def test_parse_nats_hub_node_target_requires_monitor_url() -> None:
+    node = parse_nats_hub_node_target("hub-a=http://hub-a:8222")
+
+    assert node.name == "hub-a"
+    assert node.monitor_url == "http://hub-a:8222"
+
+
+def test_build_nats_hub_monitor_record_extracts_cluster_and_replica_state() -> None:
+    record = build_nats_hub_monitor_record(
+        NatsHubNodeTarget(name="hub-a", monitor_url="http://hub-a:8222"),
+        varz={
+            "server_name": "hub-a",
+            "server_id": "srv-a",
+            "version": "2.10.18",
+            "git_commit": "sha-a",
+            "cluster": {"name": "k1s-hub"},
+            "jetstream": {"config": {"domain": "K1S"}},
+        },
+        routez={
+            "num_routes": 2,
+            "routes": [
+                {"remote_name": "hub-b"},
+                {"remote_name": "hub-c"},
+            ],
+        },
+        jsz={
+            "meta_cluster": {"leader": "hub-b"},
+            "streams": [
+                {
+                    "config": {"name": "K1S_WORK"},
+                    "cluster": {
+                        "leader": "hub-a",
+                        "replicas": [{"name": "hub-b"}, {"name": "hub-c"}],
+                    },
+                    "consumer_detail": [
+                        {
+                            "config": {"durable_name": "WORK_SITE_sea"},
+                            "cluster": {
+                                "leader": "hub-a",
+                                "replicas": [{"name": "hub-b"}, {"name": "hub-c"}],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+        leafz={"num_leafs": 4},
+    )
+
+    assert record.cluster_name == "k1s-hub"
+    assert record.jetstream_domain == "K1S"
+    assert record.meta_leader == "hub-b"
+    assert record.route_count == 2
+    assert record.route_peers == ("hub-b", "hub-c")
+    assert record.leaf_count == 4
+    assert record.stream_replicas["K1S_WORK"] == 3
+    assert record.consumer_replicas["WORK_SITE_sea"] == 3
+
+
+def test_evaluate_nats_hub_cluster_reports_route_and_replica_drift() -> None:
+    records = [
+        build_nats_hub_monitor_record(
+            NatsHubNodeTarget(name="hub-a", monitor_url="http://hub-a:8222"),
+            varz={
+                "server_name": "hub-a",
+                "version": "2.10.18",
+                "cluster": {"name": "k1s-hub"},
+                "jetstream": {"config": {"domain": "K1S"}},
+            },
+            routez={"num_routes": 1, "routes": [{"remote_name": "hub-b"}]},
+            jsz={
+                "meta_cluster": {"leader": "hub-a"},
+                "streams": [
+                    {
+                        "config": {"name": "K1S_WORK"},
+                        "cluster": {"leader": "hub-a", "replicas": [{"name": "hub-b"}]},
+                        "consumer_detail": [
+                            {
+                                "config": {"durable_name": "WORK_SITE_sea"},
+                                "cluster": {"leader": "hub-a", "replicas": [{"name": "hub-b"}]},
+                            }
+                        ],
+                    }
+                ],
+            },
+        ),
+        build_nats_hub_monitor_record(
+            NatsHubNodeTarget(name="hub-b", monitor_url="http://hub-b:8222"),
+            varz={
+                "server_name": "hub-b",
+                "version": "2.10.18",
+                "cluster": {"name": "k1s-hub"},
+                "jetstream": {"config": {"domain": "K1S"}},
+            },
+            routez={"num_routes": 1, "routes": [{"remote_name": "hub-a"}]},
+            jsz={
+                "meta_cluster": {"leader": "hub-a"},
+                "streams": [
+                    {
+                        "config": {"name": "K1S_WORK"},
+                        "cluster": {"leader": "hub-a", "replicas": [{"name": "hub-b"}]},
+                        "consumer_detail": [
+                            {
+                                "config": {"durable_name": "WORK_SITE_sea"},
+                                "cluster": {"leader": "hub-a", "replicas": [{"name": "hub-b"}]},
+                            }
+                        ],
+                    }
+                ],
+            },
+        ),
+        build_nats_hub_monitor_record(
+            NatsHubNodeTarget(name="hub-c", monitor_url="http://hub-c:8222"),
+            varz={
+                "server_name": "hub-c",
+                "version": "2.10.18",
+                "cluster": {"name": "k1s-hub"},
+                "jetstream": {"config": {"domain": "K1S"}},
+            },
+            routez={"num_routes": 0, "routes": []},
+            jsz={
+                "meta_cluster": {"leader": "hub-a"},
+                "streams": [
+                    {
+                        "config": {"name": "K1S_WORK"},
+                        "cluster": {"leader": "hub-a", "replicas": [{"name": "hub-b"}]},
+                        "consumer_detail": [
+                            {
+                                "config": {"durable_name": "WORK_SITE_sea"},
+                                "cluster": {"leader": "hub-a", "replicas": [{"name": "hub-b"}]},
+                            }
+                        ],
+                    }
+                ],
+            },
+        ),
+    ]
+
+    issues = evaluate_nats_hub_cluster(
+        records,
+        expected_domain="K1S",
+        expected_stream="K1S_WORK",
+        expected_replicas=3,
+        expected_consumers=["WORK_SITE_sea"],
+    )
+
+    assert "route_mesh:hub-a:1/2" in issues
+    assert "route_mesh:hub-b:1/2" in issues
+    assert "route_mesh:hub-c:0/2" in issues
+    assert "stream_replicas:hub-a:K1S_WORK:2/3" in issues
+    assert "consumer_replicas:hub-c:WORK_SITE_sea:2/3" in issues
 
 
 def test_build_local_etcdctl_restore_command_includes_cluster_flags(tmp_path: Path) -> None:
