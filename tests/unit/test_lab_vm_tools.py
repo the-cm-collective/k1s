@@ -17,6 +17,7 @@ RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
 COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
+CRI_PREFLIGHT_SCRIPT = ROOT / "scripts" / "cri_preflight.sh"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
 HA_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core.yaml"
@@ -508,6 +509,13 @@ def test_lab_vm_scripts_prefer_repo_venv_python() -> None:
     smoke_text = (ROOT / "scripts" / "lab" / "vm" / "smoke.sh").read_text(encoding="utf-8")
     assert "$ROOT_DIR/.venv/bin/python" in common_text
     assert 'exec "$(lab_python)" "$SCRIPT_DIR/smoke_v2.py" "$@"' in smoke_text
+
+
+def test_cri_preflight_resolves_python3_fallback() -> None:
+    text = CRI_PREFLIGHT_SCRIPT.read_text(encoding="utf-8")
+    assert 'if command -v python3 >/dev/null 2>&1; then' in text
+    assert 'python_bin="$(command -v python3)"' in text
+    assert '"$python_bin" - "$info_tmp"' in text
 
 
 def test_cri_seed_lock_contains_core_and_edge_images() -> None:

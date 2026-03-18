@@ -11,6 +11,18 @@ else
   require_runtime_ready=$([[ "${EUID}" -eq 0 ]] && echo "1" || echo "0")
 fi
 required_runtime_handler="${AE_CRI_RUNTIME_HANDLER:-runc}"
+python_bin="${PYTHON_BIN:-}"
+
+if [[ -z "$python_bin" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    python_bin="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    python_bin="$(command -v python)"
+  else
+    echo "python3 or python not found" >&2
+    exit 1
+  fi
+fi
 
 if [[ "$endpoint" == unix://* ]]; then
   sock="${endpoint#unix://}"
@@ -34,7 +46,7 @@ else
       exit 1
     fi
   else
-    python - "$info_tmp" "$require_runtime_ready" "$require_network_ready" "$required_runtime_handler" <<'PY'
+    "$python_bin" - "$info_tmp" "$require_runtime_ready" "$require_network_ready" "$required_runtime_handler" <<'PY'
 import json
 import sys
 
