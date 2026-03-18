@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "src"
@@ -30,6 +31,7 @@ SUPPORTED_LANES = [*DEFAULT_LANES, "ha_control_plane"]
 DEFAULT_PHASE_TIMEOUTS = {
     "provision": 1800,
     "seed_cache": 1200,
+    "ha_shared_infra": 900,
     "bootstrap": 1800,
     "service_ready": 900,
     "fabric_validate": 600,
@@ -100,6 +102,14 @@ def write_unhandled_failure_summary(args: argparse.Namespace, run_id: str, exc: 
 
 def parse_csv(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _url_host(raw: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    parsed = urlparse(value if "://" in value else f"http://{value}")
+    return str(parsed.hostname or "").strip()
 
 
 def parse_phase_overrides(items: list[str]) -> dict[str, int]:
@@ -380,6 +390,35 @@ def build_ha_lane_config(
         ).strip(),
         "expected_sha": str(ha_cfg.get("expected_sha") or "").strip(),
     }
+
+
+def uses_vm_managed_ha_infra(variant: dict[str, Any], requested_lanes: list[str]) -> bool:
+    if "ha_control_plane" not in requested_lanes:
+        return False
+    ha_cfg = variant.get("ha") if isinstance(variant.get("ha"), dict) else {}
+    hosts = variant.get("hosts") if isinstance(variant.get("hosts"), list) else []
+    core_hosts = [
+        host for host in hosts if isinstance(host, dict) and host.get("role") == "k1s-ha-core"
+    ]
+    if len(core_hosts) != 3:
+        return False
+    core_ips = {
+        str(host.get("ip") or "").strip()
+        for host in core_hosts
+        if str(host.get("ip") or "").strip()
+    }
+    if len(core_ips) != 3:
+        return False
+    etcd_hosts = {
+        _url_host(item) for item in ha_cfg.get("etcd_endpoints") or [] if _url_host(str(item))
+    }
+    hub_hosts = {
+        _url_host(str(node.get("monitor_url") or ""))
+        for node in ha_cfg.get("hub_nodes") or []
+        if isinstance(node, dict) and _url_host(str(node.get("monitor_url") or ""))
+    }
+    nats_host = _url_host(str(ha_cfg.get("nats_url") or ""))
+    return bool(etcd_hosts == core_ips and hub_hosts == core_ips and nats_host in core_ips)
 
 
 def parse_log_time(line: str) -> datetime | None:
@@ -1041,6 +1080,7 @@ def smoke_v2(args: argparse.Namespace) -> int:
         smoke_cfg.get("lanes") if isinstance(smoke_cfg.get("lanes"), list) else DEFAULT_LANES
     )
     requested_lanes = parse_csv(args.lanes) if args.lanes else [str(x) for x in default_lanes]
+    vm_managed_ha_infra = uses_vm_managed_ha_infra(variant, requested_lanes)
 
     if args.down:
         args.auto_down_on_success = True
@@ -1197,6 +1237,33 @@ def smoke_v2(args: argparse.Namespace) -> int:
                 },
             )
             return 1
+
+        if vm_managed_ha_infra:
+            shared_infra_ok = run_global_phase(
+                "ha_shared_infra",
+                [
+                    str(ROOT / "scripts" / "lab" / "vm" / "ha_shared_infra.sh"),
+                    "--variant",
+                    str(variant_path),
+                    "--run-id",
+                    run_id,
+                    "--execute",
+                ],
+                timeout_s=phase_timeouts["ha_shared_infra"],
+            )
+            if not shared_infra_ok:
+                write_json(run_dir / "global_phases.json", global_phases)
+                write_json(
+                    run_dir / "summary.json",
+                    {
+                        "run_id": run_id,
+                        "variant_name": variant["name"],
+                        "status": "failed",
+                        "reason": "ha_shared_infra failed",
+                        "global_phases": global_phases,
+                    },
+                )
+                return 1
 
         bootstrap_env = dict(os.environ)
         bootstrap_env["AE_CRI_CACHE_SEED_MODE"] = os.environ.get(

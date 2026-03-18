@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,8 +81,8 @@ def _run(
     cmd: list[str], *, check: bool = True, capture: bool = True
 ) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            cmd,  # noqa: S603 - command is assembled from fixed tool names + caller args.
+        return subprocess.run(  # noqa: S603 - command is assembled from fixed tool names + caller args.
+            cmd,
             check=check,
             text=True,
             capture_output=capture,
@@ -108,7 +108,7 @@ def _check_ready() -> None:
     info = _crictl(["info"]).stdout
     payload = json.loads(info)
     conds: dict[str, bool] = {}
-    for cond in ((payload.get("status") or {}).get("conditions") or []):
+    for cond in (payload.get("status") or {}).get("conditions") or []:
         conds[str(cond.get("type") or "")] = bool(cond.get("status"))
     if not conds.get("RuntimeReady", False):
         raise RuntimeError("CRI RuntimeReady is false")
@@ -176,7 +176,11 @@ def _component_running_container(pod_id: str, component: str) -> bool:
     return pod_has_unlabeled_running and not pod_has_component_labels
 
 
-def _component_running_elsewhere(profile: str, component: str, exclude_pod_id: str = "") -> str | None:
+def _component_running_elsewhere(
+    profile: str,
+    component: str,
+    exclude_pod_id: str = "",
+) -> str | None:
     for c in _list_containers():
         labels = _labels(c)
         if labels.get("ae.stack.profile") != profile:
@@ -203,8 +207,14 @@ def _events_log_path(profile: str) -> Path:
     return ROOT / "state" / "profiles" / profile / "cri" / "events.log"
 
 
-def _record_event(profile: str, component: str, action: str, reason: str, details: str = "") -> None:
-    ts = datetime.now(timezone.utc).isoformat()
+def _record_event(
+    profile: str,
+    component: str,
+    action: str,
+    reason: str,
+    details: str = "",
+) -> None:
+    ts = datetime.now(UTC).isoformat()
     line = f"{ts} component={component} action={action} reason={reason}"
     if details:
         line = f"{line} {details}"
@@ -282,7 +292,7 @@ def _count_inotify_watches(top_n: int = 3) -> tuple[int, list[tuple[int, int, st
         pid_count = 0
         try:
             fd_entries = list(fdinfo_dir.iterdir())
-        except Exception:
+        except Exception:  # noqa: S112 - /proc entries can disappear between scans.
             continue
         for fdinfo in fd_entries:
             try:
@@ -290,7 +300,7 @@ def _count_inotify_watches(top_n: int = 3) -> tuple[int, list[tuple[int, int, st
                     for line in fh:
                         if line.startswith("inotify"):
                             pid_count += 1
-            except Exception:
+            except Exception:  # noqa: S112 - individual fdinfo files are inherently racy.
                 continue
         if pid_count > 0:
             per_pid[pid] = pid_count
@@ -324,8 +334,7 @@ def _rathole_inotify_mitigate(component: str) -> str | None:
         return None
 
     top_summary = ", ".join(
-        f"{pid}:{count}:{(cmd[:60] + '...') if len(cmd) > 60 else cmd}"
-        for pid, count, cmd in top
+        f"{pid}:{count}:{(cmd[:60] + '...') if len(cmd) > 60 else cmd}" for pid, count, cmd in top
     )
 
     if auto_tune and os.geteuid() == 0:
@@ -422,9 +431,7 @@ def _image_exists(image: str) -> bool:
     return proc.returncode == 0
 
 
-def _build_command(
-    component: str, *, source_image: str, target_image: str
-) -> list[str] | None:
+def _build_command(component: str, *, source_image: str, target_image: str) -> list[str] | None:
     cri_endpoint = os.getenv("AE_CRI_ENDPOINT", DEFAULT_CRI_ENDPOINT)
     if component == "k1s-core-apishim":
         script = ROOT / "scripts" / "build_cri_apishim_image.sh"
@@ -500,16 +507,12 @@ def _prompt_missing_image(
         print(f"[cri-stack] invalid choice: {choice}", file=sys.stderr)
 
 
-def _ensure_image(
-    image: str, component: str, *, source_image: str | None = None
-) -> None:
+def _ensure_image(image: str, component: str, *, source_image: str | None = None) -> None:
     if _image_exists(image):
         return
 
     policy = _resolve_image_policy()
-    build_cmd = _build_command(
-        component, source_image=source_image or image, target_image=image
-    )
+    build_cmd = _build_command(component, source_image=source_image or image, target_image=image)
 
     if policy == "fail":
         raise RuntimeError(
@@ -573,8 +576,6 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-
-
 def _component_lock_path(profile: str, component: str) -> Path:
     return ROOT / "state" / "profiles" / profile / "cri" / ".locks" / f"{component}.lock"
 
@@ -621,6 +622,7 @@ def _start_component(
             rollout_key=rollout_key,
             stable_seconds=stable_seconds,
         )
+
 
 def _start_component_unlocked(
     *,
@@ -737,7 +739,11 @@ def _start_component_unlocked(
                             time.sleep(0.2)
                             continue
 
-                        handoff_pod = _component_running_elsewhere(profile, component, exclude_pod_id=pod_id)
+                        handoff_pod = _component_running_elsewhere(
+                            profile,
+                            component,
+                            exclude_pod_id=pod_id,
+                        )
                         if handoff_pod:
                             _record_event(
                                 profile,
@@ -764,15 +770,28 @@ def _start_component_unlocked(
                             f"pod={pod_id} container={container_id} {inspect_summary}".strip(),
                         )
                         raise RuntimeError(
-                            f"component exited before stability window ({stable_seconds}s): {component}"
+                            "component exited before stability window "
+                            f"({stable_seconds}s): {component}"
                         )
                     time.sleep(0.2)
             print(f"[cri-stack] {component}: running")
-            _record_event(profile, component, "start", "running", f"pod={pod_id} container={container_id}")
+            _record_event(
+                profile,
+                component,
+                "start",
+                "running",
+                f"pod={pod_id} container={container_id}",
+            )
             return
         time.sleep(0.2)
     _remove_pod(pod_id)
-    _record_event(profile, component, "start", "failed-not-running", f"pod={pod_id} container={container_id}")
+    _record_event(
+        profile,
+        component,
+        "start",
+        "failed-not-running",
+        f"pod={pod_id} container={container_id}",
+    )
     raise RuntimeError(f"component did not reach running state: {component}")
 
 
@@ -882,25 +901,39 @@ def _start_apishim(
 
 
 def _start_etcd(
-    profile: str, *, runtime_handler: str | None = None, recreate: bool = False
+    profile: str,
+    *,
+    name: str = "etcd0",
+    component: str | None = None,
+    listen_client_urls: str = "http://0.0.0.0:2379",
+    advertise_client_urls: str = "http://127.0.0.1:2379",
+    listen_peer_urls: str = "http://0.0.0.0:2380",
+    initial_advertise_peer_urls: str = "http://127.0.0.1:2380",
+    initial_cluster: str | None = None,
+    initial_cluster_state: str = "new",
+    data_dir_name: str = "etcd",
+    runtime_handler: str | None = None,
+    recreate: bool = False,
 ) -> None:
-    etcd_data = _cri_data_root() / "etcd"
+    resolved_component = component or f"{profile}-etcd"
+    resolved_initial_cluster = initial_cluster or f"{name}={initial_advertise_peer_urls}"
+    etcd_data = _cri_data_root() / data_dir_name
     etcd_data.mkdir(parents=True, exist_ok=True)
     _start_component(
         profile=profile,
-        component="k1s-core-etcd",
+        component=resolved_component,
         image="quay.io/coreos/etcd:v3.5.13",
         runtime_handler=runtime_handler,
         command=[
             "/usr/local/bin/etcd",
-            "--name=etcd0",
+            f"--name={name}",
             "--data-dir=/etcd-data",
-            "--listen-client-urls=http://0.0.0.0:2379",
-            "--advertise-client-urls=http://127.0.0.1:2379",
-            "--listen-peer-urls=http://0.0.0.0:2380",
-            "--initial-advertise-peer-urls=http://127.0.0.1:2380",
-            "--initial-cluster=etcd0=http://127.0.0.1:2380",
-            "--initial-cluster-state=new",
+            f"--listen-client-urls={listen_client_urls}",
+            f"--advertise-client-urls={advertise_client_urls}",
+            f"--listen-peer-urls={listen_peer_urls}",
+            f"--initial-advertise-peer-urls={initial_advertise_peer_urls}",
+            f"--initial-cluster={resolved_initial_cluster}",
+            f"--initial-cluster-state={initial_cluster_state}",
         ],
         mounts=[_mount(etcd_data, "/etcd-data")],
         recreate=recreate,
@@ -1006,9 +1039,7 @@ def _start_registry(
     )
 
 
-def _core_base(
-    profile: str, *, runtime_handler: str | None = None, recreate: bool = False
-) -> None:
+def _core_base(profile: str, *, runtime_handler: str | None = None, recreate: bool = False) -> None:
     hub_cfg_raw = str(os.getenv("AE_NATS_HUB_CONFIG", "")).strip()
     hub_cfg = Path(hub_cfg_raw).resolve() if hub_cfg_raw else None
     _start_etcd(profile, runtime_handler=runtime_handler, recreate=recreate)
@@ -1241,7 +1272,12 @@ def _start_rathole_client(
                 "inotify-pressure",
                 note,
             )
-        _record_event(profile, f"k1s-edge-rathole-{site_id}-{node_id}", "retry", "unstable-first-start")
+        _record_event(
+            profile,
+            f"k1s-edge-rathole-{site_id}-{node_id}",
+            "retry",
+            "unstable-first-start",
+        )
         time.sleep(1)
         _start_component(
             profile=profile,
@@ -1280,6 +1316,19 @@ def main(argv: list[str] | None = None) -> int:
     core = sub.add_parser("up-core-base", help="start etcd+nats-hub+postgres")
     core.add_argument("--profile", default="k1s-core")
     core.add_argument("--recreate", action="store_true")
+
+    etcd = sub.add_parser("up-etcd", help="start/reconcile etcd")
+    etcd.add_argument("--profile", default="k1s-core")
+    etcd.add_argument("--name", default="etcd0")
+    etcd.add_argument("--component", default="")
+    etcd.add_argument("--listen-client-urls", default="http://0.0.0.0:2379")
+    etcd.add_argument("--advertise-client-urls", default="http://127.0.0.1:2379")
+    etcd.add_argument("--listen-peer-urls", default="http://0.0.0.0:2380")
+    etcd.add_argument("--initial-advertise-peer-urls", default="http://127.0.0.1:2380")
+    etcd.add_argument("--initial-cluster", default="")
+    etcd.add_argument("--initial-cluster-state", default="new")
+    etcd.add_argument("--data-dir-name", default="etcd")
+    etcd.add_argument("--recreate", action="store_true")
 
     registry = sub.add_parser("up-registry", help="start local managed registry")
     registry.add_argument("--profile", default="k1s-core")
@@ -1345,6 +1394,22 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "up-core-base":
             _core_base(
                 args.profile,
+                runtime_handler=args.runtime_handler,
+                recreate=bool(args.recreate),
+            )
+            return 0
+        if args.cmd == "up-etcd":
+            _start_etcd(
+                args.profile,
+                name=str(args.name),
+                component=str(args.component).strip() or None,
+                listen_client_urls=str(args.listen_client_urls),
+                advertise_client_urls=str(args.advertise_client_urls),
+                listen_peer_urls=str(args.listen_peer_urls),
+                initial_advertise_peer_urls=str(args.initial_advertise_peer_urls),
+                initial_cluster=str(args.initial_cluster).strip() or None,
+                initial_cluster_state=str(args.initial_cluster_state),
+                data_dir_name=str(args.data_dir_name),
                 runtime_handler=args.runtime_handler,
                 recreate=bool(args.recreate),
             )

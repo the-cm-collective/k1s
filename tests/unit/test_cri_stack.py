@@ -103,6 +103,51 @@ def test_start_etcd_uses_ae_cri_data_root(monkeypatch, tmp_path) -> None:
     } in mounts
 
 
+def test_start_etcd_allows_cluster_overrides(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_start_component(**kwargs):
+        captured.update(kwargs)
+
+    data_root = (tmp_path / "cri-data").resolve()
+    monkeypatch.setenv("AE_CRI_DATA_ROOT", str(data_root))
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+
+    cri_stack._start_etcd(
+        "k1s-ha-core",
+        name="core-a",
+        component="k1s-ha-core-etcd",
+        advertise_client_urls="http://192.168.155.10:2379",
+        initial_advertise_peer_urls="http://192.168.155.10:2380",
+        initial_cluster=(
+            "core-a=http://192.168.155.10:2380,"
+            "core-b=http://192.168.155.11:2380,"
+            "core-c=http://192.168.155.12:2380"
+        ),
+        data_dir_name="ha-etcd",
+        runtime_handler="runc",
+        recreate=True,
+    )
+
+    assert captured["component"] == "k1s-ha-core-etcd"
+    assert captured["recreate"] is True
+    assert "--name=core-a" in captured["command"]
+    assert "--advertise-client-urls=http://192.168.155.10:2379" in captured["command"]
+    assert "--initial-advertise-peer-urls=http://192.168.155.10:2380" in captured["command"]
+    assert (
+        "--initial-cluster=core-a=http://192.168.155.10:2380,"
+        "core-b=http://192.168.155.11:2380,"
+        "core-c=http://192.168.155.12:2380"
+    ) in captured["command"]
+    mounts = captured["mounts"]
+    assert isinstance(mounts, list)
+    assert {
+        "host_path": str(data_root / "ha-etcd"),
+        "container_path": "/etcd-data",
+        "readonly": False,
+    } in mounts
+
+
 def test_start_envoy_mounts_state_paths_for_tls_resolution(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
@@ -119,7 +164,11 @@ def test_start_envoy_mounts_state_paths_for_tls_resolution(monkeypatch, tmp_path
     mounts = captured["mounts"]
     assert isinstance(mounts, list)
     state_dir = str((cri_stack.ROOT / "state").resolve())
-    assert {"host_path": str(cfg), "container_path": "/etc/envoy/envoy.yaml", "readonly": True} in mounts
+    assert {
+        "host_path": str(cfg),
+        "container_path": "/etc/envoy/envoy.yaml",
+        "readonly": True,
+    } in mounts
     assert {"host_path": state_dir, "container_path": "/state", "readonly": True} in mounts
     assert {"host_path": state_dir, "container_path": state_dir, "readonly": True} in mounts
 
@@ -185,8 +234,7 @@ def test_resolve_image_ref_registry_mode_off_skips_rewrite(monkeypatch) -> None:
     monkeypatch.setenv("AE_CRI_REGISTRY_MODE", "off")
     monkeypatch.setenv("AE_CRI_REGISTRY", "127.0.0.1:32000")
     assert (
-        cri_stack._resolve_image_ref("docker.io/library/nats:2.10")
-        == "docker.io/library/nats:2.10"
+        cri_stack._resolve_image_ref("docker.io/library/nats:2.10") == "docker.io/library/nats:2.10"
     )
 
 

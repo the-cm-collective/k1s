@@ -67,10 +67,6 @@ seed_bundle_default="/mnt/host/state/lab-vm/${RUN_ID}/seeds/cri-seed-images.oci.
 edge_core_site_ids="$(
   echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-core" and (.site_id // "") != "") | .site_id' | sort -u | tr '\n' ' '
 )"
-first_ha_controller_name=""
-if [[ -n "$ha_controller_row" ]]; then
-  first_ha_controller_name="$(printf '%s' "$ha_controller_row" | base64 -d | jq -r '.name')"
-fi
 
 mapfile -t rows < <(echo "$variant_json" | jq -r '.hosts[] | @base64')
 plan_file="$(run_dir "$RUN_ID")/bootstrap/plan.txt"
@@ -125,23 +121,6 @@ ${register_edge_sites_snippet}
 CMD
       ;;
     k1s-ha-core)
-      local register_edge_sites_snippet=""
-      if [[ "$name" == "$first_ha_controller_name" && -n "$edge_core_site_ids" ]]; then
-        register_edge_sites_snippet="$(cat <<CMD
-if command -v bash >/dev/null 2>&1; then
-  for _ in \$(seq 1 90); do
-    if bash -c 'exec 3<>/dev/tcp/127.0.0.1/${controller_port}' >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-  done
-fi
-for site in ${edge_core_site_ids}; do
-  (cd /mnt/host && sudo -E AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} REGISTER_ONLY=1 SITE_ID="\$site" ./scripts/dev/add_edge_site.sh)
-done
-CMD
-)"
-      fi
       cat <<CMD
 cd /mnt/host
 bootstrap_pip_install
@@ -165,7 +144,6 @@ nohup sudo env \
   AE_NATS_URL='${ha_nats_url}' \
   APISHIM_PORT=${apishim_port} \
   make k1s-ha-core > /home/ae/k1s-ha-core.log 2>&1 &
-${register_edge_sites_snippet}
 CMD
       ;;
     k1s-edge-core)

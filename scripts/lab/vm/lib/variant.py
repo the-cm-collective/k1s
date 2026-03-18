@@ -20,6 +20,7 @@ SUPPORTED_SMOKE_LANES = [*DEFAULT_SMOKE_LANES, "ha_control_plane"]
 DEFAULT_PHASE_TIMEOUTS = {
     "provision": 1800,
     "bootstrap": 1800,
+    "ha_shared_infra": 900,
     "service_ready": 900,
     "fabric_validate": 600,
     "functional_basic": 300,

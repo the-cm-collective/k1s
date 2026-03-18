@@ -12,12 +12,14 @@ VARIANT_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "variant.py"
 GATE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "throughput_gate.py"
 SMOKE_V2_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "smoke_v2.py"
 BOOTSTRAP_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "k1s_bootstrap.sh"
+HA_SHARED_INFRA_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "ha_shared_infra.sh"
 RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
 COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
+HA_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core.yaml"
 
 _SMOKE_V2_SPEC = spec_from_file_location("smoke_v2_script", SMOKE_V2_SCRIPT)
 assert _SMOKE_V2_SPEC is not None and _SMOKE_V2_SPEC.loader is not None
@@ -58,6 +60,30 @@ def test_variant_parser_prints_normalized_json() -> None:
     assert payload["environments"]["local_vm"] == {}
     assert payload["environments"]["remote_lab"] == {}
     assert payload["secrets"]["refs"] == {}
+
+
+def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
+    res = subprocess.run(  # noqa: S603
+        [sys.executable, str(VARIANT_SCRIPT), "--variant", str(HA_VARIANT_FILE), "--print-json"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    payload = json.loads(res.stdout)
+    assert payload["name"] == "ha-control-plane-core"
+    assert [host["role"] for host in payload["hosts"][:3]] == [
+        "k1s-ha-core",
+        "k1s-ha-core",
+        "k1s-ha-core",
+    ]
+    assert payload["ha"]["enabled"] is True
+    assert payload["ha"]["etcd_endpoints"] == [
+        "http://192.168.155.10:2379",
+        "http://192.168.155.11:2379",
+        "http://192.168.155.12:2379",
+    ]
+    assert [item["name"] for item in payload["ha"]["hub_nodes"]] == ["core-a", "core-b", "core-c"]
+    assert payload["smoke"]["lanes"] == ["ha_control_plane"]
 
 
 def test_variant_parser_validate_images_fails_when_files_missing(tmp_path: Path) -> None:
@@ -440,6 +466,16 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_APISHIM_ETCD_ENDPOINTS='${ha_etcd_endpoints}'" in text
     assert "AE_CRI_CACHE_SEED_MODE" in text
     assert "AE_CRI_CACHE_SEED_BUNDLE" in text
+    assert text.count("REGISTER_ONLY=1 SITE_ID") == 1
+
+
+def test_ha_shared_infra_script_bootstraps_clustered_backends() -> None:
+    text = HA_SHARED_INFRA_SCRIPT.read_text(encoding="utf-8")
+    assert "ha shared infra requires exactly 3 hosts with role=k1s-ha-core" in text
+    assert "python3 /mnt/host/scripts/dev/cri_stack.py up-etcd \\" in text
+    assert "--initial-cluster '" in text
+    assert "python3 /mnt/host/scripts/dev/cri_stack.py up-nats-hub \\" in text
+    assert "HA shared infra NATS cluster did not converge" in text
 
 
 def test_run_profile_host_apishim_uses_src_pythonpath() -> None:
@@ -468,7 +504,7 @@ def test_cri_seed_bundle_script_accepts_run_id_and_profile() -> None:
 def test_lab_vm_scripts_prefer_repo_venv_python() -> None:
     common_text = COMMON_SCRIPT.read_text(encoding="utf-8")
     smoke_text = (ROOT / "scripts" / "lab" / "vm" / "smoke.sh").read_text(encoding="utf-8")
-    assert '$ROOT_DIR/.venv/bin/python' in common_text
+    assert "$ROOT_DIR/.venv/bin/python" in common_text
     assert 'exec "$(lab_python)" "$SCRIPT_DIR/smoke_v2.py" "$@"' in smoke_text
 
 
@@ -486,6 +522,51 @@ def test_cri_seed_lock_contains_core_and_edge_images() -> None:
 
 def test_smoke_v2_includes_seed_cache_phase_timeout() -> None:
     assert "seed_cache" in smoke_v2.DEFAULT_PHASE_TIMEOUTS
+
+
+def test_smoke_v2_includes_ha_shared_infra_phase_timeout() -> None:
+    assert "ha_shared_infra" in smoke_v2.DEFAULT_PHASE_TIMEOUTS
+
+
+def test_smoke_v2_detects_vm_managed_ha_infra() -> None:
+    variant = json.loads(
+        subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                str(VARIANT_SCRIPT),
+                "--variant",
+                str(HA_VARIANT_FILE),
+                "--print-json",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+    )
+    assert smoke_v2.uses_vm_managed_ha_infra(variant, ["ha_control_plane"]) is True
+
+
+def test_smoke_v2_skips_vm_managed_ha_infra_for_external_backends() -> None:
+    variant = json.loads(
+        subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                str(VARIANT_SCRIPT),
+                "--variant",
+                str(HA_VARIANT_FILE),
+                "--print-json",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+    )
+    variant["ha"]["etcd_endpoints"] = [
+        "http://10.0.0.10:2379",
+        "http://10.0.0.11:2379",
+        "http://10.0.0.12:2379",
+    ]
+    assert smoke_v2.uses_vm_managed_ha_infra(variant, ["ha_control_plane"]) is False
 
 
 def test_smoke_with_retry_handles_check_exceptions() -> None:
