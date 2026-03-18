@@ -61,6 +61,8 @@ _APP_CANARY_STEPS: dict[str, int] = {}
 _OUTBOX_PUBLISH_OK: int = 0
 _OUTBOX_PUBLISH_FAIL: int = 0
 _SITE_LAST_SEEN: dict[str, float] = {}
+_SITE_GATEWAY_LAST_SEEN: dict[tuple[str, str], float] = {}
+_SITE_GATEWAY_BUILD_INFO: dict[tuple[str, str], tuple[str, str, str]] = {}
 _JS_STREAM_STATS: dict[str, dict[str, float]] = {}
 _JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
 _GATEWAY_WORK_METRICS: dict[str, dict[str, float]] = {}
@@ -165,10 +167,35 @@ def record_outbox_publish(success: bool) -> None:
         _OUTBOX_PUBLISH_FAIL += 1
 
 
-def record_site_seen(site_id: str) -> None:
+def record_site_seen(site_id: str, *, node_id: str | None = None) -> None:
     if not site_id:
         return
-    _SITE_LAST_SEEN[site_id] = time.time()
+    now = time.time()
+    _SITE_LAST_SEEN[site_id] = now
+    node_name = str(node_id or "").strip()
+    if node_name:
+        _SITE_GATEWAY_LAST_SEEN[(site_id, node_name)] = now
+
+
+def record_gateway_identity(
+    site_id: str,
+    node_id: str | None,
+    *,
+    version: str | None,
+    sha: str | None,
+    date: str | None,
+) -> None:
+    if not site_id:
+        return
+    node_name = str(node_id or "").strip()
+    if not node_name:
+        return
+    _SITE_GATEWAY_LAST_SEEN[(site_id, node_name)] = time.time()
+    _SITE_GATEWAY_BUILD_INFO[(site_id, node_name)] = (
+        str(version or "").strip() or "unknown",
+        str(sha or "").strip() or "unknown",
+        str(date or "").strip() or "unknown",
+    )
 
 
 def record_gateway_metrics(
@@ -3317,6 +3344,26 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 labels = f'site="{site_id}"'
                 lines.append(f"ae_site_last_seen_seconds{{{labels}}} {last_age}")
                 lines.append(f"ae_site_stale{{{labels}}} {stale}")
+            if _SITE_GATEWAY_LAST_SEEN:
+                lines.append(
+                    "# HELP ae_site_gateway_last_seen_seconds Age of the latest gateway status sample per site and node"
+                )
+                lines.append("# TYPE ae_site_gateway_last_seen_seconds gauge")
+                for (site_id, node_id), last_ts in sorted(_SITE_GATEWAY_LAST_SEEN.items()):
+                    try:
+                        last_age = now.timestamp() - float(last_ts)
+                    except Exception:
+                        continue
+                    labels = f'site="{site_id}",node="{node_id}"'
+                    lines.append(f"ae_site_gateway_last_seen_seconds{{{labels}}} {last_age}")
+            if _SITE_GATEWAY_BUILD_INFO:
+                lines.append("# HELP ae_site_gateway_build_info Gateway build metadata observed via site telemetry")
+                lines.append("# TYPE ae_site_gateway_build_info gauge")
+                for (site_id, node_id), (version, sha, date) in sorted(_SITE_GATEWAY_BUILD_INFO.items()):
+                    labels = (
+                        f'site="{site_id}",node="{node_id}",version="{version}",sha="{sha}",date="{date}"'
+                    )
+                    lines.append(f"ae_site_gateway_build_info{{{labels}}} 1")
         except Exception:
             pass
         # Controller authority metrics

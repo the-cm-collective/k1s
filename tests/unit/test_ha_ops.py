@@ -4,14 +4,19 @@ from pathlib import Path
 
 from ae.ha.ops import (
     collect_prometheus_metric_values,
+    collect_site_gateway_status,
+    EdgeGatewayStatusRecord,
     EtcdRestoreMemberSpec,
+    NatsEdgeSiteTarget,
     NatsHubNodeTarget,
+    build_nats_edge_monitor_record,
     build_nats_hub_monitor_record,
     build_container_etcdctl_command,
     build_local_etcdctl_command,
     build_local_etcdctl_recovery_command,
     build_quorum_restore_plan,
     derive_client_url,
+    evaluate_nats_edge_site,
     evaluate_nats_hub_cluster,
     format_quorum_restore_plan,
     ha_core_missing_env,
@@ -19,6 +24,7 @@ from ae.ha.ops import (
     parse_etcd_leader_response,
     parse_etcd_member_add_output,
     parse_ha_core_node_target,
+    parse_nats_edge_site_target,
     parse_nats_hub_node_target,
     parse_nats_url,
     parse_prometheus_metric_value,
@@ -118,6 +124,13 @@ def test_parse_nats_hub_node_target_requires_monitor_url() -> None:
     assert node.monitor_url == "http://hub-a:8222"
 
 
+def test_parse_nats_edge_site_target_requires_monitor_url() -> None:
+    site = parse_nats_edge_site_target("sea=http://edge-sea:8224")
+
+    assert site.site_id == "sea"
+    assert site.monitor_url == "http://edge-sea:8224"
+
+
 def test_build_nats_hub_monitor_record_extracts_cluster_and_replica_state() -> None:
     record = build_nats_hub_monitor_record(
         NatsHubNodeTarget(name="hub-a", monitor_url="http://hub-a:8222"),
@@ -168,6 +181,26 @@ def test_build_nats_hub_monitor_record_extracts_cluster_and_replica_state() -> N
     assert record.leaf_count == 4
     assert record.stream_replicas["K1S_WORK"] == 3
     assert record.consumer_replicas["WORK_SITE_sea"] == 3
+
+
+def test_build_nats_edge_monitor_record_extracts_leaf_connectivity() -> None:
+    record = build_nats_edge_monitor_record(
+        NatsEdgeSiteTarget(site_id="sea", monitor_url="http://edge-sea:8224"),
+        varz={
+            "server_name": "edge-sea",
+            "server_id": "srv-edge-sea",
+            "version": "2.10.18",
+            "git_commit": "sha-edge",
+        },
+        leafz={"num_leafs": 1},
+    )
+
+    assert record.site_id == "sea"
+    assert record.server_name == "edge-sea"
+    assert record.server_id == "srv-edge-sea"
+    assert record.version == "2.10.18"
+    assert record.git_commit == "sha-edge"
+    assert record.leaf_count == 1
 
 
 def test_evaluate_nats_hub_cluster_reports_route_and_replica_drift() -> None:
@@ -262,6 +295,48 @@ def test_evaluate_nats_hub_cluster_reports_route_and_replica_drift() -> None:
     assert "route_mesh:hub-c:0/2" in issues
     assert "stream_replicas:hub-a:K1S_WORK:2/3" in issues
     assert "consumer_replicas:hub-c:WORK_SITE_sea:2/3" in issues
+
+
+def test_evaluate_nats_edge_site_reports_missing_leaf_connectivity() -> None:
+    record = build_nats_edge_monitor_record(
+        NatsEdgeSiteTarget(site_id="sea", monitor_url="http://edge-sea:8224"),
+        varz={"server_name": "edge-sea", "version": "2.10.18"},
+        leafz={"num_leafs": 0},
+    )
+
+    issues = evaluate_nats_edge_site(record, expected_leaf_min=1)
+
+    assert issues == ["leaf_count:sea:0/1"]
+
+
+def test_collect_site_gateway_status_merges_last_seen_and_build_info() -> None:
+    text = """
+ae_site_gateway_last_seen_seconds{site="sea",node="edge-1"} 5
+ae_site_gateway_last_seen_seconds{site="sea",node="edge-2"} 7
+ae_site_gateway_build_info{site="sea",node="edge-1",version="0.1.3.dev0",sha="sha-a",date="2026-03-18"} 1
+ae_site_gateway_build_info{site="sea",node="edge-2",version="0.1.3.dev1",sha="sha-b",date="2026-03-19"} 1
+"""
+
+    records = collect_site_gateway_status(text, "sea")
+
+    assert records == {
+        "edge-1": EdgeGatewayStatusRecord(
+            site_id="sea",
+            node_id="edge-1",
+            last_seen_seconds=5.0,
+            version="0.1.3.dev0",
+            sha="sha-a",
+            date="2026-03-18",
+        ),
+        "edge-2": EdgeGatewayStatusRecord(
+            site_id="sea",
+            node_id="edge-2",
+            last_seen_seconds=7.0,
+            version="0.1.3.dev1",
+            sha="sha-b",
+            date="2026-03-19",
+        ),
+    }
 
 
 def test_build_local_etcdctl_restore_command_includes_cluster_flags(tmp_path: Path) -> None:

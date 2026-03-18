@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ae import build_info as AE_BUILD_INFO
 from ae.config.transport import GatewayJetStreamConfig, check_nats_connectivity
 from ae.gateway.spool import GatewaySpool
 from ae.ha.fencing import MutationEnvelope, SQLiteFenceStore, merge_envelope, parse_envelope
@@ -1011,6 +1012,7 @@ class SiteGateway:
                 status = {
                     "site_id": self._site_id,
                     "node_id": self._node_id,
+                    "build": AE_BUILD_INFO(),
                     "inflight": self._stats.inflight,
                     "accepted": self._stats.accepted,
                     "completed": self._stats.completed,

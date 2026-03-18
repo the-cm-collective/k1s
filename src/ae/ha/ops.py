@@ -99,6 +99,12 @@ class NatsHubNodeTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class NatsEdgeSiteTarget:
+    site_id: str
+    monitor_url: str
+
+
+@dataclass(frozen=True, slots=True)
 class NatsHubMonitorRecord:
     name: str
     monitor_url: str
@@ -116,6 +122,27 @@ class NatsHubMonitorRecord:
     stream_offline: dict[str, tuple[str, ...]]
     consumer_replicas: dict[str, int]
     consumer_offline: dict[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class NatsEdgeMonitorRecord:
+    site_id: str
+    monitor_url: str
+    server_name: str
+    server_id: str
+    version: str
+    git_commit: str
+    leaf_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeGatewayStatusRecord:
+    site_id: str
+    node_id: str
+    last_seen_seconds: float | None
+    version: str
+    sha: str
+    date: str
 
 
 def split_csv(raw: str | None) -> list[str]:
@@ -660,6 +687,18 @@ def parse_nats_hub_node_target(raw: str) -> NatsHubNodeTarget:
     return NatsHubNodeTarget(name=node_name, monitor_url=base_url)
 
 
+def parse_nats_edge_site_target(raw: str) -> NatsEdgeSiteTarget:
+    text = str(raw or "").strip()
+    if "=" not in text:
+        raise ValueError(f"invalid site value {raw!r}; expected SITE_ID=MONITOR_URL")
+    site_id, monitor_url = text.split("=", 1)
+    site_name = site_id.strip()
+    base_url = monitor_url.strip().rstrip("/")
+    if not site_name or not base_url:
+        raise ValueError(f"invalid site value {raw!r}; expected SITE_ID=MONITOR_URL")
+    return NatsEdgeSiteTarget(site_id=site_name, monitor_url=base_url)
+
+
 def fetch_nats_monitor_json(base_url: str, endpoint: str, *, timeout_s: float = 3.0) -> dict[str, Any]:
     path = str(endpoint or "").strip()
     if not path.startswith("/"):
@@ -746,6 +785,28 @@ def build_nats_hub_monitor_record(
     )
 
 
+def build_nats_edge_monitor_record(
+    target: NatsEdgeSiteTarget,
+    *,
+    varz: dict[str, Any],
+    leafz: dict[str, Any] | None = None,
+) -> NatsEdgeMonitorRecord:
+    return NatsEdgeMonitorRecord(
+        site_id=target.site_id,
+        monitor_url=target.monitor_url,
+        server_name=_clean_str(varz.get("server_name")) or target.site_id,
+        server_id=_clean_str(varz.get("server_id")) or _clean_str(varz.get("id")),
+        version=_clean_str(varz.get("version")),
+        git_commit=_clean_str(
+            varz.get("git_commit")
+            or varz.get("git_commit_hash")
+            or varz.get("commit")
+            or varz.get("build")
+        ),
+        leaf_count=_leaf_count(leafz),
+    )
+
+
 def fetch_nats_hub_monitor_record(
     target: NatsHubNodeTarget,
     *,
@@ -766,6 +827,22 @@ def fetch_nats_hub_monitor_record(
         except Exception:
             leafz = None
     return build_nats_hub_monitor_record(target, varz=varz, routez=routez, jsz=jsz, leafz=leafz)
+
+
+def fetch_nats_edge_monitor_record(
+    target: NatsEdgeSiteTarget,
+    *,
+    timeout_s: float = 3.0,
+    include_leafz: bool = True,
+) -> NatsEdgeMonitorRecord:
+    varz = fetch_nats_monitor_json(target.monitor_url, "/varz", timeout_s=timeout_s)
+    leafz = None
+    if include_leafz:
+        try:
+            leafz = fetch_nats_monitor_json(target.monitor_url, "/leafz", timeout_s=timeout_s)
+        except Exception:
+            leafz = None
+    return build_nats_edge_monitor_record(target, varz=varz, leafz=leafz)
 
 
 def evaluate_nats_hub_cluster(
@@ -825,8 +902,64 @@ def evaluate_nats_hub_cluster(
     return issues
 
 
+def evaluate_nats_edge_site(
+    record: NatsEdgeMonitorRecord,
+    *,
+    expected_leaf_min: int | None = 1,
+) -> list[str]:
+    issues: list[str] = []
+    if expected_leaf_min is not None:
+        if record.leaf_count is None:
+            issues.append(f"leaf_count_unavailable:{record.site_id}")
+        elif int(record.leaf_count) < int(expected_leaf_min):
+            issues.append(f"leaf_count:{record.site_id}:{int(record.leaf_count)}/{int(expected_leaf_min)}")
+    return issues
+
+
 def nats_build_key(record: NatsHubMonitorRecord) -> tuple[str, str]:
     return (record.version, record.git_commit)
+
+
+def collect_site_gateway_status(
+    metrics_text: str,
+    site_id: str,
+) -> dict[str, EdgeGatewayStatusRecord]:
+    site = str(site_id or "").strip()
+    if not site:
+        return {}
+    last_seen_by_node: dict[str, float] = {}
+    build_by_node: dict[str, tuple[str, str, str]] = {}
+    for labels, value in collect_prometheus_metric_values(metrics_text, "ae_site_gateway_last_seen_seconds"):
+        if str(labels.get("site") or "").strip() != site:
+            continue
+        node_id = str(labels.get("node") or "").strip()
+        if not node_id:
+            continue
+        last_seen_by_node[node_id] = value
+    for labels, _value in collect_prometheus_metric_values(metrics_text, "ae_site_gateway_build_info"):
+        if str(labels.get("site") or "").strip() != site:
+            continue
+        node_id = str(labels.get("node") or "").strip()
+        if not node_id:
+            continue
+        build_by_node[node_id] = (
+            str(labels.get("version") or "").strip(),
+            str(labels.get("sha") or "").strip(),
+            str(labels.get("date") or "").strip(),
+        )
+    nodes = sorted(set(last_seen_by_node) | set(build_by_node))
+    records: dict[str, EdgeGatewayStatusRecord] = {}
+    for node_id in nodes:
+        version, sha, date = build_by_node.get(node_id, ("", "", ""))
+        records[node_id] = EdgeGatewayStatusRecord(
+            site_id=site,
+            node_id=node_id,
+            last_seen_seconds=last_seen_by_node.get(node_id),
+            version=version,
+            sha=sha,
+            date=date,
+        )
+    return records
 
 
 def _clean_str(value: Any) -> str:
@@ -973,6 +1106,7 @@ def subprocess_run(
 
 __all__ = [
     "BuildInfoRecord",
+    "EdgeGatewayStatusRecord",
     "EtcdMemberAddResult",
     "EtcdQuorumRestorePlan",
     "EtcdLeaderRecord",
@@ -980,21 +1114,27 @@ __all__ = [
     "EtcdRestoreMemberSpec",
     "HA_CORE_REQUIRED_ENV",
     "HaCoreNodeTarget",
+    "NatsEdgeMonitorRecord",
+    "NatsEdgeSiteTarget",
     "NatsHubMonitorRecord",
     "NatsHubNodeTarget",
     "build_container_etcdctl_command",
+    "build_nats_edge_monitor_record",
     "build_nats_hub_monitor_record",
     "build_local_etcdctl_command",
     "build_local_etcdctl_recovery_command",
     "build_quorum_restore_plan",
     "collect_prometheus_metric_values",
+    "collect_site_gateway_status",
     "detect_container_cli",
     "detect_container_cli_or_die",
+    "evaluate_nats_edge_site",
     "evaluate_nats_hub_cluster",
     "derive_client_url",
     "etcd_endpoint_healthy",
     "fetch_build_info",
     "fetch_http_text",
+    "fetch_nats_edge_monitor_record",
     "fetch_nats_hub_monitor_record",
     "fetch_nats_monitor_json",
     "format_quorum_restore_plan",
@@ -1006,6 +1146,7 @@ __all__ = [
     "parse_etcd_leader_response",
     "parse_etcd_member_add_output",
     "parse_ha_core_node_target",
+    "parse_nats_edge_site_target",
     "parse_nats_hub_node_target",
     "parse_nats_url",
     "parse_prometheus_metric_value",
