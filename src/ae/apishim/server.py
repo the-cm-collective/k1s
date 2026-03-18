@@ -2277,6 +2277,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     crd_registry: dict[tuple[str, str, str], dict[str, Any]] = {}
     crd_index: dict[str, list[tuple[str, str, str]]] = {}
     crd_lock = threading.RLock()
+    _crd_refresh_monotonic: float = 0.0
 
     def _app_admission_mode(self) -> str:
         mode = (self.app_admission_mode or "enforce").strip().lower()
@@ -3166,6 +3167,11 @@ class ShimHandler(BaseHTTPRequestHandler):
         )
         if h_plural == "horizontalpodautoscalers":
             supported = True
+        crd_plural, _crd_name = _gv_cluster_name(
+            path, "apiextensions.k8s.io", "v1", "customresourcedefinitions"
+        )
+        if crd_plural == "customresourcedefinitions":
+            supported = True
         for resource in ("roles", "rolebindings"):
             r_plural, _r_ns, _r_name = _gv_ns_name(
                 path, "rbac.authorization.k8s.io", "v1", resource
@@ -3181,6 +3187,12 @@ class ShimHandler(BaseHTTPRequestHandler):
         p_plural, _p_ns, _p_name = _gv_ns_name(path, "policy", "v1", "poddisruptionbudgets")
         if p_plural == "poddisruptionbudgets":
             supported = True
+        self._refresh_crd_registry_from_state()
+        custom = _parse_custom_resource_path(path)
+        if custom is not None:
+            group, version, _namespace, plural, _name = custom
+            if self._lookup_crd(group, version, plural):
+                supported = True
         if supported:
             return False
         self._json_status(
@@ -5266,6 +5278,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             pass
 
     def _serve_dynamic_group_discovery(self, path: str) -> bool:
+        self._refresh_crd_registry_from_state()
         m_group = re.match(r"^/apis/([^/]+)$", path)
         if m_group:
             group = m_group.group(1)
@@ -5604,6 +5617,51 @@ class ShimHandler(BaseHTTPRequestHandler):
         with cls.crd_lock:
             return cls.crd_registry.get((group, version, plural))
 
+    @classmethod
+    def _refresh_crd_registry_from_state(cls, *, force: bool = False) -> None:
+        ha_mode = str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        if not ha_mode:
+            return
+        refresh_interval = max(
+            0.1,
+            float(os.getenv("AE_APISHIM_HA_CRD_REFRESH_SEC", "0.5") or "0.5"),
+        )
+        now = time.monotonic()
+        with cls.crd_lock:
+            if not force and (now - cls._crd_refresh_monotonic) < refresh_interval:
+                return
+        state = getattr(cls, "state", None)
+        if state is None or not hasattr(state, "list_authority_objects"):
+            return
+        try:
+            objs = state.list_authority_objects(
+                "apiextensions.k8s.io",
+                "v1",
+                "customresourcedefinitions",
+                None,
+            )
+        except Exception:
+            return
+        with cls.crd_lock:
+            cls.crd_registry = {}
+            cls.crd_index = {}
+        for obj in objs:
+            cls._register_crd(
+                K8sObject(
+                    "apiextensions.k8s.io",
+                    "v1",
+                    "customresourcedefinitions",
+                    None,
+                    obj.name,
+                    dict(obj.metadata or {}),
+                    dict(obj.spec or {}),
+                    dict(obj.status or {}),
+                    int(obj.resource_version or 0),
+                )
+            )
+        with cls.crd_lock:
+            cls._crd_refresh_monotonic = now
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
@@ -5644,6 +5702,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             self._ok({"versions": ["v1"]})
             return
         if path == "/apis":
+            self._refresh_crd_registry_from_state()
             groups = [
                 {
                     "name": "batch",
@@ -10459,6 +10518,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return None
 
     def _handle_custom_resource_get(self, path: str, query: dict[str, list[str]]) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(path)
         if not parsed:
             return False
@@ -10542,6 +10602,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return False
 
     def _handle_custom_resource_post(self, doc: dict[str, Any]) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -10593,6 +10654,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return True
 
     def _handle_custom_resource_put(self, doc: dict[str, Any]) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -10638,6 +10700,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return True
 
     def _handle_custom_resource_patch(self, ctype: str, patch: dict[str, Any]) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -10682,6 +10745,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return True
 
     def _handle_custom_resource_delete(self) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -12332,7 +12396,7 @@ class ShimServer(ThreadingHTTPServer):
             self.store = legacy_store
         self._storage_controller = None
         if ha_mode:
-            LOGGER.info("HA mode disables apishim storage controller until H4b2")
+            LOGGER.info("HA mode disables apishim storage controller until H4b2b")
         else:
             try:
                 from ae.storage.controller import StorageController
@@ -12396,6 +12460,9 @@ class ShimServer(ThreadingHTTPServer):
             self._adapter = None
 
     def _bootstrap_crds(self) -> None:
+        if str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+            ShimHandler._refresh_crd_registry_from_state(force=True)
+            return
         try:
             objs = self.store.list_all("apiextensions.k8s.io", "v1", "customresourcedefinitions")
         except Exception:

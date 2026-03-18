@@ -3,7 +3,9 @@ import sys
 import types
 
 from ae.apishim import server as shim_server
+from ae.apishim.ha_store import MultiplexApishimStore
 from ae.apishim.store import ObjectStore
+from ae.controller.state import SQLiteStateStore
 from tests.unit.test_apishim_storage import _handler, _json_body
 
 
@@ -266,9 +268,15 @@ def test_apishim_ha_mode_disables_storage_controller_startup(monkeypatch, tmp_pa
             store.close()
 
 
-def test_apishim_ha_mode_rejects_crd_create_until_later_slice(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_routes_crd_create_through_shared_authority(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
-    store = ObjectStore(tmp_path / "apishim.db")
+    state = SQLiteStateStore(tmp_path / "state.db")
+    legacy = ObjectStore(tmp_path / "apishim.db")
+    store = MultiplexApishimStore.from_state_and_legacy(state, legacy)
+    shim_server.ShimHandler.state = state
+    shim_server.ShimHandler.crd_registry = {}
+    shim_server.ShimHandler.crd_index = {}
+    shim_server.ShimHandler._crd_refresh_monotonic = 0.0
     body = json.dumps(
         {
             "apiVersion": "apiextensions.k8s.io/v1",
@@ -289,22 +297,64 @@ def test_apishim_ha_mode_rejects_crd_create_until_later_slice(monkeypatch, tmp_p
         method="PUT",
         body=body,
     )
+    handler.server = types.SimpleNamespace(store=store, state=state, runtime=None)
+    handler.state = state
 
     handler.do_PUT()
 
-    assert status["code"] == 409
+    assert status["code"] == 200
     payload = _json_body(handler)
-    assert payload["reason"] == "HAUnsupported"
-    assert "later H4" in payload["message"]
-    assert store.get("apiextensions.k8s.io", "v1", "customresourcedefinitions", None, "apps.ae.dev") is None
+    assert payload["kind"] == "CustomResourceDefinition"
+    assert payload["metadata"]["name"] == "apps.ae.dev"
+    assert legacy.get("apiextensions.k8s.io", "v1", "customresourcedefinitions", None, "apps.ae.dev") is None
+    entry = state.get_authority_object(
+        "apiextensions.k8s.io",
+        "v1",
+        "customresourcedefinitions",
+        None,
+        "apps.ae.dev",
+    )
+    assert entry is not None
 
 
-def test_apishim_ha_mode_rejects_custom_resource_create_until_later_slice(
+def test_apishim_ha_mode_routes_custom_resource_create_through_shared_authority(
     monkeypatch,
     tmp_path,
 ) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
-    store = ObjectStore(tmp_path / "apishim.db")
+    state = SQLiteStateStore(tmp_path / "state.db")
+    legacy = ObjectStore(tmp_path / "apishim.db")
+    store = MultiplexApishimStore.from_state_and_legacy(state, legacy)
+    shim_server.ShimHandler.state = state
+    shim_server.ShimHandler.crd_registry = {}
+    shim_server.ShimHandler.crd_index = {}
+    shim_server.ShimHandler._crd_refresh_monotonic = 0.0
+
+    crd_body = json.dumps(
+        {
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {"name": "apps.ae.dev"},
+            "spec": {
+                "group": "ae.dev",
+                "scope": "Namespaced",
+                "names": {"plural": "apps", "singular": "app", "kind": "Deployment"},
+                "versions": [{"name": "v1alpha1", "served": True, "storage": True}],
+            },
+        }
+    ).encode("utf-8")
+    crd_handler, crd_status = _handler(
+        store,
+        monkeypatch,
+        "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/apps.ae.dev",
+        method="PUT",
+        body=crd_body,
+    )
+    crd_handler.server = types.SimpleNamespace(store=store, state=state, runtime=None)
+    crd_handler.state = state
+    crd_handler.do_PUT()
+    assert crd_status["code"] == 200
+
     body = json.dumps(
         {
             "apiVersion": "ae.dev/v1alpha1",
@@ -320,11 +370,15 @@ def test_apishim_ha_mode_rejects_custom_resource_create_until_later_slice(
         method="POST",
         body=body,
     )
+    handler.server = types.SimpleNamespace(store=store, state=state, runtime=None)
+    handler.state = state
 
     handler.do_POST()
 
-    assert status["code"] == 409
+    assert status["code"] == 201
     payload = _json_body(handler)
-    assert payload["reason"] == "HAUnsupported"
-    assert "later H4" in payload["message"]
-    assert store.list_all("ae.dev", "v1alpha1", "apps") == []
+    assert payload["kind"] == "Deployment"
+    assert payload["metadata"]["name"] == "demo"
+    assert legacy.list_all("ae.dev", "v1alpha1", "apps") == []
+    entry = state.get_authority_object("ae.dev", "v1alpha1", "apps", "default", "demo")
+    assert entry is not None
