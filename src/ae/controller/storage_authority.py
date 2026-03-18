@@ -1,4 +1,4 @@
-"""Leader-owned HA storage controller hosting for core storage resources."""
+"""Leader-owned HA storage controller hosting for shared-authority storage resources."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ class StorageAuthorityRunner:
                         self._start_active_controller()
                     elif not is_leader and self._active is not None:
                         LOGGER.info(
-                            "storage authority lost leadership; stopping core storage reconcile"
+                            "storage authority lost leadership; stopping storage reconcile"
                         )
                         self._stop_active_controller()
                 except Exception as exc:  # noqa: BLE001
@@ -91,7 +91,7 @@ class StorageAuthorityRunner:
         self._active = controller
         if seeded:
             LOGGER.info("seeded %s StorageClass objects from config", seeded)
-        LOGGER.info("started leader-owned core storage authority controller")
+        LOGGER.info("started leader-owned storage authority controller")
 
     def _stop_active_controller(self) -> None:
         controller = self._active
@@ -131,9 +131,4 @@ class StorageAuthorityRunner:
 
     @staticmethod
     def _default_controller_factory(store: Any) -> StorageController:
-        return StorageController(
-            store,
-            enable_snapshots=False,
-            enable_csi=False,
-            enable_storage_capacity=False,
-        )
+        return StorageController(store)

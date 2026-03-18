@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 from ae.controller.storage_authority import StorageAuthorityRunner
+from ae.apishim.store import ObjectStore
 
 
 class _FakeAuthority:
@@ -43,3 +44,13 @@ def test_storage_authority_runner_starts_on_leadership_and_stops_on_loss() -> No
 
     assert calls[:2] == ["sync", "start"]
     assert "stop" in calls
+
+
+def test_storage_authority_runner_default_factory_enables_full_storage_surface(tmp_path) -> None:
+    controller = StorageAuthorityRunner._default_controller_factory(
+        ObjectStore(db_path=tmp_path / "apishim.db")
+    )
+
+    assert controller._enable_snapshots is True
+    assert controller._enable_csi is True
+    assert controller._enable_storage_capacity is True
