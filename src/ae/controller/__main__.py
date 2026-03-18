@@ -32,6 +32,12 @@ from ae.controller.cronjob_authority import (
     CronJobAuthorityController,
     CronJobAuthorityControllerConfig,
 )
+from ae.controller.hpa_authority import (
+    HPAAuthorityController,
+    HPAAuthorityControllerConfig,
+    WorkloadMetricsCollector,
+    WorkloadMetricsCollectorConfig,
+)
 from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
@@ -1634,6 +1640,24 @@ def _make_reconciler(
     )
 
 
+def _make_hpa_sample_reader(*, authority=None):
+    registry_auth = registry_auth_factory()
+    base_runtime = runtime_factory(registry_auth=registry_auth)
+    local_node_id = str(os.getenv("AE_NODE_ID") or "").strip()
+
+    def _read(node) -> list:
+        agent_url = str(getattr(node, "endpoint", "") or "").strip() or None
+        node_id = str(getattr(node, "node_id", "") or "").strip()
+        if agent_url is None and local_node_id and node_id and node_id != local_node_id:
+            return []
+        from ae.runtime import RemoteRuntime
+
+        runtime = RemoteRuntime(agent_url, base_runtime, authority=authority, node_id=node_id)
+        return runtime.list_workload_metrics()
+
+    return _read
+
+
 def _reconcile_all(
     reconciler: Reconciler,
     manifests: Iterable[AppManifest],
@@ -1775,6 +1799,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     _route_bundle = None
     _edge_renderer = None
     _cronjob_authority = None
+    _hpa_metrics_collector = None
+    _hpa_authority = None
     if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
         try:
             edge_cfg = build_core_proxy_config()
@@ -1912,6 +1938,43 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
                 _log.getLogger(__name__).warning(
                     "failed to start cronjob authority controller: %s", exc
+                )
+        try:
+            hpa_interval = float(os.getenv("AE_HPA_POLL_INTERVAL_SECONDS", "15") or 15)
+        except Exception:
+            hpa_interval = 15.0
+        try:
+            hpa_metrics_max_age = float(os.getenv("AE_HPA_METRICS_MAX_AGE_SECONDS", "45") or 45)
+        except Exception:
+            hpa_metrics_max_age = 45.0
+        try:
+            hpa_cooldown = float(os.getenv("AE_HPA_COOLDOWN_SECONDS", "30") or 30)
+        except Exception:
+            hpa_cooldown = 30.0
+        if hpa_interval > 0:
+            try:
+                _hpa_metrics_collector = WorkloadMetricsCollector(
+                    store,
+                    _make_hpa_sample_reader(authority=authority),
+                    config=WorkloadMetricsCollectorConfig(interval_s=hpa_interval),
+                    authority=authority,
+                )
+                _hpa_metrics_collector.start()
+                _hpa_authority = HPAAuthorityController(
+                    store,
+                    config=HPAAuthorityControllerConfig(
+                        interval_s=hpa_interval,
+                        metrics_max_age_s=hpa_metrics_max_age,
+                        cooldown_s=hpa_cooldown,
+                    ),
+                    authority=authority,
+                )
+                _hpa_authority.start()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+
+                _log.getLogger(__name__).warning(
+                    "failed to start hpa authority components: %s", exc
                 )
     _agent_api_server = None
     try:
@@ -2910,6 +2973,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     )
                     if _cronjob_authority is not None:
                         _cronjob_authority.stop()
+                    if _hpa_authority is not None:
+                        _hpa_authority.stop()
+                    if _hpa_metrics_collector is not None:
+                        _hpa_metrics_collector.stop()
                     if authority is not None:
                         authority.stop()
                     return 0
@@ -2943,6 +3010,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             pass
         if _cronjob_authority is not None:
             _cronjob_authority.stop()
+        if _hpa_authority is not None:
+            _hpa_authority.stop()
+        if _hpa_metrics_collector is not None:
+            _hpa_metrics_collector.stop()
         if authority is not None:
             authority.stop()
         return 0
@@ -3104,6 +3175,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     finally:
         for component in (
             _cronjob_authority,
+            _hpa_authority,
+            _hpa_metrics_collector,
             _route_bundle,
             _outbox_publisher,
             _nats_ingress,

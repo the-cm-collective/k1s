@@ -11,9 +11,11 @@ from ae.observability.http_api import (
     _ApiHandler,
     _GATEWAY_WORK_METRICS,
     _HA_FENCE_METRICS,
+    _HPA_ACTIVITY_METRICS,
     _ROUTE_BUNDLE_METRICS,
     record_gateway_metrics,
     record_ha_fence_event,
+    record_hpa_activity,
     record_route_bundle_publish_state,
 )
 from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
@@ -169,3 +171,36 @@ def test_metrics_expose_gateway_replay_and_route_publish_series(tmp_path: Path) 
     assert 'ae_route_bundle_publish_fail_total{site="sea"} 1.0' in txt
     assert 'ae_route_bundle_pending{site="sea"} 1.0' in txt
     assert 'ae_route_bundle_ack_age_seconds{site="sea"} 7.5' in txt
+
+
+def test_metrics_expose_hpa_authority_series(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    handler = object.__new__(_ApiHandler)
+    handler.store = store  # type: ignore[attr-defined]
+    handler.metrics = MetricsService(store)  # type: ignore[attr-defined]
+    handler.wfile = io.BytesIO()  # type: ignore[attr-defined]
+
+    def _noop(*_args, **_kwargs):
+        return None
+
+    handler.send_response = _noop  # type: ignore[attr-defined]
+    handler.send_header = _noop  # type: ignore[attr-defined]
+    handler.end_headers = _noop  # type: ignore[attr-defined]
+
+    original = dict(_HPA_ACTIVITY_METRICS)
+    for key in list(_HPA_ACTIVITY_METRICS):
+        _HPA_ACTIVITY_METRICS[key] = 0.0
+    record_hpa_activity(reconcile=True, scale=True, metrics_stale=True, metrics_missing=True)
+    record_hpa_activity(snapshot_age_seconds=12.5)
+    try:
+        _ApiHandler._handle_metrics(handler)  # type: ignore[arg-type]
+        txt = handler.wfile.getvalue().decode("utf-8", "replace")
+    finally:
+        _HPA_ACTIVITY_METRICS.clear()
+        _HPA_ACTIVITY_METRICS.update(original)
+
+    assert "ae_hpa_reconcile_total 1.0" in txt
+    assert "ae_hpa_scale_total 1.0" in txt
+    assert "ae_hpa_metrics_stale_total 1.0" in txt
+    assert "ae_hpa_metrics_missing_total 1.0" in txt
+    assert "ae_hpa_snapshot_age_seconds 12.5" in txt

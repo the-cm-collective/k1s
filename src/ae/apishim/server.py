@@ -11326,6 +11326,11 @@ def _to_hpa(o: K8sObject, store: ObjectStore) -> dict[str, Any]:
             if obj:
                 current_replicas = current_replicas or int(obj.spec.get("replicas", 1))
                 desired = desired or int(obj.spec.get("replicas", 1))
+        elif target_kind == "daemonset":
+            obj = store.get("apps", "v1", "daemonsets", o.namespace, target_name)  # type: ignore[arg-type]
+            if obj:
+                current_replicas = current_replicas or int(obj.spec.get("replicas", 1))
+                desired = desired or int(obj.spec.get("replicas", 1))
     except Exception:
         pass
     status.setdefault("currentReplicas", current_replicas or 0)

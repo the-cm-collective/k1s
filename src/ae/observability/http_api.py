@@ -65,6 +65,13 @@ _JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
 _GATEWAY_WORK_METRICS: dict[str, dict[str, float]] = {}
 _ROUTE_BUNDLE_METRICS: dict[str, dict[str, float]] = {}
 _HA_FENCE_METRICS: dict[str, dict[str, float]] = {}
+_HPA_ACTIVITY_METRICS: dict[str, float] = {
+    "reconcile_total": 0.0,
+    "scale_total": 0.0,
+    "metrics_stale_total": 0.0,
+    "metrics_missing_total": 0.0,
+    "snapshot_age_seconds": 0.0,
+}
 _HEARTBEAT_WRITES_TOTAL: float = 0.0
 _HEARTBEAT_NODE_REWRITES_TOTAL: float = 0.0
 _ETCD_MAINTENANCE_RUNS_TOTAL: float = 0.0
@@ -284,6 +291,36 @@ def record_ha_fence_event(
     _add("stale_total", stale)
     _add("duplicate_total", duplicate)
     _add("epoch_advance_total", epoch_advanced)
+
+
+def record_hpa_activity(
+    *,
+    reconcile: bool | int | float = False,
+    scale: bool | int | float = False,
+    metrics_stale: bool | int | float = False,
+    metrics_missing: bool | int | float = False,
+    snapshot_age_seconds: float | None = None,
+) -> None:
+    def _add(field: str, value: bool | int | float) -> None:
+        if isinstance(value, bool):
+            amount = 1.0 if value else 0.0
+        else:
+            try:
+                amount = float(value)
+            except Exception:
+                amount = 0.0
+        if amount > 0:
+            _HPA_ACTIVITY_METRICS[field] = _HPA_ACTIVITY_METRICS.get(field, 0.0) + amount
+
+    _add("reconcile_total", reconcile)
+    _add("scale_total", scale)
+    _add("metrics_stale_total", metrics_stale)
+    _add("metrics_missing_total", metrics_missing)
+    if snapshot_age_seconds is not None:
+        try:
+            _HPA_ACTIVITY_METRICS["snapshot_age_seconds"] = max(0.0, float(snapshot_age_seconds))
+        except Exception:
+            pass
 
 
 def record_heartbeat_write(*, node_rewrite: bool) -> None:
@@ -3549,6 +3586,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 lines.append(
                     f"ae_ha_fence_epoch_advance_total{{{labels}}} {float(stats.get('epoch_advance_total', 0.0) or 0.0)}"
                 )
+        lines.append("# HELP ae_hpa_reconcile_total HPA authority reconcile attempts")
+        lines.append("# TYPE ae_hpa_reconcile_total counter")
+        lines.append(
+            f"ae_hpa_reconcile_total {float(_HPA_ACTIVITY_METRICS.get('reconcile_total', 0.0) or 0.0)}"
+        )
+        lines.append("# HELP ae_hpa_scale_total HPA authority scale actions")
+        lines.append("# TYPE ae_hpa_scale_total counter")
+        lines.append(
+            f"ae_hpa_scale_total {float(_HPA_ACTIVITY_METRICS.get('scale_total', 0.0) or 0.0)}"
+        )
+        lines.append("# HELP ae_hpa_metrics_stale_total HPA reconciles skipped due to stale metrics")
+        lines.append("# TYPE ae_hpa_metrics_stale_total counter")
+        lines.append(
+            f"ae_hpa_metrics_stale_total {float(_HPA_ACTIVITY_METRICS.get('metrics_stale_total', 0.0) or 0.0)}"
+        )
+        lines.append("# HELP ae_hpa_metrics_missing_total HPA reconciles skipped due to missing metrics or requests")
+        lines.append("# TYPE ae_hpa_metrics_missing_total counter")
+        lines.append(
+            f"ae_hpa_metrics_missing_total {float(_HPA_ACTIVITY_METRICS.get('metrics_missing_total', 0.0) or 0.0)}"
+        )
+        lines.append("# HELP ae_hpa_snapshot_age_seconds Age of the latest workload metrics snapshot used by HPA")
+        lines.append("# TYPE ae_hpa_snapshot_age_seconds gauge")
+        lines.append(
+            f"ae_hpa_snapshot_age_seconds {float(_HPA_ACTIVITY_METRICS.get('snapshot_age_seconds', 0.0) or 0.0)}"
+        )
         if _JS_STREAM_STATS:
             lines.append("# HELP ae_js_stream_bytes JetStream stream bytes in use")
             lines.append("# TYPE ae_js_stream_bytes gauge")

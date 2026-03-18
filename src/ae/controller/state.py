@@ -3621,15 +3621,6 @@ class SQLiteStateStore:
             )
             conn.commit()
             return new_attempt
-
-
-def _outbox_publish_subject(site_id: str) -> str:
-    return f"k1s.v1.work.site.{site_id}"
-
-
-def _outbox_publish_msg_id(work_id: str, attempt: int, payload: dict) -> str:
-    return str(payload.get("operation_id") or f"{work_id}:{attempt}")
-
     # --- Canary rollout state ----------------------------------------------
 
     def get_canary_state(self, app_name: str) -> dict | None:
@@ -3985,6 +3976,14 @@ def _outbox_publish_msg_id(work_id: str, attempt: int, payload: dict) -> str:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
                 conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))
             conn.commit()
+
+
+def _outbox_publish_subject(site_id: str) -> str:
+    return f"k1s.v1.work.site.{site_id}"
+
+
+def _outbox_publish_msg_id(work_id: str, attempt: int, payload: dict) -> str:
+    return str(payload.get("operation_id") or f"{work_id}:{attempt}")
 
 
 def state_store_from_env() -> SQLiteStateStore:

@@ -45,6 +45,7 @@ def test_controller_ha_starts_and_stops_cronjob_authority(tmp_path, monkeypatch)
     monkeypatch.setenv("AE_RUNTIME_BACKEND", "stub")
     monkeypatch.setenv("AE_CADDY_SITES", "")
     monkeypatch.setenv("AE_HA_MODE", "1")
+    monkeypatch.setenv("AE_HPA_POLL_INTERVAL_SECONDS", "0")
     monkeypatch.setattr(
         "ae.controller.__main__.ControllerAuthorityService.from_env",
         lambda: _FakeAuthority(is_leader=True),
