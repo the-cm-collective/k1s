@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata
@@ -204,3 +205,63 @@ def test_metrics_expose_hpa_authority_series(tmp_path: Path) -> None:
     assert "ae_hpa_metrics_stale_total 1.0" in txt
     assert "ae_hpa_metrics_missing_total 1.0" in txt
     assert "ae_hpa_snapshot_age_seconds 12.5" in txt
+
+
+def test_metrics_expose_controller_authority_series(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    handler = object.__new__(_ApiHandler)
+    handler.store = store  # type: ignore[attr-defined]
+    handler.metrics = MetricsService(store)  # type: ignore[attr-defined]
+    handler.wfile = io.BytesIO()  # type: ignore[attr-defined]
+    handler.authority_info_fn = staticmethod(  # type: ignore[attr-defined]
+        lambda: SimpleNamespace(
+            enabled=True,
+            is_leader=True,
+            leader_info=SimpleNamespace(controller_id="ctrl-a", controller_epoch=19),
+            controller_epoch=19,
+        )
+    )
+
+    def _noop(*_args, **_kwargs):
+        return None
+
+    handler.send_response = _noop  # type: ignore[attr-defined]
+    handler.send_header = _noop  # type: ignore[attr-defined]
+    handler.end_headers = _noop  # type: ignore[attr-defined]
+
+    _ApiHandler._handle_metrics(handler)  # type: ignore[arg-type]
+    txt = handler.wfile.getvalue().decode("utf-8", "replace")
+
+    assert "ae_controller_is_leader 1" in txt
+    assert "ae_controller_epoch 19" in txt
+    assert "ae_controller_authority_healthy 1" in txt
+
+
+def test_metrics_report_unhealthy_authority_when_no_leader_is_visible(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    handler = object.__new__(_ApiHandler)
+    handler.store = store  # type: ignore[attr-defined]
+    handler.metrics = MetricsService(store)  # type: ignore[attr-defined]
+    handler.wfile = io.BytesIO()  # type: ignore[attr-defined]
+    handler.authority_info_fn = staticmethod(  # type: ignore[attr-defined]
+        lambda: SimpleNamespace(
+            enabled=True,
+            is_leader=False,
+            leader_info=None,
+            controller_epoch=0,
+        )
+    )
+
+    def _noop(*_args, **_kwargs):
+        return None
+
+    handler.send_response = _noop  # type: ignore[attr-defined]
+    handler.send_header = _noop  # type: ignore[attr-defined]
+    handler.end_headers = _noop  # type: ignore[attr-defined]
+
+    _ApiHandler._handle_metrics(handler)  # type: ignore[arg-type]
+    txt = handler.wfile.getvalue().decode("utf-8", "replace")
+
+    assert "ae_controller_is_leader 0" in txt
+    assert "ae_controller_epoch 0" in txt
+    assert "ae_controller_authority_healthy 0" in txt

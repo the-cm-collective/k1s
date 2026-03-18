@@ -2971,6 +2971,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 exec_fn=_exec,
                 logs_fn=_logs,
                 system_info_fn=_system_info,
+                authority_info_fn=(
+                    (lambda: authority.snapshot()) if authority is not None else None
+                ),
                 plan_fn=_plan,
                 rollout_pause_fn=_rollout_pause,
                 rollout_resume_fn=_rollout_resume,

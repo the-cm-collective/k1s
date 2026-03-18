@@ -890,6 +890,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     apply_fn = None  # type: ignore[var-annotated]
     # Optional system info provider injected by controller
     system_info_fn = None  # type: ignore[var-annotated]
+    authority_info_fn = None  # type: ignore[var-annotated]
     plan_fn = None  # type: ignore[var-annotated]
     rollout_pause_fn = None  # type: ignore[var-annotated]
     rollout_resume_fn = None  # type: ignore[var-annotated]
@@ -3307,6 +3308,36 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 lines.append(f"ae_site_stale{{{labels}}} {stale}")
         except Exception:
             pass
+        # Controller authority metrics
+        try:
+            authority_fn = getattr(self, "authority_info_fn", None)
+            if authority_fn is not None:
+                snapshot = authority_fn()
+                enabled = bool(getattr(snapshot, "enabled", False)) if snapshot is not None else False
+                is_leader = bool(getattr(snapshot, "is_leader", False)) if snapshot is not None else False
+                leader_info = getattr(snapshot, "leader_info", None) if snapshot is not None else None
+                epoch = 0
+                if snapshot is not None:
+                    try:
+                        epoch = int(getattr(snapshot, "controller_epoch", 0) or 0)
+                    except Exception:
+                        epoch = 0
+                authority_healthy = 1 if (not enabled or is_leader or leader_info is not None) else 0
+                lines.append(
+                    "# HELP ae_controller_is_leader Whether this controller currently owns mutation authority"
+                )
+                lines.append("# TYPE ae_controller_is_leader gauge")
+                lines.append(f"ae_controller_is_leader {1 if is_leader else 0}")
+                lines.append("# HELP ae_controller_epoch Current controller authority epoch")
+                lines.append("# TYPE ae_controller_epoch gauge")
+                lines.append(f"ae_controller_epoch {epoch}")
+                lines.append(
+                    "# HELP ae_controller_authority_healthy Whether controller authority can resolve a valid leader"
+                )
+                lines.append("# TYPE ae_controller_authority_healthy gauge")
+                lines.append(f"ae_controller_authority_healthy {authority_healthy}")
+        except Exception:
+            pass
         # Etcd maintenance + heartbeat churn metrics
         try:
             lines += [
@@ -4822,6 +4853,7 @@ def start_http_api(
     exec_fn=None,
     logs_fn=None,
     system_info_fn=None,
+    authority_info_fn=None,
     plan_fn=None,
     rollout_pause_fn=None,
     rollout_resume_fn=None,
@@ -4842,6 +4874,9 @@ def start_http_api(
     handler_cls.logs_fn = staticmethod(logs_fn) if logs_fn is not None else None
     handler_cls.system_info_fn = (
         staticmethod(system_info_fn) if system_info_fn is not None else None
+    )
+    handler_cls.authority_info_fn = (
+        staticmethod(authority_info_fn) if authority_info_fn is not None else None
     )
     handler_cls.plan_fn = staticmethod(plan_fn) if plan_fn is not None else None
     handler_cls.rollout_pause_fn = (
