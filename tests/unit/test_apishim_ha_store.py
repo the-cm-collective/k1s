@@ -482,6 +482,55 @@ def test_generic_authority_store_round_trips_built_in_passive_resources(tmp_path
     assert pdb_entry is not None
 
 
+def test_workload_authority_watch_defaults_since_rv_to_zero(tmp_path) -> None:
+    _state, _legacy, store = _make_store(tmp_path)
+    store.upsert(
+        "apps",
+        "v1",
+        "deployments",
+        "default",
+        "demo",
+        metadata={"name": "demo", "namespace": "default"},
+        spec=_deployment_spec("demo"),
+        status={},
+    )
+
+    gen = store.watch("apps", "v1", "deployments", "default")
+    try:
+        event_type, obj = next(gen)
+    finally:
+        gen.close()
+
+    assert event_type == "ADDED"
+    assert obj.name == "demo"
+
+
+def test_generic_authority_watch_defaults_since_rv_to_zero(tmp_path) -> None:
+    _state, _legacy, store = _make_store(tmp_path)
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "demo-pvc",
+        metadata={"name": "demo-pvc", "namespace": "default"},
+        spec={
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": "1Gi"}},
+        },
+        status={"phase": "Pending"},
+    )
+
+    gen = store.watch("", "v1", "persistentvolumeclaims", "default")
+    try:
+        event_type, obj = next(gen)
+    finally:
+        gen.close()
+
+    assert event_type == "ADDED"
+    assert obj.name == "demo-pvc"
+
+
 def test_generic_authority_store_routes_crds_and_dynamic_custom_resources(tmp_path) -> None:
     state, legacy, store = _make_store(tmp_path)
 

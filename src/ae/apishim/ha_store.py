@@ -1144,7 +1144,8 @@ class WorkloadAuthorityStore:
         allow_bookmarks: bool = False,
         since_rv: int | None = None,
     ) -> Iterator[tuple[str, K8sObject]]:
-        last_rv = int(since_rv or 0)
+        normalized_since_rv = int(since_rv or 0)
+        last_rv = normalized_since_rv
         known: dict[tuple[str | None, str], K8sObject] = {}
         last_heartbeat = time.time()
 
@@ -1154,7 +1155,7 @@ class WorkloadAuthorityStore:
             return self.list(group, version, resource, namespace)
 
         initial = _snapshot()
-        if since_rv <= 0:
+        if normalized_since_rv <= 0:
             for obj in initial:
                 key = (obj.namespace, obj.name)
                 known[key] = obj
@@ -1359,7 +1360,8 @@ class GenericAuthorityStore:
         allow_bookmarks: bool = False,
         since_rv: int | None = None,
     ) -> Iterator[tuple[str, K8sObject]]:
-        last_rv = int(since_rv or 0)
+        normalized_since_rv = int(since_rv or 0)
+        last_rv = normalized_since_rv
         known: dict[tuple[str | None, str], K8sObject] = {}
         last_heartbeat = time.time()
 
@@ -1369,7 +1371,7 @@ class GenericAuthorityStore:
             return self.list(group, version, resource, namespace)
 
         initial = _snapshot()
-        if since_rv <= 0:
+        if normalized_since_rv <= 0:
             for obj in initial:
                 key = (obj.namespace, obj.name)
                 known[key] = obj
