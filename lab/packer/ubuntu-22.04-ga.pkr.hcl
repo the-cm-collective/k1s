@@ -12,7 +12,7 @@ variable "variant" {
   default = "base"
   validation {
     condition     = contains(["base", "gpu"], var.variant)
-    error_message = "variant must be base or gpu"
+    error_message = "Variant must be base or gpu."
   }
 }
 
@@ -33,12 +33,12 @@ variable "vm_cpus" {
 
 variable "ubuntu_image_url" {
   type    = string
-  default = "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+  default = "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
 }
 
 variable "ubuntu_image_checksum" {
   type    = string
-  default = "sha256:53c9f90f0f3b8f6ca8f9f7fcbc1b325f6cbe8f9f3895ea665c19fdd84c400c5f"
+  default = "sha256:e66ef756881b5e682c496112201382abd76291797a7395bf81fd1bd0888f5b6f"
 }
 
 source "qemu" "ubuntu" {
