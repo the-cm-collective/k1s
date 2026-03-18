@@ -25,6 +25,11 @@ WORKLOAD_KIND_LABEL = "apishim.k1s.dev/workload-kind"
 SERVICE_NAME_LABEL = "apishim.k1s.dev/service-name"
 SERVICE_CLUSTER_IP_LABEL = "apishim.k1s.dev/service-cluster-ip"
 INGRESS_NAME_LABEL = "apishim.k1s.dev/ingress-name"
+OWNER_API_VERSION_LABEL = "apishim.k1s.dev/owner-api-version"
+OWNER_KIND_LABEL = "apishim.k1s.dev/owner-kind"
+OWNER_NAME_LABEL = "apishim.k1s.dev/owner-name"
+OWNER_UID_LABEL = "apishim.k1s.dev/owner-uid"
+CRONJOB_SCHEDULED_AT_LABEL = "apishim.k1s.dev/cronjob-scheduled-at"
 
 WORKLOAD_RESOURCES: set[tuple[str, str, str]] = {
     ("apps", "v1", "deployments"),
@@ -178,6 +183,43 @@ def _service_cluster_ip(entry: RegistryEntry, state: SQLiteStateStore) -> str | 
     return raw or None
 
 
+def _owner_references_for_entry(entry: RegistryEntry) -> list[dict[str, Any]]:
+    labels = entry.labels or {}
+    owner_kind = str(labels.get(OWNER_KIND_LABEL) or "").strip()
+    owner_name = str(labels.get(OWNER_NAME_LABEL) or "").strip()
+    owner_uid = str(labels.get(OWNER_UID_LABEL) or "").strip()
+    if not owner_kind or not owner_name or not owner_uid:
+        return []
+    return [
+        {
+            "apiVersion": str(labels.get(OWNER_API_VERSION_LABEL) or "v1"),
+            "kind": owner_kind,
+            "name": owner_name,
+            "uid": owner_uid,
+            "controller": True,
+            "blockOwnerDeletion": True,
+        }
+    ]
+
+
+def _owner_label_updates(metadata: dict[str, Any] | None) -> dict[str, str]:
+    refs = list((metadata or {}).get("ownerReferences") or [])
+    if not refs:
+        return {}
+    ref = refs[0] if isinstance(refs[0], dict) else {}
+    owner_kind = str(ref.get("kind") or "").strip()
+    owner_name = str(ref.get("name") or "").strip()
+    owner_uid = str(ref.get("uid") or "").strip()
+    if not owner_kind or not owner_name or not owner_uid:
+        return {}
+    return {
+        OWNER_API_VERSION_LABEL: str(ref.get("apiVersion") or "v1"),
+        OWNER_KIND_LABEL: owner_kind,
+        OWNER_NAME_LABEL: owner_name,
+        OWNER_UID_LABEL: owner_uid,
+    }
+
+
 def _workload_doc(entry: RegistryEntry, state: SQLiteStateStore) -> tuple[str, dict[str, Any]]:
     kind = workload_kind_for_entry(entry)
     manifest = daemonset_manifest_for_entry(entry, state) if kind == "daemonset" else entry.manifest
@@ -207,6 +249,9 @@ def _workload_doc(entry: RegistryEntry, state: SQLiteStateStore) -> tuple[str, d
     metadata = dict(doc.get("metadata") or {})
     metadata["resourceVersion"] = str(entry.resource_version)
     metadata.setdefault("generation", int(entry.resource_version or 1))
+    owner_references = _owner_references_for_entry(entry)
+    if owner_references:
+        metadata["ownerReferences"] = owner_references
     doc["metadata"] = metadata
     return kind, doc
 
@@ -648,6 +693,7 @@ class WorkloadAuthorityStore:
             manifest = k8s_convert.manifest_from_k8s_workload(obj)
             job_labels = dict(getattr(manifest.metadata, "labels", None) or {})
             job_labels.setdefault("ae.workload", "job")
+            internal_updates.update(_owner_label_updates(metadata))
             updates = {
                 "workload": "job",
                 "jobBackoffLimit": (obj.spec or {}).get("backoffLimit"),

@@ -28,6 +28,10 @@ import yaml
 
 from ae.apishim.ha_store import materialize_registry_manifests
 from ae.controller.authority import AuthorityConfig, ControllerAuthorityService, NotLeaderError
+from ae.controller.cronjob_authority import (
+    CronJobAuthorityController,
+    CronJobAuthorityControllerConfig,
+)
 from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
@@ -1770,6 +1774,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     _work_watchdog = None
     _route_bundle = None
     _edge_renderer = None
+    _cronjob_authority = None
     if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
         try:
             edge_cfg = build_core_proxy_config()
@@ -1889,6 +1894,25 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 import logging as _log
 
                 _log.getLogger(__name__).warning("failed to start route bundle: %s", exc)
+    if authority_config.enabled:
+        try:
+            cronjob_interval = float(os.getenv("AE_CRONJOB_AUTHORITY_INTERVAL_S", "5") or 5)
+        except Exception:
+            cronjob_interval = 5.0
+        if cronjob_interval > 0:
+            try:
+                _cronjob_authority = CronJobAuthorityController(
+                    store,
+                    config=CronJobAuthorityControllerConfig(interval_s=cronjob_interval),
+                    authority=authority,
+                )
+                _cronjob_authority.start()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+
+                _log.getLogger(__name__).warning(
+                    "failed to start cronjob authority controller: %s", exc
+                )
     _agent_api_server = None
     try:
         agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))
@@ -2884,6 +2908,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     _logging.getLogger(__name__).info(
                         "HA standby/unknown authority in --once mode; skipping reconcile"
                     )
+                    if _cronjob_authority is not None:
+                        _cronjob_authority.stop()
                     if authority is not None:
                         authority.stop()
                     return 0
@@ -2915,6 +2941,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             _prune_orphan_status(store, entries)
         except Exception:
             pass
+        if _cronjob_authority is not None:
+            _cronjob_authority.stop()
         if authority is not None:
             authority.stop()
         return 0
@@ -3075,6 +3103,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         pass
     finally:
         for component in (
+            _cronjob_authority,
             _route_bundle,
             _outbox_publisher,
             _nats_ingress,
