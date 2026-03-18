@@ -3151,7 +3151,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             return False
         supported = False
         plural, _ns, _name = _ns_name(path)
-        if plural in {"namespaces", "configmaps", "secrets", "serviceaccounts", "services"}:
+        if plural in {
+            "namespaces",
+            "configmaps",
+            "secrets",
+            "serviceaccounts",
+            "services",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+        }:
             supported = True
         d_plural, _d_ns, _d_name = _apps_ns_name(path)
         if d_plural in {"deployments", "deployments/scale", "statefulsets", "daemonsets"}:
@@ -3186,6 +3194,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 supported = True
         p_plural, _p_ns, _p_name = _gv_ns_name(path, "policy", "v1", "poddisruptionbudgets")
         if p_plural == "poddisruptionbudgets":
+            supported = True
+        s_plural, _s_name = _gv_cluster_name(path, "storage.k8s.io", "v1", "storageclasses")
+        if s_plural == "storageclasses":
             supported = True
         self._refresh_crd_registry_from_state()
         custom = _parse_custom_resource_path(path)

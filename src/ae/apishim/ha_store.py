@@ -56,8 +56,14 @@ GENERIC_AUTHORITY_RESOURCES: set[tuple[str, str, str]] = {
     ("rbac.authorization.k8s.io", "v1", "clusterrolebindings"),
     ("policy", "v1", "poddisruptionbudgets"),
 }
+STORAGE_AUTHORITY_RESOURCES: set[tuple[str, str, str]] = {
+    ("", "v1", "persistentvolumeclaims"),
+    ("", "v1", "persistentvolumes"),
+    ("storage.k8s.io", "v1", "storageclasses"),
+}
 WORKLOAD_AUTHORITY_RESOURCES = WORKLOAD_RESOURCES | ATTACHED_RESOURCES
-AUTHORITY_RESOURCES = WORKLOAD_AUTHORITY_RESOURCES | GENERIC_AUTHORITY_RESOURCES
+PASSIVE_AUTHORITY_RESOURCES = GENERIC_AUTHORITY_RESOURCES | STORAGE_AUTHORITY_RESOURCES
+AUTHORITY_RESOURCES = WORKLOAD_AUTHORITY_RESOURCES | PASSIVE_AUTHORITY_RESOURCES
 CRD_AUTHORITY_RESOURCE = ("apiextensions.k8s.io", "v1", "customresourcedefinitions")
 
 
@@ -89,12 +95,19 @@ def is_generic_authority_resource(group: str, version: str, resource: str) -> bo
     return (group, version, resource) in GENERIC_AUTHORITY_RESOURCES
 
 
+def is_storage_authority_resource(group: str, version: str, resource: str) -> bool:
+    return (group, version, resource) in STORAGE_AUTHORITY_RESOURCES
+
+
 def generic_kind_for_resource(resource: str) -> str:
     return {
         "namespaces": "Namespace",
         "configmaps": "ConfigMap",
         "secrets": "Secret",
         "serviceaccounts": "ServiceAccount",
+        "persistentvolumeclaims": "PersistentVolumeClaim",
+        "persistentvolumes": "PersistentVolume",
+        "storageclasses": "StorageClass",
         "customresourcedefinitions": "CustomResourceDefinition",
         "cronjobs": "CronJob",
         "horizontalpodautoscalers": "HorizontalPodAutoscaler",
@@ -1413,7 +1426,7 @@ class MultiplexApishimStore:
     ) -> "MultiplexApishimStore":
         crd_catalog = CrdAuthorityCatalog(state)
         supports = lambda group, version, resource: (
-            is_generic_authority_resource(group, version, resource)
+            (group, version, resource) in PASSIVE_AUTHORITY_RESOURCES
             or crd_catalog.is_dynamic_resource(group, version, resource)
         )
         return cls(
@@ -1447,6 +1460,8 @@ class MultiplexApishimStore:
         if is_workload_authority_resource(group, version, resource):
             return self._authority
         if is_generic_authority_resource(group, version, resource):
+            return self._generic_authority
+        if is_storage_authority_resource(group, version, resource):
             return self._generic_authority
         if self._crd_catalog.is_dynamic_resource(group, version, resource):
             return self._generic_authority

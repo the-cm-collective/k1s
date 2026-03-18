@@ -9,9 +9,14 @@ from ae.controller.state import SQLiteStateStore
 from tests.unit.test_apishim_storage import _handler, _json_body
 
 
-def test_apishim_ha_mode_rejects_post_create_for_storage_resource(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_routes_core_storage_create_through_shared_authority(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
-    store = ObjectStore(tmp_path / "apishim.db")
+    state = SQLiteStateStore(tmp_path / "state.db")
+    legacy = ObjectStore(tmp_path / "apishim.db")
+    store = MultiplexApishimStore.from_state_and_legacy(state, legacy)
+    shim_server.ShimHandler.state = state
     body = json.dumps(
         {
             "apiVersion": "v1",
@@ -33,31 +38,32 @@ def test_apishim_ha_mode_rejects_post_create_for_storage_resource(monkeypatch, t
 
     handler.do_POST()
 
-    assert status["code"] == 409
+    assert status["code"] == 201
     payload = _json_body(handler)
-    assert payload["reason"] == "HAUnsupported"
-    assert "later H4" in payload["message"]
-    assert store.get("", "v1", "persistentvolumeclaims", "default", "demo") is None
+    assert payload["kind"] == "PersistentVolumeClaim"
+    assert legacy.get("", "v1", "persistentvolumeclaims", "default", "demo") is None
+    assert state.get_authority_object("", "v1", "persistentvolumeclaims", "default", "demo") is not None
 
 
-def test_apishim_ha_mode_rejects_put_for_storage_resource(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_rejects_put_for_csi_storage_resource(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     store = ObjectStore(tmp_path / "apishim.db")
     body = json.dumps(
         {
-            "apiVersion": "v1",
-            "kind": "PersistentVolumeClaim",
-            "metadata": {"name": "demo", "namespace": "default"},
+            "apiVersion": "storage.k8s.io/v1",
+            "kind": "VolumeAttachment",
+            "metadata": {"name": "demo"},
             "spec": {
-                "accessModes": ["ReadWriteOnce"],
-                "resources": {"requests": {"storage": "1Gi"}},
+                "attacher": "csi.example.com",
+                "nodeName": "node-a",
+                "source": {"persistentVolumeName": "pv-a"},
             },
         }
     ).encode("utf-8")
     handler, status = _handler(
         store,
         monkeypatch,
-        "/api/v1/namespaces/default/persistentvolumeclaims/demo",
+        "/apis/storage.k8s.io/v1/volumeattachments/demo",
         method="PUT",
         body=body,
     )
@@ -68,30 +74,31 @@ def test_apishim_ha_mode_rejects_put_for_storage_resource(monkeypatch, tmp_path)
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
     assert "later H4" in payload["message"]
-    assert store.get("", "v1", "persistentvolumeclaims", "default", "demo") is None
+    assert store.get("storage.k8s.io", "v1", "volumeattachments", None, "demo") is None
 
 
-def test_apishim_ha_mode_rejects_patch_for_storage_resource(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_rejects_patch_for_snapshot_resource(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     store = ObjectStore(tmp_path / "apishim.db")
     store.upsert(
-        "",
+        "snapshot.storage.k8s.io",
         "v1",
-        "persistentvolumeclaims",
+        "volumesnapshots",
         "default",
         "demo",
         metadata={"name": "demo", "namespace": "default"},
         spec={
-            "accessModes": ["ReadWriteOnce"],
-            "resources": {"requests": {"storage": "1Gi"}},
+            "source": {"persistentVolumeClaimName": "demo-pvc"},
         },
         status={},
     )
-    body = json.dumps({"spec": {"resources": {"requests": {"storage": "2Gi"}}}}).encode("utf-8")
+    body = json.dumps({"spec": {"source": {"persistentVolumeClaimName": "demo-pvc-2"}}}).encode(
+        "utf-8"
+    )
     handler, status = _handler(
         store,
         monkeypatch,
-        "/api/v1/namespaces/default/persistentvolumeclaims/demo",
+        "/apis/snapshot.storage.k8s.io/v1/namespaces/default/volumesnapshots/demo",
         method="PATCH",
         body=body,
     )
@@ -102,31 +109,30 @@ def test_apishim_ha_mode_rejects_patch_for_storage_resource(monkeypatch, tmp_pat
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
     assert "later H4" in payload["message"]
-    obj = store.get("", "v1", "persistentvolumeclaims", "default", "demo")
+    obj = store.get("snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "demo")
     assert obj is not None
-    assert obj.spec["resources"]["requests"]["storage"] == "1Gi"
+    assert obj.spec["source"]["persistentVolumeClaimName"] == "demo-pvc"
 
 
-def test_apishim_ha_mode_rejects_delete_for_storage_resource(monkeypatch, tmp_path) -> None:
+def test_apishim_ha_mode_rejects_delete_for_snapshot_resource(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     store = ObjectStore(tmp_path / "apishim.db")
     store.upsert(
-        "",
+        "snapshot.storage.k8s.io",
         "v1",
-        "persistentvolumeclaims",
+        "volumesnapshots",
         "default",
         "demo",
         metadata={"name": "demo", "namespace": "default"},
         spec={
-            "accessModes": ["ReadWriteOnce"],
-            "resources": {"requests": {"storage": "1Gi"}},
+            "source": {"persistentVolumeClaimName": "demo-pvc"},
         },
         status={},
     )
     handler, status = _handler(
         store,
         monkeypatch,
-        "/api/v1/namespaces/default/persistentvolumeclaims/demo",
+        "/apis/snapshot.storage.k8s.io/v1/namespaces/default/volumesnapshots/demo",
         method="DELETE",
     )
 
@@ -136,7 +142,10 @@ def test_apishim_ha_mode_rejects_delete_for_storage_resource(monkeypatch, tmp_pa
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
     assert "later H4" in payload["message"]
-    assert store.get("", "v1", "persistentvolumeclaims", "default", "demo") is not None
+    assert (
+        store.get("snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "demo")
+        is not None
+    )
 
 
 def test_apishim_ha_mode_keeps_get_available(monkeypatch, tmp_path) -> None:

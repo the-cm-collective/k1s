@@ -255,6 +255,70 @@ def test_generic_authority_store_round_trips_passive_resources(tmp_path) -> None
     assert cron_entry.status["lastScheduleTime"] == "2026-03-17T00:00:00Z"
 
 
+def test_generic_authority_store_round_trips_core_storage_resources(tmp_path) -> None:
+    state, legacy, store = _make_store(tmp_path)
+
+    storage_class = store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "k1s-local",
+        metadata={"name": "k1s-local"},
+        spec={
+            "provisioner": "k1s.io/local-path",
+            "volumeBindingMode": "WaitForFirstConsumer",
+        },
+        status={},
+    )
+    assert storage_class.spec["provisioner"] == "k1s.io/local-path"
+    assert legacy.get("storage.k8s.io", "v1", "storageclasses", None, "k1s-local") is None
+
+    pvc = store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "demo-pvc",
+        metadata={"name": "demo-pvc", "namespace": "default"},
+        spec={
+            "accessModes": ["ReadWriteOnce"],
+            "storageClassName": "k1s-local",
+            "resources": {"requests": {"storage": "1Gi"}},
+        },
+        status={"phase": "Pending"},
+    )
+    assert pvc.spec["storageClassName"] == "k1s-local"
+    assert legacy.get("", "v1", "persistentvolumeclaims", "default", "demo-pvc") is None
+
+    pv = store.upsert(
+        "",
+        "v1",
+        "persistentvolumes",
+        None,
+        "demo-pv",
+        metadata={"name": "demo-pv"},
+        spec={
+            "capacity": {"storage": "1Gi"},
+            "accessModes": ["ReadWriteOnce"],
+            "storageClassName": "k1s-local",
+        },
+        status={"phase": "Available"},
+    )
+    assert pv.spec["storageClassName"] == "k1s-local"
+    assert legacy.get("", "v1", "persistentvolumes", None, "demo-pv") is None
+
+    assert (
+        state.get_authority_object("storage.k8s.io", "v1", "storageclasses", None, "k1s-local")
+        is not None
+    )
+    assert (
+        state.get_authority_object("", "v1", "persistentvolumeclaims", "default", "demo-pvc")
+        is not None
+    )
+    assert state.get_authority_object("", "v1", "persistentvolumes", None, "demo-pv") is not None
+
+
 def test_generic_authority_store_round_trips_built_in_passive_resources(tmp_path) -> None:
     state, legacy, store = _make_store(tmp_path)
 
