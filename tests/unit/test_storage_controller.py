@@ -1,7 +1,17 @@
 from pathlib import Path
 
+from ae.apishim.ha_store import MultiplexApishimStore
 from ae.apishim.store import ObjectStore
+from ae.controller.state import SQLiteStateStore
 from ae.storage.controller import StorageController
+
+
+def _make_ha_storage_store(tmp_path):
+    state = SQLiteStateStore(tmp_path / "state.db")
+    legacy = ObjectStore(db_path=tmp_path / "apishim.db")
+    store = MultiplexApishimStore.from_state_and_legacy(state, legacy)
+    return state, legacy, store
+
 
 def test_storage_controller_seeds_default_local_class(tmp_path, monkeypatch):
     monkeypatch.delenv("AE_STORAGE_PROVISIONERS", raising=False)
@@ -19,6 +29,29 @@ def test_storage_controller_seeds_default_local_class(tmp_path, monkeypatch):
     assert spec.get("volumeBindingMode") == "WaitForFirstConsumer"
     annotations = (sc.metadata or {}).get("annotations") or {}
     assert annotations.get("storageclass.kubernetes.io/is-default-class") == "true"
+
+
+def test_storage_controller_core_mode_seeds_storage_class_in_shared_authority(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("AE_STORAGE_PROVISIONERS", raising=False)
+    monkeypatch.setenv("AE_STORAGE_SEED_DEFAULTS", "1")
+    monkeypatch.setenv("AE_STORAGE_LOCAL_CLASS", "k1s-local")
+    state, legacy, store = _make_ha_storage_store(tmp_path)
+    controller = StorageController(
+        store,
+        enable_snapshots=False,
+        enable_csi=False,
+        enable_storage_capacity=False,
+    )
+
+    seeded = controller.sync()
+
+    assert seeded == 1
+    entry = state.get_authority_object("storage.k8s.io", "v1", "storageclasses", None, "k1s-local")
+    assert entry is not None
+    assert entry.spec["provisioner"] == "k1s.io/local-path"
+    assert legacy.get("storage.k8s.io", "v1", "storageclasses", None, "k1s-local") is None
 
 
 def test_storage_controller_seeds_nfs_class_when_configured(tmp_path, monkeypatch):
@@ -88,6 +121,75 @@ def test_storage_controller_binds_pvc(tmp_path):
     assert claim_ref.get("name") == "pvc1"
     assert claim_ref.get("namespace") == "default"
     assert (pv.status or {}).get("phase") == "Bound"
+
+
+def test_storage_controller_core_mode_binds_pvc_via_shared_authority(tmp_path):
+    state, legacy, store = _make_ha_storage_store(tmp_path)
+    controller = StorageController(
+        store,
+        enable_snapshots=False,
+        enable_csi=False,
+        enable_storage_capacity=False,
+    )
+
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteMany"],
+        "storageClassName": "k1s-nfs",
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteMany"],
+        "storageClassName": "k1s-nfs",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+
+    store.upsert("", "v1", "persistentvolumes", None, "pv1", {"name": "pv1"}, pv_spec)
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc1",
+        {"name": "pvc1", "namespace": "default"},
+        pvc_spec,
+    )
+
+    controller.reconcile_once()
+
+    pvc = state.get_authority_object("", "v1", "persistentvolumeclaims", "default", "pvc1")
+    pv = state.get_authority_object("", "v1", "persistentvolumes", None, "pv1")
+    assert pvc is not None
+    assert pv is not None
+    assert pvc.spec["volumeName"] == "pv1"
+    assert (pvc.status or {}).get("phase") == "Bound"
+    claim_ref = (pv.spec or {}).get("claimRef") or {}
+    assert claim_ref.get("name") == "pvc1"
+    assert claim_ref.get("namespace") == "default"
+    assert (pv.status or {}).get("phase") == "Bound"
+    assert legacy.get("", "v1", "persistentvolumeclaims", "default", "pvc1") is None
+    assert legacy.get("", "v1", "persistentvolumes", None, "pv1") is None
+
+
+def test_storage_controller_core_mode_skips_snapshot_and_capacity_paths(tmp_path, monkeypatch):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(
+        store,
+        enable_snapshots=False,
+        enable_csi=False,
+        enable_storage_capacity=False,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(controller, "_reconcile_all", lambda: calls.append("all"))
+    monkeypatch.setattr(controller, "_reconcile_snapshots", lambda: calls.append("snapshots"))
+    monkeypatch.setattr(controller, "_check_volume_health", lambda: calls.append("health"))
+    monkeypatch.setattr(
+        controller, "_reconcile_storage_capacity", lambda: calls.append("capacity")
+    )
+
+    controller.reconcile_once()
+
+    assert calls == ["all", "health"]
 
 
 def test_storage_controller_adds_pvc_pv_finalizers(tmp_path):

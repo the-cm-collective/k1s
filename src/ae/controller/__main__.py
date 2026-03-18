@@ -38,6 +38,10 @@ from ae.controller.hpa_authority import (
     WorkloadMetricsCollector,
     WorkloadMetricsCollectorConfig,
 )
+from ae.controller.storage_authority import (
+    StorageAuthorityRunner,
+    build_storage_authority_store,
+)
 from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
@@ -1799,6 +1803,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     _route_bundle = None
     _edge_renderer = None
     _cronjob_authority = None
+    _storage_authority = None
     _hpa_metrics_collector = None
     _hpa_authority = None
     if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
@@ -1921,6 +1926,25 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
                 _log.getLogger(__name__).warning("failed to start route bundle: %s", exc)
     if authority_config.enabled:
+        try:
+            storage_poll = float(os.getenv("AE_STORAGE_AUTHORITY_POLL_S", "1") or 1)
+        except Exception:
+            storage_poll = 1.0
+        if storage_poll > 0:
+            try:
+                _storage_authority = StorageAuthorityRunner(
+                    build_storage_authority_store(store),
+                    authority=authority,
+                    poll_interval_s=storage_poll,
+                    close_store=True,
+                )
+                _storage_authority.start()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+
+                _log.getLogger(__name__).warning(
+                    "failed to start storage authority controller: %s", exc
+                )
         try:
             cronjob_interval = float(os.getenv("AE_CRONJOB_AUTHORITY_INTERVAL_S", "5") or 5)
         except Exception:
@@ -2971,6 +2995,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     _logging.getLogger(__name__).info(
                         "HA standby/unknown authority in --once mode; skipping reconcile"
                     )
+                    if _storage_authority is not None:
+                        _storage_authority.stop()
                     if _cronjob_authority is not None:
                         _cronjob_authority.stop()
                     if _hpa_authority is not None:
@@ -3010,6 +3036,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             pass
         if _cronjob_authority is not None:
             _cronjob_authority.stop()
+        if _storage_authority is not None:
+            _storage_authority.stop()
         if _hpa_authority is not None:
             _hpa_authority.stop()
         if _hpa_metrics_collector is not None:
@@ -3174,6 +3202,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         pass
     finally:
         for component in (
+            _storage_authority,
             _cronjob_authority,
             _hpa_authority,
             _hpa_metrics_collector,

@@ -85,7 +85,15 @@ PVC_FS_RESIZE_PENDING_CONDITION = "FileSystemResizePending"
 class StorageController:
     """Seed StorageClass objects from config and prepare for PVC/PV binding."""
 
-    def __init__(self, store: ObjectStore, *, config: StorageConfig | None = None) -> None:
+    def __init__(
+        self,
+        store: ObjectStore,
+        *,
+        config: StorageConfig | None = None,
+        enable_snapshots: bool = True,
+        enable_csi: bool = True,
+        enable_storage_capacity: bool = True,
+    ) -> None:
         self._store = store
         self._config = config or StorageConfig.from_env()
         classes, registry = load_storage_registry(self._config.provisioners_path)
@@ -104,6 +112,9 @@ class StorageController:
         self._snapshot_thread: threading.Thread | None = None
         self._csi_timeout = float(os.getenv("AE_CSI_TIMEOUT_SECONDS", "10") or 10)
         self._csi_clients: dict[str, CsiControllerClient] = {}
+        self._enable_snapshots = bool(enable_snapshots)
+        self._enable_csi = bool(enable_csi)
+        self._enable_storage_capacity = bool(enable_storage_capacity)
 
     def sync(self) -> int:
         """Sync configured StorageClass objects into the apishim store."""
@@ -165,23 +176,29 @@ class StorageController:
         self._pv_thread = threading.Thread(
             target=self._watch_pvs, name="storage-pv-watch", daemon=True
         )
-        self._snapshot_thread = threading.Thread(
-            target=self._watch_snapshots, name="storage-snapshot-watch", daemon=True
-        )
         self._pvc_thread.start()
         self._pv_thread.start()
-        self._snapshot_thread.start()
+        if self._enable_snapshots:
+            self._snapshot_thread = threading.Thread(
+                target=self._watch_snapshots, name="storage-snapshot-watch", daemon=True
+            )
+            self._snapshot_thread.start()
         self.reconcile_once()
 
     def stop(self) -> None:
         self._stop.set()
+        for thread in (self._pvc_thread, self._pv_thread, self._snapshot_thread):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=1.0)
 
     def reconcile_once(self) -> None:
         """Run a single PVC/PV binding pass."""
         self._reconcile_all()
-        self._reconcile_snapshots()
+        if self._enable_snapshots:
+            self._reconcile_snapshots()
         self._check_volume_health()
-        self._reconcile_storage_capacity()
+        if self._enable_storage_capacity:
+            self._reconcile_storage_capacity()
 
     def _resolve_default(
         self, storage_classes: list[StorageClassConfig]
@@ -268,6 +285,8 @@ class StorageController:
                 gen.close()  # type: ignore[attr-defined]
 
     def _watch_snapshots(self) -> None:
+        if not self._enable_snapshots:
+            return
         gen = self._store.watch(
             SNAP_GROUP,
             SNAP_VERSION,
@@ -298,6 +317,8 @@ class StorageController:
             self._reconcile_pvc(pvc)
 
     def _reconcile_snapshots(self) -> None:
+        if not self._enable_snapshots:
+            return
         try:
             snapshots = self._store.list_all(SNAP_GROUP, SNAP_VERSION, SNAPSHOT_RESOURCE)
         except Exception:
@@ -336,6 +357,8 @@ class StorageController:
                 self._record_pvc_event(pvc, "VolumeUnhealthy", f"backing path missing: {path}")
 
     def _reconcile_storage_capacity(self) -> None:
+        if not self._enable_storage_capacity:
+            return
         try:
             storage_classes = self._store.list_all(SC_GROUP, SC_VERSION, SC_RESOURCE)
         except Exception:
@@ -582,7 +605,8 @@ class StorageController:
                 )
                 return
             self._bind(pvc, pv)
-            self._reconcile_csi_attachment(pvc, pv)
+            if self._enable_csi:
+                self._reconcile_csi_attachment(pvc, pv)
             self._maybe_expand_bound_volume(pvc, pv)
             return
         if self._pvc_is_bound(pvc):
@@ -591,7 +615,8 @@ class StorageController:
                 pv = self._store.get(CORE_GROUP, CORE_VERSION, PV_RESOURCE, None, pv_name)
                 if pv is not None:
                     self._bind(pvc, pv)
-                    self._reconcile_csi_attachment(pvc, pv)
+                    if self._enable_csi:
+                        self._reconcile_csi_attachment(pvc, pv)
                     self._maybe_expand_bound_volume(pvc, pv)
             return
 
@@ -760,6 +785,13 @@ class StorageController:
             provisioner
         )
         if entry is not None and entry.type == "csi":
+            if not self._enable_csi:
+                self._record_pvc_event(
+                    pvc,
+                    "ProvisionerUnsupported",
+                    f"provisioner {provisioner} remains outside the H4b2c-core slice",
+                )
+                return None
             return self._provision_csi(pvc, sc, entry, source_info=source_info)
         if provisioner:
             self._record_pvc_event(
@@ -958,6 +990,8 @@ class StorageController:
         return meta, True
 
     def _reconcile_csi_attachment(self, pvc, pv) -> None:
+        if not self._enable_csi:
+            return
         pv_spec = pv.spec or {}
         csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
         if not isinstance(csi, dict):
@@ -1393,6 +1427,13 @@ class StorageController:
             return self._clone_source_for_pvc(pvc, source)
         if kind != "VolumeSnapshot":
             return None, False
+        if not self._enable_snapshots:
+            self._record_pvc_event(
+                pvc,
+                "SnapshotRestoreUnsupported",
+                "snapshot restore remains outside the H4b2c-core slice",
+            )
+            return None, True
         if api_group and api_group != SNAP_GROUP:
             return None, False
         snap_name = str(source.get("name") or "")
@@ -2612,6 +2653,8 @@ class StorageController:
         return out
 
     def _delete_volume_attachments(self, pv) -> None:  # noqa: ANN001
+        if not self._enable_csi:
+            return
         pv_name = getattr(pv, "name", None) or ""
         attachments = self._volume_attachments_for_pv(pv_name)
         pv_spec = pv.spec or {}
@@ -2654,6 +2697,8 @@ class StorageController:
                 self._store.delete(SC_GROUP, SC_VERSION, VA_RESOURCE, None, att.name)
 
     def _csi_delete_volume(self, pv) -> None:  # noqa: ANN001
+        if not self._enable_csi:
+            return
         pv_spec = pv.spec or {}
         csi = pv_spec.get("csi") if isinstance(pv_spec, dict) else None
         if not isinstance(csi, dict):
@@ -2724,6 +2769,8 @@ class StorageController:
         return {str(k): str(v) for k, v in raw.items() if v is not None}
 
     def _csi_driver_attach_required(self, driver: str) -> bool:
+        if not self._enable_csi:
+            return False
         if not driver:
             return True
         try:
