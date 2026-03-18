@@ -29,7 +29,7 @@ def test_apishim_ha_mode_rejects_post_create(monkeypatch, tmp_path) -> None:
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
-    assert "until H4" in payload["message"]
+    assert "until H4b" in payload["message"]
     assert store.get("", "v1", "configmaps", "default", "demo") is None
 
 
@@ -57,6 +57,7 @@ def test_apishim_ha_mode_rejects_put(monkeypatch, tmp_path) -> None:
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
+    assert "until H4b" in payload["message"]
     assert store.get("", "v1", "configmaps", "default", "demo") is None
 
 
@@ -87,6 +88,7 @@ def test_apishim_ha_mode_rejects_patch(monkeypatch, tmp_path) -> None:
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
+    assert "until H4b" in payload["message"]
     obj = store.get("", "v1", "configmaps", "default", "demo")
     assert obj is not None
     assert obj.spec == {"hello": "world"}
@@ -117,6 +119,7 @@ def test_apishim_ha_mode_rejects_delete(monkeypatch, tmp_path) -> None:
     assert status["code"] == 409
     payload = _json_body(handler)
     assert payload["reason"] == "HAUnsupported"
+    assert "until H4b" in payload["message"]
     assert store.get("", "v1", "configmaps", "default", "demo") is not None
 
 

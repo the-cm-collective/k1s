@@ -30,7 +30,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from ae.controller.state import AppEvent, ServiceEndpoint, SQLiteStateStore, state_store_from_env
+from ae.controller.state import (
+    AppEvent,
+    RegistryConflictError,
+    ServiceEndpoint,
+    SQLiteStateStore,
+    state_store_from_env,
+)
 from ae.runtime import (
     CRIRuntime,
     DockerRuntime,
@@ -41,6 +47,10 @@ from ae.runtime import (
 )
 
 from .adapter import build_adapter
+from .ha_store import (
+    AuthorityMutationError,
+    MultiplexApishimStore,
+)
 from .store import K8sObject, ObjectStore
 
 K8S_VERSION = {
@@ -3138,10 +3148,25 @@ class ShimHandler(BaseHTTPRequestHandler):
     def _reject_ha_workload_mutation(self, method: str, path: str) -> bool:
         if not self._ha_mode_enabled() or self._ha_mutation_exempt(method, path):
             return False
+        supported = False
+        plural, _ns, _name = _ns_name(path)
+        if plural == "services":
+            supported = True
+        d_plural, _d_ns, _d_name = _apps_ns_name(path)
+        if d_plural in {"deployments", "deployments/scale", "statefulsets", "daemonsets"}:
+            supported = True
+        n_plural, _n_ns, _n_name = _net_ns_name(path)
+        if n_plural == "ingresses":
+            supported = True
+        b_plural, _b_ns, _b_name = _batch_ns_name(path)
+        if b_plural == "jobs":
+            supported = True
+        if supported:
+            return False
         self._json_status(
             HTTPStatus.CONFLICT,
             reason="HAUnsupported",
-            message="HA workload mutation via apishim is disabled until H4",
+            message="HA mutation via apishim is enabled only for H4a workload-core resources; this resource remains read-only until H4b",
         )
         return True
 
@@ -12238,7 +12263,14 @@ class ShimServer(ThreadingHTTPServer):
         super().__init__(server_address, ShimHandler)
         dsn = os.getenv("AE_APISHIM_DSN")
         db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
-        self.store = ObjectStore(db_path=db_path, dsn=dsn)
+        self.state = state_store_from_env()
+        ShimHandler.state = self.state  # type: ignore[assignment]
+        legacy_store = ObjectStore(db_path=db_path, dsn=dsn)
+        self._legacy_store = legacy_store
+        if str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+            self.store = MultiplexApishimStore.from_state_and_legacy(self.state, legacy_store)
+        else:
+            self.store = legacy_store
         self._storage_controller = None
         try:
             from ae.storage.controller import StorageController
@@ -12268,8 +12300,6 @@ class ShimServer(ThreadingHTTPServer):
             ShimHandler.pod_watch_ttl = 30.0
         ShimHandler.pod_watch_cache = {}
         ShimHandler.allow_anonymous = allow_anonymous
-        self.state = state_store_from_env()
-        ShimHandler.state = self.state  # type: ignore[assignment]
         self.runtime = _runtime_from_env()
         self._runtime_base = getattr(self.runtime, "_local", self.runtime)
         self._runtime_cache: dict[str, RuntimeAdapter] = {}
@@ -12288,6 +12318,8 @@ class ShimServer(ThreadingHTTPServer):
             "yes",
             "on",
         }
+        if str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+            adapter_enabled = False
         if sot_enabled:
             adapter_enabled = False
         if adapter_enabled:
@@ -12308,6 +12340,34 @@ class ShimServer(ThreadingHTTPServer):
             objs = []
         for obj in objs:
             ShimHandler._register_crd(obj)
+
+
+def _wrap_store_errors(method):
+    def _inner(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except RegistryConflictError as exc:
+            self._json_status(
+                HTTPStatus.CONFLICT,
+                reason="Conflict",
+                message=str(exc),
+            )
+            return None
+        except AuthorityMutationError as exc:
+            self._json_status(
+                HTTPStatus(exc.status_code),
+                reason=exc.reason,
+                message=exc.message,
+            )
+            return None
+
+    return _inner
+
+
+ShimHandler.do_POST = _wrap_store_errors(ShimHandler.do_POST)
+ShimHandler.do_PUT = _wrap_store_errors(ShimHandler.do_PUT)
+ShimHandler.do_PATCH = _wrap_store_errors(ShimHandler.do_PATCH)
+ShimHandler.do_DELETE = _wrap_store_errors(ShimHandler.do_DELETE)
 
 
 def run_server(
