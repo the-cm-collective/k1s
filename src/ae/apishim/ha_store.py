@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http import HTTPStatus
 from typing import Any
 
@@ -46,6 +47,7 @@ GENERIC_AUTHORITY_RESOURCES: set[tuple[str, str, str]] = {
     ("", "v1", "configmaps"),
     ("", "v1", "secrets"),
     ("", "v1", "serviceaccounts"),
+    ("apiextensions.k8s.io", "v1", "customresourcedefinitions"),
     ("batch", "v1", "cronjobs"),
     ("autoscaling", "v2", "horizontalpodautoscalers"),
     ("rbac.authorization.k8s.io", "v1", "roles"),
@@ -56,6 +58,7 @@ GENERIC_AUTHORITY_RESOURCES: set[tuple[str, str, str]] = {
 }
 WORKLOAD_AUTHORITY_RESOURCES = WORKLOAD_RESOURCES | ATTACHED_RESOURCES
 AUTHORITY_RESOURCES = WORKLOAD_AUTHORITY_RESOURCES | GENERIC_AUTHORITY_RESOURCES
+CRD_AUTHORITY_RESOURCE = ("apiextensions.k8s.io", "v1", "customresourcedefinitions")
 
 
 class AuthorityMutationError(RuntimeError):
@@ -92,6 +95,7 @@ def generic_kind_for_resource(resource: str) -> str:
         "configmaps": "ConfigMap",
         "secrets": "Secret",
         "serviceaccounts": "ServiceAccount",
+        "customresourcedefinitions": "CustomResourceDefinition",
         "cronjobs": "CronJob",
         "horizontalpodautoscalers": "HorizontalPodAutoscaler",
         "roles": "Role",
@@ -575,6 +579,79 @@ def _authority_object_to_k8s(entry: AuthorityObjectEntry) -> K8sObject:
         dict(entry.status or {}),
         int(entry.resource_version or 0),
     )
+
+
+def _crd_served_resources(
+    name: str,
+    spec: dict[str, Any],
+) -> dict[tuple[str, str, str], dict[str, Any]]:
+    group = str(spec.get("group") or "").strip()
+    versions = spec.get("versions")
+    names = spec.get("names") if isinstance(spec.get("names"), dict) else {}
+    plural = str(names.get("plural") or "").strip()
+    kind = str(names.get("kind") or "").strip()
+    if not group or not isinstance(versions, list) or not plural or not kind:
+        return {}
+    namespaced = str(spec.get("scope") or "Namespaced").strip().lower() == "namespaced"
+    out: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for version_entry in versions:
+        if not isinstance(version_entry, dict) or not bool(version_entry.get("served", True)):
+            continue
+        version = str(version_entry.get("name") or "").strip()
+        if not version:
+            continue
+        out[(group, version, plural)] = {
+            "kind": kind,
+            "namespaced": namespaced,
+            "shortNames": list(names.get("shortNames") or []),
+            "singularName": str(names.get("singular") or ""),
+            "crdName": name,
+        }
+    return out
+
+
+class CrdAuthorityCatalog:
+    """State-backed catalog of CRD-served custom-resource GVRs for HA routing."""
+
+    def __init__(self, state: SQLiteStateStore) -> None:
+        self._state = state
+        self._lock = threading.RLock()
+        self._refresh_interval = max(
+            0.1,
+            float(os.getenv("AE_APISHIM_HA_CRD_REFRESH_SEC", "0.5") or "0.5"),
+        )
+        self._last_refresh_monotonic = 0.0
+        self._served: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    def refresh(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        with self._lock:
+            if not force and (now - self._last_refresh_monotonic) < self._refresh_interval:
+                return
+        try:
+            entries = self._state.list_authority_objects(*CRD_AUTHORITY_RESOURCE, namespace=None)
+        except Exception:
+            return
+        served: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for entry in entries:
+            served.update(_crd_served_resources(entry.name, entry.spec or {}))
+        with self._lock:
+            self._served = served
+            self._last_refresh_monotonic = now
+
+    def lookup(self, group: str, version: str, resource: str) -> dict[str, Any] | None:
+        self.refresh()
+        with self._lock:
+            meta = self._served.get((group, version, resource))
+        if meta is not None:
+            return dict(meta)
+        self.refresh(force=True)
+        with self._lock:
+            meta = self._served.get((group, version, resource))
+        return dict(meta) if meta is not None else None
+
+    def is_dynamic_resource(self, group: str, version: str, resource: str) -> bool:
+        return self.lookup(group, version, resource) is not None
 
 
 class WorkloadAuthorityStore:
@@ -1102,8 +1179,16 @@ class WorkloadAuthorityStore:
 class GenericAuthorityStore:
     """Store adapter exposing non-workload HA resources via controller state."""
 
-    def __init__(self, state: SQLiteStateStore) -> None:
+    def __init__(
+        self,
+        state: SQLiteStateStore,
+        *,
+        supports: Callable[[str, str, str], bool] | None = None,
+        dynamic_lookup: Callable[[str, str, str], dict[str, Any] | None] | None = None,
+    ) -> None:
         self._state = state
+        self._supports = supports or is_generic_authority_resource
+        self._dynamic_lookup = dynamic_lookup or (lambda _g, _v, _r: None)
         self.backend = "ha-controller-generic"
         self._watch_poll_interval = max(
             0.1, float(os.getenv("AE_APISHIM_HA_WATCH_POLL_SEC", "0.5") or "0.5")
@@ -1121,7 +1206,7 @@ class GenericAuthorityStore:
     def get(
         self, group: str, version: str, resource: str, namespace: str | None, name: str
     ) -> K8sObject | None:
-        if not is_generic_authority_resource(group, version, resource):
+        if not self._supports(group, version, resource):
             return None
         entry = self._state.get_authority_object(group, version, resource, namespace, name)
         return _authority_object_to_k8s(entry) if entry is not None else None
@@ -1129,7 +1214,7 @@ class GenericAuthorityStore:
     def list(
         self, group: str, version: str, resource: str, namespace: str | None | None
     ) -> list[K8sObject]:
-        if not is_generic_authority_resource(group, version, resource):
+        if not self._supports(group, version, resource):
             return []
         entries = self._state.list_authority_objects(group, version, resource, namespace)
         return [_authority_object_to_k8s(entry) for entry in entries]
@@ -1149,7 +1234,7 @@ class GenericAuthorityStore:
         status: dict[str, Any] | None = None,
         resource_version: int | None = None,
     ) -> K8sObject:
-        if not is_generic_authority_resource(group, version, resource):
+        if not self._supports(group, version, resource):
             raise AuthorityMutationError(message=f"unsupported authority resource {group}/{version}/{resource}")
         if (group, version, resource) == ("autoscaling", "v2", "horizontalpodautoscalers"):
             _validate_hpa_spec(spec)
@@ -1157,7 +1242,13 @@ class GenericAuthorityStore:
         expected_rv = _rv_from_metadata(metadata)
         if expected_rv is None:
             expected_rv = existing.resource_version if existing is not None else 0
-        kind = str((metadata or {}).get("kind") or (existing.kind if existing is not None else generic_kind_for_resource(resource)))
+        dynamic_meta = self._dynamic_lookup(group, version, resource)
+        kind = str(
+            (metadata or {}).get("kind")
+            or (existing.kind if existing is not None else "")
+            or ((dynamic_meta or {}).get("kind") if isinstance(dynamic_meta, dict) else "")
+            or generic_kind_for_resource(resource)
+        )
         self._state.register_authority_object(
             group,
             version,
@@ -1206,7 +1297,7 @@ class GenericAuthorityStore:
     def delete(
         self, group: str, version: str, resource: str, namespace: str | None, name: str
     ) -> bool:
-        if not is_generic_authority_resource(group, version, resource):
+        if not self._supports(group, version, resource):
             return False
         entry = self._state.get_authority_object(group, version, resource, namespace, name)
         if entry is None:
@@ -1308,17 +1399,33 @@ class MultiplexApishimStore:
         authority: WorkloadAuthorityStore,
         generic_authority: GenericAuthorityStore,
         legacy: ObjectStore,
+        crd_catalog: CrdAuthorityCatalog,
     ) -> None:
         self._authority = authority
         self._generic_authority = generic_authority
         self._legacy = legacy
+        self._crd_catalog = crd_catalog
         self.backend = "mux"
 
     @classmethod
     def from_state_and_legacy(
         cls, state: SQLiteStateStore, legacy: ObjectStore
     ) -> "MultiplexApishimStore":
-        return cls(WorkloadAuthorityStore(state), GenericAuthorityStore(state), legacy)
+        crd_catalog = CrdAuthorityCatalog(state)
+        supports = lambda group, version, resource: (
+            is_generic_authority_resource(group, version, resource)
+            or crd_catalog.is_dynamic_resource(group, version, resource)
+        )
+        return cls(
+            WorkloadAuthorityStore(state),
+            GenericAuthorityStore(
+                state,
+                supports=supports,
+                dynamic_lookup=crd_catalog.lookup,
+            ),
+            legacy,
+            crd_catalog,
+        )
 
     def close(self) -> None:
         self._authority.close()
@@ -1340,6 +1447,8 @@ class MultiplexApishimStore:
         if is_workload_authority_resource(group, version, resource):
             return self._authority
         if is_generic_authority_resource(group, version, resource):
+            return self._generic_authority
+        if self._crd_catalog.is_dynamic_resource(group, version, resource):
             return self._generic_authority
         return self._legacy
 

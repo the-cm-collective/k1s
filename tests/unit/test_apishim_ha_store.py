@@ -336,3 +336,67 @@ def test_generic_authority_store_round_trips_built_in_passive_resources(tmp_path
     assert cluster_role_entry is not None
     pdb_entry = state.get_authority_object("policy", "v1", "poddisruptionbudgets", "team-a", "web")
     assert pdb_entry is not None
+
+
+def test_generic_authority_store_routes_crds_and_dynamic_custom_resources(tmp_path) -> None:
+    state, legacy, store = _make_store(tmp_path)
+
+    crd = store.upsert(
+        "apiextensions.k8s.io",
+        "v1",
+        "customresourcedefinitions",
+        None,
+        "widgets.example.io",
+        metadata={"name": "widgets.example.io"},
+        spec={
+            "group": "example.io",
+            "scope": "Namespaced",
+            "names": {
+                "plural": "widgets",
+                "singular": "widget",
+                "kind": "Widget",
+                "shortNames": ["wdg"],
+            },
+            "versions": [{"name": "v1", "served": True, "storage": True}],
+        },
+        status={},
+    )
+    assert crd.name == "widgets.example.io"
+    assert (
+        legacy.get(
+            "apiextensions.k8s.io",
+            "v1",
+            "customresourcedefinitions",
+            None,
+            "widgets.example.io",
+        )
+        is None
+    )
+
+    custom = store.upsert(
+        "example.io",
+        "v1",
+        "widgets",
+        "default",
+        "blue",
+        metadata={"name": "blue", "namespace": "default"},
+        spec={"size": "large"},
+        status={"phase": "Ready"},
+    )
+    assert custom.name == "blue"
+    assert custom.resource == "widgets"
+    assert custom.status["phase"] == "Ready"
+    assert legacy.get("example.io", "v1", "widgets", "default", "blue") is None
+
+    crd_entry = state.get_authority_object(
+        "apiextensions.k8s.io",
+        "v1",
+        "customresourcedefinitions",
+        None,
+        "widgets.example.io",
+    )
+    assert crd_entry is not None
+    custom_entry = state.get_authority_object("example.io", "v1", "widgets", "default", "blue")
+    assert custom_entry is not None
+    assert custom_entry.kind == "Widget"
+    assert custom_entry.spec["size"] == "large"
