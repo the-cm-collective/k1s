@@ -12396,7 +12396,7 @@ class ShimServer(ThreadingHTTPServer):
             self.store = legacy_store
         self._storage_controller = None
         if ha_mode:
-            LOGGER.info("HA mode disables apishim storage controller until H4b2b")
+            LOGGER.info("HA mode disables apishim storage controller until H4b2c")
         else:
             try:
                 from ae.storage.controller import StorageController
