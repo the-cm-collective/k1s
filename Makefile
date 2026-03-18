@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track
+.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-ha-core-systemd uninstall-ha-core-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track
 .PHONY: dev-min dev-etcd k1s-core k1s-ha-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
 .PHONY: k1s-core-cri k1s-edge-cri k1s-core-edge-cri k1s-edge-core-cri edge-site-cri
 .PHONY: edge-site
@@ -159,6 +159,12 @@ install-systemd:
 
 uninstall-systemd:
 			@bash scripts/install.sh uninstall --disable
+
+install-ha-core-systemd:
+		@bash scripts/install.sh ha-core-install --enable
+
+uninstall-ha-core-systemd:
+			@bash scripts/install.sh ha-core-uninstall --disable
 
 install-docs-service:
 			@bash scripts/install.sh docs-install --enable
