@@ -700,6 +700,9 @@
       <a href="project-philosophy.html">Philosophy</a>
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -726,7 +729,7 @@
     </button>
     <div class="container">
     <h1 id="high-availability-control-plane-roadmap">High Availability Control Plane Roadmap</h1>
-<p>Status: proposed public roadmap for true HA <code>k1s</code> core.</p>
+<p>Status: implemented roadmap and closed HA control-plane track for true HA <code>k1s</code> core.</p>
 <p>This roadmap defines the control-plane foundation that must exist before <code>k1s</code> can claim a true HA mode. It precedes the AMD fabric deployment work in <a href="distributed-compute-fabric.html">Distributed Compute Fabric Roadmap</a> and gives that later roadmap a stable authority model to depend on instead of re-defining core HA inside provider-edge or fabric docs.</p>
 <p>The core position is deliberate:</p>
 <ul>
@@ -1004,6 +1007,7 @@
 <li>the new <code>ha_core_preflight.py</code> helper validates required HA env, shared <code>etcd</code> reachability, and NATS reachability before startup</li>
 <li><code>etcd_snapshot.py</code> provides explicit etcd snapshot save/status/restore tooling instead of overloading the existing SQLite/specs <code>ae backup</code> path</li>
 <li><code>ha_core_drills.py</code> provides focused verification helpers for leader failover, transport recovery, and external-etcd restart drills</li>
+<li><code>ha_core_drills.py etcd-restart</code> and <code>transport-recovery</code> now prefer the current leader&#x27;s metrics endpoint when <code>--etcd-endpoints</code> and <code>--etcd-prefix</code> are supplied, so drill verification remains valid after leader movement</li>
 </ul>
 <h3 id="h5b1-etcd-recovery-member-replacement-quorum-loss-and-stale-leader-recovery">H5b1-etcd-recovery: Member replacement, quorum loss, and stale-leader recovery</h3>
 <p>Goal:</p>
@@ -1098,14 +1102,15 @@
 </ul>
 <p>Current implementation status:</p>
 <ul>
-<li><code>docs/ops/ha-closeout.md</code> now records the H0-H5 capability matrix, evidence map, gap register, and close criteria</li>
+<li><a href="ha-closeout.html">HA Closeout</a> now records the H0-H5 capability matrix, evidence map, gap register, and close criteria</li>
 <li><code>scripts/lab/vm/lib/variant.py</code>, <code>scripts/lab/vm/k1s_bootstrap.sh</code>, <code>scripts/lab/vm/smoke_v2.py</code>, and <code>scripts/lab/vm/smoke_helper.py</code> now support explicit <code>k1s-ha-core</code> hosts plus a <code>ha_control_plane</code> lane that emits a machine-readable <code>ha_summary.json</code></li>
 <li><code>lab/variants/ha-control-plane-core.yaml</code> now provides a checked-in 3-core-plus-1-site HA closeout topology instead of requiring an ad hoc local variant</li>
 <li><code>scripts/lab/vm/ha_shared_infra.sh</code> plus the new <code>ha_shared_infra</code> smoke phase now bootstrap shared <code>etcd</code> and shared hub NATS/JetStream on the three HA core VMs before <code>k1s-ha-core</code> starts</li>
 <li><code>make lab-vm-smoke</code> is now the promoted VM operator entrypoint, wrapping the new helper-backed smoke flow instead of the older raw <code>smoke.sh</code> path</li>
 <li>the VM lane uses the existing HA helper surfaces for precheck, cluster verification, hub transport validation, edge transport validation, and optional drills instead of inventing a second HA operator contract</li>
 <li><code>tests/e2e/ha_closeout.py</code> and <code>tests/integration/test_ha_closeout_e2e.py</code> now provide a reduced local HA topology with two controllers, one apishim, one edge site, and a failover-plus-replay check; that reduced lane now forces <code>AE_JS_REPLICAS=1</code> so it stays lightweight without pretending to be the full transport-fidelity evidence lane</li>
-<li>current audit result: no new source-visible <code>must_fix_before_closeout</code> gaps were found, and the primary VM/lab lane is now green on the checked-in topology; the track remains open only until the final roadmap closeout decision is recorded</li>
+<li><code>scripts/dev/ha_closeout_e2e.sh</code> plus <code>make ha-closeout-e2e</code> now provide the supported reduced-harness entrypoint, priming the local <code>libstdc++</code> runtime path and preflighting <code>grpc</code> before the reduced HA lane starts</li>
+<li>current audit result: the drill-enabled primary VM/lab lane is green on the checked-in topology, the wrapper-backed reduced local HA harness is green, no <code>must_fix_before_closeout</code> gaps remain, and the track is closed via the 2026-03-19 roadmap checkpoint</li>
 </ul>
 <h2 id="dependency-model">Dependency Model</h2>
 <p>This HA track is the foundation for later deployment work:</p>
@@ -1131,7 +1136,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 09:46:08</span>
+        <span>Built 2026-03-19 16:29:04</span>
       </div>
     </footer>
     <script>

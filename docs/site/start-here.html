@@ -700,6 +700,9 @@
       <a href="project-philosophy.html">Philosophy</a>
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
@@ -734,7 +737,7 @@
 <ul>
 <li>Python 3.11+</li>
 <li>Podman (preferred) or Docker installed and running</li>
-<li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> (see <code>docs/ops/runbook.md</code>)</li>
+<li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> (see <a href="runbook.html">Operations Runbook</a>)</li>
 <li>Optional (for ingress/docs via Caddy and Prometheus): <code>docker compose</code> or <code>podman compose</code></li>
 <li>Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking</li>
 </ul>
@@ -1003,16 +1006,17 @@ ae tls kubesecret --name mycert --namespace demo -o mycert-secret.yaml</code></p
 <pre><code>python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status</code></pre>
-<p>Tip: <code>ae auth remote -o .env.api</code> also emits shim tokens + <code>AE_API_MUTATIONS=1</code>, and <code>ae auth local -o .env.local</code> reuses tokens from <code>state/*.env</code> when running demos/labs. Details: <code>README.md:67</code> and token management in <code>docs/ops/runbook.md:1</code>.</p>
+<p>Tip: <code>ae auth remote -o .env.api</code> also emits shim tokens + <code>AE_API_MUTATIONS=1</code>, and <code>ae auth local -o .env.local</code> reuses tokens from <code>state/*.env</code> when running demos/labs. Details: <code>README.md:67</code> and token management in <a href="runbook.html">Operations Runbook</a>.</p>
 <h2 id="documentation-map-most-useful-first">Documentation Map (most useful first)</h2>
 <ul>
-<li>High‑level overview: <code>docs/getting-started/overview.md:1</code></li>
-<li>Operations runbook: <code>docs/ops/runbook.md:1</code></li>
-<li>HTTP API reference: <code>docs/reference/http-api.md:1</code></li>
-<li>Kubernetes API shim compatibility: <code>docs/reference/apishim-compatibility-matrix.md:1</code></li>
-<li>Ingress & TLS: <code>docs/reference/ingress.md:1</code></li>
-<li>Demos & examples: <code>docs/guides/demos-examples.md:1</code></li>
-<li>Architecture deep dive: <code>docs/reference/architecture.md:1</code></li>
+<li>High‑level overview: <a href="overview.html">Overview</a></li>
+<li>Operations runbook: <a href="runbook.html">Operations Runbook</a></li>
+<li>HA operator closeout and VM/lab wrappers: <a href="ha-closeout.html">HA Closeout</a>, <a href="vm-variant-runbook.html">VM Variant Runbook</a></li>
+<li>HTTP API reference: <a href="http-api.html">HTTP API</a></li>
+<li>Kubernetes API shim compatibility: <a href="apishim-compatibility-matrix.html">API Shim Compatibility Matrix</a></li>
+<li>Ingress & TLS: <a href="ingress.html">Ingress</a></li>
+<li>Demos & examples: <a href="examples.html">Demos & Examples</a></li>
+<li>Architecture deep dive: <a href="architecture.html">Architecture</a></li>
 </ul>
 <h2 id="where-things-live-in-the-repo">Where things live in the repo</h2>
 <ul>
@@ -1043,7 +1047,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 12:10:03</span>
+        <span>Built 2026-03-19 15:40:35</span>
       </div>
     </footer>
     <script>
