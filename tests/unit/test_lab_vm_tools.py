@@ -461,6 +461,14 @@ smoke:
 
 def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     text = BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+    assert 'ha_profile_dir="$ROOT_DIR/state/profiles/k1s-ha-core"' in text
+    assert 'ha_apishim_ca_file="$ha_profile_dir/apishim.ca.crt"' in text
+    assert "ensure_ha_shared_apishim_tls() {" in text
+    assert 'APISHIM_ENV_FILE="$ha_apishim_env_file"' in text
+    assert 'APISHIM_CA_FILE="$ha_apishim_ca_file"' in text
+    assert '"$ROOT_DIR/scripts/ensure_apishim_env.sh"' in text
+    assert '"$ROOT_DIR/scripts/ensure_apishim_cli_env.sh"' in text
+    assert "ensure_ha_shared_apishim_tls" in text
     assert "AE_CRI_DATA_ROOT=\\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri}" in text
     assert "AE_CRI_REGISTRY_TRUST_SYSTEM=\\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1}" in text
     assert "AE_CRI_REGISTRY_PRELOAD=\\${AE_CRI_REGISTRY_PRELOAD:-1}" in text

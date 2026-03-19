@@ -67,6 +67,13 @@ edge_hub_leaf_host="127.0.0.1"
 if [[ "$leaf_uplink_mode" == "direct_ip" ]]; then
   edge_hub_leaf_host="${transport_hub_host:-$controller_ip}"
 fi
+ha_profile_dir="$ROOT_DIR/state/profiles/k1s-ha-core"
+ha_apishim_env_file="$ha_profile_dir/apishim.env"
+ha_apishim_cli_env_file="$ha_profile_dir/apishim.cli.env"
+ha_apishim_cert_file="$ha_profile_dir/apishim.crt"
+ha_apishim_key_file="$ha_profile_dir/apishim.key"
+ha_apishim_ca_file="$ha_profile_dir/apishim.ca.crt"
+ha_apishim_ca_key_file="$ha_profile_dir/apishim.ca.key"
 seed_manifest_default="/mnt/host/lab/variants/cri_seed_images.lock.json"
 seed_bundle_default="/mnt/host/state/lab-vm/${RUN_ID}/seeds/cri-seed-images.oci.tar"
 edge_core_site_ids="$(
@@ -76,6 +83,23 @@ edge_core_site_ids="$(
 mapfile -t rows < <(echo "$variant_json" | jq -r '.hosts[] | @base64')
 plan_file="$(run_dir "$RUN_ID")/bootstrap/plan.txt"
 : >"$plan_file"
+
+ensure_ha_shared_apishim_tls() {
+  [[ -n "$ha_controller_row" ]] || return 0
+  mkdir -p "$ha_profile_dir"
+  APISHIM_ENV_FILE="$ha_apishim_env_file" \
+    APISHIM_CERT_FILE="$ha_apishim_cert_file" \
+    APISHIM_KEY_FILE="$ha_apishim_key_file" \
+    APISHIM_CA_FILE="$ha_apishim_ca_file" \
+    APISHIM_CA_KEY_FILE="$ha_apishim_ca_key_file" \
+    APISHIM_CERT_SANS="$ha_apishim_cert_sans" \
+    "$ROOT_DIR/scripts/ensure_apishim_env.sh"
+  APISHIM_ENV_FILE="$ha_apishim_env_file" \
+    APISHIM_CLI_ENV_FILE="$ha_apishim_cli_env_file" \
+    APISHIM_CERT_FILE="$ha_apishim_cert_file" \
+    APISHIM_CA_FILE="$ha_apishim_ca_file" \
+    "$ROOT_DIR/scripts/ensure_apishim_cli_env.sh"
+}
 
 build_command() {
   local host_json="$1"
@@ -203,6 +227,8 @@ CMD
       ;;
   esac
 }
+
+ensure_ha_shared_apishim_tls
 
 for row in "${rows[@]}"; do
   host_json="$(printf '%s' "$row" | base64 -d)"
