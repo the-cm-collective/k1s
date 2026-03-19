@@ -9,6 +9,7 @@ else
   CLI_ENV_FILE="$(dirname "$ENV_FILE")/apishim.cli.env"
 fi
 CERT_FILE="${APISHIM_CERT_FILE:-$(dirname "$ENV_FILE")/apishim.crt}"
+CA_FILE="${APISHIM_CA_FILE:-$(dirname "$CERT_FILE")/apishim.ca.crt}"
 if [[ -n "${APISHIM_CLI_CA_FILE:-}" ]]; then
   CLI_CA_FILE="${APISHIM_CLI_CA_FILE}"
 else
@@ -84,8 +85,16 @@ mkdir -p "$(dirname "$CLI_CA_FILE")"
 umask 027
 
 ca_bundle=""
-if [[ -f "$CERT_FILE" ]]; then
-  if cp "$CERT_FILE" "$CLI_CA_FILE" 2>/dev/null; then
+if [[ -f "$CA_FILE" ]]; then
+  if [[ "$(cd "$(dirname "$CA_FILE")" && pwd)/$(basename "$CA_FILE")" == "$(cd "$(dirname "$CLI_CA_FILE")" && pwd)/$(basename "$CLI_CA_FILE")" ]]; then
+    chmod 640 "$CLI_CA_FILE" 2>/dev/null || true
+    apply_shared_group "$CLI_CA_FILE"
+    if [[ -r "$CLI_CA_FILE" ]]; then
+      ca_bundle="$CLI_CA_FILE"
+    else
+      log "shared CA file exists but is not readable: $CLI_CA_FILE"
+    fi
+  elif cp "$CA_FILE" "$CLI_CA_FILE" 2>/dev/null; then
     chmod 640 "$CLI_CA_FILE" 2>/dev/null || true
     apply_shared_group "$CLI_CA_FILE"
     if [[ -r "$CLI_CA_FILE" ]]; then
@@ -94,10 +103,10 @@ if [[ -f "$CERT_FILE" ]]; then
       log "shared CA file exists but is not readable: $CLI_CA_FILE"
     fi
   else
-    log "warning: failed to sync shared CA bundle from $CERT_FILE"
+    log "warning: failed to sync shared CA bundle from $CA_FILE"
   fi
 else
-  log "warning: cert file missing; skipping CA bundle export: $CERT_FILE"
+  log "warning: CA file missing; skipping CA bundle export: $CA_FILE"
 fi
 
 {

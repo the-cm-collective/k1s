@@ -19,6 +19,7 @@ CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh
 COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
 CRI_PREFLIGHT_SCRIPT = ROOT / "scripts" / "cri_preflight.sh"
 ENSURE_APISHIM_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_env.sh"
+ENSURE_APISHIM_CLI_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_cli_env.sh"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
 HA_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core.yaml"
@@ -87,6 +88,7 @@ def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
     assert payload["ha"]["apishim_scheme"] == "https"
     assert [item["name"] for item in payload["ha"]["hub_nodes"]] == ["core-a", "core-b", "core-c"]
     assert payload["ha"]["edge_sites"][0]["monitor_url"] == "http://192.168.155.20:8223"
+    assert payload["ha"]["edge_sites"][0]["expected_gateways"] == ["sea--sea-gw"]
     assert payload["smoke"]["lanes"] == ["ha_control_plane"]
 
 
@@ -421,9 +423,9 @@ ha:
       monitor_url: http://192.168.155.110:8222
   edge_sites:
     - site_id: sea
-      monitor_url: http://192.168.155.20:8224
+      monitor_url: http://192.168.155.20:8223
       expected_gateways:
-        - edge-sea
+        - sea--sea-gw
 smoke:
   lanes:
     - ha_control_plane
@@ -481,11 +483,23 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
 
 def test_ensure_apishim_env_regenerates_when_requested_sans_are_missing() -> None:
     text = ENSURE_APISHIM_ENV_SCRIPT.read_text(encoding="utf-8")
+    assert 'CA_FILE="${APISHIM_CA_FILE:-$(dirname "$CERT_FILE")/apishim.ca.crt}"' in text
+    assert 'CA_KEY_FILE="${APISHIM_CA_KEY_FILE:-$(dirname "$KEY_FILE")/apishim.ca.key}"' in text
     assert 'san="${APISHIM_CERT_SANS:-DNS:apishim,DNS:localhost,IP:127.0.0.1,IP:::1}"' in text
-    assert 'grep -q "CA:TRUE" <<<"$cert_text"' in text
+    assert 'grep -q "CA:TRUE" <<<"$ca_text"' in text
+    assert 'grep -q "CA:FALSE" <<<"$cert_text"' in text
     assert "IFS=',' read -r -a san_entries <<<\"$san\"" in text
     assert 'cert_pattern="IP Address:${san_entry#IP:}"' in text
     assert '-addext "basicConstraints=critical,CA:TRUE"' in text
+    assert "extendedKeyUsage=serverAuth" in text
+    assert 'openssl x509 -req -in "$csr_file" -CA "$CA_FILE" -CAkey "$CA_KEY_FILE"' in text
+
+
+def test_ensure_apishim_cli_env_uses_dedicated_ca_file() -> None:
+    text = ENSURE_APISHIM_CLI_ENV_SCRIPT.read_text(encoding="utf-8")
+    assert 'CA_FILE="${APISHIM_CA_FILE:-$(dirname "$CERT_FILE")/apishim.ca.crt}"' in text
+    assert 'if [[ -f "$CA_FILE" ]]; then' in text
+    assert 'warning: CA file missing; skipping CA bundle export: $CA_FILE' in text
 
 
 def test_ha_shared_infra_script_bootstraps_clustered_backends() -> None:
@@ -661,8 +675,8 @@ def test_run_ha_acceptance_checks_passes_ha_env_to_required_helpers(
             "edge_sites": [
                 {
                     "site_id": "sea",
-                    "monitor_url": "http://192.168.155.20:8224",
-                    "expected_gateways": ["edge-sea"],
+                    "monitor_url": "http://192.168.155.20:8223",
+                    "expected_gateways": ["sea--sea-gw"],
                 }
             ],
             "expected_version": "0.1.3.dev0",
