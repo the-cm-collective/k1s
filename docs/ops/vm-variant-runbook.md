@@ -9,6 +9,7 @@ Reference variants
 - `lab/variants/test3-abc-no-gpu.yaml` (validated non-GPU baseline)
 - `lab/variants/test3-abc-pp2.yaml` (passthrough profile)
 - `lab/variants/ha-control-plane-core.yaml` (HA closeout topology: 3 `k1s-ha-core` + 1 `k1s-edge-core` site)
+- `lab/variants/ha-control-plane-core-drills.yaml` (same HA topology, with disruptive drill commands enabled)
 
 Transport defaults
 - Variants default to `transport.leaf_uplink_mode: direct_ip`.
@@ -68,6 +69,24 @@ make lab-vm-smoke \
   RUN_ID="$RUN_ID" \
   LAB_VM_SMOKE_ARGS="--purge --destroy-network"
 ```
+
+Deeper disruptive HA drill example:
+
+```bash
+sudo -v
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_drills"
+export RUN_ID
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core-drills.yaml \
+  RUN_ID="$RUN_ID" \
+  LAB_VM_SMOKE_ARGS="--teardown never"
+```
+
+That drill-enabled variant wires the optional HA drill hooks through `scripts/lab/vm/ha_drill_actions.sh`, so the wrapper will report `ha_drill_leader_failover`, `ha_drill_etcd_restart`, and `ha_drill_transport_recovery` instead of skipping them.
 
 Manual retention for investigation:
 

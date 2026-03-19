@@ -42,6 +42,7 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 - Variant role model:
   - `scripts/lab/vm/lib/variant.py` now accepts explicit `k1s-ha-core` hosts.
   - `lab/variants/ha-control-plane-core.yaml` is the checked-in HA closeout variant for the 3-core-plus-1-site topology.
+  - `lab/variants/ha-control-plane-core-drills.yaml` is the checked-in deeper-validation variant that enables the optional disruptive drill hooks.
 - Shared backend bootstrap:
   - `scripts/lab/vm/ha_shared_infra.sh` now bootstraps shared `etcd` and shared hub NATS/JetStream on the three `k1s-ha-core` VMs before `k1s-ha-core` starts.
   - `scripts/lab/vm/smoke_v2.py` runs that step as the `ha_shared_infra` global phase when the HA variant points its endpoints back at the three HA core VM IPs.
@@ -58,6 +59,7 @@ This document is the canonical closeout artifact for the HA control-plane roadma
   - `ha_transport_upgrade.py`
   - `ha_edge_transport.py`
   - optional `ha_core_drills.py` subcommands when the variant supplies disruptive drill commands
+    - `ha-control-plane-core-drills.yaml` wires those commands through `scripts/lab/vm/ha_drill_actions.sh`
 
 ### Secondary: Reduced Local HA Harness
 

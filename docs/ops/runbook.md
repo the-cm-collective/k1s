@@ -452,6 +452,7 @@ HA closeout (`H5c-ha-closeout`)
 - Primary evidence lane:
   - VM/lab variants can now declare explicit `k1s-ha-core` hosts plus a `ha_control_plane` smoke lane.
   - The checked-in HA closeout topology is `lab/variants/ha-control-plane-core.yaml`.
+  - For deeper disruptive validation, use `lab/variants/ha-control-plane-core-drills.yaml`; it enables the optional leader-failover, etcd-restart, and transport-recovery drill hooks through `scripts/lab/vm/ha_drill_actions.sh`.
   - `scripts/lab/vm/smoke_helper.py` is the preferred operator entrypoint for that lane. It wraps `smoke_v2.py`, prints live phase/check status from the `runs/<RUN_ID>/...` artifacts, and can auto-run `variant_down.sh` on success.
   - When the variant points HA endpoints at the three HA core VM IPs, `smoke_v2` runs a `ha_shared_infra` phase that boots shared `etcd` plus shared hub NATS/JetStream on those VMs before `k1s-ha-core` bootstrap.
   - The lane writes `runs/<RUN_ID>/ha_summary.json` as the machine-readable HA evidence artifact.

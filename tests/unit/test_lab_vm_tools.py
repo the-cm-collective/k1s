@@ -20,10 +20,12 @@ COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
 CRI_PREFLIGHT_SCRIPT = ROOT / "scripts" / "cri_preflight.sh"
 ENSURE_APISHIM_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_env.sh"
 ENSURE_APISHIM_CLI_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_cli_env.sh"
+HA_DRILL_ACTIONS_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "ha_drill_actions.sh"
 MAKEFILE = ROOT / "Makefile"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
 HA_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core.yaml"
+HA_DRILL_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core-drills.yaml"
 
 _SMOKE_V2_SPEC = spec_from_file_location("smoke_v2_script", SMOKE_V2_SCRIPT)
 assert _SMOKE_V2_SPEC is not None and _SMOKE_V2_SPEC.loader is not None
@@ -91,6 +93,51 @@ def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
     assert payload["ha"]["edge_sites"][0]["monitor_url"] == "http://192.168.155.20:8223"
     assert payload["ha"]["edge_sites"][0]["expected_gateways"] == ["sea--sea-gw"]
     assert payload["smoke"]["lanes"] == ["ha_control_plane"]
+
+
+def test_checked_in_ha_drill_variant_exposes_optional_commands() -> None:
+    res = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(VARIANT_SCRIPT),
+            "--variant",
+            str(HA_DRILL_VARIANT_FILE),
+            "--print-json",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    payload = json.loads(res.stdout)
+    assert payload["name"] == "ha-control-plane-core-drills"
+    assert payload["ha"]["drills"]["leader_failover_command"] == (
+        "./scripts/lab/vm/ha_drill_actions.sh leader-failover "
+        "--variant lab/variants/ha-control-plane-core-drills.yaml"
+    )
+    assert payload["ha"]["drills"]["etcd_restart_command"] == (
+        "./scripts/lab/vm/ha_drill_actions.sh etcd-restart "
+        "--variant lab/variants/ha-control-plane-core-drills.yaml"
+    )
+    assert payload["ha"]["drills"]["transport_recovery_command"] == (
+        "./scripts/lab/vm/ha_drill_actions.sh transport-recovery "
+        "--variant lab/variants/ha-control-plane-core-drills.yaml --site sea"
+    )
+
+
+def test_ha_drill_actions_dry_run_works_without_live_vms() -> None:
+    res = subprocess.run(  # noqa: S603
+        [
+            str(HA_DRILL_ACTIONS_SCRIPT),
+            "leader-failover",
+            "--variant",
+            str(HA_DRILL_VARIANT_FILE),
+            "--dry-run",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "dry-run leader-failover target=current controller leader via etcd" in res.stdout
 
 
 def test_variant_parser_validate_images_fails_when_files_missing(tmp_path: Path) -> None:
