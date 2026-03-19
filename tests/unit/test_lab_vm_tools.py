@@ -18,6 +18,7 @@ CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
 COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
 CRI_PREFLIGHT_SCRIPT = ROOT / "scripts" / "cri_preflight.sh"
+ENSURE_APISHIM_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_env.sh"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
 HA_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core.yaml"
@@ -468,9 +469,20 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_CONTROLLER_ADVERTISE_ADDR=http://${ip}:${controller_port}" in text
     assert "AE_APISHIM_ETCD_ENDPOINTS='${ha_etcd_endpoints}'" in text
     assert "APISHIM_HOST=\\${APISHIM_HOST:-0.0.0.0}" in text
+    assert "APISHIM_CERT_SANS='${ha_apishim_cert_sans}'" in text
+    assert "AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db" in text
+    assert "AE_GATEWAY_FENCE_DB=/var/lib/ae/gateway/fence-${site_id}-${node_id}.db" in text
+    assert "sudo mkdir -p /var/lib/ae/gateway" in text
     assert "AE_CRI_CACHE_SEED_MODE" in text
     assert "AE_CRI_CACHE_SEED_BUNDLE" in text
     assert text.count("REGISTER_ONLY=1 SITE_ID") == 1
+
+
+def test_ensure_apishim_env_regenerates_when_requested_sans_are_missing() -> None:
+    text = ENSURE_APISHIM_ENV_SCRIPT.read_text(encoding="utf-8")
+    assert 'san="${APISHIM_CERT_SANS:-DNS:apishim,DNS:localhost,IP:127.0.0.1,IP:::1}"' in text
+    assert "IFS=',' read -r -a san_entries <<<\"$san\"" in text
+    assert 'cert_pattern="IP Address:${san_entry#IP:}"' in text
 
 
 def test_ha_shared_infra_script_bootstraps_clustered_backends() -> None:

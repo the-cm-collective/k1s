@@ -142,21 +142,32 @@ log "Wrote $ENV_FILE (tokens generated or sourced securely)."
 CERT_FILE="${APISHIM_CERT_FILE:-$ROOT_DIR/state/profiles/labs/apishim.crt}"
 KEY_FILE="${APISHIM_KEY_FILE:-$ROOT_DIR/state/profiles/labs/apishim.key}"
 if command -v openssl >/dev/null 2>&1; then
+  san="${APISHIM_CERT_SANS:-DNS:apishim,DNS:localhost,IP:127.0.0.1,IP:::1}"
   need_regen=0
   if [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]]; then
     cert_text="$(openssl x509 -in "$CERT_FILE" -noout -text 2>/dev/null || true)"
     if ! grep -q "Subject Alternative Name" <<<"$cert_text"; then
       need_regen=1
-    elif ! grep -q "DNS:localhost" <<<"$cert_text"; then
-      need_regen=1
-    elif ! grep -q "IP Address:127.0.0.1" <<<"$cert_text"; then
-      need_regen=1
+    else
+      IFS=',' read -r -a san_entries <<<"$san"
+      for san_entry in "${san_entries[@]}"; do
+        san_entry="${san_entry#"${san_entry%%[![:space:]]*}"}"
+        san_entry="${san_entry%"${san_entry##*[![:space:]]}"}"
+        [[ -n "$san_entry" ]] || continue
+        cert_pattern="$san_entry"
+        if [[ "$san_entry" == IP:* ]]; then
+          cert_pattern="IP Address:${san_entry#IP:}"
+        fi
+        if ! grep -q "$cert_pattern" <<<"$cert_text"; then
+          need_regen=1
+          break
+        fi
+      done
     fi
   fi
   if [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" || $need_regen -eq 1 ]]; then
     mkdir -p "$(dirname "$CERT_FILE")"
     subj="/CN=apishim"
-    san="${APISHIM_CERT_SANS:-DNS:apishim,DNS:localhost,IP:127.0.0.1,IP:::1}"
     openssl req -x509 -newkey rsa:2048 -sha256 -days 3 -nodes \
       -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "$subj" -addext "subjectAltName=${san}" >/dev/null 2>&1
     chmod 600 "$KEY_FILE" "$CERT_FILE"

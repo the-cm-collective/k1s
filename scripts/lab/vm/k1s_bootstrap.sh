@@ -58,6 +58,11 @@ edge_hub_leaf_port="$(echo "$variant_json" | jq -r '.transport.hub_leaf_port')"
 ha_etcd_endpoints="$(echo "$variant_json" | jq -r '.ha.etcd_endpoints | join(",")')"
 ha_etcd_prefix="$(echo "$variant_json" | jq -r '.ha.etcd_prefix // empty')"
 ha_nats_url="$(echo "$variant_json" | jq -r '.ha.nats_url // empty')"
+ha_apishim_cert_sans="$(echo "$variant_json" | jq -r '(
+  ["DNS:apishim", "DNS:localhost", "IP:127.0.0.1", "IP:::1"]
+  + [.hosts[] | select(.role=="k1s-ha-core") | "DNS:\(.name)"]
+  + [.hosts[] | select(.role=="k1s-ha-core") | "IP:\(.ip)"]
+) | unique | join(",")')"
 edge_hub_leaf_host="127.0.0.1"
 if [[ "$leaf_uplink_mode" == "direct_ip" ]]; then
   edge_hub_leaf_host="${transport_hub_host:-$controller_ip}"
@@ -136,6 +141,7 @@ nohup sudo env \
   AE_CRI_REGISTRY_PRELOAD=\${AE_CRI_REGISTRY_PRELOAD:-1} \
   AE_APISHIM_MODE=\${AE_APISHIM_MODE:-cri} \
   APISHIM_HOST=\${APISHIM_HOST:-0.0.0.0} \
+  APISHIM_CERT_SANS='${ha_apishim_cert_sans}' \
   AE_HA_MODE=1 \
   AE_CONTROLLER_ID=${node_id} \
   AE_CONTROLLER_ADVERTISE_ADDR=http://${ip}:${controller_port} \
@@ -156,6 +162,7 @@ CMD
 cd /mnt/host
 bootstrap_pip_install
 bootstrap_seed_cri_cache edge
+sudo mkdir -p /var/lib/ae/gateway
 nohup sudo env \
   PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
@@ -164,6 +171,8 @@ nohup sudo env \
   AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
   AE_SITE_ID=${site_id} \
   AE_NODE_ID=${node_id} \
+  AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db \
+  AE_GATEWAY_FENCE_DB=/var/lib/ae/gateway/fence-${site_id}-${node_id}.db \
   AE_NATS_HUB_LEAF_HOST=${edge_hub_leaf_host} \
   AE_NATS_HUB_LEAF_PORT=${edge_hub_leaf_port} \
   make k1s-edge-core-cri > /home/ae/k1s-edge-core.log 2>&1 &

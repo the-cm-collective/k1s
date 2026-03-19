@@ -121,8 +121,10 @@ class NatsHubMonitorRecord:
     route_count: int
     route_peers: tuple[str, ...]
     leaf_count: int | None
+    stream_leaders: dict[str, str | None]
     stream_replicas: dict[str, int]
     stream_offline: dict[str, tuple[str, ...]]
+    consumer_leaders: dict[str, str | None]
     consumer_replicas: dict[str, int]
     consumer_offline: dict[str, tuple[str, ...]]
 
@@ -756,8 +758,10 @@ def build_nats_hub_monitor_record(
     )
     route_count = int(routez.get("num_routes") or len(route_entries) or 0)
 
+    stream_leaders: dict[str, str | None] = {}
     stream_replicas: dict[str, int] = {}
     stream_offline: dict[str, tuple[str, ...]] = {}
+    consumer_leaders: dict[str, str | None] = {}
     consumer_replicas: dict[str, int] = {}
     consumer_offline: dict[str, tuple[str, ...]] = {}
     for stream in _iter_js_streams(jsz):
@@ -767,6 +771,7 @@ def build_nats_hub_monitor_record(
         if not stream_name:
             continue
         cluster = stream.get("cluster") if isinstance(stream.get("cluster"), dict) else {}
+        stream_leaders[stream_name] = _clean_str(cluster.get("leader")) or None
         stream_replicas[stream_name] = _cluster_replica_total(cluster)
         stream_offline[stream_name] = _cluster_offline_names(cluster)
         for consumer in _iter_stream_consumers(stream):
@@ -780,6 +785,7 @@ def build_nats_hub_monitor_record(
             consumer_cluster = (
                 consumer.get("cluster") if isinstance(consumer.get("cluster"), dict) else {}
             )
+            consumer_leaders[consumer_name] = _clean_str(consumer_cluster.get("leader")) or None
             consumer_replicas[consumer_name] = _cluster_replica_total(consumer_cluster)
             consumer_offline[consumer_name] = _cluster_offline_names(consumer_cluster)
 
@@ -802,8 +808,10 @@ def build_nats_hub_monitor_record(
         route_count=route_count,
         route_peers=route_peers,
         leaf_count=_leaf_count(leafz),
+        stream_leaders=stream_leaders,
         stream_replicas=stream_replicas,
         stream_offline=stream_offline,
+        consumer_leaders=consumer_leaders,
         consumer_replicas=consumer_replicas,
         consumer_offline=consumer_offline,
     )
@@ -894,36 +902,91 @@ def evaluate_nats_hub_cluster(
     for record in records:
         if record.route_count < expected_routes:
             issues.append(f"route_mesh:{record.name}:{record.route_count}/{expected_routes}")
-        stream_replica_total = int(record.stream_replicas.get(expected_stream, 0) or 0)
-        if stream_replica_total != int(expected_replicas):
-            issues.append(
-                f"stream_replicas:{record.name}:{expected_stream}:{stream_replica_total}/{int(expected_replicas)}"
-            )
-        offline_stream = record.stream_offline.get(expected_stream) or ()
-        if offline_stream:
-            issues.append(
-                f"stream_offline:{record.name}:{expected_stream}:{','.join(offline_stream)}"
-            )
         if expected_leaf_min is not None and record.leaf_count is not None:
             if int(record.leaf_count) < int(expected_leaf_min):
                 issues.append(
                     f"leaf_count:{record.name}:{int(record.leaf_count)}/{int(expected_leaf_min)}"
                 )
-        for consumer in expected_consumers or []:
-            consumer_replica_total = int(record.consumer_replicas.get(consumer, 0) or 0)
-            if consumer_replica_total != int(expected_replicas):
-                issues.append(
-                    f"consumer_replicas:{record.name}:{consumer}:{consumer_replica_total}/{int(expected_replicas)}"
-                )
-            offline_consumer = record.consumer_offline.get(consumer) or ()
-            if offline_consumer:
-                issues.append(
-                    f"consumer_offline:{record.name}:{consumer}:{','.join(offline_consumer)}"
-                )
+    stream_leader_record = _leader_record_for_stream(records, expected_stream)
+    if stream_leader_record is None:
+        issues.append(f"stream_leader_unknown:{expected_stream}")
+    else:
+        stream_replica_total = int(
+            stream_leader_record.stream_replicas.get(expected_stream, 0) or 0
+        )
+        if stream_replica_total != int(expected_replicas):
+            issues.append(
+                f"stream_replicas:{stream_leader_record.name}:{expected_stream}:{stream_replica_total}/{int(expected_replicas)}"
+            )
+        offline_stream = stream_leader_record.stream_offline.get(expected_stream) or ()
+        if offline_stream:
+            issues.append(
+                f"stream_offline:{stream_leader_record.name}:{expected_stream}:{','.join(offline_stream)}"
+            )
+    for consumer in expected_consumers or []:
+        consumer_leader_record = _leader_record_for_consumer(records, consumer)
+        if consumer_leader_record is None:
+            issues.append(f"consumer_leader_unknown:{consumer}")
+            continue
+        consumer_replica_total = int(
+            consumer_leader_record.consumer_replicas.get(consumer, 0) or 0
+        )
+        if consumer_replica_total != int(expected_replicas):
+            issues.append(
+                f"consumer_replicas:{consumer_leader_record.name}:{consumer}:{consumer_replica_total}/{int(expected_replicas)}"
+            )
+        offline_consumer = consumer_leader_record.consumer_offline.get(consumer) or ()
+        if offline_consumer:
+            issues.append(
+                f"consumer_offline:{consumer_leader_record.name}:{consumer}:{','.join(offline_consumer)}"
+            )
     meta_leaders = sorted({name for name in (_clean_str(r.meta_leader) for r in records) if name})
     if len(meta_leaders) != 1:
         issues.append("meta_leader_mismatch")
     return issues
+
+
+def _leader_record_for_stream(
+    records: list[NatsHubMonitorRecord], stream_name: str
+) -> NatsHubMonitorRecord | None:
+    leader_name = _unique_leader_name(record.stream_leaders.get(stream_name) for record in records)
+    if not leader_name:
+        return None
+    return _hub_record_by_identity(records, leader_name)
+
+
+def _leader_record_for_consumer(
+    records: list[NatsHubMonitorRecord], consumer_name: str
+) -> NatsHubMonitorRecord | None:
+    leader_name = _unique_leader_name(
+        record.consumer_leaders.get(consumer_name) for record in records
+    )
+    if not leader_name:
+        return None
+    return _hub_record_by_identity(records, leader_name)
+
+
+def _unique_leader_name(values) -> str | None:
+    leaders = sorted({_clean_str(value) for value in values if _clean_str(value)})
+    if len(leaders) != 1:
+        return None
+    return leaders[0]
+
+
+def _hub_record_by_identity(
+    records: list[NatsHubMonitorRecord], leader_name: str
+) -> NatsHubMonitorRecord | None:
+    wanted = _clean_str(leader_name)
+    if not wanted:
+        return None
+    for record in records:
+        if wanted in {
+            _clean_str(record.name),
+            _clean_str(record.server_name),
+            _clean_str(record.server_id),
+        }:
+            return record
+    return None
 
 
 def evaluate_nats_edge_site(

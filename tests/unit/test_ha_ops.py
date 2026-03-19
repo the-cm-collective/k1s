@@ -65,7 +65,10 @@ def test_parse_etcd_leader_response_uses_mod_revision_for_epoch() -> None:
     payload = {
         "kvs": [
             {
-                "value": "eyJhZHZlcnRpc2VfYWRkciI6Imh0dHA6Ly9jb3JlLWE6OTAwMCIsImNvbnRyb2xsZXJfaWQiOiJjb3JlLWEiLCJsZWFzZV9pZCI6NTAxfQ==",
+                "value": (
+                    "eyJhZHZlcnRpc2VfYWRkciI6Imh0dHA6Ly9jb3JlLWE6OTAwMCIsImNvbnRyb2xsZXJf"
+                    "aWQiOiJjb3JlLWEiLCJsZWFzZV9pZCI6NTAxfQ=="
+                ),
                 "mod_revision": 42,
             }
         ]
@@ -181,7 +184,9 @@ def test_build_nats_hub_monitor_record_extracts_cluster_and_replica_state() -> N
     assert record.route_count == 2
     assert record.route_peers == ("hub-b", "hub-c")
     assert record.leaf_count == 4
+    assert record.stream_leaders["K1S_WORK"] == "hub-a"
     assert record.stream_replicas["K1S_WORK"] == 3
+    assert record.consumer_leaders["WORK_SITE_sea"] == "hub-a"
     assert record.consumer_replicas["WORK_SITE_sea"] == 3
 
 
@@ -205,7 +210,105 @@ def test_build_nats_edge_monitor_record_extracts_leaf_connectivity() -> None:
     assert record.leaf_count == 1
 
 
-def test_evaluate_nats_hub_cluster_reports_route_and_replica_drift() -> None:
+def test_evaluate_nats_hub_cluster_uses_stream_leader_view_for_replication() -> None:
+    records = [
+        build_nats_hub_monitor_record(
+            NatsHubNodeTarget(name="hub-a", monitor_url="http://hub-a:8222"),
+            varz={
+                "server_name": "hub-a",
+                "version": "2.10.18",
+                "cluster": {"name": "k1s-hub"},
+                "jetstream": {"config": {"domain": "K1S"}},
+            },
+            routez={
+                "num_routes": 2,
+                "routes": [{"remote_name": "hub-b"}, {"remote_name": "hub-c"}],
+            },
+            jsz={
+                "meta_cluster": {"leader": "hub-c"},
+                "streams": [
+                    {
+                        "config": {"name": "K1S_WORK"},
+                        "cluster": {
+                            "leader": "hub-c",
+                            "replicas": [
+                                {"name": "hub-b", "current": False},
+                                {"name": "hub-c", "current": True},
+                            ],
+                        },
+                    }
+                ],
+            },
+        ),
+        build_nats_hub_monitor_record(
+            NatsHubNodeTarget(name="hub-b", monitor_url="http://hub-b:8222"),
+            varz={
+                "server_name": "hub-b",
+                "version": "2.10.18",
+                "cluster": {"name": "k1s-hub"},
+                "jetstream": {"config": {"domain": "K1S"}},
+            },
+            routez={
+                "num_routes": 2,
+                "routes": [{"remote_name": "hub-a"}, {"remote_name": "hub-c"}],
+            },
+            jsz={
+                "meta_cluster": {"leader": "hub-c"},
+                "streams": [
+                    {
+                        "config": {"name": "K1S_WORK"},
+                        "cluster": {
+                            "leader": "hub-c",
+                            "replicas": [
+                                {"name": "hub-a", "current": False},
+                                {"name": "hub-c", "current": True},
+                            ],
+                        },
+                    }
+                ],
+            },
+        ),
+        build_nats_hub_monitor_record(
+            NatsHubNodeTarget(name="hub-c", monitor_url="http://hub-c:8222"),
+            varz={
+                "server_name": "hub-c",
+                "version": "2.10.18",
+                "cluster": {"name": "k1s-hub"},
+                "jetstream": {"config": {"domain": "K1S"}},
+            },
+            routez={
+                "num_routes": 2,
+                "routes": [{"remote_name": "hub-a"}, {"remote_name": "hub-b"}],
+            },
+            jsz={
+                "meta_cluster": {"leader": "hub-c"},
+                "streams": [
+                    {
+                        "config": {"name": "K1S_WORK"},
+                        "cluster": {
+                            "leader": "hub-c",
+                            "replicas": [
+                                {"name": "hub-a", "current": True},
+                                {"name": "hub-b", "current": True},
+                            ],
+                        },
+                    }
+                ],
+            },
+        ),
+    ]
+
+    issues = evaluate_nats_hub_cluster(
+        records,
+        expected_domain="K1S",
+        expected_stream="K1S_WORK",
+        expected_replicas=3,
+    )
+
+    assert issues == []
+
+
+def test_evaluate_nats_hub_cluster_reports_route_and_leader_replica_drift() -> None:
     records = [
         build_nats_hub_monitor_record(
             NatsHubNodeTarget(name="hub-a", monitor_url="http://hub-a:8222"),
@@ -296,7 +399,7 @@ def test_evaluate_nats_hub_cluster_reports_route_and_replica_drift() -> None:
     assert "route_mesh:hub-b:1/2" in issues
     assert "route_mesh:hub-c:0/2" in issues
     assert "stream_replicas:hub-a:K1S_WORK:2/3" in issues
-    assert "consumer_replicas:hub-c:WORK_SITE_sea:2/3" in issues
+    assert "consumer_replicas:hub-a:WORK_SITE_sea:2/3" in issues
 
 
 def test_evaluate_nats_edge_site_reports_missing_leaf_connectivity() -> None:
@@ -312,12 +415,14 @@ def test_evaluate_nats_edge_site_reports_missing_leaf_connectivity() -> None:
 
 
 def test_collect_site_gateway_status_merges_last_seen_and_build_info() -> None:
-    text = """
-ae_site_gateway_last_seen_seconds{site="sea",node="edge-1"} 5
-ae_site_gateway_last_seen_seconds{site="sea",node="edge-2"} 7
-ae_site_gateway_build_info{site="sea",node="edge-1",version="0.1.3.dev0",sha="sha-a",date="2026-03-18"} 1
-ae_site_gateway_build_info{site="sea",node="edge-2",version="0.1.3.dev1",sha="sha-b",date="2026-03-19"} 1
-"""
+    text = (
+        'ae_site_gateway_last_seen_seconds{site="sea",node="edge-1"} 5\n'
+        'ae_site_gateway_last_seen_seconds{site="sea",node="edge-2"} 7\n'
+        'ae_site_gateway_build_info{site="sea",node="edge-1",version="0.1.3.dev0",'
+        'sha="sha-a",date="2026-03-18"} 1\n'
+        'ae_site_gateway_build_info{site="sea",node="edge-2",version="0.1.3.dev1",'
+        'sha="sha-b",date="2026-03-19"} 1\n'
+    )
 
     records = collect_site_gateway_status(text, "sea")
 
