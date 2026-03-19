@@ -267,7 +267,7 @@ lab-vm-bootstrap:
 	@./scripts/lab/vm/k1s_bootstrap.sh --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID} $${EXECUTE:+--execute}
 
 lab-vm-smoke:
-	@./scripts/lab/vm/labctl.sh smoke --variant $${VARIANT:-lab/variants/test3-abc-pp2.yaml} $${RUN_ID:+--run-id $$RUN_ID} $${LAB_VM_SMOKE_ARGS:-}
+	@./scripts/lab/vm/smoke_helper.py --variant $${VARIANT:-lab/variants/test3-abc-pp2.yaml} $${RUN_ID:+--run-id $$RUN_ID} $${LAB_VM_SMOKE_ARGS:-}
 
 lab-vm-baseline:
 	@./scripts/lab/vm/labctl.sh variant baseline --variant $${VARIANT:?set VARIANT} --endpoint $${INFERENCE_URL:?set INFERENCE_URL} $${RUN_ID:+--run-id $$RUN_ID}

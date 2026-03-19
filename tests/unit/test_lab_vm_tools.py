@@ -20,6 +20,7 @@ COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
 CRI_PREFLIGHT_SCRIPT = ROOT / "scripts" / "cri_preflight.sh"
 ENSURE_APISHIM_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_env.sh"
 ENSURE_APISHIM_CLI_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_cli_env.sh"
+MAKEFILE = ROOT / "Makefile"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
 HA_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core.yaml"
@@ -559,6 +560,15 @@ def test_lab_vm_scripts_prefer_repo_venv_python() -> None:
     smoke_text = (ROOT / "scripts" / "lab" / "vm" / "smoke.sh").read_text(encoding="utf-8")
     assert "$ROOT_DIR/.venv/bin/python" in common_text
     assert 'exec "$(lab_python)" "$SCRIPT_DIR/smoke_v2.py" "$@"' in smoke_text
+
+
+def test_make_lab_vm_smoke_uses_smoke_helper_wrapper() -> None:
+    text = MAKEFILE.read_text(encoding="utf-8")
+    assert "lab-vm-smoke:" in text
+    assert "./scripts/lab/vm/smoke_helper.py" in text
+    assert "./scripts/lab/vm/labctl.sh smoke" not in text
+    assert "$${VARIANT:-lab/variants/test3-abc-pp2.yaml}" in text
+    assert "$${LAB_VM_SMOKE_ARGS:-}" in text
 
 
 def test_cri_preflight_resolves_python3_fallback() -> None:

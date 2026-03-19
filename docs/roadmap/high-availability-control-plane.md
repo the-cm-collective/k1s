@@ -381,12 +381,13 @@ Primary outcomes:
 Current implementation status:
 
 - `docs/ops/ha-closeout.md` now records the H0-H5 capability matrix, evidence map, gap register, and close criteria
-- `scripts/lab/vm/lib/variant.py`, `scripts/lab/vm/k1s_bootstrap.sh`, and `scripts/lab/vm/smoke_v2.py` now support explicit `k1s-ha-core` hosts plus a `ha_control_plane` lane that emits a machine-readable `ha_summary.json`
+- `scripts/lab/vm/lib/variant.py`, `scripts/lab/vm/k1s_bootstrap.sh`, `scripts/lab/vm/smoke_v2.py`, and `scripts/lab/vm/smoke_helper.py` now support explicit `k1s-ha-core` hosts plus a `ha_control_plane` lane that emits a machine-readable `ha_summary.json`
 - `lab/variants/ha-control-plane-core.yaml` now provides a checked-in 3-core-plus-1-site HA closeout topology instead of requiring an ad hoc local variant
 - `scripts/lab/vm/ha_shared_infra.sh` plus the new `ha_shared_infra` smoke phase now bootstrap shared `etcd` and shared hub NATS/JetStream on the three HA core VMs before `k1s-ha-core` starts
+- `make lab-vm-smoke` is now the promoted VM operator entrypoint, wrapping the new helper-backed smoke flow instead of the older raw `smoke.sh` path
 - the VM lane uses the existing HA helper surfaces for precheck, cluster verification, hub transport validation, edge transport validation, and optional drills instead of inventing a second HA operator contract
 - `tests/e2e/ha_closeout.py` and `tests/integration/test_ha_closeout_e2e.py` now provide a reduced local HA topology with two controllers, one apishim, one edge site, and a failover-plus-replay check; that reduced lane now forces `AE_JS_REPLICAS=1` so it stays lightweight without pretending to be the full transport-fidelity evidence lane
-- current audit result: no new source-visible `must_fix_before_closeout` gaps were found, but the track remains open until the primary VM/lab lane is executed and reviewed
+- current audit result: no new source-visible `must_fix_before_closeout` gaps were found, and the primary VM/lab lane is now green on the checked-in topology; the track remains open only until the final roadmap closeout decision is recorded
 
 ## Dependency Model
 

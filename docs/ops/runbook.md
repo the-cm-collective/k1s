@@ -31,10 +31,11 @@ VM GPU Fabric Lab
 - Variant orchestration and bootstrap: `docs/ops/vm-variant-runbook.md`
 - Baseline metrics and throughput gates: `docs/ops/vm-metrics-and-gates.md`
 - Remote GPU VM precursor (A+B, libvirt/QEMU): `docs/ops/gpu-vm-remote-host-validation.md`
-- Primary command entrypoint: `scripts/lab/vm/labctl.sh`
-- Recommended non-GPU smoke pattern (seeded cache, v2 harness):
-  - `LAB_VM_SMOKE_V2=1 AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 scripts/lab/vm/smoke.sh --variant lab/variants/test3-abc-no-gpu.yaml --run-id "$RUN_ID" --lanes multi_non_gpu --keep-on-fail`
-  - This enables `seed_cache` before bootstrap and avoids Docker Hub pull-rate failures in repeated VM runs.
+- Primary smoke entrypoint: `make lab-vm-smoke`
+- Lower-level orchestration entrypoint: `scripts/lab/vm/labctl.sh`
+- Recommended non-GPU smoke pattern (seeded cache, helper-backed):
+  - `AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/test3-abc-no-gpu.yaml RUN_ID="$RUN_ID" LAB_VM_SMOKE_ARGS="--purge --destroy-network --lanes multi_non_gpu"`
+  - This uses the wrapper-backed smoke path, enables `seed_cache` before bootstrap, and auto-tears down on success while keeping failed runs for inspection.
 
 NATS + etcd dev stack (Mode A)
 - Start hub + etcd + edge NATS: `docker compose -f ops/dev/docker-compose.nats-etcd.yaml up -d`

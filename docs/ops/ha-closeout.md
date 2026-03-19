@@ -10,8 +10,9 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 
 ## Current Decision
 
-- Result: `H5c-ha-closeout` is implemented, but the HA track is not yet marked complete in the roadmap table.
-- Reason: the source audit is clean enough to proceed, but the milestone-defining VM/lab `ha_control_plane` lane still needs to be executed and reviewed as integrated evidence.
+- Result: `H5c-ha-closeout` is implemented and the milestone-defining VM/lab HA lane has now passed on the checked-in topology, but the HA track is not yet marked complete in the roadmap table.
+- Evidence: `runs/ha-cp-smoke-20260319T162412Z/summary.json` and `runs/ha-cp-smoke-20260319T162412Z/ha_summary.json` are green.
+- Reason the track is still open: the final roadmap status flip and checkpoint closeout have not been performed yet.
 
 ## Capability Matrix
 
@@ -47,7 +48,8 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 - Bootstrap:
   - `scripts/lab/vm/k1s_bootstrap.sh` can launch `k1s-ha-core` nodes with HA env instead of assuming a singleton `k1s-core`.
 - Acceptance lane:
-  - `scripts/lab/vm/smoke_helper.py` is the preferred operator entrypoint. It wraps `smoke_v2.py`, prints live phase/check status from the run artifacts, and can auto-run `variant_down.sh` after a successful pass.
+  - `make lab-vm-smoke` is the preferred operator entrypoint for the VM lane.
+  - That target now wraps `scripts/lab/vm/smoke_helper.py`, which in turn wraps `smoke_v2.py`, prints live phase/check status from the run artifacts, and can auto-run `variant_down.sh` after a successful pass.
   - `scripts/lab/vm/smoke_v2.py` now supports `ha_control_plane`.
   - The lane writes `runs/<RUN_ID>/ha_summary.json`.
 - Acceptance engine:
@@ -79,9 +81,10 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 ### must_fix_before_closeout
 
 - None currently identified from the source audit.
-- Track closure is still blocked on evidence, not on an open source-visible correctness gap:
-  - the VM/lab `ha_control_plane` lane must be executed
-  - the resulting `ha_summary.json` must be reviewed and retained with the closeout decision
+- No source-visible correctness gap is currently blocking HA closeout.
+- Remaining administrative closeout work:
+  - retain the green `ha_summary.json` and `summary.json` evidence with the final checkpoint decision
+  - flip the roadmap/status entry when you want the HA track formally closed
 
 ### follow_on_non_blocking
 
@@ -109,6 +112,7 @@ Current conclusion:
 The HA track can be marked complete only when all of the following are true:
 
 1. The VM/lab `ha_control_plane` lane has been executed on the intended HA topology and `runs/<RUN_ID>/ha_summary.json` is green.
+   - Current evidence run: `runs/ha-cp-smoke-20260319T162412Z/ha_summary.json`
 2. The reduced local HA harness has been run successfully as a secondary/manual regression check.
 3. `docs/roadmap/high-availability-control-plane.md`, `docs/roadmap/status.md`, `docs/ops/runbook.md`, and generated `docs/site` output match the implemented HA surface.
 4. No `must_fix_before_closeout` gaps remain in this document.

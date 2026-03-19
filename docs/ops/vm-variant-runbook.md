@@ -15,7 +15,7 @@ Transport defaults
 - Edge-core bootstrap resolves hub leaf endpoint from `transport.hub_host` (or core host IP) and `transport.hub_leaf_port` (default `7422`).
 - Use `local_tunnel` only when each edge host intentionally forwards hub leaf traffic to localhost.
 
-## 0) Single-command smoke (recommended helper flow)
+## 0) Single-command smoke (recommended Make + helper flow)
 
 ```bash
 sudo -v
@@ -25,19 +25,16 @@ export RUN_ID
 AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
-scripts/lab/vm/smoke_helper.py \
-  --variant lab/variants/test3-abc-no-gpu.yaml \
-  --run-id "$RUN_ID" \
-  --teardown on-success \
-  --purge \
-  --destroy-network \
-  -- \
-  --lanes multi_non_gpu
+make lab-vm-smoke \
+  VARIANT=lab/variants/test3-abc-no-gpu.yaml \
+  RUN_ID="$RUN_ID" \
+  LAB_VM_SMOKE_ARGS="--purge --destroy-network --lanes multi_non_gpu"
 ```
 
 What this runs:
-- `smoke_v2.py` with live phase/check status projected from `runs/<RUN_ID>/...`
-- `variant_down.sh` automatically on success when `--teardown on-success` is used
+- `make lab-vm-smoke`, which now wraps `scripts/lab/vm/smoke_helper.py`
+- `smoke_v2.py` underneath, with live phase/check status projected from `runs/<RUN_ID>/...`
+- `variant_down.sh` automatically on success when `--teardown on-success` is in effect
 - failed runs are kept by default for inspection
 
 Notes:
@@ -45,6 +42,7 @@ Notes:
 - `AE_CRI_CACHE_SEED_MODE=required` fails early if seed bundle import/coverage is incomplete.
 - `AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0` prefers cached source images and avoids unnecessary remote pulls.
 - `smoke_helper.py` expects `sudo -v` to have been run already; it keeps `sudo -n true` warm for the run and teardown.
+- `LAB_VM_SMOKE_ARGS` is forwarded to the helper; helper flags and smoke_v2 passthrough flags can both be passed there.
 
 Key artifacts:
 - `runs/<RUN_ID>/plan.json`
@@ -65,12 +63,10 @@ export RUN_ID
 AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
-scripts/lab/vm/smoke_helper.py \
-  --variant lab/variants/ha-control-plane-core.yaml \
-  --run-id "$RUN_ID" \
-  --teardown on-success \
-  --purge \
-  --destroy-network
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core.yaml \
+  RUN_ID="$RUN_ID" \
+  LAB_VM_SMOKE_ARGS="--purge --destroy-network"
 ```
 
 Manual retention for investigation:
@@ -81,10 +77,10 @@ export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_smoke
 AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
-scripts/lab/vm/smoke_helper.py \
-  --variant lab/variants/ha-control-plane-core.yaml \
-  --run-id "$RUN_ID" \
-  --teardown never
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core.yaml \
+  RUN_ID="$RUN_ID" \
+  LAB_VM_SMOKE_ARGS="--teardown never"
 ```
 
 Or explicit teardown after result inspection:
@@ -93,6 +89,17 @@ Or explicit teardown after result inspection:
 scripts/lab/vm/labctl.sh variant down \
   --variant lab/variants/test3-abc-no-gpu.yaml \
   --run-id "$RUN_ID" \
+  --purge \
+  --destroy-network
+```
+
+Direct helper usage remains available when you want to bypass Make and call the wrapper explicitly:
+
+```bash
+scripts/lab/vm/smoke_helper.py \
+  --variant lab/variants/ha-control-plane-core.yaml \
+  --run-id "$RUN_ID" \
+  --teardown on-success \
   --purge \
   --destroy-network
 ```
