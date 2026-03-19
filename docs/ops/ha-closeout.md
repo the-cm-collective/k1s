@@ -47,6 +47,7 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 - Bootstrap:
   - `scripts/lab/vm/k1s_bootstrap.sh` can launch `k1s-ha-core` nodes with HA env instead of assuming a singleton `k1s-core`.
 - Acceptance lane:
+  - `scripts/lab/vm/smoke_helper.py` is the preferred operator entrypoint. It wraps `smoke_v2.py`, prints live phase/check status from the run artifacts, and can auto-run `variant_down.sh` after a successful pass.
   - `scripts/lab/vm/smoke_v2.py` now supports `ha_control_plane`.
   - The lane writes `runs/<RUN_ID>/ha_summary.json`.
 - Acceptance engine:

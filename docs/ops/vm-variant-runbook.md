@@ -15,37 +15,38 @@ Transport defaults
 - Edge-core bootstrap resolves hub leaf endpoint from `transport.hub_host` (or core host IP) and `transport.hub_leaf_port` (default `7422`).
 - Use `local_tunnel` only when each edge host intentionally forwards hub leaf traffic to localhost.
 
-## 0) Single-command smoke (recommended seeded v2 flow)
+## 0) Single-command smoke (recommended helper flow)
 
 ```bash
 sudo -v
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_multi_non_gpu"
 export RUN_ID
 
-LAB_VM_SMOKE_V2=1 \
 AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
-scripts/lab/vm/smoke.sh \
+scripts/lab/vm/smoke_helper.py \
   --variant lab/variants/test3-abc-no-gpu.yaml \
   --run-id "$RUN_ID" \
-  --lanes multi_non_gpu \
-  --keep-on-fail
+  --teardown on-success \
+  --purge \
+  --destroy-network \
+  -- \
+  --lanes multi_non_gpu
 ```
 
 What this runs:
-- `provision` (`variant up`)
-- `seed_cache` (`image_seed_bundle.sh`)
-- `ha_shared_infra` (`ha_shared_infra.sh --execute`) when the variant points HA endpoints at the three `k1s-ha-core` VM IPs
-- `bootstrap` (`k1s_bootstrap.sh --execute` with seeded cache import enabled)
-- lane checks (`service_ready`, `fabric_validate`, `functional_basic`, `functional_advanced`)
+- `smoke_v2.py` with live phase/check status projected from `runs/<RUN_ID>/...`
+- `variant_down.sh` automatically on success when `--teardown on-success` is used
+- failed runs are kept by default for inspection
 
 Notes:
 - `AE_CRI_CACHE_SEED_ENGINE=docker` uses host Docker credentials/tokens for seed pulls.
 - `AE_CRI_CACHE_SEED_MODE=required` fails early if seed bundle import/coverage is incomplete.
 - `AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0` prefers cached source images and avoids unnecessary remote pulls.
+- `smoke_helper.py` expects `sudo -v` to have been run already; it keeps `sudo -n true` warm for the run and teardown.
 
-Key artifacts (`smoke_v2`):
+Key artifacts:
 - `runs/<RUN_ID>/plan.json`
 - `runs/<RUN_ID>/global_phases.json`
 - `runs/<RUN_ID>/lanes/<lane>/phase_status.json`
@@ -61,30 +62,29 @@ sudo -v
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_control_plane"
 export RUN_ID
 
-LAB_VM_SMOKE_V2=1 \
 AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
-scripts/lab/vm/smoke.sh \
+scripts/lab/vm/smoke_helper.py \
   --variant lab/variants/ha-control-plane-core.yaml \
   --run-id "$RUN_ID" \
-  --lanes ha_control_plane \
-  --keep-on-fail
+  --teardown on-success \
+  --purge \
+  --destroy-network
 ```
 
-Optional automatic teardown in the same run:
+Manual retention for investigation:
 
 ```bash
 sudo -v
 export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_smoke
-LAB_VM_SMOKE_V2=1 \
 AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
-make lab-vm-smoke \
-  VARIANT=lab/variants/test3-abc-no-gpu.yaml \
-  RUN_ID="$RUN_ID" \
-  LAB_VM_SMOKE_ARGS="--down --purge"
+scripts/lab/vm/smoke_helper.py \
+  --variant lab/variants/ha-control-plane-core.yaml \
+  --run-id "$RUN_ID" \
+  --teardown never
 ```
 
 Or explicit teardown after result inspection:

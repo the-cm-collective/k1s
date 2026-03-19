@@ -508,7 +508,7 @@ def test_ensure_apishim_cli_env_uses_dedicated_ca_file() -> None:
     text = ENSURE_APISHIM_CLI_ENV_SCRIPT.read_text(encoding="utf-8")
     assert 'CA_FILE="${APISHIM_CA_FILE:-$(dirname "$CERT_FILE")/apishim.ca.crt}"' in text
     assert 'if [[ -f "$CA_FILE" ]]; then' in text
-    assert 'warning: CA file missing; skipping CA bundle export: $CA_FILE' in text
+    assert "warning: CA file missing; skipping CA bundle export: $CA_FILE" in text
 
 
 def test_ha_shared_infra_script_bootstraps_clustered_backends() -> None:
@@ -528,7 +528,10 @@ def test_run_profile_host_apishim_uses_src_pythonpath() -> None:
     assert 'local ca_file="${APISHIM_CA_FILE:-$profile_dir/apishim.ca.crt}"' in text
     assert 'local ca_key_file="${APISHIM_CA_KEY_FILE:-$profile_dir/apishim.ca.key}"' in text
     assert 'if is_truthy "${AE_APISHIM_PRESEEDED:-0}"' in text
-    assert '&& [[ -f "$env_file" && -f "$cert_file" && -f "$key_file" && -f "$ca_file" && -f "$ca_key_file" ]]; then' in text
+    assert (
+        '&& [[ -f "$env_file" && -f "$cert_file" && -f "$key_file" '
+        '&& -f "$ca_file" && -f "$ca_key_file" ]]; then'
+    ) in text
     assert 'APISHIM_CA_FILE="$ca_file" APISHIM_CA_KEY_FILE="$ca_key_file"' in text
 
 

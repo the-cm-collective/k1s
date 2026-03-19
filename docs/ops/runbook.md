@@ -451,7 +451,8 @@ HA closeout (`H5c-ha-closeout`)
 - Primary evidence lane:
   - VM/lab variants can now declare explicit `k1s-ha-core` hosts plus a `ha_control_plane` smoke lane.
   - The checked-in HA closeout topology is `lab/variants/ha-control-plane-core.yaml`.
-  - When that variant points HA endpoints at the three HA core VM IPs, `smoke_v2` runs a `ha_shared_infra` phase that boots shared `etcd` plus shared hub NATS/JetStream on those VMs before `k1s-ha-core` bootstrap.
+  - `scripts/lab/vm/smoke_helper.py` is the preferred operator entrypoint for that lane. It wraps `smoke_v2.py`, prints live phase/check status from the `runs/<RUN_ID>/...` artifacts, and can auto-run `variant_down.sh` on success.
+  - When the variant points HA endpoints at the three HA core VM IPs, `smoke_v2` runs a `ha_shared_infra` phase that boots shared `etcd` plus shared hub NATS/JetStream on those VMs before `k1s-ha-core` bootstrap.
   - The lane writes `runs/<RUN_ID>/ha_summary.json` as the machine-readable HA evidence artifact.
   - The lane reuses the existing HA helper family instead of inventing a second operator contract:
     - `ha_core_preflight.py`
@@ -465,6 +466,7 @@ HA closeout (`H5c-ha-closeout`)
   - It forces `AE_JS_REPLICAS=1`, so it is useful for failover and replay regression but not as transport-fidelity evidence for the shared hub cluster.
 - Closeout rule:
   - Do not mark the `H*` track complete until `docs/ops/ha-closeout.md` shows zero `must_fix_before_closeout` gaps and the primary VM/lab lane has been executed against the intended HA topology.
+  - On passworded-sudo hosts, run `sudo -v` before invoking `smoke_helper.py`; the helper does not prompt for a password and fails fast if `sudo -n true` is not already warm.
 
 Release notes quick links
 - Compatibility matrix: `docs/reference/apishim-compatibility-matrix.md` (uploaded with releases)
