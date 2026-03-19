@@ -501,6 +501,8 @@ def test_cri_seed_bundle_script_accepts_run_id_and_profile() -> None:
     assert "--profile <name>" in text
     assert "AE_CRI_CACHE_SEED_ENGINE" in text
     assert "[cri-seed] source already cached: $image" in text
+    assert "build_cri_apishim_image.sh" in text
+    assert "local seed image already cached" in text
     assert "images export" in text or "save -o" in text
 
 
@@ -528,6 +530,7 @@ def test_cri_seed_lock_contains_core_and_edge_images() -> None:
     assert "docker.io/library/registry:2" in payload["images"]["edge"]
     assert "quay.io/coreos/etcd:v3.5.13" in payload["images"]["core"]
     assert "docker.io/library/nats:2.10" in payload["images"]["edge"]
+    assert "localhost:5001/k1s-apishim:dev" in payload["images"]["core"]
 
 
 def test_smoke_v2_includes_seed_cache_phase_timeout() -> None:
