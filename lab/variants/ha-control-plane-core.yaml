@@ -70,7 +70,7 @@ ha:
       monitor_url: http://192.168.155.12:8222
   edge_sites:
     - site_id: sea
-      monitor_url: http://192.168.155.20:8224
+      monitor_url: http://192.168.155.20:8223
       expected_gateways:
         - edge-sea
 smoke:

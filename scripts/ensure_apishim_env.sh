@@ -148,6 +148,8 @@ if command -v openssl >/dev/null 2>&1; then
     cert_text="$(openssl x509 -in "$CERT_FILE" -noout -text 2>/dev/null || true)"
     if ! grep -q "Subject Alternative Name" <<<"$cert_text"; then
       need_regen=1
+    elif ! grep -q "CA:TRUE" <<<"$cert_text"; then
+      need_regen=1
     else
       IFS=',' read -r -a san_entries <<<"$san"
       for san_entry in "${san_entries[@]}"; do
@@ -169,7 +171,10 @@ if command -v openssl >/dev/null 2>&1; then
     mkdir -p "$(dirname "$CERT_FILE")"
     subj="/CN=apishim"
     openssl req -x509 -newkey rsa:2048 -sha256 -days 3 -nodes \
-      -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "$subj" -addext "subjectAltName=${san}" >/dev/null 2>&1
+      -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "$subj" \
+      -addext "subjectAltName=${san}" \
+      -addext "basicConstraints=critical,CA:TRUE" \
+      -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" >/dev/null 2>&1
     chmod 600 "$KEY_FILE" "$CERT_FILE"
     log "Wrote $CERT_FILE and $KEY_FILE (self-signed, dev only)."
   fi

@@ -86,6 +86,7 @@ def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
     ]
     assert payload["ha"]["apishim_scheme"] == "https"
     assert [item["name"] for item in payload["ha"]["hub_nodes"]] == ["core-a", "core-b", "core-c"]
+    assert payload["ha"]["edge_sites"][0]["monitor_url"] == "http://192.168.155.20:8223"
     assert payload["smoke"]["lanes"] == ["ha_control_plane"]
 
 
@@ -481,8 +482,10 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
 def test_ensure_apishim_env_regenerates_when_requested_sans_are_missing() -> None:
     text = ENSURE_APISHIM_ENV_SCRIPT.read_text(encoding="utf-8")
     assert 'san="${APISHIM_CERT_SANS:-DNS:apishim,DNS:localhost,IP:127.0.0.1,IP:::1}"' in text
+    assert 'grep -q "CA:TRUE" <<<"$cert_text"' in text
     assert "IFS=',' read -r -a san_entries <<<\"$san\"" in text
     assert 'cert_pattern="IP Address:${san_entry#IP:}"' in text
+    assert '-addext "basicConstraints=critical,CA:TRUE"' in text
 
 
 def test_ha_shared_infra_script_bootstraps_clustered_backends() -> None:
