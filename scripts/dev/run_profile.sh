@@ -1414,6 +1414,8 @@ start_apishim() {
   local cli_env_file="${APISHIM_CLI_ENV_FILE:-$profile_dir/apishim.cli.env}"
   local cert_file="${APISHIM_CERT_FILE:-$profile_dir/apishim.crt}"
   local key_file="${APISHIM_KEY_FILE:-$profile_dir/apishim.key}"
+  local ca_file="${APISHIM_CA_FILE:-$profile_dir/apishim.ca.crt}"
+  local ca_key_file="${APISHIM_CA_KEY_FILE:-$profile_dir/apishim.ca.key}"
   local mode="${AE_APISHIM_MODE:-container}"
   local startup_timeout="${AE_APISHIM_STARTUP_TIMEOUT:-12}"
   local health_token=""
@@ -1425,11 +1427,17 @@ start_apishim() {
   fi
   if [[ -f "$pid_file" ]] && ! apishim_pid_alive "$pid_file"; then
     rm -f "$pid_file" >/dev/null 2>&1 || true
-  fi
+	  fi
 
   mkdir -p "$profile_dir"
-  APISHIM_ENV_FILE="$env_file" APISHIM_CERT_FILE="$cert_file" APISHIM_KEY_FILE="$key_file" \
-    "$ROOT_DIR/scripts/ensure_apishim_env.sh" >/dev/null 2>&1 || true
+  if is_truthy "${AE_APISHIM_PRESEEDED:-0}" \
+    && [[ -f "$env_file" && -f "$cert_file" && -f "$key_file" && -f "$ca_file" && -f "$ca_key_file" ]]; then
+    :
+  else
+    APISHIM_ENV_FILE="$env_file" APISHIM_CERT_FILE="$cert_file" APISHIM_KEY_FILE="$key_file" \
+      APISHIM_CA_FILE="$ca_file" APISHIM_CA_KEY_FILE="$ca_key_file" \
+      "$ROOT_DIR/scripts/ensure_apishim_env.sh" >/dev/null 2>&1 || true
+  fi
   if [[ -f "$env_file" ]]; then
     local env_apishim_token=""
     local env_apishim_read_token=""
@@ -1466,6 +1474,7 @@ start_apishim() {
   export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-$key_file}"
   export AE_APISHIM_SERVER="https://127.0.0.1:${port}"
   APISHIM_ENV_FILE="$env_file" APISHIM_CLI_ENV_FILE="$cli_env_file" APISHIM_CERT_FILE="$cert_file" \
+    APISHIM_CA_FILE="$ca_file" \
     AE_APISHIM_SERVER="${AE_APISHIM_SERVER}" AE_CLI_SHARED_GROUP="${AE_CLI_SHARED_GROUP:-aecli}" \
     "$ROOT_DIR/scripts/ensure_apishim_cli_env.sh" >/dev/null 2>&1 || \
     echo "warning: failed to sync shared apishim CLI env" >&2

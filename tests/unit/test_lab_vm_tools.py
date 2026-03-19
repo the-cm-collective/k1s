@@ -479,6 +479,7 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "make k1s-ha-core" in text
     assert "AE_CONTROLLER_ADVERTISE_ADDR=http://${ip}:${controller_port}" in text
     assert "AE_APISHIM_ETCD_ENDPOINTS='${ha_etcd_endpoints}'" in text
+    assert "AE_APISHIM_PRESEEDED=1" in text
     assert "APISHIM_HOST=\\${APISHIM_HOST:-0.0.0.0}" in text
     assert "APISHIM_CERT_SANS='${ha_apishim_cert_sans}'" in text
     assert "AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db" in text
@@ -524,6 +525,11 @@ def test_run_profile_host_apishim_uses_src_pythonpath() -> None:
     text = RUN_PROFILE_SCRIPT.read_text(encoding="utf-8")
     assert 'local apishim_pythonpath="$ROOT_DIR/src"' in text
     assert 'nohup env PYTHONPATH="$apishim_pythonpath" "$PYTHON_BIN" -m ae.apishim serve' in text
+    assert 'local ca_file="${APISHIM_CA_FILE:-$profile_dir/apishim.ca.crt}"' in text
+    assert 'local ca_key_file="${APISHIM_CA_KEY_FILE:-$profile_dir/apishim.ca.key}"' in text
+    assert 'if is_truthy "${AE_APISHIM_PRESEEDED:-0}"' in text
+    assert '&& [[ -f "$env_file" && -f "$cert_file" && -f "$key_file" && -f "$ca_file" && -f "$ca_key_file" ]]; then' in text
+    assert 'APISHIM_CA_FILE="$ca_file" APISHIM_CA_KEY_FILE="$ca_key_file"' in text
 
 
 def test_cri_image_mirror_prefers_local_cache() -> None:
