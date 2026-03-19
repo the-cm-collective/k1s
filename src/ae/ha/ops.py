@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import urllib.error
 import urllib.request
@@ -23,7 +24,9 @@ HA_CORE_REQUIRED_ENV: tuple[str, ...] = (
 )
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
-_PROM_LINE = re.compile(r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>\S+)$")
+_PROM_LINE = re.compile(
+    r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>\S+)$"
+)
 _ETCD_ENV_LINE = re.compile(r'^(?P<key>ETCD_[A-Z0-9_]+)=(?:"(?P<quoted>.*)"|(?P<raw>.+))$')
 _ETCD_MEMBER_ADD = re.compile(
     r"Member\s+(?P<member_id>[0-9a-fA-F]+)\s+added(?:\s+to\s+cluster\s+(?P<cluster_id>[0-9a-fA-F]+))?",
@@ -182,7 +185,9 @@ def tcp_connectable(host: str, port: int, timeout_s: float = 3.0) -> tuple[bool,
         return False, str(exc)
 
 
-def _http_json(url: str, *, timeout_s: float = 3.0, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _http_json(
+    url: str, *, timeout_s: float = 3.0, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
     data: bytes | None = None
     method = "GET"
     headers: dict[str, str] = {}
@@ -191,7 +196,17 @@ def _http_json(url: str, *, timeout_s: float = 3.0, payload: dict[str, Any] | No
         method = "POST"
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+    context = None
+    parsed = urlparse(url)
+    if str(parsed.scheme or "").strip().lower() == "https":
+        ca_bundle = (
+            os.getenv("AE_APISHIM_CA_BUNDLE")
+            or os.getenv("AE_APISHIM_CA")
+            or os.getenv("AE_APISHIM_TLS_CA")
+        )
+        if ca_bundle:
+            context = ssl.create_default_context(cafile=ca_bundle)
+    with urllib.request.urlopen(req, timeout=timeout_s, context=context) as resp:
         raw = resp.read().decode("utf-8")
     return json.loads(raw or "{}")
 
@@ -543,12 +558,15 @@ def parse_etcd_member_add_output(
             continue
         env_match = _ETCD_ENV_LINE.match(line)
         if env_match:
-            env_map[env_match.group("key")] = env_match.group("quoted") or env_match.group("raw") or ""
+            env_map[env_match.group("key")] = (
+                env_match.group("quoted") or env_match.group("raw") or ""
+            )
     member_name = str(env_map.get("ETCD_NAME") or expected_name or "").strip()
     initial_cluster = str(env_map.get("ETCD_INITIAL_CLUSTER") or "").strip()
     initial_cluster_state = str(env_map.get("ETCD_INITIAL_CLUSTER_STATE") or "").strip()
     initial_peer_urls = (
-        str(env_map.get("ETCD_INITIAL_ADVERTISE_PEER_URLS") or expected_peer_urls or "").strip() or None
+        str(env_map.get("ETCD_INITIAL_ADVERTISE_PEER_URLS") or expected_peer_urls or "").strip()
+        or None
     )
     if not member_name or not initial_cluster or not initial_cluster_state:
         raise ValueError(f"unable to parse etcd member add output: {text!r}")
@@ -699,7 +717,9 @@ def parse_nats_edge_site_target(raw: str) -> NatsEdgeSiteTarget:
     return NatsEdgeSiteTarget(site_id=site_name, monitor_url=base_url)
 
 
-def fetch_nats_monitor_json(base_url: str, endpoint: str, *, timeout_s: float = 3.0) -> dict[str, Any]:
+def fetch_nats_monitor_json(
+    base_url: str, endpoint: str, *, timeout_s: float = 3.0
+) -> dict[str, Any]:
     path = str(endpoint or "").strip()
     if not path.startswith("/"):
         path = f"/{path}"
@@ -741,16 +761,20 @@ def build_nats_hub_monitor_record(
     consumer_replicas: dict[str, int] = {}
     consumer_offline: dict[str, tuple[str, ...]] = {}
     for stream in _iter_js_streams(jsz):
-        stream_name = _clean_str(_nested_get(stream, "config", "name")) or _clean_str(stream.get("name"))
+        stream_name = _clean_str(_nested_get(stream, "config", "name")) or _clean_str(
+            stream.get("name")
+        )
         if not stream_name:
             continue
         cluster = stream.get("cluster") if isinstance(stream.get("cluster"), dict) else {}
         stream_replicas[stream_name] = _cluster_replica_total(cluster)
         stream_offline[stream_name] = _cluster_offline_names(cluster)
         for consumer in _iter_stream_consumers(stream):
-            consumer_name = _clean_str(_nested_get(consumer, "config", "durable_name")) or _clean_str(
-                _nested_get(consumer, "config", "name")
-            ) or _clean_str(consumer.get("name"))
+            consumer_name = (
+                _clean_str(_nested_get(consumer, "config", "durable_name"))
+                or _clean_str(_nested_get(consumer, "config", "name"))
+                or _clean_str(consumer.get("name"))
+            )
             if not consumer_name:
                 continue
             consumer_cluster = (
@@ -912,7 +936,9 @@ def evaluate_nats_edge_site(
         if record.leaf_count is None:
             issues.append(f"leaf_count_unavailable:{record.site_id}")
         elif int(record.leaf_count) < int(expected_leaf_min):
-            issues.append(f"leaf_count:{record.site_id}:{int(record.leaf_count)}/{int(expected_leaf_min)}")
+            issues.append(
+                f"leaf_count:{record.site_id}:{int(record.leaf_count)}/{int(expected_leaf_min)}"
+            )
     return issues
 
 
@@ -929,14 +955,18 @@ def collect_site_gateway_status(
         return {}
     last_seen_by_node: dict[str, float] = {}
     build_by_node: dict[str, tuple[str, str, str]] = {}
-    for labels, value in collect_prometheus_metric_values(metrics_text, "ae_site_gateway_last_seen_seconds"):
+    for labels, value in collect_prometheus_metric_values(
+        metrics_text, "ae_site_gateway_last_seen_seconds"
+    ):
         if str(labels.get("site") or "").strip() != site:
             continue
         node_id = str(labels.get("node") or "").strip()
         if not node_id:
             continue
         last_seen_by_node[node_id] = value
-    for labels, _value in collect_prometheus_metric_values(metrics_text, "ae_site_gateway_build_info"):
+    for labels, _value in collect_prometheus_metric_values(
+        metrics_text, "ae_site_gateway_build_info"
+    ):
         if str(labels.get("site") or "").strip() != site:
             continue
         node_id = str(labels.get("node") or "").strip()

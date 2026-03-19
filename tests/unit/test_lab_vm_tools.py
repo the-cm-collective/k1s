@@ -83,6 +83,7 @@ def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
         "http://192.168.155.11:2379",
         "http://192.168.155.12:2379",
     ]
+    assert payload["ha"]["apishim_scheme"] == "https"
     assert [item["name"] for item in payload["ha"]["hub_nodes"]] == ["core-a", "core-b", "core-c"]
     assert payload["smoke"]["lanes"] == ["ha_control_plane"]
 
@@ -466,6 +467,7 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "make k1s-ha-core" in text
     assert "AE_CONTROLLER_ADVERTISE_ADDR=http://${ip}:${controller_port}" in text
     assert "AE_APISHIM_ETCD_ENDPOINTS='${ha_etcd_endpoints}'" in text
+    assert "APISHIM_HOST=\\${APISHIM_HOST:-0.0.0.0}" in text
     assert "AE_CRI_CACHE_SEED_MODE" in text
     assert "AE_CRI_CACHE_SEED_BUNDLE" in text
     assert text.count("REGISTER_ONLY=1 SITE_ID") == 1
@@ -515,7 +517,7 @@ def test_lab_vm_scripts_prefer_repo_venv_python() -> None:
 
 def test_cri_preflight_resolves_python3_fallback() -> None:
     text = CRI_PREFLIGHT_SCRIPT.read_text(encoding="utf-8")
-    assert 'if command -v python3 >/dev/null 2>&1; then' in text
+    assert "if command -v python3 >/dev/null 2>&1; then" in text
     assert 'python_bin="$(command -v python3)"' in text
     assert '"$python_bin" - "$info_tmp"' in text
 
@@ -557,6 +559,116 @@ def test_smoke_v2_detects_vm_managed_ha_infra() -> None:
         ).stdout
     )
     assert smoke_v2.uses_vm_managed_ha_infra(variant, ["ha_control_plane"]) is True
+
+
+def test_smoke_v2_ha_env_sets_ha_defaults_and_ca_bundle(tmp_path: Path, monkeypatch) -> None:
+    ca_bundle = tmp_path / "state" / "profiles" / "k1s-ha-core" / "apishim.ca.crt"
+    ca_bundle.parent.mkdir(parents=True, exist_ok=True)
+    ca_bundle.write_text("fake-ca", encoding="utf-8")
+    monkeypatch.setattr(smoke_v2, "ROOT", tmp_path)
+
+    env = smoke_v2._ha_env(
+        {
+            "core_nodes": [
+                {
+                    "name": "core-a",
+                    "node_id": "core-a",
+                    "controller_url": "http://192.168.155.10:9108",
+                }
+            ],
+            "etcd_endpoints": [
+                "http://192.168.155.10:2379",
+                "http://192.168.155.11:2379",
+                "http://192.168.155.12:2379",
+            ],
+            "etcd_prefix": "k1s/lab/ha-control-plane",
+            "nats_url": "nats://hub-controller:dev@192.168.155.10:4222",
+        }
+    )
+
+    assert env["AE_CONTROLLER_ID"] == "core-a"
+    assert env["AE_CONTROLLER_ADVERTISE_ADDR"] == "http://192.168.155.10:9108"
+    assert env["AE_HA_MODE"] == "1"
+    assert env["AE_JS_REPLICAS"] == "3"
+    assert env["AE_APISHIM_CA_BUNDLE"] == str(ca_bundle)
+
+
+def test_run_ha_acceptance_checks_passes_ha_env_to_required_helpers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ca_bundle = tmp_path / "state" / "profiles" / "k1s-ha-core" / "apishim.ca.crt"
+    ca_bundle.parent.mkdir(parents=True, exist_ok=True)
+    ca_bundle.write_text("fake-ca", encoding="utf-8")
+    monkeypatch.setattr(smoke_v2, "ROOT", tmp_path)
+
+    captured_env: dict[str, dict[str, str] | None] = {}
+
+    def _fake_run_helper_check(
+        name: str,
+        command: list[str],
+        *,
+        timeout_s: int,
+        optional: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        _ = command, timeout_s, optional
+        captured_env[name] = env
+        return {
+            "name": name,
+            "status": "passed",
+            "optional": optional,
+            "detail": "ok",
+            "command": command,
+        }
+
+    monkeypatch.setattr(smoke_v2, "_run_helper_check", _fake_run_helper_check)
+
+    result = smoke_v2.run_ha_acceptance_checks(
+        {
+            "core_nodes": [
+                {
+                    "name": "core-a",
+                    "node_id": "core-a",
+                    "controller_url": "http://192.168.155.10:9108",
+                    "apishim_url": "https://192.168.155.10:8445",
+                }
+            ],
+            "controller_metrics_url": "http://192.168.155.10:9108/metrics",
+            "etcd_endpoints": [
+                "http://192.168.155.10:2379",
+                "http://192.168.155.11:2379",
+                "http://192.168.155.12:2379",
+            ],
+            "etcd_prefix": "k1s/lab/ha-control-plane",
+            "nats_url": "nats://hub-controller:dev@192.168.155.10:4222",
+            "hub_nodes": [{"name": "core-a", "monitor_url": "http://192.168.155.10:8222"}],
+            "edge_core_sites": ["sea"],
+            "edge_sites": [
+                {
+                    "site_id": "sea",
+                    "monitor_url": "http://192.168.155.20:8224",
+                    "expected_gateways": ["edge-sea"],
+                }
+            ],
+            "expected_version": "0.1.3.dev0",
+        },
+        timeout_s=30,
+    )
+
+    assert result["status"] == "passed"
+    for name in [
+        "ha_core_preflight",
+        "ha_core_precheck",
+        "ha_core_cluster_verify",
+        "ha_hub_transport_precheck",
+        "ha_edge_precheck:sea",
+        "ha_edge_verify:sea",
+    ]:
+        env = captured_env[name]
+        assert env is not None
+        assert env["AE_HA_MODE"] == "1"
+        assert env["AE_JS_REPLICAS"] == "3"
+        assert env["AE_APISHIM_CA_BUNDLE"] == str(ca_bundle)
 
 
 def test_smoke_v2_skips_vm_managed_ha_infra_for_external_backends() -> None:

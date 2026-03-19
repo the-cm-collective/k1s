@@ -60,6 +60,7 @@ ha:
     - http://192.168.155.12:2379
   etcd_prefix: k1s/lab/ha-control-plane
   nats_url: nats://hub-controller:dev@192.168.155.10:4222
+  apishim_scheme: https
   hub_nodes:
     - name: core-a
       monitor_url: http://192.168.155.10:8222

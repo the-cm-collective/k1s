@@ -749,9 +749,14 @@ def _ha_env(config: dict[str, Any]) -> dict[str, str]:
     if isinstance(controller, dict):
         env["AE_CONTROLLER_ID"] = str(controller.get("node_id") or controller.get("name") or "")
         env["AE_CONTROLLER_ADVERTISE_ADDR"] = str(controller.get("controller_url") or "")
+    env["AE_HA_MODE"] = str(env.get("AE_HA_MODE") or "1")
+    env["AE_JS_REPLICAS"] = str(env.get("AE_JS_REPLICAS") or "3")
     env["AE_ETCD_ENDPOINTS"] = ",".join(str(item) for item in config.get("etcd_endpoints") or [])
     env["AE_ETCD_PREFIX"] = str(config.get("etcd_prefix") or "")
     env["AE_NATS_URL"] = str(config.get("nats_url") or "")
+    ca_bundle = ROOT / "state" / "profiles" / "k1s-ha-core" / "apishim.ca.crt"
+    if ca_bundle.is_file():
+        env["AE_APISHIM_CA_BUNDLE"] = str(ca_bundle)
     return env
 
 
@@ -827,6 +832,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
                 str(config["nats_url"]),
             ],
             timeout_s=timeout_s,
+            env=env,
         )
     )
     cluster_cmd = [
@@ -844,6 +850,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             "ha_core_cluster_verify",
             cluster_cmd,
             timeout_s=timeout_s,
+            env=env,
         )
     )
 
@@ -861,6 +868,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             "ha_hub_transport_precheck",
             hub_cmd,
             timeout_s=timeout_s,
+            env=env,
         )
     )
 
@@ -893,6 +901,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
                 f"ha_edge_precheck:{site['site_id']}",
                 precheck_cmd,
                 timeout_s=timeout_s,
+                env=env,
             )
         )
         checks.append(
@@ -900,6 +909,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
                 f"ha_edge_verify:{site['site_id']}",
                 verify_cmd,
                 timeout_s=timeout_s,
+                env=env,
             )
         )
 
@@ -1933,7 +1943,7 @@ def main() -> int:
         )
     try:
         require_vm_host_prereqs(
-            skip_up=bool(args.skip_up),
+            skip_up=bool(args.skip_up or args.plan_only),
             auto_down=bool(args.down or args.auto_down_on_success or args.auto_down_on_fail),
         )
         return smoke_v2(args)

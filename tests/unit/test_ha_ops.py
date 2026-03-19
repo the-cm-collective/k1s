@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import ae.ha.ops as ha_ops
 from ae.ha.ops import (
-    collect_prometheus_metric_values,
-    collect_site_gateway_status,
     EdgeGatewayStatusRecord,
     EtcdRestoreMemberSpec,
     NatsEdgeSiteTarget,
     NatsHubNodeTarget,
-    build_nats_edge_monitor_record,
-    build_nats_hub_monitor_record,
     build_container_etcdctl_command,
     build_local_etcdctl_command,
     build_local_etcdctl_recovery_command,
+    build_nats_edge_monitor_record,
+    build_nats_hub_monitor_record,
     build_quorum_restore_plan,
+    collect_prometheus_metric_values,
+    collect_site_gateway_status,
     derive_client_url,
     evaluate_nats_edge_site,
     evaluate_nats_hub_cluster,
@@ -465,9 +467,7 @@ def test_build_quorum_restore_plan_renders_three_member_restore_commands(tmp_pat
     )
 
     assert plan.initial_cluster == (
-        "etcd-a=http://10.0.0.11:2380,"
-        "etcd-b=http://10.0.0.12:2380,"
-        "etcd-c=http://10.0.0.13:2380"
+        "etcd-a=http://10.0.0.11:2380,etcd-b=http://10.0.0.12:2380,etcd-c=http://10.0.0.13:2380"
     )
     assert len(plan.members) == 3
     assert plan.members[0].restore_command[0:3] == ["etcdctl", "snapshot", "restore"]
@@ -478,3 +478,42 @@ def test_build_quorum_restore_plan_renders_three_member_restore_commands(tmp_pat
     assert "Quorum restore plan from snapshot:" in rendered
     assert "[etcd-b]" in rendered
     assert "Initial cluster token: k1s-ha" in rendered
+
+
+def test_http_json_uses_tls_context_from_apishim_ca_bundle(tmp_path: Path, monkeypatch) -> None:
+    ca_bundle = tmp_path / "apishim.ca.crt"
+    ca_bundle.write_text("fake-ca", encoding="utf-8")
+    seen: dict[str, object] = {}
+    sentinel = object()
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            _ = exc_type, exc, tb
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True}).encode("utf-8")
+
+    def _fake_create_default_context(*, cafile: str | None = None) -> object:
+        seen["cafile"] = cafile
+        return sentinel
+
+    def _fake_urlopen(req, *, timeout: float = 0.0, context=None):
+        seen["url"] = req.full_url
+        seen["timeout"] = timeout
+        seen["context"] = context
+        return _Response()
+
+    monkeypatch.setenv("AE_APISHIM_CA_BUNDLE", str(ca_bundle))
+    monkeypatch.setattr(ha_ops.ssl, "create_default_context", _fake_create_default_context)
+    monkeypatch.setattr(ha_ops.urllib.request, "urlopen", _fake_urlopen)
+
+    payload = ha_ops._http_json("https://core-a:8445/__ae/version", timeout_s=5.0)
+
+    assert payload == {"ok": True}
+    assert seen["cafile"] == str(ca_bundle)
+    assert seen["url"] == "https://core-a:8445/__ae/version"
+    assert seen["timeout"] == 5.0
+    assert seen["context"] is sentinel
