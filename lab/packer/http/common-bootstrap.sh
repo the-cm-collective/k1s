@@ -112,7 +112,7 @@ mkdir -p /etc/containerd
 if [[ ! -f /etc/containerd/config.toml ]]; then
   containerd config default >/etc/containerd/config.toml
 fi
-if ! containerd config dump --config /etc/containerd/config.toml >/dev/null 2>&1; then
+if ! containerd --config /etc/containerd/config.toml config dump >/dev/null 2>&1; then
   containerd config default >/etc/containerd/config.toml
 fi
 

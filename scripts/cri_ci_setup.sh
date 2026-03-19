@@ -67,7 +67,7 @@ if [[ ! -f /etc/containerd/config.toml ]]; then
   run_root sh -c 'containerd config default > /etc/containerd/config.toml'
 fi
 
-if ! run_root containerd config dump --config /etc/containerd/config.toml >/dev/null 2>&1; then
+if ! run_root containerd --config /etc/containerd/config.toml config dump >/dev/null 2>&1; then
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   echo "Detected invalid containerd config; regenerating default (backup suffix: ${ts})..."
   run_root cp /etc/containerd/config.toml "/etc/containerd/config.toml.bak.${ts}" || true

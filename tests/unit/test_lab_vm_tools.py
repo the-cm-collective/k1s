@@ -561,6 +561,8 @@ def test_guest_prereqs_script_requires_ready_image_by_default() -> None:
     assert 'missing+=("/opt/cni/bin")' in text
     assert 'missing+=("/etc/cni/net.d")' in text
     assert 'missing+=("containerd-config-valid")' in text
+    assert "sudo find /etc/cni/net.d -maxdepth 1 -type f" in text
+    assert "containerd --config /etc/containerd/config.toml config dump" in text
     assert "stale VM image; missing prerequisites" in text
     assert "scripts/lab/vm/labctl.sh image build --variant all" in text
     assert "scripts/lab/vm/labctl.sh image verify --variant all" in text
@@ -605,6 +607,7 @@ def test_common_bootstrap_bakes_vm_prereqs_into_images() -> None:
     assert "python-is-python3" in text
     assert "apt-get install -y cri-tools" in text
     assert "install_crictl_binary()" in text
+    assert "containerd --config /etc/containerd/config.toml config dump" in text
     assert "/etc/crictl.yaml" in text
     assert "/opt/cni/bin" in text
     assert "10-k1s-bridge.conflist" in text
@@ -750,6 +753,11 @@ def test_cri_preflight_resolves_python3_fallback() -> None:
     assert "if command -v python3 >/dev/null 2>&1; then" in text
     assert 'python_bin="$(command -v python3)"' in text
     assert '"$python_bin" - "$info_tmp"' in text
+
+
+def test_cri_ci_setup_uses_supported_containerd_config_validation() -> None:
+    text = (ROOT / "scripts" / "cri_ci_setup.sh").read_text(encoding="utf-8")
+    assert "containerd --config /etc/containerd/config.toml config dump" in text
 
 
 def test_cri_seed_lock_contains_core_and_edge_images() -> None:

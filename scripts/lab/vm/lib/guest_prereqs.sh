@@ -23,13 +23,14 @@ vm_bootstrap_missing_prereqs() {
     missing+=("/opt/cni/bin/*")
   fi
 
-  if ! compgen -G "/etc/cni/net.d/*.conf" >/dev/null 2>&1 \
-    && ! compgen -G "/etc/cni/net.d/*.conflist" >/dev/null 2>&1; then
+  if ! sudo find /etc/cni/net.d -maxdepth 1 -type f \
+    \( -name '*.conf' -o -name '*.conflist' \) -print -quit 2>/dev/null \
+    | grep -q .; then
     missing+=("/etc/cni/net.d")
   fi
 
   if [[ -f /etc/containerd/config.toml ]] \
-    && ! sudo containerd config dump --config /etc/containerd/config.toml >/dev/null 2>&1; then
+    && ! sudo containerd --config /etc/containerd/config.toml config dump >/dev/null 2>&1; then
     missing+=("containerd-config-valid")
   fi
 
