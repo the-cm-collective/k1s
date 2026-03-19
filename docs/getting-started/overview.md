@@ -134,13 +134,13 @@ Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/de
 
 ## Further Reading
 
-- Project philosophy and cognitive safeguards: `docs/design/project-philosophy.md`, `docs/design/cognitive-welfare-and-continuity.md`
-- Runbook: `docs/ops/runbook.md`
-- End-to-End Guide: `docs/guides/e2e.md`
-- Runtime Profiles: `docs/guides/runtime-profiles.md`
-- Multi-node + ingress mode validation: `docs/guides/multinode-lab.md`, `docs/guides/ingress-capability-test-sequence.md`
-- HTTP API: `docs/reference/http-api.md`
-- Kubernetes API shim + compatibility matrix: `docs/reference/apishim-roadmap.md`, `docs/reference/apishim-compatibility-matrix.md`
-- Inference fabric current state: `docs/reference/inference-fabric.md`
-- Fabric design and phase path: `docs/roadmap/high-availability-control-plane.md`, `docs/design/fabric-deployment-topology.md`, `docs/design/fabric-control-plane.md`, `docs/roadmap/distributed-compute-fabric.md`
-- Architecture (detailed): `docs/reference/architecture.md`
+- Project philosophy and cognitive safeguards: [Project Philosophy](project-philosophy.html), [Cognitive Welfare and Continuity](cognitive-welfare-and-continuity.html)
+- Runbook and HA ops: [Operations Runbook](runbook.html), [VM Variant Runbook](vm-variant-runbook.html), [HA Closeout](ha-closeout.html)
+- End-to-End Guide: [E2E Guide](e2e.html)
+- Runtime Profiles: [Runtime Profiles](runtime-profiles.html)
+- Multi-node + ingress mode validation: [Multi-Node Lab](multinode-lab.html), [Ingress Capability Test Sequence](ingress-capability-test-sequence.html)
+- HTTP API: [HTTP API](http-api.html)
+- Kubernetes API shim + compatibility matrix: [API Shim Roadmap](apishim-roadmap.html), [API Shim Compatibility Matrix](apishim-compatibility-matrix.html)
+- Inference fabric current state: [Inference Fabric](inference-fabric.html)
+- Fabric design and phase path: [HA Control Plane Roadmap](high-availability-control-plane.html), [Fabric Deployment Topology](fabric-deployment-topology.html), [Fabric Control Plane](fabric-control-plane.html), [Distributed Compute Fabric Roadmap](distributed-compute-fabric.html)
+- Architecture (detailed): [Architecture](architecture.html)

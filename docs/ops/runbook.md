@@ -1,4 +1,4 @@
-Operations Runbook
+# Operations Runbook
 
 Purpose
 - This runbook captures common operational tasks for the k1s controller: exporting manifests to K8s, validating portability, managing ingress/TLS, rollouts, and API tokens.
@@ -28,7 +28,7 @@ Setup
 
 VM GPU Fabric Lab
 - Golden image build/verify/transfer: `docs/ops/vm-golden-image-pipeline.md`
-- Variant orchestration and bootstrap: `docs/ops/vm-variant-runbook.md`
+- Variant orchestration and bootstrap: [VM Variant Runbook](vm-variant-runbook.html)
 - Baseline metrics and throughput gates: `docs/ops/vm-metrics-and-gates.md`
 - Remote GPU VM precursor (A+B, libvirt/QEMU): `docs/ops/gpu-vm-remote-host-validation.md`
 - Primary smoke entrypoint: `make lab-vm-smoke`
@@ -277,9 +277,10 @@ HA control-plane mode (`k1s-ha-core`)
   - Snapshot save: `PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto save --output state/backups/ha-$(date +%Y%m%d-%H%M%S).db`
   - Snapshot status: `PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto status --input state/backups/ha-20260318-120000.db`
   - Snapshot restore: `PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto restore --input state/backups/ha-20260318-120000.db --data-dir state/etcd-restore`
-  - Leader failover drill: `PYTHONPATH=src python scripts/dev/ha_core_drills.py leader-failover --command 'systemctl restart ae-controller'`
-  - External-etcd restart drill: `PYTHONPATH=src python scripts/dev/ha_core_drills.py etcd-restart --command 'ssh etcd-a sudo systemctl restart etcd' --metrics-url http://127.0.0.1:9108/metrics`
-  - Transport recovery drill: `PYTHONPATH=src python scripts/dev/ha_core_drills.py transport-recovery --command 'systemctl restart ae-gateway' --metrics-url http://127.0.0.1:9108/metrics --site sfo-edge-01`
+  - Leader failover drill: `PYTHONPATH=src python scripts/dev/ha_core_drills.py leader-failover --command 'systemctl restart ae-controller' --etcd-endpoints http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379 --etcd-prefix /k1s/prod --require-controller-change`
+  - External-etcd restart drill: `PYTHONPATH=src python scripts/dev/ha_core_drills.py etcd-restart --command 'ssh etcd-a sudo systemctl restart etcd' --metrics-url http://127.0.0.1:9108/metrics --etcd-endpoints http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379 --etcd-prefix /k1s/prod`
+  - Transport recovery drill: `PYTHONPATH=src python scripts/dev/ha_core_drills.py transport-recovery --command 'systemctl restart ae-gateway' --metrics-url http://127.0.0.1:9108/metrics --etcd-endpoints http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379 --etcd-prefix /k1s/prod --site sfo-edge-01`
+  - `etcd-restart` and `transport-recovery` prefer the current leader's metrics endpoint when `--etcd-endpoints` and `--etcd-prefix` are supplied; use that leader-aware mode for HA validation after failover.
 - Backup boundary:
   - `ae backup` remains the SQLite/specs-oriented single-node backup path.
   - HA etcd backup and restore should use `scripts/dev/etcd_snapshot.py`.
@@ -315,7 +316,7 @@ HA etcd recovery (`H5b1-etcd-recovery`)
 - Stale-leader isolation and safe rejoin:
   - Isolate the suspected stale leader first; do not allow it to keep talking to nodes or gateways while authority is uncertain.
   - Verify follower takeover with the existing drill surface:
-    - `PYTHONPATH=src python scripts/dev/ha_core_drills.py leader-failover --command 'systemctl restart ae-controller'`
+    - `PYTHONPATH=src python scripts/dev/ha_core_drills.py leader-failover --command 'systemctl restart ae-controller' --etcd-endpoints http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379 --etcd-prefix /k1s/prod --require-controller-change`
   - Confirm the old leader no longer reports `ae_controller_is_leader 1` and does not resume mutation until it rejoins as a follower.
   - Rejoin the isolated node only after etcd membership and controller authority are healthy again.
 - Control-plane node role separation:
@@ -448,12 +449,14 @@ HA edge transport upgrades (`H5b2c-edge-transport-upgrades`)
   - `k1s-edge` / `k1s-core-edge` are not the milestone-defining HA exit lane for this slice.
 
 HA closeout (`H5c-ha-closeout`)
-- Canonical audit artifact: `docs/ops/ha-closeout.md`
+- Canonical audit artifact: [HA Closeout](ha-closeout.html)
 - Primary evidence lane:
   - VM/lab variants can now declare explicit `k1s-ha-core` hosts plus a `ha_control_plane` smoke lane.
   - The checked-in HA closeout topology is `lab/variants/ha-control-plane-core.yaml`.
   - For deeper disruptive validation, use `lab/variants/ha-control-plane-core-drills.yaml`; it enables the optional leader-failover, etcd-restart, and transport-recovery drill hooks through `scripts/lab/vm/ha_drill_actions.sh`.
-  - `scripts/lab/vm/smoke_helper.py` is the preferred operator entrypoint for that lane. It wraps `smoke_v2.py`, prints live phase/check status from the `runs/<RUN_ID>/...` artifacts, and can auto-run `variant_down.sh` on success.
+  - `scripts/lab/vm/smoke_helper.py` is the preferred operator entrypoint for that lane. `make lab-vm-smoke` is a thin wrapper around it, and the helper in turn wraps `smoke_v2.py`.
+  - `smoke_helper.py` prints live phase/check status from the `runs/<RUN_ID>/...` artifacts and can auto-run `variant_down.sh` on success.
+  - Helper-owned wrapper flags are `--teardown on-success|always|never`, `--purge`, `--destroy-network`, and `--console`; pass any remaining `smoke_v2.py` flags after the helper flags.
   - When the variant points HA endpoints at the three HA core VM IPs, `smoke_v2` runs a `ha_shared_infra` phase that boots shared `etcd` plus shared hub NATS/JetStream on those VMs before `k1s-ha-core` bootstrap.
   - The lane writes `runs/<RUN_ID>/ha_summary.json` as the machine-readable HA evidence artifact.
   - The lane now assumes prereq-ready qcow2 images. Rebuild and re-verify the images after bootstrap/image changes before retrying first-pass VM failures:
@@ -467,15 +470,17 @@ HA closeout (`H5c-ha-closeout`)
     - `ha_edge_transport.py`
     - optional `ha_core_drills.py` commands when the variant supplies drill commands
 - Secondary evidence lane:
-  - `AE_E2E_HA_CLOSEOUT=1 PYTHONPATH=src pytest -q tests/integration/test_ha_closeout_e2e.py`
+  - `make ha-closeout-e2e`
+  - `scripts/dev/ha_closeout_e2e.sh` is the supported wrapper for the reduced harness. It prefers the repo venv, exports the Nix `libstdc++` runtime path when available, preflights `import grpc`, and then runs `tests/integration/test_ha_closeout_e2e.py`.
   - This reduced harness is intended for nightly/manual regression, not as the milestone-defining HA lane.
   - It forces `AE_JS_REPLICAS=1`, so it is useful for failover and replay regression but not as transport-fidelity evidence for the shared hub cluster.
 - Closeout rule:
-  - Do not mark the `H*` track complete until `docs/ops/ha-closeout.md` shows zero `must_fix_before_closeout` gaps and the primary VM/lab lane has been executed against the intended HA topology.
+  - The 2026-03-19 HA closeout checkpoint satisfies the evidence rule: [HA Closeout](ha-closeout.html) shows zero `must_fix_before_closeout` gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.
+  - Reopen `H5c-ha-closeout` if either evidence lane regresses or [HA Closeout](ha-closeout.html) regains a must-fix gap.
   - On passworded-sudo hosts, run `sudo -v` before invoking `smoke_helper.py`; the helper does not prompt for a password and fails fast if `sudo -n true` is not already warm.
 
 Release notes quick links
-- Compatibility matrix: `docs/reference/apishim-compatibility-matrix.md` (uploaded with releases)
+- Compatibility matrix: [API Shim Compatibility Matrix](apishim-compatibility-matrix.html) (uploaded with releases)
 - OpenAPI artifacts: `/openapi/v2` and `/openapi/v3` are exported during release and attached as `openapi-schemas`.
 
 Observability

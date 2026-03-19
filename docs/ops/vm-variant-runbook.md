@@ -34,6 +34,7 @@ make lab-vm-smoke \
 
 What this runs:
 - `make lab-vm-smoke`, which now wraps `scripts/lab/vm/smoke_helper.py`
+- `scripts/lab/vm/smoke_helper.py`, which in turn wraps `smoke_v2.py`
 - `smoke_v2.py` underneath, with live phase/check status projected from `runs/<RUN_ID>/...`
 - `variant_down.sh` automatically on success when `--teardown on-success` is in effect
 - failed runs are kept by default for inspection
@@ -43,6 +44,7 @@ Notes:
 - `AE_CRI_CACHE_SEED_MODE=required` fails early if seed bundle import/coverage is incomplete.
 - `AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0` prefers cached source images and avoids unnecessary remote pulls.
 - `smoke_helper.py` expects `sudo -v` to have been run already; it keeps `sudo -n true` warm for the run and teardown.
+- Helper-owned wrapper flags are `--teardown on-success|always|never`, `--purge`, `--destroy-network`, and `--console`; pass any remaining `smoke_v2.py` flags after those helper flags.
 - `LAB_VM_SMOKE_ARGS` is forwarded to the helper; helper flags and smoke_v2 passthrough flags can both be passed there.
 - The smoke/drill lanes now assume prereq-ready qcow2 images. Re-run `scripts/lab/vm/labctl.sh image build --variant all` and `scripts/lab/vm/labctl.sh image verify --variant all` after image/bootstrap changes before treating a fresh-VM bootstrap failure as product regressions.
 - `AE_VM_BOOTSTRAP_AUTOFIX=1` can re-enable guest-side repair for manual debugging, but it is intentionally not the default lane contract.
@@ -50,6 +52,7 @@ Notes:
 Key artifacts:
 - `runs/<RUN_ID>/plan.json`
 - `runs/<RUN_ID>/global_phases.json`
+- `runs/<RUN_ID>/ha_summary.json` (when the lane is `ha_control_plane`)
 - `runs/<RUN_ID>/lanes/<lane>/phase_status.json`
 - `runs/<RUN_ID>/lanes/<lane>/checks/service_ready.json`
 - `runs/<RUN_ID>/lanes/<lane>/checks/fabric_validate.json`

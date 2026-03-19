@@ -47,7 +47,7 @@ Project philosophy: `TENETS.md` captures the core project stance, and `docs/desi
 ## Prerequisites
 - Python 3.11+
 - Podman (preferred) or Docker installed and running
-- Optional (CRI/containerd): containerd + CNI + `crictl` (see `docs/ops/runbook.md`)
+- Optional (CRI/containerd): containerd + CNI + `crictl` (see [Operations Runbook](runbook.html))
 - Optional (for ingress/docs via Caddy and Prometheus): `docker compose` or `podman compose`
 - Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
 
@@ -347,16 +347,17 @@ source .env.api
 ae --server http://<controller-ip>:9108 --token $AE_API_READ_TOKEN status
 ```
 Tip: `ae auth remote -o .env.api` also emits shim tokens + `AE_API_MUTATIONS=1`, and `ae auth local -o .env.local` reuses tokens from `state/*.env` when running demos/labs.
-Details: `README.md:67` and token management in `docs/ops/runbook.md:1`.
+Details: `README.md:67` and token management in [Operations Runbook](runbook.html).
 
 ## Documentation Map (most useful first)
-- High‑level overview: `docs/getting-started/overview.md:1`
-- Operations runbook: `docs/ops/runbook.md:1`
-- HTTP API reference: `docs/reference/http-api.md:1`
-- Kubernetes API shim compatibility: `docs/reference/apishim-compatibility-matrix.md:1`
-- Ingress & TLS: `docs/reference/ingress.md:1`
-- Demos & examples: `docs/guides/demos-examples.md:1`
-- Architecture deep dive: `docs/reference/architecture.md:1`
+- High‑level overview: [Overview](overview.html)
+- Operations runbook: [Operations Runbook](runbook.html)
+- HA operator closeout and VM/lab wrappers: [HA Closeout](ha-closeout.html), [VM Variant Runbook](vm-variant-runbook.html)
+- HTTP API reference: [HTTP API](http-api.html)
+- Kubernetes API shim compatibility: [API Shim Compatibility Matrix](apishim-compatibility-matrix.html)
+- Ingress & TLS: [Ingress](ingress.html)
+- Demos & examples: [Demos & Examples](examples.html)
+- Architecture deep dive: [Architecture](architecture.html)
 
 ## Where things live in the repo
 - Controller daemon entry: `src/ae/controller/__main__.py:1`

@@ -1,6 +1,6 @@
 # HA Closeout
 
-Status: final HA audit and evidence gate before the `H*` track can close.
+Status: canonical HA audit and evidence artifact for the completed `H*` track.
 
 This document is the canonical closeout artifact for the HA control-plane roadmap. Its job is to answer three questions in one place:
 
@@ -10,9 +10,10 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 
 ## Current Decision
 
-- Result: `H5c-ha-closeout` is implemented and the milestone-defining VM/lab HA lane has now passed on the checked-in topology, but the HA track is not yet marked complete in the roadmap table.
-- Evidence: `runs/ha-cp-smoke-20260319T162412Z/summary.json` and `runs/ha-cp-smoke-20260319T162412Z/ha_summary.json` are green.
-- Reason the track is still open: the final roadmap status flip and checkpoint closeout have not been performed yet.
+- Result: the primary VM/lab HA lane is green on the checked-in topology, the drill-enabled HA variant is green, and the `H*` track is now marked complete in the roadmap table.
+- Evidence: `runs/ha-cp-drills-20260319T213601Z/summary.json` and `runs/ha-cp-drills-20260319T213601Z/ha_summary.json` are green, including the optional `ha_drill_leader_failover`, `ha_drill_etcd_restart`, and `ha_drill_transport_recovery` checks.
+- Secondary evidence: `make ha-closeout-e2e` passed locally on 2026-03-19. The wrapper-backed reduced harness now primes the Nix `libstdc++` runtime path, preflights `import grpc`, and then runs `tests/integration/test_ha_closeout_e2e.py`.
+- Reason the track is closed: the primary and secondary evidence lanes are green, `must_fix_before_closeout` is empty, and the roadmap decision checkpoint has been recorded.
 
 ## Capability Matrix
 
@@ -66,7 +67,8 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 ### Secondary: Reduced Local HA Harness
 
 - Entry point:
-  - `AE_E2E_HA_CLOSEOUT=1 PYTHONPATH=src pytest -q tests/integration/test_ha_closeout_e2e.py`
+  - `make ha-closeout-e2e`
+  - wrapper: `scripts/dev/ha_closeout_e2e.sh`
 - Scope:
   - 2 HA controllers
   - shared etcd
@@ -79,16 +81,13 @@ This document is the canonical closeout artifact for the HA control-plane roadma
   - controller failover advances authority to a new leader
   - gateway replay stays bounded after restart under the new leader
   - the reduced harness forces `AE_JS_REPLICAS=1`; it is not the milestone transport-fidelity lane
+  - the wrapper-backed entrypoint validates the supported local runtime path for gRPC-backed HA authority before the test begins
 
 ## Gap Register
 
 ### must_fix_before_closeout
 
-- None currently identified from the source audit.
-- No source-visible correctness gap is currently blocking HA closeout.
-- Remaining administrative closeout work:
-  - retain the green `ha_summary.json` and `summary.json` evidence with the final checkpoint decision
-  - flip the roadmap/status entry when you want the HA track formally closed
+- none
 
 ### follow_on_non_blocking
 
@@ -109,19 +108,23 @@ Items that were previously left outside individual HA slices were reviewed again
 Current conclusion:
 
 - no deferred item needs to be pulled back into the `H*` track to make current HA roadmap/runbook claims honest
-- the remaining blocker is integrated evidence, not a newly discovered missing feature slice
+- no remaining closeout blocker invalidates the current HA roadmap/runbook claims
+- the HA track is complete as of the 2026-03-19 roadmap closeout checkpoint
 
 ## Close Criteria
 
 The HA track can be marked complete only when all of the following are true:
 
 1. The VM/lab `ha_control_plane` lane has been executed on the intended HA topology and `runs/<RUN_ID>/ha_summary.json` is green.
-   - Current evidence run: `runs/ha-cp-smoke-20260319T162412Z/ha_summary.json`
-   - Deeper drill validation should be run against rebuilt prereq-ready images after image/bootstrap changes.
+   - Current strongest evidence run: `runs/ha-cp-drills-20260319T213601Z/ha_summary.json`
+   - This drill-enabled run includes the optional leader-failover, etcd-restart, and transport-recovery hooks.
 2. The reduced local HA harness has been run successfully as a secondary/manual regression check.
-3. `docs/roadmap/high-availability-control-plane.md`, `docs/roadmap/status.md`, `docs/ops/runbook.md`, and generated `docs/site` output match the implemented HA surface.
+   - Current strongest evidence command: `make ha-closeout-e2e`
+   - Current result: passed locally on 2026-03-19 through the wrapper-backed reduced harness entrypoint.
+3. [HA Control Plane Roadmap](high-availability-control-plane.html), [Roadmap Status](roadmap-status.html), [Operations Runbook](runbook.html), and generated `docs/site` output match the implemented HA surface.
 4. No `must_fix_before_closeout` gaps remain in this document.
 5. A final roadmap decision checkpoint is recorded when the status table flips from `In progress` to complete.
+   - Current checkpoint: 2026-03-19 HA control-plane closeout checkpoint recorded in [Roadmap Status](roadmap-status.html).
 
 ## Operator Notes
 

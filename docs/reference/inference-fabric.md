@@ -119,7 +119,7 @@ The controller records session metadata such as:
 - fabric session persistence in controller state
 - VM and LAN validation workflows through:
   - `docs/ops/gpu-fabric-abc-lan.md`
-  - `docs/ops/vm-variant-runbook.md`
+  - [VM Variant Runbook](vm-variant-runbook.html)
   - `docs/ops/vm-metrics-and-gates.md`
 
 The current lane remains standard-transport-first. RoCE is being documented as the first acceleration path for later phases, not as the current default execution path.
@@ -151,11 +151,14 @@ The current lane does not yet provide:
 - Host and LAN pattern:
   - `docs/ops/gpu-fabric-abc-lan.md`
 - AI Max hardware contract:
-  - `docs/reference/ai-max-395-hardware-baseline.md`
+  - [AI Max+ 395 Hardware Baseline](ai-max-395-hardware-baseline.html)
 - AI Max cluster prep:
-  - `docs/ops/ai-max-395-cluster-prep.md`
-- VM variants and bootstrap:
-  - `docs/ops/vm-variant-runbook.md`
+  - [AI Max+ 395 Cluster Prep](ai-max-395-cluster-prep.html)
+- VM variants, HA lab wrappers, and bootstrap:
+  - [VM Variant Runbook](vm-variant-runbook.html)
+- Backend HA operator contract:
+  - [Operations Runbook](runbook.html)
+  - [HA Closeout](ha-closeout.html)
 - Throughput and baseline gates:
   - `docs/ops/vm-metrics-and-gates.md`
 - Remote GPU VM precursor:
