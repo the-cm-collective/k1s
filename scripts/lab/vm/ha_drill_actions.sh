@@ -76,11 +76,11 @@ wait_for_host() {
 
 emit_runtime_preamble() {
   cat <<'PRELUDE'
+export AE_CRI_ENDPOINT=${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}
 sudo mkdir -p /mnt/host
 sudo mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host || true
-if [[ ! -S /run/containerd/containerd.sock ]] || ! command -v crictl >/dev/null 2>&1; then
-  (cd /mnt/host && sudo -E DEBIAN_FRONTEND=noninteractive AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock ./scripts/cri_ci_setup.sh)
-fi
+source /mnt/host/scripts/lab/vm/lib/guest_prereqs.sh
+ensure_vm_bootstrap_prereqs
 PRELUDE
 }
 

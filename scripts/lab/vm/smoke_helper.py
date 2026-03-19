@@ -300,10 +300,16 @@ def _run_duration(summary: dict[str, Any] | None) -> str:
 
 def _best_failure_snippet(payload: dict[str, Any] | None, detail: str = "") -> str:
     if isinstance(payload, dict):
+        for key in ("stderr_tail", "stdout_tail"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                text = "\n".join(str(item).strip() for item in value if str(item).strip())
+                if text:
+                    return text.splitlines()[-1]
         for key in ("stderr", "stdout"):
             value = str(payload.get(key) or "").strip()
             if value:
-                return value.splitlines()[0]
+                return value.splitlines()[-1]
     return str(detail or "").strip()
 
 
@@ -312,7 +318,10 @@ def first_failure(snapshot: Snapshot) -> tuple[str, str] | None:
     if summary:
         for phase in summary.get("global_phases", []):
             if phase.get("status") == "failed":
-                detail = str(phase.get("detail") or "failed")
+                detail = _best_failure_snippet(
+                    phase if isinstance(phase, dict) else None,
+                    str(phase.get("detail") or "failed"),
+                )
                 return (f"global phase {phase.get('phase')}", detail)
     ha_summary = snapshot.ha_summary
     if ha_summary:
@@ -328,7 +337,10 @@ def first_failure(snapshot: Snapshot) -> tuple[str, str] | None:
         for lane in summary.get("lanes", []):
             for phase in lane.get("phase_status", []):
                 if phase.get("status") == "failed":
-                    detail = str(phase.get("detail") or "failed")
+                    detail = _best_failure_snippet(
+                        phase if isinstance(phase, dict) else None,
+                        str(phase.get("detail") or "failed"),
+                    )
                     return (f"lane {lane.get('name')} phase {phase.get('phase')}", detail)
     if snapshot.crash_log.strip():
         return ("unexpected crash", snapshot.crash_log.strip().splitlines()[-1])
@@ -449,11 +461,16 @@ class Reporter:
         if summary:
             lines.append("[lab-vm] global phases:")
             for phase in summary.get("global_phases", []):
+                detail = (
+                    _best_failure_snippet(phase if isinstance(phase, dict) else None, "")
+                    if phase.get("status") == "failed"
+                    else phase.get("detail")
+                )
                 lines.append(
                     "  - "
                     f"{phase.get('phase')}: {phase.get('status')} "
                     f"({_duration_text(phase.get('duration_s'))}) "
-                    f"{phase.get('detail')}"
+                    f"{detail}"
                 )
             lines.append("[lab-vm] lanes:")
             for lane in summary.get("lanes", []):

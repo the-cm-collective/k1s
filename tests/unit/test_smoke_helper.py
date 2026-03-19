@@ -138,3 +138,29 @@ def test_smoke_helper_final_summary_reports_failed_ha_check(
     assert "first_failure=HA check ha_core_cluster_verify" in out
     assert "certificate verify failed" in out
     assert str(run_dir) in out
+
+
+def test_smoke_helper_first_failure_prefers_global_phase_stderr_tail() -> None:
+    known_hosts_warning = (
+        "Warning: Permanently added '192.168.155.10' (ED25519) to the list of known hosts."
+    )
+    snapshot = smoke_helper.Snapshot(
+        summary={
+            "status": "failed",
+            "global_phases": [
+                {
+                    "phase": "bootstrap",
+                    "status": "failed",
+                    "detail": known_hosts_warning,
+                    "stderr_tail": [
+                        known_hosts_warning,
+                        "python: command not found",
+                    ],
+                }
+            ],
+            "lanes": [],
+        }
+    )
+
+    failure = smoke_helper.first_failure(snapshot)
+    assert failure == ("global phase bootstrap", "python: command not found")

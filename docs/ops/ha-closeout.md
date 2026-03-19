@@ -48,6 +48,8 @@ This document is the canonical closeout artifact for the HA control-plane roadma
   - `scripts/lab/vm/smoke_v2.py` runs that step as the `ha_shared_infra` global phase when the HA variant points its endpoints back at the three HA core VM IPs.
 - Bootstrap:
   - `scripts/lab/vm/k1s_bootstrap.sh` can launch `k1s-ha-core` nodes with HA env instead of assuming a singleton `k1s-core`.
+  - The VM lane now treats prereq-ready images as part of the contract: first-pass bootstrap assumes baked `python` aliasing, `crictl`, CNI binaries/config, and valid containerd config.
+  - `AE_VM_BOOTSTRAP_AUTOFIX=1` remains available only as a manual debug fallback; the default lane fails stale-image boots fast and points operators back to `image build` plus `image verify`.
 - Acceptance lane:
   - `make lab-vm-smoke` is the preferred operator entrypoint for the VM lane.
   - That target now wraps `scripts/lab/vm/smoke_helper.py`, which in turn wraps `smoke_v2.py`, prints live phase/check status from the run artifacts, and can auto-run `variant_down.sh` after a successful pass.
@@ -115,6 +117,7 @@ The HA track can be marked complete only when all of the following are true:
 
 1. The VM/lab `ha_control_plane` lane has been executed on the intended HA topology and `runs/<RUN_ID>/ha_summary.json` is green.
    - Current evidence run: `runs/ha-cp-smoke-20260319T162412Z/ha_summary.json`
+   - Deeper drill validation should be run against rebuilt prereq-ready images after image/bootstrap changes.
 2. The reduced local HA harness has been run successfully as a secondary/manual regression check.
 3. `docs/roadmap/high-availability-control-plane.md`, `docs/roadmap/status.md`, `docs/ops/runbook.md`, and generated `docs/site` output match the implemented HA surface.
 4. No `must_fix_before_closeout` gaps remain in this document.

@@ -37,6 +37,10 @@ check_one() {
   (cd "$IMAGE_DIR" && sha256sum -c "$(basename "$sha_file")")
   qemu-img info --output=json "$image" | jq -e '.format == "qcow2"' >/dev/null
   jq -e '.kernel_track == "ga-5.15"' "$meta_file" >/dev/null
+  jq -e '.vm_bootstrap_ready == true' "$meta_file" >/dev/null
+  jq -e '.python_alias == true' "$meta_file" >/dev/null
+  jq -e '.crictl_ready == true' "$meta_file" >/dev/null
+  jq -e '.cni_ready == true' "$meta_file" >/dev/null
 
   echo "[image-verify] ok: $image"
 }

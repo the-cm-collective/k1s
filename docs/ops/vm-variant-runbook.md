@@ -44,6 +44,8 @@ Notes:
 - `AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0` prefers cached source images and avoids unnecessary remote pulls.
 - `smoke_helper.py` expects `sudo -v` to have been run already; it keeps `sudo -n true` warm for the run and teardown.
 - `LAB_VM_SMOKE_ARGS` is forwarded to the helper; helper flags and smoke_v2 passthrough flags can both be passed there.
+- The smoke/drill lanes now assume prereq-ready qcow2 images. Re-run `scripts/lab/vm/labctl.sh image build --variant all` and `scripts/lab/vm/labctl.sh image verify --variant all` after image/bootstrap changes before treating a fresh-VM bootstrap failure as product regressions.
+- `AE_VM_BOOTSTRAP_AUTOFIX=1` can re-enable guest-side repair for manual debugging, but it is intentionally not the default lane contract.
 
 Key artifacts:
 - `runs/<RUN_ID>/plan.json`
@@ -171,6 +173,7 @@ Default strict-CRI core bootstrap behavior now includes:
 - `AE_CRI_REGISTRY_TRUST_SYSTEM=1` for managed-registry CA installation into system trust.
 - `AE_CRI_REGISTRY_PRELOAD=1` so core strict-CRI images are mirrored/pulled before `k1s-core` starts.
 - `AE_CRI_CACHE_SEED_MODE=required` (when run via `smoke_v2`) to enforce pre-seeded image availability during bootstrap.
+- A strict guest prereq check for `python`, `crictl`, `/etc/crictl.yaml`, CNI binaries/config, and valid containerd config. Missing prerequisites now fail fast as a stale-image problem unless `AE_VM_BOOTSTRAP_AUTOFIX=1` is set explicitly.
 
 Override when needed:
 

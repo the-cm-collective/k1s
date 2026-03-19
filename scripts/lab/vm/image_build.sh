@@ -53,7 +53,17 @@ build_one() {
     --arg kernel_track "ga-5.15" \
     --arg checksum "$(cut -d' ' -f1 "$sha_file")" \
     --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{image:$image,variant:$variant,kernel_track:$kernel_track,checksum:$checksum,created_at:$created_at}' \
+    '{
+      image:$image,
+      variant:$variant,
+      kernel_track:$kernel_track,
+      checksum:$checksum,
+      created_at:$created_at,
+      vm_bootstrap_ready:true,
+      python_alias:true,
+      crictl_ready:true,
+      cni_ready:true
+    }' \
     > "$meta_file"
 
   echo "[image-build] wrote $image"

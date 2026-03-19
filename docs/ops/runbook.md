@@ -456,6 +456,10 @@ HA closeout (`H5c-ha-closeout`)
   - `scripts/lab/vm/smoke_helper.py` is the preferred operator entrypoint for that lane. It wraps `smoke_v2.py`, prints live phase/check status from the `runs/<RUN_ID>/...` artifacts, and can auto-run `variant_down.sh` on success.
   - When the variant points HA endpoints at the three HA core VM IPs, `smoke_v2` runs a `ha_shared_infra` phase that boots shared `etcd` plus shared hub NATS/JetStream on those VMs before `k1s-ha-core` bootstrap.
   - The lane writes `runs/<RUN_ID>/ha_summary.json` as the machine-readable HA evidence artifact.
+  - The lane now assumes prereq-ready qcow2 images. Rebuild and re-verify the images after bootstrap/image changes before retrying first-pass VM failures:
+    - `scripts/lab/vm/labctl.sh image build --variant all`
+    - `scripts/lab/vm/labctl.sh image verify --variant all`
+  - `AE_VM_BOOTSTRAP_AUTOFIX=1` can temporarily re-enable guest-side repair for manual debugging, but it is not the default HA evidence path.
   - The lane reuses the existing HA helper family instead of inventing a second operator contract:
     - `ha_core_preflight.py`
     - `ha_core_upgrade.py`

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 # ruff: noqa: S603
 import json
+import shutil
 import subprocess
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 VARIANT_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "variant.py"
@@ -13,10 +16,14 @@ GATE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "throughput_gate.py"
 SMOKE_V2_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "smoke_v2.py"
 BOOTSTRAP_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "k1s_bootstrap.sh"
 HA_SHARED_INFRA_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "ha_shared_infra.sh"
+COMMON_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "common-bootstrap.sh"
+IMAGE_BUILD_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_build.sh"
+IMAGE_VERIFY_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_verify.sh"
 RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
 COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
+GUEST_PREREQS_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "guest_prereqs.sh"
 CRI_PREFLIGHT_SCRIPT = ROOT / "scripts" / "cri_preflight.sh"
 ENSURE_APISHIM_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_env.sh"
 ENSURE_APISHIM_CLI_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_cli_env.sh"
@@ -138,6 +145,12 @@ def test_ha_drill_actions_dry_run_works_without_live_vms() -> None:
         capture_output=True,
     )
     assert "dry-run leader-failover target=current controller leader via etcd" in res.stdout
+
+
+def test_ha_drill_actions_require_guest_prereqs() -> None:
+    text = HA_DRILL_ACTIONS_SCRIPT.read_text(encoding="utf-8")
+    assert "source /mnt/host/scripts/lab/vm/lib/guest_prereqs.sh" in text
+    assert "ensure_vm_bootstrap_prereqs" in text
 
 
 def test_variant_parser_validate_images_fails_when_files_missing(tmp_path: Path) -> None:
@@ -520,7 +533,8 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_CRI_DATA_ROOT=\\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri}" in text
     assert "AE_CRI_REGISTRY_TRUST_SYSTEM=\\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1}" in text
     assert "AE_CRI_REGISTRY_PRELOAD=\\${AE_CRI_REGISTRY_PRELOAD:-1}" in text
-    assert "|| ! command -v crictl >/dev/null 2>&1; then" in text
+    assert "source /mnt/host/scripts/lab/vm/lib/guest_prereqs.sh" in text
+    assert "ensure_vm_bootstrap_prereqs" in text
     assert "AE_APISHIM_MODE=\\${AE_APISHIM_MODE:-host}" in text
     assert "bootstrap_seed_cri_cache core" in text
     assert "bootstrap_seed_cri_cache edge" in text
@@ -536,6 +550,21 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_CRI_CACHE_SEED_MODE" in text
     assert "AE_CRI_CACHE_SEED_BUNDLE" in text
     assert text.count("REGISTER_ONLY=1 SITE_ID") == 1
+
+
+def test_guest_prereqs_script_requires_ready_image_by_default() -> None:
+    text = GUEST_PREREQS_SCRIPT.read_text(encoding="utf-8")
+    assert "AE_VM_BOOTSTRAP_AUTOFIX:-0" in text
+    assert 'missing+=("python")' in text
+    assert 'missing+=("crictl")' in text
+    assert 'missing+=("/etc/crictl.yaml")' in text
+    assert 'missing+=("/opt/cni/bin")' in text
+    assert 'missing+=("/etc/cni/net.d")' in text
+    assert 'missing+=("containerd-config-valid")' in text
+    assert "stale VM image; missing prerequisites" in text
+    assert "scripts/lab/vm/labctl.sh image build --variant all" in text
+    assert "scripts/lab/vm/labctl.sh image verify --variant all" in text
+    assert "AE_VM_BOOTSTRAP_AUTOFIX=1" in text
 
 
 def test_ensure_apishim_env_regenerates_when_requested_sans_are_missing() -> None:
@@ -562,11 +591,109 @@ def test_ensure_apishim_cli_env_uses_dedicated_ca_file() -> None:
 def test_ha_shared_infra_script_bootstraps_clustered_backends() -> None:
     text = HA_SHARED_INFRA_SCRIPT.read_text(encoding="utf-8")
     assert "ha shared infra requires exactly 3 hosts with role=k1s-ha-core" in text
-    assert "|| ! command -v crictl >/dev/null 2>&1; then" in text
+    assert "source /mnt/host/scripts/lab/vm/lib/guest_prereqs.sh" in text
+    assert "ensure_vm_bootstrap_prereqs" in text
     assert "python3 /mnt/host/scripts/dev/cri_stack.py up-etcd \\" in text
     assert "--initial-cluster '" in text
     assert "python3 /mnt/host/scripts/dev/cri_stack.py up-nats-hub \\" in text
     assert "HA shared infra NATS cluster did not converge" in text
+
+
+def test_common_bootstrap_bakes_vm_prereqs_into_images() -> None:
+    text = COMMON_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+    assert "containernetworking-plugins" in text
+    assert "python-is-python3" in text
+    assert "apt-get install -y cri-tools" in text
+    assert "install_crictl_binary()" in text
+    assert "/etc/crictl.yaml" in text
+    assert "/opt/cni/bin" in text
+    assert "10-k1s-bridge.conflist" in text
+    assert '"vm_bootstrap_ready": true' in text
+    assert '"python_alias": true' in text
+    assert '"crictl_ready": true' in text
+    assert '"cni_ready": true' in text
+
+
+def test_image_build_writes_vm_bootstrap_metadata_flags() -> None:
+    text = IMAGE_BUILD_SCRIPT.read_text(encoding="utf-8")
+    assert "vm_bootstrap_ready:true" in text
+    assert "python_alias:true" in text
+    assert "crictl_ready:true" in text
+    assert "cni_ready:true" in text
+
+
+@pytest.mark.skipif(
+    not shutil.which("qemu-img") or not shutil.which("sha256sum") or not shutil.which("jq"),
+    reason="image verify dependencies not available",
+)
+def test_image_verify_requires_vm_bootstrap_metadata_flags(tmp_path: Path) -> None:
+    qemu_img = shutil.which("qemu-img")
+    sha256sum = shutil.which("sha256sum")
+    assert qemu_img is not None
+    assert sha256sum is not None
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    image = image_dir / "ubuntu-22.04-k1s-base.qcow2"
+    subprocess.run(  # noqa: S603
+        [qemu_img, "create", "-f", "qcow2", str(image), "16M"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    sha_file = Path(f"{image}.sha256")
+    meta_file = Path(f"{image}.meta.json")
+    sha_file.write_text(
+        subprocess.run(  # noqa: S603
+            [sha256sum, str(image)],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout,
+        encoding="utf-8",
+    )
+    meta_file.write_text(
+        json.dumps(
+            {
+                "image": image.name,
+                "variant": "base",
+                "kernel_track": "ga-5.15",
+                "checksum": sha_file.read_text(encoding="utf-8").split()[0],
+                "created_at": "2026-03-19T18:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [str(IMAGE_VERIFY_SCRIPT), "--image-dir", str(image_dir), "--variant", "base"],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 1
+
+    meta_file.write_text(
+        json.dumps(
+            {
+                "image": image.name,
+                "variant": "base",
+                "kernel_track": "ga-5.15",
+                "checksum": sha_file.read_text(encoding="utf-8").split()[0],
+                "created_at": "2026-03-19T18:00:00Z",
+                "vm_bootstrap_ready": True,
+                "python_alias": True,
+                "crictl_ready": True,
+                "cni_ready": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [str(IMAGE_VERIFY_SCRIPT), "--image-dir", str(image_dir), "--variant", "base"],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr
 
 
 def test_run_profile_host_apishim_uses_src_pythonpath() -> None:
@@ -644,6 +771,16 @@ def test_smoke_v2_includes_seed_cache_phase_timeout() -> None:
 
 def test_smoke_v2_includes_ha_shared_infra_phase_timeout() -> None:
     assert "ha_shared_infra" in smoke_v2.DEFAULT_PHASE_TIMEOUTS
+
+
+def test_smoke_v2_select_failure_detail_ignores_known_hosts_warning() -> None:
+    stderr = "\n".join(
+        [
+            "Warning: Permanently added '192.168.155.10' (ED25519) to the list of known hosts.",
+            "python: command not found",
+        ]
+    )
+    assert smoke_v2.select_failure_detail(stderr, "") == "python: command not found"
 
 
 def test_smoke_v2_detects_vm_managed_ha_infra() -> None:

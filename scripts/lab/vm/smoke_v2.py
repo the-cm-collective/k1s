@@ -46,6 +46,12 @@ DEFAULT_RETRY_POLICY = {
 EP = "unix:///run/containerd/containerd.sock"
 CRI_SEED_MANIFEST = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 CRI_SEED_BUNDLE_NAME = "cri-seed-images.oci.tar"
+GLOBAL_PHASE_NOISE_MARKERS = (
+    "Permanently added ",
+    "REMOTE HOST IDENTIFICATION HAS CHANGED",
+    "Offending ",
+    "This host key is known by the following other names/addresses",
+)
 
 
 @dataclass
@@ -188,6 +194,30 @@ def run_cmd(
         )
     except subprocess.TimeoutExpired as exc:  # pragma: no cover - defensive
         raise SmokeError(f"command timed out: {' '.join(cmd)}") from exc
+
+
+def tail_lines(raw: str | None, limit: int = 10) -> list[str]:
+    if not raw:
+        return []
+    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
+    return lines[-limit:]
+
+
+def is_noise_line(line: str) -> bool:
+    stripped = line.strip()
+    return any(marker in stripped for marker in GLOBAL_PHASE_NOISE_MARKERS)
+
+
+def select_failure_detail(stderr: str | None, stdout: str | None) -> str:
+    for raw in (stderr, stdout):
+        for line in reversed(tail_lines(raw, limit=50)):
+            if not is_noise_line(line):
+                return line
+    for raw in (stderr, stdout):
+        lines = tail_lines(raw, limit=50)
+        if lines:
+            return lines[-1]
+    return "command failed"
 
 
 def load_variant(variant_path: Path) -> dict[str, Any]:
@@ -1178,14 +1208,9 @@ def smoke_v2(args: argparse.Namespace) -> int:
         res = run_cmd(command, timeout=timeout_s, check=False, env=env)
         ended = utc_now()
         ok = res.returncode == 0
-        detail = (
-            "ok"
-            if ok
-            else (
-                (res.stderr or res.stdout or "command failed").strip().splitlines()[:1]
-                or ["failed"]
-            )[0]
-        )
+        stderr_tail = tail_lines(res.stderr)
+        stdout_tail = tail_lines(res.stdout)
+        detail = "ok" if ok else select_failure_detail(res.stderr, res.stdout)
         global_phases.append(
             {
                 "phase": phase,
@@ -1196,6 +1221,8 @@ def smoke_v2(args: argparse.Namespace) -> int:
                 "attempts": 1,
                 "detail": detail,
                 "command": command,
+                "stderr_tail": stderr_tail,
+                "stdout_tail": stdout_tail,
             }
         )
         return ok
