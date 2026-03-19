@@ -106,3 +106,31 @@ def test_grpc_etcd_lease_client_uses_expected_methods(monkeypatch: pytest.Monkey
 def test_normalize_grpc_target_strips_http_scheme() -> None:
     assert etcd_lease_client._normalize_grpc_target("http://127.0.0.1:2379") == ("127.0.0.1:2379", False)
     assert etcd_lease_client._normalize_grpc_target("https://etcd.example:2379") == ("etcd.example:2379", True)
+
+
+def test_grpc_etcd_lease_client_reports_original_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(etcd_lease_client, "grpc", None)
+    monkeypatch.setattr(
+        etcd_lease_client,
+        "_GRPC_IMPORT_ERROR",
+        ImportError("libstdc++.so.6: cannot open shared object file: No such file or directory"),
+    )
+
+    with pytest.raises(RuntimeError, match="libstdc\\+\\+\\.so\\.6"):
+        etcd_lease_client.GrpcEtcdLeaseClient(["http://127.0.0.1:2379"])
+
+
+def test_grpc_etcd_lease_client_reports_missing_grpc_install_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(etcd_lease_client, "grpc", None)
+    monkeypatch.setattr(
+        etcd_lease_client,
+        "_GRPC_IMPORT_ERROR",
+        ModuleNotFoundError("No module named 'grpc'"),
+    )
+
+    with pytest.raises(RuntimeError, match="install grpcio"):
+        etcd_lease_client.GrpcEtcdLeaseClient(["http://127.0.0.1:2379"])

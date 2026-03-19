@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-ha-core-systemd uninstall-ha-core-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track
+.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-ha-core-systemd uninstall-ha-core-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track ha-closeout-e2e
 .PHONY: dev-min dev-etcd k1s-core k1s-ha-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
 .PHONY: k1s-core-cri k1s-edge-cri k1s-core-edge-cri k1s-edge-core-cri edge-site-cri
 .PHONY: edge-site
@@ -16,6 +16,9 @@ watch:
 
 test:
 	pytest -q
+
+ha-closeout-e2e:
+	@./scripts/dev/ha_closeout_e2e.sh $${HA_CLOSEOUT_E2E_ARGS:-}
 
 lint:
 	ruff check

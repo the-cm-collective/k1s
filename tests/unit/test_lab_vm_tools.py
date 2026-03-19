@@ -20,6 +20,7 @@ COMMON_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "common-bootstrap.s
 IMAGE_BUILD_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_build.sh"
 IMAGE_VERIFY_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_verify.sh"
 RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
+HA_CLOSEOUT_E2E_SCRIPT = ROOT / "scripts" / "dev" / "ha_closeout_e2e.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
 COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
@@ -777,6 +778,23 @@ def test_make_lab_vm_smoke_uses_smoke_helper_wrapper() -> None:
     assert "./scripts/lab/vm/labctl.sh smoke" not in text
     assert "$${VARIANT:-lab/variants/test3-abc-pp2.yaml}" in text
     assert "$${LAB_VM_SMOKE_ARGS:-}" in text
+
+
+def test_make_ha_closeout_e2e_uses_wrapper_script() -> None:
+    text = MAKEFILE.read_text(encoding="utf-8")
+    assert "ha-closeout-e2e:" in text
+    assert "./scripts/dev/ha_closeout_e2e.sh" in text
+    assert "$${HA_CLOSEOUT_E2E_ARGS:-}" in text
+
+
+def test_ha_closeout_e2e_wrapper_prepares_runtime_and_runs_pytest() -> None:
+    text = HA_CLOSEOUT_E2E_SCRIPT.read_text(encoding="utf-8")
+    assert "$ROOT_DIR/.venv/bin/python" in text
+    assert "nix eval --raw nixpkgs#stdenv.cc.cc.lib.outPath" in text
+    assert 'export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' in text
+    assert "import grpc" in text
+    assert "AE_E2E_HA_CLOSEOUT=1" in text
+    assert "-m pytest -q tests/integration/test_ha_closeout_e2e.py" in text
 
 
 def test_cri_preflight_resolves_python3_fallback() -> None:

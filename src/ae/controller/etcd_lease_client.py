@@ -9,10 +9,22 @@ from urllib.parse import urlparse
 
 try:  # pragma: no cover - optional dependency in some unit test environments
     import grpc
-except Exception:  # pragma: no cover - optional dependency
+    _GRPC_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - optional dependency
     grpc = None
+    _GRPC_IMPORT_ERROR = exc
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _grpc_required_error() -> RuntimeError:
+    message = "grpc is required for etcd lease keepalive"
+    if _GRPC_IMPORT_ERROR is None:
+        return RuntimeError(f"{message} (install grpcio)")
+    detail = str(_GRPC_IMPORT_ERROR).strip()
+    if isinstance(_GRPC_IMPORT_ERROR, ModuleNotFoundError):
+        return RuntimeError(f"{message} (install grpcio): {detail}")
+    return RuntimeError(f"{message}: {detail}")
 
 
 def _encode_varint(value: int) -> bytes:
@@ -162,7 +174,7 @@ class GrpcEtcdLeaseClient:
         token_provider: Callable[[], str | None] | None = None,
     ) -> None:
         if grpc is None:  # pragma: no cover - depends on optional dependency
-            raise RuntimeError("grpc is required for etcd lease keepalive (install grpcio)")
+            raise _grpc_required_error()
         clean = [e.strip() for e in endpoints if e and e.strip()]
         if not clean:
             raise ValueError("etcd endpoints required")
