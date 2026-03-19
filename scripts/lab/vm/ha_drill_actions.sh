@@ -64,6 +64,7 @@ controller_port="$(echo "$variant_json" | jq -r '.k1s.controller_port // 9108')"
 apishim_port="$(echo "$variant_json" | jq -r '.k1s.apishim_port // 8445')"
 edge_hub_leaf_host="$(echo "$variant_json" | jq -r '.transport.hub_host // empty')"
 edge_hub_leaf_port="$(echo "$variant_json" | jq -r '.transport.hub_leaf_port // 7422')"
+edge_nats_url="nats://gateway:dev@127.0.0.1:4223"
 
 wait_for_host() {
   local name="$1"
@@ -81,6 +82,62 @@ sudo mkdir -p /mnt/host
 sudo mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host || true
 source /mnt/host/scripts/lab/vm/lib/guest_prereqs.sh
 ensure_vm_bootstrap_prereqs
+
+wait_for_local_tcp_port() {
+  local port="$1"
+  local attempts="${2:-30}"
+  local delay_s="${3:-1}"
+  local attempt=""
+  for attempt in $(seq 1 "$attempts"); do
+    if bash -lc "exec 3<>/dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$delay_s"
+  done
+  return 1
+}
+
+wait_for_local_process() {
+  local pattern="$1"
+  local attempts="${2:-30}"
+  local delay_s="${3:-1}"
+  local attempt=""
+  for attempt in $(seq 1 "$attempts"); do
+    if pgrep -f -- "$pattern" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$delay_s"
+  done
+  return 1
+}
+
+wait_for_local_etcd_health() {
+  local url="${1:-http://127.0.0.1:2379/health}"
+  local attempts="${2:-30}"
+  local delay_s="${3:-1}"
+  local attempt=""
+  for attempt in $(seq 1 "$attempts"); do
+    if python3 - <<'PY' "$url"
+import json
+import sys
+import urllib.request
+
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=3.0) as resp:
+        payload = json.loads(resp.read().decode("utf-8") or "{}")
+except Exception:
+    raise SystemExit(1)
+
+health = str(payload.get("health") or "").strip().lower()
+raise SystemExit(0 if health in {"true", "1", "ok"} else 1)
+PY
+    then
+      return 0
+    fi
+    sleep "$delay_s"
+  done
+  return 1
+}
 PRELUDE
 }
 
@@ -144,19 +201,27 @@ build_ha_core_restart_script() {
   cat <<EOF
 $(emit_runtime_preamble)
 cd /mnt/host
-sudo pkill -f 'ae.controller --loop --metrics-port' >/dev/null 2>&1 || true
+sudo pkill -f -- 'ae\.controller --loop --metrics-port ${controller_port}' >/dev/null 2>&1 || true
 sleep 2
 nohup sudo env \
-  PYTHON_BIN=python3 \
+  PYTHONPATH=/mnt/host/src \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
   AE_CRI_DATA_ROOT=\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri} \
-  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_RUNTIME_HANDLER=\${AE_CRI_RUNTIME_HANDLER:-runc} \
   AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
   AE_CRI_REGISTRY_TRUST_SYSTEM=\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1} \
   AE_CRI_REGISTRY_PRELOAD=\${AE_CRI_REGISTRY_PRELOAD:-1} \
+  DEV_PROFILE_DIR=/mnt/host/state/profiles/k1s-ha-core \
+  AE_PROJECTION_ROOT=/mnt/host/state/profiles/k1s-ha-core/projections \
   AE_APISHIM_MODE=\${AE_APISHIM_MODE:-cri} \
   AE_APISHIM_PRESEEDED=1 \
+  AE_STATE_BACKEND=\${AE_STATE_BACKEND:-etcd} \
+  AE_TRANSPORT_BACKEND=\${AE_TRANSPORT_BACKEND:-nats-js} \
+  AE_JS_DOMAIN=\${AE_JS_DOMAIN:-K1S} \
+  AE_NODE_PROFILE=\${AE_NODE_PROFILE:-k1s-ha-core} \
+  AE_ETCD_MAINTENANCE_ENABLE=\${AE_ETCD_MAINTENANCE_ENABLE:-0} \
+  AE_ETCD_MAINTENANCE_THRESHOLD_PCT=\${AE_ETCD_MAINTENANCE_THRESHOLD_PCT:-80} \
   APISHIM_HOST=\${APISHIM_HOST:-0.0.0.0} \
   AE_HA_MODE=1 \
   AE_CONTROLLER_ID=${node_id} \
@@ -166,8 +231,12 @@ nohup sudo env \
   AE_ETCD_PREFIX='${ha_etcd_prefix}' \
   AE_NATS_URL='${ha_nats_url}' \
   APISHIM_PORT=${apishim_port} \
-  make k1s-ha-core > /home/ae/k1s-ha-core.log 2>&1 </dev/null &
+  python3 -m ae.controller --loop --metrics-port ${controller_port} > /home/ae/k1s-ha-core.log 2>&1 </dev/null &
 disown || true
+wait_for_local_tcp_port ${controller_port} 45 1 || {
+  echo "controller restart was not observed on port ${controller_port}" >&2
+  exit 1
+}
 echo leader-failover-triggered
 EOF
 }
@@ -201,6 +270,10 @@ sudo env \
     --initial-cluster-state new \
     --data-dir-name ha-etcd \
     --recreate
+wait_for_local_etcd_health http://127.0.0.1:2379/health 45 1 || {
+  echo "etcd restart did not become healthy in time" >&2
+  exit 1
+}
 echo etcd-restart-triggered
 EOF
 }
@@ -211,23 +284,33 @@ build_edge_transport_restart_script() {
   cat <<EOF
 $(emit_runtime_preamble)
 cd /mnt/host
-sudo pkill -f 'ae.gateway' >/dev/null 2>&1 || true
+sudo pkill -f -- 'ae\.gateway' >/dev/null 2>&1 || true
 sleep 2
 sudo mkdir -p /var/lib/ae/gateway
 nohup sudo env \
-  PYTHON_BIN=python3 \
+  PYTHONPATH=/mnt/host/src \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
   AE_CRI_DATA_ROOT=\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri} \
+  AE_CRI_RUNTIME_HANDLER=\${AE_CRI_RUNTIME_HANDLER:-runc} \
   AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
+  EDGE_PROFILE=\${EDGE_PROFILE:-k1s-core} \
+  AE_TRANSPORT_BACKEND=\${AE_TRANSPORT_BACKEND:-nats-js} \
+  AE_JS_DOMAIN=\${AE_JS_DOMAIN:-K1S} \
   AE_SITE_ID=${site_id} \
   AE_NODE_ID=${node_id} \
+  AE_NODE_LABELS=\${AE_NODE_LABELS:-role=gateway,profile=k1s-core} \
+  AE_NATS_URL=\${AE_NATS_URL:-${edge_nats_url}} \
   AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db \
   AE_GATEWAY_FENCE_DB=/var/lib/ae/gateway/fence-${site_id}-${node_id}.db \
   AE_NATS_HUB_LEAF_HOST=${edge_hub_leaf_host} \
   AE_NATS_HUB_LEAF_PORT=${edge_hub_leaf_port} \
-  make k1s-edge-core-cri > /home/ae/k1s-edge-core.log 2>&1 </dev/null &
+  python3 -m ae.gateway > /home/ae/k1s-edge-core.log 2>&1 </dev/null &
 disown || true
+wait_for_local_process 'python(3)? -m ae\.gateway' 45 1 || {
+  echo "gateway restart was not observed" >&2
+  exit 1
+}
 echo transport-recovery-triggered
 EOF
 }

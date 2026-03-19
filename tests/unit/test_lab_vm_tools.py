@@ -153,6 +153,17 @@ def test_ha_drill_actions_require_guest_prereqs() -> None:
     assert "ensure_vm_bootstrap_prereqs" in text
 
 
+def test_ha_drill_actions_restart_processes_without_profile_reentry() -> None:
+    text = HA_DRILL_ACTIONS_SCRIPT.read_text(encoding="utf-8")
+    assert "python3 -m ae.controller --loop --metrics-port" in text
+    assert "python3 -m ae.gateway" in text
+    assert "wait_for_local_tcp_port" in text
+    assert "wait_for_local_process" in text
+    assert "wait_for_local_etcd_health" in text
+    assert "make k1s-ha-core > /home/ae/k1s-ha-core.log 2>&1 </dev/null &" not in text
+    assert "make k1s-edge-core-cri > /home/ae/k1s-edge-core.log 2>&1 </dev/null &" not in text
+
+
 def test_variant_parser_validate_images_fails_when_files_missing(tmp_path: Path) -> None:
     variant = tmp_path / "missing-images.yaml"
     variant.write_text(
@@ -569,6 +580,26 @@ def test_guest_prereqs_script_requires_ready_image_by_default() -> None:
     assert "AE_VM_BOOTSTRAP_AUTOFIX=1" in text
 
 
+def test_guest_prereqs_blank_output_does_not_trigger_stale_image() -> None:
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            f"""
+source "{GUEST_PREREQS_SCRIPT}"
+vm_bootstrap_missing_prereqs() {{
+  printf '\\n'
+}}
+ensure_vm_bootstrap_prereqs
+""",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "[vm-prereqs] ready" in res.stdout
+
+
 def test_ensure_apishim_env_regenerates_when_requested_sans_are_missing() -> None:
     text = ENSURE_APISHIM_ENV_SCRIPT.read_text(encoding="utf-8")
     assert 'CA_FILE="${APISHIM_CA_FILE:-$(dirname "$CERT_FILE")/apishim.ca.crt}"' in text
@@ -917,6 +948,74 @@ def test_run_ha_acceptance_checks_passes_ha_env_to_required_helpers(
         assert env["AE_HA_MODE"] == "1"
         assert env["AE_JS_REPLICAS"] == "3"
         assert env["AE_APISHIM_CA_BUNDLE"] == str(ca_bundle)
+
+
+def test_run_ha_acceptance_checks_passes_ha_discovery_to_transport_drill(monkeypatch) -> None:
+    captured_commands: dict[str, list[str]] = {}
+
+    def _fake_run_helper_check(
+        name: str,
+        command: list[str],
+        *,
+        timeout_s: int,
+        optional: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        _ = timeout_s, optional, env
+        captured_commands[name] = command
+        return {
+            "name": name,
+            "status": "passed",
+            "optional": optional,
+            "detail": "ok",
+            "command": command,
+        }
+
+    monkeypatch.setattr(smoke_v2, "_run_helper_check", _fake_run_helper_check)
+
+    result = smoke_v2.run_ha_acceptance_checks(
+        {
+            "core_nodes": [
+                {
+                    "name": "core-a",
+                    "node_id": "core-a",
+                    "controller_url": "http://192.168.155.10:9108",
+                    "apishim_url": "https://192.168.155.10:8445",
+                }
+            ],
+            "controller_metrics_url": "http://192.168.155.10:9108/metrics",
+            "etcd_endpoints": [
+                "http://192.168.155.10:2379",
+                "http://192.168.155.11:2379",
+                "http://192.168.155.12:2379",
+            ],
+            "etcd_prefix": "k1s/lab/ha-control-plane",
+            "nats_url": "nats://hub-controller:dev@192.168.155.10:4222",
+            "hub_nodes": [{"name": "core-a", "monitor_url": "http://192.168.155.10:8222"}],
+            "edge_core_sites": ["sea"],
+            "edge_sites": [
+                {
+                    "site_id": "sea",
+                    "monitor_url": "http://192.168.155.20:8223",
+                    "expected_gateways": ["sea--sea-gw"],
+                }
+            ],
+            "drills": {
+                "transport_recovery_command": "./scripts/lab/vm/ha_drill_actions.sh transport-recovery --variant lab/variants/ha-control-plane-core-drills.yaml --site sea",
+            },
+            "expected_version": "0.1.3.dev0",
+        },
+        timeout_s=30,
+    )
+
+    assert result["status"] == "passed"
+    command = captured_commands["ha_drill_transport_recovery"]
+    assert "--etcd-endpoints" in command
+    assert command[command.index("--etcd-endpoints") + 1] == (
+        "http://192.168.155.10:2379,http://192.168.155.11:2379,http://192.168.155.12:2379"
+    )
+    assert "--etcd-prefix" in command
+    assert command[command.index("--etcd-prefix") + 1] == "k1s/lab/ha-control-plane"
 
 
 def test_smoke_v2_skips_vm_managed_ha_infra_for_external_backends() -> None:

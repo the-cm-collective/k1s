@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SRC = os.path.join(ROOT, "src")
@@ -44,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     transport = sub.add_parser("transport-recovery", help="Verify gateway replay and route convergence after transport impairment")
     _add_command_arg(transport)
     _add_dry_run_arg(transport)
+    _add_etcd_args(transport)
     transport.add_argument("--metrics-url", default=os.getenv("HA_CORE_METRICS_URL") or "")
     transport.add_argument("--site", default=os.getenv("HA_CORE_SITE_ID") or "")
     transport.add_argument("--timeout-seconds", type=float, default=45.0)
@@ -108,10 +110,11 @@ def leader_failover(args: argparse.Namespace) -> int:
 def etcd_restart(args: argparse.Namespace) -> int:
     endpoints = split_csv(args.etcd_endpoints)
     prefix = str(args.etcd_prefix or "").strip()
+    fallback_metrics_url = str(args.metrics_url or "").strip()
     if args.dry_run:
         print(
             f"DRY RUN etcd-restart command={args.command!r} timeout={args.timeout_seconds}s "
-            f"metrics_url={args.metrics_url or 'n/a'}"
+            f"metrics_url={fallback_metrics_url or 'n/a'}"
         )
         return 0
     if not endpoints or not prefix:
@@ -119,17 +122,18 @@ def etcd_restart(args: argparse.Namespace) -> int:
     _run_shell(args.command)
     deadline = time.time() + float(args.timeout_seconds)
     while time.time() < deadline:
-        try:
-            leader = read_etcd_leader(endpoints, prefix, timeout_s=3.0)
-        except Exception:
-            leader = None
+        leader = _read_current_leader(endpoints, prefix)
+        resolved_metrics_url = _resolve_metrics_url(
+            fallback_metrics_url,
+            leader=leader,
+        )
         metrics_ok = True
-        if args.metrics_url:
-            metrics_ok = _metrics_reachable(args.metrics_url)
+        if resolved_metrics_url:
+            metrics_ok = _metrics_reachable(resolved_metrics_url)
         if leader is not None and metrics_ok:
             print(
                 f"etcd recovery observed: leader={leader.controller_id}:{leader.controller_epoch} "
-                f"metrics_url={args.metrics_url or 'n/a'}"
+                f"metrics_url={resolved_metrics_url or 'n/a'}"
             )
             return 0
         time.sleep(1.0)
@@ -137,7 +141,9 @@ def etcd_restart(args: argparse.Namespace) -> int:
 
 
 def transport_recovery(args: argparse.Namespace) -> int:
-    metrics_url = str(args.metrics_url or "").strip()
+    fallback_metrics_url = str(args.metrics_url or "").strip()
+    endpoints = split_csv(getattr(args, "etcd_endpoints", ""))
+    prefix = str(getattr(args, "etcd_prefix", "") or "").strip()
     if args.dry_run:
         print(
             f"DRY RUN transport-recovery command={args.command!r} timeout={args.timeout_seconds}s "
@@ -145,11 +151,19 @@ def transport_recovery(args: argparse.Namespace) -> int:
             f"ack_age_threshold={args.ack_age_threshold}"
         )
         return 0
-    if not metrics_url:
-        raise SystemExit("--metrics-url is required")
+    if not fallback_metrics_url and (not endpoints or not prefix):
+        raise SystemExit("--metrics-url is required when HA discovery args are unavailable")
     _run_shell(args.command)
     deadline = time.time() + float(args.timeout_seconds)
     while time.time() < deadline:
+        leader = _read_current_leader(endpoints, prefix)
+        metrics_url = _resolve_metrics_url(
+            fallback_metrics_url,
+            leader=leader,
+        )
+        if not metrics_url:
+            time.sleep(1.0)
+            continue
         try:
             metrics = _fetch_metrics(metrics_url)
         except Exception:
@@ -205,6 +219,32 @@ def _metrics_reachable(url: str) -> bool:
 def _fetch_metrics(url: str) -> str:
     with urllib.request.urlopen(url, timeout=3.0) as resp:
         return resp.read().decode("utf-8")
+
+
+def _read_current_leader(endpoints: list[str], prefix: str):
+    if not endpoints or not prefix:
+        return None
+    try:
+        return read_etcd_leader(endpoints, prefix, timeout_s=3.0)
+    except Exception:
+        return None
+
+
+def _resolve_metrics_url(fallback_url: str, *, leader) -> str:
+    leader_url = _metrics_url_from_advertise_addr(getattr(leader, "advertise_addr", None))
+    if leader_url:
+        return leader_url
+    return str(fallback_url or "").strip()
+
+
+def _metrics_url_from_advertise_addr(advertise_addr: str | None) -> str:
+    raw = str(advertise_addr or "").strip()
+    if not raw:
+        return ""
+    parsed = urlsplit(raw if "://" in raw else f"http://{raw}")
+    if not parsed.netloc:
+        return ""
+    return urlunsplit((parsed.scheme or "http", parsed.netloc, "/metrics", "", ""))
 
 
 if __name__ == "__main__":

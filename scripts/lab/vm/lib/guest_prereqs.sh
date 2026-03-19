@@ -34,12 +34,27 @@ vm_bootstrap_missing_prereqs() {
     missing+=("containerd-config-valid")
   fi
 
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
   printf '%s\n' "${missing[@]}"
+}
+
+vm_bootstrap_collect_missing_prereqs() {
+  local -n out_ref="$1"
+  local item=""
+
+  out_ref=()
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    out_ref+=("$item")
+  done < <(vm_bootstrap_missing_prereqs)
 }
 
 ensure_vm_bootstrap_prereqs() {
   local missing=()
-  mapfile -t missing < <(vm_bootstrap_missing_prereqs)
+  vm_bootstrap_collect_missing_prereqs missing
   if [[ "${#missing[@]}" -eq 0 ]]; then
     echo "[vm-prereqs] ready"
     return 0
@@ -58,7 +73,7 @@ ensure_vm_bootstrap_prereqs() {
           AE_CRI_ENDPOINT="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}" \
           ./scripts/cri_ci_setup.sh
     )
-    mapfile -t missing < <(vm_bootstrap_missing_prereqs)
+    vm_bootstrap_collect_missing_prereqs missing
     if [[ "${#missing[@]}" -eq 0 ]]; then
       echo "[vm-prereqs] ready after autofix"
       return 0
