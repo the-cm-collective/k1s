@@ -68,6 +68,11 @@ Operator bootstrap entrypoint: [HA Cluster Bring-Up](ha-cluster-bring-up.html). 
 
 ### Secondary: Reduced Local HA Harness
 
+#### Relation to HA Bring-Up
+
+- Real multi-host strict-CRI HA commands now live on [HA Cluster Bring-Up](ha-cluster-bring-up.html#ha-command-readout).
+- This section remains the reduced one-box regression lane, not a supported single-host 3x `k1s-ha-core` cluster.
+
 - Entry point:
   - `make ha-closeout-e2e`
   - wrapper: `scripts/dev/ha_closeout_e2e.sh`

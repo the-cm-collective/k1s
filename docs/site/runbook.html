@@ -1110,6 +1110,7 @@
 <li><code>make k1s-ha-core</code> is the strict-CRI HA core-node profile. It is intended to be operationally interchangeable with <code>k1s-core</code> at the node role level, but it switches the node onto shared-authority HA mode instead of the single-host/dev bootstrap path.</li>
 <li><code>k1s-core</code> remains the single-host and dev-oriented profile. <code>k1s-ha-core</code> does not replace it.</li>
 <li>Canonical bootstrap sequence: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a></li>
+<li>Exact command readout: <a href="ha-cluster-bring-up.html#ha-command-readout">HA Cluster Bring-Up</a></li>
 <li>Required env before startup:
 <ul>
 <li><code>AE_CONTROLLER_ID</code></li>
@@ -1142,6 +1143,21 @@
 </ul>
 </li>
 <li>The new <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a> page owns the numbered 3-controller bootstrap sequence, first validation, and first snapshot checkpoint. This runbook keeps the profile contract, installed-service surface, recovery, and upgrade procedures.</li>
+</ul>
+<h3 id="ha-exact-commands">Exact HA Commands</h3>
+<ul>
+<li>Full strict-CRI HA command readout: <a href="ha-cluster-bring-up.html#ha-command-readout">HA Cluster Bring-Up</a></li>
+<li>Reduced one-box regression lane: <a href="ha-cluster-bring-up.html#ha-command-readout-one-box">HA Cluster Bring-Up</a> and <a href="ha-closeout.html">HA Closeout</a></li>
+<li>Role mapping for the HA lane:
+<ul>
+<li>controllers use <code>make k1s-ha-core</code></li>
+<li>hub nodes still use <code>make k1s-core-node</code></li>
+<li>gateways still use <code>make k1s-edge-core-cri</code></li>
+<li>edge workers still use <code>make k1s-edge-node</code></li>
+</ul>
+</li>
+</ul>
+<ul>
 <li>Installed-service surface:
 <ul>
 <li><code>make install-ha-core-systemd</code> installs the HA node-role unit, env file, and wrapper.</li>
@@ -1983,7 +1999,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 19:26:55</span>
+        <span>Built 2026-03-20 09:40:50</span>
       </div>
     </footer>
     <script>

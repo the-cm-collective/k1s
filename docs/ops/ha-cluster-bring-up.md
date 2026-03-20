@@ -59,22 +59,281 @@ On `core-a`:
 
 ```bash
 export AE_CONTROLLER_ID=core-a
-export AE_CONTROLLER_ADVERTISE_ADDR=https://core-a.example.net:9108
+export AE_CONTROLLER_ADVERTISE_ADDR=http://core-a.example.net:9108
 ```
 
 On `core-b`:
 
 ```bash
 export AE_CONTROLLER_ID=core-b
-export AE_CONTROLLER_ADVERTISE_ADDR=https://core-b.example.net:9108
+export AE_CONTROLLER_ADVERTISE_ADDR=http://core-b.example.net:9108
 ```
 
 On `core-c`:
 
 ```bash
 export AE_CONTROLLER_ID=core-c
-export AE_CONTROLLER_ADVERTISE_ADDR=https://core-c.example.net:9108
+export AE_CONTROLLER_ADVERTISE_ADDR=http://core-c.example.net:9108
 ```
+
+## Command Readout (Strict-CRI HA) {#ha-command-readout}
+
+Use this section when you want exact role-by-role commands in the same style as the single-host strict-CRI guide, but for the real HA control-plane contract.
+
+Assumptions:
+- the real HA path uses three separate `k1s-ha-core` hosts
+- shared `etcd` and shared hub NATS/JetStream already exist
+- nodes and gateways reach the controller agent API on `:9110`
+- optional NetFS or storage flags from [Multi-node Edge Gateway Manual Test](multinode-lab.html#cri-deployment) can be layered on after the base HA cluster is healthy
+
+### Shared Variables
+
+Run these once in your shell before using the commands below:
+
+```bash
+ROOT="/home/$USER/git/k1s"
+VENV_BIN="$ROOT/.venv/bin"
+SUDO_PATH="${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+WG_BIN=$(command -v wg)
+APISHIM_TAG="localhost:5001/k1s-apishim:dev-$(date +%s)"
+
+AGENT_TOKEN=replace-me-shared-agent-token
+HA_ETCD_ENDPOINTS="http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379"
+HA_ETCD_PREFIX="/k1s/prod"
+HA_NATS_URL="nats://10.0.0.21:4222,nats://10.0.0.22:4222,nats://10.0.0.23:4222"
+
+# Use a stable VIP or load balancer for nodes and gateways.
+HA_CONTROLLER_URL="http://core-vip.example.net:9110"
+```
+
+Notes:
+- `AE_CONTROLLER_ADVERTISE_ADDR` stays on the controller HTTP surface, typically `:9108`.
+- `HA_CONTROLLER_URL` is the node/gateway agent API URL, typically `:9110` when `AE_AGENT_API_PORT=9110` is enabled on the controllers.
+- Reuse the same `AGENT_TOKEN` value for `AE_AGENT_API_TOKEN` on controllers and `AE_AGENT_TOKEN` on nodes and gateways.
+
+### HA Core Controllers
+
+Run one controller per host. Reuse the same block on `core-a`, `core-b`, and `core-c`, changing only `AE_CONTROLLER_ID` and `AE_CONTROLLER_ADVERTISE_ADDR`.
+
+Core-proxy:
+
+```bash
+sudo -E \
+  AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN="${AGENT_TOKEN}" \
+  AE_HA_MODE=1 AE_STATE_BACKEND=etcd AE_TRANSPORT_BACKEND=nats-js AE_JS_DOMAIN=K1S \
+  AE_ETCD_ENDPOINTS="${HA_ETCD_ENDPOINTS}" \
+  AE_APISHIM_ETCD_ENDPOINTS="${HA_ETCD_ENDPOINTS}" \
+  AE_ETCD_PREFIX="${HA_ETCD_PREFIX}" \
+  AE_ETCD_MAINTENANCE_ENABLE=0 \
+  AE_NATS_URL="${HA_NATS_URL}" \
+  AE_CONTROLLER_ID=core-a \
+  AE_CONTROLLER_ADVERTISE_ADDR=http://core-a.example.net:9108 \
+  AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE="${APISHIM_TAG}" \
+  EDGE_INGRESS_MODE=core-proxy \
+  AE_EDGE_INGRESS_RATHOLE_RELOAD=1 \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
+  make k1s-ha-core
+```
+
+Core-to-edge-public:
+
+```bash
+sudo -E \
+  AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN="${AGENT_TOKEN}" \
+  AE_HA_MODE=1 AE_STATE_BACKEND=etcd AE_TRANSPORT_BACKEND=nats-js AE_JS_DOMAIN=K1S \
+  AE_ETCD_ENDPOINTS="${HA_ETCD_ENDPOINTS}" \
+  AE_APISHIM_ETCD_ENDPOINTS="${HA_ETCD_ENDPOINTS}" \
+  AE_ETCD_PREFIX="${HA_ETCD_PREFIX}" \
+  AE_ETCD_MAINTENANCE_ENABLE=0 \
+  AE_NATS_URL="${HA_NATS_URL}" \
+  AE_CONTROLLER_ID=core-a \
+  AE_CONTROLLER_ADVERTISE_ADDR=http://core-a.example.net:9108 \
+  AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE="${APISHIM_TAG}" \
+  EDGE_INGRESS_MODE=core-to-edge-public \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
+  make k1s-ha-core
+```
+
+Edge-local:
+
+```bash
+sudo -E \
+  AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN="${AGENT_TOKEN}" \
+  AE_HA_MODE=1 AE_STATE_BACKEND=etcd AE_TRANSPORT_BACKEND=nats-js AE_JS_DOMAIN=K1S \
+  AE_ETCD_ENDPOINTS="${HA_ETCD_ENDPOINTS}" \
+  AE_APISHIM_ETCD_ENDPOINTS="${HA_ETCD_ENDPOINTS}" \
+  AE_ETCD_PREFIX="${HA_ETCD_PREFIX}" \
+  AE_ETCD_MAINTENANCE_ENABLE=0 \
+  AE_NATS_URL="${HA_NATS_URL}" \
+  AE_CONTROLLER_ID=core-a \
+  AE_CONTROLLER_ADVERTISE_ADDR=http://core-a.example.net:9108 \
+  AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE="${APISHIM_TAG}" \
+  EDGE_INGRESS_MODE=edge-local \
+  AE_ROUTE_BUNDLE_ENABLED=1 \
+  AE_ENABLE_SERVICE_PROXY=1 \
+  AE_SERVICE_PROVIDER=iptables \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD="sudo -n ${WG_BIN} show {iface} dump" \
+  make k1s-ha-core
+```
+
+Notes:
+- For `core-b` and `core-c`, rerun the chosen block with that host's `AE_CONTROLLER_ID` and `AE_CONTROLLER_ADVERTISE_ADDR`.
+- If you want local docs and playground helpers while testing, layer `AE_DEV_LOCAL=1` on top. Do not treat that as the default operator bootstrap posture.
+
+### Core Node
+
+There is no `k1s-ha-core-node` target. HA still uses `make k1s-core-node`, pointed at the HA controller API:
+
+```bash
+sudo -E env PATH="$SUDO_PATH" \
+  AE_RUNTIME_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_NODE_ID=hub-1 \
+  AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=192.168.29.143:51820" \
+  AE_POD_CIDR=10.42.0.0/24 \
+  AE_ROSENPASS_ENABLED=1 \
+  AE_ROSENPASS_CONFIG=controller \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+  AE_ROSENPASS_INTERFACE=wg-hub \
+  AE_WG_LISTEN_PORT=51820 \
+  AE_WG_ADDRESS=10.255.0.1/32 \
+  AE_AGENT_TOKEN="${AGENT_TOKEN}" \
+  AE_CONTROLLER_URL="${HA_CONTROLLER_URL}" \
+  AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
+  make k1s-core-node
+```
+
+### Edge Site and Edge Gateway
+
+For the repo-managed dev or lab path, register the site against the HA hub profile first:
+
+```bash
+sudo -E \
+  AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  HUB_PROFILE=k1s-ha-core \
+  AE_NATS_HUB_LEAF_HOST=10.0.0.21 \
+  AE_NATS_HUB_LEAF_PORT=7422 \
+  make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+```
+
+If you are using a real external shared hub cluster, create the `site-<id>-uplink` user/operator config outside `edge-site-cri` and treat the helper above as out of scope.
+
+Gateway in `core-proxy` mode:
+
+```bash
+sudo -E env PATH="$SUDO_PATH" \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  EDGE_INGRESS_MODE=core-proxy \
+  AE_SITE_ID=sea-edge-02 \
+  AE_NODE_ID=edge-1 \
+  AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri
+```
+
+Gateway in `edge-local` mode:
+
+```bash
+EDGE_LOCAL_DIR="$ROOT/state/profiles/k1s-core/edge-local"
+RELOAD_CMD="/usr/bin/install -D -m 0644 ${EDGE_LOCAL_DIR}/edge-local.caddy ${ROOT}/state/caddy/edge-local.caddy && ${VENV_BIN}/python ${ROOT}/scripts/dev/cri_stack.py up-caddy --profile k1s-ha-core --metrics-port 9108 --apishim-port 8445 --recreate"
+
+sudo -E env PATH="$SUDO_PATH" \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  EDGE_INGRESS_MODE=edge-local \
+  AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR="$EDGE_LOCAL_DIR" \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_FILE="$EDGE_LOCAL_DIR/edge-local.caddy" \
+  AE_EDGE_LOCAL_INGRESS_RELOAD_CMD="$RELOAD_CMD" \
+  AE_SITE_ID=sea-edge-02 \
+  AE_NODE_ID=edge-1 \
+  AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri
+```
+
+Notes:
+- `k1s-edge-core-cri` still uses the `k1s-core` edge profile internally, so the gateway's edge-local config dir remains under `state/profiles/k1s-core/edge-local`.
+- The reload command targets the HA core caddy stack, so it uses `--profile k1s-ha-core`.
+
+### Edge Node
+
+The HA edge-node lane still uses `make k1s-edge-node`, pointed at the HA controller API:
+
+```bash
+sudo -E env PATH="$SUDO_PATH" \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_NODE_ID=edge-1 \
+  AE_POD_CIDR=10.42.1.0/24 \
+  AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
+  AE_WG_INTERFACE=wg-edge \
+  AE_ROSENPASS_INTERFACE=wg-edge \
+  AE_WG_ADDRESS=10.255.0.3/32 \
+  AE_WG_TABLE=off \
+  AE_WG_LISTEN_PORT=51821 \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+  AE_AGENT_TOKEN="${AGENT_TOKEN}" \
+  AE_CONTROLLER_URL="${HA_CONTROLLER_URL}" \
+  AE_AGENT_ENDPOINT=http://10.255.0.3:9112 \
+  make k1s-edge-node
+```
+
+### Reduced One-Box HA Regression Lane {#ha-command-readout-one-box}
+
+There is no supported single-host 3x `k1s-ha-core` cluster. The local approximation is the reduced closeout harness:
+
+```bash
+make ha-closeout-e2e
+```
+
+Direct wrapper:
+
+```bash
+scripts/dev/ha_closeout_e2e.sh
+```
+
+What this lane proves:
+- controller failover still advances authority to a new leader
+- shared-authority writes remain usable in HA mode
+- gateway replay stays bounded after restart under the new leader
+
+What it does not prove:
+- full 3-controller HA topology on one host
+- multi-host transport fidelity
+- production-equivalent JetStream replication; the reduced harness forces `AE_JS_REPLICAS=1`
+
+### What This Is Not
+
+- It is not a supported single-host 3x `k1s-ha-core` cluster.
+- It is not a replacement for the numbered bootstrap sequence above.
+- It does not redefine the base feature flags from the single-host CRI guide; optional feature-specific env like NetFS or storage seeding should be layered on after the HA control plane is healthy.
 
 ## 3) Run HA preflight on each core node
 

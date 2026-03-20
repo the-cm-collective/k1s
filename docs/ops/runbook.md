@@ -235,6 +235,7 @@ HA control-plane mode (`k1s-ha-core`)
 - `make k1s-ha-core` is the strict-CRI HA core-node profile. It is intended to be operationally interchangeable with `k1s-core` at the node role level, but it switches the node onto shared-authority HA mode instead of the single-host/dev bootstrap path.
 - `k1s-core` remains the single-host and dev-oriented profile. `k1s-ha-core` does not replace it.
 - Canonical bootstrap sequence: [HA Cluster Bring-Up](ha-cluster-bring-up.html)
+- Exact command readout: [HA Cluster Bring-Up](ha-cluster-bring-up.html#ha-command-readout)
 - Required env before startup:
   - `AE_CONTROLLER_ID`
   - `AE_CONTROLLER_ADVERTISE_ADDR`
@@ -258,6 +259,17 @@ HA control-plane mode (`k1s-ha-core`)
   - still starts the controller, apishim, and the core ingress/core-proxy sidecars expected on a core node
   - allows `AE_DEV_LOCAL=1` for lab convenience, but defaults to operator-safe values with local singleton services and docs extras off
 - The new [HA Cluster Bring-Up](ha-cluster-bring-up.html) page owns the numbered 3-controller bootstrap sequence, first validation, and first snapshot checkpoint. This runbook keeps the profile contract, installed-service surface, recovery, and upgrade procedures.
+
+### Exact HA Commands {#ha-exact-commands}
+
+- Full strict-CRI HA command readout: [HA Cluster Bring-Up](ha-cluster-bring-up.html#ha-command-readout)
+- Reduced one-box regression lane: [HA Cluster Bring-Up](ha-cluster-bring-up.html#ha-command-readout-one-box) and [HA Closeout](ha-closeout.html)
+- Role mapping for the HA lane:
+  - controllers use `make k1s-ha-core`
+  - hub nodes still use `make k1s-core-node`
+  - gateways still use `make k1s-edge-core-cri`
+  - edge workers still use `make k1s-edge-node`
+
 - Installed-service surface:
   - `make install-ha-core-systemd` installs the HA node-role unit, env file, and wrapper.
   - `make uninstall-ha-core-systemd` removes the unit and wrapper while leaving `/etc/ae/ha-core.env` in place.

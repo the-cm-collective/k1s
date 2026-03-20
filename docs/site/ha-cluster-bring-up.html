@@ -773,13 +773,224 @@ export AE_NATS_URL=nats://10.0.0.21:4222,nats://10.0.0.22:4222,nats://10.0.0.23:
 <p>Set a unique controller identity on each host before startup.</p>
 <p>On <code>core-a</code>:</p>
 <pre><code>export AE_CONTROLLER_ID=core-a
-export AE_CONTROLLER_ADVERTISE_ADDR=https://core-a.example.net:9108</code></pre>
+export AE_CONTROLLER_ADVERTISE_ADDR=http://core-a.example.net:9108</code></pre>
 <p>On <code>core-b</code>:</p>
 <pre><code>export AE_CONTROLLER_ID=core-b
-export AE_CONTROLLER_ADVERTISE_ADDR=https://core-b.example.net:9108</code></pre>
+export AE_CONTROLLER_ADVERTISE_ADDR=http://core-b.example.net:9108</code></pre>
 <p>On <code>core-c</code>:</p>
 <pre><code>export AE_CONTROLLER_ID=core-c
-export AE_CONTROLLER_ADVERTISE_ADDR=https://core-c.example.net:9108</code></pre>
+export AE_CONTROLLER_ADVERTISE_ADDR=http://core-c.example.net:9108</code></pre>
+<h2 id="ha-command-readout">Command Readout (Strict-CRI HA)</h2>
+<p>Use this section when you want exact role-by-role commands in the same style as the single-host strict-CRI guide, but for the real HA control-plane contract.</p>
+<p>Assumptions:</p>
+<ul>
+<li>the real HA path uses three separate <code>k1s-ha-core</code> hosts</li>
+<li>shared <code>etcd</code> and shared hub NATS/JetStream already exist</li>
+<li>nodes and gateways reach the controller agent API on <code>:9110</code></li>
+<li>optional NetFS or storage flags from <a href="multinode-lab.html#cri-deployment">Multi-node Edge Gateway Manual Test</a> can be layered on after the base HA cluster is healthy</li>
+</ul>
+<h3 id="shared-variables">Shared Variables</h3>
+<p>Run these once in your shell before using the commands below:</p>
+<pre><code>ROOT=&quot;/home/$USER/git/k1s&quot;
+VENV_BIN=&quot;$ROOT/.venv/bin&quot;
+SUDO_PATH=&quot;${VENV_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin&quot;
+WG_BIN=$(command -v wg)
+APISHIM_TAG=&quot;localhost:5001/k1s-apishim:dev-$(date +%s)&quot;
+
+AGENT_TOKEN=replace-me-shared-agent-token
+HA_ETCD_ENDPOINTS=&quot;http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379&quot;
+HA_ETCD_PREFIX=&quot;/k1s/prod&quot;
+HA_NATS_URL=&quot;nats://10.0.0.21:4222,nats://10.0.0.22:4222,nats://10.0.0.23:4222&quot;
+
+# Use a stable VIP or load balancer for nodes and gateways.
+HA_CONTROLLER_URL=&quot;http://core-vip.example.net:9110&quot;</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>AE_CONTROLLER_ADVERTISE_ADDR</code> stays on the controller HTTP surface, typically <code>:9108</code>.</li>
+<li><code>HA_CONTROLLER_URL</code> is the node/gateway agent API URL, typically <code>:9110</code> when <code>AE_AGENT_API_PORT=9110</code> is enabled on the controllers.</li>
+<li>Reuse the same <code>AGENT_TOKEN</code> value for <code>AE_AGENT_API_TOKEN</code> on controllers and <code>AE_AGENT_TOKEN</code> on nodes and gateways.</li>
+</ul>
+<h3 id="ha-core-controllers">HA Core Controllers</h3>
+<p>Run one controller per host. Reuse the same block on <code>core-a</code>, <code>core-b</code>, and <code>core-c</code>, changing only <code>AE_CONTROLLER_ID</code> and <code>AE_CONTROLLER_ADVERTISE_ADDR</code>.</p>
+<p>Core-proxy:</p>
+<pre><code>sudo -E \
+  AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=&quot;${AGENT_TOKEN}&quot; \
+  AE_HA_MODE=1 AE_STATE_BACKEND=etcd AE_TRANSPORT_BACKEND=nats-js AE_JS_DOMAIN=K1S \
+  AE_ETCD_ENDPOINTS=&quot;${HA_ETCD_ENDPOINTS}&quot; \
+  AE_APISHIM_ETCD_ENDPOINTS=&quot;${HA_ETCD_ENDPOINTS}&quot; \
+  AE_ETCD_PREFIX=&quot;${HA_ETCD_PREFIX}&quot; \
+  AE_ETCD_MAINTENANCE_ENABLE=0 \
+  AE_NATS_URL=&quot;${HA_NATS_URL}&quot; \
+  AE_CONTROLLER_ID=core-a \
+  AE_CONTROLLER_ADVERTISE_ADDR=http://core-a.example.net:9108 \
+  AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE=&quot;${APISHIM_TAG}&quot; \
+  EDGE_INGRESS_MODE=core-proxy \
+  AE_EDGE_INGRESS_RATHOLE_RELOAD=1 \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+  make k1s-ha-core</code></pre>
+<p>Core-to-edge-public:</p>
+<pre><code>sudo -E \
+  AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=&quot;${AGENT_TOKEN}&quot; \
+  AE_HA_MODE=1 AE_STATE_BACKEND=etcd AE_TRANSPORT_BACKEND=nats-js AE_JS_DOMAIN=K1S \
+  AE_ETCD_ENDPOINTS=&quot;${HA_ETCD_ENDPOINTS}&quot; \
+  AE_APISHIM_ETCD_ENDPOINTS=&quot;${HA_ETCD_ENDPOINTS}&quot; \
+  AE_ETCD_PREFIX=&quot;${HA_ETCD_PREFIX}&quot; \
+  AE_ETCD_MAINTENANCE_ENABLE=0 \
+  AE_NATS_URL=&quot;${HA_NATS_URL}&quot; \
+  AE_CONTROLLER_ID=core-a \
+  AE_CONTROLLER_ADVERTISE_ADDR=http://core-a.example.net:9108 \
+  AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE=&quot;${APISHIM_TAG}&quot; \
+  EDGE_INGRESS_MODE=core-to-edge-public \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+  make k1s-ha-core</code></pre>
+<p>Edge-local:</p>
+<pre><code>sudo -E \
+  AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=&quot;${AGENT_TOKEN}&quot; \
+  AE_HA_MODE=1 AE_STATE_BACKEND=etcd AE_TRANSPORT_BACKEND=nats-js AE_JS_DOMAIN=K1S \
+  AE_ETCD_ENDPOINTS=&quot;${HA_ETCD_ENDPOINTS}&quot; \
+  AE_APISHIM_ETCD_ENDPOINTS=&quot;${HA_ETCD_ENDPOINTS}&quot; \
+  AE_ETCD_PREFIX=&quot;${HA_ETCD_PREFIX}&quot; \
+  AE_ETCD_MAINTENANCE_ENABLE=0 \
+  AE_NATS_URL=&quot;${HA_NATS_URL}&quot; \
+  AE_CONTROLLER_ID=core-a \
+  AE_CONTROLLER_ADVERTISE_ADDR=http://core-a.example.net:9108 \
+  AE_APISHIM_MODE=cri \
+  AE_APISHIM_IMAGE=&quot;${APISHIM_TAG}&quot; \
+  EDGE_INGRESS_MODE=edge-local \
+  AE_ROUTE_BUNDLE_ENABLED=1 \
+  AE_ENABLE_SERVICE_PROXY=1 \
+  AE_SERVICE_PROVIDER=iptables \
+  AE_WG_INTERFACE=wg-hub \
+  AE_WG_DUMP_CMD=&quot;sudo -n ${WG_BIN} show {iface} dump&quot; \
+  make k1s-ha-core</code></pre>
+<p>Notes:</p>
+<ul>
+<li>For <code>core-b</code> and <code>core-c</code>, rerun the chosen block with that host&#x27;s <code>AE_CONTROLLER_ID</code> and <code>AE_CONTROLLER_ADVERTISE_ADDR</code>.</li>
+<li>If you want local docs and playground helpers while testing, layer <code>AE_DEV_LOCAL=1</code> on top. Do not treat that as the default operator bootstrap posture.</li>
+</ul>
+<h3 id="core-node">Core Node</h3>
+<p>There is no <code>k1s-ha-core-node</code> target. HA still uses <code>make k1s-core-node</code>, pointed at the HA controller API:</p>
+<pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_NODE_ID=hub-1 \
+  AE_NODE_LABELS=&quot;role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=192.168.29.143:51820&quot; \
+  AE_POD_CIDR=10.42.0.0/24 \
+  AE_ROSENPASS_ENABLED=1 \
+  AE_ROSENPASS_CONFIG=controller \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-hub \
+  AE_ROSENPASS_INTERFACE=wg-hub \
+  AE_WG_LISTEN_PORT=51820 \
+  AE_WG_ADDRESS=10.255.0.1/32 \
+  AE_AGENT_TOKEN=&quot;${AGENT_TOKEN}&quot; \
+  AE_CONTROLLER_URL=&quot;${HA_CONTROLLER_URL}&quot; \
+  AE_AGENT_ENDPOINT=http://10.255.0.1:9111 \
+  make k1s-core-node</code></pre>
+<h3 id="edge-site-and-edge-gateway">Edge Site and Edge Gateway</h3>
+<p>For the repo-managed dev or lab path, register the site against the HA hub profile first:</p>
+<pre><code>sudo -E \
+  AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  HUB_PROFILE=k1s-ha-core \
+  AE_NATS_HUB_LEAF_HOST=10.0.0.21 \
+  AE_NATS_HUB_LEAF_PORT=7422 \
+  make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code></pre>
+<p>If you are using a real external shared hub cluster, create the <code>site-&lt;id&gt;-uplink</code> user/operator config outside <code>edge-site-cri</code> and treat the helper above as out of scope.</p>
+<p>Gateway in <code>core-proxy</code> mode:</p>
+<pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  EDGE_INGRESS_MODE=core-proxy \
+  AE_SITE_ID=sea-edge-02 \
+  AE_NODE_ID=edge-1 \
+  AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri</code></pre>
+<p>Gateway in <code>edge-local</code> mode:</p>
+<pre><code>EDGE_LOCAL_DIR=&quot;$ROOT/state/profiles/k1s-core/edge-local&quot;
+RELOAD_CMD=&quot;/usr/bin/install -D -m 0644 ${EDGE_LOCAL_DIR}/edge-local.caddy ${ROOT}/state/caddy/edge-local.caddy &amp;&amp; ${VENV_BIN}/python ${ROOT}/scripts/dev/cri_stack.py up-caddy --profile k1s-ha-core --metrics-port 9108 --apishim-port 8445 --recreate&quot;
+
+sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_CRI_REGISTRY_MODE=managed AE_CRI_REGISTRY_INSECURE=0 \
+  EDGE_INGRESS_MODE=edge-local \
+  AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=&quot;$EDGE_LOCAL_DIR&quot; \
+  AE_EDGE_LOCAL_INGRESS_CONFIG_FILE=&quot;$EDGE_LOCAL_DIR/edge-local.caddy&quot; \
+  AE_EDGE_LOCAL_INGRESS_RELOAD_CMD=&quot;$RELOAD_CMD&quot; \
+  AE_SITE_ID=sea-edge-02 \
+  AE_NODE_ID=edge-1 \
+  AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224 \
+  AE_LOG_LEVEL=debug \
+  make k1s-edge-core-cri</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>k1s-edge-core-cri</code> still uses the <code>k1s-core</code> edge profile internally, so the gateway&#x27;s edge-local config dir remains under <code>state/profiles/k1s-core/edge-local</code>.</li>
+<li>The reload command targets the HA core caddy stack, so it uses <code>--profile k1s-ha-core</code>.</li>
+</ul>
+<h3 id="edge-node">Edge Node</h3>
+<p>The HA edge-node lane still uses <code>make k1s-edge-node</code>, pointed at the HA controller API:</p>
+<pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_NODE_ID=edge-1 \
+  AE_POD_CIDR=10.42.1.0/24 \
+  AE_NODE_LABELS=&quot;role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp&quot; \
+  AE_WG_INTERFACE=wg-edge \
+  AE_ROSENPASS_INTERFACE=wg-edge \
+  AE_WG_ADDRESS=10.255.0.3/32 \
+  AE_WG_TABLE=off \
+  AE_WG_LISTEN_PORT=51821 \
+  AE_ROSENPASS_DIR=/var/lib/ae/rosenpass-edge \
+  AE_AGENT_TOKEN=&quot;${AGENT_TOKEN}&quot; \
+  AE_CONTROLLER_URL=&quot;${HA_CONTROLLER_URL}&quot; \
+  AE_AGENT_ENDPOINT=http://10.255.0.3:9112 \
+  make k1s-edge-node</code></pre>
+<h3 id="ha-command-readout-one-box">Reduced One-Box HA Regression Lane</h3>
+<p>There is no supported single-host 3x <code>k1s-ha-core</code> cluster. The local approximation is the reduced closeout harness:</p>
+<pre><code>make ha-closeout-e2e</code></pre>
+<p>Direct wrapper:</p>
+<pre><code>scripts/dev/ha_closeout_e2e.sh</code></pre>
+<p>What this lane proves:</p>
+<ul>
+<li>controller failover still advances authority to a new leader</li>
+<li>shared-authority writes remain usable in HA mode</li>
+<li>gateway replay stays bounded after restart under the new leader</li>
+</ul>
+<p>What it does not prove:</p>
+<ul>
+<li>full 3-controller HA topology on one host</li>
+<li>multi-host transport fidelity</li>
+<li>production-equivalent JetStream replication; the reduced harness forces <code>AE_JS_REPLICAS=1</code></li>
+</ul>
+<h3 id="what-this-is-not">What This Is Not</h3>
+<ul>
+<li>It is not a supported single-host 3x <code>k1s-ha-core</code> cluster.</li>
+<li>It is not a replacement for the numbered bootstrap sequence above.</li>
+<li>It does not redefine the base feature flags from the single-host CRI guide; optional feature-specific env like NetFS or storage seeding should be layered on after the HA control plane is healthy.</li>
+</ul>
 <h2 id="3-run-ha-preflight-on-each-core-node">3) Run HA preflight on each core node</h2>
 <p>With both the shared HA env and the node-specific identity set, run:</p>
 <pre><code>PYTHONPATH=src python scripts/dev/ha_core_preflight.py</code></pre>
@@ -876,7 +1087,7 @@ make lab-vm-smoke \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 19:26:55</span>
+        <span>Built 2026-03-20 09:41:35</span>
       </div>
     </footer>
     <script>

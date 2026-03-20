@@ -13,6 +13,7 @@ Podman / mixed-runtime patterns:
 CRI patterns:
 - [CRI Deployment (strict CRI)](#cri-deployment)
 - [Single-Host Dev Ops Patterns (CRI)](#cri-single-host)
+- [HA Counterpart](#cri-ha-counterpart)
 - [Same-Host Variant (hub + edge on one box)](#cri-same-host-variant)
 - [CRI troubleshooting notes](#cri-troubleshooting)
 
@@ -230,6 +231,17 @@ Expected:
 - `ae nodes` shows controller, hub CRI node, edge CRI node, and edge gateway node as `Ready`.
 - `ae status` workloads reach `ready`.
 - CRI pods are visible in `sudo crictl pods` for core/edge components.
+
+## HA Counterpart {#cri-ha-counterpart}
+
+If you want the HA version of the role-based command blocks on this page, use [HA Cluster Bring-Up](ha-cluster-bring-up.html#ha-command-readout).
+
+That page is the canonical docs-server location for:
+- the exact `k1s-ha-core` controller commands by ingress mode
+- the HA equivalents of the `k1s-core-node`, `edge-site-cri`, `k1s-edge-core-cri`, and `k1s-edge-node` role commands
+- the reduced one-box HA regression lane at [HA Cluster Bring-Up](ha-cluster-bring-up.html#ha-command-readout-one-box)
+
+This page remains the single-host and non-HA strict-CRI pattern. There is no supported single-host 3x `k1s-ha-core` cluster. For the reduced local HA harness in its original closeout context, see [HA Closeout](ha-closeout.html).
 
 ## Option A — LAN-only multi-node (no WireGuard) {#option-a-lan-only}
 
