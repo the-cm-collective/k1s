@@ -8,6 +8,8 @@ This document is the canonical closeout artifact for the HA control-plane roadma
 - what concrete evidence exists for those promises
 - whether any remaining gaps must be fixed before the HA track can be marked complete
 
+Operator bootstrap entrypoint: [HA Cluster Bring-Up](ha-cluster-bring-up.html). This document is the audit and evidence surface, not the primary numbered day-0 bring-up guide.
+
 ## Current Decision
 
 - Result: the primary VM/lab HA lane is green on the checked-in topology, the drill-enabled HA variant is green, and the `H*` track is now marked complete in the roadmap table.
@@ -111,6 +113,12 @@ Current conclusion:
 - no remaining closeout blocker invalidates the current HA roadmap/runbook claims
 - the HA track is complete as of the 2026-03-19 roadmap closeout checkpoint
 
+### Post-Closeout Dashboard Amendment
+
+- `H5c-amend-ha-dashboard` extends the built-in Hive dashboard after closeout so operators can see HA authority, etcd summary, transport pressure, and edge-site status from one live snapshot.
+- This is a post-closeout observability amendment, not a reopened HA correctness milestone.
+- The amendment does not change the original `H5c-ha-closeout` evidence rule, capability matrix, or closure decision; it only improves the integrated operator surface.
+
 ## Close Criteria
 
 The HA track can be marked complete only when all of the following are true:
@@ -122,6 +130,7 @@ The HA track can be marked complete only when all of the following are true:
    - Current strongest evidence command: `make ha-closeout-e2e`
    - Current result: passed locally on 2026-03-19 through the wrapper-backed reduced harness entrypoint.
 3. [HA Control Plane Roadmap](high-availability-control-plane.html), [Roadmap Status](roadmap-status.html), [Operations Runbook](runbook.html), and generated `docs/site` output match the implemented HA surface.
+   - The canonical day-0 operator bootstrap page is [HA Cluster Bring-Up](ha-cluster-bring-up.html).
 4. No `must_fix_before_closeout` gaps remain in this document.
 5. A final roadmap decision checkpoint is recorded when the status table flips from `In progress` to complete.
    - Current checkpoint: 2026-03-19 HA control-plane closeout checkpoint recorded in [Roadmap Status](roadmap-status.html).

@@ -122,6 +122,16 @@
       .banner { margin-top:8px; padding:6px 10px; border-radius:6px; font-size:12px; border:1px solid transparent; }
       .banner.warn { background:#fef3c733; color:#b45309; border-color:#f59e0b; }
       .banner.err { background:#fee2e233; color:#b91c1c; border-color:#ef4444; }
+      .ha-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+      .ha-subcard { border:1px solid rgba(148,163,184,0.2); border-radius:8px; padding:8px 10px; background:rgba(15,23,42,0.32); }
+      .ha-subcard strong { display:block; margin-bottom:6px; }
+      .ha-row { display:flex; justify-content:space-between; gap:8px; font-size:12px; line-height:1.4; padding:2px 0; }
+      .ha-row strong { font-weight:600; opacity:0.88; }
+      .ha-stack { display:flex; flex-direction:column; gap:8px; }
+      .ha-chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:rgba(15,23,42,0.45); border:1px solid rgba(148,163,184,0.24); }
+      .ha-site { border-top:1px solid rgba(148,163,184,0.16); padding-top:8px; margin-top:8px; }
+      .ha-site:first-child { border-top:none; padding-top:0; margin-top:0; }
+      .ha-meta { font-size:11px; color:#94a3b8; }
       /* Ensure flex children can shrink and let inner boxes scroll */
       .row.stretch > .card { min-width: 0; }
       .detail-card { flex: 0 0 320px; }
@@ -375,6 +385,32 @@
           <strong>System</strong>
           <div class="row" id="sys-counters" style="gap:10px; margin-top:6px; flex-wrap:wrap; justify-content:center;"></div>
         </div>
+        <div id="ha-section" class="card" style="margin-top:12px;">
+          <div class="row" style="align-items:center; justify-content:space-between;">
+            <strong>HA Control Plane</strong>
+            <span id="ha-status-pill" class="pill"></span>
+          </div>
+          <div id="ha-issues-banner" class="banner hidden" role="status" aria-live="polite"></div>
+          <div id="ha-summary" class="row" style="gap:10px; margin-top:8px; flex-wrap:wrap; justify-content:center;"></div>
+          <div class="ha-grid" style="margin-top:12px;">
+            <div class="ha-subcard">
+              <strong>Authority</strong>
+              <div id="ha-authority" class="ha-stack"></div>
+            </div>
+            <div class="ha-subcard">
+              <strong>Etcd</strong>
+              <div id="ha-etcd" class="ha-stack"></div>
+            </div>
+            <div class="ha-subcard">
+              <strong>Transport</strong>
+              <div id="ha-transport" class="ha-stack"></div>
+            </div>
+            <div class="ha-subcard">
+              <strong>Edge Sites</strong>
+              <div id="ha-edge-sites" class="ha-stack"></div>
+            </div>
+          </div>
+        </div>
         <div class="card" style="margin-top:12px;">
           <strong>Probe History</strong>
           <div id="probe-history" class="scrollcap scrollbar-hide" style="max-height:220px;"
@@ -448,6 +484,26 @@
                   }
                   .node.node.stale .hex-inner { stroke: rgba(245,158,11,0.75); }
                   .node.node.stale .hex-label { fill: #fde68a; }
+                  .node.node.leader .hex-outer, .node.system.leader .hex-outer {
+                    stroke:#22c55e;
+                    stroke-width:6;
+                    filter: drop-shadow(0 0 10px rgba(34,197,94,0.45));
+                  }
+                  .node.node.leader .hex-inner, .node.system.leader .hex-inner {
+                    stroke: rgba(187,247,208,0.85);
+                  }
+                  .node.node.leader .hex-label, .node.system.leader .hex-label {
+                    fill:#dcfce7;
+                  }
+                  .node.node.standby .hex-outer, .node.system.standby .hex-outer {
+                    stroke:#38bdf8;
+                    stroke-width:6;
+                    stroke-dasharray:10 6;
+                    filter: drop-shadow(0 0 10px rgba(56,189,248,0.35));
+                  }
+                  .node.node.standby .hex-inner, .node.system.standby .hex-inner {
+                    stroke: rgba(125,211,252,0.75);
+                  }
                   .link { stroke:rgba(148,163,184,0.55); stroke-width:1.4; fill:none; marker-end:url(#arrow); }
                   .link.flow { stroke-dasharray:6 6; }
                   .link.trace { stroke:rgba(245,197,66,0.9); stroke-width:1.6; stroke-dasharray:4 6; marker-end:none; filter: drop-shadow(0 0 4px rgba(245,197,66,0.35)); }
@@ -1298,6 +1354,183 @@ Connection: close
       function escapeHtml(s){
         s = (s === null || s === undefined) ? '' : String(s);
         return s.replace(/[&<>]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]); });
+      }
+
+      function formatNumberCompact(value){
+        if (value === null || value === undefined || value === '') return '-';
+        var num = Number(value);
+        if (!isFinite(num)) return String(value);
+        if (Math.abs(num) >= 1000) return String(Math.round(num));
+        if (Math.round(num) === num) return String(num);
+        if (Math.abs(num) >= 10) return num.toFixed(1);
+        return num.toFixed(2).replace(/\.?0+$/, '');
+      }
+
+      function formatAgeShort(age){
+        if (age === null || age === undefined || age === '') return '-';
+        var val = Number(age);
+        if (!isFinite(val)) return '-';
+        if (val < 1) return val.toFixed(2) + 's';
+        if (val < 60) return formatNumberCompact(val) + 's';
+        if (val < 3600) return Math.round(val / 60) + 'm';
+        if (val < 86400) return Math.round(val / 3600) + 'h';
+        return Math.round(val / 86400) + 'd';
+      }
+
+      function renderHaRows(rows){
+        return (rows || []).map(function(row){
+          return '<div class="ha-row"><strong>' + escapeHtml(row.k) + '</strong><span>' + escapeHtml(row.v) + '</span></div>';
+        }).join('');
+      }
+
+      function pillClassForSeverity(severity){
+        var sev = String(severity || '').toLowerCase();
+        if (sev === 'error' || sev === 'err' || sev === 'bad') return 'bad';
+        if (sev === 'warn' || sev === 'warning') return 'warn';
+        return 'ok';
+      }
+
+      function renderHaDashboard(sys){
+        var statusEl = document.getElementById('ha-status-pill');
+        var bannerEl = document.getElementById('ha-issues-banner');
+        var summaryEl = document.getElementById('ha-summary');
+        var authorityEl = document.getElementById('ha-authority');
+        var etcdEl = document.getElementById('ha-etcd');
+        var transportEl = document.getElementById('ha-transport');
+        var sitesEl = document.getElementById('ha-edge-sites');
+        if (!statusEl || !bannerEl || !summaryEl || !authorityEl || !etcdEl || !transportEl || !sitesEl) return;
+
+        var ha = (sys && sys.ha) ? sys.ha : null;
+        if (!ha) {
+          statusEl.textContent = '-';
+          statusEl.className = 'pill';
+          bannerEl.className = 'banner hidden';
+          bannerEl.textContent = '';
+          summaryEl.innerHTML = '';
+          authorityEl.innerHTML = '';
+          etcdEl.innerHTML = '';
+          transportEl.innerHTML = '';
+          sitesEl.innerHTML = '';
+          return;
+        }
+
+        var authority = ha.authority || {};
+        var etcd = ha.etcd || {};
+        var transport = ha.transport || {};
+        var jetstream = transport.jetstream || {};
+        var gateway = transport.gateway || {};
+        var routes = transport.routes || {};
+        var fence = transport.fence || {};
+        var hpa = ha.hpa || {};
+        var siteSummary = transport.site_summary || {};
+        var siteRows = Array.isArray(transport.sites) ? transport.sites : [];
+        var issues = Array.isArray(ha.issues) ? ha.issues : [];
+        var localRole = !ha.enabled ? 'disabled' : (authority.is_leader ? 'leader' : (authority.healthy ? 'standby' : 'degraded'));
+        statusEl.textContent = localRole;
+        statusEl.className = 'pill ' + (localRole === 'leader' ? 'ok' : (localRole === 'standby' ? 'warn' : (localRole === 'disabled' ? '' : 'bad')));
+
+        if (issues.length) {
+          var bannerClass = issues.some(function(issue){ return String(issue.severity || '').toLowerCase() === 'error'; }) ? 'banner err' : 'banner warn';
+          bannerEl.className = bannerClass;
+          bannerEl.innerHTML = issues.map(function(issue){
+            return '<span class="ha-chip ' + pillClassForSeverity(issue.severity) + '">' + escapeHtml(issue.code || 'issue') + '</span> ' + escapeHtml(issue.message || '');
+          }).join(' &nbsp; ');
+        } else {
+          bannerEl.className = 'banner hidden';
+          bannerEl.textContent = '';
+        }
+
+        var build = ha.controller_build || {};
+        var lastProbeAge = 'disabled';
+        if (etcd.probes_enabled) {
+          lastProbeAge = etcd.last_probe_ts ? (formatAgeShort((Date.now() / 1000) - Number(etcd.last_probe_ts || 0)) + ' ago') : 'pending';
+        }
+        var summary = [
+          {k:'HA Mode', v: ha.enabled ? 'enabled' : 'disabled'},
+          {k:'Authority', v: authority.healthy ? (authority.is_leader ? 'leader' : 'standby') : 'degraded'},
+          {k:'Leader', v: authority.leader_id || '-'},
+          {k:'Epoch', v: String(authority.controller_epoch != null ? authority.controller_epoch : '-')},
+          {k:'Build', v: (build.version || '-') + (build.sha ? (' @ ' + String(build.sha).slice(0, 7)) : '')},
+          {k:'Etcd', v: etcd.probes_enabled ? (String(etcd.healthy_endpoints || 0) + ' / ' + String((etcd.healthy_endpoints || 0) + (etcd.unhealthy_endpoints || 0))) : String((etcd.configured_endpoints || []).length) + ' cfg'},
+          {k:'JS Pending', v: formatNumberCompact(jetstream.pending)},
+          {k:'Replay Backlog', v: formatNumberCompact(gateway.result_replay_backlog)},
+          {k:'Route Ack', v: formatAgeShort(routes.max_ack_age_s)},
+          {k:'Fence Stale', v: formatNumberCompact(fence.stale_total)},
+          {k:'HPA Snapshot', v: formatAgeShort(hpa.snapshot_age_seconds)},
+        ];
+        summaryEl.innerHTML = summary.map(function(item){
+          return '<div class="pill" style="background:#0001">' + escapeHtml(item.k) + ': <strong>' + escapeHtml(item.v) + '</strong></div>';
+        }).join('');
+
+        authorityEl.innerHTML = renderHaRows([
+          {k:'Mode', v: ha.enabled ? 'HA enabled' : 'HA disabled'},
+          {k:'Controller', v: authority.controller_id || '-'},
+          {k:'Local Role', v: localRole},
+          {k:'Leader', v: authority.leader_id || '-'},
+          {k:'Advertise', v: authority.leader_advertise_addr || '-'},
+          {k:'Epoch', v: String(authority.controller_epoch != null ? authority.controller_epoch : '-')},
+          {k:'Build', v: (build.version || '-') + (build.date ? (' (' + build.date + ')') : '')},
+        ]);
+
+        var etcdRows = [
+          {k:'Configured', v: String((etcd.configured_endpoints || []).length)},
+          {k:'Maintenance Runs', v: formatNumberCompact(etcd.maintenance_runs_total)},
+          {k:'Triggered', v: formatNumberCompact(etcd.maintenance_triggered_total)},
+          {k:'Last Probe', v: lastProbeAge},
+        ];
+        if (etcd.probes_enabled) {
+          etcdRows.push({k:'Healthy', v: String(etcd.healthy_endpoints || 0)});
+          etcdRows.push({k:'Unhealthy', v: String(etcd.unhealthy_endpoints || 0)});
+        }
+        var etcdMembers = Array.isArray(etcd.members) ? etcd.members : [];
+        var etcdDetail = etcdMembers.map(function(member){
+          return '<div class="ha-site"><div><strong>' + escapeHtml(member.name || member.endpoint || 'endpoint') + '</strong> <span class="pill ' + ((member.healthy) ? 'ok' : 'bad') + '">' + (member.healthy ? 'healthy' : 'down') + '</span></div><div class="ha-meta">' + escapeHtml(member.detail || '') + '</div></div>';
+        }).join('');
+        etcdEl.innerHTML = renderHaRows(etcdRows) + (etcdDetail || '');
+
+        var hubMonitors = transport.hub_monitors || {};
+        var edgeMonitors = transport.edge_monitors || {};
+        var transportBody = renderHaRows([
+          {k:'Backend', v: transport.backend || '-'},
+          {k:'JS Domain', v: transport.js_domain || '-'},
+          {k:'Outbox OK', v: formatNumberCompact((transport.outbox || {}).ok_total)},
+          {k:'Outbox Fail', v: formatNumberCompact((transport.outbox || {}).fail_total)},
+          {k:'JS Consumers', v: String(jetstream.consumer_count != null ? jetstream.consumer_count : '-')},
+          {k:'JS Ack Pending', v: formatNumberCompact(jetstream.ack_pending)},
+          {k:'Replay Backlog', v: formatNumberCompact(gateway.result_replay_backlog)},
+          {k:'Pending Sites', v: formatNumberCompact(routes.pending_sites)},
+          {k:'Max Ack Age', v: formatAgeShort(routes.max_ack_age_s)},
+          {k:'Fence Duplicate', v: formatNumberCompact(fence.duplicate_total)},
+        ]);
+        var transportNotes = [];
+        if (hubMonitors && (hubMonitors.nodes || hubMonitors.issues || hubMonitors.errors)) {
+          transportNotes.push('<div class="ha-site"><div><strong>Hub Monitors</strong></div><div class="ha-meta">nodes=' + escapeHtml(String((hubMonitors.nodes || []).length || 0)) + ', issues=' + escapeHtml(String((hubMonitors.issues || []).length || 0)) + ', errors=' + escapeHtml(String((hubMonitors.errors || []).length || 0)) + '</div></div>');
+        }
+        if (edgeMonitors && (edgeMonitors.sites || edgeMonitors.errors)) {
+          transportNotes.push('<div class="ha-site"><div><strong>Edge Monitors</strong></div><div class="ha-meta">sites=' + escapeHtml(String((edgeMonitors.sites || []).length || 0)) + ', errors=' + escapeHtml(String((edgeMonitors.errors || []).length || 0)) + '</div></div>');
+        }
+        transportEl.innerHTML = transportBody + transportNotes.join('');
+
+        if (!siteRows.length) {
+          sitesEl.innerHTML = '<div class="ha-meta">No site telemetry</div>';
+          return;
+        }
+        sitesEl.innerHTML = siteRows.map(function(site){
+          var gateways = Array.isArray(site.gateways) ? site.gateways : [];
+          var gatewayBuilds = gateways.map(function(gw){
+            var label = String(gw.node_id || 'gateway');
+            if (gw.version) label += ' @ ' + String(gw.version);
+            return label;
+          }).join(', ');
+          return '' +
+            '<div class="ha-site">' +
+              '<div><strong>' + escapeHtml(site.site_id || 'site') + '</strong> ' +
+                '<span class="pill ' + (site.stale ? 'warn' : 'ok') + '">' + (site.stale ? 'stale' : 'fresh') + '</span>' +
+              '</div>' +
+              '<div class="ha-meta">last seen ' + escapeHtml(formatAgeShort(site.last_seen_age_s)) + ', replay backlog ' + escapeHtml(formatNumberCompact(site.result_replay_backlog)) + ', route pending ' + escapeHtml(formatNumberCompact(site.publish_pending)) + ', ack age ' + escapeHtml(formatAgeShort(site.ack_age_s)) + '</div>' +
+              '<div class="ha-meta">gateways: ' + escapeHtml(String(site.gateway_count || gateways.length || 0)) + (gatewayBuilds ? (' | ' + escapeHtml(gatewayBuilds)) : '') + '</div>' +
+            '</div>';
+        }).join('');
       }
 
       function splitArgs(cmd){
@@ -2356,6 +2589,7 @@ Connection: close
         return fetchJSON('/system').then(function(sys){
           lastSystem = sys;
           renderCounters(sys);
+          renderHaDashboard(sys);
           var sbody = document.querySelector('#tbl-services tbody');
           if(sbody){ sbody.innerHTML = (sys.services||[]).map(function(s){
             return '<tr><td>'+escapeHtml(s.app||'')+'</td><td>'+(s.port!=null?escapeHtml(String(s.port)):'-')+'</td><td>'+(s.target_port!=null?escapeHtml(String(s.target_port)):'-')+'</td><td>'+(s.replicas!=null?escapeHtml(String(s.replicas)):'-')+'</td></tr>';
@@ -2560,6 +2794,41 @@ Connection: close
         var labelMeasureCtx = null;
         var transport = (sys && sys.transport) ? sys.transport : {};
         var siteDetails = (transport && transport.sites_detail) ? transport.sites_detail : {};
+        var ha = (sys && sys.ha) ? sys.ha : {};
+        var haAuthority = (ha && ha.authority) ? ha.authority : {};
+        var haTransport = (ha && ha.transport) ? ha.transport : {};
+        var siteRows = Array.isArray(haTransport.sites) ? haTransport.sites : [];
+        var siteRowById = {};
+        var gatewayInfoByKey = {};
+        var leaderId = String((haAuthority && (haAuthority.leader_id || '')) || '');
+        var localControllerRole = (!ha || !ha.enabled) ? 'disabled' : (haAuthority.is_leader ? 'leader' : (haAuthority.healthy ? 'standby' : 'degraded'));
+        siteRows.forEach(function(siteRow){
+          var siteId = String((siteRow && siteRow.site_id) || '');
+          if (!siteId) return;
+          siteRowById[siteId] = siteRow;
+          var gateways = Array.isArray(siteRow.gateways) ? siteRow.gateways : [];
+          gateways.forEach(function(gateway){
+            var nodeId = String((gateway && gateway.node_id) || '');
+            if (!nodeId) return;
+            gatewayInfoByKey[siteId + '|' + nodeId] = gateway;
+          });
+        });
+
+        function nodeMatchesLeader(nodeRec, siteId){
+          var wanted = String(leaderId || '').trim().toLowerCase();
+          if (!wanted) return false;
+          var labels = (nodeRec && nodeRec.labels) ? nodeRec.labels : {};
+          var candidates = [
+            nodeRec && (nodeRec.id || nodeRec.node_id),
+            nodeRec && nodeRec.name,
+            shortNodeName(nodeRec, siteId),
+            labels['ae.controller_id'],
+            labels['controller_id']
+          ];
+          return candidates.some(function(value){
+            return String(value || '').trim().toLowerCase() === wanted;
+          });
+        }
 
         function measureLabelText(text){
           if (!labelMeasureCtx) {
@@ -2830,7 +3099,14 @@ Connection: close
         var sysOffsets = clusterOffsets(4);
         sysLabels.forEach(function(label, idx){
           var off = sysOffsets[idx] || {x:0,y:0};
-          addNode(sysIds[idx], label, 'system', systemCenter.x + off.x, systemCenter.y + off.y, {system:sysIds[idx], coreHub:false});
+          var isControllerNode = sysIds[idx] === 'controller';
+          addNode(sysIds[idx], label, 'system', systemCenter.x + off.x, systemCenter.y + off.y, {
+            system:sysIds[idx],
+            coreHub:false,
+            leader: isControllerNode && localControllerRole === 'leader',
+            standby: isControllerNode && localControllerRole === 'standby',
+            authority: isControllerNode ? haAuthority : null
+          });
         });
         var sysLabelX = systemCenter.x;
         var sysLabelY = systemCenter.y - hexH * 0.5 - labelGap - labelLift;
@@ -3081,9 +3357,13 @@ Connection: close
             }
             var nodeId = nodeRec.id || nodeRec.node_id || shortNodeName(nodeRec, siteId);
             var nodeLabel = shortNodeName(nodeRec, siteId) || nodeId || 'node';
-            if (String(role || '').toLowerCase() === 'controller' && !labels.site) {
+            if (String(role || '').toLowerCase() === 'controller' && !labels.site && suppressNode) {
               nodeLabel = 'core';
             }
+            var siteRow = siteRowById[String(siteId || '')] || null;
+            var gatewayInfo = gatewayInfoByKey[String(siteId || '') + '|' + String(nodeId || '')] || null;
+            var isLeaderController = String(role || '').toLowerCase() === 'controller' && nodeMatchesLeader(nodeRec, siteId);
+            var isStandbyController = String(role || '').toLowerCase() === 'controller' && !!leaderId && !isLeaderController;
             var traceAnchorId = suppressNode ? 'runtime' : ('node:' + nodeId);
             var entries = [];
             var links = [];
@@ -3108,7 +3388,19 @@ Connection: close
                   profile: profile,
                   status: nodeRec.status,
                   backend: nodeRec.backend,
-                  labels: labels
+                  labels: labels,
+                  leader: isLeaderController,
+                  standby: isStandbyController,
+                  leader_id: leaderId || null,
+                  gateway_last_seen_age_s: gatewayInfo ? gatewayInfo.last_seen_age_s : null,
+                  gateway_build: gatewayInfo ? {
+                    version: gatewayInfo.version,
+                    sha: gatewayInfo.sha,
+                    date: gatewayInfo.date
+                  } : null,
+                  replay_backlog: siteRow ? siteRow.result_replay_backlog : null,
+                  route_pending: siteRow ? siteRow.publish_pending : null,
+                  ack_age_s: siteRow ? siteRow.ack_age_s : null
                 }
               });
             }
@@ -3436,7 +3728,7 @@ Connection: close
               var group = buildNodeGroup(
                 nodeRec,
                 siteIdFromNode(nodeRec) || 'core-hub',
-                {suppressNode: true, hideEmpty: true}
+                {suppressNode: false, hideEmpty: false}
               );
               if (group) coreGroups.push(group);
             });
@@ -3574,6 +3866,7 @@ Connection: close
             var baseY = siteLayout.y + siteLayout.padY + siteHeader;
             var siteColor = namespaceColors(siteId).color;
             var detail = (siteDetails && siteDetails[siteId]) ? siteDetails[siteId] : null;
+            var siteRow = siteRowById[siteId] || null;
             var siteStale = detail && detail.stale;
             var lastSeen = detail && detail.last_seen_age_s != null ? Number(detail.last_seen_age_s) : null;
             var lastSeenText = formatAge(lastSeen);
@@ -3611,6 +3904,11 @@ Connection: close
                 nodes: siteLayout.nodes,
                 stale: !!siteStale,
                 last_seen_age_s: lastSeen,
+                gateway_count: siteRow ? siteRow.gateway_count : siteLayout.nodes.length,
+                result_replay_backlog: siteRow ? siteRow.result_replay_backlog : null,
+                publish_pending: siteRow ? siteRow.publish_pending : null,
+                ack_age_s: siteRow ? siteRow.ack_age_s : null,
+                gateways: siteRow ? siteRow.gateways : null,
                 subtitle: siteStale ? ('stale' + (lastSeenText ? (' · ' + lastSeenText) : '')) : ''
               }
             );
@@ -4790,6 +5088,8 @@ Connection: close
           if ((n.type === 'site' || n.type === 'node') && n.meta && n.meta.stale) {
             extraClass = ' stale';
           }
+          if (n.meta && n.meta.leader) extraClass += ' leader';
+          else if (n.meta && n.meta.standby) extraClass += ' standby';
           g.setAttribute('class','node hex-node ' + n.type + extraClass);
           g.setAttribute('transform','translate(' + n.x + ' ' + n.y + ')');
           if (n.meta && n.meta.node_id) {
@@ -4930,6 +5230,8 @@ Connection: close
               if (roleVal && profileVal && roleVal !== profileVal) roleText = roleVal + ' · ' + profileVal;
               else if (roleVal) roleText = roleVal;
               else if (profileVal) roleText = profileVal;
+              if (n.meta && n.meta.leader) roleText = roleText ? (roleText + ' · leader') : 'leader';
+              else if (n.meta && n.meta.standby) roleText = roleText ? (roleText + ' · standby') : 'standby';
             } catch(e){ roleText = ''; }
             if (roleText) {
               var sub = document.createElementNS('http://www.w3.org/2000/svg','text');
@@ -4990,9 +5292,20 @@ Connection: close
             lines.push('Node: ' + (ninfo.node_id || n.label || 'node'));
             if (ninfo.site_id) lines.push('Site: ' + ninfo.site_id);
             if (ninfo.role) lines.push('Role: ' + ninfo.role);
+            if (ninfo.leader) lines.push('Authority: leader');
+            else if (ninfo.standby) lines.push('Authority: standby');
             if (ninfo.profile) lines.push('Profile: ' + ninfo.profile);
             if (ninfo.status) lines.push('Status: ' + ninfo.status);
             if (ninfo.backend) lines.push('Backend: ' + ninfo.backend);
+            if (ninfo.gateway_last_seen_age_s != null) lines.push('Gateway seen: ' + formatAge(ninfo.gateway_last_seen_age_s));
+            if (ninfo.gateway_build && ninfo.gateway_build.version) {
+              var buildText = String(ninfo.gateway_build.version || '');
+              if (ninfo.gateway_build.sha) buildText += ' @ ' + String(ninfo.gateway_build.sha).slice(0, 7);
+              lines.push('Gateway build: ' + buildText);
+            }
+            if (ninfo.replay_backlog != null) lines.push('Replay backlog: ' + formatNumberCompact(ninfo.replay_backlog));
+            if (ninfo.route_pending != null) lines.push('Route pending: ' + formatNumberCompact(ninfo.route_pending));
+            if (ninfo.ack_age_s != null) lines.push('Ack age: ' + formatAge(ninfo.ack_age_s));
             title.textContent = lines.join(String.fromCharCode(10));
           } else if (n.type === 'site') {
             var sinfo = n.meta || {};
@@ -5001,6 +5314,7 @@ Connection: close
             if (sinfo.nodes && sinfo.nodes.length != null) {
               sLines.push('Nodes: ' + String(sinfo.nodes.length));
             }
+            if (sinfo.gateway_count != null) sLines.push('Gateways: ' + String(sinfo.gateway_count));
             if (sinfo.stale) {
               sLines.push('Status: stale');
             }
@@ -5009,6 +5323,9 @@ Connection: close
                 sLines.push('Last seen: ' + formatAge(sinfo.last_seen_age_s));
               } catch(e){}
             }
+            if (sinfo.result_replay_backlog != null) sLines.push('Replay backlog: ' + formatNumberCompact(sinfo.result_replay_backlog));
+            if (sinfo.publish_pending != null) sLines.push('Route pending: ' + formatNumberCompact(sinfo.publish_pending));
+            if (sinfo.ack_age_s != null) sLines.push('Ack age: ' + formatAge(sinfo.ack_age_s));
             title.textContent = sLines.join(String.fromCharCode(10));
           } else {
             title.textContent = labelInfo.full || String(n.label||'');
@@ -5169,13 +5486,21 @@ Connection: close
           },
           controller: {
             title:'Controller',
-            body:[
+            body:(function(){
+              var lines = [
               'Reconciliation loop for registered apps (imported from specs/).',
               'Computes desired state and converges containers and ingress.',
               'Single-node rollout: maxUnavailable=0, maxSurge=1 (zero-downtime).',
               'Records events, exposes /status, /events, /metrics, and serves the dashboard.',
               'Cleans up old revisions after switching traffic.'
-            ].join('<br>')
+              ];
+              if (ha && ha.enabled) {
+                lines.unshift('Local role: <code>' + escapeHtml(localControllerRole) + '</code>');
+                if (haAuthority.leader_id) lines.unshift('Leader: <code>' + escapeHtml(haAuthority.leader_id) + '</code>');
+                lines.push('Epoch: <code>' + escapeHtml(String(haAuthority.controller_epoch != null ? haAuthority.controller_epoch : '-')) + '</code>');
+              }
+              return lines.join('<br>');
+            })()
           },
           runtime: {
             title:'Runtime (Docker)',

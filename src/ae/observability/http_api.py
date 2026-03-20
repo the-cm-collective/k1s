@@ -226,9 +226,7 @@ def record_gateway_metrics(
     }
 
 
-def record_route_bundle_apply(
-    site_id: str, *, ok: bool, latency_seconds: float | None
-) -> None:
+def record_route_bundle_apply(site_id: str, *, ok: bool, latency_seconds: float | None) -> None:
     if not site_id:
         return
     metrics = _ROUTE_BUNDLE_METRICS.setdefault(
@@ -400,6 +398,8 @@ def record_js_consumer_stats(
         "redelivered": float(redelivered),
         "waiting": float(waiting),
     }
+
+
 _HELM_DEMO_LOCK = threading.RLock()
 _HELM_DEMO_STATE: dict[str, object] = {
     "proc": None,
@@ -907,6 +907,566 @@ def record_probe_backoff(app: str, pod_name: str, probe_type: str, seconds: int)
         _PROBE_BACKOFF[(str(app), str(pod_name), str(probe_type))] = max(0, int(seconds))
     except Exception:
         pass
+
+
+def _truthy_flag(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _split_csv(raw: object) -> list[str]:
+    return [item.strip() for item in str(raw or "").split(",") if item.strip()]
+
+
+def _as_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _as_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _transport_site_join_key(site_id: object) -> str:
+    return str(site_id or "").strip()
+
+
+def _build_transport_snapshot() -> dict[str, object]:
+    transport: dict[str, object] = {}
+    backend = (os.getenv("AE_TRANSPORT_BACKEND") or "http").strip() or "http"
+    transport["backend"] = backend
+    js_domain = (os.getenv("AE_JS_DOMAIN") or "").strip()
+    if js_domain:
+        transport["js_domain"] = js_domain
+    transport["outbox"] = {
+        "ok_total": int(_OUTBOX_PUBLISH_OK),
+        "fail_total": int(_OUTBOX_PUBLISH_FAIL),
+    }
+
+    try:
+        grace = int(os.getenv("AE_SITE_NOTREADY_AFTER", "90") or 90)
+    except Exception:
+        grace = 90
+    now_ts = time.time()
+    site_details: dict[str, dict[str, object]] = {}
+    gateway_nodes_by_site: dict[str, list[dict[str, object]]] = {}
+    for site_id, last_ts in sorted(_SITE_LAST_SEEN.items()):
+        age = _as_float(now_ts - float(last_ts))
+        if age is None:
+            continue
+        site_key = _transport_site_join_key(site_id)
+        site_details[site_key] = {
+            "last_seen_age_s": age,
+            "stale": age > grace,
+        }
+    for site_id, node_id in sorted(set(_SITE_GATEWAY_LAST_SEEN) | set(_SITE_GATEWAY_BUILD_INFO)):
+        site_key = _transport_site_join_key(site_id)
+        node_key = str(node_id or "").strip()
+        if not site_key or not node_key:
+            continue
+        last_seen_ts = _SITE_GATEWAY_LAST_SEEN.get((site_id, node_id))
+        last_seen_age = None
+        if last_seen_ts is not None:
+            try:
+                last_seen_age = max(0.0, now_ts - float(last_seen_ts))
+            except Exception:
+                last_seen_age = None
+        version, sha, date = _SITE_GATEWAY_BUILD_INFO.get(
+            (site_id, node_id),
+            ("unknown", "unknown", "unknown"),
+        )
+        gateway_nodes_by_site.setdefault(site_key, []).append(
+            {
+                "node_id": node_key,
+                "last_seen_age_s": last_seen_age,
+                "stale": bool(last_seen_age is not None and last_seen_age > grace),
+                "version": str(version or ""),
+                "sha": str(sha or ""),
+                "date": str(date or ""),
+            }
+        )
+    seen = len(site_details)
+    stale = sum(1 for detail in site_details.values() if detail.get("stale"))
+    last_seen_age = None
+    for detail in site_details.values():
+        age = _as_float(detail.get("last_seen_age_s"))
+        if age is None:
+            continue
+        if last_seen_age is None or age < last_seen_age:
+            last_seen_age = age
+    transport["sites"] = {
+        "seen": int(seen),
+        "stale": int(stale),
+        "fresh": int(max(0, seen - stale)),
+        "last_seen_age_s": last_seen_age,
+    }
+    if site_details:
+        transport["sites_detail"] = site_details
+
+    js_summary: dict[str, object] | None = None
+    if _JS_STREAM_STATS or _JS_CONSUMER_STATS:
+        js_pending = 0.0
+        js_ack_pending = 0.0
+        js_redelivered = 0.0
+        js_waiting = 0.0
+        consumers_detail: list[dict[str, object]] = []
+        for (stream, consumer), stats in sorted(_JS_CONSUMER_STATS.items()):
+            pending = float(stats.get("pending", 0.0) or 0.0)
+            ack_pending = float(stats.get("ack_pending", 0.0) or 0.0)
+            redelivered = float(stats.get("redelivered", 0.0) or 0.0)
+            waiting = float(stats.get("waiting", 0.0) or 0.0)
+            js_pending += pending
+            js_ack_pending += ack_pending
+            js_redelivered += redelivered
+            js_waiting += waiting
+            consumers_detail.append(
+                {
+                    "stream": stream,
+                    "consumer": consumer,
+                    "site_id": str(stats.get("site_id", "") or ""),
+                    "pending": pending,
+                    "ack_pending": ack_pending,
+                    "redelivered": redelivered,
+                    "waiting": waiting,
+                }
+            )
+        js_summary = {
+            "streams": int(len(_JS_STREAM_STATS)),
+            "consumers": int(len(_JS_CONSUMER_STATS)),
+            "pending": js_pending,
+            "ack_pending": js_ack_pending,
+            "redelivered": js_redelivered,
+            "waiting": js_waiting,
+        }
+        if consumers_detail:
+            js_summary["consumers_detail"] = consumers_detail
+        stream_detail: list[dict[str, object]] = []
+        for stream, stats in sorted(_JS_STREAM_STATS.items()):
+            stream_detail.append(
+                {
+                    "stream": stream,
+                    "bytes_used": float(stats.get("bytes_used", 0.0) or 0.0),
+                    "messages": float(stats.get("messages", 0.0) or 0.0),
+                    "max_bytes": float(stats.get("max_bytes", 0.0) or 0.0),
+                }
+            )
+        if stream_detail:
+            js_summary["streams_detail"] = stream_detail
+        transport["js"] = js_summary
+
+    gateway_summary: dict[str, object] | None = None
+    gateway_details: list[dict[str, object]] = []
+    if _GATEWAY_WORK_METRICS:
+        gw_nak = 0.0
+        gw_stale = 0.0
+        gw_retries = 0.0
+        gw_replay = 0.0
+        gw_replay_fail = 0.0
+        gw_replay_backlog = 0.0
+        for site_id, stats in sorted(_GATEWAY_WORK_METRICS.items()):
+            site_key = _transport_site_join_key(site_id)
+            detail = {
+                "site_id": site_key,
+                "work_nak_total": float(stats.get("work_nak_total", 0.0) or 0.0),
+                "work_stale_total": float(stats.get("work_stale_total", 0.0) or 0.0),
+                "lease_retry_total": float(stats.get("lease_retry_total", 0.0) or 0.0),
+                "result_replay_total": float(stats.get("result_replay_total", 0.0) or 0.0),
+                "result_replay_fail_total": float(
+                    stats.get("result_replay_fail_total", 0.0) or 0.0
+                ),
+                "result_replay_backlog": float(stats.get("result_replay_backlog", 0.0) or 0.0),
+            }
+            gw_nak += float(detail["work_nak_total"])
+            gw_stale += float(detail["work_stale_total"])
+            gw_retries += float(detail["lease_retry_total"])
+            gw_replay += float(detail["result_replay_total"])
+            gw_replay_fail += float(detail["result_replay_fail_total"])
+            gw_replay_backlog += float(detail["result_replay_backlog"])
+            gateway_details.append(detail)
+        gateway_summary = {
+            "work_nak_total": gw_nak,
+            "work_stale_total": gw_stale,
+            "lease_retry_total": gw_retries,
+            "result_replay_total": gw_replay,
+            "result_replay_fail_total": gw_replay_fail,
+            "result_replay_backlog": gw_replay_backlog,
+            "sites": int(len(gateway_details)),
+        }
+        if gateway_details:
+            gateway_summary["sites_detail"] = gateway_details
+        transport["gateway"] = gateway_summary
+
+    route_summary: dict[str, object] | None = None
+    route_details: list[dict[str, object]] = []
+    if _ROUTE_BUNDLE_METRICS:
+        ok_total = 0.0
+        fail_total = 0.0
+        publish_ok_total = 0.0
+        publish_fail_total = 0.0
+        pending_sites = 0.0
+        max_ack_age = None
+        last_latency = None
+        for site_id, stats in sorted(_ROUTE_BUNDLE_METRICS.items()):
+            detail = {
+                "site_id": _transport_site_join_key(site_id),
+                "bundle_ok_total": float(stats.get("apply_ok_total", 0.0) or 0.0),
+                "bundle_fail_total": float(stats.get("apply_fail_total", 0.0) or 0.0),
+                "publish_ok_total": float(stats.get("publish_ok_total", 0.0) or 0.0),
+                "publish_fail_total": float(stats.get("publish_fail_total", 0.0) or 0.0),
+                "pending": float(stats.get("pending", 0.0) or 0.0),
+                "ack_age_s": _as_float(stats.get("ack_age_s")),
+                "last_latency_s": _as_float(stats.get("last_latency_s")),
+            }
+            ok_total += float(detail["bundle_ok_total"])
+            fail_total += float(detail["bundle_fail_total"])
+            publish_ok_total += float(detail["publish_ok_total"])
+            publish_fail_total += float(detail["publish_fail_total"])
+            pending_sites += float(detail["pending"])
+            ack_age = _as_float(detail["ack_age_s"])
+            if ack_age is not None and (max_ack_age is None or ack_age > max_ack_age):
+                max_ack_age = ack_age
+            latency = _as_float(detail["last_latency_s"])
+            if latency is not None and (last_latency is None or latency > last_latency):
+                last_latency = latency
+            route_details.append(detail)
+        route_summary = {
+            "bundle_ok_total": ok_total,
+            "bundle_fail_total": fail_total,
+            "publish_ok_total": publish_ok_total,
+            "publish_fail_total": publish_fail_total,
+            "pending_sites": pending_sites,
+            "max_ack_age_s": max_ack_age,
+            "last_latency_s": last_latency,
+            "sites": int(len(route_details)),
+        }
+        if route_details:
+            route_summary["sites_detail"] = route_details
+        transport["routes"] = route_summary
+
+    fence_summary: dict[str, object] | None = None
+    fence_details: list[dict[str, object]] = []
+    if _HA_FENCE_METRICS:
+        stale_total = 0.0
+        duplicate_total = 0.0
+        epoch_advance_total = 0.0
+        for surface, stats in sorted(_HA_FENCE_METRICS.items()):
+            detail = {
+                "surface": surface,
+                "stale_total": float(stats.get("stale_total", 0.0) or 0.0),
+                "duplicate_total": float(stats.get("duplicate_total", 0.0) or 0.0),
+                "epoch_advance_total": float(stats.get("epoch_advance_total", 0.0) or 0.0),
+            }
+            stale_total += float(detail["stale_total"])
+            duplicate_total += float(detail["duplicate_total"])
+            epoch_advance_total += float(detail["epoch_advance_total"])
+            fence_details.append(detail)
+        fence_summary = {
+            "stale_total": stale_total,
+            "duplicate_total": duplicate_total,
+            "epoch_advance_total": epoch_advance_total,
+            "surfaces": int(len(fence_details)),
+        }
+        if fence_details:
+            fence_summary["surfaces_detail"] = fence_details
+        transport["ha_fence"] = fence_summary
+
+    site_rows: list[dict[str, object]] = []
+    site_ids = sorted(
+        set(site_details)
+        | {detail["site_id"] for detail in gateway_details}
+        | {detail["site_id"] for detail in route_details}
+        | set(gateway_nodes_by_site)
+    )
+    gateway_by_site = {detail["site_id"]: detail for detail in gateway_details}
+    route_by_site = {detail["site_id"]: detail for detail in route_details}
+    for site_id in site_ids:
+        site_detail = site_details.get(site_id, {})
+        gateway_detail = gateway_by_site.get(site_id, {})
+        route_detail = route_by_site.get(site_id, {})
+        site_rows.append(
+            {
+                "site_id": site_id,
+                "last_seen_age_s": _as_float(site_detail.get("last_seen_age_s")),
+                "stale": bool(site_detail.get("stale", False)),
+                "gateway_count": len(gateway_nodes_by_site.get(site_id, [])),
+                "result_replay_backlog": float(
+                    gateway_detail.get("result_replay_backlog", 0.0) or 0.0
+                ),
+                "work_nak_total": float(gateway_detail.get("work_nak_total", 0.0) or 0.0),
+                "publish_pending": float(route_detail.get("pending", 0.0) or 0.0),
+                "ack_age_s": _as_float(route_detail.get("ack_age_s")),
+                "gateways": gateway_nodes_by_site.get(site_id, []),
+            }
+        )
+    if site_rows:
+        transport["site_rows"] = site_rows
+
+    return transport
+
+
+def _build_authority_snapshot(authority_snapshot: object | None) -> dict[str, object]:
+    enabled = (
+        bool(getattr(authority_snapshot, "enabled", False))
+        if authority_snapshot is not None
+        else _truthy_flag(os.getenv("AE_HA_MODE"))
+    )
+    controller_id = None
+    if authority_snapshot is not None:
+        controller_id = str(getattr(authority_snapshot, "controller_id", "") or "").strip() or None
+    if controller_id is None:
+        controller_id = str(os.getenv("AE_CONTROLLER_ID") or "").strip() or None
+    is_leader = (
+        bool(getattr(authority_snapshot, "is_leader", False))
+        if authority_snapshot is not None
+        else False
+    )
+    leader_info = (
+        getattr(authority_snapshot, "leader_info", None) if authority_snapshot is not None else None
+    )
+    leader_id = (
+        str(getattr(leader_info, "controller_id", "") or "").strip() or None
+        if leader_info is not None
+        else None
+    )
+    advertise_addr = (
+        str(getattr(leader_info, "advertise_addr", "") or "").strip() or None
+        if leader_info is not None
+        else None
+    )
+    controller_epoch = (
+        _as_int(getattr(authority_snapshot, "controller_epoch", 0))
+        if authority_snapshot is not None
+        else 0
+    )
+    if is_leader:
+        if leader_id is None:
+            leader_id = controller_id
+        if advertise_addr is None:
+            advertise_addr = str(os.getenv("AE_CONTROLLER_ADVERTISE_ADDR") or "").strip() or None
+    healthy = (not enabled) or is_leader or leader_id is not None
+    return {
+        "healthy": bool(healthy),
+        "is_leader": bool(is_leader),
+        "controller_id": controller_id,
+        "leader_id": leader_id,
+        "leader_advertise_addr": advertise_addr,
+        "controller_epoch": int(controller_epoch),
+    }
+
+
+def _build_ha_snapshot(
+    *,
+    extra: dict[str, object],
+    authority_snapshot: object | None,
+    transport: dict[str, object],
+) -> dict[str, object]:
+    authority = _build_authority_snapshot(authority_snapshot)
+    build = AE_BUILD_INFO()
+    probe_snapshot = extra.get("ha_probes") if isinstance(extra.get("ha_probes"), dict) else {}
+    probe_snapshot = dict(probe_snapshot or {})
+    etcd_probe = probe_snapshot.get("etcd") if isinstance(probe_snapshot.get("etcd"), dict) else {}
+    etcd_probe = dict(etcd_probe or {})
+
+    js_summary = dict(transport.get("js") or {})
+    gateway_summary = dict(transport.get("gateway") or {})
+    route_summary = dict(transport.get("routes") or {})
+    fence_summary = dict(transport.get("ha_fence") or {})
+    site_summary = dict(transport.get("sites") or {})
+    site_rows = list(transport.get("site_rows") or [])
+
+    jetstream = {
+        "stream_count": _as_int(js_summary.get("streams")),
+        "consumer_count": _as_int(js_summary.get("consumers")),
+        "pending": float(js_summary.get("pending", 0.0) or 0.0),
+        "ack_pending": float(js_summary.get("ack_pending", 0.0) or 0.0),
+        "redelivered": float(js_summary.get("redelivered", 0.0) or 0.0),
+        "waiting": float(js_summary.get("waiting", 0.0) or 0.0),
+        "consumers": list(js_summary.get("consumers_detail") or []),
+        "streams": list(js_summary.get("streams_detail") or []),
+    }
+    gateway = {
+        "site_count": _as_int(gateway_summary.get("sites")),
+        "work_nak_total": float(gateway_summary.get("work_nak_total", 0.0) or 0.0),
+        "work_stale_total": float(gateway_summary.get("work_stale_total", 0.0) or 0.0),
+        "lease_retry_total": float(gateway_summary.get("lease_retry_total", 0.0) or 0.0),
+        "result_replay_total": float(gateway_summary.get("result_replay_total", 0.0) or 0.0),
+        "result_replay_fail_total": float(
+            gateway_summary.get("result_replay_fail_total", 0.0) or 0.0
+        ),
+        "result_replay_backlog": float(gateway_summary.get("result_replay_backlog", 0.0) or 0.0),
+        "sites": list(gateway_summary.get("sites_detail") or []),
+    }
+    routes = {
+        "site_count": _as_int(route_summary.get("sites")),
+        "bundle_ok_total": float(route_summary.get("bundle_ok_total", 0.0) or 0.0),
+        "bundle_fail_total": float(route_summary.get("bundle_fail_total", 0.0) or 0.0),
+        "publish_ok_total": float(route_summary.get("publish_ok_total", 0.0) or 0.0),
+        "publish_fail_total": float(route_summary.get("publish_fail_total", 0.0) or 0.0),
+        "pending_sites": float(route_summary.get("pending_sites", 0.0) or 0.0),
+        "max_ack_age_s": _as_float(route_summary.get("max_ack_age_s")),
+        "last_latency_s": _as_float(route_summary.get("last_latency_s")),
+        "sites": list(route_summary.get("sites_detail") or []),
+    }
+    fence = {
+        "surface_count": _as_int(fence_summary.get("surfaces")),
+        "stale_total": float(fence_summary.get("stale_total", 0.0) or 0.0),
+        "duplicate_total": float(fence_summary.get("duplicate_total", 0.0) or 0.0),
+        "epoch_advance_total": float(fence_summary.get("epoch_advance_total", 0.0) or 0.0),
+        "surfaces": list(fence_summary.get("surfaces_detail") or []),
+    }
+
+    etcd_members = list(etcd_probe.get("members") or [])
+    etcd = {
+        "configured_endpoints": _split_csv(os.getenv("AE_ETCD_ENDPOINTS")),
+        "maintenance_runs_total": float(_ETCD_MAINTENANCE_RUNS_TOTAL),
+        "maintenance_triggered_total": float(_ETCD_MAINTENANCE_TRIGGERED_TOTAL),
+        "healthy_endpoints": _as_int(etcd_probe.get("healthy_endpoints")),
+        "unhealthy_endpoints": _as_int(etcd_probe.get("unhealthy_endpoints")),
+        "members": etcd_members,
+        "last_probe_ts": _as_float(probe_snapshot.get("last_probe_ts")),
+        "probes_enabled": bool(probe_snapshot.get("enabled")),
+    }
+
+    hpa = {
+        "reconcile_total": float(_HPA_ACTIVITY_METRICS.get("reconcile_total", 0.0) or 0.0),
+        "scale_total": float(_HPA_ACTIVITY_METRICS.get("scale_total", 0.0) or 0.0),
+        "metrics_stale_total": float(_HPA_ACTIVITY_METRICS.get("metrics_stale_total", 0.0) or 0.0),
+        "metrics_missing_total": float(
+            _HPA_ACTIVITY_METRICS.get("metrics_missing_total", 0.0) or 0.0
+        ),
+        "snapshot_age_seconds": float(
+            _HPA_ACTIVITY_METRICS.get("snapshot_age_seconds", 0.0) or 0.0
+        ),
+    }
+
+    transport_snapshot = {
+        "backend": transport.get("backend"),
+        "js_domain": transport.get("js_domain"),
+        "outbox": dict(transport.get("outbox") or {}),
+        "site_summary": site_summary,
+        "sites": site_rows,
+        "jetstream": jetstream,
+        "gateway": gateway,
+        "routes": routes,
+        "fence": fence,
+    }
+    if isinstance(probe_snapshot.get("hubs"), dict):
+        transport_snapshot["hub_monitors"] = dict(probe_snapshot["hubs"])
+    if isinstance(probe_snapshot.get("edges"), dict):
+        transport_snapshot["edge_monitors"] = dict(probe_snapshot["edges"])
+
+    issues: list[dict[str, str]] = []
+    enabled = bool(authority_snapshot is not None and getattr(authority_snapshot, "enabled", False))
+    if authority_snapshot is None:
+        enabled = _truthy_flag(os.getenv("AE_HA_MODE"))
+    if enabled and not bool(authority.get("healthy")):
+        issues.append(
+            {
+                "code": "authority_unhealthy",
+                "severity": "error",
+                "message": "controller authority cannot resolve a leader",
+            }
+        )
+    if bool(etcd.get("probes_enabled")) and _as_int(etcd.get("unhealthy_endpoints")) > 0:
+        issues.append(
+            {
+                "code": "etcd_probe_degraded",
+                "severity": "error" if _as_int(etcd.get("healthy_endpoints")) == 0 else "warn",
+                "message": f"etcd probes report {_as_int(etcd.get('unhealthy_endpoints'))} unhealthy endpoint(s)",
+            }
+        )
+    if _as_int(site_summary.get("stale")) > 0:
+        issues.append(
+            {
+                "code": "stale_sites",
+                "severity": "warn",
+                "message": f"{_as_int(site_summary.get('stale'))} edge site(s) are stale",
+            }
+        )
+    if float(gateway.get("result_replay_backlog", 0.0) or 0.0) > 0:
+        issues.append(
+            {
+                "code": "gateway_replay_backlog",
+                "severity": "warn",
+                "message": "gateway replay backlog is non-zero",
+            }
+        )
+    if float(routes.get("pending_sites", 0.0) or 0.0) > 0:
+        issues.append(
+            {
+                "code": "route_publish_pending",
+                "severity": "warn",
+                "message": "route bundle acknowledgements are still pending",
+            }
+        )
+    if (
+        float(fence.get("stale_total", 0.0) or 0.0) > 0
+        or float(fence.get("duplicate_total", 0.0) or 0.0) > 0
+    ):
+        issues.append(
+            {
+                "code": "ha_fence_activity",
+                "severity": "warn",
+                "message": "HA fence counters report stale or duplicate mutation activity",
+            }
+        )
+    if (
+        float(hpa.get("metrics_stale_total", 0.0) or 0.0) > 0
+        or float(hpa.get("metrics_missing_total", 0.0) or 0.0) > 0
+    ):
+        issues.append(
+            {
+                "code": "hpa_metrics_quality",
+                "severity": "warn",
+                "message": "HPA metrics snapshots have been stale or missing",
+            }
+        )
+    hub_monitors = (
+        transport_snapshot.get("hub_monitors")
+        if isinstance(transport_snapshot.get("hub_monitors"), dict)
+        else {}
+    )
+    if hub_monitors and (hub_monitors.get("issues") or hub_monitors.get("errors")):
+        issues.append(
+            {
+                "code": "hub_transport_probe",
+                "severity": "warn",
+                "message": "hub NATS/JetStream monitor probes report cluster drift or fetch failures",
+            }
+        )
+    edge_monitors = (
+        transport_snapshot.get("edge_monitors")
+        if isinstance(transport_snapshot.get("edge_monitors"), dict)
+        else {}
+    )
+    if edge_monitors and edge_monitors.get("errors"):
+        issues.append(
+            {
+                "code": "edge_transport_probe",
+                "severity": "warn",
+                "message": "edge monitor probes report fetch failures",
+            }
+        )
+
+    return {
+        "enabled": bool(enabled),
+        "authority": authority,
+        "controller_build": {
+            "version": str(build.get("version") or "unknown"),
+            "sha": str(build.get("sha") or "unknown"),
+            "date": str(build.get("date") or "unknown"),
+        },
+        "etcd": etcd,
+        "transport": transport_snapshot,
+        "hpa": hpa,
+        "issues": issues,
+    }
 
 
 class _ApiHandler(http.server.BaseHTTPRequestHandler):
@@ -1646,7 +2206,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     default_ttl = 600
                 try:
-                    max_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL_MAX", str(default_ttl)) or default_ttl)
+                    max_ttl = int(
+                        os.getenv("AE_APISHIM_SESSION_TTL_MAX", str(default_ttl)) or default_ttl
+                    )
                 except Exception:
                     max_ttl = default_ttl
                 ttl = ttl_req if ttl_req > 0 else default_ttl
@@ -1661,7 +2223,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
 
                 payload_b64 = _b64url(payload_raw)
-                sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+                sig = hmac.new(
+                    secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
+                ).digest()
                 sig_b64 = _b64url(sig)
                 token = f"sess1.{payload_b64}.{sig_b64}"
                 self._json_ok(
@@ -2458,10 +3022,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 or str(_HELM_DEMO_STATE.get("token") or "").strip()
                             )
                             if not token and env_file:
-                                token = (
-                                    _read_env_file_var(env_file, "AE_LABS_HELM_TOKEN")
-                                    or _read_env_file_var(env_file, "AE_APISHIM_TOKEN")
-                                )
+                                token = _read_env_file_var(
+                                    env_file, "AE_LABS_HELM_TOKEN"
+                                ) or _read_env_file_var(env_file, "AE_APISHIM_TOKEN")
                             headers = {"Authorization": f"Bearer {token}"} if token else {}
                             verify = _resolve_apishim_verify()
                             if token:
@@ -3283,9 +3846,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 ns, _dep = split_app_key(s0.app_name)
                 for r in reps:
                     val = 1 if r.ready else 0
-                    lines.append(
-                        f'ae_pod_ready{{app="{s0.app_name}",pod="{r.pod_name}"}} {val}'
-                    )
+                    lines.append(f'ae_pod_ready{{app="{s0.app_name}",pod="{r.pod_name}"}} {val}')
                     lines.append(
                         f'ae_replica_ready{{app="{s0.app_name}",replica="{r.pod_name}"}} {val}'
                     )
@@ -3322,7 +3883,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 cordoned = bool(getattr(node, "cordoned", False))
                 labels = f'node="{node.node_id}",name="{node.name or ""}",cordoned="{str(cordoned).lower()}"'
                 lines.append(f'ae_node_status{{{labels},status="{st}"}} 1')
-                lines.append(f'ae_node_stale{{{labels}}} {"1" if stale else "0"}')
+                lines.append(f"ae_node_stale{{{labels}}} {'1' if stale else '0'}")
                 if last_age is not None:
                     lines.append(f"ae_node_last_seen_seconds{{{labels}}} {last_age}")
         except Exception:
@@ -3357,12 +3918,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     labels = f'site="{site_id}",node="{node_id}"'
                     lines.append(f"ae_site_gateway_last_seen_seconds{{{labels}}} {last_age}")
             if _SITE_GATEWAY_BUILD_INFO:
-                lines.append("# HELP ae_site_gateway_build_info Gateway build metadata observed via site telemetry")
+                lines.append(
+                    "# HELP ae_site_gateway_build_info Gateway build metadata observed via site telemetry"
+                )
                 lines.append("# TYPE ae_site_gateway_build_info gauge")
-                for (site_id, node_id), (version, sha, date) in sorted(_SITE_GATEWAY_BUILD_INFO.items()):
-                    labels = (
-                        f'site="{site_id}",node="{node_id}",version="{version}",sha="{sha}",date="{date}"'
-                    )
+                for (site_id, node_id), (version, sha, date) in sorted(
+                    _SITE_GATEWAY_BUILD_INFO.items()
+                ):
+                    labels = f'site="{site_id}",node="{node_id}",version="{version}",sha="{sha}",date="{date}"'
                     lines.append(f"ae_site_gateway_build_info{{{labels}}} 1")
         except Exception:
             pass
@@ -3371,16 +3934,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             authority_fn = getattr(self, "authority_info_fn", None)
             if authority_fn is not None:
                 snapshot = authority_fn()
-                enabled = bool(getattr(snapshot, "enabled", False)) if snapshot is not None else False
-                is_leader = bool(getattr(snapshot, "is_leader", False)) if snapshot is not None else False
-                leader_info = getattr(snapshot, "leader_info", None) if snapshot is not None else None
+                enabled = (
+                    bool(getattr(snapshot, "enabled", False)) if snapshot is not None else False
+                )
+                is_leader = (
+                    bool(getattr(snapshot, "is_leader", False)) if snapshot is not None else False
+                )
+                leader_info = (
+                    getattr(snapshot, "leader_info", None) if snapshot is not None else None
+                )
                 epoch = 0
                 if snapshot is not None:
                     try:
                         epoch = int(getattr(snapshot, "controller_epoch", 0) or 0)
                     except Exception:
                         epoch = 0
-                authority_healthy = 1 if (not enabled or is_leader or leader_info is not None) else 0
+                authority_healthy = (
+                    1 if (not enabled or is_leader or leader_info is not None) else 0
+                )
                 lines.append(
                     "# HELP ae_controller_is_leader Whether this controller currently owns mutation authority"
                 )
@@ -3685,17 +4256,23 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         lines.append(
             f"ae_hpa_scale_total {float(_HPA_ACTIVITY_METRICS.get('scale_total', 0.0) or 0.0)}"
         )
-        lines.append("# HELP ae_hpa_metrics_stale_total HPA reconciles skipped due to stale metrics")
+        lines.append(
+            "# HELP ae_hpa_metrics_stale_total HPA reconciles skipped due to stale metrics"
+        )
         lines.append("# TYPE ae_hpa_metrics_stale_total counter")
         lines.append(
             f"ae_hpa_metrics_stale_total {float(_HPA_ACTIVITY_METRICS.get('metrics_stale_total', 0.0) or 0.0)}"
         )
-        lines.append("# HELP ae_hpa_metrics_missing_total HPA reconciles skipped due to missing metrics or requests")
+        lines.append(
+            "# HELP ae_hpa_metrics_missing_total HPA reconciles skipped due to missing metrics or requests"
+        )
         lines.append("# TYPE ae_hpa_metrics_missing_total counter")
         lines.append(
             f"ae_hpa_metrics_missing_total {float(_HPA_ACTIVITY_METRICS.get('metrics_missing_total', 0.0) or 0.0)}"
         )
-        lines.append("# HELP ae_hpa_snapshot_age_seconds Age of the latest workload metrics snapshot used by HPA")
+        lines.append(
+            "# HELP ae_hpa_snapshot_age_seconds Age of the latest workload metrics snapshot used by HPA"
+        )
         lines.append("# TYPE ae_hpa_snapshot_age_seconds gauge")
         lines.append(
             f"ae_hpa_snapshot_age_seconds {float(_HPA_ACTIVITY_METRICS.get('snapshot_age_seconds', 0.0) or 0.0)}"
@@ -3790,6 +4367,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 extra = dict(fn())  # type: ignore[misc]
             except Exception:
                 extra = {}
+        raw_probe_snapshot = extra.pop("ha_probes", None)
+        if isinstance(raw_probe_snapshot, dict):
+            extra["ha_probes"] = raw_probe_snapshot
 
         # Crashloop flags snapshot (apps with active TTL)
         try:
@@ -3799,161 +4379,26 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             crash = {app: (float(until) > now) for app, until in list(_APP_CRASHLOOP_UNTIL.items())}
         except Exception:
             crash = {}
-        # Transport snapshot (best-effort, derived from in-process counters)
-        transport: dict = {}
-        try:
-            backend = (os.getenv("AE_TRANSPORT_BACKEND") or "http").strip() or "http"
-            transport["backend"] = backend
-            js_domain = (os.getenv("AE_JS_DOMAIN") or "").strip()
-            if js_domain:
-                transport["js_domain"] = js_domain
-            transport["outbox"] = {
-                "ok_total": int(_OUTBOX_PUBLISH_OK),
-                "fail_total": int(_OUTBOX_PUBLISH_FAIL),
-            }
-            # Site telemetry summary
+        authority_snapshot = None
+        authority_fn = getattr(self, "authority_info_fn", None)
+        if authority_fn is not None:
             try:
-                grace = int(os.getenv("AE_SITE_NOTREADY_AFTER", "90") or 90)
+                authority_snapshot = authority_fn()
             except Exception:
-                grace = 90
-            now_ts = time.time()
-            seen = len(_SITE_LAST_SEEN)
-            stale = 0
-            last_seen_age = None
-            site_details: dict[str, dict[str, float | bool]] = {}
-            for last_ts in list(_SITE_LAST_SEEN.values()):
-                try:
-                    age = float(now_ts) - float(last_ts)
-                except Exception:
-                    continue
-                if last_seen_age is None or age < last_seen_age:
-                    last_seen_age = age
-                if age > grace:
-                    stale += 1
-            for site_id, last_ts in list(_SITE_LAST_SEEN.items()):
-                try:
-                    age = float(now_ts) - float(last_ts)
-                except Exception:
-                    continue
-                site_details[str(site_id)] = {
-                    "last_seen_age_s": age,
-                    "stale": age > grace,
-                }
-            transport["sites"] = {
-                "seen": int(seen),
-                "stale": int(stale),
-                "fresh": int(max(0, seen - stale)),
-                "last_seen_age_s": last_seen_age,
-            }
-            if site_details:
-                transport["sites_detail"] = site_details
-            # JetStream summary (if any stats are present)
-            if _JS_STREAM_STATS or _JS_CONSUMER_STATS:
-                js_pending = 0.0
-                js_ack_pending = 0.0
-                js_redelivered = 0.0
-                js_waiting = 0.0
-                for stats in _JS_CONSUMER_STATS.values():
-                    js_pending += float(stats.get("pending", 0.0) or 0.0)
-                    js_ack_pending += float(stats.get("ack_pending", 0.0) or 0.0)
-                    js_redelivered += float(stats.get("redelivered", 0.0) or 0.0)
-                    js_waiting += float(stats.get("waiting", 0.0) or 0.0)
-                transport["js"] = {
-                    "streams": int(len(_JS_STREAM_STATS)),
-                    "consumers": int(len(_JS_CONSUMER_STATS)),
-                    "pending": js_pending,
-                    "ack_pending": js_ack_pending,
-                    "redelivered": js_redelivered,
-                    "waiting": js_waiting,
-                }
-            # Gateway work summary (NAKs, stale work)
-            if _GATEWAY_WORK_METRICS:
-                gw_nak = 0.0
-                gw_stale = 0.0
-                gw_retries = 0.0
-                gw_replay = 0.0
-                gw_replay_fail = 0.0
-                gw_replay_backlog = 0.0
-                for stats in _GATEWAY_WORK_METRICS.values():
-                    gw_nak += float(stats.get("work_nak_total", 0.0) or 0.0)
-                    gw_stale += float(stats.get("work_stale_total", 0.0) or 0.0)
-                    gw_retries += float(stats.get("lease_retry_total", 0.0) or 0.0)
-                    gw_replay += float(stats.get("result_replay_total", 0.0) or 0.0)
-                    gw_replay_fail += float(stats.get("result_replay_fail_total", 0.0) or 0.0)
-                    gw_replay_backlog += float(stats.get("result_replay_backlog", 0.0) or 0.0)
-                transport["gateway"] = {
-                    "work_nak_total": gw_nak,
-                    "work_stale_total": gw_stale,
-                    "lease_retry_total": gw_retries,
-                    "result_replay_total": gw_replay,
-                    "result_replay_fail_total": gw_replay_fail,
-                    "result_replay_backlog": gw_replay_backlog,
-                    "sites": int(len(_GATEWAY_WORK_METRICS)),
-                }
-            # Route bundle apply summary
-            if _ROUTE_BUNDLE_METRICS:
-                ok_total = 0.0
-                fail_total = 0.0
-                publish_ok_total = 0.0
-                publish_fail_total = 0.0
-                pending_sites = 0.0
-                max_ack_age = None
-                last_latency = None
-                for stats in _ROUTE_BUNDLE_METRICS.values():
-                    ok_total += float(stats.get("apply_ok_total", 0.0) or 0.0)
-                    fail_total += float(stats.get("apply_fail_total", 0.0) or 0.0)
-                    publish_ok_total += float(stats.get("publish_ok_total", 0.0) or 0.0)
-                    publish_fail_total += float(stats.get("publish_fail_total", 0.0) or 0.0)
-                    pending_sites += float(stats.get("pending", 0.0) or 0.0)
-                    ack_age = stats.get("ack_age_s")
-                    if ack_age is not None:
-                        try:
-                            ack_age_val = float(ack_age)
-                        except Exception:
-                            ack_age_val = None
-                        if ack_age_val is not None and (
-                            max_ack_age is None or ack_age_val > max_ack_age
-                        ):
-                            max_ack_age = ack_age_val
-                    latency = stats.get("last_latency_s")
-                    if latency is None:
-                        continue
-                    try:
-                        lat_val = float(latency)
-                    except Exception:
-                        continue
-                    if last_latency is None or lat_val > last_latency:
-                        last_latency = lat_val
-                transport["routes"] = {
-                    "bundle_ok_total": ok_total,
-                    "bundle_fail_total": fail_total,
-                    "publish_ok_total": publish_ok_total,
-                    "publish_fail_total": publish_fail_total,
-                    "pending_sites": pending_sites,
-                    "max_ack_age_s": max_ack_age,
-                    "last_latency_s": last_latency,
-                    "sites": int(len(_ROUTE_BUNDLE_METRICS)),
-                }
-            if _HA_FENCE_METRICS:
-                stale_total = 0.0
-                duplicate_total = 0.0
-                epoch_advance_total = 0.0
-                for stats in _HA_FENCE_METRICS.values():
-                    stale_total += float(stats.get("stale_total", 0.0) or 0.0)
-                    duplicate_total += float(stats.get("duplicate_total", 0.0) or 0.0)
-                    epoch_advance_total += float(stats.get("epoch_advance_total", 0.0) or 0.0)
-                transport["ha_fence"] = {
-                    "stale_total": stale_total,
-                    "duplicate_total": duplicate_total,
-                    "epoch_advance_total": epoch_advance_total,
-                    "surfaces": int(len(_HA_FENCE_METRICS)),
-                }
+                authority_snapshot = None
+        try:
+            transport = _build_transport_snapshot()
         except Exception:
             transport = {}
 
         payload = {"controller": ctrl, "rbac": rbac, "crashloop": crash, **(extra or {})}
-        if transport:
-            payload["transport"] = transport
+        payload["transport"] = transport
+        payload["ha"] = _build_ha_snapshot(
+            extra=payload,
+            authority_snapshot=authority_snapshot,
+            transport=transport,
+        )
+        payload.pop("ha_probes", None)
         self._json_ok(payload)
 
     def _handle_ui_features(self) -> None:
@@ -3963,7 +4408,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         }
         self._json_ok(payload)
 
-    def _handle_swagger(self, *, spec_url: str = "/openapi.json", title: str = "k1s Swagger UI") -> None:
+    def _handle_swagger(
+        self, *, spec_url: str = "/openapi.json", title: str = "k1s Swagger UI"
+    ) -> None:
         spec_literal = json.dumps(spec_url)
         labs_token = ""
         try:

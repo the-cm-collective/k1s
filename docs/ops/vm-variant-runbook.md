@@ -2,6 +2,7 @@
 
 Purpose
 - Start, configure, and run k1s fabric test variants on local KVM/QEMU.
+- Canonical HA operator bootstrap sequence: [HA Cluster Bring-Up](ha-cluster-bring-up.html)
 
 Reference variants
 - `lab/variants/test1-a-only-passthrough.yaml`
@@ -154,6 +155,8 @@ This writes:
 - `runs/<RUN_ID>/qemu_inventory.json`
 
 ## 3) Bootstrap k1s services
+
+For the ordered strict-CRI HA control-plane sequence, use [HA Cluster Bring-Up](ha-cluster-bring-up.html). This section focuses on variant-backed bootstrap mechanics and helper-driven execution.
 
 Generate host bootstrap scripts:
 

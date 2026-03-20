@@ -701,6 +701,7 @@
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
       <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
       <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
@@ -816,6 +817,16 @@
 <li>RBAC: shows whether mutations are enabled and tokens are configured (never reveals secrets)</li>
 </ul>
 </li>
+<li>Adds an <code>HA Control Plane</code> section sourced from <code>GET /system.ha</code>:
+<ul>
+<li>Authority: local role, visible leader, advertise address, and controller epoch</li>
+<li>Etcd: configured endpoints, maintenance counters, and optional cached probe health when enabled</li>
+<li>Transport: JetStream pressure, replay backlog, route acknowledgement age, HA fence activity, and optional hub/edge monitor summaries</li>
+<li>Edge sites: per-site freshness, replay backlog, route pending, ack age, and gateway build/last-seen rows</li>
+<li>Issue banner: normalized HA/operator warnings from <code>system.ha.issues</code></li>
+</ul>
+</li>
+<li>The built-in dashboard stays on <code>GET /system</code>; it does not parse <code>/metrics</code> in the browser.</li>
 </ul>
 <ul>
 <li>Per‑app details now include:
@@ -829,10 +840,28 @@
 <pre><code>{
   &quot;controller&quot;: { &quot;last_reconcile_timestamp&quot;: 1698000000.0, &quot;last_reconcile_duration&quot;: 0.245, &quot;apps&quot;: { &quot;echo&quot;: {&quot;reconciles&quot;: 12, &quot;duration_sum&quot;: 2.3, &quot;ops&quot;: {&quot;created&quot;: 1}}}},
   &quot;rbac&quot;: { &quot;mutations_enabled&quot;: false, &quot;read_token_configured&quot;: false, &quot;scaler_token_configured&quot;: false, &quot;admin_token_configured&quot;: false },
+  &quot;ha&quot;: {
+    &quot;enabled&quot;: true,
+    &quot;authority&quot;: { &quot;healthy&quot;: true, &quot;is_leader&quot;: false, &quot;controller_id&quot;: &quot;core-a&quot;, &quot;leader_id&quot;: &quot;core-b&quot;, &quot;leader_advertise_addr&quot;: &quot;https://core-b.example.net:9108&quot;, &quot;controller_epoch&quot;: 19 },
+    &quot;controller_build&quot;: { &quot;version&quot;: &quot;0.1.3.dev0&quot;, &quot;sha&quot;: &quot;abc123&quot;, &quot;date&quot;: &quot;2026-03-19&quot; },
+    &quot;etcd&quot;: { &quot;configured_endpoints&quot;: [&quot;http://10.0.0.11:2379&quot;, &quot;http://10.0.0.12:2379&quot;, &quot;http://10.0.0.13:2379&quot;], &quot;maintenance_runs_total&quot;: 0.0, &quot;maintenance_triggered_total&quot;: 0.0, &quot;healthy_endpoints&quot;: 3, &quot;unhealthy_endpoints&quot;: 0, &quot;members&quot;: [], &quot;last_probe_ts&quot;: 1710800000.0, &quot;probes_enabled&quot;: true },
+    &quot;transport&quot;: { &quot;backend&quot;: &quot;nats-js&quot;, &quot;js_domain&quot;: &quot;K1S&quot;, &quot;site_summary&quot;: { &quot;seen&quot;: 2, &quot;stale&quot;: 0, &quot;fresh&quot;: 2, &quot;last_seen_age_s&quot;: 4.2 }, &quot;sites&quot;: [], &quot;jetstream&quot;: { &quot;stream_count&quot;: 1, &quot;consumer_count&quot;: 2, &quot;pending&quot;: 0.0, &quot;ack_pending&quot;: 1.0, &quot;redelivered&quot;: 0.0, &quot;waiting&quot;: 0.0, &quot;consumers&quot;: [], &quot;streams&quot;: [] }, &quot;gateway&quot;: { &quot;site_count&quot;: 2, &quot;result_replay_backlog&quot;: 0.0, &quot;sites&quot;: [] }, &quot;routes&quot;: { &quot;site_count&quot;: 2, &quot;pending_sites&quot;: 0.0, &quot;max_ack_age_s&quot;: 0.0, &quot;sites&quot;: [] }, &quot;fence&quot;: { &quot;surface_count&quot;: 2, &quot;stale_total&quot;: 0.0, &quot;duplicate_total&quot;: 0.0, &quot;epoch_advance_total&quot;: 0.0, &quot;surfaces&quot;: [] } },
+    &quot;hpa&quot;: { &quot;reconcile_total&quot;: 0.0, &quot;scale_total&quot;: 0.0, &quot;metrics_stale_total&quot;: 0.0, &quot;metrics_missing_total&quot;: 0.0, &quot;snapshot_age_seconds&quot;: 0.0 },
+    &quot;issues&quot;: []
+  },
   &quot;ingress&quot;: { &quot;dirty&quot;: false, &quot;sites&quot;: [{&quot;app&quot;: &quot;echo&quot;, &quot;host&quot;: &quot;echo.local&quot;, &quot;path&quot;: &quot;/path/to/echo.caddy&quot;, &quot;exists&quot;: true}] },
   &quot;services&quot;: [{ &quot;app&quot;: &quot;echo&quot;, &quot;port&quot;: 8080, &quot;target_port&quot;: 8080, &quot;replicas&quot;: 1 }],
   &quot;volumes&quot;: [{ &quot;name&quot;: &quot;ae-echo-data&quot;, &quot;labels&quot;: {&quot;ae.app&quot;: &quot;echo&quot;}, &quot;driver&quot;: &quot;local&quot;, &quot;mountpoint&quot;: &quot;/var/lib/docker/volumes/...&quot; }]
 }</code></pre>
+<p><code>system.ha</code> is the stable dashboard contract for live HA operator state. It includes:</p>
+<ul>
+<li><code>authority</code>: HA role and leader visibility derived from controller authority state</li>
+<li><code>controller_build</code>: controller build metadata already exported at <code>/__ae/version</code> and <code>/metrics</code></li>
+<li><code>etcd</code>: configured endpoints, maintenance counters, and optional cached probe/member results</li>
+<li><code>transport</code>: outbox, JetStream, gateway replay, route convergence, HA fence, and per-site joined rows for dashboard rendering</li>
+<li><code>hpa</code>: shared-metrics HPA reconcile/scale quality counters</li>
+<li><code>issues</code>: UI-facing warnings/errors summarized from the current live snapshot</li>
+</ul>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -840,7 +869,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 15:40:35</span>
+        <span>Built 2026-03-19 19:26:55</span>
       </div>
     </footer>
     <script>

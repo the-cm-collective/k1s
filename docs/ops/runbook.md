@@ -234,6 +234,7 @@ Controller state store
 HA control-plane mode (`k1s-ha-core`)
 - `make k1s-ha-core` is the strict-CRI HA core-node profile. It is intended to be operationally interchangeable with `k1s-core` at the node role level, but it switches the node onto shared-authority HA mode instead of the single-host/dev bootstrap path.
 - `k1s-core` remains the single-host and dev-oriented profile. `k1s-ha-core` does not replace it.
+- Canonical bootstrap sequence: [HA Cluster Bring-Up](ha-cluster-bring-up.html)
 - Required env before startup:
   - `AE_CONTROLLER_ID`
   - `AE_CONTROLLER_ADVERTISE_ADDR`
@@ -256,13 +257,7 @@ HA control-plane mode (`k1s-ha-core`)
   - keeps `AE_APISHIM_DB` as compatibility storage only; it is not HA authority
   - still starts the controller, apishim, and the core ingress/core-proxy sidecars expected on a core node
   - allows `AE_DEV_LOCAL=1` for lab convenience, but defaults to operator-safe values with local singleton services and docs extras off
-- Example bootstrap:
-  - `export AE_CONTROLLER_ID=core-a`
-  - `export AE_CONTROLLER_ADVERTISE_ADDR=https://core-a.example.net:9108`
-  - `export AE_ETCD_ENDPOINTS=http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379`
-  - `export AE_ETCD_PREFIX=/k1s/prod`
-  - `export AE_NATS_URL=nats://10.0.0.21:4222,nats://10.0.0.22:4222,nats://10.0.0.23:4222`
-  - `make k1s-ha-core`
+- The new [HA Cluster Bring-Up](ha-cluster-bring-up.html) page owns the numbered 3-controller bootstrap sequence, first validation, and first snapshot checkpoint. This runbook keeps the profile contract, installed-service surface, recovery, and upgrade procedures.
 - Installed-service surface:
   - `make install-ha-core-systemd` installs the HA node-role unit, env file, and wrapper.
   - `make uninstall-ha-core-systemd` removes the unit and wrapper while leaving `/etc/ae/ha-core.env` in place.
@@ -490,6 +485,18 @@ Observability
   - `ae_controller_is_leader`
   - `ae_controller_epoch`
   - `ae_controller_authority_healthy`
+- Integrated HA dashboard:
+  - `/dashboard` now includes a dedicated `HA Control Plane` section sourced from `GET /system.ha`.
+  - Treat the HA section as the live operator snapshot for authority health, etcd reachability summary, transport pressure, site freshness, route acknowledgement age, and HA fence activity.
+  - Treat Grafana/Prometheus as the history surface; the built-in dashboard does not fetch or parse `/metrics` directly.
+  - `system.ha.issues` drives the dashboard issue banner; investigate those warnings before moving on to disruptive HA operations.
+- Optional member-level dashboard probes:
+  - `AE_HA_DASHBOARD_PROBES=1` enables background cached probes for the built-in dashboard.
+  - `AE_HA_DASHBOARD_PROBE_TIMEOUT_S=2` sets per-probe timeout.
+  - `AE_HA_DASHBOARD_ETCD_PROBE_INTERVAL_S=30` sets the background probe interval.
+  - `AE_HA_DASHBOARD_HUB_MONITORS=hub-a=http://10.0.0.21:8222,hub-b=http://10.0.0.22:8222,hub-c=http://10.0.0.23:8222` enables hub NATS/JetStream member probing.
+  - `AE_HA_DASHBOARD_EDGE_MONITORS=sea=http://10.0.1.21:8223,sfo=http://10.0.2.21:8223` enables edge-site NATS monitor probing.
+  - If those env vars are unset, the dashboard still renders controller-known HA state; only the optional member-level etcd/NATS probe rows remain absent.
 
 Dashboard reload vs. restart
 - Code/UI changes only (e.g., edits in `src/ae/observability/http_api.py`): `make dashboard-reload`

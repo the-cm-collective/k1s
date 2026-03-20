@@ -135,7 +135,7 @@ Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/de
 ## Further Reading
 
 - Project philosophy and cognitive safeguards: [Project Philosophy](project-philosophy.html), [Cognitive Welfare and Continuity](cognitive-welfare-and-continuity.html)
-- Runbook and HA ops: [Operations Runbook](runbook.html), [VM Variant Runbook](vm-variant-runbook.html), [HA Closeout](ha-closeout.html)
+- Runbook and HA ops: [HA Cluster Bring-Up](ha-cluster-bring-up.html), [Operations Runbook](runbook.html), [VM Variant Runbook](vm-variant-runbook.html), [HA Closeout](ha-closeout.html)
 - End-to-End Guide: [E2E Guide](e2e.html)
 - Runtime Profiles: [Runtime Profiles](runtime-profiles.html)
 - Multi-node + ingress mode validation: [Multi-Node Lab](multinode-lab.html), [Ingress Capability Test Sequence](ingress-capability-test-sequence.html)

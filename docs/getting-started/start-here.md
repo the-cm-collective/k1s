@@ -352,7 +352,7 @@ Details: `README.md:67` and token management in [Operations Runbook](runbook.htm
 ## Documentation Map (most useful first)
 - High‑level overview: [Overview](overview.html)
 - Operations runbook: [Operations Runbook](runbook.html)
-- HA operator closeout and VM/lab wrappers: [HA Closeout](ha-closeout.html), [VM Variant Runbook](vm-variant-runbook.html)
+- HA cluster bootstrap and evidence lanes: [HA Cluster Bring-Up](ha-cluster-bring-up.html), [HA Closeout](ha-closeout.html), [VM Variant Runbook](vm-variant-runbook.html)
 - HTTP API reference: [HTTP API](http-api.html)
 - Kubernetes API shim compatibility: [API Shim Compatibility Matrix](apishim-compatibility-matrix.html)
 - Ingress & TLS: [Ingress](ingress.html)

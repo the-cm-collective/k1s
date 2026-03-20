@@ -118,6 +118,7 @@ NAV_LINKS = [
     ("Inference Fabric", "inference-fabric.html", False, False),
     ("Roadmap", "distributed-compute-fabric.html", False, False),
     ("Ops Runbook", "runbook.html", False, False),
+    ("HA Bring-Up", "ha-cluster-bring-up.html", False, False),
     ("VM Variants", "vm-variant-runbook.html", False, False),
     ("HA Closeout", "ha-closeout.html", False, False),
     ("CRI containerd", "cri-containerd.html", False, False),

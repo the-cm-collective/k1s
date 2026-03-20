@@ -30,6 +30,7 @@ DOCS_MAPPING = {
     "design/site-to-site-csi-storage.md": "site-to-site-csi-storage.html",
     "design/apishim-source-of-truth.md": "apishim-source-of-truth.html",
     "ops/ai-max-395-cluster-prep.md": "ai-max-395-cluster-prep.html",
+    "ops/ha-cluster-bring-up.md": "ha-cluster-bring-up.html",
     "ops/runbook.md": "runbook.html",
     "ops/ha-closeout.md": "ha-closeout.html",
     "ops/vm-variant-runbook.md": "vm-variant-runbook.html",

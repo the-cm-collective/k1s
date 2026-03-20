@@ -283,6 +283,7 @@ Primary outcomes:
 Current implementation status:
 
 - `make k1s-ha-core` now starts a strict-CRI HA core node with `AE_HA_MODE=1` and refuses to bootstrap local singleton `etcd`, NATS, or Postgres
+- [HA Cluster Bring-Up](ha-cluster-bring-up.html) now provides the canonical operator sequence for that 3-controller bootstrap contract, including first validation and first snapshot checkpoint
 - the new `ha_core_preflight.py` helper validates required HA env, shared `etcd` reachability, and NATS reachability before startup
 - `etcd_snapshot.py` provides explicit etcd snapshot save/status/restore tooling instead of overloading the existing SQLite/specs `ae backup` path
 - `ha_core_drills.py` provides focused verification helpers for leader failover, transport recovery, and external-etcd restart drills
@@ -382,6 +383,7 @@ Primary outcomes:
 Current implementation status:
 
 - [HA Closeout](ha-closeout.html) now records the H0-H5 capability matrix, evidence map, gap register, and close criteria
+- [HA Cluster Bring-Up](ha-cluster-bring-up.html) now serves as the canonical day-0 operator sequence, so the HA track no longer relies on bootstrap ordering being inferred across the runbook, VM lane, and closeout docs
 - `scripts/lab/vm/lib/variant.py`, `scripts/lab/vm/k1s_bootstrap.sh`, `scripts/lab/vm/smoke_v2.py`, and `scripts/lab/vm/smoke_helper.py` now support explicit `k1s-ha-core` hosts plus a `ha_control_plane` lane that emits a machine-readable `ha_summary.json`
 - `lab/variants/ha-control-plane-core.yaml` now provides a checked-in 3-core-plus-1-site HA closeout topology instead of requiring an ad hoc local variant
 - `scripts/lab/vm/ha_shared_infra.sh` plus the new `ha_shared_infra` smoke phase now bootstrap shared `etcd` and shared hub NATS/JetStream on the three HA core VMs before `k1s-ha-core` starts
@@ -390,6 +392,26 @@ Current implementation status:
 - `tests/e2e/ha_closeout.py` and `tests/integration/test_ha_closeout_e2e.py` now provide a reduced local HA topology with two controllers, one apishim, one edge site, and a failover-plus-replay check; that reduced lane now forces `AE_JS_REPLICAS=1` so it stays lightweight without pretending to be the full transport-fidelity evidence lane
 - `scripts/dev/ha_closeout_e2e.sh` plus `make ha-closeout-e2e` now provide the supported reduced-harness entrypoint, priming the local `libstdc++` runtime path and preflighting `grpc` before the reduced HA lane starts
 - current audit result: the drill-enabled primary VM/lab lane is green on the checked-in topology, the wrapper-backed reduced local HA harness is green, no `must_fix_before_closeout` gaps remain, and the track is closed via the 2026-03-19 roadmap checkpoint
+
+### H5c Amendment: Integrated HA Dashboard Observability
+
+Goal:
+- extend the closed `H5c` operator surface so the built-in Hive dashboard exposes HA authority, transport, and site health directly instead of leaving those signals split across `/metrics` and helper scripts
+
+Primary outcomes:
+
+- `GET /system` now exposes a stable top-level `ha` snapshot used by the integrated dashboard
+- the Hive dashboard now renders a dedicated `HA Control Plane` section with authority, etcd, transport, edge-site, and issue-banner views
+- optional controller-owned cached etcd/NATS member probes can enrich the live dashboard without moving Prometheus parsing into the browser
+- the amendment is explicitly post-closeout observability work; it does not reopen HA correctness scope or change the original `H5c` closeout claim
+
+Current implementation status:
+
+- `src/ae/observability/http_api.py` now assembles `system.ha` from authority state, build identity, transport counters, HPA counters, and optional cached probe data while keeping the legacy top-level `transport` snapshot for compatibility
+- `src/ae/controller/__main__.py` now starts an optional HA dashboard probe cache that feeds `system_info_fn` when `AE_HA_DASHBOARD_PROBES=1`
+- `src/ae/ha/dashboard.py` now provides the background etcd and NATS monitor polling used only for the integrated dashboard's optional member-level view
+- `src/ae/resources/observability/dashboard.html` now renders first-class HA authority, etcd, transport, and edge-site panels plus issue banners and leader/standby graph cues from `GET /system`
+- the observability reference, runbook, status table, and closeout doc now record this amendment as a post-closeout operator-surface extension instead of a reopened HA milestone
 
 ## Dependency Model
 

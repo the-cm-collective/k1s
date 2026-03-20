@@ -701,6 +701,7 @@
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
       <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
       <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
@@ -1004,6 +1005,7 @@
 <p>Current implementation status:</p>
 <ul>
 <li><code>make k1s-ha-core</code> now starts a strict-CRI HA core node with <code>AE_HA_MODE=1</code> and refuses to bootstrap local singleton <code>etcd</code>, NATS, or Postgres</li>
+<li><a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a> now provides the canonical operator sequence for that 3-controller bootstrap contract, including first validation and first snapshot checkpoint</li>
 <li>the new <code>ha_core_preflight.py</code> helper validates required HA env, shared <code>etcd</code> reachability, and NATS reachability before startup</li>
 <li><code>etcd_snapshot.py</code> provides explicit etcd snapshot save/status/restore tooling instead of overloading the existing SQLite/specs <code>ae backup</code> path</li>
 <li><code>ha_core_drills.py</code> provides focused verification helpers for leader failover, transport recovery, and external-etcd restart drills</li>
@@ -1103,6 +1105,7 @@
 <p>Current implementation status:</p>
 <ul>
 <li><a href="ha-closeout.html">HA Closeout</a> now records the H0-H5 capability matrix, evidence map, gap register, and close criteria</li>
+<li><a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a> now serves as the canonical day-0 operator sequence, so the HA track no longer relies on bootstrap ordering being inferred across the runbook, VM lane, and closeout docs</li>
 <li><code>scripts/lab/vm/lib/variant.py</code>, <code>scripts/lab/vm/k1s_bootstrap.sh</code>, <code>scripts/lab/vm/smoke_v2.py</code>, and <code>scripts/lab/vm/smoke_helper.py</code> now support explicit <code>k1s-ha-core</code> hosts plus a <code>ha_control_plane</code> lane that emits a machine-readable <code>ha_summary.json</code></li>
 <li><code>lab/variants/ha-control-plane-core.yaml</code> now provides a checked-in 3-core-plus-1-site HA closeout topology instead of requiring an ad hoc local variant</li>
 <li><code>scripts/lab/vm/ha_shared_infra.sh</code> plus the new <code>ha_shared_infra</code> smoke phase now bootstrap shared <code>etcd</code> and shared hub NATS/JetStream on the three HA core VMs before <code>k1s-ha-core</code> starts</li>
@@ -1111,6 +1114,26 @@
 <li><code>tests/e2e/ha_closeout.py</code> and <code>tests/integration/test_ha_closeout_e2e.py</code> now provide a reduced local HA topology with two controllers, one apishim, one edge site, and a failover-plus-replay check; that reduced lane now forces <code>AE_JS_REPLICAS=1</code> so it stays lightweight without pretending to be the full transport-fidelity evidence lane</li>
 <li><code>scripts/dev/ha_closeout_e2e.sh</code> plus <code>make ha-closeout-e2e</code> now provide the supported reduced-harness entrypoint, priming the local <code>libstdc++</code> runtime path and preflighting <code>grpc</code> before the reduced HA lane starts</li>
 <li>current audit result: the drill-enabled primary VM/lab lane is green on the checked-in topology, the wrapper-backed reduced local HA harness is green, no <code>must_fix_before_closeout</code> gaps remain, and the track is closed via the 2026-03-19 roadmap checkpoint</li>
+</ul>
+<h3 id="h5c-amendment-integrated-ha-dashboard-observability">H5c Amendment: Integrated HA Dashboard Observability</h3>
+<p>Goal:</p>
+<ul>
+<li>extend the closed <code>H5c</code> operator surface so the built-in Hive dashboard exposes HA authority, transport, and site health directly instead of leaving those signals split across <code>/metrics</code> and helper scripts</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li><code>GET /system</code> now exposes a stable top-level <code>ha</code> snapshot used by the integrated dashboard</li>
+<li>the Hive dashboard now renders a dedicated <code>HA Control Plane</code> section with authority, etcd, transport, edge-site, and issue-banner views</li>
+<li>optional controller-owned cached etcd/NATS member probes can enrich the live dashboard without moving Prometheus parsing into the browser</li>
+<li>the amendment is explicitly post-closeout observability work; it does not reopen HA correctness scope or change the original <code>H5c</code> closeout claim</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>src/ae/observability/http_api.py</code> now assembles <code>system.ha</code> from authority state, build identity, transport counters, HPA counters, and optional cached probe data while keeping the legacy top-level <code>transport</code> snapshot for compatibility</li>
+<li><code>src/ae/controller/__main__.py</code> now starts an optional HA dashboard probe cache that feeds <code>system_info_fn</code> when <code>AE_HA_DASHBOARD_PROBES=1</code></li>
+<li><code>src/ae/ha/dashboard.py</code> now provides the background etcd and NATS monitor polling used only for the integrated dashboard&#x27;s optional member-level view</li>
+<li><code>src/ae/resources/observability/dashboard.html</code> now renders first-class HA authority, etcd, transport, and edge-site panels plus issue banners and leader/standby graph cues from <code>GET /system</code></li>
+<li>the observability reference, runbook, status table, and closeout doc now record this amendment as a post-closeout operator-surface extension instead of a reopened HA milestone</li>
 </ul>
 <h2 id="dependency-model">Dependency Model</h2>
 <p>This HA track is the foundation for later deployment work:</p>
@@ -1136,7 +1159,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 16:29:04</span>
+        <span>Built 2026-03-19 19:26:55</span>
       </div>
     </footer>
     <script>

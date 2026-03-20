@@ -701,6 +701,7 @@
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
       <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
       <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
@@ -736,6 +737,7 @@
 <li>what concrete evidence exists for those promises</li>
 <li>whether any remaining gaps must be fixed before the HA track can be marked complete</li>
 </ul>
+<p>Operator bootstrap entrypoint: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>. This document is the audit and evidence surface, not the primary numbered day-0 bring-up guide.</p>
 <h2 id="current-decision">Current Decision</h2>
 <ul>
 <li>Result: the primary VM/lab HA lane is green on the checked-in topology, the drill-enabled HA variant is green, and the <code>H*</code> track is now marked complete in the roadmap table.</li>
@@ -844,6 +846,12 @@
 <li>no remaining closeout blocker invalidates the current HA roadmap/runbook claims</li>
 <li>the HA track is complete as of the 2026-03-19 roadmap closeout checkpoint</li>
 </ul>
+<h3 id="post-closeout-dashboard-amendment">Post-Closeout Dashboard Amendment</h3>
+<ul>
+<li><code>H5c-amend-ha-dashboard</code> extends the built-in Hive dashboard after closeout so operators can see HA authority, etcd summary, transport pressure, and edge-site status from one live snapshot.</li>
+<li>This is a post-closeout observability amendment, not a reopened HA correctness milestone.</li>
+<li>The amendment does not change the original <code>H5c-ha-closeout</code> evidence rule, capability matrix, or closure decision; it only improves the integrated operator surface.</li>
+</ul>
 <h2 id="close-criteria">Close Criteria</h2>
 <p>The HA track can be marked complete only when all of the following are true:</p>
 <p>1. The VM/lab <code>ha_control_plane</code> lane has been executed on the intended HA topology and <code>runs/&lt;RUN_ID&gt;/ha_summary.json</code> is green.</p>
@@ -856,7 +864,11 @@
 <li>Current strongest evidence command: <code>make ha-closeout-e2e</code></li>
 <li>Current result: passed locally on 2026-03-19 through the wrapper-backed reduced harness entrypoint.</li>
 </ul>
-<p>3. <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>, <a href="roadmap-status.html">Roadmap Status</a>, <a href="runbook.html">Operations Runbook</a>, and generated <code>docs/site</code> output match the implemented HA surface. 4. No <code>must_fix_before_closeout</code> gaps remain in this document. 5. A final roadmap decision checkpoint is recorded when the status table flips from <code>In progress</code> to complete.</p>
+<p>3. <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>, <a href="roadmap-status.html">Roadmap Status</a>, <a href="runbook.html">Operations Runbook</a>, and generated <code>docs/site</code> output match the implemented HA surface.</p>
+<ul>
+<li>The canonical day-0 operator bootstrap page is <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>.</li>
+</ul>
+<p>4. No <code>must_fix_before_closeout</code> gaps remain in this document. 5. A final roadmap decision checkpoint is recorded when the status table flips from <code>In progress</code> to complete.</p>
 <ul>
 <li>Current checkpoint: 2026-03-19 HA control-plane closeout checkpoint recorded in <a href="roadmap-status.html">Roadmap Status</a>.</li>
 </ul>
@@ -873,7 +885,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 16:29:04</span>
+        <span>Built 2026-03-19 19:26:55</span>
       </div>
     </footer>
     <script>

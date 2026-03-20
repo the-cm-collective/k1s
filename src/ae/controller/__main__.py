@@ -56,9 +56,15 @@ from ae.observability.http_api import (
     set_reconcile_metrics,
     start_http_api,
 )
+from ae.ha.dashboard import HaDashboardProbeCache
 from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
-from ae.config.transport import TransportConfig, check_nats_connectivity, desired_js_replicas, ha_mode_enabled
+from ae.config.transport import (
+    TransportConfig,
+    check_nats_connectivity,
+    desired_js_replicas,
+    ha_mode_enabled,
+)
 from ae.transport.nats_client import NatsClient, NatsClientError
 from ae.transport.controller_ingress import NatsControllerIngress
 from ae.transport.telemetry_ingress import TelemetryIngress
@@ -226,9 +232,7 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
     stream_name = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
     work_subject = os.getenv("AE_JS_WORK_SUBJECT", "k1s.v1.work.site.>")
     storage = os.getenv("AE_JS_STORAGE", "file")
-    ack_wait_s = _parse_duration_seconds(
-        os.getenv("AE_GATEWAY_JS_ACK_WAIT"), default=30.0
-    )
+    ack_wait_s = _parse_duration_seconds(os.getenv("AE_GATEWAY_JS_ACK_WAIT"), default=30.0)
     max_ack_pending = int(os.getenv("AE_GATEWAY_JS_MAX_ACK_PENDING", "32") or 32)
     max_deliver = int(os.getenv("AE_GATEWAY_JS_MAX_DELIVER", "20") or 20)
     max_waiting = int(os.getenv("AE_GATEWAY_JS_MAX_WAITING", "512") or 512)
@@ -567,17 +571,13 @@ def _store_edge_ingress_route(doc: dict, store: SQLiteStateStore) -> None:
     meta, name, namespace = meta_info
     spec = doc.get("spec") if isinstance(doc.get("spec"), dict) else {}
     exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
-    placement = (
-        exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
-    )
+    placement = exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
     site_id = str(placement.get("site") or "").strip()
     policy_ref = spec.get("policyRef") if isinstance(spec.get("policyRef"), dict) else {}
     policy_name = str(policy_ref.get("name") or "").strip() or None
     policy_namespace = None
     if policy_name:
-        policy_namespace = (
-            str(policy_ref.get("namespace") or namespace).strip() or namespace
-        )
+        policy_namespace = str(policy_ref.get("namespace") or namespace).strip() or namespace
     payload = {
         "apiVersion": "k1s.io/v1",
         "kind": "EdgeIngressRoute",
@@ -667,9 +667,7 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
         spec = _edge_ingress_route_spec(route)
         exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
         mode = str(exposure.get("mode") or "").strip().lower()
-        placement = (
-            exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
-        )
+        placement = exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
         site_id = str(placement.get("site") or route.site_id or "").strip()
         errors: list[str] = []
         policy_unsupported: list[str] = []
@@ -710,9 +708,7 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
         policy_namespace = str(policy_ref.get("namespace") or route.namespace or "").strip()
         policy = None
         if policy_name:
-            policy = _lookup_edge_ingress_policy(
-                store, policy_name, policy_namespace, policy_cache
-            )
+            policy = _lookup_edge_ingress_policy(store, policy_name, policy_namespace, policy_cache)
             if policy is None:
                 errors.append("policy_ref_not_found")
         if isinstance(policy, dict):
@@ -720,9 +716,7 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
                 policy_unsupported = _edge_local_policy_unsupported(policy)
             elif mode in {"core-proxy", "core-to-edge-public"}:
                 errors.extend(
-                    _core_policy_errors(
-                        policy, primary_forward_auth_url, multiple_forward_auth
-                    )
+                    _core_policy_errors(policy, primary_forward_auth_url, multiple_forward_auth)
                 )
 
         status = {
@@ -1364,6 +1358,7 @@ def _snapshot_apishim_manifests(
         return {}, False
 
     try:
+
         class _NullReconciler:
             _runtime = _StubRuntime()
 
@@ -1806,6 +1801,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     _storage_authority = None
     _hpa_metrics_collector = None
     _hpa_authority = None
+    _ha_dashboard_probes = None
     if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
         try:
             edge_cfg = build_core_proxy_config()
@@ -1836,9 +1832,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             _log.getLogger(__name__).warning("failed to start telemetry ingress: %s", exc)
         if transport.backend == "nats-js":
             try:
-                interval_s = float(
-                    os.getenv("AE_OUTBOX_PUBLISH_INTERVAL_S", "0.5") or 0.5
-                )
+                interval_s = float(os.getenv("AE_OUTBOX_PUBLISH_INTERVAL_S", "0.5") or 0.5)
                 batch_size = int(os.getenv("AE_OUTBOX_PUBLISH_BATCH", "100") or 100)
                 _outbox_publisher = OutboxPublisher(
                     store,
@@ -1853,9 +1847,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
                 _log.getLogger(__name__).warning("failed to start outbox publisher: %s", exc)
             try:
-                watchdog_enabled = str(
-                    os.getenv("AE_WORK_WATCHDOG", "1") or "1"
-                ).lower() in {"1", "true", "yes", "on"}
+                watchdog_enabled = str(os.getenv("AE_WORK_WATCHDOG", "1") or "1").lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
                 if watchdog_enabled:
                     dispatched_max = _parse_duration_seconds(
                         os.getenv("AE_WORK_DISPATCHED_MAX"), default=300.0
@@ -1881,9 +1878,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
                 _log.getLogger(__name__).warning("failed to start work watchdog: %s", exc)
             try:
-                monitor_interval = float(
-                    os.getenv("AE_JS_MONITOR_INTERVAL_S", "10") or 10
-                )
+                monitor_interval = float(os.getenv("AE_JS_MONITOR_INTERVAL_S", "10") or 10)
             except Exception:
                 monitor_interval = 10.0
             if monitor_interval > 0:
@@ -1906,13 +1901,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     _log.getLogger(__name__).warning("failed to start js monitor: %s", exc)
         if transport.backend in {"nats-core", "nats-js"}:
             try:
-                bundle_enabled = str(
-                    os.getenv("AE_ROUTE_BUNDLE_ENABLED", "0") or "0"
-                ).lower() in {"1", "true", "yes", "on"}
+                bundle_enabled = str(os.getenv("AE_ROUTE_BUNDLE_ENABLED", "0") or "0").lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
                 if bundle_enabled:
-                    bundle_interval = float(
-                        os.getenv("AE_ROUTE_BUNDLE_INTERVAL_S", "5") or 5
-                    )
+                    bundle_interval = float(os.getenv("AE_ROUTE_BUNDLE_INTERVAL_S", "5") or 5)
                     _route_bundle = RouteBundlePublisher(
                         store,
                         nats_url=transport.nats_url,
@@ -2000,6 +1996,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 _log.getLogger(__name__).warning(
                     "failed to start hpa authority components: %s", exc
                 )
+    try:
+        _ha_dashboard_probes = HaDashboardProbeCache.from_env()
+        if _ha_dashboard_probes is not None:
+            _ha_dashboard_probes.start()
+    except Exception as exc:  # noqa: BLE001
+        import logging as _log
+
+        _log.getLogger(__name__).warning("failed to start HA dashboard probes: %s", exc)
     _agent_api_server = None
     try:
         agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))
@@ -2287,11 +2291,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 # Fallback: run in a matching pod name
                 reps = store.list_pods(app)
                 target = next(
-                    (
-                        r
-                        for r in reps
-                        if (r.pod_name == container or str(container) in r.pod_name)
-                    ),
+                    (r for r in reps if (r.pod_name == container or str(container) in r.pod_name)),
                     None,
                 )
                 if target is None and reps:
@@ -2359,6 +2359,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             # Site summary (derived from node labels + node ids)
             sites_summary: list[dict] = []
             try:
+
                 def _site_from_node_id(node_id: str | None) -> str | None:
                     if not node_id:
                         return None
@@ -2626,12 +2627,18 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                             wg_ok = bool(hub.get("wg_pubkey") and node.get("wg_pubkey"))
                             rp_ok = bool(hub.get("rp_pubkey") and node.get("rp_pubkey"))
                             transport = "wireguard" if wg_ok else "unknown"
-                            psk = "rosenpass" if (wg_ok and rp_ok) else ("none" if wg_ok else "unknown")
+                            psk = (
+                                "rosenpass"
+                                if (wg_ok and rp_ok)
+                                else ("none" if wg_ok else "unknown")
+                            )
                             handshake_age = None
                             if wg_ok:
                                 handshake_age = handshake_map.get(str(node.get("wg_pubkey") or ""))
                             last_handshake_at = (
-                                None if handshake_age is None else max(0.0, now_ts - float(handshake_age))
+                                None
+                                if handshake_age is None
+                                else max(0.0, now_ts - float(handshake_age))
                             )
                             if handshake_age is None:
                                 status = "unknown"
@@ -2727,7 +2734,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 api = None
 
             # Return combined snapshot
-            return {
+            payload = {
                 "ingress": ing,
                 "services": services,
                 "service_endpoints": {
@@ -2749,6 +2756,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 "docs": docs,
                 "api": api,
             }
+            if _ha_dashboard_probes is not None:
+                try:
+                    payload["ha_probes"] = _ha_dashboard_probes.snapshot()
+                except Exception:
+                    pass
+            return payload
 
         try:
             # Planner: reuse CLI planner logic for diagnostics and host-port checks
@@ -3006,6 +3019,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                         _hpa_authority.stop()
                     if _hpa_metrics_collector is not None:
                         _hpa_metrics_collector.stop()
+                    if _ha_dashboard_probes is not None:
+                        _ha_dashboard_probes.stop()
                     if authority is not None:
                         authority.stop()
                     return 0
@@ -3057,9 +3072,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         heartbeat_grace = 40
     heartbeat_interval = max(5, min(20, max(1, heartbeat_grace // 2)))
     last_heartbeat = 0.0
-    etcd_maintenance_enabled = (
-        getattr(store, "backend", "").lower() == "etcd"
-        and _truthy_env("AE_ETCD_MAINTENANCE_ENABLE", "1")
+    etcd_maintenance_enabled = getattr(store, "backend", "").lower() == "etcd" and _truthy_env(
+        "AE_ETCD_MAINTENANCE_ENABLE", "1"
     )
     etcd_maintenance_interval = _parse_duration_seconds(
         os.getenv("AE_ETCD_MAINTENANCE_INTERVAL_SEC", "900"),
@@ -3140,7 +3154,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             if is_leader and not last_is_leader:
                 changed = True
             last_is_leader = is_leader
-            if etcd_maintenance_enabled and (now - last_etcd_maintenance) >= etcd_maintenance_interval:
+            if (
+                etcd_maintenance_enabled
+                and (now - last_etcd_maintenance) >= etcd_maintenance_interval
+            ):
                 triggered = False
                 try:
                     watchdog_fn = getattr(store, "run_maintenance_watchdog", None)
@@ -3209,6 +3226,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             _cronjob_authority,
             _hpa_authority,
             _hpa_metrics_collector,
+            _ha_dashboard_probes,
             _route_bundle,
             _outbox_publisher,
             _nats_ingress,

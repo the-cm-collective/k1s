@@ -701,6 +701,7 @@
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
       <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
       <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
@@ -732,6 +733,7 @@
 <p>Purpose</p>
 <ul>
 <li>Start, configure, and run k1s fabric test variants on local KVM/QEMU.</li>
+<li>Canonical HA operator bootstrap sequence: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a></li>
 </ul>
 <p>Reference variants</p>
 <ul>
@@ -853,6 +855,7 @@ scripts/lab/vm/labctl.sh variant up \
 <li><code>runs/&lt;RUN_ID&gt;/qemu_inventory.json</code></li>
 </ul>
 <h2 id="3-bootstrap-k1s-services">3) Bootstrap k1s services</h2>
+<p>For the ordered strict-CRI HA control-plane sequence, use <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>. This section focuses on variant-backed bootstrap mechanics and helper-driven execution.</p>
 <p>Generate host bootstrap scripts:</p>
 <pre><code>scripts/lab/vm/k1s_bootstrap.sh \
   --variant lab/variants/test3-abc-no-gpu.yaml \
@@ -929,7 +932,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 15:40:35</span>
+        <span>Built 2026-03-19 19:26:55</span>
       </div>
     </footer>
     <script>
