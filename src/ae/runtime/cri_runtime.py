@@ -36,6 +36,14 @@ from .registry import RegistryAuthProvider
 LOGGER = logging.getLogger(__name__)
 
 
+class _StalePodSandboxError(RuntimeError):
+    """Raised when CRI reports a dead or missing pod sandbox task."""
+
+    def __init__(self, pod_id: str, message: str) -> None:
+        super().__init__(message)
+        self.pod_id = str(pod_id)
+
+
 class CRIRuntime(RuntimeAdapter):
     """CRI gRPC-backed runtime adapter (containerd/kubelet)."""
 
@@ -1218,6 +1226,7 @@ class CRIRuntime(RuntimeAdapter):
         *,
         node_id: str | None = None,
         attempt: int = 0,
+        sandbox_recovery_attempt: int = 0,
     ) -> None:
         pb2 = self._pb2()
         app_name = app_key_for_manifest(manifest)
@@ -1254,7 +1263,20 @@ class CRIRuntime(RuntimeAdapter):
         if not pod_id:
             raise RuntimeError("CRI RunPodSandbox returned no pod_sandbox_id")
         self._port_assignments[str(replica_id)] = port_map
-        self._create_main_container(manifest, pod_id, replica_id, revision, attempt=attempt)
+        try:
+            self._create_main_container(manifest, pod_id, replica_id, revision, attempt=attempt)
+        except _StalePodSandboxError as exc:
+            self._recover_from_stale_pod_sandbox(
+                manifest,
+                stale_pod_id=exc.pod_id,
+                replica_id=replica_id,
+                revision=revision,
+                attempt=attempt,
+                sandbox_recovery_attempt=sandbox_recovery_attempt,
+                cause=exc,
+                node_id=node_id,
+            )
+            return
         try:
             self._ensure_sidecars(manifest, pod_id, replica_id, revision)
         except Exception as exc:
@@ -1275,13 +1297,26 @@ class CRIRuntime(RuntimeAdapter):
         container = self._find_container(pod_id, container_label="main")
         replica_id = self._pod_labels(pod).get(self.REPLICA_LABEL, "")
         if not container:
-            self._create_main_container(
-                manifest,
-                pod_id,
-                replica_id,
-                revision,
-                attempt=0,
-            )
+            try:
+                self._create_main_container(
+                    manifest,
+                    pod_id,
+                    replica_id,
+                    revision,
+                    attempt=0,
+                )
+            except _StalePodSandboxError as exc:
+                self._recover_from_stale_pod_sandbox(
+                    manifest,
+                    stale_pod_id=exc.pod_id,
+                    replica_id=replica_id,
+                    revision=revision,
+                    attempt=0,
+                    sandbox_recovery_attempt=0,
+                    cause=exc,
+                    node_id=self._current_node_id,
+                )
+                return True
             try:
                 if replica_id:
                     self._ensure_sidecars(manifest, pod_id, replica_id, revision)
@@ -1314,19 +1349,119 @@ class CRIRuntime(RuntimeAdapter):
         self._runtime_call(
             "RemoveContainer", self._pb2().RemoveContainerRequest(container_id=container.id)
         )
-        self._create_main_container(
-            manifest,
-            pod_id,
-            replica_id,
-            revision,
-            attempt=attempt + 1,
-        )
+        try:
+            self._create_main_container(
+                manifest,
+                pod_id,
+                replica_id,
+                revision,
+                attempt=attempt + 1,
+            )
+        except _StalePodSandboxError as exc:
+            self._recover_from_stale_pod_sandbox(
+                manifest,
+                stale_pod_id=exc.pod_id,
+                replica_id=replica_id,
+                revision=revision,
+                attempt=attempt + 1,
+                sandbox_recovery_attempt=0,
+                cause=exc,
+                node_id=self._current_node_id,
+            )
+            return True
         try:
             if replica_id:
                 self._ensure_sidecars(manifest, pod_id, replica_id, revision)
         except Exception as exc:
             LOGGER.warning("Failed to ensure sidecars for %s: %s", replica_id, exc)
         return True
+
+    def _grpc_error_details(self, exc: Exception) -> str:
+        details = ""
+        with contextlib.suppress(Exception):
+            details = str(exc.details() or "")
+        return details or str(exc)
+
+    def _is_stale_pod_sandbox_error(self, exc: Exception) -> bool:
+        if grpc is None or not isinstance(exc, grpc.RpcError):
+            return False
+        try:
+            if exc.code() != grpc.StatusCode.NOT_FOUND:
+                return False
+        except Exception:
+            return False
+        details = self._grpc_error_details(exc).lower()
+        if "sandbox" not in details:
+            return False
+        stale_markers = (
+            "sandbox container task",
+            "no running task found",
+            "podsandbox not found",
+            "pod sandbox not found",
+            "sandbox not found",
+        )
+        return any(marker in details for marker in stale_markers)
+
+    def _remove_pod_sandbox(self, pod_id: str) -> None:
+        pb2 = self._pb2()
+        containers = []
+        with contextlib.suppress(Exception):
+            flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id))
+            resp = self._runtime_call("ListContainers", pb2.ListContainersRequest(filter=flt))
+            items = getattr(resp, "containers", None)
+            if items is None:
+                items = getattr(resp, "items", None)
+            containers = list(items or [])
+        for container in containers:
+            container_id = getattr(container, "id", None)
+            if not container_id:
+                continue
+            with contextlib.suppress(Exception):
+                self._runtime_call(
+                    "StopContainer", pb2.StopContainerRequest(container_id=container_id, timeout=0)
+                )
+            with contextlib.suppress(Exception):
+                self._runtime_call(
+                    "RemoveContainer", pb2.RemoveContainerRequest(container_id=container_id)
+                )
+        with contextlib.suppress(Exception):
+            self._runtime_call(
+                "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
+            )
+        with contextlib.suppress(Exception):
+            self._runtime_call(
+                "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
+            )
+
+    def _recover_from_stale_pod_sandbox(
+        self,
+        manifest: AppManifest,
+        *,
+        stale_pod_id: str,
+        replica_id: str,
+        revision: int,
+        attempt: int,
+        sandbox_recovery_attempt: int,
+        cause: _StalePodSandboxError,
+        node_id: str | None,
+    ) -> None:
+        if sandbox_recovery_attempt >= 1:
+            raise cause
+        LOGGER.warning(
+            "CRI sandbox stale for replica %s (pod_id=%s); recreating pod: %s",
+            replica_id,
+            stale_pod_id,
+            cause,
+        )
+        self._remove_pod_sandbox(stale_pod_id)
+        self._run_pod(
+            manifest,
+            replica_id,
+            revision,
+            node_id=node_id,
+            attempt=attempt,
+            sandbox_recovery_attempt=sandbox_recovery_attempt + 1,
+        )
 
     def _ensure_sidecars(
         self,
@@ -1444,11 +1579,23 @@ class CRIRuntime(RuntimeAdapter):
             config=config,
             sandbox_config=pod_config,
         )
-        resp = self._runtime_call("CreateContainer", req)
+        try:
+            resp = self._runtime_call("CreateContainer", req)
+        except Exception as exc:
+            if self._is_stale_pod_sandbox_error(exc):
+                detail = self._grpc_error_details(exc)
+                raise _StalePodSandboxError(str(pod_id), detail) from exc
+            raise
         container_id = getattr(resp, "container_id", None)
         if not container_id:
             raise RuntimeError("CRI CreateContainer returned no container_id")
-        self._runtime_call("StartContainer", pb2.StartContainerRequest(container_id=container_id))
+        try:
+            self._runtime_call("StartContainer", pb2.StartContainerRequest(container_id=container_id))
+        except Exception as exc:
+            if self._is_stale_pod_sandbox_error(exc):
+                detail = self._grpc_error_details(exc)
+                raise _StalePodSandboxError(str(pod_id), detail) from exc
+            raise
 
     def _stop_and_remove_pod(self, manifest: AppManifest | None, pod: Any) -> None:
         pb2 = self._pb2()
