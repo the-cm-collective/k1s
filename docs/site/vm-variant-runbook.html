@@ -741,6 +741,7 @@
 <li><code>lab/variants/test2-ab-passthrough.yaml</code></li>
 <li><code>lab/variants/test3-abc-no-gpu.yaml</code> (validated non-GPU baseline)</li>
 <li><code>lab/variants/test3-abc-pp2.yaml</code> (passthrough profile)</li>
+<li><code>lab/variants/ha-control-plane-hub-node.yaml</code> (retained/manual HA smoke: 3 <code>k1s-ha-core</code> + 1 <code>k1s-core-node</code>)</li>
 <li><code>lab/variants/ha-control-plane-core.yaml</code> (HA closeout topology: 3 <code>k1s-ha-core</code> + 1 <code>k1s-edge-core</code> site)</li>
 <li><code>lab/variants/ha-control-plane-core-drills.yaml</code> (same HA topology, with disruptive drill commands enabled)</li>
 </ul>
@@ -820,30 +821,62 @@ make lab-vm-smoke \
 <p>Manual retention for investigation:</p>
 <pre><code>sudo -v
 export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_smoke
+scripts/lab/vm/labctl.sh host prepare \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --apply
 AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
 make lab-vm-smoke \
-  VARIANT=lab/variants/ha-control-plane-core.yaml \
+  VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
   RUN_ID=&quot;$RUN_ID&quot; \
   LAB_VM_SMOKE_ARGS=&quot;--teardown never&quot;</code></pre>
-<p>Or explicit teardown after result inspection:</p>
+<p>Use that retained HA run as the direct manual-smoke lane on one workstation:</p>
+<ul>
+<li>open <code>http://192.168.155.10:9108/dashboard</code>, <code>http://192.168.155.11:9108/dashboard</code>, or <code>http://192.168.155.12:9108/dashboard</code></li>
+<li>reach the API shim directly at <code>https://192.168.155.10:8445</code>, <code>https://192.168.155.11:8445</code>, or <code>https://192.168.155.12:8445</code></li>
+<li>the harness automatically validates that <code>hub-1</code> (<code>192.168.155.20</code>, <code>role=hub,site=hub</code>) registers and runs the pinned <code>shell-demo-node-hub</code> workload</li>
+<li><code>hub-1</code> reaches the controller agent API on <code>:9110</code> and runs without Rosenpass/WireGuard in this retained lane; overlay validation stays with the edge/gateway HA closeout topology</li>
+<li>rebuild host docs against one controller if you want a local static docs entrypoint:</li>
+</ul>
+<pre><code>source &lt;(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)
+curl -fsS \
+  -H &quot;Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}&quot; \
+  http://192.168.155.10:9108/system | python -m json.tool</code></pre>
+<pre><code>DOCS_API_BASE=http://192.168.155.10:9108 \
+DOCS_DASHBOARD_URL=http://192.168.155.10:9108/dashboard \
+python docs/build_docs.py
+python -m http.server 9109 --directory docs/site</code></pre>
+<p>Notes:</p>
+<ul>
+<li>Treat this as a retained VM smoke environment, not a supported single-host HA dev profile.</li>
+<li>Read surfaces stay usable on any healthy controller; leader-only mutations still return <code>not_leader</code> on followers.</li>
+<li>In this HA VM profile, <code>/system</code> is bearer-protected and the dashboard needs the same bearer token for its data panels.</li>
+<li>If <code>AE_API_READ_TOKEN</code> is unset, use <code>AE_API_ADMIN_TOKEN</code> in the header above and in the dashboard <code>Bearer</code> field.</li>
+<li>The retained workload smoke uses the shared HA state store because controller HTTP mutations stay disabled in this profile.</li>
+<li>Use <code>lab/variants/ha-control-plane-core.yaml</code> instead when you want the checked-in HA edge/gateway transport topology.</li>
+<li>If you are reusing <code>k1s-br0</code> from a different variant CIDR, tear that lane down with <code>--destroy-network</code> before running the HA host prep command above.</li>
+<li>If the controller backing the local docs build changes, rebuild with another core URL.</li>
+</ul>
+<p>Or explicit teardown after result inspection. Use <code>--destroy-network</code> only when you want full bridge cleanup or are switching to another subnet:</p>
 <pre><code>scripts/lab/vm/labctl.sh variant down \
-  --variant lab/variants/test3-abc-no-gpu.yaml \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
   --run-id &quot;$RUN_ID&quot; \
-  --purge \
-  --destroy-network</code></pre>
+  --purge</code></pre>
 <p>Direct helper usage remains available when you want to bypass Make and call the wrapper explicitly:</p>
 <pre><code>scripts/lab/vm/smoke_helper.py \
-  --variant lab/variants/ha-control-plane-core.yaml \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
   --run-id &quot;$RUN_ID&quot; \
   --teardown on-success \
-  --purge \
-  --destroy-network</code></pre>
+  --purge</code></pre>
 <h2 id="1-host-prerequisite-check">1) Host prerequisite check</h2>
 <pre><code>scripts/lab/vm/labctl.sh host prepare</code></pre>
 <p>Apply bridge/NAT setup:</p>
 <pre><code>scripts/lab/vm/labctl.sh host prepare --apply</code></pre>
+<p>For the checked-in HA closeout topology, prefer the variant-aware form so the host bridge matches the variant CIDR exactly:</p>
+<pre><code>scripts/lab/vm/labctl.sh host prepare \
+  --variant lab/variants/ha-control-plane-core.yaml \
+  --apply</code></pre>
 <h2 id="2-bring-up-a-variant">2) Bring up a variant</h2>
 <pre><code>export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_test3
 scripts/lab/vm/labctl.sh variant up \
@@ -932,7 +965,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 19:26:55</span>
+        <span>Built 2026-03-20 16:18:24</span>
       </div>
     </footer>
     <script>

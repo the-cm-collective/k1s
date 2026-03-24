@@ -114,11 +114,11 @@ CRI nodes (containerd)
 - Service VIP proxy on CRI uses iptables; set `AE_ENABLE_SERVICE_PROXY=1` and run as root.
 - CNI dirs (defaults): `/opt/cni/bin` and `/etc/cni/net.d`
 - Init CNI configs (bridge + loopback) if missing: `./scripts/cni_init.sh`
-- If CNI version mismatches occur, force rewrite with a newer spec and restart containerd:
-  - `AE_CNI_FORCE=1 AE_CNI_VERSION=1.0.0 ./scripts/cni_init.sh`
+- If CNI version mismatches occur, force rewrite with the compatibility default and restart containerd:
+  - `AE_CNI_FORCE=1 AE_CNI_VERSION=0.4.0 ./scripts/cni_init.sh`
   - `sudo systemctl restart containerd`
 - Preflight checks: `./scripts/cri_preflight.sh`
-- Smoke check (requires crictl): `./scripts/cri_smoke.sh`
+- Smoke check (requires crictl): `./scripts/cri_smoke.sh` (pulls the sandbox image and runs a PodSandbox)
 - Optional pull test: `AE_CRI_SMOKE_PULL=1 pytest tests/integration/test_cri_smoke.py -k pull`
 - Optional lifecycle test: `AE_CRI_IT=1 pytest tests/integration/test_cri_runtime_integration.py -q`
 - CI-style bootstrap (installs containerd/CNI/crictl): `./scripts/cri_ci_setup.sh`

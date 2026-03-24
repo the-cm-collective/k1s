@@ -50,6 +50,7 @@ if [[ -n "$controller_host_override" ]]; then
   controller_ip="$controller_host_override"
 fi
 controller_port="$(echo "$variant_json" | jq -r '.k1s.controller_port')"
+controller_agent_port="$(echo "$variant_json" | jq -r '.k1s.agent_api_port')"
 apishim_port="$(echo "$variant_json" | jq -r '.k1s.apishim_port')"
 token="$(echo "$variant_json" | jq -r '.k1s.agent_token')"
 leaf_uplink_mode="$(echo "$variant_json" | jq -r '.transport.leaf_uplink_mode')"
@@ -149,6 +150,28 @@ nohup sudo env \
 ${register_edge_sites_snippet}
 CMD
       ;;
+    k1s-core-node)
+      if [[ -z "$labels" ]]; then
+        labels="role=hub,site=${site_id:-hub}"
+      fi
+      cat <<CMD
+cd /mnt/host
+bootstrap_pip_install
+bootstrap_seed_cri_cache core
+nohup sudo env \
+  PYTHON_BIN=python3 \
+  AE_RUNTIME_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_NODE_ID=${node_id} \
+  AE_NODE_LABELS='${labels}' \
+  AE_ROSENPASS_ENABLED=\${AE_ROSENPASS_ENABLED:-0} \
+  AE_CONTROLLER_URL=http://${controller_ip}:${controller_agent_port} \
+  AE_AGENT_ENDPOINT=http://${ip}:${agent_port} \
+  AE_AGENT_TOKEN=${token} \
+  AE_NODE_PORT=${agent_port} \
+  make k1s-core-node > /home/ae/k1s-core-node.log 2>&1 &
+CMD
+      ;;
     k1s-ha-core)
       cat <<CMD
 cd /mnt/host
@@ -168,6 +191,8 @@ nohup sudo env \
   APISHIM_HOST=\${APISHIM_HOST:-0.0.0.0} \
   APISHIM_CERT_SANS='${ha_apishim_cert_sans}' \
   AE_HA_MODE=1 \
+  AE_AGENT_API_PORT=${controller_agent_port} \
+  AE_AGENT_API_TOKEN=${token} \
   AE_CONTROLLER_ID=${node_id} \
   AE_CONTROLLER_ADVERTISE_ADDR=http://${ip}:${controller_port} \
   AE_ETCD_ENDPOINTS='${ha_etcd_endpoints}' \
@@ -216,9 +241,10 @@ nohup sudo env \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_NODE_ID=${node_id} \
   AE_NODE_LABELS='${labels}' \
-  AE_CONTROLLER_URL=http://${controller_ip}:${controller_port} \
+  AE_CONTROLLER_URL=http://${controller_ip}:${controller_agent_port} \
   AE_AGENT_ENDPOINT=http://${ip}:${agent_port} \
   AE_AGENT_TOKEN=${token} \
+  AE_NODE_PORT=${agent_port} \
   make k1s-edge-node > /home/ae/k1s-edge-node.log 2>&1 &
 CMD
       ;;

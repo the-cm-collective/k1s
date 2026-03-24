@@ -34,10 +34,17 @@ cidr="$(echo "$variant_json" | jq -r '.network.cidr')"
 
 state_dir="$ROOT_DIR/state/lab-vm/$RUN_ID"
 inventory="$state_dir/inventory.json"
+run_inventory="$(run_dir "$RUN_ID")/qemu_inventory.json"
 
 if [[ ! -f "$inventory" ]]; then
-  err "inventory not found for run_id=${RUN_ID}: $inventory"
-  exit 1
+  if [[ -f "$run_inventory" ]]; then
+    inventory="$run_inventory"
+    log "using run inventory fallback for run_id=${RUN_ID}: $inventory"
+  else
+    err "inventory not found for run_id=${RUN_ID}: $inventory"
+    err "run inventory fallback also missing: $run_inventory"
+    exit 1
+  fi
 fi
 
 mapfile -t rows < <(jq -r '.[] | @base64' "$inventory")
@@ -47,10 +54,16 @@ for row in "${rows[@]}"; do
   name="$(echo "$decoded" | jq -r '.name')"
   tap="$(echo "$decoded" | jq -r '.tap')"
   pid_file="$(echo "$decoded" | jq -r '.pid_file')"
+  overlay="$state_dir/${name}.qcow2"
 
   if [[ -f "$pid_file" ]]; then
     kill "$(cat "$pid_file")" >/dev/null 2>&1 || true
     rm -f "$pid_file"
+  elif pids="$(pgrep -f -- "$overlay" 2>/dev/null || true)" && [[ -n "$pids" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] || continue
+      kill "$pid" >/dev/null 2>&1 || true
+    done <<<"$pids"
   fi
   if ip link show "$tap" >/dev/null 2>&1; then
     sudo ip link set "$tap" down || true

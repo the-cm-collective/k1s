@@ -6,7 +6,7 @@ bridge_file="${CNI_BRIDGE_FILE:-$conf_dir/10-k1s-bridge.conflist}"
 loopback_file="${CNI_LOOPBACK_FILE:-$conf_dir/99-loopback.conf}"
 bridge_name="${AE_CNI_BRIDGE_NAME:-cni0}"
 subnet="${AE_CNI_SUBNET:-10.88.0.0/16}"
-cni_version="${AE_CNI_VERSION:-1.0.0}"
+cni_version="${AE_CNI_VERSION:-0.4.0}"
 force="${AE_CNI_FORCE:-0}"
 
 need_sudo=0

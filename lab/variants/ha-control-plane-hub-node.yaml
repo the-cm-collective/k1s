@@ -1,6 +1,6 @@
-name: ha-control-plane-core
-test_id: 4
-description: HA control-plane validation topology with three HA core nodes and one edge site.
+name: ha-control-plane-hub-node
+test_id: 6
+description: HA control-plane retained manual-smoke topology with three HA core nodes and one workload-capable hub node.
 network:
   bridge: k1s-br0
   cidr: 192.168.155.0/24
@@ -31,19 +31,13 @@ hosts:
     role: k1s-ha-core
     gpu: false
     node_id: core-c
-  - name: edge-sea
+  - name: hub-1
     ip: 192.168.155.20
-    role: k1s-edge-core
+    role: k1s-core-node
     gpu: false
-    site_id: sea
-    node_id: sea-gw
-  - name: edge-sea-node
-    ip: 192.168.155.21
-    role: k1s-edge-node
-    gpu: false
-    site_id: sea
-    node_id: sea-node-1
-    node_labels: role=worker,site=sea
+    site_id: hub
+    node_id: hub-1
+    node_labels: role=hub,site=hub
 k1s:
   agent_token: devtoken
   controller_port: 9108
@@ -69,11 +63,6 @@ ha:
       monitor_url: http://192.168.155.11:8222
     - name: core-c
       monitor_url: http://192.168.155.12:8222
-  edge_sites:
-    - site_id: sea
-      monitor_url: http://192.168.155.20:8223
-      expected_gateways:
-        - sea--sea-gw
 smoke:
   lanes:
     - ha_control_plane

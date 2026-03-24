@@ -5,6 +5,8 @@ variant="${1:-base}"
 seed_manifest="${2:-/tmp/cri_seed_images.lock.json}"
 export DEBIAN_FRONTEND=noninteractive
 crictl_version="${CRICTL_VERSION:-v1.30.0}"
+bootstrap_contract_version="${BOOTSTRAP_CONTRACT_VERSION:-20260324-cni-0.4.0-smoke-v1}"
+expected_cni_version="${AE_CNI_VERSION:-0.4.0}"
 
 crictl_arch() {
   case "$(uname -m)" in
@@ -39,7 +41,7 @@ write_cni_configs() {
   mkdir -p /etc/cni/net.d
   cat >/etc/cni/net.d/10-k1s-bridge.conflist <<'EOF'
 {
-  "cniVersion": "1.0.0",
+  "cniVersion": "0.4.0",
   "name": "cni0",
   "plugins": [
     {
@@ -62,7 +64,7 @@ write_cni_configs() {
 EOF
   cat >/etc/cni/net.d/99-loopback.conf <<'EOF'
 {
-  "cniVersion": "1.0.0",
+  "cniVersion": "0.4.0",
   "name": "lo",
   "type": "loopback"
 }
@@ -131,6 +133,7 @@ write_cni_configs
 
 systemctl enable containerd qemu-guest-agent
 systemctl restart containerd qemu-guest-agent
+crictl pull registry.k8s.io/pause:3.9 >/dev/null
 
 seed_version=""
 if [[ -f "$seed_manifest" ]]; then
@@ -155,6 +158,8 @@ cat >/etc/k1s-image/build-info.json <<JSON
   "distro": "ubuntu-22.04",
   "kernel_track": "ga-5.15",
   "cri_seed_version": "${seed_version}",
+  "bootstrap_contract_version": "${bootstrap_contract_version}",
+  "cni_version": "${expected_cni_version}",
   "vm_bootstrap_ready": true,
   "python_alias": true,
   "crictl_ready": true,

@@ -23,6 +23,8 @@ RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
 HA_CLOSEOUT_E2E_SCRIPT = ROOT / "scripts" / "dev" / "ha_closeout_e2e.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
+HOST_PREPARE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "host_prepare.sh"
+VARIANT_DOWN_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "variant_down.sh"
 COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
 GUEST_PREREQS_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "guest_prereqs.sh"
 CRI_PREFLIGHT_SCRIPT = ROOT / "scripts" / "cri_preflight.sh"
@@ -33,7 +35,10 @@ MAKEFILE = ROOT / "Makefile"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
 HA_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core.yaml"
+HA_HUB_NODE_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-hub-node.yaml"
 HA_DRILL_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core-drills.yaml"
+HA_BRING_UP_DOC = ROOT / "docs" / "ops" / "ha-cluster-bring-up.md"
+VM_VARIANT_RUNBOOK_DOC = ROOT / "docs" / "ops" / "vm-variant-runbook.md"
 
 _SMOKE_V2_SPEC = spec_from_file_location("smoke_v2_script", SMOKE_V2_SCRIPT)
 assert _SMOKE_V2_SPEC is not None and _SMOKE_V2_SPEC.loader is not None
@@ -41,6 +46,11 @@ smoke_v2 = module_from_spec(_SMOKE_V2_SPEC)
 # Dataclasses consult sys.modules during class decoration on Python 3.13+.
 sys.modules[_SMOKE_V2_SPEC.name] = smoke_v2
 _SMOKE_V2_SPEC.loader.exec_module(smoke_v2)
+
+
+def _write_executable(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
 
 
 def test_variant_parser_prints_normalized_json() -> None:
@@ -59,6 +69,7 @@ def test_variant_parser_prints_normalized_json() -> None:
     assert Path(payload["images"]["base"]).is_absolute()
     assert Path(payload["images"]["gpu"]).is_absolute()
     assert payload["k1s"]["apishim_port"] == 8445
+    assert payload["k1s"]["agent_api_port"] == 9110
     assert payload["transport"]["leaf_uplink_mode"] == "direct_ip"
     assert payload["transport"]["hub_host"] == "192.168.152.10"
     assert payload["transport"]["hub_leaf_port"] == 7422
@@ -100,6 +111,29 @@ def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
     assert [item["name"] for item in payload["ha"]["hub_nodes"]] == ["core-a", "core-b", "core-c"]
     assert payload["ha"]["edge_sites"][0]["monitor_url"] == "http://192.168.155.20:8223"
     assert payload["ha"]["edge_sites"][0]["expected_gateways"] == ["sea--sea-gw"]
+    assert payload["smoke"]["lanes"] == ["ha_control_plane"]
+
+
+def test_checked_in_ha_hub_node_variant_normalizes_for_manual_smoke_lane() -> None:
+    res = subprocess.run(  # noqa: S603
+        [sys.executable, str(VARIANT_SCRIPT), "--variant", str(HA_HUB_NODE_VARIANT_FILE), "--print-json"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    payload = json.loads(res.stdout)
+    assert payload["name"] == "ha-control-plane-hub-node"
+    assert [host["role"] for host in payload["hosts"][:3]] == [
+        "k1s-ha-core",
+        "k1s-ha-core",
+        "k1s-ha-core",
+    ]
+    assert payload["hosts"][3]["role"] == "k1s-core-node"
+    assert payload["hosts"][3]["node_id"] == "hub-1"
+    assert payload["hosts"][3]["node_labels"] == "role=hub,site=hub"
+    assert payload["k1s"]["agent_api_port"] == 9110
+    assert payload["ha"]["enabled"] is True
+    assert payload["ha"]["edge_sites"] == []
     assert payload["smoke"]["lanes"] == ["ha_control_plane"]
 
 
@@ -277,6 +311,7 @@ vm:
   disk_gb: 20
 k1s:
   controller_port: 9208
+  agent_api_port: 9210
   apishim_port: 9445
 ha:
   etcd_endpoints:
@@ -310,6 +345,7 @@ smoke:
     payload = json.loads(res.stdout)
     assert [host["role"] for host in payload["hosts"][:2]] == ["k1s-ha-core", "k1s-ha-core"]
     assert payload["k1s"]["controller_port"] == 9208
+    assert payload["k1s"]["agent_api_port"] == 9210
     assert payload["k1s"]["apishim_port"] == 9445
     assert payload["ha"]["enabled"] is True
     assert payload["ha"]["etcd_endpoints"] == [
@@ -532,6 +568,131 @@ smoke:
     assert lane["skipped"] is False
 
 
+def test_host_prepare_parse_args_accepts_variant() -> None:
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            (
+                f'source "{HOST_PREPARE_SCRIPT}"; '
+                f'parse_args --variant "{HA_VARIANT_FILE}" --apply; '
+                'printf "%s|%s" "$VARIANT" "$APPLY"'
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert res.stdout == f"{HA_VARIANT_FILE}|1"
+
+
+def test_host_prepare_rejects_variant_with_manual_network_flags() -> None:
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            (
+                f'source "{HOST_PREPARE_SCRIPT}"; '
+                f'parse_args --variant "{HA_VARIANT_FILE}" --cidr 192.168.155.0/24'
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 2
+    assert "--variant cannot be combined with --bridge, --cidr, or --gateway" in res.stderr
+
+
+def test_host_prepare_detects_existing_bridge_cidr_mismatch(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "sudo",
+        "#!/usr/bin/env bash\nexec \"$@\"\n",
+    )
+    _write_executable(
+        fake_bin / "ip",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "link" && "$2" == "show" && "$3" == "k1s-br0" ]]; then
+  exit 0
+fi
+if [[ "$1" == "-o" && "$2" == "-4" && "$3" == "addr" && "$4" == "show" && "$5" == "dev" && "$6" == "k1s-br0" ]]; then
+  echo "344: k1s-br0    inet 192.168.152.1/24 brd 192.168.152.255 scope global k1s-br0"
+  exit 0
+fi
+echo "unexpected ip args: $*" >&2
+exit 9
+""",
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            (
+                f'PATH="{fake_bin}:$PATH"; '
+                f'source "{HOST_PREPARE_SCRIPT}"; '
+                'BRIDGE="k1s-br0"; NET_CIDR="192.168.155.0/24"; GATEWAY="192.168.155.1"; '
+                'validate_existing_bridge'
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 1
+    assert "bridge=k1s-br0 already exists with IPv4 192.168.152.1/24; expected 192.168.155.1/24" in res.stderr
+    assert "--destroy-network" in res.stderr
+
+
+def test_host_prepare_allows_matching_existing_bridge(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "sudo",
+        "#!/usr/bin/env bash\nexec \"$@\"\n",
+    )
+    _write_executable(
+        fake_bin / "ip",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "link" && "$2" == "show" && "$3" == "k1s-br0" ]]; then
+  exit 0
+fi
+if [[ "$1" == "-o" && "$2" == "-4" && "$3" == "addr" && "$4" == "show" && "$5" == "dev" && "$6" == "k1s-br0" ]]; then
+  echo "344: k1s-br0    inet 192.168.155.1/24 brd 192.168.155.255 scope global k1s-br0"
+  exit 0
+fi
+echo "unexpected ip args: $*" >&2
+exit 9
+""",
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            (
+                f'PATH="{fake_bin}:$PATH"; '
+                f'source "{HOST_PREPARE_SCRIPT}"; '
+                'BRIDGE="k1s-br0"; NET_CIDR="192.168.155.0/24"; GATEWAY="192.168.155.1"; '
+                'validate_existing_bridge && echo ok'
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "ok"
+
+
+def test_variant_down_uses_run_inventory_fallback() -> None:
+    text = VARIANT_DOWN_SCRIPT.read_text(encoding="utf-8")
+    assert 'run_inventory="$(run_dir "$RUN_ID")/qemu_inventory.json"' in text
+    assert 'log "using run inventory fallback for run_id=${RUN_ID}: $inventory"' in text
+    assert 'elif pids="$(pgrep -f -- "$overlay" 2>/dev/null || true)" && [[ -n "$pids" ]]; then' in text
+
+
 def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     text = BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
     assert 'ha_profile_dir="$ROOT_DIR/state/profiles/k1s-ha-core"' in text
@@ -550,12 +711,18 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_APISHIM_MODE=\\${AE_APISHIM_MODE:-host}" in text
     assert "bootstrap_seed_cri_cache core" in text
     assert "bootstrap_seed_cri_cache edge" in text
+    assert "make k1s-core-node" in text
     assert "make k1s-ha-core" in text
+    assert "AE_CONTROLLER_URL=http://${controller_ip}:${controller_agent_port}" in text
     assert "AE_CONTROLLER_ADVERTISE_ADDR=http://${ip}:${controller_port}" in text
+    assert "AE_AGENT_API_PORT=${controller_agent_port}" in text
+    assert "AE_AGENT_API_TOKEN=${token}" in text
     assert "AE_APISHIM_ETCD_ENDPOINTS='${ha_etcd_endpoints}'" in text
     assert "AE_APISHIM_PRESEEDED=1" in text
     assert "APISHIM_HOST=\\${APISHIM_HOST:-0.0.0.0}" in text
     assert "APISHIM_CERT_SANS='${ha_apishim_cert_sans}'" in text
+    assert "AE_ROSENPASS_ENABLED=\\${AE_ROSENPASS_ENABLED:-0}" in text
+    assert "AE_NODE_PORT=${agent_port}" in text
     assert "AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db" in text
     assert "AE_GATEWAY_FENCE_DB=/var/lib/ae/gateway/fence-${site_id}-${node_id}.db" in text
     assert "sudo mkdir -p /var/lib/ae/gateway" in text
@@ -714,6 +881,8 @@ def test_image_verify_requires_vm_bootstrap_metadata_flags(tmp_path: Path) -> No
                 "kernel_track": "ga-5.15",
                 "checksum": sha_file.read_text(encoding="utf-8").split()[0],
                 "created_at": "2026-03-19T18:00:00Z",
+                "bootstrap_contract_version": "20260324-cni-0.4.0-smoke-v1",
+                "cni_version": "0.4.0",
                 "vm_bootstrap_ready": True,
                 "python_alias": True,
                 "crictl_ready": True,
@@ -760,8 +929,43 @@ def test_cri_seed_bundle_script_accepts_run_id_and_profile() -> None:
     assert "AE_CRI_CACHE_SEED_ENGINE" in text
     assert "[cri-seed] source already cached: $image" in text
     assert "build_cri_apishim_image.sh" in text
+    assert "samples/servers/shell-demo" in text
     assert "local seed image already cached" in text
     assert "images export" in text or "save -o" in text
+
+
+def test_ha_docs_use_variant_aware_host_prepare() -> None:
+    bring_up = HA_BRING_UP_DOC.read_text(encoding="utf-8")
+    runbook = VM_VARIANT_RUNBOOK_DOC.read_text(encoding="utf-8")
+    assert (
+        "scripts/lab/vm/labctl.sh host prepare \\\n"
+        "  --variant lab/variants/ha-control-plane-hub-node.yaml \\\n"
+        "  --apply"
+    ) in bring_up
+    assert (
+        "scripts/lab/vm/labctl.sh host prepare \\\n"
+        "  --variant lab/variants/ha-control-plane-hub-node.yaml \\\n"
+        "  --apply"
+    ) in runbook
+    assert "lab/variants/ha-control-plane-hub-node.yaml" in bring_up
+    assert "lab/variants/ha-control-plane-hub-node.yaml" in runbook
+    assert "--purge" in bring_up
+    assert "--purge" in runbook
+    assert "`--destroy-network` only when you want full bridge cleanup" in bring_up
+    assert "`--destroy-network` only when you want full bridge cleanup" in runbook
+    assert 'source <(ae auth local --strict)' in bring_up
+    assert (
+        'Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}'
+    ) in bring_up
+    assert (
+        'source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)'
+    ) in bring_up
+    assert (
+        'source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)'
+    ) in runbook
+    assert (
+        'Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}'
+    ) in runbook
 
 
 def test_lab_vm_scripts_prefer_repo_venv_python() -> None:
@@ -819,6 +1023,7 @@ def test_cri_seed_lock_contains_core_and_edge_images() -> None:
     assert "docker.io/library/registry:2" in payload["images"]["edge"]
     assert "quay.io/coreos/etcd:v3.5.13" in payload["images"]["core"]
     assert "docker.io/library/nats:2.10" in payload["images"]["edge"]
+    assert "docker.io/library/demo-shell:latest" in payload["images"]["core"]
     assert "localhost:5001/k1s-apishim:dev" in payload["images"]["core"]
 
 
@@ -1034,6 +1239,88 @@ def test_run_ha_acceptance_checks_passes_ha_discovery_to_transport_drill(monkeyp
     )
     assert "--etcd-prefix" in command
     assert command[command.index("--etcd-prefix") + 1] == "k1s/lab/ha-control-plane"
+
+
+def test_run_ha_acceptance_checks_includes_core_node_smoke_when_runtime_node_present(
+    monkeypatch,
+) -> None:
+    captured_commands: dict[str, list[str]] = {}
+
+    def _fake_run_helper_check(
+        name: str,
+        command: list[str],
+        *,
+        timeout_s: int,
+        optional: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        _ = timeout_s, optional, env
+        captured_commands[name] = command
+        return {
+            "name": name,
+            "status": "passed",
+            "optional": optional,
+            "detail": "ok",
+            "command": command,
+        }
+
+    monkeypatch.setattr(smoke_v2, "_run_helper_check", _fake_run_helper_check)
+
+    result = smoke_v2.run_ha_acceptance_checks(
+        {
+            "core_nodes": [
+                {
+                    "name": "core-a",
+                    "node_id": "core-a",
+                    "controller_url": "http://192.168.155.10:9108",
+                    "apishim_url": "https://192.168.155.10:8445",
+                }
+            ],
+            "runtime_nodes": [
+                {
+                    "name": "hub-1",
+                    "node_id": "hub-1",
+                    "ip": "192.168.155.20",
+                    "agent_url": "http://192.168.155.20:9111",
+                    "labels": {"role": "hub", "site": "hub"},
+                }
+            ],
+            "controller_metrics_url": "http://192.168.155.10:9108/metrics",
+            "etcd_endpoints": [
+                "http://192.168.155.10:2379",
+                "http://192.168.155.11:2379",
+                "http://192.168.155.12:2379",
+            ],
+            "etcd_prefix": "k1s/lab/ha-control-plane",
+            "nats_url": "nats://hub-controller:dev@192.168.155.10:4222",
+            "hub_nodes": [{"name": "core-a", "monitor_url": "http://192.168.155.10:8222"}],
+            "edge_core_sites": [],
+            "edge_sites": [],
+            "expected_version": "0.1.3.dev0",
+        },
+        timeout_s=30,
+    )
+
+    assert result["status"] == "passed"
+    assert captured_commands["ha_core_node_precheck"][:4] == [
+        sys.executable,
+        str(ROOT / "scripts" / "dev" / "ha_core_node_smoke.py"),
+        "precheck",
+        "--node-id",
+    ]
+    assert captured_commands["ha_core_node_precheck"][4] == "hub-1"
+    assert "--label" in captured_commands["ha_core_node_precheck"]
+    assert "role=hub" in captured_commands["ha_core_node_precheck"]
+    assert "site=hub" in captured_commands["ha_core_node_precheck"]
+    assert captured_commands["ha_core_node_workload_smoke"][:3] == [
+        sys.executable,
+        str(ROOT / "scripts" / "dev" / "ha_core_node_smoke.py"),
+        "workload-smoke",
+    ]
+    assert "--manifest" in captured_commands["ha_core_node_workload_smoke"]
+    assert "shell-demo-node-hub.yaml" in captured_commands["ha_core_node_workload_smoke"][
+        captured_commands["ha_core_node_workload_smoke"].index("--manifest") + 1
+    ]
 
 
 def test_smoke_v2_skips_vm_managed_ha_infra_for_external_backends() -> None:

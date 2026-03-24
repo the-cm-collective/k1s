@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TEMPLATE="${TEMPLATE:-$ROOT_DIR/lab/packer/ubuntu-22.04-ga.pkr.hcl}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/artifacts/images}"
 VARIANT="${VARIANT:-all}"
+BOOTSTRAP_CONTRACT_VERSION="${BOOTSTRAP_CONTRACT_VERSION:-20260324-cni-0.4.0-smoke-v1}"
+EXPECTED_CNI_VERSION="${EXPECTED_CNI_VERSION:-0.4.0}"
 
 usage() {
   cat <<USAGE
@@ -53,12 +55,16 @@ build_one() {
     --arg kernel_track "ga-5.15" \
     --arg checksum "$(cut -d' ' -f1 "$sha_file")" \
     --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg bootstrap_contract_version "$BOOTSTRAP_CONTRACT_VERSION" \
+    --arg cni_version "$EXPECTED_CNI_VERSION" \
     '{
       image:$image,
       variant:$variant,
       kernel_track:$kernel_track,
       checksum:$checksum,
       created_at:$created_at,
+      bootstrap_contract_version:$bootstrap_contract_version,
+      cni_version:$cni_version,
       vm_bootstrap_ready:true,
       python_alias:true,
       crictl_ready:true,

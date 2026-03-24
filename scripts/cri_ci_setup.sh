@@ -7,7 +7,7 @@ if [[ "${ACT:-}" == "true" ]]; then
 fi
 
 endpoint="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
-cni_version="${AE_CNI_VERSION:-1.0.0}"
+cni_version="${AE_CNI_VERSION:-0.4.0}"
 cni_force="${AE_CNI_FORCE:-1}"
 crictl_version="${CRICTL_VERSION:-v1.30.0}"
 

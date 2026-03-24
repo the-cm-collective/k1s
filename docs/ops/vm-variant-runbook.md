@@ -9,6 +9,7 @@ Reference variants
 - `lab/variants/test2-ab-passthrough.yaml`
 - `lab/variants/test3-abc-no-gpu.yaml` (validated non-GPU baseline)
 - `lab/variants/test3-abc-pp2.yaml` (passthrough profile)
+- `lab/variants/ha-control-plane-hub-node.yaml` (retained/manual HA smoke: 3 `k1s-ha-core` + 1 `k1s-core-node`)
 - `lab/variants/ha-control-plane-core.yaml` (HA closeout topology: 3 `k1s-ha-core` + 1 `k1s-edge-core` site)
 - `lab/variants/ha-control-plane-core-drills.yaml` (same HA topology, with disruptive drill commands enabled)
 
@@ -99,34 +100,66 @@ Manual retention for investigation:
 ```bash
 sudo -v
 export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_smoke
+scripts/lab/vm/labctl.sh host prepare \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --apply
 AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
 make lab-vm-smoke \
-  VARIANT=lab/variants/ha-control-plane-core.yaml \
+  VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
   RUN_ID="$RUN_ID" \
   LAB_VM_SMOKE_ARGS="--teardown never"
 ```
 
-Or explicit teardown after result inspection:
+Use that retained HA run as the direct manual-smoke lane on one workstation:
+- open `http://192.168.155.10:9108/dashboard`, `http://192.168.155.11:9108/dashboard`, or `http://192.168.155.12:9108/dashboard`
+- reach the API shim directly at `https://192.168.155.10:8445`, `https://192.168.155.11:8445`, or `https://192.168.155.12:8445`
+- the harness automatically validates that `hub-1` (`192.168.155.20`, `role=hub,site=hub`) registers and runs the pinned `shell-demo-node-hub` workload
+- `hub-1` reaches the controller agent API on `:9110` and runs without Rosenpass/WireGuard in this retained lane; overlay validation stays with the edge/gateway HA closeout topology
+- rebuild host docs against one controller if you want a local static docs entrypoint:
+
+```bash
+source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)
+curl -fsS \
+  -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
+  http://192.168.155.10:9108/system | python -m json.tool
+```
+
+```bash
+DOCS_API_BASE=http://192.168.155.10:9108 \
+DOCS_DASHBOARD_URL=http://192.168.155.10:9108/dashboard \
+python docs/build_docs.py
+python -m http.server 9109 --directory docs/site
+```
+
+Notes:
+- Treat this as a retained VM smoke environment, not a supported single-host HA dev profile.
+- Read surfaces stay usable on any healthy controller; leader-only mutations still return `not_leader` on followers.
+- In this HA VM profile, `/system` is bearer-protected and the dashboard needs the same bearer token for its data panels.
+- If `AE_API_READ_TOKEN` is unset, use `AE_API_ADMIN_TOKEN` in the header above and in the dashboard `Bearer` field.
+- The retained workload smoke uses the shared HA state store because controller HTTP mutations stay disabled in this profile.
+- Use `lab/variants/ha-control-plane-core.yaml` instead when you want the checked-in HA edge/gateway transport topology.
+- If you are reusing `k1s-br0` from a different variant CIDR, tear that lane down with `--destroy-network` before running the HA host prep command above.
+- If the controller backing the local docs build changes, rebuild with another core URL.
+
+Or explicit teardown after result inspection. Use `--destroy-network` only when you want full bridge cleanup or are switching to another subnet:
 
 ```bash
 scripts/lab/vm/labctl.sh variant down \
-  --variant lab/variants/test3-abc-no-gpu.yaml \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
   --run-id "$RUN_ID" \
-  --purge \
-  --destroy-network
+  --purge
 ```
 
 Direct helper usage remains available when you want to bypass Make and call the wrapper explicitly:
 
 ```bash
 scripts/lab/vm/smoke_helper.py \
-  --variant lab/variants/ha-control-plane-core.yaml \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
   --run-id "$RUN_ID" \
   --teardown on-success \
-  --purge \
-  --destroy-network
+  --purge
 ```
 
 ## 1) Host prerequisite check
@@ -139,6 +172,14 @@ Apply bridge/NAT setup:
 
 ```bash
 scripts/lab/vm/labctl.sh host prepare --apply
+```
+
+For the checked-in HA closeout topology, prefer the variant-aware form so the host bridge matches the variant CIDR exactly:
+
+```bash
+scripts/lab/vm/labctl.sh host prepare \
+  --variant lab/variants/ha-control-plane-core.yaml \
+  --apply
 ```
 
 ## 2) Bring up a variant

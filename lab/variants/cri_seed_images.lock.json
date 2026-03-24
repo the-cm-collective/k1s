@@ -10,6 +10,7 @@
       "docker.io/library/postgres:16",
       "docker.io/envoyproxy/envoy:v1.29-latest",
       "docker.io/rapiz1/rathole:v0.5.0",
+      "docker.io/library/demo-shell:latest",
       "localhost:5001/k1s-apishim:dev"
     ],
     "edge": [

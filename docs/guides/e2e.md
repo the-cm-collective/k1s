@@ -26,7 +26,7 @@ Podman Quickstart (recommended)
 CRI Quickstart (containerd)
 - Ensure containerd + CNI + `crictl` are installed (see `docs/ops/runbook.md`).
 - Initialize CNI configs if missing:
-  - `./scripts/cni_init.sh` (or `AE_CNI_FORCE=1 AE_CNI_VERSION=1.0.0 ./scripts/cni_init.sh`)
+  - `./scripts/cni_init.sh` (or `AE_CNI_FORCE=1 AE_CNI_VERSION=0.4.0 ./scripts/cni_init.sh`)
 - Start strict CRI profile lanes (recommended):
   - `make k1s-core-cri`
   - Optional edge pairings: `make k1s-edge-cri` / `make k1s-edge-core-cri`
@@ -36,7 +36,7 @@ CRI Quickstart (containerd)
   - `export AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9`
 - Run CRI preflight/smoke (optional):
   - `./scripts/cri_preflight.sh`
-  - `./scripts/cri_smoke.sh`
+  - `./scripts/cri_smoke.sh`  # verifies image pull plus PodSandbox networking
 
 CRI Multi-node Ingress + Security Validation (recommended for release confidence)
 - Run the canonical mode-isolated ingress lanes after strict CRI stack startup:

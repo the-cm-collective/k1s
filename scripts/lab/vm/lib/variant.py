@@ -10,6 +10,8 @@ from typing import Any
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+BOOTSTRAP_CONTRACT_VERSION = "20260324-cni-0.4.0-smoke-v1"
+EXPECTED_CNI_VERSION = "0.4.0"
 DEFAULT_SMOKE_LANES = [
     "single_non_gpu",
     "single_gpu",
@@ -38,7 +40,13 @@ DEFAULT_SMOKE_CHECKS = {
     "functional_advanced": False,
     "ha_acceptance": True,
 }
-ALLOWED_HOST_ROLES = {"k1s-core", "k1s-ha-core", "k1s-edge-core", "k1s-edge-node"}
+ALLOWED_HOST_ROLES = {
+    "k1s-core",
+    "k1s-core-node",
+    "k1s-ha-core",
+    "k1s-edge-core",
+    "k1s-edge-node",
+}
 ALLOWED_HA_SCHEMES = {"http", "https"}
 
 
@@ -58,13 +66,39 @@ def _resolve_repo_path(raw_path: str) -> str:
     return str(candidate.resolve())
 
 
+def _validate_image_metadata(image_name: str, image_path: str) -> None:
+    meta_path = Path(f"{image_path}.meta.json")
+    if not meta_path.is_file():
+        raise ValueError(f"images.{image_name} metadata not found: {meta_path}")
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"images.{image_name} metadata invalid JSON: {meta_path}") from exc
+
+    expected = {
+        "bootstrap_contract_version": BOOTSTRAP_CONTRACT_VERSION,
+        "cni_version": EXPECTED_CNI_VERSION,
+        "vm_bootstrap_ready": True,
+        "python_alias": True,
+        "crictl_ready": True,
+        "cni_ready": True,
+    }
+    for key, expected_value in expected.items():
+        actual = payload.get(key)
+        if actual != expected_value:
+            raise ValueError(
+                f"images.{image_name} metadata {key} expected {expected_value!r}, got {actual!r}: {meta_path}"
+            )
+
+
 def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
     name = _must(host, "name", str, f"hosts[{idx}]")
     ip = _must(host, "ip", str, f"hosts[{idx}]")
     role = _must(host, "role", str, f"hosts[{idx}]")
     if role not in ALLOWED_HOST_ROLES:
         raise ValueError(
-            f"hosts[{idx}].role must be one of k1s-core|k1s-ha-core|k1s-edge-core|k1s-edge-node"
+            "hosts[{idx}].role must be one of "
+            "k1s-core|k1s-core-node|k1s-ha-core|k1s-edge-core|k1s-edge-node"
         )
     return {
         "name": name,
@@ -75,7 +109,10 @@ def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
         "node_id": str(host.get("node_id", "")).strip() or name,
         "node_labels": str(host.get("node_labels", "")).strip() or None,
         "agent_port": int(
-            host.get("agent_port", 9112 if role not in {"k1s-core", "k1s-ha-core"} else 9111)
+            host.get(
+                "agent_port",
+                9112 if role not in {"k1s-core", "k1s-core-node", "k1s-ha-core"} else 9111,
+            )
         ),
     }
 
@@ -297,6 +334,7 @@ def parse_variant(path: Path, *, validate_images: bool = False) -> dict[str, Any
         for image_name, image_path in (("base", base_img), ("gpu", gpu_img)):
             if not Path(image_path).is_file():
                 raise ValueError(f"images.{image_name} not found: {image_path}")
+            _validate_image_metadata(image_name, image_path)
 
     hosts_raw = _must(raw, "hosts", list, "variant")
     if not hosts_raw:
@@ -383,6 +421,7 @@ def parse_variant(path: Path, *, validate_images: bool = False) -> dict[str, Any
         "k1s": {
             "agent_token": str(k1s.get("agent_token", "devtoken")),
             "controller_port": int(k1s.get("controller_port", 9108)),
+            "agent_api_port": int(k1s.get("agent_api_port", 9110)),
             "apishim_port": int(k1s.get("apishim_port", 8445)),
             "controller_host": str(k1s.get("controller_host", "")) or None,
             "inference_experimental": bool(k1s.get("inference_experimental", True)),

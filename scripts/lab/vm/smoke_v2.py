@@ -110,6 +110,19 @@ def parse_csv(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def parse_label_csv(raw: str | None) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for item in parse_csv(str(raw or "")):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            labels[key] = value
+    return labels
+
+
 def _url_host(raw: str) -> str:
     value = str(raw or "").strip()
     if not value:
@@ -416,6 +429,17 @@ def build_ha_lane_config(
     build = ae_build_info()
     return {
         "core_nodes": core_nodes,
+        "runtime_nodes": [
+            {
+                "name": host["name"],
+                "node_id": host.get("node_id") or host["name"],
+                "ip": host["ip"],
+                "agent_url": f"http://{host['ip']}:{int(host.get('agent_port') or 9111)}",
+                "labels": parse_label_csv(host.get("node_labels")),
+            }
+            for host in lane_hosts_full
+            if host["role"] == "k1s-core-node"
+        ],
         "edge_core_sites": sorted(
             {
                 str(host.get("site_id") or "").strip()
@@ -512,6 +536,14 @@ def host_service_check_command(
             f"if ! ss -ltn | awk '$4 ~ /:{apishim_port}$/ {{f=1}} END {{exit(f?0:1)}}'; then "
             "echo 'apishim_port_not_listening'; exit 41; fi; "
             "echo 'ok'"
+        )
+
+    if role == "k1s-core-node":
+        port = int(host.get("agent_port") or 9111)
+        return (
+            f"if ss -ltn | awk '$4 ~ /:{port}$/ {{f=1}} END {{exit(f?0:1)}}'; then echo 'ok'; exit 0; fi; "
+            "if pgrep -f 'k1s-core-node|ae.node' >/dev/null 2>&1; then echo 'agent_process_running'; exit 0; fi; "
+            "echo 'core_node_agent_not_ready'; exit 13"
         )
 
     if role == "k1s-edge-core":
@@ -779,6 +811,7 @@ def _ha_env(config: dict[str, Any]) -> dict[str, str]:
     if isinstance(controller, dict):
         env["AE_CONTROLLER_ID"] = str(controller.get("node_id") or controller.get("name") or "")
         env["AE_CONTROLLER_ADVERTISE_ADDR"] = str(controller.get("controller_url") or "")
+    env["AE_STATE_BACKEND"] = str(env.get("AE_STATE_BACKEND") or "etcd")
     env["AE_HA_MODE"] = str(env.get("AE_HA_MODE") or "1")
     env["AE_JS_REPLICAS"] = str(env.get("AE_JS_REPLICAS") or "3")
     env["AE_ETCD_ENDPOINTS"] = ",".join(str(item) for item in config.get("etcd_endpoints") or [])
@@ -901,6 +934,54 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             env=env,
         )
     )
+
+    runtime_nodes = list(config.get("runtime_nodes") or [])
+    if runtime_nodes:
+        runtime_node = runtime_nodes[0]
+        precheck_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_core_node_smoke.py"),
+            "precheck",
+            "--node-id",
+            str(runtime_node["node_id"]),
+        ]
+        for key, value in sorted((runtime_node.get("labels") or {}).items()):
+            precheck_cmd.extend(["--label", f"{key}={value}"])
+        checks.append(
+            _run_helper_check(
+                "ha_core_node_precheck",
+                precheck_cmd,
+                timeout_s=timeout_s,
+                env=env,
+            )
+        )
+
+        workload_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_core_node_smoke.py"),
+            "workload-smoke",
+            "--node-id",
+            str(runtime_node["node_id"]),
+            "--manifest",
+            str(ROOT / "docs" / "site" / "examples" / "shell-demo-node-hub.yaml"),
+            "--app-name",
+            "ha-core-node-smoke",
+            "--timeout",
+            str(timeout_s),
+            "--poll",
+            "2",
+            "--purge-history",
+        ]
+        for key, value in sorted((runtime_node.get("labels") or {}).items()):
+            workload_cmd.extend(["--label", f"{key}={value}"])
+        checks.append(
+            _run_helper_check(
+                "ha_core_node_workload_smoke",
+                workload_cmd,
+                timeout_s=timeout_s,
+                env=env,
+            )
+        )
 
     for site in config.get("edge_sites") or []:
         expected_gateways = [str(item) for item in site.get("expected_gateways") or []]

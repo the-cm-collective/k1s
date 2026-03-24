@@ -162,7 +162,7 @@ local_build_context() {
     normalized="${normalized#*/}"
   fi
   case "$normalized" in
-    demo-shell:latest)
+    demo-shell:latest|*/demo-shell:latest)
       echo "${root_dir}/samples/servers/shell-demo"
       ;;
     demo-green:latest)

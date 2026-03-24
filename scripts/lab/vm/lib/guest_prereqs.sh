@@ -9,6 +9,7 @@ vm_bootstrap_autofix_enabled() {
 
 vm_bootstrap_missing_prereqs() {
   local missing=()
+  local smoke_log=""
 
   command -v python3 >/dev/null 2>&1 || missing+=("python3")
   command -v python >/dev/null 2>&1 || missing+=("python")
@@ -32,6 +33,23 @@ vm_bootstrap_missing_prereqs() {
   if [[ -f /etc/containerd/config.toml ]] \
     && ! sudo containerd --config /etc/containerd/config.toml config dump >/dev/null 2>&1; then
     missing+=("containerd-config-valid")
+  fi
+
+  if command -v crictl >/dev/null 2>&1 \
+    && [[ -f /etc/crictl.yaml ]] \
+    && [[ -S /run/containerd/containerd.sock ]]; then
+    smoke_log="$(mktemp)"
+    if ! sudo env \
+      AE_CRI_ENDPOINT="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}" \
+      AE_CRI_SMOKE_PULL=0 \
+      /mnt/host/scripts/cri_smoke.sh >"$smoke_log" 2>&1; then
+      missing+=("cri-sandbox-smoke")
+      if [[ -s "$smoke_log" ]]; then
+        echo "[vm-prereqs] cri-sandbox-smoke detail:" >&2
+        tail -n 5 "$smoke_log" | sed 's/^/[vm-prereqs] /' >&2
+      fi
+    fi
+    rm -f "$smoke_log"
   fi
 
   if [[ "${#missing[@]}" -eq 0 ]]; then

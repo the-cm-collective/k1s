@@ -379,10 +379,19 @@ Expected result:
 - healthy controllers report `ae_controller_authority_healthy 1`
 - all nodes show the same current `ae_controller_epoch`
 
+Export local auth before reading `/system` or populating the dashboard:
+
+```bash
+source <(ae auth local --strict)
+```
+
 Inspect the HA snapshot served by `/system`:
 
 ```bash
-curl -fsS http://127.0.0.1:9108/system | python -c 'import json,sys; data=json.load(sys.stdin); print(json.dumps(data.get("ha", {}), indent=2))'
+curl -fsS \
+  -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
+  http://127.0.0.1:9108/system \
+  | python -c 'import json,sys; data=json.load(sys.stdin); print(json.dumps(data.get("ha", {}), indent=2))'
 ```
 
 Expected result:
@@ -396,6 +405,9 @@ Open the integrated dashboard on a core node:
 ```text
 http://<core-host>:9108/dashboard
 ```
+
+If the dashboard shows `Unauthorized (401)`, paste `AE_API_READ_TOKEN` or
+`AE_API_ADMIN_TOKEN` into the `Bearer` field and save.
 
 Confirm the `HA Control Plane` section is present and shows leader, epoch, `etcd`, and transport state.
 
@@ -426,8 +438,12 @@ Use this when you want the repo-managed, reproducible equivalent of the same HA 
 Prepare the host:
 
 ```bash
-scripts/lab/vm/labctl.sh host prepare --apply
+scripts/lab/vm/labctl.sh host prepare \
+  --variant lab/variants/ha-control-plane-core.yaml \
+  --apply
 ```
+
+If `k1s-br0` was left behind by another variant on a different CIDR, tear that lane down with `--destroy-network` before retrying this HA flow.
 
 Bring up the checked-in HA topology:
 
@@ -477,6 +493,81 @@ make lab-vm-smoke \
 ```
 
 That wrapper produces the machine-readable `runs/<RUN_ID>/ha_summary.json` artifact used by the HA closeout lane.
+
+### Single-Workstation Manual Smoke (Direct)
+
+Use this when you want to keep a checked-in HA topology running on one workstation for manual inspection and a small workload smoke. This is a retained VM smoke lane, not a supported single-host HA dev profile.
+
+Prepare the host for the HA variant first:
+
+```bash
+scripts/lab/vm/labctl.sh host prepare \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --apply
+```
+
+Bring the HA lane up without auto teardown:
+
+```bash
+sudo -v
+export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_ha_manual
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
+  RUN_ID="$RUN_ID" \
+  LAB_VM_SMOKE_ARGS="--teardown never"
+```
+
+This retained variant keeps the three HA controllers and replaces the previous `sea`
+edge pair with one workload-capable hub node:
+- `hub-1`: `192.168.155.20` (`role=hub,site=hub`)
+- the smoke helper automatically verifies that `hub-1` registers Ready and can run the pinned `shell-demo-node-hub` workload
+
+Direct controller access from the host:
+- `core-a`: `http://192.168.155.10:9108/dashboard`
+- `core-b`: `http://192.168.155.11:9108/dashboard`
+- `core-c`: `http://192.168.155.12:9108/dashboard`
+- API shim: `https://192.168.155.10:8445`, `https://192.168.155.11:8445`, `https://192.168.155.12:8445`
+
+Export local auth for the retained HA profile before reading `/system` or
+using the dashboard data panels:
+
+```bash
+source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)
+curl -fsS \
+  -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
+  http://192.168.155.10:9108/system | python -m json.tool
+```
+
+Host docs remain a static convenience layer. Point them at one controller URL and serve them locally:
+
+```bash
+DOCS_API_BASE=http://192.168.155.10:9108 \
+DOCS_DASHBOARD_URL=http://192.168.155.10:9108/dashboard \
+python docs/build_docs.py
+python -m http.server 9109 --directory docs/site
+```
+
+Notes:
+- Any healthy controller can serve `/dashboard`, `/system`, and `/metrics` during normal HA operation.
+- In this retained VM profile, `/system` is bearer-protected and only `AE_API_ADMIN_TOKEN` may be configured for controller HTTP reads.
+- `/dashboard` serves without auth, but its data panels fetch `/system`; paste the bearer token into the page when prompted.
+- `hub-1` reaches the HA controller agent API on `:9110` and runs with Rosenpass/WireGuard disabled in this retained lane; this lane validates HA control-plane health plus workload placement, not overlay networking.
+- Followers still reject leader-only mutation with `not_leader`; use the current leader for apply/scale/delete or retry after reading the leader hint.
+- The retained workload smoke uses the shared HA state store, not controller HTTP mutations, because this lane keeps `AE_API_MUTATIONS=0`.
+- `lab/variants/ha-control-plane-core.yaml` remains the separate HA closeout topology when you want edge/gateway transport coverage instead of a hub workload node.
+- If you are switching from another VM lane that used a different `k1s-br0` subnet, tear it down with `--destroy-network` before rerunning host prep for this HA variant.
+- If the controller used by `DOCS_API_BASE` goes away, rebuild docs with another core URL or open the remaining controllers directly.
+- Clean up manually when you are done. Use `--destroy-network` only when you want full bridge cleanup or are switching to another subnet:
+
+```bash
+scripts/lab/vm/labctl.sh variant down \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --run-id "$RUN_ID" \
+  --purge
+```
 
 ## Next Procedures
 

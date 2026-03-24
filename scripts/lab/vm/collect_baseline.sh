@@ -64,6 +64,7 @@ for row in "${rows[@]}"; do
 
   run_remote "$ip" "sudo journalctl -u containerd --no-pager -n 200" >"$run_root/logs/${name}-containerd.log" 2>/dev/null || true
   run_remote "$ip" "tail -n 400 /home/ae/k1s-core.log" >"$run_root/logs/${name}-k1s-core.log" 2>/dev/null || true
+  run_remote "$ip" "tail -n 400 /home/ae/k1s-core-node.log" >"$run_root/logs/${name}-k1s-core-node.log" 2>/dev/null || true
   run_remote "$ip" "tail -n 400 /home/ae/k1s-edge-core.log" >"$run_root/logs/${name}-k1s-edge-core.log" 2>/dev/null || true
   run_remote "$ip" "tail -n 400 /home/ae/k1s-edge-node.log" >"$run_root/logs/${name}-k1s-edge-node.log" 2>/dev/null || true
 
