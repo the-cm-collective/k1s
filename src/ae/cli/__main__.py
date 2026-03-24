@@ -3442,6 +3442,23 @@ def _preferred_profile_apishim_env(profile_dir: Path) -> Path | None:
     return None
 
 
+def _profile_private_apishim_env(apishim_env: Path | None) -> Path | None:
+    if apishim_env is None:
+        return None
+    try:
+        candidate = apishim_env.expanduser()
+        if candidate.parent.parent.name != "profiles":
+            return None
+        if candidate.name == "apishim.env":
+            return candidate
+        sibling = candidate.with_name("apishim.env")
+        if sibling == candidate:
+            return candidate
+        return sibling
+    except Exception:
+        return None
+
+
 def _profile_state_db_from_env(apishim_env: Path | None) -> Path | None:
     if not apishim_env:
         return None
@@ -3625,6 +3642,7 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
         apishim_env = _detect_apishim_env(
             args.apishim_env if args.apishim_env else None, controller_env, proc_env
         )
+        private_apishim_env = _profile_private_apishim_env(apishim_env)
         profile_state_db_path = _profile_state_db_from_env(apishim_env)
         profile_state_db = None
         if profile_state_db_path:
@@ -3687,20 +3705,40 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
         admin_token = pick(
             proc_env.get("AE_API_ADMIN_TOKEN"),
             _read_env_file_var(apishim_env, "AE_API_ADMIN_TOKEN"),
+            (
+                _read_env_file_var(private_apishim_env, "AE_API_ADMIN_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_API_ADMIN_TOKEN"),
             os.getenv("AE_API_ADMIN_TOKEN"),
         )
         labs_token = pick(
             proc_env.get("AE_LABS_TOKEN"),
             _read_env_file_var(apishim_env, "AE_LABS_TOKEN"),
+            (
+                _read_env_file_var(private_apishim_env, "AE_LABS_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_LABS_TOKEN"),
             os.getenv("AE_LABS_TOKEN"),
         )
         scaler_token = pick(
+            (
+                _read_env_file_var(private_apishim_env, "AE_API_SCALER_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_API_SCALER_TOKEN"),
             os.getenv("AE_API_SCALER_TOKEN"),
         )
         read_token = pick(
+            (
+                _read_env_file_var(private_apishim_env, "AE_API_READ_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_API_READ_TOKEN"),
             os.getenv("AE_API_READ_TOKEN"),
         )

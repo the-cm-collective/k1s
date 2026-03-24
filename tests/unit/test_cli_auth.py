@@ -246,6 +246,65 @@ def test_auth_local_strict_prefers_inferred_shared_cli_env(tmp_path, monkeypatch
     assert "export AE_APISHIM_CA_BUNDLE=state/profiles/k1s-core/apishim.ca.crt" in out
 
 
+def test_auth_local_infers_controller_http_tokens_from_sibling_profile_env(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    profile_dir = tmp_path / "state" / "profiles" / "k1s-ha-core"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    root_env = profile_dir / "apishim.env"
+    cli_env = profile_dir / "apishim.cli.env"
+    controller_env = tmp_path / "state" / "env.sh"
+    dev_env = tmp_path / "state" / "dev.env"
+    pid_path = tmp_path / "state" / "apishim.pid"
+
+    root_env.write_text(
+        "\n".join(
+            [
+                "AE_API_ADMIN_TOKEN=ha-admin-token",
+                "AE_LABS_TOKEN=ha-labs-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cli_env.write_text(
+        "\n".join(
+            [
+                "AE_APISHIM_SERVER=https://127.0.0.1:8445",
+                "AE_APISHIM_MINT_TOKEN=shared-mint-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    controller_env.parent.mkdir(parents=True, exist_ok=True)
+    controller_env.write_text(
+        "AE_STATE_DB=state/profiles/k1s-ha-core/controller.db\n",
+        encoding="utf-8",
+    )
+    dev_env.write_text("", encoding="utf-8")
+
+    rc = cli.main(
+        [
+            "auth",
+            "local",
+            "--strict",
+            "--controller-env",
+            str(controller_env),
+            "--dev-env",
+            str(dev_env),
+            "--apishim-pid",
+            str(pid_path),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "export AE_APISHIM_MINT_TOKEN=shared-mint-token" in out
+    assert "export AE_API_ADMIN_TOKEN=ha-admin-token" in out
+    assert "export AE_LABS_TOKEN=ha-labs-token" in out
+
+
 def test_auth_local_strict_hints_shared_env_for_unreadable_profile_env(
     tmp_path, monkeypatch, capsys
 ):
