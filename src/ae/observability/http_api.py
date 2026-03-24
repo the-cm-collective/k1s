@@ -1210,7 +1210,10 @@ def _build_transport_snapshot() -> dict[str, object]:
     return transport
 
 
-def _build_authority_snapshot(authority_snapshot: object | None) -> dict[str, object]:
+def _build_authority_snapshot(
+    authority_snapshot: object | None,
+    authority_members: list[object] | None = None,
+) -> dict[str, object]:
     enabled = (
         bool(getattr(authority_snapshot, "enabled", False))
         if authority_snapshot is not None
@@ -1250,6 +1253,37 @@ def _build_authority_snapshot(authority_snapshot: object | None) -> dict[str, ob
         if advertise_addr is None:
             advertise_addr = str(os.getenv("AE_CONTROLLER_ADVERTISE_ADDR") or "").strip() or None
     healthy = (not enabled) or is_leader or leader_id is not None
+    members: list[dict[str, object]] = []
+    for member in list(authority_members or []):
+        get = member.get if isinstance(member, dict) else lambda key: getattr(member, key, None)
+        member_id = str(get("controller_id") or "").strip()
+        if not member_id:
+            continue
+        member_is_leader = bool(get("is_leader")) or (
+            leader_id is not None and member_id == str(leader_id)
+        )
+        role = str(get("role") or ("leader" if member_is_leader else "standby")).strip().lower()
+        if role not in {"leader", "standby"}:
+            role = "leader" if member_is_leader else "standby"
+        members.append(
+            {
+                "controller_id": member_id,
+                "advertise_addr": str(get("advertise_addr") or "").strip() or None,
+                "version": str(get("version") or "").strip() or None,
+                "is_leader": bool(member_is_leader),
+                "is_local": bool(get("is_local")) or (
+                    controller_id is not None and member_id == str(controller_id)
+                ),
+                "role": role,
+            }
+        )
+    members.sort(
+        key=lambda member: (
+            0 if member["is_leader"] else 1,
+            0 if member["is_local"] else 1,
+            str(member["controller_id"]),
+        )
+    )
     return {
         "healthy": bool(healthy),
         "is_leader": bool(is_leader),
@@ -1257,6 +1291,8 @@ def _build_authority_snapshot(authority_snapshot: object | None) -> dict[str, ob
         "leader_id": leader_id,
         "leader_advertise_addr": advertise_addr,
         "controller_epoch": int(controller_epoch),
+        "member_count": len(members),
+        "members": members,
     }
 
 
@@ -1264,9 +1300,10 @@ def _build_ha_snapshot(
     *,
     extra: dict[str, object],
     authority_snapshot: object | None,
+    authority_members: list[object] | None,
     transport: dict[str, object],
 ) -> dict[str, object]:
-    authority = _build_authority_snapshot(authority_snapshot)
+    authority = _build_authority_snapshot(authority_snapshot, authority_members)
     build = AE_BUILD_INFO()
     probe_snapshot = extra.get("ha_probes") if isinstance(extra.get("ha_probes"), dict) else {}
     probe_snapshot = dict(probe_snapshot or {})
@@ -1479,6 +1516,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     # Optional system info provider injected by controller
     system_info_fn = None  # type: ignore[var-annotated]
     authority_info_fn = None  # type: ignore[var-annotated]
+    authority_members_fn = None  # type: ignore[var-annotated]
     plan_fn = None  # type: ignore[var-annotated]
     rollout_pause_fn = None  # type: ignore[var-annotated]
     rollout_resume_fn = None  # type: ignore[var-annotated]
@@ -4386,6 +4424,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 authority_snapshot = authority_fn()
             except Exception:
                 authority_snapshot = None
+        authority_members = None
+        authority_members_fn = getattr(self, "authority_members_fn", None)
+        if authority_members_fn is not None:
+            try:
+                authority_members = list(authority_members_fn())
+            except Exception:
+                authority_members = None
         try:
             transport = _build_transport_snapshot()
         except Exception:
@@ -4396,6 +4441,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         payload["ha"] = _build_ha_snapshot(
             extra=payload,
             authority_snapshot=authority_snapshot,
+            authority_members=authority_members,
             transport=transport,
         )
         payload.pop("ha_probes", None)
@@ -5364,6 +5410,7 @@ def start_http_api(
     logs_fn=None,
     system_info_fn=None,
     authority_info_fn=None,
+    authority_members_fn=None,
     plan_fn=None,
     rollout_pause_fn=None,
     rollout_resume_fn=None,
@@ -5387,6 +5434,9 @@ def start_http_api(
     )
     handler_cls.authority_info_fn = (
         staticmethod(authority_info_fn) if authority_info_fn is not None else None
+    )
+    handler_cls.authority_members_fn = (
+        staticmethod(authority_members_fn) if authority_members_fn is not None else None
     )
     handler_cls.plan_fn = staticmethod(plan_fn) if plan_fn is not None else None
     handler_cls.rollout_pause_fn = (

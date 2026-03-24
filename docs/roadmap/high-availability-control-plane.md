@@ -428,6 +428,13 @@ Primary outcomes:
 - phase 1 explicitly does not claim per-member freshness; membership and role are authoritative, but freshness remains out of scope
 - the amendment remains post-closeout operator-surface work and does not reopen HA correctness scope or change the original `H5c` closeout claim
 
+Current implementation status:
+
+- `src/ae/controller/authority.py` now lists controller presence members directly from `controlplane/controllers/*` so phase 1 uses authority-backed membership instead of inferred node layout
+- `src/ae/observability/http_api.py` now exposes `ha.authority.members` with leader/local role flags in the `GET /system` HA payload
+- `src/ae/resources/observability/dashboard.html` now renders controller-only HA member pips on the collapsed system controller hex, adds a distinct graph legend entry, and mirrors member details into both the HA authority card and the controller hover card
+- `tests/unit/test_controller_authority.py`, `tests/unit/test_system_ha_dashboard.py`, and `tests/unit/test_dashboard_template_ha.py` cover the authority member read path, additive payload shape, and dashboard template hooks for this phase
+
 ### H5c Amendment Follow-On Phase 2: Presence Freshness and Member Age
 
 Goal:

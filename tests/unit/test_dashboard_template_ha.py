@@ -13,3 +13,9 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert 'id="ha-etcd"' in html
     assert 'id="ha-transport"' in html
     assert 'id="ha-edge-sites"' in html
+    assert 'id="overlays"' in html
+    assert "HA members" in html
+    assert "authority-member-pip" in html
+    assert "authorityMembersFromSnapshot" in html
+    assert "graphHoverOwner" in html
+    assert "authorityMemberPipOffsets" in html

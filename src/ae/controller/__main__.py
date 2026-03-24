@@ -2987,6 +2987,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 authority_info_fn=(
                     (lambda: authority.snapshot()) if authority is not None else None
                 ),
+                authority_members_fn=(
+                    (lambda: authority.list_members()) if authority is not None else None
+                ),
                 plan_fn=_plan,
                 rollout_pause_fn=_rollout_pause,
                 rollout_resume_fn=_rollout_resume,

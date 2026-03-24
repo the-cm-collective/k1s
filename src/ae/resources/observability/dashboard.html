@@ -461,6 +461,36 @@
                     stroke-width: 1.2;
                     pointer-events:none;
                   }
+                  .authority-member-pip .ha-pip-hit {
+                    fill: transparent;
+                    stroke: none;
+                    pointer-events: all;
+                  }
+                  .authority-member-pip .ha-pip-body {
+                    stroke-width:1.6;
+                  }
+                  .authority-member-pip .ha-pip-ring {
+                    fill:none;
+                    stroke:transparent;
+                    stroke-width:1.4;
+                  }
+                  .authority-member-pip.role-leader .ha-pip-body {
+                    fill:#22c55e;
+                    stroke:#dcfce7;
+                    filter: drop-shadow(0 0 5px rgba(34,197,94,0.45));
+                  }
+                  .authority-member-pip.role-standby .ha-pip-body {
+                    fill:#38bdf8;
+                    stroke:#dbeafe;
+                    filter: drop-shadow(0 0 4px rgba(56,189,248,0.35));
+                  }
+                  .authority-member-pip.role-unknown .ha-pip-body {
+                    fill:#64748b;
+                    stroke:#cbd5e1;
+                  }
+                  .authority-member-pip.local .ha-pip-ring {
+                    stroke:rgba(255,255,255,0.95);
+                  }
                   .site-panel { }
                   .site-panel.stale {
                     stroke:#f59e0b;
@@ -527,6 +557,7 @@
               <g id="panels"></g>
               <g id="links"></g>
               <g id="nodes"></g>
+              <g id="overlays"></g>
               <g id="labels"></g>
             </svg>
             <div id="graph-legend" style="position:absolute; right:8px; top:8px; background:rgba(17,24,39,0.82); color:#e5e7eb; padding:6px 8px; border-radius:6px; border:1px solid #334155; backdrop-filter: blur(2px); font-size:12px; z-index:2;">
@@ -536,6 +567,7 @@
                 <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0b1220" stroke="#60a5fa" stroke-width="1.6"/></svg> Site</span>
                 <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0b1220" stroke="#fbbf24" stroke-width="1.6"/></svg> Node (gateway)</span>
                 <span id="legend-namespace" title="Namespace: default" style="--ns-color:#3b82f6;"><svg width="16" height="16" viewBox="0 0 24 24"><path id="legend-namespace-hex" d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0f172a" stroke="var(--ns-color)" stroke-width="1.6"/></svg> Namespace (current)</span>
+                <span title="HA control-plane members"><svg width="30" height="14" viewBox="0 0 30 14"><circle cx="7" cy="7" r="4.5" fill="#22c55e" stroke="#dcfce7" stroke-width="1.2"/><circle cx="15" cy="7" r="4.5" fill="#38bdf8" stroke="#dbeafe" stroke-width="1.2"/><circle cx="23" cy="7" r="4.5" fill="#38bdf8" stroke="#dbeafe" stroke-width="1.2"/><circle cx="23" cy="7" r="6.1" fill="none" stroke="#f8fafc" stroke-width="1.2"/></svg> HA members</span>
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#dcfce7" stroke="#16a34a"/></svg> Pod ready</span>
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#fef3c7" stroke="#f59e0b"/></svg> Pod pending</span>
                 <span><svg width="30" height="8"><path d="M1 4 L22 4" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 6"/><polygon points="22,1 29,4 22,7" fill="#9ca3af"/></svg> Flow</span>
@@ -698,6 +730,7 @@ Connection: close
       var lastStatuses = [];
       var currentDetail = null;
       var graphHover = null;
+      var graphHoverOwner = null;
       var graphPathMode = (localStorage.getItem('graph_path_mode') || 'orth'); // 'orth' or 'straight'
       var graphNamespaceCollapse = (localStorage.getItem('graph_namespace_collapse') || '0') === '1';
       var graphNodeScaleMode = (localStorage.getItem('graph_node_scale') || 'compact'); // 'compact' or 'comfortable'
@@ -1383,6 +1416,64 @@ Connection: close
         }).join('');
       }
 
+      function authorityMembersFromSnapshot(authority){
+        var list = Array.isArray(authority && authority.members) ? authority.members : [];
+        return list.map(function(member){
+          if (!member) return null;
+          var controllerId = String(member.controller_id || '').trim();
+          if (!controllerId) return null;
+          var isLeader = !!member.is_leader || String(member.role || '').toLowerCase() === 'leader';
+          var role = isLeader ? 'leader' : 'standby';
+          return {
+            controller_id: controllerId,
+            advertise_addr: String(member.advertise_addr || '').trim(),
+            version: String(member.version || '').trim(),
+            is_leader: isLeader,
+            is_local: !!member.is_local,
+            role: role
+          };
+        }).filter(Boolean);
+      }
+
+      function authorityMemberPillClass(member){
+        return (member && member.is_leader) ? 'ok' : 'warn';
+      }
+
+      function renderAuthorityMemberList(members){
+        return (members || []).map(function(member){
+          var badges = [
+            '<span class="pill ' + authorityMemberPillClass(member) + '">' + escapeHtml(member.role) + '</span>'
+          ];
+          if (member.is_local) badges.push('<span class="pill">local</span>');
+          var meta = [];
+          if (member.advertise_addr) meta.push('advertise=' + member.advertise_addr);
+          if (member.version) meta.push('version=' + member.version);
+          return (
+            '<div class="ha-site">' +
+              '<div><strong>' + escapeHtml(member.controller_id) + '</strong> ' + badges.join(' ') + '</div>' +
+              (meta.length ? ('<div class="ha-meta">' + escapeHtml(meta.join(' · ')) + '</div>') : '') +
+            '</div>'
+          );
+        }).join('');
+      }
+
+      function formatAuthorityMemberHover(member){
+        if (!member) return null;
+        var lines = [];
+        lines.push('<div><strong>' + escapeHtml(member.controller_id || 'controller') + '</strong></div>');
+        lines.push('<div>role: <code>' + escapeHtml(member.role || (member.is_leader ? 'leader' : 'standby')) + '</code>' + (member.is_local ? ' · local' : '') + '</div>');
+        if (member.advertise_addr) {
+          lines.push('<div>advertise: <code>' + escapeHtml(member.advertise_addr) + '</code></div>');
+        }
+        if (member.version) {
+          lines.push('<div>version: <code>' + escapeHtml(member.version) + '</code></div>');
+        }
+        return {
+          title: 'HA Member',
+          body: lines.join('')
+        };
+      }
+
       function pillClassForSeverity(severity){
         var sev = String(severity || '').toLowerCase();
         if (sev === 'error' || sev === 'err' || sev === 'bad') return 'bad';
@@ -1415,6 +1506,7 @@ Connection: close
         }
 
         var authority = ha.authority || {};
+        var authorityMembers = authorityMembersFromSnapshot(authority);
         var etcd = ha.etcd || {};
         var transport = ha.transport || {};
         var jetstream = transport.jetstream || {};
@@ -1469,8 +1561,9 @@ Connection: close
           {k:'Leader', v: authority.leader_id || '-'},
           {k:'Advertise', v: authority.leader_advertise_addr || '-'},
           {k:'Epoch', v: String(authority.controller_epoch != null ? authority.controller_epoch : '-')},
+          {k:'Members', v: String(authority.member_count != null ? authority.member_count : authorityMembers.length)},
           {k:'Build', v: (build.version || '-') + (build.date ? (' (' + build.date + ')') : '')},
-        ]);
+        ]) + (authorityMembers.length ? renderAuthorityMemberList(authorityMembers) : '');
 
         var etcdRows = [
           {k:'Configured', v: String((etcd.configured_endpoints || []).length)},
@@ -2772,6 +2865,7 @@ Connection: close
         var svg = document.getElementById('sys-graph');
         if(!svg) return;
         graphHover = graphHover || document.getElementById('graph-hover');
+        graphHoverOwner = null;
         if (graphHover) { graphHover.style.display='none'; }
         var wrapEl = document.getElementById('graph-wrap');
         var W = svg.clientWidth || (wrapEl ? wrapEl.clientWidth : 1000) || 1000;
@@ -2796,6 +2890,7 @@ Connection: close
         var siteDetails = (transport && transport.sites_detail) ? transport.sites_detail : {};
         var ha = (sys && sys.ha) ? sys.ha : {};
         var haAuthority = (ha && ha.authority) ? ha.authority : {};
+        var haAuthorityMembers = authorityMembersFromSnapshot(haAuthority);
         var haTransport = (ha && ha.transport) ? ha.transport : {};
         var siteRows = Array.isArray(haTransport.sites) ? haTransport.sites : [];
         var siteRowById = {};
@@ -2853,6 +2948,34 @@ Connection: close
         function addNode(id, label, type, x, y, meta){
           var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}};
           nodes.push(n); nodeById[id]=n; return n;
+        }
+        function authorityMemberPipOffsets(count){
+          var total = Math.max(0, Math.min(3, Number(count || 0)));
+          var positions = [];
+          if (!total) return positions;
+          var edgeA = {x: 0, y: -56};
+          var edgeB = {x: 48.497, y: -28};
+          var tangent = {x: edgeB.x - edgeA.x, y: edgeB.y - edgeA.y};
+          var edgeLen = Math.sqrt((tangent.x * tangent.x) + (tangent.y * tangent.y)) || 1;
+          var outward = {x: tangent.y / edgeLen, y: -tangent.x / edgeLen};
+          var edgeInsetStart = 0.55;
+          var edgeInsetEnd = 0.9;
+          var normalInset = 7.5;
+          function at(t){
+            var clamped = Math.max(0, Math.min(1, t));
+            return {
+              x: edgeA.x + (tangent.x * clamped) + (outward.x * normalInset),
+              y: edgeA.y + (tangent.y * clamped) + (outward.y * normalInset)
+            };
+          }
+          if (total === 1) {
+            return [at((edgeInsetStart + edgeInsetEnd) / 2)];
+          }
+          for (var i = 0; i < total; i++) {
+            var ratio = i / Math.max(1, total - 1);
+            positions.push(at(edgeInsetStart + ((edgeInsetEnd - edgeInsetStart) * ratio)));
+          }
+          return positions;
         }
         function addLabel(id, text, x, y, color, textColor, anchor, size){
           labelNodes.push({id:id, text:text, x:x, y:y, color:color, textColor:textColor, anchor:anchor, size:size});
@@ -3105,7 +3228,8 @@ Connection: close
             coreHub:false,
             leader: isControllerNode && localControllerRole === 'leader',
             standby: isControllerNode && localControllerRole === 'standby',
-            authority: isControllerNode ? haAuthority : null
+            authority: isControllerNode ? haAuthority : null,
+            member_pips: isControllerNode ? haAuthorityMembers : []
           });
         });
         var sysLabelX = systemCenter.x;
@@ -4321,11 +4445,13 @@ Connection: close
         var gPanels = svg.querySelector('#panels');
         var gNodes = svg.querySelector('#nodes');
         var gLinks = svg.querySelector('#links');
+        var gOverlays = svg.querySelector('#overlays');
         var gLabels = svg.querySelector('#labels');
-        if(!gPanels||!gNodes||!gLinks||!gLabels) return;
+        if(!gPanels||!gNodes||!gLinks||!gOverlays||!gLabels) return;
         gPanels.innerHTML = '';
         gNodes.innerHTML = '';
         gLinks.innerHTML = '';
+        gOverlays.innerHTML = '';
         gLabels.innerHTML = '';
 
         function pointInRect(x, y, r){
@@ -5082,6 +5208,64 @@ Connection: close
           };
         }
 
+        function drawAuthorityMemberPips(n, localScale){
+          if (!gOverlays || !n || n.type !== 'system' || !n.meta || n.meta.system !== 'controller') return;
+          var authorityMembers = Array.isArray(n.meta.member_pips) ? n.meta.member_pips.slice(0, 3) : [];
+          if (!authorityMembers.length) return;
+          var pipOffsets = authorityMemberPipOffsets(authorityMembers.length);
+          authorityMembers.forEach(function(member, memberIdx){
+            var pos = pipOffsets[memberIdx];
+            if (!pos) return;
+            var pipGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+            var pipRole = String(member.role || (member.is_leader ? 'leader' : 'standby')).toLowerCase();
+            if (pipRole !== 'leader' && pipRole !== 'standby') pipRole = 'unknown';
+            var pipClass = 'authority-member-pip role-' + pipRole;
+            if (member.is_local) pipClass += ' local';
+            pipGroup.setAttribute('class', pipClass);
+            pipGroup.setAttribute(
+              'transform',
+              'translate(' + (n.x + (pos.x * localScale)) + ' ' + (n.y + (pos.y * localScale)) + ')'
+            );
+            pipGroup.style.cursor = 'pointer';
+
+            var hit = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            hit.setAttribute('class', 'ha-pip-hit');
+            hit.setAttribute('cx', '0');
+            hit.setAttribute('cy', '0');
+            hit.setAttribute('r', String(10 * localScale));
+            pipGroup.appendChild(hit);
+
+            var ring = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            ring.setAttribute('class', 'ha-pip-ring');
+            ring.setAttribute('cx', '0');
+            ring.setAttribute('cy', '0');
+            ring.setAttribute('r', String(7 * localScale));
+            pipGroup.appendChild(ring);
+
+            var body = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            body.setAttribute('class', 'ha-pip-body');
+            body.setAttribute('cx', '0');
+            body.setAttribute('cy', '0');
+            body.setAttribute('r', String(5.1 * localScale));
+            pipGroup.appendChild(body);
+
+            pipGroup.addEventListener('mouseenter', function(ev){
+              ev.stopPropagation();
+              showAuthorityMemberHoverCard(member, ev);
+            });
+            pipGroup.addEventListener('mousemove', function(ev){
+              ev.stopPropagation();
+              showAuthorityMemberHoverCard(member, ev);
+            });
+            pipGroup.addEventListener('mouseleave', function(ev){
+              ev.stopPropagation();
+              if (graphHoverOwner === 'ha-member') hideHoverCard();
+            });
+
+            gOverlays.appendChild(pipGroup);
+          });
+        }
+
         function drawHexNode(n){
           var g = document.createElementNS('http://www.w3.org/2000/svg','g');
           var extraClass = '';
@@ -5259,6 +5443,9 @@ Connection: close
             gInner.appendChild(subLabel);
           }
           gNodes.appendChild(g);
+          if (n.type === 'system' && n.meta && n.meta.system === 'controller') {
+            drawAuthorityMemberPips(n, localScale);
+          }
 
           var labelMax = hexW * 1.2 * scaleFactor;
           var labelInfo = fitTextToWidth(text, n.label, labelMax);
@@ -5498,6 +5685,20 @@ Connection: close
                 lines.unshift('Local role: <code>' + escapeHtml(localControllerRole) + '</code>');
                 if (haAuthority.leader_id) lines.unshift('Leader: <code>' + escapeHtml(haAuthority.leader_id) + '</code>');
                 lines.push('Epoch: <code>' + escapeHtml(String(haAuthority.controller_epoch != null ? haAuthority.controller_epoch : '-')) + '</code>');
+                if (haAuthorityMembers.length) {
+                  lines.push('<strong>Members</strong>');
+                  haAuthorityMembers.forEach(function(member){
+                    var memberLine = '<code>' + escapeHtml(member.controller_id) + '</code> · ' + escapeHtml(member.role);
+                    if (member.is_local) memberLine += ' · local';
+                    if (member.advertise_addr) {
+                      memberLine += ' · <code>' + escapeHtml(member.advertise_addr) + '</code>';
+                    }
+                    if (member.version) {
+                      memberLine += ' · <code>' + escapeHtml(member.version) + '</code>';
+                    }
+                    lines.push(memberLine);
+                  });
+                }
               }
               return lines.join('<br>');
             })()
@@ -5538,12 +5739,14 @@ Connection: close
 
         function showHoverCard(kind, evt){
           if (!graphHover) return;
+          if (graphHoverOwner === 'ha-member') return;
           var wrap = document.getElementById('graph-wrap');
           var rect = wrap.getBoundingClientRect();
           var x = (evt.clientX - rect.left) + 10;
           var y = (evt.clientY - rect.top) + 10;
           var info = sysHelp[kind];
           if (!info) return;
+          graphHoverOwner = 'system:' + String(kind || '');
           graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
           graphHover.style.left = x + 'px';
           graphHover.style.top = y + 'px';
@@ -5558,12 +5761,31 @@ Connection: close
           var rect = wrap.getBoundingClientRect();
           var x = (evt.clientX - rect.left) + 10;
           var y = (evt.clientY - rect.top) + 10;
+          graphHoverOwner = 'overlay';
           graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
           graphHover.style.left = x + 'px';
           graphHover.style.top = y + 'px';
           graphHover.style.display = 'block';
         }
-        function hideHoverCard(){ if (graphHover) graphHover.style.display='none'; }
+
+        function showAuthorityMemberHoverCard(member, evt){
+          if (!graphHover) return;
+          var info = formatAuthorityMemberHover(member);
+          if (!info) return;
+          var wrap = document.getElementById('graph-wrap');
+          var rect = wrap.getBoundingClientRect();
+          var x = (evt.clientX - rect.left) + 10;
+          var y = (evt.clientY - rect.top) + 10;
+          graphHoverOwner = 'ha-member';
+          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
+          graphHover.style.left = x + 'px';
+          graphHover.style.top = y + 'px';
+          graphHover.style.display = 'block';
+        }
+        function hideHoverCard(){
+          graphHoverOwner = null;
+          if (graphHover) graphHover.style.display='none';
+        }
 
         // Highlight selection
         try {

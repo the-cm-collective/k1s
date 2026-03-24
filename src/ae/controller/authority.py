@@ -62,6 +62,18 @@ class LeaseClient(Protocol):
     def close(self) -> None: ...
 
 
+def _prefix_end(prefix: str | bytes) -> bytes:
+    raw = prefix.encode("utf-8") if isinstance(prefix, str) else prefix
+    if not raw:
+        return b"\x00"
+    buf = bytearray(raw)
+    for idx in range(len(buf) - 1, -1, -1):
+        if buf[idx] < 0xFF:
+            buf[idx] += 1
+            return bytes(buf[: idx + 1])
+    return b"\x00"
+
+
 @dataclass(slots=True, frozen=True)
 class AuthorityConfig:
     enabled: bool
@@ -132,6 +144,13 @@ class LeaderInfo:
     lease_id: int
     advertise_addr: str | None
     acquired_at: datetime | None
+    version: str
+
+
+@dataclass(slots=True, frozen=True)
+class AuthorityMember:
+    controller_id: str
+    advertise_addr: str | None
     version: str
 
 
@@ -307,6 +326,41 @@ class ControllerAuthorityService:
 
     def wait_until_ready(self, timeout: float | None = None) -> bool:
         return self._ready.wait(timeout)
+
+    def list_members(self) -> list[AuthorityMember]:
+        if not self.config.enabled:
+            return []
+        try:
+            response = self.kv_client.range(
+                self.config.controllers_prefix,
+                range_end=_prefix_end(self.config.controllers_prefix),
+            )
+        except Exception:
+            return []
+        members: list[AuthorityMember] = []
+        for kv in list(response.get("kvs") or []):
+            try:
+                key = base64.b64decode(str(kv.get("key", "")).encode("ascii")).decode("utf-8")
+            except Exception:
+                key = ""
+            try:
+                raw = base64.b64decode(str(kv.get("value", "")).encode("ascii")).decode("utf-8")
+                rec = json.loads(raw)
+            except Exception:
+                continue
+            key_controller_id = key.rsplit("/", 1)[-1] if key else ""
+            controller_id = str(rec.get("controller_id") or key_controller_id or "").strip()
+            if not controller_id:
+                continue
+            members.append(
+                AuthorityMember(
+                    controller_id=controller_id,
+                    advertise_addr=str(rec.get("advertise_addr") or "").strip() or None,
+                    version=str(rec.get("version") or AE_VERSION),
+                )
+            )
+        members.sort(key=lambda member: member.controller_id)
+        return members
 
     def _run(self) -> None:
         delay = 0.1
@@ -533,6 +587,7 @@ class ControllerAuthorityService:
 
 __all__ = [
     "AuthorityConfig",
+    "AuthorityMember",
     "AuthoritySnapshot",
     "ControllerAuthorityService",
     "LeaderInfo",

@@ -7,7 +7,9 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
-if "requests" not in sys.modules:
+try:
+    import requests  # noqa: F401
+except ImportError:
     requests_stub = types.ModuleType("requests")
 
     class _RequestException(Exception):
@@ -20,7 +22,9 @@ if "requests" not in sys.modules:
     requests_stub.get = _get
     sys.modules["requests"] = requests_stub
 
-if "yaml" not in sys.modules:
+try:
+    import yaml  # noqa: F401
+except ImportError:
     yaml_stub = types.ModuleType("yaml")
     yaml_stub.safe_load = lambda *_args, **_kwargs: {}
     yaml_stub.safe_dump = lambda *_args, **_kwargs: ""
@@ -44,6 +48,7 @@ def _make_handler(
     tmp_path: Path,
     *,
     authority_info_fn=None,
+    authority_members_fn=None,
     system_info_fn=None,
 ) -> _ApiHandler:
     handler = object.__new__(_ApiHandler)
@@ -51,6 +56,8 @@ def _make_handler(
     handler.wfile = io.BytesIO()  # type: ignore[attr-defined]
     if authority_info_fn is not None:
         handler.authority_info_fn = staticmethod(authority_info_fn)  # type: ignore[attr-defined]
+    if authority_members_fn is not None:
+        handler.authority_members_fn = staticmethod(authority_members_fn)  # type: ignore[attr-defined]
     if system_info_fn is not None:
         handler.system_info_fn = staticmethod(system_info_fn)  # type: ignore[attr-defined]
 
@@ -180,6 +187,23 @@ def test_system_exposes_ha_snapshot_and_merges_probe_cache(
                 ),
                 controller_epoch=19,
             ),
+            authority_members_fn=lambda: [
+                {
+                    "controller_id": "ctrl-c",
+                    "advertise_addr": "http://ctrl-c:9108",
+                    "version": "0.1.0",
+                },
+                {
+                    "controller_id": "ctrl-a",
+                    "advertise_addr": "http://ctrl-a:9108",
+                    "version": "0.1.0",
+                },
+                {
+                    "controller_id": "ctrl-b",
+                    "advertise_addr": "http://ctrl-b:9108",
+                    "version": "0.1.1",
+                },
+            ],
             system_info_fn=lambda: {
                 "ha_probes": {
                     "enabled": True,
@@ -207,6 +231,15 @@ def test_system_exposes_ha_snapshot_and_merges_probe_cache(
     assert ha["authority"]["healthy"] is True
     assert ha["authority"]["leader_id"] == "ctrl-b"
     assert ha["authority"]["controller_epoch"] == 19
+    assert ha["authority"]["member_count"] == 3
+    assert [member["controller_id"] for member in ha["authority"]["members"]] == [
+        "ctrl-b",
+        "ctrl-a",
+        "ctrl-c",
+    ]
+    assert ha["authority"]["members"][0]["role"] == "leader"
+    assert ha["authority"]["members"][0]["is_leader"] is True
+    assert ha["authority"]["members"][1]["is_local"] is True
     assert ha["etcd"]["healthy_endpoints"] == 1
     assert ha["etcd"]["unhealthy_endpoints"] == 1
     assert ha["transport"]["backend"] == "nats-js"

@@ -58,18 +58,34 @@ class _FakeKvClient:
         self._records.pop(key, None)
 
     def range(self, key: str, *, range_end=None, limit: int | None = None) -> dict:
-        rec = self._records.get(key)
-        if rec is None:
+        rows: list[tuple[str, dict[str, object]]] = []
+        if range_end is None:
+            rec = self._records.get(key)
+            if rec is None:
+                return {}
+            rows = [(key, rec)]
+        else:
+            start = key.encode("utf-8")
+            end = range_end.encode("utf-8") if isinstance(range_end, str) else bytes(range_end)
+            rows = [
+                (record_key, rec)
+                for record_key, rec in sorted(self._records.items())
+                if start <= record_key.encode("utf-8") < end
+            ]
+        if limit is not None:
+            rows = rows[:limit]
+        if not rows:
             return {}
         return {
             "kvs": [
                 {
-                    "key": base64.b64encode(key.encode("utf-8")).decode("ascii"),
+                    "key": base64.b64encode(record_key.encode("utf-8")).decode("ascii"),
                     "value": base64.b64encode(str(rec["value"]).encode("utf-8")).decode("ascii"),
                     "create_revision": rec["create_revision"],
                     "mod_revision": rec["mod_revision"],
                     "lease": rec["lease"] or 0,
                 }
+                for record_key, rec in rows
             ]
         }
 
@@ -241,3 +257,40 @@ def test_authority_service_fails_over_between_two_controllers(
     assert failed_over.leader_info is not None
     assert failed_over.leader_info.controller_id == "ctrl-b"
     assert failed_over.leader_info.controller_epoch > leader_initial.leader_info.controller_epoch
+
+
+def test_authority_service_lists_presence_members() -> None:
+    kv = _FakeKvClient()
+    leases = _FakeLeaseClient()
+    service = ControllerAuthorityService(config=_config(), kv_client=kv, lease_client=leases)
+
+    kv.put(
+        "k1s/test/controlplane/controllers/ctrl-b",
+        json.dumps(
+            {
+                "controller_id": "ctrl-b",
+                "advertise_addr": "http://ctrl-b:9000",
+                "observed_at": "2026-03-24T00:00:00+00:00",
+                "version": "0.1.1",
+            }
+        ),
+        lease=701,
+    )
+    kv.put(
+        "k1s/test/controlplane/controllers/ctrl-a",
+        json.dumps(
+            {
+                "controller_id": "ctrl-a",
+                "advertise_addr": "http://ctrl-a:9000",
+                "observed_at": "2026-03-24T00:00:00+00:00",
+                "version": "0.1.0",
+            }
+        ),
+        lease=702,
+    )
+
+    members = service.list_members()
+
+    assert [member.controller_id for member in members] == ["ctrl-a", "ctrl-b"]
+    assert members[0].advertise_addr == "http://ctrl-a:9000"
+    assert members[1].version == "0.1.1"
