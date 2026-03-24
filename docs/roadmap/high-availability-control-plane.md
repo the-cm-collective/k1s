@@ -413,6 +413,33 @@ Current implementation status:
 - `src/ae/resources/observability/dashboard.html` now renders first-class HA authority, etcd, transport, and edge-site panels plus issue banners and leader/standby graph cues from `GET /system`
 - the observability reference, runbook, status table, and closeout doc now record this amendment as a post-closeout operator-surface extension instead of a reopened HA milestone
 
+Later follow-on dashboard amendments extend controller-member visibility and freshness on top of this foundation without reopening HA correctness scope or changing the original `H5c` closeout claim.
+
+### H5c Amendment Follow-On Phase 1: Authority-Backed HA Member Visuals
+
+Goal:
+- extend the integrated HA dashboard so the collapsed system controller hex can show controller-cluster membership directly without expanding the graph or borrowing workload-pod semantics
+
+Primary outcomes:
+
+- `GET /system` gains an additive `ha.authority.members` list derived from controller authority presence instead of inferred site or node layout
+- the system controller hex renders distinct HA member pips that remain visually separate from workload pod dots and from the existing leader or standby controller highlight
+- member detail is available through pip hover and the controller detail card so the view remains usable in dense desktop layouts and touch-oriented dashboard use
+- phase 1 explicitly does not claim per-member freshness; membership and role are authoritative, but freshness remains out of scope
+- the amendment remains post-closeout operator-surface work and does not reopen HA correctness scope or change the original `H5c` closeout claim
+
+### H5c Amendment Follow-On Phase 2: Presence Freshness and Member Age
+
+Goal:
+- add true freshness semantics to controller-member presence so the HA dashboard can show when authority members were last heartbeating instead of only which members are currently present
+
+Primary outcomes:
+
+- controller authority presence becomes heartbeat-capable rather than initial-publish-only metadata, so member freshness is derived from controller-written presence state instead of inference from lease TTL or static `observed_at`
+- `GET /system` extends `ha.authority.members` with freshness fields suitable for dashboard display and stale or unknown handling
+- the dashboard surfaces member freshness in controller detail views and member-level hover treatment without implying generalized node health or site health
+- phase 2 depends on the phase 1 member-visual amendment and preserves the same boundary: it extends operator visibility without reopening HA correctness scope or changing the original `H5c` closeout claim
+
 ## Dependency Model
 
 This HA track is the foundation for later deployment work:
