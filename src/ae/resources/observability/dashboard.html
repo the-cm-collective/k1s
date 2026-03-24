@@ -5259,7 +5259,7 @@ Connection: close
             });
             pipGroup.addEventListener('mouseleave', function(ev){
               ev.stopPropagation();
-              if (graphHoverOwner === 'ha-member') hideHoverCard();
+              hideHoverCard(graphAuthorityMemberHoverOwner(member));
             });
 
             gOverlays.appendChild(pipGroup);
@@ -5462,73 +5462,15 @@ Connection: close
             lab.setAttribute('stroke-width','1.1');
             gInner.insertBefore(lab, text);
           } catch(e){}
-          var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-          if((n.meta && n.meta.app) || n.id.indexOf('app:')===0){
-            var ainfo = n.meta || {};
-            var info = [];
-            info.push('App: ' + (ainfo.app||n.label));
-            if (ainfo.ns) info.push('Namespace: ' + ainfo.ns);
-            if (ainfo.ready!=null || ainfo.desired!=null){
-              info.push('Pods: ' + (ainfo.ready||0) + '/' + (ainfo.desired||0));
-            }
-            if(ainfo.rev!=null) info.push('Revision: ' + ainfo.rev + ' (' + (ainfo.status||'-') + ')');
-            title.textContent = info.join(String.fromCharCode(10));
-          } else if (n.type === 'node') {
-            var ninfo = n.meta || {};
-            var lines = [];
-            lines.push('Node: ' + (ninfo.node_id || n.label || 'node'));
-            if (ninfo.site_id) lines.push('Site: ' + ninfo.site_id);
-            if (ninfo.role) lines.push('Role: ' + ninfo.role);
-            if (ninfo.leader) lines.push('Authority: leader');
-            else if (ninfo.standby) lines.push('Authority: standby');
-            if (ninfo.profile) lines.push('Profile: ' + ninfo.profile);
-            if (ninfo.status) lines.push('Status: ' + ninfo.status);
-            if (ninfo.backend) lines.push('Backend: ' + ninfo.backend);
-            if (ninfo.gateway_last_seen_age_s != null) lines.push('Gateway seen: ' + formatAge(ninfo.gateway_last_seen_age_s));
-            if (ninfo.gateway_build && ninfo.gateway_build.version) {
-              var buildText = String(ninfo.gateway_build.version || '');
-              if (ninfo.gateway_build.sha) buildText += ' @ ' + String(ninfo.gateway_build.sha).slice(0, 7);
-              lines.push('Gateway build: ' + buildText);
-            }
-            if (ninfo.replay_backlog != null) lines.push('Replay backlog: ' + formatNumberCompact(ninfo.replay_backlog));
-            if (ninfo.route_pending != null) lines.push('Route pending: ' + formatNumberCompact(ninfo.route_pending));
-            if (ninfo.ack_age_s != null) lines.push('Ack age: ' + formatAge(ninfo.ack_age_s));
-            title.textContent = lines.join(String.fromCharCode(10));
-          } else if (n.type === 'site') {
-            var sinfo = n.meta || {};
-            var sLines = [];
-            sLines.push('Site: ' + (sinfo.site_id || n.label || 'site'));
-            if (sinfo.nodes && sinfo.nodes.length != null) {
-              sLines.push('Nodes: ' + String(sinfo.nodes.length));
-            }
-            if (sinfo.gateway_count != null) sLines.push('Gateways: ' + String(sinfo.gateway_count));
-            if (sinfo.stale) {
-              sLines.push('Status: stale');
-            }
-            if (sinfo.last_seen_age_s != null) {
-              try {
-                sLines.push('Last seen: ' + formatAge(sinfo.last_seen_age_s));
-              } catch(e){}
-            }
-            if (sinfo.result_replay_backlog != null) sLines.push('Replay backlog: ' + formatNumberCompact(sinfo.result_replay_backlog));
-            if (sinfo.publish_pending != null) sLines.push('Route pending: ' + formatNumberCompact(sinfo.publish_pending));
-            if (sinfo.ack_age_s != null) sLines.push('Ack age: ' + formatAge(sinfo.ack_age_s));
-            title.textContent = sLines.join(String.fromCharCode(10));
-          } else {
-            title.textContent = labelInfo.full || String(n.label||'');
-          }
-          g.appendChild(title);
 
           if (n.type === 'app' && n.meta && n.meta.app) {
             g.addEventListener('mouseenter', function(){ setGraphHoverApp(n.meta.app); });
             g.addEventListener('mouseleave', function(){ clearGraphHoverApp(n.meta.app); });
           }
 
-          if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
-            g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mouseleave', function(){ hideHoverCard(); });
-          }
+          g.addEventListener('mouseenter', function(ev){ showGraphNodeHoverCard(n, ev); });
+          g.addEventListener('mousemove', function(ev){ showGraphNodeHoverCard(n, ev); });
+          g.addEventListener('mouseleave', function(){ hideHoverCard(graphNodeHoverOwner(n)); });
         }
 
         function drawPodNode(n){
@@ -5558,24 +5500,13 @@ Connection: close
             t.textContent = countText;
             g.appendChild(t);
           }
-          var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-          var parts = [];
-          if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
-          if(n.meta && n.meta.ns) parts.push('Namespace: '+n.meta.ns);
-          if(n.meta && n.meta.node_id) parts.push('Node: '+n.meta.node_id);
-          if(isAggregate && n.meta){
-            parts.push('Pods: ' + String(n.meta.ready || 0) + '/' + String(n.meta.desired || n.meta.count || 0));
-          } else if(n.meta && n.meta.pod_name) {
-            parts.push('Pod: '+n.meta.pod_name);
-          }
-          parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
-          if(n.meta && n.meta.status) parts.push('Status: '+n.meta.status);
-          title.textContent = parts.join(String.fromCharCode(10));
-          g.appendChild(title);
           if (n.meta && n.meta.app) {
             g.addEventListener('mouseenter', function(){ setGraphHoverApp(n.meta.app); });
             g.addEventListener('mouseleave', function(){ clearGraphHoverApp(n.meta.app); });
           }
+          g.addEventListener('mouseenter', function(ev){ showGraphNodeHoverCard(n, ev); });
+          g.addEventListener('mousemove', function(ev){ showGraphNodeHoverCard(n, ev); });
+          g.addEventListener('mouseleave', function(){ hideHoverCard(graphNodeHoverOwner(n)); });
           gNodes.appendChild(g);
         }
 
@@ -5662,6 +5593,13 @@ Connection: close
         labelNodes.forEach(drawLabel);
 
         var sysHelp = {
+          dns: {
+            title:'DNS',
+            body:[
+              'Resolves service and ingress names for the local control plane.',
+              'Provides the lookup path the core hub uses while routing internal traffic.'
+            ].join('<br>')
+          },
           ingress: {
             title:'Ingress (Caddy)',
             body:[
@@ -5714,6 +5652,177 @@ Connection: close
           }
         };
 
+        function formatHoverLines(lines){
+          return (lines || []).filter(function(line){
+            return line != null && line !== '';
+          }).map(function(line){
+            return '<div>' + line + '</div>';
+          }).join('');
+        }
+
+        function graphNodeHoverOwner(n){
+          return 'graph-node:' + String((n && n.type) || 'node') + ':' + String((n && n.id) || '');
+        }
+
+        function graphOverlayHoverOwner(ol){
+          return 'overlay:' + String((ol && ol.from) || '') + '>' + String((ol && ol.to) || '');
+        }
+
+        function graphAuthorityMemberHoverOwner(member){
+          return 'ha-member:' + String((member && member.controller_id) || '');
+        }
+
+        function formatGraphNodeHover(n){
+          if (!n) return null;
+          var meta = n.meta || {};
+          if (n.type === 'system') {
+            var systemInfo = sysHelp[n.id];
+            if (systemInfo) return systemInfo;
+            return {
+              title: escapeHtml(String(n.label || 'System')),
+              body: ''
+            };
+          }
+          if (n.type === 'host') {
+            return {
+              title: 'Host',
+              body: formatHoverLines([
+                'name: <code>' + escapeHtml(String(n.label || meta.title || 'host')) + '</code>'
+              ])
+            };
+          }
+          if (n.type === 'pod') {
+            var podLines = [];
+            if (meta.app) podLines.push('app: <code>' + escapeHtml(String(meta.app)) + '</code>');
+            if (meta.ns) podLines.push('namespace: <code>' + escapeHtml(String(meta.ns)) + '</code>');
+            if (meta.node_id) podLines.push('node: <code>' + escapeHtml(String(meta.node_id)) + '</code>');
+            if (meta.count != null) {
+              podLines.push('pods: <code>' + escapeHtml(String(meta.ready || 0)) + '/' + escapeHtml(String(meta.desired || meta.count || 0)) + '</code>');
+            } else if (meta.pod_name) {
+              podLines.push('name: <code>' + escapeHtml(String(meta.pod_name)) + '</code>');
+            }
+            podLines.push('state: <code>' + escapeHtml(String(meta.state || n.label || 'unknown')) + '</code>');
+            if (meta.status) podLines.push('status: <code>' + escapeHtml(String(meta.status)) + '</code>');
+            return {
+              title: meta.count != null ? 'Pods' : 'Pod',
+              body: formatHoverLines(podLines)
+            };
+          }
+          if (n.type === 'app' || n.id.indexOf('app:') === 0) {
+            var appLines = [];
+            var appName = String(meta.app || n.label || 'app');
+            if (meta.ns) appLines.push('namespace: <code>' + escapeHtml(String(meta.ns)) + '</code>');
+            if (meta.ready != null || meta.desired != null) {
+              appLines.push('pods: <code>' + escapeHtml(String(meta.ready || 0)) + '/' + escapeHtml(String(meta.desired || 0)) + '</code>');
+            }
+            if (meta.rev != null) {
+              appLines.push('revision: <code>' + escapeHtml(String(meta.rev)) + '</code> (' + escapeHtml(String(meta.status || '-')) + ')');
+            } else if (meta.status) {
+              appLines.push('status: <code>' + escapeHtml(String(meta.status)) + '</code>');
+            }
+            return {
+              title: 'App: ' + escapeHtml(appName),
+              body: formatHoverLines(appLines)
+            };
+          }
+          if (n.type === 'node') {
+            var nodeLines = [];
+            nodeLines.push('site: <code>' + escapeHtml(String(meta.site_id || '-')) + '</code>');
+            if (meta.role) nodeLines.push('role: <code>' + escapeHtml(String(meta.role)) + '</code>');
+            if (meta.leader) nodeLines.push('authority: <code>leader</code>');
+            else if (meta.standby) nodeLines.push('authority: <code>standby</code>');
+            if (meta.profile) nodeLines.push('profile: <code>' + escapeHtml(String(meta.profile)) + '</code>');
+            if (meta.status) nodeLines.push('status: <code>' + escapeHtml(String(meta.status)) + '</code>');
+            if (meta.backend) nodeLines.push('backend: <code>' + escapeHtml(String(meta.backend)) + '</code>');
+            if (meta.gateway_last_seen_age_s != null) nodeLines.push('gateway seen: ' + escapeHtml(formatAge(meta.gateway_last_seen_age_s)));
+            if (meta.gateway_build && meta.gateway_build.version) {
+              var buildText = String(meta.gateway_build.version || '');
+              if (meta.gateway_build.sha) buildText += ' @ ' + String(meta.gateway_build.sha).slice(0, 7);
+              nodeLines.push('gateway build: <code>' + escapeHtml(buildText) + '</code>');
+            }
+            if (meta.replay_backlog != null) nodeLines.push('replay backlog: <code>' + escapeHtml(formatNumberCompact(meta.replay_backlog)) + '</code>');
+            if (meta.route_pending != null) nodeLines.push('route pending: <code>' + escapeHtml(formatNumberCompact(meta.route_pending)) + '</code>');
+            if (meta.ack_age_s != null) nodeLines.push('ack age: ' + escapeHtml(formatAge(meta.ack_age_s)));
+            return {
+              title: 'Node: ' + escapeHtml(String(meta.node_id || n.label || 'node')),
+              body: formatHoverLines(nodeLines)
+            };
+          }
+          if (n.type === 'site') {
+            var siteLines = [];
+            if (meta.nodes && meta.nodes.length != null) {
+              siteLines.push('nodes: <code>' + escapeHtml(String(meta.nodes.length)) + '</code>');
+            }
+            if (meta.gateway_count != null) siteLines.push('gateways: <code>' + escapeHtml(String(meta.gateway_count)) + '</code>');
+            if (meta.stale) siteLines.push('status: <code>stale</code>');
+            if (meta.last_seen_age_s != null) {
+              try {
+                siteLines.push('last seen: ' + escapeHtml(formatAge(meta.last_seen_age_s)));
+              } catch(e){}
+            }
+            if (meta.result_replay_backlog != null) siteLines.push('replay backlog: <code>' + escapeHtml(formatNumberCompact(meta.result_replay_backlog)) + '</code>');
+            if (meta.publish_pending != null) siteLines.push('route pending: <code>' + escapeHtml(formatNumberCompact(meta.publish_pending)) + '</code>');
+            if (meta.ack_age_s != null) siteLines.push('ack age: ' + escapeHtml(formatAge(meta.ack_age_s)));
+            return {
+              title: 'Site: ' + escapeHtml(String(meta.site_id || n.label || 'site')),
+              body: formatHoverLines(siteLines)
+            };
+          }
+          if (n.type === 'namespace') {
+            var nsLines = [];
+            var countMatch = String(n.label || '').match(/\((\d+)\)\s*$/);
+            if (countMatch && countMatch[1]) {
+              nsLines.push('apps: <code>' + escapeHtml(String(countMatch[1])) + '</code>');
+            }
+            return {
+              title: 'Namespace: ' + escapeHtml(String(meta.ns || n.label || 'namespace')),
+              body: formatHoverLines(nsLines)
+            };
+          }
+          return {
+            title: escapeHtml(String(n.label || 'Node')),
+            body: ''
+          };
+        }
+
+        function formatHoverCardHtml(info){
+          if (!info) return '';
+          var html = '<div style="font-weight:600; margin-bottom:4px;">' + String(info.title || '') + '</div>';
+          if (info.body) html += '<div>' + info.body + '</div>';
+          return html;
+        }
+
+        function hoverCardPosition(evt){
+          var wrap = document.getElementById('graph-wrap');
+          if (!wrap || !evt) return {x: 10, y: 10};
+          var rect = wrap.getBoundingClientRect();
+          return {
+            x: (evt.clientX - rect.left) + 10,
+            y: (evt.clientY - rect.top) + 10
+          };
+        }
+
+        function showGraphHoverInfo(owner, info, evt){
+          if (!graphHover || !info || !owner) return;
+          if (
+            graphHoverOwner &&
+            graphHoverOwner !== owner &&
+            graphHoverOwner.indexOf('ha-member:') === 0
+          ) {
+            return;
+          }
+          var pos = hoverCardPosition(evt);
+          graphHoverOwner = owner;
+          graphHover.innerHTML = formatHoverCardHtml(info);
+          graphHover.style.left = pos.x + 'px';
+          graphHover.style.top = pos.y + 'px';
+          graphHover.style.display = 'block';
+        }
+
+        function showGraphNodeHoverCard(n, evt){
+          showGraphHoverInfo(graphNodeHoverOwner(n), formatGraphNodeHover(n), evt);
+        }
+
         function formatOverlayLink(ol){
           if (!ol) return null;
           var from = String(ol.from || '');
@@ -5738,51 +5847,24 @@ Connection: close
         }
 
         function showHoverCard(kind, evt){
-          if (!graphHover) return;
-          if (graphHoverOwner === 'ha-member') return;
-          var wrap = document.getElementById('graph-wrap');
-          var rect = wrap.getBoundingClientRect();
-          var x = (evt.clientX - rect.left) + 10;
-          var y = (evt.clientY - rect.top) + 10;
           var info = sysHelp[kind];
           if (!info) return;
-          graphHoverOwner = 'system:' + String(kind || '');
-          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
-          graphHover.style.left = x + 'px';
-          graphHover.style.top = y + 'px';
-          graphHover.style.display = 'block';
+          showGraphHoverInfo('system:' + String(kind || ''), info, evt);
         }
 
         function showOverlayHoverCard(ol, evt){
-          if (!graphHover) return;
           var info = formatOverlayLink(ol);
           if (!info) return;
-          var wrap = document.getElementById('graph-wrap');
-          var rect = wrap.getBoundingClientRect();
-          var x = (evt.clientX - rect.left) + 10;
-          var y = (evt.clientY - rect.top) + 10;
-          graphHoverOwner = 'overlay';
-          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
-          graphHover.style.left = x + 'px';
-          graphHover.style.top = y + 'px';
-          graphHover.style.display = 'block';
+          showGraphHoverInfo(graphOverlayHoverOwner(ol), info, evt);
         }
 
         function showAuthorityMemberHoverCard(member, evt){
-          if (!graphHover) return;
           var info = formatAuthorityMemberHover(member);
           if (!info) return;
-          var wrap = document.getElementById('graph-wrap');
-          var rect = wrap.getBoundingClientRect();
-          var x = (evt.clientX - rect.left) + 10;
-          var y = (evt.clientY - rect.top) + 10;
-          graphHoverOwner = 'ha-member';
-          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
-          graphHover.style.left = x + 'px';
-          graphHover.style.top = y + 'px';
-          graphHover.style.display = 'block';
+          showGraphHoverInfo(graphAuthorityMemberHoverOwner(member), info, evt);
         }
-        function hideHoverCard(){
+        function hideHoverCard(owner){
+          if (owner && graphHoverOwner !== owner) return;
           graphHoverOwner = null;
           if (graphHover) graphHover.style.display='none';
         }

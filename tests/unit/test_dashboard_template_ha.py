@@ -19,3 +19,10 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert "authorityMembersFromSnapshot" in html
     assert "graphHoverOwner" in html
     assert "authorityMemberPipOffsets" in html
+    assert "formatGraphNodeHover" in html
+    assert "showGraphNodeHoverCard" in html
+    assert "graphNodeHoverOwner" in html
+    assert "graphAuthorityMemberHoverOwner" in html
+    assert "title:'DNS'" in html
+    assert "title: 'Host'" in html
+    assert "createElementNS('http://www.w3.org/2000/svg','title')" not in html
