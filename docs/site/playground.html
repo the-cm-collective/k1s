@@ -688,12 +688,12 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="static/labs.css?v=255db9c284"/>
+    <link rel="stylesheet" href="static/labs.css?v=6fc483d7e2"/>
 <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
 <script>window.DOCS_LABS_TOKEN='';</script>
 <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-<script defer src="static/labs.js?v=255db9c284"></script>
+<script defer src="static/labs.js?v=6fc483d7e2"></script>
   </head>
   <body>
     <nav>
@@ -753,7 +753,7 @@
 <li>Backend:
 <ul>
 <li><select id="backend-select"> <option value="auto" selected>Auto</option> <option value="k1s-host">k1s-Host (local)</option> <option value="k1s-docker">k1s-in-Docker (compose)</option> <option value="k3s">k3s via k3d</option> </select></li>
-<li><label><input type="checkbox" id="toggle-actions"/> Enable Controlled Actions</label></li>
+<li><label class="labs-toggle-label"><input type="checkbox" id="toggle-actions"/> <span>Enable Controlled Actions</span></label></li>
 <li>Token: <input id="labs-token" type="password" placeholder="paste AE_LABS_TOKEN"/> <button id="btn-use-token" onclick="window.k1sUseToken && window.k1sUseToken()">Use Token</button> <span id="labs-token-nudge" class="nudge hidden" role="status" aria-live="polite">Paste AE_LABS_TOKEN, then click <em>Use Token</em>.</span></li>
 <li><button id="btn-start-session" class="btn-primary">Start Session</button></li>
 <li>Session: <span id="session-id">(none)</span></li>
@@ -912,7 +912,7 @@ python -m ae.cli rollout resume &lt;app&gt;</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 19:26:55</span>
+        <span>Built 2026-03-25 15:07:46</span>
       </div>
     </footer>
     <script>

@@ -740,7 +740,36 @@
 <li>Podman (preferred) or Docker installed and running</li>
 <li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> (see <a href="runbook.html">Operations Runbook</a>)</li>
 <li>Optional (for ingress/docs via Caddy and Prometheus): <code>docker compose</code> or <code>podman compose</code></li>
+<li>Optional (NixOS/additive dev shell): <code>nix</code> + <code>direnv</code> for the repo-local flake path</li>
 <li>Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking</li>
+</ul>
+<h2 id="optional-nixos-repo-local-shell">Optional NixOS / Repo-Local Shell</h2>
+<p>This path is additive. The existing Debian/Ubuntu flow stays the same.</p>
+<p>1) Enter the shell:</p>
+<pre><code>direnv allow
+# or:
+nix develop</code></pre>
+<p>2) Bootstrap the editable Python environment:</p>
+<pre><code>python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .[dev]</code></pre>
+<p>3) Inspect host vs shell requirements:</p>
+<pre><code>make env-doctor</code></pre>
+<p>4) Use the CRI-oriented shell when needed:</p>
+<pre><code>nix develop .#cri</code></pre>
+<p>Notes</p>
+<ul>
+<li>The flake fills in userland tools such as <code>podman-compose</code>, lint/test tooling, and CRI clients.</li>
+<li>Host runtimes remain host-managed: Podman/Docker runtime and containerd.</li>
+<li><code>make dev-local</code> can manage local demo DNS/TLS state directly on Debian/RHEL and through the NixOS bridge helper on NixOS.</li>
+<li><code>make env-doctor</code> reports whether the NixOS bridge is installed/imported and how the demo domains currently resolve.</li>
+<li>One-time NixOS bridge bootstrap:
+<ul>
+<li><code>sudo install -D -m 0644 ops/nixos/k1s-local-dev-bridge.nix /etc/nixos/nixos/modules/k1s-local-dev-bridge.nix</code></li>
+<li>add <code>./nixos/modules/k1s-local-dev-bridge.nix</code> to your host imports</li>
+<li><code>sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)</code></li>
+</ul>
+</li>
 </ul>
 <h2 id="option-a-zero-to-labs-automated">Option A — Zero‑to‑Labs (automated)</h2>
 <p>This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Deployments).</p>
@@ -834,6 +863,8 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make watch</code>: install file-watching extras (<code>pip -e .[watch]</code>).</li>
 <li><code>make test</code>: run unit tests (<code>pytest -q</code>).</li>
 <li><code>make lint</code>: run <code>ruff check</code> + <code>mypy src/ae</code>.</li>
+<li><code>make env-doctor</code>: report shell tools, compose availability, host sockets/services, and local DNS/TLS bridge status.</li>
+<li><code>make dev-local-clean</code>: remove helper-managed local DNS/TLS state.</li>
 <li><code>make wheel</code>: build a wheel into <code>dist/</code>.</li>
 </ul>
 <p>Local dev and samples</p>
@@ -1048,7 +1079,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 19:26:55</span>
+        <span>Built 2026-03-25 15:07:46</span>
       </div>
     </footer>
     <script>

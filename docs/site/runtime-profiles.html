@@ -889,11 +889,41 @@ CORE_CADDY=1 make dev-etcd</code></pre>
 <ul>
 <li><code>AE_DEV_LOCAL=1 make dev-min</code> (or <code>dev-etcd</code> / <code>k1s-core</code>) will:
 <ul>
-<li>add <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>echo.home.arpa</code> to <code>/etc/hosts</code></li>
-<li>install local Caddy/Apishim/Envoy certs into system trust (requires <code>update-ca-certificates</code>)</li>
+<li>add the local ingress names to host DNS resolution</li>
+<li>install local Caddy/Apishim/Envoy trust material for TLS</li>
+<li>include <code>blue.home.arpa</code> and <code>green.home.arpa</code> automatically when <code>make demo</code> seeds the standard demo</li>
 </ul>
 </li>
 <li><code>make dev-local</code> runs the helper on demand (useful after Caddy/Envoy have minted certs)</li>
+<li><code>make dev-local-clean</code> removes helper-managed DNS/TLS state</li>
+<li>Debian/Ubuntu and RHEL/Fedora:
+<ul>
+<li>the helper updates <code>/etc/hosts</code> directly</li>
+<li>the helper updates system trust with <code>update-ca-certificates</code> or <code>update-ca-trust</code></li>
+</ul>
+</li>
+<li>NixOS:
+<ul>
+<li>the helper writes bridge state under <code>/var/lib/k1s-dev</code></li>
+<li>a one-time imported bridge module at <code>ops/nixos/k1s-local-dev-bridge.nix</code> lets <code>nixos-rebuild --impure switch</code> project that state into <code>networking.extraHosts</code> and <code>security.pki.certificateFiles</code></li>
+<li><code>make env-doctor</code> reports whether the bridge module is installed/imported and what the demo domains currently resolve to</li>
+<li>bootstrap once with:
+<ul>
+<li><code>sudo install -D -m 0644 ops/nixos/k1s-local-dev-bridge.nix /etc/nixos/nixos/modules/k1s-local-dev-bridge.nix</code></li>
+<li>add <code>./nixos/modules/k1s-local-dev-bridge.nix</code> to your host imports</li>
+<li><code>sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)</code></li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Additive NixOS shell:
+<ul>
+<li><code>direnv allow</code> or <code>nix develop</code> provides missing userland tools such as <code>podman-compose</code></li>
+<li><code>nix develop .#cri</code> adds CRI-facing tooling for strict lanes</li>
+<li><code>make env-doctor</code> reports shell-provided tools, bridge status, and host-managed services/sockets</li>
+<li>Host runtime concerns remain outside the shell: Podman/Docker runtime and <code>containerd</code></li>
+</ul>
+</li>
 </ul>
 <p>Aliases:</p>
 <ul>
@@ -954,7 +984,7 @@ make k1s-edge-core-cri</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 19:26:55</span>
+        <span>Built 2026-03-25 15:07:46</span>
       </div>
     </footer>
     <script>
