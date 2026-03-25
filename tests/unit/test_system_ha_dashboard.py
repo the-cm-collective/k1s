@@ -120,6 +120,9 @@ def test_system_exposes_ha_snapshot_and_merges_probe_cache(
     monkeypatch.setenv("AE_ETCD_ENDPOINTS", "http://etcd-a:2379,http://etcd-b:2379")
     monkeypatch.setenv("AE_TRANSPORT_BACKEND", "nats-js")
     monkeypatch.setenv("AE_JS_DOMAIN", "K1S")
+    monkeypatch.setenv("AE_CONTROLPLANE_LEASE_TTL_SECONDS", "15")
+    monkeypatch.setenv("AE_CONTROLPLANE_KEEPALIVE_SECONDS", "5")
+    monkeypatch.setattr("ae.observability.http_api.time.time", lambda: 200.0)
     original = _snapshot_observability_state()
     try:
         _SITE_LAST_SEEN.clear()
@@ -196,11 +199,13 @@ def test_system_exposes_ha_snapshot_and_merges_probe_cache(
                 {
                     "controller_id": "ctrl-a",
                     "advertise_addr": "http://ctrl-a:9108",
+                    "heartbeat_at": "1970-01-01T00:03:00+00:00",
                     "version": "0.1.0",
                 },
                 {
                     "controller_id": "ctrl-b",
                     "advertise_addr": "http://ctrl-b:9108",
+                    "heartbeat_at": "1970-01-01T00:03:15+00:00",
                     "version": "0.1.1",
                 },
             ],
@@ -239,7 +244,15 @@ def test_system_exposes_ha_snapshot_and_merges_probe_cache(
     ]
     assert ha["authority"]["members"][0]["role"] == "leader"
     assert ha["authority"]["members"][0]["is_leader"] is True
+    assert ha["authority"]["members"][0]["freshness"] == "fresh"
+    assert ha["authority"]["members"][0]["last_heartbeat_at"] == "1970-01-01T00:03:15+00:00"
+    assert ha["authority"]["members"][0]["last_heartbeat_age_s"] == 5.0
     assert ha["authority"]["members"][1]["is_local"] is True
+    assert ha["authority"]["members"][1]["freshness"] == "stale"
+    assert ha["authority"]["members"][1]["last_heartbeat_age_s"] == 20.0
+    assert ha["authority"]["members"][1]["stale_after_seconds"] == 10.0
+    assert ha["authority"]["members"][2]["freshness"] == "unknown"
+    assert ha["authority"]["members"][2]["last_heartbeat_at"] is None
     assert ha["etcd"]["healthy_endpoints"] == 1
     assert ha["etcd"]["unhealthy_endpoints"] == 1
     assert ha["transport"]["backend"] == "nats-js"

@@ -131,7 +131,9 @@ def _config(**overrides) -> AuthorityConfig:
     return AuthorityConfig(**base)
 
 
-def test_authority_service_claims_leadership_and_derives_epoch(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_authority_service_claims_leadership_and_derives_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("ae.controller.authority.random.uniform", lambda low, high: low)
     kv = _FakeKvClient()
     leases = _FakeLeaseClient()
@@ -147,7 +149,9 @@ def test_authority_service_claims_leadership_and_derives_epoch(monkeypatch: pyte
     assert snapshot.leader_info.advertise_addr == "http://ctrl-a:9000"
 
 
-def test_authority_service_stays_standby_when_leader_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_authority_service_stays_standby_when_leader_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("ae.controller.authority.random.uniform", lambda low, high: low)
     kv = _FakeKvClient()
     kv.put(
@@ -175,7 +179,9 @@ def test_authority_service_stays_standby_when_leader_exists(monkeypatch: pytest.
     assert snapshot.leader_info.controller_epoch == 1
 
 
-def test_authority_service_sets_leader_lost_on_keepalive_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_authority_service_sets_leader_lost_on_keepalive_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("ae.controller.authority.random.uniform", lambda low, high: low)
     kv = _FakeKvClient()
     leases = _FakeLeaseClient()
@@ -193,7 +199,9 @@ def test_authority_service_sets_leader_lost_on_keepalive_failure(monkeypatch: py
     assert service.leader_lost.is_set() is True
 
 
-def test_authority_service_acquires_after_existing_leader_disappears(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_authority_service_acquires_after_existing_leader_disappears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("ae.controller.authority.random.uniform", lambda low, high: low)
     kv = _FakeKvClient()
     kv.put(
@@ -271,6 +279,7 @@ def test_authority_service_lists_presence_members() -> None:
                 "controller_id": "ctrl-b",
                 "advertise_addr": "http://ctrl-b:9000",
                 "observed_at": "2026-03-24T00:00:00+00:00",
+                "heartbeat_at": "2026-03-24T00:00:10+00:00",
                 "version": "0.1.1",
             }
         ),
@@ -293,4 +302,67 @@ def test_authority_service_lists_presence_members() -> None:
 
     assert [member.controller_id for member in members] == ["ctrl-a", "ctrl-b"]
     assert members[0].advertise_addr == "http://ctrl-a:9000"
+    assert members[0].heartbeat_at is None
     assert members[1].version == "0.1.1"
+    assert members[1].heartbeat_at is not None
+    assert members[1].heartbeat_at.isoformat() == "2026-03-24T00:00:10+00:00"
+
+
+def test_authority_service_writes_presence_heartbeat_on_keepalive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timestamps = iter(
+        [
+            "2026-03-24T00:00:00+00:00",
+            "2026-03-24T00:00:01+00:00",
+            "2026-03-24T00:00:07+00:00",
+        ]
+    )
+    monkeypatch.setattr("ae.controller.authority._now_iso", lambda: next(timestamps))
+    monkeypatch.setattr("ae.controller.authority.random.uniform", lambda low, high: low)
+    kv = _FakeKvClient()
+    leases = _FakeLeaseClient()
+    service = ControllerAuthorityService(config=_config(), kv_client=kv, lease_client=leases)
+
+    service.run_once(now_monotonic=0.0)
+    initial = json.loads(str(kv._records[service.config.presence_key]["value"]))
+    initial_lease = int(kv._records[service.config.presence_key]["lease"] or 0)
+
+    service.run_once(now_monotonic=6.0)
+    updated = json.loads(str(kv._records[service.config.presence_key]["value"]))
+
+    assert initial["observed_at"] == "2026-03-24T00:00:00+00:00"
+    assert initial["heartbeat_at"] == "2026-03-24T00:00:00+00:00"
+    assert updated["observed_at"] == "2026-03-24T00:00:00+00:00"
+    assert updated["heartbeat_at"] == "2026-03-24T00:00:07+00:00"
+    assert int(kv._records[service.config.presence_key]["lease"] or 0) == initial_lease
+
+
+def test_authority_service_regrants_presence_lease_and_refreshes_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timestamps = iter(
+        [
+            "2026-03-24T00:00:00+00:00",
+            "2026-03-24T00:00:01+00:00",
+            "2026-03-24T00:00:07+00:00",
+        ]
+    )
+    monkeypatch.setattr("ae.controller.authority._now_iso", lambda: next(timestamps))
+    monkeypatch.setattr("ae.controller.authority.random.uniform", lambda low, high: low)
+    kv = _FakeKvClient()
+    leases = _FakeLeaseClient()
+    service = ControllerAuthorityService(config=_config(), kv_client=kv, lease_client=leases)
+
+    service.run_once(now_monotonic=0.0)
+    initial_lease = int(kv._records[service.config.presence_key]["lease"] or 0)
+    assert service._presence_lease is not None
+    leases.fail_keepalive.add(service._presence_lease.lease_id)
+
+    service.run_once(now_monotonic=6.0)
+    updated = json.loads(str(kv._records[service.config.presence_key]["value"]))
+    updated_lease = int(kv._records[service.config.presence_key]["lease"] or 0)
+
+    assert updated["observed_at"] == "2026-03-24T00:00:00+00:00"
+    assert updated["heartbeat_at"] == "2026-03-24T00:00:07+00:00"
+    assert updated_lease != initial_lease

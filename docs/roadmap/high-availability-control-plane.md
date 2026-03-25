@@ -447,6 +447,13 @@ Primary outcomes:
 - the dashboard surfaces member freshness in controller detail views and member-level hover treatment without implying generalized node health or site health
 - phase 2 depends on the phase 1 member-visual amendment and preserves the same boundary: it extends operator visibility without reopening HA correctness scope or changing the original `H5c` closeout claim
 
+Current implementation status:
+
+- `src/ae/controller/authority.py` now refreshes controller presence records with a dedicated `heartbeat_at` field on initial publish, on successful keepalive, and on lease re-grant without repurposing legacy `observed_at`
+- `src/ae/observability/http_api.py` now exposes additive `last_heartbeat_at`, `last_heartbeat_age_s`, `freshness`, and `stale_after_seconds` fields on `ha.authority.members`
+- `src/ae/resources/observability/dashboard.html` now renders member freshness in the HA authority card, controller hover card, and member-pip hover treatment while keeping role color semantics separate from freshness cues
+- `tests/unit/test_controller_authority.py`, `tests/unit/test_system_ha_dashboard.py`, and `tests/unit/test_dashboard_template_ha.py` cover the refreshed presence write path, additive payload shape, and dashboard freshness hooks for this phase
+
 ## Dependency Model
 
 This HA track is the foundation for later deployment work:

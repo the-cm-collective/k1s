@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ae import build_info as AE_BUILD_INFO
-from ae.controller.authority import NotLeaderError
+from ae.controller.authority import AuthorityConfig, NotLeaderError
 from ae.controller.state import RegistryConflictError
 from ae.controller.state import SQLiteStateStore
 from ae.observability.metrics import MetricsService
@@ -933,6 +933,42 @@ def _as_int(value: object) -> int:
         return 0
 
 
+def _as_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            dt = (
+                datetime.fromisoformat(raw[:-1] + "+00:00")
+                if raw.endswith("Z")
+                else datetime.fromisoformat(raw)
+            )
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _as_iso8601(value: object) -> str | None:
+    dt = _as_datetime(value)
+    if dt is None:
+        return None
+    return dt.isoformat()
+
+
+def _authority_presence_stale_after_seconds() -> float:
+    try:
+        return float(AuthorityConfig.from_env().presence_stale_after_seconds)
+    except Exception:
+        return 10.0
+
+
 def _transport_site_join_key(site_id: object) -> str:
     return str(site_id or "").strip()
 
@@ -1253,6 +1289,8 @@ def _build_authority_snapshot(
         if advertise_addr is None:
             advertise_addr = str(os.getenv("AE_CONTROLLER_ADVERTISE_ADDR") or "").strip() or None
     healthy = (not enabled) or is_leader or leader_id is not None
+    stale_after_seconds = _authority_presence_stale_after_seconds()
+    now_ts = time.time()
     members: list[dict[str, object]] = []
     for member in list(authority_members or []):
         get = member.get if isinstance(member, dict) else lambda key: getattr(member, key, None)
@@ -1265,16 +1303,26 @@ def _build_authority_snapshot(
         role = str(get("role") or ("leader" if member_is_leader else "standby")).strip().lower()
         if role not in {"leader", "standby"}:
             role = "leader" if member_is_leader else "standby"
+        heartbeat_at = _as_iso8601(get("heartbeat_at") or get("last_heartbeat_at"))
+        heartbeat_dt = _as_datetime(heartbeat_at)
+        heartbeat_age_s = None
+        freshness = "unknown"
+        if heartbeat_dt is not None:
+            heartbeat_age_s = max(0.0, now_ts - heartbeat_dt.timestamp())
+            freshness = "stale" if heartbeat_age_s > stale_after_seconds else "fresh"
         members.append(
             {
                 "controller_id": member_id,
                 "advertise_addr": str(get("advertise_addr") or "").strip() or None,
                 "version": str(get("version") or "").strip() or None,
                 "is_leader": bool(member_is_leader),
-                "is_local": bool(get("is_local")) or (
-                    controller_id is not None and member_id == str(controller_id)
-                ),
+                "is_local": bool(get("is_local"))
+                or (controller_id is not None and member_id == str(controller_id)),
                 "role": role,
+                "last_heartbeat_at": heartbeat_at,
+                "last_heartbeat_age_s": heartbeat_age_s,
+                "freshness": freshness,
+                "stale_after_seconds": stale_after_seconds,
             }
         )
     members.sort(

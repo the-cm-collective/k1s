@@ -491,6 +491,14 @@
                   }
                   .authority-member-pip.local .ha-pip-ring {
                     stroke:rgba(255,255,255,0.95);
+                    stroke-width:1.8;
+                  }
+                  .authority-member-pip.freshness-stale .ha-pip-ring {
+                    stroke:rgba(245,158,11,0.9);
+                    stroke-dasharray:2.2 1.4;
+                  }
+                  .authority-member-pip.freshness-unknown .ha-pip-ring {
+                    stroke:rgba(148,163,184,0.92);
                   }
                   .site-panel { }
                   .site-panel.stale {
@@ -1425,13 +1433,23 @@ Connection: close
           if (!controllerId) return null;
           var isLeader = !!member.is_leader || String(member.role || '').toLowerCase() === 'leader';
           var role = isLeader ? 'leader' : 'standby';
+          var heartbeatAge = (member.last_heartbeat_age_s == null) ? null : Number(member.last_heartbeat_age_s);
+          if (heartbeatAge != null && !isFinite(heartbeatAge)) heartbeatAge = null;
+          var freshness = String(member.freshness || '').trim().toLowerCase();
+          if (freshness !== 'fresh' && freshness !== 'stale' && freshness !== 'unknown') {
+            freshness = (heartbeatAge == null) ? 'unknown' : 'fresh';
+          }
           return {
             controller_id: controllerId,
             advertise_addr: String(member.advertise_addr || '').trim(),
             version: String(member.version || '').trim(),
             is_leader: isLeader,
             is_local: !!member.is_local,
-            role: role
+            role: role,
+            last_heartbeat_at: String(member.last_heartbeat_at || '').trim(),
+            last_heartbeat_age_s: heartbeatAge,
+            freshness: freshness,
+            stale_after_seconds: (member.stale_after_seconds == null) ? null : Number(member.stale_after_seconds)
           };
         }).filter(Boolean);
       }
@@ -1440,15 +1458,35 @@ Connection: close
         return (member && member.is_leader) ? 'ok' : 'warn';
       }
 
+      function authorityMemberFreshness(member){
+        var freshness = String(member && member.freshness || '').toLowerCase();
+        if (freshness === 'stale' || freshness === 'unknown') return freshness;
+        return 'fresh';
+      }
+
+      function authorityMemberFreshnessPillClass(member){
+        var freshness = authorityMemberFreshness(member);
+        if (freshness === 'stale') return 'warn';
+        if (freshness === 'unknown') return '';
+        return 'ok';
+      }
+
+      function authorityMemberHeartbeatAgeText(member){
+        if (!member || member.last_heartbeat_age_s == null) return 'unknown';
+        return formatAgeShort(member.last_heartbeat_age_s) + ' ago';
+      }
+
       function renderAuthorityMemberList(members){
         return (members || []).map(function(member){
           var badges = [
             '<span class="pill ' + authorityMemberPillClass(member) + '">' + escapeHtml(member.role) + '</span>'
           ];
           if (member.is_local) badges.push('<span class="pill">local</span>');
+          badges.push('<span class="pill ' + authorityMemberFreshnessPillClass(member) + '">' + escapeHtml(authorityMemberFreshness(member)) + '</span>');
           var meta = [];
           if (member.advertise_addr) meta.push('advertise=' + member.advertise_addr);
           if (member.version) meta.push('version=' + member.version);
+          meta.push('heartbeat age=' + authorityMemberHeartbeatAgeText(member));
           return (
             '<div class="ha-site">' +
               '<div><strong>' + escapeHtml(member.controller_id) + '</strong> ' + badges.join(' ') + '</div>' +
@@ -1463,6 +1501,11 @@ Connection: close
         var lines = [];
         lines.push('<div><strong>' + escapeHtml(member.controller_id || 'controller') + '</strong></div>');
         lines.push('<div>role: <code>' + escapeHtml(member.role || (member.is_leader ? 'leader' : 'standby')) + '</code>' + (member.is_local ? ' · local' : '') + '</div>');
+        lines.push('<div>freshness: <code>' + escapeHtml(authorityMemberFreshness(member)) + '</code></div>');
+        lines.push('<div>heartbeat age: <code>' + escapeHtml(authorityMemberHeartbeatAgeText(member)) + '</code></div>');
+        if (member.last_heartbeat_at) {
+          lines.push('<div>last heartbeat: <code>' + escapeHtml(member.last_heartbeat_at) + '</code></div>');
+        }
         if (member.advertise_addr) {
           lines.push('<div>advertise: <code>' + escapeHtml(member.advertise_addr) + '</code></div>');
         }
@@ -5222,6 +5265,7 @@ Connection: close
             if (pipRole !== 'leader' && pipRole !== 'standby') pipRole = 'unknown';
             var pipClass = 'authority-member-pip role-' + pipRole;
             if (member.is_local) pipClass += ' local';
+            pipClass += ' freshness-' + authorityMemberFreshness(member);
             pipGroup.setAttribute('class', pipClass);
             pipGroup.setAttribute(
               'transform',
@@ -5630,6 +5674,8 @@ Connection: close
                   haAuthorityMembers.forEach(function(member){
                     var memberLine = '<code>' + escapeHtml(member.controller_id) + '</code> · ' + escapeHtml(member.role);
                     if (member.is_local) memberLine += ' · local';
+                    memberLine += ' · freshness=' + escapeHtml(authorityMemberFreshness(member));
+                    memberLine += ' · heartbeat age=' + escapeHtml(authorityMemberHeartbeatAgeText(member));
                     if (member.advertise_addr) {
                       memberLine += ' · <code>' + escapeHtml(member.advertise_addr) + '</code>';
                     }

@@ -136,6 +136,15 @@ class AuthorityConfig:
     def presence_key(self) -> str:
         return "/".join((self.controllers_prefix, self.controller_id))
 
+    @property
+    def presence_stale_after_seconds(self) -> float:
+        return float(
+            min(
+                int(self.lease_ttl_seconds),
+                max(1.0, float(self.keepalive_interval_seconds) * 2.0),
+            )
+        )
+
 
 @dataclass(slots=True, frozen=True)
 class LeaderInfo:
@@ -152,6 +161,7 @@ class AuthorityMember:
     controller_id: str
     advertise_addr: str | None
     version: str
+    heartbeat_at: datetime | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -215,6 +225,7 @@ class ControllerAuthorityService:
     _leader_lost: threading.Event = field(default_factory=threading.Event, init=False)
     _next_election_attempt_at: float = field(default=0.0, init=False)
     _next_leader_poll_at: float = field(default=0.0, init=False)
+    _presence_observed_at: str | None = field(default=None, init=False)
 
     @classmethod
     def from_env(
@@ -230,7 +241,8 @@ class ControllerAuthorityService:
 
             env_map = env or os.environ
             raw_endpoints = [
-                e.strip() for e in (env_map.get("AE_ETCD_ENDPOINTS") or "http://127.0.0.1:2379").split(",")
+                e.strip()
+                for e in (env_map.get("AE_ETCD_ENDPOINTS") or "http://127.0.0.1:2379").split(",")
             ]
             kv_client = EtcdHttpClient(
                 raw_endpoints,
@@ -357,6 +369,7 @@ class ControllerAuthorityService:
                     controller_id=controller_id,
                     advertise_addr=str(rec.get("advertise_addr") or "").strip() or None,
                     version=str(rec.get("version") or AE_VERSION),
+                    heartbeat_at=_dt_from_iso(rec.get("heartbeat_at")),
                 )
             )
         members.sort(key=lambda member: member.controller_id)
@@ -373,7 +386,9 @@ class ControllerAuthorityService:
 
     def _cleanup(self) -> None:
         leader_lease_id = self._leader_lease.lease_id if self._leader_lease is not None else None
-        presence_lease_id = self._presence_lease.lease_id if self._presence_lease is not None else None
+        presence_lease_id = (
+            self._presence_lease.lease_id if self._presence_lease is not None else None
+        )
         if leader_lease_id:
             try:
                 self.lease_client.revoke_lease(leader_lease_id)
@@ -393,22 +408,32 @@ class ControllerAuthorityService:
             self._leader_lease = None
             self._is_leader = False
             self._leader_info = None
+            self._presence_observed_at = None
+
+    def _publish_presence(self, lease_id: int, *, heartbeat_at: str | None = None) -> str:
+        heartbeat_iso = heartbeat_at or _now_iso()
+        observed_at = self._presence_observed_at or heartbeat_iso
+        self.kv_client.put(
+            self.config.presence_key,
+            self._encode_json(
+                {
+                    "controller_id": self.config.controller_id,
+                    "advertise_addr": self.config.advertise_addr,
+                    "observed_at": observed_at,
+                    "heartbeat_at": heartbeat_iso,
+                    "version": AE_VERSION,
+                }
+            ),
+            lease=lease_id,
+        )
+        with self._lock:
+            self._presence_observed_at = observed_at
+        return heartbeat_iso
 
     def _ensure_presence(self, now: float) -> None:
         if self._presence_lease is None:
             lease_id = self.lease_client.grant_lease(self.config.lease_ttl_seconds)
-            self.kv_client.put(
-                self.config.presence_key,
-                self._encode_json(
-                    {
-                        "controller_id": self.config.controller_id,
-                        "advertise_addr": self.config.advertise_addr,
-                        "observed_at": _now_iso(),
-                        "version": AE_VERSION,
-                    }
-                ),
-                lease=lease_id,
-            )
+            self._publish_presence(lease_id)
             with self._lock:
                 self._presence_lease = _LeaseState(
                     lease_id=lease_id,
@@ -422,24 +447,14 @@ class ControllerAuthorityService:
             self.lease_client.keepalive(self._presence_lease.lease_id)
         except Exception:
             lease_id = self.lease_client.grant_lease(self.config.lease_ttl_seconds)
-            self.kv_client.put(
-                self.config.presence_key,
-                self._encode_json(
-                    {
-                        "controller_id": self.config.controller_id,
-                        "advertise_addr": self.config.advertise_addr,
-                        "observed_at": _now_iso(),
-                        "version": AE_VERSION,
-                    }
-                ),
-                lease=lease_id,
-            )
+            self._publish_presence(lease_id)
             with self._lock:
                 self._presence_lease = _LeaseState(
                     lease_id=lease_id,
                     renew_at=now + self.config.keepalive_interval_seconds,
                 )
             return
+        self._publish_presence(self._presence_lease.lease_id)
         with self._lock:
             assert self._presence_lease is not None
             self._presence_lease = _LeaseState(
@@ -558,7 +573,9 @@ class ControllerAuthorityService:
         if self._leader_lease is not None:
             targets.append(self._leader_lease.renew_at)
         if not self._is_leader:
-            targets.append(self._next_election_attempt_at or (now + self.config.standby_retry_min_seconds))
+            targets.append(
+                self._next_election_attempt_at or (now + self.config.standby_retry_min_seconds)
+            )
             targets.append(self._next_leader_poll_at or (now + self.config.follower_poll_seconds))
         next_at = min(targets)
         return max(0.05, min(1.0, next_at - now))

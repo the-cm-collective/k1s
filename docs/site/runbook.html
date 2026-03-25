@@ -1560,7 +1560,7 @@
 <li>Integrated HA dashboard:
 <ul>
 <li><code>/dashboard</code> now includes a dedicated <code>HA Control Plane</code> section sourced from <code>GET /system.ha</code>.</li>
-<li>Treat the HA section as the live operator snapshot for authority health, etcd reachability summary, transport pressure, site freshness, route acknowledgement age, and HA fence activity.</li>
+<li>Treat the HA section as the live operator snapshot for authority health, controller-member freshness, etcd reachability summary, transport pressure, site freshness, route acknowledgement age, and HA fence activity.</li>
 <li>Treat Grafana/Prometheus as the history surface; the built-in dashboard does not fetch or parse <code>/metrics</code> directly.</li>
 <li><code>system.ha.issues</code> drives the dashboard issue banner; investigate those warnings before moving on to disruptive HA operations.</li>
 </ul>
@@ -1999,7 +1999,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-24 18:29:30</span>
+        <span>Built 2026-03-24 19:52:30</span>
       </div>
     </footer>
     <script>

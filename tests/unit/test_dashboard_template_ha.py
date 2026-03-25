@@ -17,12 +17,21 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert "HA members" in html
     assert "authority-member-pip" in html
     assert "authorityMembersFromSnapshot" in html
+    assert "authorityMemberFreshness" in html
+    assert "authorityMemberHeartbeatAgeText" in html
     assert "graphHoverOwner" in html
     assert "authorityMemberPipOffsets" in html
     assert "formatGraphNodeHover" in html
     assert "showGraphNodeHoverCard" in html
     assert "graphNodeHoverOwner" in html
     assert "graphAuthorityMemberHoverOwner" in html
+    assert "freshness-stale" in html
+    assert "freshness-unknown" in html
+    assert "last_heartbeat_at" in html
+    assert "last_heartbeat_age_s" in html
+    assert "heartbeat age: <code>" in html
+    assert "heartbeat age=" in html
+    assert "freshness: <code>" in html
     assert "title:'DNS'" in html
     assert "title: 'Host'" in html
     assert "max-width:min(340px, calc(100% - 24px))" in html

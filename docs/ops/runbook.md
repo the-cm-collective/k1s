@@ -499,7 +499,7 @@ Observability
   - `ae_controller_authority_healthy`
 - Integrated HA dashboard:
   - `/dashboard` now includes a dedicated `HA Control Plane` section sourced from `GET /system.ha`.
-  - Treat the HA section as the live operator snapshot for authority health, etcd reachability summary, transport pressure, site freshness, route acknowledgement age, and HA fence activity.
+  - Treat the HA section as the live operator snapshot for authority health, controller-member freshness, etcd reachability summary, transport pressure, site freshness, route acknowledgement age, and HA fence activity.
   - Treat Grafana/Prometheus as the history surface; the built-in dashboard does not fetch or parse `/metrics` directly.
   - `system.ha.issues` drives the dashboard issue banner; investigate those warnings before moving on to disruptive HA operations.
 - Optional member-level dashboard probes:

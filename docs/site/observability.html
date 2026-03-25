@@ -819,7 +819,7 @@
 </li>
 <li>Adds an <code>HA Control Plane</code> section sourced from <code>GET /system.ha</code>:
 <ul>
-<li>Authority: local role, visible leader, advertise address, and controller epoch</li>
+<li>Authority: local role, visible leader, advertise address, controller epoch, and controller-member freshness from <code>ha.authority.members</code></li>
 <li>Etcd: configured endpoints, maintenance counters, and optional cached probe health when enabled</li>
 <li>Transport: JetStream pressure, replay backlog, route acknowledgement age, HA fence activity, and optional hub/edge monitor summaries</li>
 <li>Edge sites: per-site freshness, replay backlog, route pending, ack age, and gateway build/last-seen rows</li>
@@ -842,7 +842,20 @@
   &quot;rbac&quot;: { &quot;mutations_enabled&quot;: false, &quot;read_token_configured&quot;: false, &quot;scaler_token_configured&quot;: false, &quot;admin_token_configured&quot;: false },
   &quot;ha&quot;: {
     &quot;enabled&quot;: true,
-    &quot;authority&quot;: { &quot;healthy&quot;: true, &quot;is_leader&quot;: false, &quot;controller_id&quot;: &quot;core-a&quot;, &quot;leader_id&quot;: &quot;core-b&quot;, &quot;leader_advertise_addr&quot;: &quot;https://core-b.example.net:9108&quot;, &quot;controller_epoch&quot;: 19 },
+    &quot;authority&quot;: {
+      &quot;healthy&quot;: true,
+      &quot;is_leader&quot;: false,
+      &quot;controller_id&quot;: &quot;core-a&quot;,
+      &quot;leader_id&quot;: &quot;core-b&quot;,
+      &quot;leader_advertise_addr&quot;: &quot;https://core-b.example.net:9108&quot;,
+      &quot;controller_epoch&quot;: 19,
+      &quot;member_count&quot;: 3,
+      &quot;members&quot;: [
+        { &quot;controller_id&quot;: &quot;core-b&quot;, &quot;advertise_addr&quot;: &quot;https://core-b.example.net:9108&quot;, &quot;version&quot;: &quot;0.1.3.dev0&quot;, &quot;is_leader&quot;: true, &quot;is_local&quot;: false, &quot;role&quot;: &quot;leader&quot;, &quot;last_heartbeat_at&quot;: &quot;2026-03-24T19:20:05+00:00&quot;, &quot;last_heartbeat_age_s&quot;: 4.0, &quot;freshness&quot;: &quot;fresh&quot;, &quot;stale_after_seconds&quot;: 10.0 },
+        { &quot;controller_id&quot;: &quot;core-a&quot;, &quot;advertise_addr&quot;: &quot;https://core-a.example.net:9108&quot;, &quot;version&quot;: &quot;0.1.3.dev0&quot;, &quot;is_leader&quot;: false, &quot;is_local&quot;: true, &quot;role&quot;: &quot;standby&quot;, &quot;last_heartbeat_at&quot;: &quot;2026-03-24T19:19:48+00:00&quot;, &quot;last_heartbeat_age_s&quot;: 21.0, &quot;freshness&quot;: &quot;stale&quot;, &quot;stale_after_seconds&quot;: 10.0 },
+        { &quot;controller_id&quot;: &quot;core-c&quot;, &quot;advertise_addr&quot;: &quot;https://core-c.example.net:9108&quot;, &quot;version&quot;: &quot;0.1.2&quot;, &quot;is_leader&quot;: false, &quot;is_local&quot;: false, &quot;role&quot;: &quot;standby&quot;, &quot;last_heartbeat_at&quot;: null, &quot;last_heartbeat_age_s&quot;: null, &quot;freshness&quot;: &quot;unknown&quot;, &quot;stale_after_seconds&quot;: 10.0 }
+      ]
+    },
     &quot;controller_build&quot;: { &quot;version&quot;: &quot;0.1.3.dev0&quot;, &quot;sha&quot;: &quot;abc123&quot;, &quot;date&quot;: &quot;2026-03-19&quot; },
     &quot;etcd&quot;: { &quot;configured_endpoints&quot;: [&quot;http://10.0.0.11:2379&quot;, &quot;http://10.0.0.12:2379&quot;, &quot;http://10.0.0.13:2379&quot;], &quot;maintenance_runs_total&quot;: 0.0, &quot;maintenance_triggered_total&quot;: 0.0, &quot;healthy_endpoints&quot;: 3, &quot;unhealthy_endpoints&quot;: 0, &quot;members&quot;: [], &quot;last_probe_ts&quot;: 1710800000.0, &quot;probes_enabled&quot;: true },
     &quot;transport&quot;: { &quot;backend&quot;: &quot;nats-js&quot;, &quot;js_domain&quot;: &quot;K1S&quot;, &quot;site_summary&quot;: { &quot;seen&quot;: 2, &quot;stale&quot;: 0, &quot;fresh&quot;: 2, &quot;last_seen_age_s&quot;: 4.2 }, &quot;sites&quot;: [], &quot;jetstream&quot;: { &quot;stream_count&quot;: 1, &quot;consumer_count&quot;: 2, &quot;pending&quot;: 0.0, &quot;ack_pending&quot;: 1.0, &quot;redelivered&quot;: 0.0, &quot;waiting&quot;: 0.0, &quot;consumers&quot;: [], &quot;streams&quot;: [] }, &quot;gateway&quot;: { &quot;site_count&quot;: 2, &quot;result_replay_backlog&quot;: 0.0, &quot;sites&quot;: [] }, &quot;routes&quot;: { &quot;site_count&quot;: 2, &quot;pending_sites&quot;: 0.0, &quot;max_ack_age_s&quot;: 0.0, &quot;sites&quot;: [] }, &quot;fence&quot;: { &quot;surface_count&quot;: 2, &quot;stale_total&quot;: 0.0, &quot;duplicate_total&quot;: 0.0, &quot;epoch_advance_total&quot;: 0.0, &quot;surfaces&quot;: [] } },
@@ -855,12 +868,20 @@
 }</code></pre>
 <p><code>system.ha</code> is the stable dashboard contract for live HA operator state. It includes:</p>
 <ul>
-<li><code>authority</code>: HA role and leader visibility derived from controller authority state</li>
+<li><code>authority</code>: HA role and leader visibility derived from controller authority state, plus additive <code>members[]</code> freshness for visible controllers</li>
 <li><code>controller_build</code>: controller build metadata already exported at <code>/__ae/version</code> and <code>/metrics</code></li>
 <li><code>etcd</code>: configured endpoints, maintenance counters, and optional cached probe/member results</li>
 <li><code>transport</code>: outbox, JetStream, gateway replay, route convergence, HA fence, and per-site joined rows for dashboard rendering</li>
 <li><code>hpa</code>: shared-metrics HPA reconcile/scale quality counters</li>
 <li><code>issues</code>: UI-facing warnings/errors summarized from the current live snapshot</li>
+</ul>
+<p><code>system.ha.authority.members[]</code> includes:</p>
+<ul>
+<li><code>controller_id</code>, <code>advertise_addr</code>, <code>version</code>, <code>is_leader</code>, <code>is_local</code>, and <code>role</code></li>
+<li><code>last_heartbeat_at</code>: additive heartbeat timestamp when the controller publishes freshness-capable presence</li>
+<li><code>last_heartbeat_age_s</code>: additive age derived from <code>last_heartbeat_at</code></li>
+<li><code>freshness</code>: one of <code>fresh</code>, <code>stale</code>, or <code>unknown</code></li>
+<li><code>stale_after_seconds</code>: the current freshness threshold derived from HA keepalive and lease settings</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -869,7 +890,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 19:26:55</span>
+        <span>Built 2026-03-24 19:52:30</span>
       </div>
     </footer>
     <script>

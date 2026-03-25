@@ -81,7 +81,7 @@ You can also embed a single panel JSON (e.g., stat showing ready apps):
   - Storage: container‑engine named volumes created for apps (PV‑lite)
   - RBAC: shows whether mutations are enabled and tokens are configured (never reveals secrets)
 - Adds an `HA Control Plane` section sourced from `GET /system.ha`:
-  - Authority: local role, visible leader, advertise address, and controller epoch
+  - Authority: local role, visible leader, advertise address, controller epoch, and controller-member freshness from `ha.authority.members`
   - Etcd: configured endpoints, maintenance counters, and optional cached probe health when enabled
   - Transport: JetStream pressure, replay backlog, route acknowledgement age, HA fence activity, and optional hub/edge monitor summaries
   - Edge sites: per-site freshness, replay backlog, route pending, ack age, and gateway build/last-seen rows
@@ -101,7 +101,20 @@ You can also embed a single panel JSON (e.g., stat showing ready apps):
   "rbac": { "mutations_enabled": false, "read_token_configured": false, "scaler_token_configured": false, "admin_token_configured": false },
   "ha": {
     "enabled": true,
-    "authority": { "healthy": true, "is_leader": false, "controller_id": "core-a", "leader_id": "core-b", "leader_advertise_addr": "https://core-b.example.net:9108", "controller_epoch": 19 },
+    "authority": {
+      "healthy": true,
+      "is_leader": false,
+      "controller_id": "core-a",
+      "leader_id": "core-b",
+      "leader_advertise_addr": "https://core-b.example.net:9108",
+      "controller_epoch": 19,
+      "member_count": 3,
+      "members": [
+        { "controller_id": "core-b", "advertise_addr": "https://core-b.example.net:9108", "version": "0.1.3.dev0", "is_leader": true, "is_local": false, "role": "leader", "last_heartbeat_at": "2026-03-24T19:20:05+00:00", "last_heartbeat_age_s": 4.0, "freshness": "fresh", "stale_after_seconds": 10.0 },
+        { "controller_id": "core-a", "advertise_addr": "https://core-a.example.net:9108", "version": "0.1.3.dev0", "is_leader": false, "is_local": true, "role": "standby", "last_heartbeat_at": "2026-03-24T19:19:48+00:00", "last_heartbeat_age_s": 21.0, "freshness": "stale", "stale_after_seconds": 10.0 },
+        { "controller_id": "core-c", "advertise_addr": "https://core-c.example.net:9108", "version": "0.1.2", "is_leader": false, "is_local": false, "role": "standby", "last_heartbeat_at": null, "last_heartbeat_age_s": null, "freshness": "unknown", "stale_after_seconds": 10.0 }
+      ]
+    },
     "controller_build": { "version": "0.1.3.dev0", "sha": "abc123", "date": "2026-03-19" },
     "etcd": { "configured_endpoints": ["http://10.0.0.11:2379", "http://10.0.0.12:2379", "http://10.0.0.13:2379"], "maintenance_runs_total": 0.0, "maintenance_triggered_total": 0.0, "healthy_endpoints": 3, "unhealthy_endpoints": 0, "members": [], "last_probe_ts": 1710800000.0, "probes_enabled": true },
     "transport": { "backend": "nats-js", "js_domain": "K1S", "site_summary": { "seen": 2, "stale": 0, "fresh": 2, "last_seen_age_s": 4.2 }, "sites": [], "jetstream": { "stream_count": 1, "consumer_count": 2, "pending": 0.0, "ack_pending": 1.0, "redelivered": 0.0, "waiting": 0.0, "consumers": [], "streams": [] }, "gateway": { "site_count": 2, "result_replay_backlog": 0.0, "sites": [] }, "routes": { "site_count": 2, "pending_sites": 0.0, "max_ack_age_s": 0.0, "sites": [] }, "fence": { "surface_count": 2, "stale_total": 0.0, "duplicate_total": 0.0, "epoch_advance_total": 0.0, "surfaces": [] } },
@@ -116,9 +129,17 @@ You can also embed a single panel JSON (e.g., stat showing ready apps):
 
 `system.ha` is the stable dashboard contract for live HA operator state. It includes:
 
-- `authority`: HA role and leader visibility derived from controller authority state
+- `authority`: HA role and leader visibility derived from controller authority state, plus additive `members[]` freshness for visible controllers
 - `controller_build`: controller build metadata already exported at `/__ae/version` and `/metrics`
 - `etcd`: configured endpoints, maintenance counters, and optional cached probe/member results
 - `transport`: outbox, JetStream, gateway replay, route convergence, HA fence, and per-site joined rows for dashboard rendering
 - `hpa`: shared-metrics HPA reconcile/scale quality counters
 - `issues`: UI-facing warnings/errors summarized from the current live snapshot
+
+`system.ha.authority.members[]` includes:
+
+- `controller_id`, `advertise_addr`, `version`, `is_leader`, `is_local`, and `role`
+- `last_heartbeat_at`: additive heartbeat timestamp when the controller publishes freshness-capable presence
+- `last_heartbeat_age_s`: additive age derived from `last_heartbeat_at`
+- `freshness`: one of `fresh`, `stale`, or `unknown`
+- `stale_after_seconds`: the current freshness threshold derived from HA keepalive and lease settings
