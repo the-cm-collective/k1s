@@ -177,7 +177,8 @@
       h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
       .divider { border-top:1px solid #8884; margin:16px 0; }
       footer.site-footer { margin: 0 12px 12px; border-top:1px solid #8884; padding-top:10px; opacity:.85; }
-      .hover-card { position:absolute; display:none; max-width:280px; font-size:12px; line-height:1.35; background:rgba(255,255,255,0.95); color:inherit; border:1px solid #888; border-radius:6px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,0.1); pointer-events:none; z-index: 1000; }
+      .hover-card { position:absolute; display:none; max-width:min(340px, calc(100% - 24px)); font-size:12px; line-height:1.35; background:rgba(255,255,255,0.95); color:inherit; border:1px solid #888; border-radius:6px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,0.1); pointer-events:none; z-index: 1000; overflow-wrap:anywhere; word-break:break-word; }
+      .hover-card code { white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
       @media (prefers-color-scheme: dark) { .hover-card { background:rgba(17,17,17,0.9); border-color:#555; } }
       .graph-surface {
         position:relative;
@@ -2958,8 +2959,8 @@ Connection: close
           var tangent = {x: edgeB.x - edgeA.x, y: edgeB.y - edgeA.y};
           var edgeLen = Math.sqrt((tangent.x * tangent.x) + (tangent.y * tangent.y)) || 1;
           var outward = {x: tangent.y / edgeLen, y: -tangent.x / edgeLen};
-          var edgeInsetStart = 0.55;
-          var edgeInsetEnd = 0.9;
+          var edgeInsetStart = 0.48;
+          var edgeInsetEnd = 0.98;
           var normalInset = 7.5;
           function at(t){
             var clamped = Math.max(0, Math.min(1, t));
@@ -5232,7 +5233,7 @@ Connection: close
             hit.setAttribute('class', 'ha-pip-hit');
             hit.setAttribute('cx', '0');
             hit.setAttribute('cy', '0');
-            hit.setAttribute('r', String(10 * localScale));
+            hit.setAttribute('r', String(8.5 * localScale));
             pipGroup.appendChild(hit);
 
             var ring = document.createElementNS('http://www.w3.org/2000/svg','circle');
@@ -5613,13 +5614,14 @@ Connection: close
             title:'Controller',
             body:(function(){
               var lines = [
-              'Reconciliation loop for registered apps (imported from specs/).',
+              'Reconciliation loop for registered apps from controller desired state.',
               'Computes desired state and converges containers and ingress.',
               'Single-node rollout: maxUnavailable=0, maxSurge=1 (zero-downtime).',
               'Records events, exposes /status, /events, /metrics, and serves the dashboard.',
               'Cleans up old revisions after switching traffic.'
               ];
               if (ha && ha.enabled) {
+                lines.splice(1, 0, 'HA uses shared etcd-backed controller state; local specs import is disabled.');
                 lines.unshift('Local role: <code>' + escapeHtml(localControllerRole) + '</code>');
                 if (haAuthority.leader_id) lines.unshift('Leader: <code>' + escapeHtml(haAuthority.leader_id) + '</code>');
                 lines.push('Epoch: <code>' + escapeHtml(String(haAuthority.controller_epoch != null ? haAuthority.controller_epoch : '-')) + '</code>');
@@ -5637,6 +5639,8 @@ Connection: close
                     lines.push(memberLine);
                   });
                 }
+              } else {
+                lines.splice(1, 0, 'Local specs import feeds the registry in single-node and dev flows.');
               }
               return lines.join('<br>');
             })()
@@ -5792,13 +5796,29 @@ Connection: close
           return html;
         }
 
-        function hoverCardPosition(evt){
+        function hoverCardPosition(evt, cardWidth, cardHeight){
           var wrap = document.getElementById('graph-wrap');
           if (!wrap || !evt) return {x: 10, y: 10};
           var rect = wrap.getBoundingClientRect();
+          var inset = 8;
+          var gap = 10;
+          var wrapWidth = Math.max(0, wrap.clientWidth || rect.width || 0);
+          var wrapHeight = Math.max(0, wrap.clientHeight || rect.height || 0);
+          var width = Math.max(0, Number(cardWidth || 0));
+          var height = Math.max(0, Number(cardHeight || 0));
+          var x = (evt.clientX - rect.left) + gap;
+          var y = (evt.clientY - rect.top) + gap;
+          if (x + width > wrapWidth - inset) {
+            x = (evt.clientX - rect.left) - gap - width;
+          }
+          if (y + height > wrapHeight - inset) {
+            y = (evt.clientY - rect.top) - gap - height;
+          }
+          var maxX = Math.max(inset, wrapWidth - inset - width);
+          var maxY = Math.max(inset, wrapHeight - inset - height);
           return {
-            x: (evt.clientX - rect.left) + 10,
-            y: (evt.clientY - rect.top) + 10
+            x: Math.min(Math.max(inset, x), maxX),
+            y: Math.min(Math.max(inset, y), maxY)
           };
         }
 
@@ -5811,12 +5831,16 @@ Connection: close
           ) {
             return;
           }
-          var pos = hoverCardPosition(evt);
           graphHoverOwner = owner;
           graphHover.innerHTML = formatHoverCardHtml(info);
+          graphHover.style.left = '0px';
+          graphHover.style.top = '0px';
+          graphHover.style.visibility = 'hidden';
+          graphHover.style.display = 'block';
+          var pos = hoverCardPosition(evt, graphHover.offsetWidth, graphHover.offsetHeight);
           graphHover.style.left = pos.x + 'px';
           graphHover.style.top = pos.y + 'px';
-          graphHover.style.display = 'block';
+          graphHover.style.visibility = 'visible';
         }
 
         function showGraphNodeHoverCard(n, evt){
@@ -5866,7 +5890,10 @@ Connection: close
         function hideHoverCard(owner){
           if (owner && graphHoverOwner !== owner) return;
           graphHoverOwner = null;
-          if (graphHover) graphHover.style.display='none';
+          if (graphHover) {
+            graphHover.style.display='none';
+            graphHover.style.visibility='hidden';
+          }
         }
 
         // Highlight selection
