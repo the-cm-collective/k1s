@@ -515,6 +515,15 @@ Dashboard reload vs. restart
   - Kills the controller; the supervisor restarts it and picks up code changes.
 - Env or port/token changes (anything in `state/env.sh`, `AE_API_*`, `AE_*` flags): `make dashboard-restart`
   - Stops the supervisor, clears any stale lock, then starts fresh so env is re‑sourced.
+- Retained HA VM dashboard smoke:
+  - Bring the retained stack up: `make lab-vm-ha-dashboard-up`
+  - Print direct controller/apishim URLs plus auth hints: `make lab-vm-ha-dashboard-status`
+  - retained-VM "rebuild and restart all" path: `make lab-vm-ha-dashboard-refresh-all`
+  - Remove the retained test VMs and per-run VM state: `make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS="--purge"`
+  - Full retained cleanup, including `runs/<RUN_ID>` and repo-built host images: `make lab-vm-ha-dashboard-purge`
+  - Hard reset the retained stack: `make lab-vm-ha-dashboard-reset`
+  - Hard reset plus guest image rebuild: `make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"`
+  - These targets default to `VARIANT=lab/variants/ha-control-plane-hub-node.yaml` and `RUN_ID=ha-dashboard-local`.
 - Scope of apps shown and reconciled
   - The controller respects `AE_SPECS_DIR` for the active specs root. To avoid reconciling every sample under `specs/`, set `AE_SPECS_DIR` to a curated folder (e.g., `state/profiles/demo/specs`).
   - Updated Make targets and bench scripts auto‑honor `AE_SPECS_DIR`. If unset, they fall back to `specs/`.

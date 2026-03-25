@@ -23,6 +23,7 @@ RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
 HA_CLOSEOUT_E2E_SCRIPT = ROOT / "scripts" / "dev" / "ha_closeout_e2e.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
+HA_DASHBOARD_SMOKE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "ha_dashboard_smoke.sh"
 HOST_PREPARE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "host_prepare.sh"
 VARIANT_DOWN_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "variant_down.sh"
 COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
@@ -39,6 +40,7 @@ HA_HUB_NODE_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-hub-nod
 HA_DRILL_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core-drills.yaml"
 HA_BRING_UP_DOC = ROOT / "docs" / "ops" / "ha-cluster-bring-up.md"
 VM_VARIANT_RUNBOOK_DOC = ROOT / "docs" / "ops" / "vm-variant-runbook.md"
+OPS_RUNBOOK_DOC = ROOT / "docs" / "ops" / "runbook.md"
 VM_GOLDEN_IMAGE_PIPELINE_DOC = ROOT / "docs" / "ops" / "vm-golden-image-pipeline.md"
 
 _SMOKE_V2_SPEC = spec_from_file_location("smoke_v2_script", SMOKE_V2_SCRIPT)
@@ -987,6 +989,22 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     assert "use the same bearer token for the dashboard data panels" in runbook
 
 
+def test_retained_ha_dashboard_docs_use_make_helper_targets() -> None:
+    bring_up = HA_BRING_UP_DOC.read_text(encoding="utf-8")
+    runbook = VM_VARIANT_RUNBOOK_DOC.read_text(encoding="utf-8")
+    ops = OPS_RUNBOOK_DOC.read_text(encoding="utf-8")
+    for text in (bring_up, runbook, ops):
+        assert "make lab-vm-ha-dashboard-up" in text
+        assert "make lab-vm-ha-dashboard-status" in text
+        assert "make lab-vm-ha-dashboard-refresh-all" in text
+        assert "make lab-vm-ha-dashboard-down" in text
+        assert "make lab-vm-ha-dashboard-purge" in text
+        assert "make lab-vm-ha-dashboard-reset" in text
+    assert "LAB_VM_HA_DASHBOARD_ARGS=\"--target all\"" in bring_up
+    assert "LAB_VM_HA_DASHBOARD_ARGS=\"--rebuild-images --destroy-network\"" in runbook
+    assert "retained-VM \"rebuild and restart all\" path" in ops
+
+
 def test_vm_golden_image_pipeline_docs_cover_auto_cleanup_and_manual_recovery() -> None:
     text = VM_GOLDEN_IMAGE_PIPELINE_DOC.read_text(encoding="utf-8")
     assert "Repeated `image build` runs now auto-clean the matching per-variant Packer work" in text
@@ -1010,6 +1028,67 @@ def test_make_lab_vm_smoke_uses_smoke_helper_wrapper() -> None:
     assert "./scripts/lab/vm/labctl.sh smoke" not in text
     assert "$${VARIANT:-lab/variants/test3-abc-pp2.yaml}" in text
     assert "$${LAB_VM_SMOKE_ARGS:-}" in text
+
+
+def test_make_lab_vm_ha_dashboard_targets_use_helper_wrapper() -> None:
+    text = MAKEFILE.read_text(encoding="utf-8")
+    for target in (
+        "lab-vm-ha-dashboard-up:",
+        "lab-vm-ha-dashboard-status:",
+        "lab-vm-ha-dashboard-down:",
+        "lab-vm-ha-dashboard-purge:",
+        "lab-vm-ha-dashboard-reseed-core:",
+        "lab-vm-ha-dashboard-restart-core:",
+        "lab-vm-ha-dashboard-restart-apishim:",
+        "lab-vm-ha-dashboard-restart-hub-node:",
+        "lab-vm-ha-dashboard-refresh-all:",
+        "lab-vm-ha-dashboard-reset:",
+    ):
+        assert target in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh up" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh status" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh down" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh purge" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh reseed-core" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh restart-core" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh restart-apishim" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh restart-hub-node" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh refresh-all" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh reset" in text
+    assert "RUN_ID=$${RUN_ID:-ha-dashboard-local}" in text
+    assert "VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml}" in text
+    assert "$${LAB_VM_HA_DASHBOARD_ARGS:-}" in text
+
+
+def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> None:
+    text = HA_DASHBOARD_SMOKE_SCRIPT.read_text(encoding="utf-8")
+    assert 'DEFAULT_VARIANT="$ROOT_DIR/lab/variants/ha-control-plane-hub-node.yaml"' in text
+    assert 'DEFAULT_RUN_ID="ha-dashboard-local"' in text
+    assert "reseed-core" in text
+    assert "restart-core" in text
+    assert "restart-apishim" in text
+    assert "restart-hub-node" in text
+    assert "refresh-all" in text
+    assert "purge" in text
+    assert "reset" in text
+    assert '"$SCRIPT_DIR/image_verify.sh" --variant all' in text
+    assert 'if [[ -f "$seed_bundle_path" ]]; then' in text
+    assert text.index('"$SCRIPT_DIR/image_seed_bundle.sh"') < text.index(
+        '"$SCRIPT_DIR/k1s_bootstrap.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute'
+    )
+    assert '"$SCRIPT_DIR/ha_shared_infra.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute' in text
+    assert '"$SCRIPT_DIR/k1s_bootstrap.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute' in text
+    assert '"$SCRIPT_DIR/image_seed_bundle.sh" \\' in text
+    assert '--run-id "$RUN_ID" \\' in text
+    assert '--profile core \\' in text
+    assert '--output "$seed_bundle_path"' in text
+    assert "python3 /mnt/host/scripts/dev/cri_stack.py up-apishim" in text
+    assert 'make k1s-core-node > /home/ae/k1s-core-node.log 2>&1 </dev/null &' in text
+    assert '"$SCRIPT_DIR/image_build.sh" --variant all' in text
+    assert '"$SCRIPT_DIR/variant_down.sh" "${down_args[@]}" || true' in text
+    assert 'rm -rf "$run_path"' in text
+    assert 'localhost:5001/k1s-apishim:dev' in text
+    assert 'docker.io/library/demo-shell:latest' in text
 
 
 def test_make_ha_closeout_e2e_uses_wrapper_script() -> None:

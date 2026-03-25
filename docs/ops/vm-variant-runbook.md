@@ -121,7 +121,46 @@ scripts/lab/vm/labctl.sh variant down \
   --purge
 ```
 
-Manual retention for investigation:
+Preferred retained operator flow:
+
+```bash
+sudo -v
+make lab-vm-ha-dashboard-up
+make lab-vm-ha-dashboard-status
+```
+
+Override the retained run id or variant when needed:
+
+```bash
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_smoke" \
+VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
+make lab-vm-ha-dashboard-up
+```
+
+Retained rebuild/restart commands:
+
+```bash
+make lab-vm-ha-dashboard-refresh-all \
+  LAB_VM_HA_DASHBOARD_ARGS="--target all"
+
+make lab-vm-ha-dashboard-down \
+  LAB_VM_HA_DASHBOARD_ARGS="--purge"
+
+make lab-vm-ha-dashboard-purge
+
+make lab-vm-ha-dashboard-reset
+
+make lab-vm-ha-dashboard-reset \
+  LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"
+```
+
+- `make lab-vm-ha-dashboard-refresh-all` is the retained-VM rebuild and restart path on the current VMs.
+- `make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS="--purge"` removes the retained VMs plus their per-run VM state.
+- `make lab-vm-ha-dashboard-purge` additionally removes `runs/<RUN_ID>` plus the repo-built host images used by this retained lane.
+- `make lab-vm-ha-dashboard-reset` tears the retained lane down and brings it back.
+- `make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"` is the full expensive path when guest/bootstrap contracts changed.
+
+Lower-level commands remain available when you want the raw orchestration steps:
 
 ```bash
 sudo -v
@@ -180,14 +219,12 @@ scripts/lab/vm/labctl.sh variant down \
   --purge
 ```
 
-Direct helper usage remains available when you want to bypass Make and call the wrapper explicitly:
+Direct helper usage remains available when you want to bypass Make and call the retained helper explicitly:
 
 ```bash
-scripts/lab/vm/smoke_helper.py \
+scripts/lab/vm/ha_dashboard_smoke.sh up \
   --variant lab/variants/ha-control-plane-hub-node.yaml \
-  --run-id "$RUN_ID" \
-  --teardown on-success \
-  --purge
+  --run-id "$RUN_ID"
 ```
 
 ## 1) Host prerequisite check

@@ -494,7 +494,7 @@ make lab-vm-smoke \
 
 That wrapper produces the machine-readable `runs/<RUN_ID>/ha_summary.json` artifact used by the HA closeout lane.
 
-### Single-Workstation Manual Smoke (Direct)
+### Single-Workstation Manual Smoke (Retained Make Helpers)
 
 Use this when you want to keep a checked-in HA topology running on one workstation for manual inspection and a small workload smoke. This is a retained VM smoke lane, not a supported single-host HA dev profile.
 
@@ -524,6 +524,40 @@ scripts/lab/vm/labctl.sh variant down \
   --purge
 ```
 
+Preferred retained operator path:
+
+```bash
+sudo -v
+make lab-vm-ha-dashboard-up
+make lab-vm-ha-dashboard-status
+```
+
+Override the retained run id or variant when needed:
+
+```bash
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_manual" \
+VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
+make lab-vm-ha-dashboard-up
+```
+
+Retained iteration commands:
+
+```bash
+make lab-vm-ha-dashboard-refresh-all \
+  LAB_VM_HA_DASHBOARD_ARGS="--target all"
+
+make lab-vm-ha-dashboard-down \
+  LAB_VM_HA_DASHBOARD_ARGS="--purge"
+
+make lab-vm-ha-dashboard-purge
+
+make lab-vm-ha-dashboard-reset
+```
+
+`make lab-vm-ha-dashboard-refresh-all` is the retained-VM "rebuild and restart all" path on the current VMs. `make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS="--purge"` removes the retained VMs plus their per-run VM state. `make lab-vm-ha-dashboard-purge` additionally removes `runs/<RUN_ID>` plus the repo-built host images used by this retained lane. `make lab-vm-ha-dashboard-reset` is the hard recycle path that tears the retained lane down and brings it back.
+
+Lower-level equivalent commands remain available when you need the raw building blocks.
+
 Prepare the host for the HA variant:
 
 ```bash
@@ -532,7 +566,7 @@ scripts/lab/vm/labctl.sh host prepare \
   --apply
 ```
 
-Bring the HA lane up without auto teardown:
+Bring the retained HA lane up without auto teardown via the older generic wrapper:
 
 ```bash
 sudo -v
@@ -546,8 +580,7 @@ make lab-vm-smoke \
   LAB_VM_SMOKE_ARGS="--teardown never"
 ```
 
-This retained variant keeps the three HA controllers and replaces the previous `sea`
-edge pair with one workload-capable hub node:
+This retained variant keeps the three HA controllers and replaces the previous `sea` edge pair with one workload-capable hub node:
 - `hub-1`: `192.168.155.20` (`role=hub,site=hub`)
 - the smoke helper automatically verifies that `hub-1` registers Ready and can run the pinned `shell-demo-node-hub` workload
 
@@ -587,7 +620,17 @@ Notes:
 - `lab/variants/ha-control-plane-core.yaml` remains the separate HA closeout topology when you want edge/gateway transport coverage instead of a hub workload node.
 - If you are switching from another VM lane that used a different `k1s-br0` subnet, tear it down with `--destroy-network` before rerunning host prep for this HA variant.
 - If the controller used by `DOCS_API_BASE` goes away, rebuild docs with another core URL or open the remaining controllers directly.
-- Clean up manually when you are done. Use `--destroy-network` only when you want full bridge cleanup or are switching to another subnet:
+- Clean up manually when you are done. Use `--destroy-network` only when you want full bridge cleanup or are switching to another subnet.
+- Full retained cleanup is `make lab-vm-ha-dashboard-purge`; add `LAB_VM_HA_DASHBOARD_ARGS="--destroy-network"` if you also want bridge teardown.
+- The fast retained reset path is `make lab-vm-ha-dashboard-reset`.
+- If you also changed guest/bootstrap contracts, run:
+
+```bash
+make lab-vm-ha-dashboard-reset \
+  LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"
+```
+
+Lower-level teardown remains:
 
 ```bash
 scripts/lab/vm/labctl.sh variant down \
