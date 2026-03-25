@@ -1083,7 +1083,18 @@ make lab-vm-smoke \
 <p>That wrapper produces the machine-readable <code>runs/&lt;RUN_ID&gt;/ha_summary.json</code> artifact used by the HA closeout lane.</p>
 <h3 id="single-workstation-manual-smoke-direct">Single-Workstation Manual Smoke (Direct)</h3>
 <p>Use this when you want to keep a checked-in HA topology running on one workstation for manual inspection and a small workload smoke. This is a retained VM smoke lane, not a supported single-host HA dev profile.</p>
-<p>Prepare the host for the HA variant first:</p>
+<p>Verify the qcow2 images first:</p>
+<pre><code>scripts/lab/vm/labctl.sh image verify --variant all</code></pre>
+<p>If verify fails, or you changed image/bootstrap contents, rebuild from a clean packer output directory first:</p>
+<pre><code>rm -rf artifacts/images/build-base artifacts/images/build-gpu
+scripts/lab/vm/labctl.sh image build --variant all
+scripts/lab/vm/labctl.sh image verify --variant all</code></pre>
+<p>If you are reusing an existing retained HA run id, tear that run down before host prep:</p>
+<pre><code>scripts/lab/vm/labctl.sh variant down \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --run-id &quot;$RUN_ID&quot; \
+  --purge</code></pre>
+<p>Prepare the host for the HA variant:</p>
 <pre><code>scripts/lab/vm/labctl.sh host prepare \
   --variant lab/variants/ha-control-plane-hub-node.yaml \
   --apply</code></pre>
@@ -1114,6 +1125,7 @@ make lab-vm-smoke \
 curl -fsS \
   -H &quot;Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}&quot; \
   http://192.168.155.10:9108/system | python -m json.tool</code></pre>
+<p>Use the same bearer token in the dashboard <code>Bearer</code> field when the data panels need auth.</p>
 <p>Host docs remain a static convenience layer. Point them at one controller URL and serve them locally:</p>
 <pre><code>DOCS_API_BASE=http://192.168.155.10:9108 \
 DOCS_DASHBOARD_URL=http://192.168.155.10:9108/dashboard \
@@ -1151,7 +1163,7 @@ python -m http.server 9109 --directory docs/site</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-20 16:18:24</span>
+        <span>Built 2026-03-24 18:31:48</span>
       </div>
     </footer>
     <script>

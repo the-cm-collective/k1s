@@ -1135,6 +1135,39 @@
 <li><code>src/ae/resources/observability/dashboard.html</code> now renders first-class HA authority, etcd, transport, and edge-site panels plus issue banners and leader/standby graph cues from <code>GET /system</code></li>
 <li>the observability reference, runbook, status table, and closeout doc now record this amendment as a post-closeout operator-surface extension instead of a reopened HA milestone</li>
 </ul>
+<p>Later follow-on dashboard amendments extend controller-member visibility and freshness on top of this foundation without reopening HA correctness scope or changing the original <code>H5c</code> closeout claim.</p>
+<h3 id="h5c-amendment-follow-on-phase-1-authority-backed-ha-member-visuals">H5c Amendment Follow-On Phase 1: Authority-Backed HA Member Visuals</h3>
+<p>Goal:</p>
+<ul>
+<li>extend the integrated HA dashboard so the collapsed system controller hex can show controller-cluster membership directly without expanding the graph or borrowing workload-pod semantics</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li><code>GET /system</code> gains an additive <code>ha.authority.members</code> list derived from controller authority presence instead of inferred site or node layout</li>
+<li>the system controller hex renders distinct HA member pips that remain visually separate from workload pod dots and from the existing leader or standby controller highlight</li>
+<li>member detail is available through pip hover and the controller detail card so the view remains usable in dense desktop layouts and touch-oriented dashboard use</li>
+<li>phase 1 explicitly does not claim per-member freshness; membership and role are authoritative, but freshness remains out of scope</li>
+<li>the amendment remains post-closeout operator-surface work and does not reopen HA correctness scope or change the original <code>H5c</code> closeout claim</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>src/ae/controller/authority.py</code> now lists controller presence members directly from <code>controlplane/controllers/*</code> so phase 1 uses authority-backed membership instead of inferred node layout</li>
+<li><code>src/ae/observability/http_api.py</code> now exposes <code>ha.authority.members</code> with leader/local role flags in the <code>GET /system</code> HA payload</li>
+<li><code>src/ae/resources/observability/dashboard.html</code> now renders controller-only HA member pips on the collapsed system controller hex, adds a distinct graph legend entry, and mirrors member details into both the HA authority card and the controller hover card</li>
+<li><code>tests/unit/test_controller_authority.py</code>, <code>tests/unit/test_system_ha_dashboard.py</code>, and <code>tests/unit/test_dashboard_template_ha.py</code> cover the authority member read path, additive payload shape, and dashboard template hooks for this phase</li>
+</ul>
+<h3 id="h5c-amendment-follow-on-phase-2-presence-freshness-and-member-age">H5c Amendment Follow-On Phase 2: Presence Freshness and Member Age</h3>
+<p>Goal:</p>
+<ul>
+<li>add true freshness semantics to controller-member presence so the HA dashboard can show when authority members were last heartbeating instead of only which members are currently present</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>controller authority presence becomes heartbeat-capable rather than initial-publish-only metadata, so member freshness is derived from controller-written presence state instead of inference from lease TTL or static <code>observed_at</code></li>
+<li><code>GET /system</code> extends <code>ha.authority.members</code> with freshness fields suitable for dashboard display and stale or unknown handling</li>
+<li>the dashboard surfaces member freshness in controller detail views and member-level hover treatment without implying generalized node health or site health</li>
+<li>phase 2 depends on the phase 1 member-visual amendment and preserves the same boundary: it extends operator visibility without reopening HA correctness scope or changing the original <code>H5c</code> closeout claim</li>
+</ul>
 <h2 id="dependency-model">Dependency Model</h2>
 <p>This HA track is the foundation for later deployment work:</p>
 <table><thead><tr><th>Phase</th><th>Depends on</th><th>Why</th></tr></thead><tbody><tr><td>H1</td><td>H0</td><td>Leader election only matters after desired-state authority is shared.</td></tr><tr><td>H2</td><td>H1</td><td>Fencing depends on a real elected leader and an <code>etcd</code>-issued epoch.</td></tr><tr><td>H3</td><td>H1, H2</td><td>Durable transport is only safe after mutations are leader-gated and fenced.</td></tr><tr><td>H4a</td><td>H0, H1, H2</td><td>Workload-core shim mutation can only converge after shared authority, leadership, and fencing exist.</td></tr><tr><td>H4b1</td><td>H4a</td><td><code>CronJob</code> and passive shim objects can extend the same authority model without reopening storage or HPA metrics scope.</td></tr><tr><td>H4b-hpa</td><td>H4b1</td><td>HPA should only converge after the passive-resource cut and a controller-visible shared metrics source exist.</td></tr><tr><td>H4b2a</td><td>H4b1, H4b-hpa</td><td>Built-in passive resources should converge after the narrower CronJob/passive-object and shared-metrics HPA cuts land.</td></tr><tr><td>H4b2b-crd</td><td>H4b2a</td><td>CRD and custom-resource convergence should land before the remaining storage controller authority cut.</td></tr><tr><td>H4b2c-core</td><td>H4b2b-crd</td><td>Core storage authority can converge before the riskier snapshot and CSI paths.</td></tr><tr><td>H4b2c-csi</td><td>H4b2c-core</td><td>Snapshot and CSI convergence should wait until the core PVC/PV/StorageClass cut is stable.</td></tr><tr><td>H5a-core</td><td>H1, H3, H4b2c-csi</td><td>HA bootstrap and drills are only meaningful after authority, transport, and API convergence are defined.</td></tr><tr><td>H5b1-etcd-recovery</td><td>H5a-core</td><td>Member replacement, quorum loss, and stale-leader recovery should build on one real HA bootstrap and drill surface, not precede it.</td></tr><tr><td>H5b2a-core-upgrades</td><td>H5b1-etcd-recovery</td><td>Rolling upgrades for systemd-managed <code>k1s-ha-core</code> nodes should build on the finished etcd recovery posture instead of redefining it.</td></tr><tr><td>H5b2b-hub-transport-upgrades</td><td>H5b2a-core-upgrades</td><td>Shared hub NATS/JetStream upgrade sequencing should build on the finished core-node upgrade surface instead of mixing the first operator contract with transport-cluster replacement.</td></tr><tr><td>H5b2c-edge-transport-upgrades</td><td>H5b2b-hub-transport-upgrades</td><td>Edge-site NATS leader choreography should build on the shared hub upgrade posture instead of mixing shared-cluster and per-site recovery in one slice.</td></tr><tr><td>H5c-ha-closeout</td><td>H5b2c-edge-transport-upgrades</td><td>The HA track should only close after edge transport is in place and one integrated audit plus acceptance lane proves the full operator contract.</td></tr></tbody></table>
@@ -1159,7 +1192,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-19 19:26:55</span>
+        <span>Built 2026-03-24 18:29:30</span>
       </div>
     </footer>
     <script>
