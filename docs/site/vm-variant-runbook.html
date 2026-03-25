@@ -820,10 +820,10 @@ make lab-vm-smoke \
 <p>That drill-enabled variant wires the optional HA drill hooks through <code>scripts/lab/vm/ha_drill_actions.sh</code>, so the wrapper will report <code>ha_drill_leader_failover</code>, <code>ha_drill_etcd_restart</code>, and <code>ha_drill_transport_recovery</code> instead of skipping them.</p>
 <p>Image readiness for retained/manual HA smoke:</p>
 <pre><code>scripts/lab/vm/labctl.sh image verify --variant all</code></pre>
-<p>If verify fails, or you changed image/bootstrap contents, rebuild from a clean packer output directory first:</p>
-<pre><code>rm -rf artifacts/images/build-base artifacts/images/build-gpu
-scripts/lab/vm/labctl.sh image build --variant all
+<p>If verify fails, or you changed image/bootstrap contents, rebuild the images:</p>
+<pre><code>scripts/lab/vm/labctl.sh image build --variant all
 scripts/lab/vm/labctl.sh image verify --variant all</code></pre>
+<p>Normal reruns now auto-clean the matching per-variant Packer work directory. If you are troubleshooting a badly interrupted local build, you can still manually remove <code>artifacts/images/build-base</code> and <code>artifacts/images/build-gpu</code> first.</p>
 <p>If you are reusing an existing retained HA run id, tear that run down before host prep:</p>
 <pre><code>scripts/lab/vm/labctl.sh variant down \
   --variant lab/variants/ha-control-plane-hub-node.yaml \
@@ -979,7 +979,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-24 18:31:48</span>
+        <span>Built 2026-03-25 11:46:51</span>
       </div>
     </footer>
     <script>
