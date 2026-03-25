@@ -10,6 +10,7 @@ CNI_INIT_SCRIPT = ROOT / "scripts" / "cni_init.sh"
 CRI_SMOKE_SCRIPT = ROOT / "scripts" / "cri_smoke.sh"
 CRI_CI_SETUP_SCRIPT = ROOT / "scripts" / "cri_ci_setup.sh"
 COMMON_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "common-bootstrap.sh"
+GPU_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "gpu-bootstrap.sh"
 GUEST_PREREQS_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "guest_prereqs.sh"
 IMAGE_BUILD_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_build.sh"
 IMAGE_VERIFY_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_verify.sh"
@@ -141,6 +142,9 @@ def test_cri_bootstrap_scripts_use_compatible_cni_default() -> None:
     assert "crictl pull registry.k8s.io/pause:3.9" in common_bootstrap
     assert "bootstrap_contract_version" in common_bootstrap
     assert '"cni_version": "${expected_cni_version}"' in common_bootstrap
+    gpu_bootstrap = GPU_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+    assert "mkdir -p /etc/k1s-image" in gpu_bootstrap
+    assert "cat >/etc/k1s-image/gpu-info.json <<JSON" in gpu_bootstrap
 
     image_build = IMAGE_BUILD_SCRIPT.read_text(encoding="utf-8")
     assert 'BOOTSTRAP_CONTRACT_VERSION="${BOOTSTRAP_CONTRACT_VERSION:-20260324-cni-0.4.0-smoke-v1}"' in image_build
