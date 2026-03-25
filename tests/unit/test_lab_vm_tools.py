@@ -39,6 +39,7 @@ HA_HUB_NODE_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-hub-nod
 HA_DRILL_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core-drills.yaml"
 HA_BRING_UP_DOC = ROOT / "docs" / "ops" / "ha-cluster-bring-up.md"
 VM_VARIANT_RUNBOOK_DOC = ROOT / "docs" / "ops" / "vm-variant-runbook.md"
+VM_GOLDEN_IMAGE_PIPELINE_DOC = ROOT / "docs" / "ops" / "vm-golden-image-pipeline.md"
 
 _SMOKE_V2_SPEC = spec_from_file_location("smoke_v2_script", SMOKE_V2_SCRIPT)
 assert _SMOKE_V2_SPEC is not None and _SMOKE_V2_SPEC.loader is not None
@@ -966,6 +967,24 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     assert (
         'Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}'
     ) in runbook
+    assert "scripts/lab/vm/labctl.sh image verify --variant all" in bring_up
+    assert "scripts/lab/vm/labctl.sh image verify --variant all" in runbook
+    assert "rm -rf artifacts/images/build-base artifacts/images/build-gpu" in bring_up
+    assert "rm -rf artifacts/images/build-base artifacts/images/build-gpu" in runbook
+    assert 'LAB_VM_SMOKE_ARGS="--teardown never"' in bring_up
+    assert 'LAB_VM_SMOKE_ARGS="--teardown never"' in runbook
+    assert "http://192.168.155.10:9108/dashboard" in bring_up
+    assert "http://192.168.155.10:9108/dashboard" in runbook
+    assert "Use the same bearer token in the dashboard `Bearer` field" in bring_up
+    assert "use the same bearer token for the dashboard data panels" in runbook
+
+
+def test_vm_golden_image_pipeline_docs_cover_stale_build_cleanup() -> None:
+    text = VM_GOLDEN_IMAGE_PIPELINE_DOC.read_text(encoding="utf-8")
+    assert "rm -rf artifacts/images/build-base artifacts/images/build-gpu" in text
+    assert "scripts/lab/vm/labctl.sh image build --variant all" in text
+    assert "scripts/lab/vm/labctl.sh image verify --variant all" in text
+    assert "stale output" in text or "stale output directories" in text
 
 
 def test_lab_vm_scripts_prefer_repo_venv_python() -> None:

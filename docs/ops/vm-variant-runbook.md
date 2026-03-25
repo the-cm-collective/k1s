@@ -95,6 +95,29 @@ make lab-vm-smoke \
 
 That drill-enabled variant wires the optional HA drill hooks through `scripts/lab/vm/ha_drill_actions.sh`, so the wrapper will report `ha_drill_leader_failover`, `ha_drill_etcd_restart`, and `ha_drill_transport_recovery` instead of skipping them.
 
+Image readiness for retained/manual HA smoke:
+
+```bash
+scripts/lab/vm/labctl.sh image verify --variant all
+```
+
+If verify fails, or you changed image/bootstrap contents, rebuild from a clean packer output directory first:
+
+```bash
+rm -rf artifacts/images/build-base artifacts/images/build-gpu
+scripts/lab/vm/labctl.sh image build --variant all
+scripts/lab/vm/labctl.sh image verify --variant all
+```
+
+If you are reusing an existing retained HA run id, tear that run down before host prep:
+
+```bash
+scripts/lab/vm/labctl.sh variant down \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --run-id "$RUN_ID" \
+  --purge
+```
+
 Manual retention for investigation:
 
 ```bash
@@ -117,7 +140,7 @@ Use that retained HA run as the direct manual-smoke lane on one workstation:
 - reach the API shim directly at `https://192.168.155.10:8445`, `https://192.168.155.11:8445`, or `https://192.168.155.12:8445`
 - the harness automatically validates that `hub-1` (`192.168.155.20`, `role=hub,site=hub`) registers and runs the pinned `shell-demo-node-hub` workload
 - `hub-1` reaches the controller agent API on `:9110` and runs without Rosenpass/WireGuard in this retained lane; overlay validation stays with the edge/gateway HA closeout topology
-- rebuild host docs against one controller if you want a local static docs entrypoint:
+- export local auth, verify `/system`, and use the same bearer token for the dashboard data panels:
 
 ```bash
 source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)
@@ -125,6 +148,8 @@ curl -fsS \
   -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
   http://192.168.155.10:9108/system | python -m json.tool
 ```
+
+- rebuild host docs against one controller if you want a local static docs entrypoint:
 
 ```bash
 DOCS_API_BASE=http://192.168.155.10:9108 \

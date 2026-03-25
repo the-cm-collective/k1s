@@ -498,7 +498,30 @@ That wrapper produces the machine-readable `runs/<RUN_ID>/ha_summary.json` artif
 
 Use this when you want to keep a checked-in HA topology running on one workstation for manual inspection and a small workload smoke. This is a retained VM smoke lane, not a supported single-host HA dev profile.
 
-Prepare the host for the HA variant first:
+Verify the qcow2 images first:
+
+```bash
+scripts/lab/vm/labctl.sh image verify --variant all
+```
+
+If verify fails, or you changed image/bootstrap contents, rebuild from a clean packer output directory first:
+
+```bash
+rm -rf artifacts/images/build-base artifacts/images/build-gpu
+scripts/lab/vm/labctl.sh image build --variant all
+scripts/lab/vm/labctl.sh image verify --variant all
+```
+
+If you are reusing an existing retained HA run id, tear that run down before host prep:
+
+```bash
+scripts/lab/vm/labctl.sh variant down \
+  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --run-id "$RUN_ID" \
+  --purge
+```
+
+Prepare the host for the HA variant:
 
 ```bash
 scripts/lab/vm/labctl.sh host prepare \
@@ -531,8 +554,7 @@ Direct controller access from the host:
 - `core-c`: `http://192.168.155.12:9108/dashboard`
 - API shim: `https://192.168.155.10:8445`, `https://192.168.155.11:8445`, `https://192.168.155.12:8445`
 
-Export local auth for the retained HA profile before reading `/system` or
-using the dashboard data panels:
+Export local auth for the retained HA profile before reading `/system` or using the dashboard data panels:
 
 ```bash
 source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)
@@ -540,6 +562,8 @@ curl -fsS \
   -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
   http://192.168.155.10:9108/system | python -m json.tool
 ```
+
+Use the same bearer token in the dashboard `Bearer` field when the data panels need auth.
 
 Host docs remain a static convenience layer. Point them at one controller URL and serve them locally:
 

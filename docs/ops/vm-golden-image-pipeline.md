@@ -15,6 +15,14 @@ Inputs
 scripts/lab/vm/labctl.sh image build --variant all
 ```
 
+If you are rerunning a build after an interrupted packer run or stale output
+directories are still present, clean the per-variant build directories first:
+
+```bash
+rm -rf artifacts/images/build-base artifacts/images/build-gpu
+scripts/lab/vm/labctl.sh image build --variant all
+```
+
 Outputs
 - `artifacts/images/ubuntu-22.04-k1s-base.qcow2`
 - `artifacts/images/ubuntu-22.04-k1s-gpu.qcow2`
@@ -38,6 +46,13 @@ Checks
 
 The VM smoke and drill lanes now treat those readiness flags as authoritative. If
 `image verify` fails, rebuild the images before running `make lab-vm-smoke`.
+The clean rebuild path is:
+
+```bash
+rm -rf artifacts/images/build-base artifacts/images/build-gpu
+scripts/lab/vm/labctl.sh image build --variant all
+scripts/lab/vm/labctl.sh image verify --variant all
+```
 
 ## 3) Transfer images to test host
 
