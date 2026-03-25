@@ -9,10 +9,18 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert 'id="ha-section"' in html
     assert 'id="ha-issues-banner"' in html
     assert 'id="ha-summary"' in html
+    assert 'id="ha-disabled-note"' in html
+    assert 'id="ha-grid"' in html
     assert 'id="ha-authority"' in html
     assert 'id="ha-etcd"' in html
     assert 'id="ha-transport"' in html
     assert 'id="ha-edge-sites"' in html
+    assert "HA disabled for this profile. Use make k1s-ha-core to view authority, etcd, transport, and edge site health." in html
+    assert "summaryEl.classList.add('hidden');" in html
+    assert "noteEl.classList.remove('hidden');" in html
+    assert "gridEl.classList.add('hidden');" in html
+    assert "summaryEl.classList.remove('hidden');" in html
+    assert "gridEl.classList.remove('hidden');" in html
     assert 'id="overlays"' in html
     assert "HA members" in html
     assert "authority-member-pip" in html
