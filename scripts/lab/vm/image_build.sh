@@ -33,7 +33,12 @@ packer init "$TEMPLATE" >/dev/null
 
 build_one() {
   local variant="$1"
+  local build_dir="$OUTPUT_DIR/build-${variant}"
   echo "[image-build] building variant=${variant}"
+  if [[ -d "$build_dir" ]]; then
+    echo "[image-build] removing stale packer dir $build_dir"
+    rm -rf "$build_dir"
+  fi
   packer build \
     -var "variant=${variant}" \
     -var "output_dir=${OUTPUT_DIR}" \

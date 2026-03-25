@@ -805,12 +805,16 @@ def test_common_bootstrap_bakes_vm_prereqs_into_images() -> None:
     text = COMMON_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
     assert "containernetworking-plugins" in text
     assert "python-is-python3" in text
-    assert "apt-get install -y cri-tools" in text
+    assert 'echo "[image-bootstrap] installing crictl ${crictl_version} binary"' in text
     assert "install_crictl_binary()" in text
     assert "containerd --config /etc/containerd/config.toml config dump" in text
     assert "/etc/crictl.yaml" in text
     assert "/opt/cni/bin" in text
     assert "10-k1s-bridge.conflist" in text
+    assert "systemctl enable containerd" in text
+    assert "systemctl restart containerd" in text
+    assert "systemctl enable containerd qemu-guest-agent" not in text
+    assert "systemctl restart containerd qemu-guest-agent" not in text
     assert '"vm_bootstrap_ready": true' in text
     assert '"python_alias": true' in text
     assert '"crictl_ready": true' in text
@@ -819,6 +823,8 @@ def test_common_bootstrap_bakes_vm_prereqs_into_images() -> None:
 
 def test_image_build_writes_vm_bootstrap_metadata_flags() -> None:
     text = IMAGE_BUILD_SCRIPT.read_text(encoding="utf-8")
+    assert 'build_dir="$OUTPUT_DIR/build-${variant}"' in text
+    assert 'rm -rf "$build_dir"' in text
     assert "vm_bootstrap_ready:true" in text
     assert "python_alias:true" in text
     assert "crictl_ready:true" in text
@@ -969,8 +975,10 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     ) in runbook
     assert "scripts/lab/vm/labctl.sh image verify --variant all" in bring_up
     assert "scripts/lab/vm/labctl.sh image verify --variant all" in runbook
-    assert "rm -rf artifacts/images/build-base artifacts/images/build-gpu" in bring_up
-    assert "rm -rf artifacts/images/build-base artifacts/images/build-gpu" in runbook
+    assert "Normal reruns now auto-clean the matching per-variant Packer work directory." in bring_up
+    assert "Normal reruns now auto-clean the matching per-variant Packer work directory." in runbook
+    assert "artifacts/images/build-base" in bring_up
+    assert "artifacts/images/build-base" in runbook
     assert 'LAB_VM_SMOKE_ARGS="--teardown never"' in bring_up
     assert 'LAB_VM_SMOKE_ARGS="--teardown never"' in runbook
     assert "http://192.168.155.10:9108/dashboard" in bring_up
@@ -979,12 +987,13 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     assert "use the same bearer token for the dashboard data panels" in runbook
 
 
-def test_vm_golden_image_pipeline_docs_cover_stale_build_cleanup() -> None:
+def test_vm_golden_image_pipeline_docs_cover_auto_cleanup_and_manual_recovery() -> None:
     text = VM_GOLDEN_IMAGE_PIPELINE_DOC.read_text(encoding="utf-8")
-    assert "rm -rf artifacts/images/build-base artifacts/images/build-gpu" in text
+    assert "Repeated `image build` runs now auto-clean the matching per-variant Packer work" in text
+    assert "manually remove `artifacts/images/build-base` and `artifacts/images/build-gpu`" in text
     assert "scripts/lab/vm/labctl.sh image build --variant all" in text
     assert "scripts/lab/vm/labctl.sh image verify --variant all" in text
-    assert "stale output" in text or "stale output directories" in text
+    assert "normal reruns do not require a manual cleanup" in text
 
 
 def test_lab_vm_scripts_prefer_repo_venv_python() -> None:

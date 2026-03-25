@@ -90,10 +90,8 @@ apt-get install -y \
   qemu-guest-agent
 
 if ! command -v crictl >/dev/null 2>&1; then
-  if ! apt-get install -y cri-tools; then
-    echo "[image-bootstrap] cri-tools package unavailable; installing crictl ${crictl_version} binary"
-    install_crictl_binary
-  fi
+  echo "[image-bootstrap] installing crictl ${crictl_version} binary"
+  install_crictl_binary
 fi
 
 # Keep Ubuntu 22.04 on the GA kernel line (5.15) for vGPU stability work.
@@ -131,8 +129,10 @@ if [[ -d /usr/lib/cni ]]; then
 fi
 write_cni_configs
 
-systemctl enable containerd qemu-guest-agent
-systemctl restart containerd qemu-guest-agent
+# Let runtime cloud-init activate qemu-guest-agent on first boot; the golden
+# image bake only needs containerd running for CRI validation and cache seeding.
+systemctl enable containerd
+systemctl restart containerd
 crictl pull registry.k8s.io/pause:3.9 >/dev/null
 
 seed_version=""

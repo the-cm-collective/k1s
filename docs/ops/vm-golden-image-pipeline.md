@@ -15,13 +15,9 @@ Inputs
 scripts/lab/vm/labctl.sh image build --variant all
 ```
 
-If you are rerunning a build after an interrupted packer run or stale output
-directories are still present, clean the per-variant build directories first:
-
-```bash
-rm -rf artifacts/images/build-base artifacts/images/build-gpu
-scripts/lab/vm/labctl.sh image build --variant all
-```
+Repeated `image build` runs now auto-clean the matching per-variant Packer work
+directory before each build, so normal reruns do not require a manual cleanup
+step.
 
 Outputs
 - `artifacts/images/ubuntu-22.04-k1s-base.qcow2`
@@ -49,10 +45,13 @@ The VM smoke and drill lanes now treat those readiness flags as authoritative. I
 The clean rebuild path is:
 
 ```bash
-rm -rf artifacts/images/build-base artifacts/images/build-gpu
 scripts/lab/vm/labctl.sh image build --variant all
 scripts/lab/vm/labctl.sh image verify --variant all
 ```
+
+If you need to troubleshoot a badly interrupted local build, you can still
+manually remove `artifacts/images/build-base` and `artifacts/images/build-gpu`
+before rerunning the build.
 
 ## 3) Transfer images to test host
 

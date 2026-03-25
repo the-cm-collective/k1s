@@ -101,13 +101,16 @@ Image readiness for retained/manual HA smoke:
 scripts/lab/vm/labctl.sh image verify --variant all
 ```
 
-If verify fails, or you changed image/bootstrap contents, rebuild from a clean packer output directory first:
+If verify fails, or you changed image/bootstrap contents, rebuild the images:
 
 ```bash
-rm -rf artifacts/images/build-base artifacts/images/build-gpu
 scripts/lab/vm/labctl.sh image build --variant all
 scripts/lab/vm/labctl.sh image verify --variant all
 ```
+
+Normal reruns now auto-clean the matching per-variant Packer work directory. If
+you are troubleshooting a badly interrupted local build, you can still manually
+remove `artifacts/images/build-base` and `artifacts/images/build-gpu` first.
 
 If you are reusing an existing retained HA run id, tear that run down before host prep:
 
