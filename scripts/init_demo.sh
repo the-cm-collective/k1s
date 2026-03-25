@@ -282,7 +282,7 @@ What this does (down):
   - Optionally removes hosts entries for: ${HOSTS[*]}
 
 Prerequisites:
-  - Ubuntu/Debian with sudo access
+  - Linux host with sudo access
   - Docker Engine installed and enabled (for dev stack), or Podman for OCI runtime
 
 Environment variables you can override:
@@ -686,24 +686,19 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     log "Removing local registry cache under state/registry"
     rm -rf state/registry 2>/dev/null || true
   fi
-  # Optionally remove hosts entries
-  if prompt_yes_no_hosts "Remove hosts entries for ${HOSTS[*]} from /etc/hosts?" N; then
-    for host in "${HOSTS[@]}"; do
-      $SUDO sed -i.bak "/[[:space:]]$host\$/d" /etc/hosts || true
-    done
-    log "Hosts entries removed (backup at /etc/hosts.bak)"
+  if prompt_yes_no_hosts "Remove local DNS/TLS helper state for ${HOSTS[*]}?" N; then
+    DEV_LOCAL_HOSTS="${HOSTS[*]}" \
+      DEV_LOCAL_HOSTS_IP="${HOSTS_IP}" \
+      DEV_PROFILE_DIR="${LABS_PROFILE_DIR:-$DEMO_PROFILE_DIR}" \
+      AE_CONTAINER_CLI="${STACK_BIN}" \
+      AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}" \
+      AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-${LABS_PROFILE_DIR}/apishim.crt}" \
+      AE_APISHIM_TLS_CA_CERT="${AE_APISHIM_TLS_CA_CERT:-${LABS_PROFILE_DIR}/apishim.ca.crt}" \
+      CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT}" \
+      AE_DEV_LOCAL_ACTION=clean \
+      ./scripts/dev/ensure_dev_local.sh || true
   else
-    log "Keeping hosts entries"
-  fi
-  # Optionally remove trusted local CA
-  if command -v update-ca-certificates >/dev/null 2>&1; then
-    if [[ -f /usr/local/share/ca-certificates/caddy-local-root.crt ]]; then
-      if prompt_yes_no_hosts "Remove trusted Caddy local root CA from host trust store?" Y; then
-        $SUDO rm -f /usr/local/share/ca-certificates/caddy-local-root.crt || true
-        $SUDO update-ca-certificates >/dev/null 2>&1 || true
-        log "Removed Caddy local root CA from host trust"
-      fi
-    fi
+    log "Keeping local DNS/TLS helper state"
   fi
   log "Demo teardown complete."
   exit 0
@@ -1035,96 +1030,18 @@ fi
     fi
   fi
 
-  # Trust Caddy's local CA on the host so browsers don't warn on every run.
-  # This only applies to Debian/Ubuntu hosts (update-ca-certificates). If -y was
-  # passed, do it non-interactively; otherwise still proceed best‑effort.
-  if command -v update-ca-certificates >/dev/null 2>&1; then
-    # Trigger local CA creation by touching one TLS site once (ignore TLS verify)
-    curl -ksS "https://docs.home.arpa:${CADDY_HTTPS_PORT}/" >/dev/null 2>&1 || true
-    # Give Caddy a moment to mint the local CA and leaf certs
-    sleep 1
-    mkdir -p state/certs
-    ROOT_CA_HOST="state/caddy-data/pki/authorities/local/root.crt"
-    if [[ ! -s "${ROOT_CA_HOST}" ]]; then
-      # Fallback: try to copy from the running container (name may vary; prefer AE_CADDY_CONTAINER when set)
-      CADDY_CONTAINER=${AE_CADDY_CONTAINER:-}
-      if [[ -z "${CADDY_CONTAINER}" ]]; then
-        # Best-effort: pick first container with image caddy and port 443 mapped
-        CADDY_CONTAINER=$($STACK_BIN ps --format '{{.Names}}\t{{.Image}}' | awk '/caddy/ {print $1; exit}' || true)
-      fi
-      if [[ -n "${CADDY_CONTAINER}" ]]; then
-        if "$STACK_BIN" exec "${CADDY_CONTAINER}" test -f /data/caddy/pki/authorities/local/root.crt; then
-          "$STACK_BIN" cp "${CADDY_CONTAINER}":/data/caddy/pki/authorities/local/root.crt state/certs/caddy-local-root.crt >/dev/null 2>&1 || true
-        fi
-      fi
-    else
-      cp -f "${ROOT_CA_HOST}" state/certs/caddy-local-root.crt || true
-    fi
-    if [[ -s state/certs/caddy-local-root.crt ]]; then
-      log "Installing Caddy local root CA into host trust store"
-      $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
-      $SUDO update-ca-certificates >/dev/null 2>&1 || true
-      # Build a canonical dev CA bundle (system + local CA) for CLI tools/SDKs
-      mkdir -p state/certs
-      COMBINED_OUT="state/certs/combined-dev-ca.pem"
-      "$PY_BIN" - <<'PY' || true
-import os, sys
-try:
-    import certifi
-    src = certifi.where()
-    dev = os.path.join('state','certs','caddy-local-root.crt')
-    out = os.path.join('state','certs','combined-dev-ca.pem')
-    with open(src,'rb') as fsrc, open(out,'wb') as fout:
-        data = fsrc.read()
-        fout.write(data)
-        with open(dev,'rb') as fd:
-            d = fd.read()
-            if d not in data:
-                if not d.endswith(b"\n"): d += b"\n"
-                fout.write(d)
-    print(out)
-except Exception as e:
-    print('skip-combined:', e)
-PY
-      # Best-effort user trust for Chrome/Chromium (NSS) and Firefox profiles
-      if command -v certutil >/dev/null 2>&1; then
-        mkdir -p "$HOME/.pki/nssdb"
-        certutil -d sql:"$HOME/.pki/nssdb" -A -t "C,," -n "Caddy Local Root" -i state/certs/caddy-local-root.crt 2>/dev/null || true
-        for prof in "$HOME"/.mozilla/firefox/*.default* "$HOME"/.mozilla/firefox/*.dev*; do
-          [ -d "$prof" ] || continue
-          certutil -d sql:"$prof" -A -t "C,," -n "Caddy Local Root" -i state/certs/caddy-local-root.crt 2>/dev/null || true
-        done
-      fi
-    else
-      # If CA not present yet, fix perms and try once more (Podman rootless often needs this)
-      chmod -R 0777 state/caddy-data || true
-      sleep 1
-      ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" restart caddy || true
-      sleep 1
-      if [[ -s "${ROOT_CA_HOST}" ]]; then
-        cp -f "${ROOT_CA_HOST}" state/certs/caddy-local-root.crt || true
-      fi
-      if [[ -s state/certs/caddy-local-root.crt ]]; then
-        log "Installing Caddy local root CA into host trust store (retry)"
-        $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
-        $SUDO update-ca-certificates >/dev/null 2>&1 || true
-      else
-        log "Local CA not found; skipping trust install (you can import state/certs/caddy-local-root.crt manually later)"
-      fi
-    fi
+if prompt_yes_no_hosts "Apply local DNS/TLS helper state for ${HOSTS[*]}?" N; then
+  DEV_LOCAL_HOSTS="${HOSTS[*]}" \
+    DEV_LOCAL_HOSTS_IP="${HOSTS_IP}" \
+    DEV_PROFILE_DIR="${LABS_PROFILE_DIR:-$DEMO_PROFILE_DIR}" \
+    AE_CONTAINER_CLI="${STACK_BIN}" \
+    AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}" \
+    AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-${LABS_PROFILE_DIR}/apishim.crt}" \
+    AE_APISHIM_TLS_CA_CERT="${AE_APISHIM_TLS_CA_CERT:-${LABS_PROFILE_DIR}/apishim.ca.crt}" \
+    CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT}" \
+    ./scripts/dev/ensure_dev_local.sh || true
 else
-  log "update-ca-certificates not found; skipping local CA trust (manually import state/certs/caddy-local-root.crt)"
-fi
-
-if prompt_yes_no_hosts "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" N; then
-  log "Configuring hosts entries"
-  for host in "${HOSTS[@]}"; do
-    if ! grep -q "[[:space:]]$host$" /etc/hosts; then
-      $SUDO sh -c "echo '${HOSTS_IP} ${host}' >> /etc/hosts"
-    fi
-  done
-else
-  log "Skipping hosts entries; use direct addresses instead"
+  log "Skipping local DNS/TLS helper state; use direct addresses instead"
 fi
 
 export AE_CADDY_SITES=${AE_CADDY_SITES:-state/caddy}

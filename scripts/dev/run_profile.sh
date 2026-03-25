@@ -953,7 +953,58 @@ normalize_ingress_mode() {
 
 compose() {
   local engine="$1"; shift
+  if ! compose_provider_available "$engine"; then
+    echo "error: ${engine} compose is unavailable on PATH." >&2
+    echo "hint: $(compose_provider_hint "$engine")." >&2
+    return 1
+  fi
   "$engine" compose "$@"
+}
+
+compose_provider_available() {
+  local engine="${1:-}"
+  if [[ -z "$engine" ]]; then
+    return 1
+  fi
+  if ! command -v "$engine" >/dev/null 2>&1; then
+    return 1
+  fi
+  "$engine" compose version >/dev/null 2>&1
+}
+
+compose_provider_hint() {
+  case "${1:-}" in
+    podman)
+      printf "%s" "install podman-compose or run inside 'nix develop' so 'podman compose' can resolve a provider"
+      ;;
+    docker)
+      printf "%s" "install Docker Compose v2 or the legacy 'docker-compose' binary"
+      ;;
+    *)
+      printf "%s" "install a working compose provider"
+      ;;
+  esac
+}
+
+default_apishim_mode() {
+  if is_strict_cri && [[ "$PROFILE" == "k1s-core" || "$PROFILE" == "k1s-ha-core" ]]; then
+    printf 'cri'
+    return 0
+  fi
+  if is_strict_cri; then
+    printf 'host'
+    return 0
+  fi
+  if [[ "$ENGINE_BIN" == "podman" ]]; then
+    if compose_provider_available "$ENGINE_BIN"; then
+      printf 'container'
+    else
+      echo "warning: podman compose provider not found; defaulting AE_APISHIM_MODE=host. $(compose_provider_hint "$ENGINE_BIN")." >&2
+      printf 'host'
+    fi
+    return 0
+  fi
+  printf 'host'
 }
 
 ensure_specs_dir() {
@@ -1094,6 +1145,7 @@ start_caddy() {
   local caddy_container="${AE_CADDY_CONTAINER:-dev-caddy-1}"
   local apishim_upstream=""
   local apishim_port="${APISHIM_PORT:-8445}"
+  local apishim_container_port="${APISHIM_CONTAINER_PORT:-8445}"
   local caddy_network=""
 
   mkdir -p "$caddy_sites"
@@ -1114,7 +1166,7 @@ start_caddy() {
   fi
   if [[ "${AE_APISHIM_MODE:-}" == "container" && "$ENGINE_BIN" == "podman" ]]; then
     if "$ENGINE_BIN" network inspect dev_default >/dev/null 2>&1; then
-      apishim_upstream="apishim:${apishim_port}"
+      apishim_upstream="apishim:${apishim_container_port}"
       caddy_network="dev_default"
     fi
   fi
@@ -1190,8 +1242,8 @@ EOF
     fi
     "$ENGINE_BIN" exec -T "$caddy_container" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
   else
-    "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d caddy >/dev/null 2>&1 || true
-    "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" exec -T caddy \
+    compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d caddy >/dev/null 2>&1 || true
+    compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" exec -T caddy \
       caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
   fi
 }
@@ -1352,6 +1404,51 @@ normalize_apishim_port() {
   echo "$candidate"
 }
 
+prepare_apishim_compose_env() {
+  local profile_dir="$1"
+  local env_file="$2"
+  local port="$3"
+  local host_port="$4"
+  local profile_rel="$profile_dir"
+
+  if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
+    profile_rel="${profile_dir#"$ROOT_DIR/"}"
+  fi
+
+  export APISHIM_ENV_FILE="$env_file"
+  export APISHIM_PROFILE_DIR="$profile_rel"
+  export APISHIM_PORT="$port"
+  export APISHIM_HOST_PORT="$host_port"
+  export APISHIM_CONTAINER_PORT="${APISHIM_CONTAINER_PORT:-8445}"
+  export APISHIM_CONTAINER=1
+  export AE_APISHIM_ETCD_ENDPOINTS="${AE_APISHIM_ETCD_ENDPOINTS:-${AE_ETCD_ENDPOINTS:-}}"
+}
+
+sync_apishim_dev_env() {
+  AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 \
+    "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+}
+
+apishim_compose_render() {
+  local output_file=""
+  output_file="$(mktemp)"
+  if compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" config >"$output_file" 2>&1; then
+    rm -f "$output_file"
+    return 0
+  fi
+  echo "error: failed to render apishim compose config via ${ENGINE_BIN} compose." >&2
+  cat "$output_file" >&2 || true
+  rm -f "$output_file"
+  return 1
+}
+
+up_apishim_compose() {
+  if ! apishim_compose_render; then
+    return 1
+  fi
+  compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d "$@" apishim
+}
+
 warn_apishim_dsn() {
   local dsn="${AE_APISHIM_DSN:-}"
   local scheme=""
@@ -1408,6 +1505,8 @@ start_apishim() {
   local host="${APISHIM_HOST:-127.0.0.1}"
   local requested_port="${APISHIM_PORT:-8445}"
   local port="$requested_port"
+  local requested_host_port="${APISHIM_HOST_PORT:-$requested_port}"
+  local host_port="$requested_host_port"
   local postgres_port="${POSTGRES_PORT:-5432}"
   local pid_file="${APISHIM_PID_FILE:-$ROOT_DIR/state/apishim.pid}"
   local env_file="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
@@ -1463,6 +1562,12 @@ start_apishim() {
     echo "warning: APISHIM_PORT=${requested_port} conflicts with POSTGRES_PORT=${postgres_port}; forcing APISHIM_PORT=${port}." >&2
   fi
   export APISHIM_PORT="$port"
+  host_port="$(normalize_apishim_port "$requested_host_port" "$postgres_port")"
+  if [[ "$host_port" != "$requested_host_port" ]]; then
+    echo "warning: APISHIM_HOST_PORT=${requested_host_port} conflicts with POSTGRES_PORT=${postgres_port}; forcing APISHIM_HOST_PORT=${host_port}." >&2
+  fi
+  export APISHIM_HOST_PORT="$host_port"
+  export APISHIM_CONTAINER_PORT="${APISHIM_CONTAINER_PORT:-8445}"
 
   export AE_APISHIM_RUNTIME="${AE_APISHIM_RUNTIME:-${AE_RUNTIME_BACKEND:-docker}}"
   export AE_APISHIM_ENABLE=1
@@ -1543,24 +1648,13 @@ start_apishim() {
           echo "warning: failed to recreate apishim CRI component" >&2
       fi
     elif [[ "$mode" == "container" ]]; then
-      local profile_rel="$profile_dir"
-      if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
-        profile_rel="${profile_dir#"$ROOT_DIR/"}"
-      fi
-      export APISHIM_ENV_FILE="$env_file"
-      export APISHIM_PROFILE_DIR="${APISHIM_PROFILE_DIR:-$profile_rel}"
-      export APISHIM_PORT="$port"
-      export APISHIM_CONTAINER=1
-      APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
-        AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 \
-        "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+      prepare_apishim_compose_env "$profile_dir" "$env_file" "$port" "$host_port"
+      sync_apishim_dev_env
       # Keep apishim env in sync with the active profile. This is required for
       # storage seeding and state backend changes (for example AE_STORAGE_NFS_*
       # and AE_STATE_BACKEND=etcd) to take effect between profile restarts.
       if is_truthy "${AE_APISHIM_RECREATE_ON_START:-1}"; then
-        if ! APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
-          "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" \
-          up -d --force-recreate apishim; then
+        if ! up_apishim_compose --force-recreate; then
           echo "warning: failed to recreate apishim container" >&2
         fi
       fi
@@ -1647,21 +1741,13 @@ start_apishim() {
     "$engine" network connect "$net_name" "$container" >/dev/null 2>&1 || true
   }
 
-  local profile_rel="$profile_dir"
-  if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
-    profile_rel="${profile_dir#"$ROOT_DIR/"}"
+  prepare_apishim_compose_env "$profile_dir" "$env_file" "$port" "$host_port"
+  sync_apishim_dev_env
+  if up_apishim_compose; then
+    connect_apishim_network
+  else
+    echo "warning: failed to start apishim container" >&2
   fi
-  export APISHIM_ENV_FILE="$env_file"
-  export APISHIM_PROFILE_DIR="${APISHIM_PROFILE_DIR:-$profile_rel}"
-  export APISHIM_PORT="$port"
-  export APISHIM_CONTAINER=1
-  APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
-    AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 \
-    "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
-  APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
-    "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" \
-    up -d apishim || echo "warning: failed to start apishim container" >&2
-  connect_apishim_network
   if ! apishim_wait_healthy "$port" "$health_token" "$startup_timeout"; then
     echo "error: apishim failed to become healthy in container mode on https://127.0.0.1:${port}." >&2
     local apishim_container
@@ -1675,12 +1761,22 @@ start_apishim() {
 
 ensure_dev_local() {
   if [[ "${AE_DEV_LOCAL:-0}" == "1" ]]; then
+    local dev_local_hosts="${DEV_LOCAL_HOSTS:-}"
+    if [[ -z "$dev_local_hosts" ]]; then
+      dev_local_hosts="docs.home.arpa api.home.arpa dash.home.arpa echo.home.arpa"
+      if [[ "${AE_DEMO_SEED:-0}" == "1" || "${AE_DEMO_MODE:-0}" == "1" ]]; then
+        dev_local_hosts="blue.home.arpa green.home.arpa ${dev_local_hosts}"
+      fi
+    fi
     DEV_PROFILE_DIR="${DEV_PROFILE_DIR:-${1:-}}" \
+      DEV_LOCAL_PROFILE="$PROFILE" \
+      DEV_LOCAL_HOSTS="$dev_local_hosts" \
       AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-}" \
       AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-}" \
       STACK_BIN="${STACK_BIN:-}" \
       CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT:-}" \
       AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-}" \
+      AE_APISHIM_TLS_CA_CERT="${AE_APISHIM_TLS_CA_CERT:-}" \
       AE_TLS_DIR="${AE_TLS_DIR:-}" \
       "$ROOT_DIR/scripts/dev/ensure_dev_local.sh" || true
   fi
@@ -1910,16 +2006,14 @@ if [[ "${BENCH_MODE:-0}" == "1" ]]; then
 fi
 
 if [[ -z "${AE_APISHIM_MODE:-}" ]]; then
-  if is_strict_cri && [[ "$PROFILE" == "k1s-core" || "$PROFILE" == "k1s-ha-core" ]]; then
-    AE_APISHIM_MODE="cri"
-  elif is_strict_cri; then
-    AE_APISHIM_MODE="host"
-  elif [[ "$ENGINE_BIN" == "podman" ]]; then
-    AE_APISHIM_MODE="container"
-  else
-    AE_APISHIM_MODE="host"
-  fi
+  AE_APISHIM_MODE="$(default_apishim_mode)"
   export AE_APISHIM_MODE
+fi
+
+if [[ "${AE_APISHIM_MODE:-host}" == "container" ]] && ! compose_provider_available "$ENGINE_BIN"; then
+  echo "error: AE_APISHIM_MODE=container requires a working ${ENGINE_BIN} compose provider." >&2
+  echo "hint: $(compose_provider_hint "$ENGINE_BIN")." >&2
+  exit 1
 fi
 
 if [[ "$ENGINE_BIN" == "podman" ]]; then

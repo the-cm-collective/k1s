@@ -49,7 +49,45 @@ Project philosophy: `TENETS.md` captures the core project stance, and `docs/desi
 - Podman (preferred) or Docker installed and running
 - Optional (CRI/containerd): containerd + CNI + `crictl` (see [Operations Runbook](runbook.html))
 - Optional (for ingress/docs via Caddy and Prometheus): `docker compose` or `podman compose`
+- Optional (NixOS/additive dev shell): `nix` + `direnv` for the repo-local flake path
 - Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking
+
+## Optional NixOS / Repo-Local Shell
+This path is additive. The existing Debian/Ubuntu flow stays the same.
+
+1) Enter the shell:
+```
+direnv allow
+# or:
+nix develop
+```
+
+2) Bootstrap the editable Python environment:
+```
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .[dev]
+```
+
+3) Inspect host vs shell requirements:
+```
+make env-doctor
+```
+
+4) Use the CRI-oriented shell when needed:
+```
+nix develop .#cri
+```
+
+Notes
+- The flake fills in userland tools such as `podman-compose`, lint/test tooling, and CRI clients.
+- Host runtimes remain host-managed: Podman/Docker runtime and containerd.
+- `make dev-local` can manage local demo DNS/TLS state directly on Debian/RHEL and through the NixOS bridge helper on NixOS.
+- `make env-doctor` reports whether the NixOS bridge is installed/imported and how the demo domains currently resolve.
+- One-time NixOS bridge bootstrap:
+  - `sudo install -D -m 0644 ops/nixos/k1s-local-dev-bridge.nix /etc/nixos/nixos/modules/k1s-local-dev-bridge.nix`
+  - add `./nixos/modules/k1s-local-dev-bridge.nix` to your host imports
+  - `sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)`
 
 ## Option A — Zero‑to‑Labs (automated)
 This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Deployments).
@@ -167,6 +205,8 @@ Setup and quality
 - `make watch`: install file-watching extras (`pip -e .[watch]`).
 - `make test`: run unit tests (`pytest -q`).
 - `make lint`: run `ruff check` + `mypy src/ae`.
+- `make env-doctor`: report shell tools, compose availability, host sockets/services, and local DNS/TLS bridge status.
+- `make dev-local-clean`: remove helper-managed local DNS/TLS state.
 - `make wheel`: build a wheel into `dist/`.
 
 Local dev and samples

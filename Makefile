@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-ha-core-systemd uninstall-ha-core-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track ha-closeout-e2e
+.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-ha-core-systemd uninstall-ha-core-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track ha-closeout-e2e env-doctor dev-local-clean
 .PHONY: dev-min dev-etcd k1s-core k1s-ha-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
 .PHONY: k1s-core-cri k1s-edge-cri k1s-core-edge-cri k1s-edge-core-cri edge-site-cri
 .PHONY: edge-site
@@ -120,6 +120,12 @@ dev-etcd-caddy:
 
 dev-local:
 	@AE_DEV_LOCAL=1 ./scripts/dev/ensure_dev_local.sh
+
+dev-local-clean:
+	@AE_DEV_LOCAL_ACTION=clean ./scripts/dev/ensure_dev_local.sh
+
+env-doctor:
+	@./scripts/dev/env_doctor.sh
 
 apply-sample:
 	python -m ae.cli apply -f specs/examples/echo.yaml

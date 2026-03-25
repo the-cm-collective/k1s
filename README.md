@@ -73,6 +73,35 @@ Optional: add file-watching support for instant reconciles on spec changes:
 python -m pip install -e .[watch]
 ```
 
+Optional NixOS/dev-shell path (additive; Debian/Ubuntu flow above is unchanged):
+
+```
+direnv allow
+# or:
+nix develop
+
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .[dev]
+make env-doctor
+```
+
+Use `nix develop .#cri` when you want the CRI/containerd-oriented shell. The flake
+fills in userland tooling such as `podman-compose`. Host runtimes still remain
+host-managed (`podman`/`docker`, `containerd`), but `make dev-local` can now
+manage local demo DNS/TLS state directly on Debian/RHEL and through the NixOS
+bridge helper on NixOS. Run `make env-doctor` to check whether the bridge is
+installed/imported and whether `docs/api/dash/blue/green.home.arpa` resolve
+where the demo expects.
+
+One-time NixOS bridge bootstrap:
+
+```bash
+sudo install -D -m 0644 ops/nixos/k1s-local-dev-bridge.nix /etc/nixos/nixos/modules/k1s-local-dev-bridge.nix
+# import ./nixos/modules/k1s-local-dev-bridge.nix from your host config
+sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)
+```
+
 2) Run dev fixtures (optional):
 
 ```
@@ -206,6 +235,8 @@ Setup and quality:
 - `make watch`: install file-watching extras (`pip -e .[watch]`).
 - `make test`: run unit tests (`pytest -q`).
 - `make lint`: run `ruff check` + `mypy src/ae`.
+- `make env-doctor`: report shell-provided tools, compose availability, host sockets/services, and local DNS/TLS bridge status.
+- `make dev-local-clean`: remove helper-managed local DNS/TLS state.
 - `make wheel`: build a wheel into `dist/`.
 
 Local dev and samples:
