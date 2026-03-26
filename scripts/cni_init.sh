@@ -45,9 +45,8 @@ run_cmd mkdir -p "$conf_dir"
 
 # Detect existing non-loopback CNI config
 has_non_loopback=0
-if [[ "$force" != "1" ]] && (
-  compgen -G "$conf_dir/*.conf" >/dev/null || compgen -G "$conf_dir/*.conflist" >/dev/null
-); then
+if [[ "$force" != "1" ]] && find "$conf_dir" -maxdepth 1 -type f \
+  \( -name '*.conf' -o -name '*.conflist' \) -print -quit | grep -q .; then
   for cfg in "$conf_dir"/*; do
     base="$(basename "$cfg")"
     case "$base" in

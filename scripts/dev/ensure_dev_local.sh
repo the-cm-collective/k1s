@@ -7,13 +7,14 @@ HOSTS_IP="${DEV_LOCAL_HOSTS_IP:-127.0.0.1}"
 HOSTS_BLOCK_BEGIN="# BEGIN k1s-local-dev"
 HOSTS_BLOCK_END="# END k1s-local-dev"
 COMBINED_DEV_CA="${ROOT_DIR}/state/certs/combined-dev-ca.pem"
-NIXOS_BRIDGE_ROOT="${AE_NIXOS_BRIDGE_ROOT:-/var/lib/k1s-dev}"
-NIXOS_BRIDGE_HOSTS_FILE="${NIXOS_BRIDGE_ROOT}/extra-hosts"
-NIXOS_BRIDGE_CERT_DIR="${NIXOS_BRIDGE_ROOT}/certs"
-NIXOS_MODULE_DEST="${AE_NIXOS_MODULE_DEST:-/etc/nixos/nixos/modules/k1s-local-dev-bridge.nix}"
-NIXOS_FLAKE="${AE_NIXOS_FLAKE:-/etc/nixos}"
-NIXOS_HOST="${AE_NIXOS_HOST:-$(hostname -s 2>/dev/null || hostname)}"
-NIXOS_REBUILD="${AE_NIXOS_REBUILD:-prompt}"
+source "${ROOT_DIR}/scripts/lib/nixos_bridge.sh"
+NIXOS_BRIDGE_ROOT="$(k1s_nixos_bridge_root)"
+NIXOS_BRIDGE_HOSTS_FILE="$(k1s_nixos_bridge_hosts_file)"
+NIXOS_BRIDGE_CERT_DIR="$(k1s_nixos_bridge_cert_dir)"
+NIXOS_MODULE_DEST="$(k1s_nixos_module_dest)"
+NIXOS_FLAKE="$(k1s_nixos_flake)"
+NIXOS_HOST="$(k1s_nixos_host)"
+NIXOS_REBUILD="$(k1s_nixos_rebuild_mode)"
 HAS_TTY=0
 
 declare -A TRUST_SOURCES=()
@@ -133,15 +134,11 @@ run_priv() {
 }
 
 load_os_release() {
-  if [[ -r /etc/os-release ]]; then
-    # shellcheck disable=SC1091
-    source /etc/os-release
-    OS_ID="${ID:-}"
-  fi
+  OS_ID="$(k1s_os_id /etc/os-release 2>/dev/null || true)"
 }
 
 is_nixos() {
-  [[ "${OS_ID}" == "nixos" ]]
+  k1s_is_nixos /etc/os-release
 }
 
 detect_trust_backend() {
@@ -536,25 +533,12 @@ clean_direct_trust() {
 }
 
 nixos_bridge_imported() {
-  if [[ ! -d /etc/nixos ]]; then
-    return 1
-  fi
-  if [[ ! -f "$NIXOS_MODULE_DEST" ]]; then
-    return 1
-  fi
-  rg -l --glob '*.nix' 'k1s-local-dev-bridge' /etc/nixos 2>/dev/null | grep -F -v "$NIXOS_MODULE_DEST" >/dev/null 2>&1
+  k1s_nixos_bridge_imported /etc/nixos "$NIXOS_MODULE_DEST"
 }
 
 print_nixos_bridge_bootstrap() {
   warn "NixOS bridge not detected; install it once before expecting persistent /etc/hosts and system CA updates"
-  printf '  sudo install -D -m 0644 %s %s\n' \
-    "${ROOT_DIR}/ops/nixos/k1s-local-dev-bridge.nix" \
-    "$NIXOS_MODULE_DEST" >&2
-  printf '  add ./nixos/modules/k1s-local-dev-bridge.nix to your NixOS imports under %s\n' \
-    "$NIXOS_FLAKE" >&2
-  printf '  sudo nixos-rebuild switch --impure --flake %s#%s\n' \
-    "$NIXOS_FLAKE" \
-    "$NIXOS_HOST" >&2
+  k1s_nixos_bootstrap_instructions "$ROOT_DIR" "$NIXOS_MODULE_DEST" "$NIXOS_FLAKE" "$NIXOS_HOST" >&2
 }
 
 sync_nixos_state() {

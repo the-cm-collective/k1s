@@ -72,8 +72,13 @@ if [[ -z "$registry" ]]; then
 fi
 
 resolve_engine() {
-  local prefer="${engine:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}"
+  local prefer="${engine:-${AE_CRI_IMAGE_BUILD_BACKEND:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}}"
   if [[ -n "$prefer" ]]; then
+    if [[ "$prefer" == "ctr" ]]; then
+      echo "Requested backend 'ctr' is invalid for local image builds." >&2
+      echo "Use AE_CRI_IMAGE_BUILD_BACKEND=podman|docker|nerdctl (or AE_CRI_LOCAL_BUILD_BACKEND)." >&2
+      exit 1
+    fi
     if ! command -v "$prefer" >/dev/null 2>&1; then
       echo "Requested backend '$prefer' not found" >&2
       exit 1

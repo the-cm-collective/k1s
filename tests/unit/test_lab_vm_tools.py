@@ -119,7 +119,13 @@ def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
 
 def test_checked_in_ha_hub_node_variant_normalizes_for_manual_smoke_lane() -> None:
     res = subprocess.run(  # noqa: S603
-        [sys.executable, str(VARIANT_SCRIPT), "--variant", str(HA_HUB_NODE_VARIANT_FILE), "--print-json"],
+        [
+            sys.executable,
+            str(VARIANT_SCRIPT),
+            "--variant",
+            str(HA_HUB_NODE_VARIANT_FILE),
+            "--print-json",
+        ],
         check=True,
         text=True,
         capture_output=True,
@@ -611,7 +617,7 @@ def test_host_prepare_detects_existing_bridge_cidr_mismatch(tmp_path: Path) -> N
     fake_bin.mkdir()
     _write_executable(
         fake_bin / "sudo",
-        "#!/usr/bin/env bash\nexec \"$@\"\n",
+        '#!/usr/bin/env bash\nexec "$@"\n',
     )
     _write_executable(
         fake_bin / "ip",
@@ -637,14 +643,17 @@ exit 9
                 f'PATH="{fake_bin}:$PATH"; '
                 f'source "{HOST_PREPARE_SCRIPT}"; '
                 'BRIDGE="k1s-br0"; NET_CIDR="192.168.155.0/24"; GATEWAY="192.168.155.1"; '
-                'validate_existing_bridge'
+                "validate_existing_bridge"
             ),
         ],
         text=True,
         capture_output=True,
     )
     assert res.returncode == 1
-    assert "bridge=k1s-br0 already exists with IPv4 192.168.152.1/24; expected 192.168.155.1/24" in res.stderr
+    assert (
+        "bridge=k1s-br0 already exists with IPv4 192.168.152.1/24; expected 192.168.155.1/24"
+        in res.stderr
+    )
     assert "--destroy-network" in res.stderr
 
 
@@ -653,7 +662,7 @@ def test_host_prepare_allows_matching_existing_bridge(tmp_path: Path) -> None:
     fake_bin.mkdir()
     _write_executable(
         fake_bin / "sudo",
-        "#!/usr/bin/env bash\nexec \"$@\"\n",
+        '#!/usr/bin/env bash\nexec "$@"\n',
     )
     _write_executable(
         fake_bin / "ip",
@@ -679,7 +688,7 @@ exit 9
                 f'PATH="{fake_bin}:$PATH"; '
                 f'source "{HOST_PREPARE_SCRIPT}"; '
                 'BRIDGE="k1s-br0"; NET_CIDR="192.168.155.0/24"; GATEWAY="192.168.155.1"; '
-                'validate_existing_bridge && echo ok'
+                "validate_existing_bridge && echo ok"
             ),
         ],
         text=True,
@@ -693,7 +702,10 @@ def test_variant_down_uses_run_inventory_fallback() -> None:
     text = VARIANT_DOWN_SCRIPT.read_text(encoding="utf-8")
     assert 'run_inventory="$(run_dir "$RUN_ID")/qemu_inventory.json"' in text
     assert 'log "using run inventory fallback for run_id=${RUN_ID}: $inventory"' in text
-    assert 'elif pids="$(pgrep -f -- "$overlay" 2>/dev/null || true)" && [[ -n "$pids" ]]; then' in text
+    assert (
+        'elif pids="$(pgrep -f -- "$overlay" 2>/dev/null || true)" && [[ -n "$pids" ]]; then'
+        in text
+    )
 
 
 def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
@@ -926,9 +938,21 @@ def test_run_profile_host_apishim_uses_src_pythonpath() -> None:
 def test_cri_image_mirror_prefers_local_cache() -> None:
     text = CRI_IMAGE_MIRROR_SCRIPT.read_text(encoding="utf-8")
     assert "AE_CRI_IMAGE_MIRROR_ALWAYS_PULL" in text
+    assert "AE_CRI_IMAGE_MIRROR_BACKEND" in text
     assert "[cri-image-mirror] source already cached: ${image}" in text
     assert 'ctr -n "$ctr_namespace" images ls -q' in text
     assert 'grep -Fx -- "$image"' in text
+    assert (
+        'ctr -n "$ctr_namespace" images convert --platform "$ctr_platform" "$source" "$target_image"'
+        in text
+    )
+    assert 'crictl --runtime-endpoint "$cri_endpoint" rmi "$target_image"' in text
+    assert 'ctr -n "$ctr_namespace" images delete "$target_image"' in text
+    assert "evicting CRI image cache" in text
+    assert "evicting ctr image ref" in text
+    assert 'engine_push "$target_image"' in text
+    assert "k1s-ctr-stage" not in text
+    assert "ctr backend requires 'ctr images convert' support" in text
 
 
 def test_cri_seed_bundle_script_accepts_run_id_and_profile() -> None:
@@ -962,22 +986,20 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     assert "--purge" in runbook
     assert "`--destroy-network` only when you want full bridge cleanup" in bring_up
     assert "`--destroy-network` only when you want full bridge cleanup" in runbook
-    assert 'source <(ae auth local --strict)' in bring_up
+    assert "source <(ae auth local --strict)" in bring_up
+    assert ("Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}") in bring_up
     assert (
-        'Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}'
+        "source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)"
     ) in bring_up
     assert (
-        'source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)'
-    ) in bring_up
-    assert (
-        'source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)'
+        "source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)"
     ) in runbook
-    assert (
-        'Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}'
-    ) in runbook
+    assert ("Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}") in runbook
     assert "scripts/lab/vm/labctl.sh image verify --variant all" in bring_up
     assert "scripts/lab/vm/labctl.sh image verify --variant all" in runbook
-    assert "Normal reruns now auto-clean the matching per-variant Packer work directory." in bring_up
+    assert (
+        "Normal reruns now auto-clean the matching per-variant Packer work directory." in bring_up
+    )
     assert "Normal reruns now auto-clean the matching per-variant Packer work directory." in runbook
     assert "artifacts/images/build-base" in bring_up
     assert "artifacts/images/build-base" in runbook
@@ -1000,9 +1022,9 @@ def test_retained_ha_dashboard_docs_use_make_helper_targets() -> None:
         assert "make lab-vm-ha-dashboard-down" in text
         assert "make lab-vm-ha-dashboard-purge" in text
         assert "make lab-vm-ha-dashboard-reset" in text
-    assert "LAB_VM_HA_DASHBOARD_ARGS=\"--target all\"" in bring_up
-    assert "LAB_VM_HA_DASHBOARD_ARGS=\"--rebuild-images --destroy-network\"" in runbook
-    assert "retained-VM \"rebuild and restart all\" path" in ops
+    assert 'LAB_VM_HA_DASHBOARD_ARGS="--target all"' in bring_up
+    assert 'LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"' in runbook
+    assert 'retained-VM "rebuild and restart all" path' in ops
 
 
 def test_vm_golden_image_pipeline_docs_cover_auto_cleanup_and_manual_recovery() -> None:
@@ -1076,19 +1098,23 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert text.index('"$SCRIPT_DIR/image_seed_bundle.sh"') < text.index(
         '"$SCRIPT_DIR/k1s_bootstrap.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute'
     )
-    assert '"$SCRIPT_DIR/ha_shared_infra.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute' in text
-    assert '"$SCRIPT_DIR/k1s_bootstrap.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute' in text
+    assert (
+        '"$SCRIPT_DIR/ha_shared_infra.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute' in text
+    )
+    assert (
+        '"$SCRIPT_DIR/k1s_bootstrap.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute' in text
+    )
     assert '"$SCRIPT_DIR/image_seed_bundle.sh" \\' in text
     assert '--run-id "$RUN_ID" \\' in text
-    assert '--profile core \\' in text
+    assert "--profile core \\" in text
     assert '--output "$seed_bundle_path"' in text
     assert "python3 /mnt/host/scripts/dev/cri_stack.py up-apishim" in text
-    assert 'make k1s-core-node > /home/ae/k1s-core-node.log 2>&1 </dev/null &' in text
+    assert "make k1s-core-node > /home/ae/k1s-core-node.log 2>&1 </dev/null &" in text
     assert '"$SCRIPT_DIR/image_build.sh" --variant all' in text
     assert '"$SCRIPT_DIR/variant_down.sh" "${down_args[@]}" || true' in text
     assert 'rm -rf "$run_path"' in text
-    assert 'localhost:5001/k1s-apishim:dev' in text
-    assert 'docker.io/library/demo-shell:latest' in text
+    assert "localhost:5001/k1s-apishim:dev" in text
+    assert "docker.io/library/demo-shell:latest" in text
 
 
 def test_make_ha_closeout_e2e_uses_wrapper_script() -> None:
@@ -1113,6 +1139,8 @@ def test_cri_preflight_resolves_python3_fallback() -> None:
     assert "if command -v python3 >/dev/null 2>&1; then" in text
     assert 'python_bin="$(command -v python3)"' in text
     assert '"$python_bin" - "$info_tmp"' in text
+    assert "containerd_socket_access.sh --grant" in text
+    assert "CNI plugins detected on PATH but not at" in text
 
 
 def test_cri_ci_setup_uses_supported_containerd_config_validation() -> None:
@@ -1425,9 +1453,12 @@ def test_run_ha_acceptance_checks_includes_core_node_smoke_when_runtime_node_pre
         "workload-smoke",
     ]
     assert "--manifest" in captured_commands["ha_core_node_workload_smoke"]
-    assert "shell-demo-node-hub.yaml" in captured_commands["ha_core_node_workload_smoke"][
-        captured_commands["ha_core_node_workload_smoke"].index("--manifest") + 1
-    ]
+    assert (
+        "shell-demo-node-hub.yaml"
+        in captured_commands["ha_core_node_workload_smoke"][
+            captured_commands["ha_core_node_workload_smoke"].index("--manifest") + 1
+        ]
+    )
 
 
 def test_smoke_v2_skips_vm_managed_ha_infra_for_external_backends() -> None:

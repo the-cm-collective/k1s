@@ -15,6 +15,9 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 Notes:
 - These aliases set `AE_RUNTIME_BACKEND=cri` and `AE_INFRA_BACKEND=cri`.
 - Use `sudo -E` when your containerd environment requires elevated privileges.
+- If `crictl` reports `permission denied` on the containerd socket, either keep
+  using `sudo -E` or grant temporary access with
+  `./scripts/containerd_socket_access.sh --grant`.
 - See `docs/reference/cri-containerd.md` for registry-first image prep and trust setup.
 
 `dev-min` (SQLite + HTTP, local loop)
@@ -57,6 +60,9 @@ Notes:
     - other strict-CRI managed images (etcd/nats/postgres/envoy/rathole/caddy): mirror source image into `AE_CRI_REGISTRY` + CRI pull verify
   - local build backend order: `nerdctl`, then `podman`, then `docker`, then `ctr`
   - optional override: `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr`
+  - NixOS managed-registry TLS defaults mirror/preload to `podman` when unset, then falls back to `docker`, then `nerdctl`
+  - explicit `AE_CRI_IMAGE_MIRROR_BACKEND=ctr` remains available for per-arch mirror/preload when you want it
+  - when backend=`ctr`, mirror pushes are normalized to `AE_CTR_PLATFORM` (or the host-arch default) before pushing into the managed registry; treat that path as a per-arch preload cache, not a multi-arch publishing helper
 - Registry mapping in strict CRI:
   - `AE_CRI_REGISTRY=<host:port>` rewrites CRI-managed image refs to that registry
   - optional path prefix: `AE_CRI_REGISTRY_NAMESPACE=<prefix>`
@@ -68,6 +74,9 @@ Notes:
   - optional preset: `AE_CRI_REGISTRY_PRESET=microk8s|local`
 - Optional containerd trust hook for strict CRI startup:
   - managed registry TLS (`AE_CRI_REGISTRY_MODE=managed`) defaults to secure trust wiring.
+  - Debian/Ubuntu writes the managed registry CA into `/usr/local/share/ca-certificates`; NixOS writes it into `/var/lib/k1s-dev/certs` and reuses the existing bridge module + `nixos-rebuild` flow.
+  - Debian/Ubuntu and RHEL/Fedora bootstrap `/opt/cni/bin` automatically when the required CNI plugins are available in standard source dirs.
+  - NixOS strict CRI is declarative: install/import `ops/nixos/k1s-cri-host.nix`, rebuild, and strict startup will reuse the live containerd CNI paths instead of rewriting `/etc/cni/net.d`.
   - on scheme transitions (`http` <-> `https`), strict startup auto-restarts containerd by default (`AE_CRI_REGISTRY_AUTO_RESTART=1`).
   - set `AE_CRI_REGISTRY_AUTO_RESTART=0` to disable auto-restart (startup will fail fast on unresolved transitions).
   - set `AE_CRI_REGISTRY_TRUST=1` to force trust configuration for external registries.
@@ -195,6 +204,12 @@ Local DNS + TLS trust helper (optional):
     - `sudo install -D -m 0644 ops/nixos/k1s-local-dev-bridge.nix /etc/nixos/nixos/modules/k1s-local-dev-bridge.nix`
     - add `./nixos/modules/k1s-local-dev-bridge.nix` to your host imports
     - `sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)`
+  - strict CRI bootstrap once with:
+    - `sudo install -D -m 0644 ops/nixos/k1s-cri-host.nix /etc/nixos/nixos/modules/k1s-cri-host.nix`
+    - add `./nixos/modules/k1s-cri-host.nix` to your host imports
+    - `sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)`
+  - after the CRI module is imported, `make k1s-core-cri` reuses containerd's configured CNI `bin_dir` / `conf_dir` and no longer tries to rewrite `/etc/cni/net.d`
+  - for local strict-CRI smoke on NixOS, prefer `AE_NIXOS_REBUILD=never` and validate ingress with `curl --resolve ...:10443:127.0.0.1` so the smoke does not depend on an inline `nixos-rebuild`
 - Additive NixOS shell:
   - `direnv allow` or `nix develop` provides missing userland tools such as `podman-compose`
   - `nix develop .#cri` adds CRI-facing tooling for strict lanes

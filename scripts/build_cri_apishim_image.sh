@@ -20,7 +20,8 @@ Options:
   -h, --help                 Show this help
 
 Environment:
-  AE_CRI_LOCAL_BUILD_BACKEND  Preferred backend (nerdctl|podman|docker)
+  AE_CRI_IMAGE_BUILD_BACKEND  Preferred build backend (nerdctl|podman|docker)
+  AE_CRI_LOCAL_BUILD_BACKEND  Legacy shared backend override (nerdctl|podman|docker)
 USAGE
 }
 
@@ -99,8 +100,13 @@ registry_ref() {
 }
 
 resolve_engine() {
-  local prefer="${engine:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}"
+  local prefer="${engine:-${AE_CRI_IMAGE_BUILD_BACKEND:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}}"
   if [[ -n "$prefer" ]]; then
+    if [[ "$prefer" == "ctr" ]]; then
+      echo "Requested build backend 'ctr' is invalid; ctr cannot build local images." >&2
+      echo "Use AE_CRI_IMAGE_BUILD_BACKEND=podman|docker|nerdctl (or AE_CRI_LOCAL_BUILD_BACKEND)." >&2
+      exit 1
+    fi
     if ! command -v "$prefer" >/dev/null 2>&1; then
       echo "Requested build backend '$prefer' not found" >&2
       exit 1

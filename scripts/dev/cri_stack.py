@@ -9,6 +9,8 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -31,9 +33,11 @@ def _truthy(value: str | None) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _cri_data_root() -> Path:
+def _cri_data_root(profile: str | None = None) -> Path:
     raw = str(os.getenv("AE_CRI_DATA_ROOT", "")).strip()
     if not raw:
+        if profile:
+            return ROOT / "state" / "profiles" / profile / "cri-data"
         return ROOT / "state"
     path = Path(raw).expanduser()
     if not path.is_absolute():
@@ -235,6 +239,14 @@ def _stable_hash(parts: list[str]) -> str:
         digest.update(part.encode("utf-8"))
         digest.update(b"\x00")
     return digest.hexdigest()[:16]
+
+
+def _envoy_base_id(profile: str, component: str) -> int:
+    digest = hashlib.sha256(f"{profile}:{component}".encode("utf-8")).digest()
+    value = int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+    if value == 0:
+        value = 1
+    return value
 
 
 def _file_sha256(path: Path) -> str:
@@ -611,6 +623,7 @@ def _start_component(
     resolve_image: bool = True,
     rollout_key: str | None = None,
     stable_seconds: int = 0,
+    run_as_user: int | None = None,
 ) -> None:
     with _component_lock(profile, component):
         _start_component_unlocked(
@@ -626,6 +639,7 @@ def _start_component(
             resolve_image=resolve_image,
             rollout_key=rollout_key,
             stable_seconds=stable_seconds,
+            run_as_user=run_as_user,
         )
 
 
@@ -643,6 +657,7 @@ def _start_component_unlocked(
     resolve_image: bool = True,
     rollout_key: str | None = None,
     stable_seconds: int = 0,
+    run_as_user: int | None = None,
 ) -> None:
     labels = _component_labels(profile, component)
     if rollout_key:
@@ -701,6 +716,10 @@ def _start_component_unlocked(
         ctr_payload["envs"] = [{"key": k, "value": v} for k, v in sorted(env.items())]
     if mounts:
         ctr_payload["mounts"] = mounts
+    if run_as_user is not None:
+        ctr_payload["linux"] = {
+            "security_context": {"run_as_user": {"value": int(run_as_user)}}
+        }
     _write_json(ctr_cfg, ctr_payload)
 
     pod_id = _crictl(_runp_args(pod_cfg, runtime_handler)).stdout.strip()
@@ -922,7 +941,7 @@ def _start_etcd(
 ) -> None:
     resolved_component = component or f"{profile}-etcd"
     resolved_initial_cluster = initial_cluster or f"{name}={initial_advertise_peer_urls}"
-    etcd_data = _cri_data_root() / data_dir_name
+    etcd_data = _cri_data_root(profile) / data_dir_name
     etcd_data.mkdir(parents=True, exist_ok=True)
     _start_component(
         profile=profile,
@@ -959,7 +978,7 @@ def _start_nats_hub(
         raise FileNotFoundError(f"nats hub config not found: {config}")
 
     rollout_key = _stable_hash(["nats-hub-config", str(config), _file_sha256(config)])
-    nats_data = _cri_data_root() / "nats-hub"
+    nats_data = _cri_data_root(profile) / "nats-hub"
     nats_data.mkdir(parents=True, exist_ok=True)
     _start_component(
         profile=profile,
@@ -981,13 +1000,24 @@ def _start_nats_hub(
 
 
 def _start_postgres(
-    profile: str, *, runtime_handler: str | None = None, recreate: bool = False
+    profile: str,
+    *,
+    runtime_handler: str | None = None,
+    recreate: bool = False,
+    reset_data: bool = False,
 ) -> None:
-    pg_data = _cri_data_root() / "postgres"
+    component = "k1s-core-postgres"
+    pg_data = _cri_data_root(profile) / "postgres"
+    if reset_data:
+        existing = _find_pod(profile, component)
+        if existing is not None:
+            _remove_pod(_pod_id(existing))
+        shutil.rmtree(pg_data, ignore_errors=True)
+        print(f"[cri-stack] {component}: reset data dir {pg_data}")
     pg_data.mkdir(parents=True, exist_ok=True)
     _start_component(
         profile=profile,
-        component="k1s-core-postgres",
+        component=component,
         image="docker.io/library/postgres:16",
         runtime_handler=runtime_handler,
         env={
@@ -1010,7 +1040,7 @@ def _start_registry(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
-    registry_data = _cri_data_root() / "registry"
+    registry_data = _cri_data_root(profile) / "registry"
     registry_data.mkdir(parents=True, exist_ok=True)
 
     if (tls_cert is None) != (tls_key is None):
@@ -1065,8 +1095,8 @@ def _start_caddy(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
-    caddy_data = _cri_data_root() / "caddy-data"
-    caddy_sites = _cri_data_root() / "caddy"
+    caddy_data = _cri_data_root(profile) / "caddy-data"
+    caddy_sites = _cri_data_root(profile) / "caddy"
     caddy_data.mkdir(parents=True, exist_ok=True)
     caddy_sites.mkdir(parents=True, exist_ok=True)
     _start_component(
@@ -1093,7 +1123,7 @@ def _start_caddy(
                 "/etc/caddy/Caddyfile",
                 readonly=True,
             ),
-            _mount(_cri_data_root() / "caddy-cri", "/etc/caddy/sites", readonly=True),
+            _mount(_cri_data_root(profile) / "caddy-cri", "/etc/caddy/sites", readonly=True),
             _mount(caddy_data, "/data"),
             _mount(caddy_sites, "/etc/caddy/dynsites", readonly=True),
             _mount(ROOT / "docs" / "site", "/srv/docs", readonly=True),
@@ -1106,16 +1136,26 @@ def _start_envoy(
     profile: str,
     config: Path,
     *,
+    component: str = "k1s-core-envoy",
+    extra_mounts: tuple[Path, ...] = (),
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
+    run_as_user = 0
+    base_id = _envoy_base_id(profile, component)
     cfg_hash = _file_sha256(config)
+    extra_hashes = [str(path.resolve()) for path in extra_mounts]
+    extra_hashes.extend(_file_sha256(path) for path in extra_mounts)
     rollout_key = _stable_hash(
         [
             "envoy",
+            component,
             str(_resolve_runtime_handler(runtime_handler) or ""),
             str(os.getenv("AE_ENVOY_IMAGE", "docker.io/envoyproxy/envoy:v1.29-latest")),
+            f"run_as_user={run_as_user}",
+            f"base_id={base_id}",
             cfg_hash,
+            *extra_hashes,
         ]
     )
     state_dir = (ROOT / "state").resolve()
@@ -1135,6 +1175,9 @@ def _start_envoy(
             tls_root = tls_root.resolve()
         if tls_root != state_dir and state_dir not in tls_root.parents:
             mounts.append(_mount(tls_root, str(tls_root), readonly=True))
+    for path in extra_mounts:
+        resolved = path.resolve()
+        mounts.append(_mount(resolved, str(resolved), readonly=True))
 
     deduped_mounts: list[dict[str, object]] = []
     seen_mounts: set[tuple[str, str]] = set()
@@ -1145,15 +1188,163 @@ def _start_envoy(
         seen_mounts.add(key)
         deduped_mounts.append(mount)
 
-    _start_component(
-        profile=profile,
-        component="k1s-core-envoy",
-        image=os.getenv("AE_ENVOY_IMAGE", "docker.io/envoyproxy/envoy:v1.29-latest"),
-        runtime_handler=runtime_handler,
-        command=["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"],
-        mounts=deduped_mounts,
-        recreate=recreate,
-        rollout_key=rollout_key,
+    attempted_recreate = bool(recreate)
+    while True:
+        _start_component(
+            profile=profile,
+            component=component,
+            image=os.getenv("AE_ENVOY_IMAGE", "docker.io/envoyproxy/envoy:v1.29-latest"),
+            runtime_handler=runtime_handler,
+            command=[
+                "envoy",
+                "-c",
+                "/etc/envoy/envoy.yaml",
+                "--log-level",
+                "info",
+                "--base-id",
+                str(base_id),
+            ],
+            mounts=deduped_mounts,
+            recreate=attempted_recreate,
+            rollout_key=rollout_key,
+            stable_seconds=2,
+            run_as_user=run_as_user,
+        )
+        try:
+            _ensure_envoy_ready(profile, component, config)
+            return
+        except RuntimeError:
+            if attempted_recreate:
+                raise
+            print(f"[cri-stack] {component}: listener check failed; recreating")
+            attempted_recreate = True
+
+
+def _envoy_probe_host(address: str | None) -> str:
+    value = str(address or "").strip()
+    if value in {"", "0.0.0.0", "::", "[::]"}:
+        return "127.0.0.1"
+    return value
+
+
+def _tcp_port_open(host: str, port: int, timeout_s: float = 0.4) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
+def _envoy_expected_endpoints(config: Path) -> list[tuple[str, str, int]]:
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:  # pragma: no cover - repo dev env provides PyYAML
+        raise RuntimeError("PyYAML is required to validate Envoy listeners") from exc
+
+    payload = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
+    static = payload.get("static_resources") or {}
+    listeners = static.get("listeners") or []
+    endpoints: list[tuple[str, str, int]] = []
+    seen: set[tuple[str, str, int]] = set()
+
+    for item in listeners:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "listener")
+        socket_address = ((item.get("address") or {}).get("socket_address") or {})
+        host = _envoy_probe_host(socket_address.get("address"))
+        port = int(socket_address.get("port_value") or 0)
+        endpoint = (name, host, port)
+        if port > 0 and endpoint not in seen:
+            seen.add(endpoint)
+            endpoints.append(endpoint)
+
+    admin = payload.get("admin") or {}
+    socket_address = ((admin.get("address") or {}).get("socket_address") or {})
+    host = _envoy_probe_host(socket_address.get("address"))
+    port = int(socket_address.get("port_value") or 0)
+    endpoint = ("admin", host, port)
+    if port > 0 and endpoint not in seen:
+        endpoints.append(endpoint)
+
+    return endpoints
+
+
+def _component_status_summary(profile: str, component: str) -> str:
+    pod = _find_pod(profile, component)
+    if pod is None:
+        return f"component={component} pod=missing"
+
+    pod_id = _pod_id(pod)
+    container_id = ""
+    container_state = ""
+    for item in _list_containers():
+        if _container_pod_id(item) != pod_id:
+            continue
+        labels = _labels(item)
+        if labels.get("ae.stack.component") != component:
+            continue
+        container_id = str(item.get("id") or "")
+        container_state = str(item.get("state") or "")
+        break
+
+    if not container_id:
+        return f"component={component} pod={pod_id or '-'} container=missing"
+
+    inspect = _crictl(["inspect", container_id], check=False)
+    if inspect.returncode != 0 or not inspect.stdout.strip():
+        detail = (inspect.stderr or inspect.stdout or f"exit {inspect.returncode}").strip()
+        return (
+            f"component={component} pod={pod_id or '-'} container={container_id} "
+            f"state={container_state or '-'} inspect={detail or '-'}"
+        )
+
+    try:
+        payload = json.loads(inspect.stdout)
+    except Exception:
+        return (
+            f"component={component} pod={pod_id or '-'} container={container_id} "
+            f"state={container_state or '-'} inspect=parse-failed"
+        )
+
+    status = payload.get("status") or {}
+    if not status and isinstance(payload, dict):
+        containers = payload.get("containers") or []
+        if isinstance(containers, list) and containers:
+            status = (containers[0] or {}).get("status") or {}
+
+    inspect_state = str(status.get("state") or container_state or "-")
+    inspect_reason = str(status.get("reason") or "-")
+    inspect_message = str(status.get("message") or "-")
+    inspect_exit = status.get("exitCode")
+    exit_value = inspect_exit if inspect_exit is not None else "-"
+    return (
+        f"component={component} pod={pod_id or '-'} container={container_id} "
+        f"state={inspect_state} exit={exit_value} reason={inspect_reason} message={inspect_message}"
+    )
+
+
+def _ensure_envoy_ready(profile: str, component: str, config: Path) -> None:
+    expected = _envoy_expected_endpoints(config)
+    if not expected:
+        return
+
+    deadline = time.monotonic() + 10.0
+    missing: list[tuple[str, str, int]] = expected
+    while time.monotonic() < deadline:
+        missing = [
+            (name, host, port)
+            for name, host, port in expected
+            if not _tcp_port_open(host, port)
+        ]
+        if not missing:
+            return
+        time.sleep(0.2)
+
+    missing_text = ", ".join(f"{name}={host}:{port}" for name, host, port in missing)
+    summary = _component_status_summary(profile, component)
+    raise RuntimeError(
+        f"envoy listeners not ready for {component}: missing {missing_text}; {summary}"
     )
 
 
@@ -1322,6 +1513,11 @@ def main(argv: list[str] | None = None) -> int:
     core.add_argument("--profile", default="k1s-core")
     core.add_argument("--recreate", action="store_true")
 
+    pg = sub.add_parser("up-postgres", help="start/reconcile postgres")
+    pg.add_argument("--profile", default="k1s-core")
+    pg.add_argument("--recreate", action="store_true")
+    pg.add_argument("--reset-data", action="store_true")
+
     etcd = sub.add_parser("up-etcd", help="start/reconcile etcd")
     etcd.add_argument("--profile", default="k1s-core")
     etcd.add_argument("--name", default="etcd0")
@@ -1366,7 +1562,16 @@ def main(argv: list[str] | None = None) -> int:
     envoy = sub.add_parser("up-envoy", help="start envoy ingress")
     envoy.add_argument("--profile", default="k1s-core")
     envoy.add_argument("--config", required=True)
+    envoy.add_argument("--component", default="k1s-core-envoy")
+    envoy.add_argument("--secret", action="append", default=[])
     envoy.add_argument("--recreate", action="store_true")
+
+    envoy_base_id = sub.add_parser(
+        "envoy-base-id",
+        help="print deterministic Envoy base-id for a profile/component",
+    )
+    envoy_base_id.add_argument("--profile", default="k1s-core")
+    envoy_base_id.add_argument("--component", required=True)
 
     rathole = sub.add_parser("up-rathole-server", help="start rathole server")
     rathole.add_argument("--profile", default="k1s-core")
@@ -1391,8 +1596,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
-        if args.cmd != "down-profile":
+        if args.cmd not in {"down-profile", "envoy-base-id"}:
             _check_ready()
+        if args.cmd == "envoy-base-id":
+            print(_envoy_base_id(args.profile, str(args.component).strip()))
+            return 0
         if args.cmd == "preflight":
             print("[cri-stack] CRI preflight OK")
             return 0
@@ -1401,6 +1609,14 @@ def main(argv: list[str] | None = None) -> int:
                 args.profile,
                 runtime_handler=args.runtime_handler,
                 recreate=bool(args.recreate),
+            )
+            return 0
+        if args.cmd == "up-postgres":
+            _start_postgres(
+                args.profile,
+                runtime_handler=args.runtime_handler,
+                recreate=bool(args.recreate),
+                reset_data=bool(args.reset_data),
             )
             return 0
         if args.cmd == "up-etcd":
@@ -1463,6 +1679,8 @@ def main(argv: list[str] | None = None) -> int:
             _start_envoy(
                 args.profile,
                 Path(args.config).resolve(),
+                component=str(args.component).strip() or "k1s-core-envoy",
+                extra_mounts=tuple(Path(item).resolve() for item in (args.secret or [])),
                 runtime_handler=args.runtime_handler,
                 recreate=bool(args.recreate),
             )
