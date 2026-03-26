@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -716,7 +716,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -829,7 +829,35 @@ scripts/lab/vm/labctl.sh image verify --variant all</code></pre>
   --variant lab/variants/ha-control-plane-hub-node.yaml \
   --run-id &quot;$RUN_ID&quot; \
   --purge</code></pre>
-<p>Manual retention for investigation:</p>
+<p>Preferred retained operator flow:</p>
+<pre><code>sudo -v
+make lab-vm-ha-dashboard-up
+make lab-vm-ha-dashboard-status</code></pre>
+<p>Override the retained run id or variant when needed:</p>
+<pre><code>RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_smoke&quot; \
+VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
+make lab-vm-ha-dashboard-up</code></pre>
+<p>Retained rebuild/restart commands:</p>
+<pre><code>make lab-vm-ha-dashboard-refresh-all \
+  LAB_VM_HA_DASHBOARD_ARGS=&quot;--target all&quot;
+
+make lab-vm-ha-dashboard-down \
+  LAB_VM_HA_DASHBOARD_ARGS=&quot;--purge&quot;
+
+make lab-vm-ha-dashboard-purge
+
+make lab-vm-ha-dashboard-reset
+
+make lab-vm-ha-dashboard-reset \
+  LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></pre>
+<ul>
+<li><code>make lab-vm-ha-dashboard-refresh-all</code> is the retained-VM rebuild and restart path on the current VMs.</li>
+<li><code>make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS=&quot;--purge&quot;</code> removes the retained VMs plus their per-run VM state.</li>
+<li><code>make lab-vm-ha-dashboard-purge</code> additionally removes <code>runs/&lt;RUN_ID&gt;</code> plus the repo-built host images used by this retained lane.</li>
+<li><code>make lab-vm-ha-dashboard-reset</code> tears the retained lane down and brings it back.</li>
+<li><code>make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code> is the full expensive path when guest/bootstrap contracts changed.</li>
+</ul>
+<p>Lower-level commands remain available when you want the raw orchestration steps:</p>
 <pre><code>sudo -v
 export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_smoke
 scripts/lab/vm/labctl.sh host prepare \
@@ -877,12 +905,10 @@ python -m http.server 9109 --directory docs/site</code></pre>
   --variant lab/variants/ha-control-plane-hub-node.yaml \
   --run-id &quot;$RUN_ID&quot; \
   --purge</code></pre>
-<p>Direct helper usage remains available when you want to bypass Make and call the wrapper explicitly:</p>
-<pre><code>scripts/lab/vm/smoke_helper.py \
+<p>Direct helper usage remains available when you want to bypass Make and call the retained helper explicitly:</p>
+<pre><code>scripts/lab/vm/ha_dashboard_smoke.sh up \
   --variant lab/variants/ha-control-plane-hub-node.yaml \
-  --run-id &quot;$RUN_ID&quot; \
-  --teardown on-success \
-  --purge</code></pre>
+  --run-id &quot;$RUN_ID&quot;</code></pre>
 <h2 id="1-host-prerequisite-check">1) Host prerequisite check</h2>
 <pre><code>scripts/lab/vm/labctl.sh host prepare</code></pre>
 <p>Apply bridge/NAT setup:</p>
@@ -979,7 +1005,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-25 15:07:46</span>
+        <span>Built 2026-03-26 12:34:44</span>
       </div>
     </footer>
     <script>

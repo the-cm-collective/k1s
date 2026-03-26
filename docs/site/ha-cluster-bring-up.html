@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -716,7 +716,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -1081,7 +1081,7 @@ make lab-vm-smoke \
   RUN_ID=&quot;$RUN_ID&quot; \
   LAB_VM_SMOKE_ARGS=&quot;--purge --destroy-network&quot;</code></pre>
 <p>That wrapper produces the machine-readable <code>runs/&lt;RUN_ID&gt;/ha_summary.json</code> artifact used by the HA closeout lane.</p>
-<h3 id="single-workstation-manual-smoke-direct">Single-Workstation Manual Smoke (Direct)</h3>
+<h3 id="single-workstation-manual-smoke-retained-make-helpers">Single-Workstation Manual Smoke (Retained Make Helpers)</h3>
 <p>Use this when you want to keep a checked-in HA topology running on one workstation for manual inspection and a small workload smoke. This is a retained VM smoke lane, not a supported single-host HA dev profile.</p>
 <p>Verify the qcow2 images first:</p>
 <pre><code>scripts/lab/vm/labctl.sh image verify --variant all</code></pre>
@@ -1094,11 +1094,31 @@ scripts/lab/vm/labctl.sh image verify --variant all</code></pre>
   --variant lab/variants/ha-control-plane-hub-node.yaml \
   --run-id &quot;$RUN_ID&quot; \
   --purge</code></pre>
+<p>Preferred retained operator path:</p>
+<pre><code>sudo -v
+make lab-vm-ha-dashboard-up
+make lab-vm-ha-dashboard-status</code></pre>
+<p>Override the retained run id or variant when needed:</p>
+<pre><code>RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_manual&quot; \
+VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
+make lab-vm-ha-dashboard-up</code></pre>
+<p>Retained iteration commands:</p>
+<pre><code>make lab-vm-ha-dashboard-refresh-all \
+  LAB_VM_HA_DASHBOARD_ARGS=&quot;--target all&quot;
+
+make lab-vm-ha-dashboard-down \
+  LAB_VM_HA_DASHBOARD_ARGS=&quot;--purge&quot;
+
+make lab-vm-ha-dashboard-purge
+
+make lab-vm-ha-dashboard-reset</code></pre>
+<p><code>make lab-vm-ha-dashboard-refresh-all</code> is the retained-VM &quot;rebuild and restart all&quot; path on the current VMs. <code>make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS=&quot;--purge&quot;</code> removes the retained VMs plus their per-run VM state. <code>make lab-vm-ha-dashboard-purge</code> additionally removes <code>runs/&lt;RUN_ID&gt;</code> plus the repo-built host images used by this retained lane. <code>make lab-vm-ha-dashboard-reset</code> is the hard recycle path that tears the retained lane down and brings it back.</p>
+<p>Lower-level equivalent commands remain available when you need the raw building blocks.</p>
 <p>Prepare the host for the HA variant:</p>
 <pre><code>scripts/lab/vm/labctl.sh host prepare \
   --variant lab/variants/ha-control-plane-hub-node.yaml \
   --apply</code></pre>
-<p>Bring the HA lane up without auto teardown:</p>
+<p>Bring the retained HA lane up without auto teardown via the older generic wrapper:</p>
 <pre><code>sudo -v
 export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_ha_manual
 AE_CRI_CACHE_SEED_ENGINE=docker \
@@ -1142,8 +1162,14 @@ python -m http.server 9109 --directory docs/site</code></pre>
 <li><code>lab/variants/ha-control-plane-core.yaml</code> remains the separate HA closeout topology when you want edge/gateway transport coverage instead of a hub workload node.</li>
 <li>If you are switching from another VM lane that used a different <code>k1s-br0</code> subnet, tear it down with <code>--destroy-network</code> before rerunning host prep for this HA variant.</li>
 <li>If the controller used by <code>DOCS_API_BASE</code> goes away, rebuild docs with another core URL or open the remaining controllers directly.</li>
-<li>Clean up manually when you are done. Use <code>--destroy-network</code> only when you want full bridge cleanup or are switching to another subnet:</li>
+<li>Clean up manually when you are done. Use <code>--destroy-network</code> only when you want full bridge cleanup or are switching to another subnet.</li>
+<li>Full retained cleanup is <code>make lab-vm-ha-dashboard-purge</code>; add <code>LAB_VM_HA_DASHBOARD_ARGS=&quot;--destroy-network&quot;</code> if you also want bridge teardown.</li>
+<li>The fast retained reset path is <code>make lab-vm-ha-dashboard-reset</code>.</li>
+<li>If you also changed guest/bootstrap contracts, run:</li>
 </ul>
+<pre><code>make lab-vm-ha-dashboard-reset \
+  LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></pre>
+<p>Lower-level teardown remains:</p>
 <pre><code>scripts/lab/vm/labctl.sh variant down \
   --variant lab/variants/ha-control-plane-hub-node.yaml \
   --run-id &quot;$RUN_ID&quot; \
@@ -1163,7 +1189,7 @@ python -m http.server 9109 --directory docs/site</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-25 15:07:46</span>
+        <span>Built 2026-03-26 12:34:44</span>
       </div>
     </footer>
     <script>
