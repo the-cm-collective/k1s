@@ -4,6 +4,7 @@ import yaml
 
 from ae.ingress.envoy_control_plane import (
     ControlPlaneEnvoyConfig,
+    build_control_plane_envoy_config_from_env,
     render_control_plane_envoy_config,
     render_control_plane_envoy_secrets,
 )
@@ -39,6 +40,45 @@ def test_controlplane_envoy_renders_readonly_routes_without_oauth() -> None:
     assert dash_vhost["routes"][-1]["request_headers_to_add"][0]["header"]["value"] == (
         "Bearer read-token"
     )
+
+
+def test_controlplane_envoy_renders_public_tls_authority_aliases() -> None:
+    text = render_control_plane_envoy_config(
+        ControlPlaneEnvoyConfig(
+            read_token="read-token",
+            auth_enabled=False,
+            public_tls_authority_port=10443,
+        )
+    )
+
+    payload = yaml.safe_load(text)
+    vhosts = payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]["route_config"]["virtual_hosts"]
+    docs_vhost = next(v for v in vhosts if "docs.home.arpa" in v["domains"])
+    dash_vhost = next(v for v in vhosts if "dash.home.arpa" in v["domains"])
+
+    assert {
+        "docs.home.arpa",
+        "docs.home.arpa:10081",
+        "docs.home.arpa:10443",
+    } <= set(docs_vhost["domains"])
+    assert {
+        "dash.home.arpa",
+        "dash.home.arpa:10081",
+        "dash.home.arpa:10443",
+    } <= set(dash_vhost["domains"])
+
+
+def test_build_controlplane_envoy_config_reads_public_tls_authority_port(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTROLPLANE_PUBLIC_ENABLE", "1")
+    monkeypatch.setenv("AE_EDGE_INGRESS_TLS_PORT", "10443")
+    monkeypatch.setenv("AE_CONTROLPLANE_PROXY_PORT", "10081")
+
+    cfg = build_control_plane_envoy_config_from_env()
+
+    assert cfg.listen_port == 10081
+    assert cfg.public_tls_authority_port == 10443
 
 
 def test_controlplane_envoy_renders_oauth_and_sds_secrets() -> None:

@@ -13,6 +13,7 @@ import yaml
 class ControlPlaneEnvoyConfig:
     listen_address: str = "127.0.0.1"
     listen_port: int = 10081
+    public_tls_authority_port: int | None = None
     admin_address: str = "127.0.0.1"
     admin_port: int = 9902
     dash_host: str = "dash.home.arpa"
@@ -33,6 +34,7 @@ class ControlPlaneEnvoyConfig:
 
 def build_control_plane_envoy_config_from_env() -> ControlPlaneEnvoyConfig:
     auth_enabled = _truthy_env("AE_CONTROLPLANE_AUTH_ENABLE")
+    public_ingress_enabled = _truthy_env("AE_CONTROLPLANE_PUBLIC_ENABLE")
     client_secret = None
     hmac_secret = None
     if auth_enabled:
@@ -41,6 +43,11 @@ def build_control_plane_envoy_config_from_env() -> ControlPlaneEnvoyConfig:
     return ControlPlaneEnvoyConfig(
         listen_address=str(os_env("AE_CONTROLPLANE_PROXY_ADDR", "127.0.0.1")).strip(),
         listen_port=int(os_env("AE_CONTROLPLANE_PROXY_PORT", "10081") or "10081"),
+        public_tls_authority_port=(
+            int(os_env("AE_EDGE_INGRESS_TLS_PORT", "10443") or "10443")
+            if public_ingress_enabled
+            else None
+        ),
         admin_address=str(os_env("AE_CONTROLPLANE_PROXY_ADMIN_ADDR", "127.0.0.1")).strip(),
         admin_port=int(os_env("AE_CONTROLPLANE_PROXY_ADMIN_PORT", "9902") or "9902"),
         dash_host=str(os_env("AE_CONTROLPLANE_DASH_HOST", "dash.home.arpa")).strip().lower(),
@@ -72,11 +79,14 @@ def render_control_plane_envoy_config(
         def ignore_aliases(self, _data):  # type: ignore[override]
             return True
 
-    def _domains_for_host(host: str, port: int) -> list[str]:
+    def _domains_for_host(host: str, *ports: int | None) -> list[str]:
         domains = [str(host)]
-        alias = f"{host}:{int(port)}"
-        if alias not in domains:
-            domains.append(alias)
+        for port in ports:
+            if port is None:
+                continue
+            alias = f"{host}:{int(port)}"
+            if alias not in domains:
+                domains.append(alias)
         return domains
 
     controller_cluster = {
@@ -294,14 +304,18 @@ def render_control_plane_envoy_config(
                                                 {
                                                     "name": "docs_host",
                                                     "domains": _domains_for_host(
-                                                        config.docs_host, config.listen_port
+                                                        config.docs_host,
+                                                        config.listen_port,
+                                                        config.public_tls_authority_port,
                                                     ),
                                                     "routes": docs_routes,
                                                 },
                                                 {
                                                     "name": "dash_host",
                                                     "domains": _domains_for_host(
-                                                        config.dash_host, config.listen_port
+                                                        config.dash_host,
+                                                        config.listen_port,
+                                                        config.public_tls_authority_port,
                                                     ),
                                                     "routes": dash_routes,
                                                 },
