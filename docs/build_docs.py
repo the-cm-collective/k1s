@@ -41,6 +41,9 @@ def detect_api_base() -> str:
     env = os.getenv("DOCS_API_BASE")
     if env:
         return env.rstrip("/")
+    if _truthy_env("AE_CONTROLPLANE_PUBLIC_ENABLE"):
+        tls_port = os.getenv("AE_EDGE_INGRESS_TLS_PORT", "10443").strip() or "10443"
+        return f"https://docs.home.arpa:{tls_port}"
     try:
         hosts = Path("/etc/hosts").read_text(encoding="utf-8", errors="ignore")
         if "api.home.arpa" in hosts:
@@ -57,6 +60,9 @@ def detect_dashboard_url() -> str:
     env = os.getenv("DOCS_DASHBOARD_URL")
     if env:
         return env.strip()
+    if _truthy_env("AE_CONTROLPLANE_PUBLIC_ENABLE"):
+        tls_port = os.getenv("AE_EDGE_INGRESS_TLS_PORT", "10443").strip() or "10443"
+        return f"https://dash.home.arpa:{tls_port}/dashboard"
     try:
         hosts = Path("/etc/hosts").read_text(encoding="utf-8", errors="ignore")
         if "dash.home.arpa" in hosts:
@@ -90,15 +96,11 @@ RSS_FEED_TITLE = "k1s Repo Activity"
 SOURCE_REPO_URL = os.getenv(
     "DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
 ).strip()
-SOURCE_REPO_LABEL = os.getenv(
-    "DOCS_SOURCE_REPO_LABEL", "Upstream Repository (CODEBERG)"
-).strip()
+SOURCE_REPO_LABEL = os.getenv("DOCS_SOURCE_REPO_LABEL", "Upstream Repository (CODEBERG)").strip()
 COLLAB_REPO_URL = os.getenv(
     "DOCS_COLLAB_REPO_URL", "https://github.com/the-cm-collective/k1s"
 ).strip()
-COLLAB_REPO_LABEL = os.getenv(
-    "DOCS_COLLAB_REPO_LABEL", "Issues & PRs / SPONSORS (GitHub)"
-).strip()
+COLLAB_REPO_LABEL = os.getenv("DOCS_COLLAB_REPO_LABEL", "Issues & PRs / SPONSORS (GitHub)").strip()
 
 INTERACTIVE_HREF_TOKENS = (
     "/swagger",
@@ -353,7 +355,11 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "List app statuses (paginated)",
                     "parameters": [
-                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}},
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "schema": {"type": "integer", "default": 50},
+                        },
                         {"name": "cursor", "in": "query", "schema": {"type": "string"}},
                         {"name": "app", "in": "query", "schema": {"type": "string"}},
                         {"name": "wildcard", "in": "query", "schema": {"type": "string"}},
@@ -366,9 +372,17 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "Get a single app status",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
-                    "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}},
+                    "responses": {
+                        "200": {"description": "OK"},
+                        "404": {"description": "Not Found"},
+                    },
                     "security": [{"bearerAuth": []}],
                 }
             },
@@ -376,9 +390,17 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "Get the latest stored manifest for an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
-                    "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}},
+                    "responses": {
+                        "200": {"description": "OK"},
+                        "404": {"description": "Not Found"},
+                    },
                     "security": [{"bearerAuth": []}],
                 }
             },
@@ -386,8 +408,17 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "List app events (paginated)",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
-                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "schema": {"type": "integer", "default": 20},
+                        },
                         {"name": "cursor", "in": "query", "schema": {"type": "string"}},
                     ],
                     "responses": {"200": {"description": "OK"}},
@@ -398,7 +429,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "post": {
                     "summary": "Scale an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
                     "responses": {"200": {"description": "OK"}},
                     "security": [{"bearerAuth": []}],
@@ -408,7 +444,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "post": {
                     "summary": "Delete an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
                         {"name": "purge", "in": "query", "schema": {"type": "boolean"}},
                     ],
                     "responses": {"200": {"description": "OK"}},
@@ -419,7 +460,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "Tail application logs",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
                         {"name": "container", "in": "query", "schema": {"type": "string"}},
                         {"name": "tail", "in": "query", "schema": {"type": "integer"}},
                         {"name": "since", "in": "query", "schema": {"type": "integer"}},
@@ -441,7 +487,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "Verify tlsSecretName resolvability under AE_TLS_DIR",
                     "parameters": [
-                        {"name": "name", "in": "query", "required": True, "schema": {"type": "string"}},
+                        {
+                            "name": "name",
+                            "in": "query",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
                         {"name": "root", "in": "query", "schema": {"type": "string"}},
                     ],
                     "responses": {"200": {"description": "OK"}},
@@ -452,7 +503,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "post": {
                     "summary": "Pause rollout for an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
                     "responses": {"200": {"description": "OK"}},
                     "security": [{"bearerAuth": []}],
@@ -462,7 +518,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "post": {
                     "summary": "Resume rollout for an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
                     "responses": {"200": {"description": "OK"}},
                     "security": [{"bearerAuth": []}],
@@ -1894,7 +1955,7 @@ def build_one(
                                     v = row_vals[c]
                                     style = color_for(vals, v) if len(vals) > 1 else ""
                                     html_parts.append(
-                                        f"<td style='text-align:right;{style}'>" f"{v:.1f}</td>"
+                                        f"<td style='text-align:right;{style}'>{v:.1f}</td>"
                                     )
                                 else:
                                     html_parts.append("<td style='opacity:.5'>—</td>")
@@ -2001,9 +2062,7 @@ def build_one(
                             for (_adj, _avg, c, n, coverage) in ranking
                             if (max_n and (coverage >= coverage_min))
                         ]
-                        coverage_map = {
-                            c: coverage for (_adj, _avg, c, _n, coverage) in ranking
-                        }
+                        coverage_map = {c: coverage for (_adj, _avg, c, _n, coverage) in ranking}
                         low_coverage = {
                             c for c in col_order if coverage_map.get(c, 0.0) < coverage_min
                         }
@@ -2450,7 +2509,9 @@ def main() -> None:
                         existing.unlink()
             static_out.mkdir(parents=True, exist_ok=True)
             for p in static_src.iterdir():
-                if p.name == "swagger-ui" and (not EXPORT_NON_INTERACTIVE or not vendor_swagger_assets):
+                if p.name == "swagger-ui" and (
+                    not EXPORT_NON_INTERACTIVE or not vendor_swagger_assets
+                ):
                     continue
                 if p.is_dir():
                     shutil.copytree(p, static_out / p.name)
@@ -2572,8 +2633,8 @@ def main() -> None:
             "\n".join(
                 [
                     '  <div class="hero-card hero-card--section">',
-                    f'    <h2>{html.escape(section["title"])}</h2>',
-                    f'    <p>{html.escape(section["desc"])}</p>',
+                    f"    <h2>{html.escape(section['title'])}</h2>",
+                    f"    <p>{html.escape(section['desc'])}</p>",
                     '    <div class="hero-links hero-links--dense">',
                     "      " + "\n      ".join(link_bits),
                     "    </div>",

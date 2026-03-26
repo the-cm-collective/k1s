@@ -36,6 +36,7 @@ from ae.ingress.rathole import (
 LOGGER = logging.getLogger(__name__)
 _ALLOWED_CLUSTER_LB_POLICIES = {"ROUND_ROBIN", "LEAST_REQUEST", "RING_HASH"}
 
+
 @dataclass(frozen=True)
 class EdgeCoreProxyConfig:
     config_dir: Path
@@ -55,8 +56,20 @@ class EdgeCoreProxyConfig:
     rathole_server_addr: str
     edge_local_addr: str
     reload_cmd: str | None
+    tls_fallback_sans: tuple[str, ...] = ()
     rathole_reload_cmd: str | None = None
     rathole_reload_enabled: bool = False
+    controlplane_public_enable: bool = False
+    controlplane_proxy_addr: str = "127.0.0.1"
+    controlplane_proxy_port: int = 10081
+    controlplane_dash_host: str = "dash.home.arpa"
+    controlplane_docs_host: str = "docs.home.arpa"
+    controlplane_api_host: str = "api.home.arpa"
+    controlplane_api_controller_addr: str = "127.0.0.1"
+    controlplane_api_controller_port: int = 9108
+    controlplane_api_apishim_addr: str = "127.0.0.1"
+    controlplane_api_apishim_port: int = 8445
+    controlplane_api_apishim_use_tls: bool = True
 
 
 class EdgeCoreProxyRenderer:
@@ -134,7 +147,11 @@ class EdgeCoreProxyRenderer:
         self._last_rathole_hash = rathole_digest
         if envoy_changed and self._config.reload_cmd:
             _run_reload(self._config.reload_cmd)
-        if rathole_changed and self._config.rathole_reload_enabled and self._config.rathole_reload_cmd:
+        if (
+            rathole_changed
+            and self._config.rathole_reload_enabled
+            and self._config.rathole_reload_cmd
+        ):
             _run_reload(self._config.rathole_reload_cmd)
 
 
@@ -144,9 +161,7 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
         return None
     config_dir = Path(raw_dir)
     envoy_path = Path(os.getenv("AE_EDGE_INGRESS_ENVOY_CONFIG", config_dir / "envoy.yaml"))
-    rathole_server = Path(
-        os.getenv("AE_RATHOLE_SERVER_CONFIG", config_dir / "rathole-server.toml")
-    )
+    rathole_server = Path(os.getenv("AE_RATHOLE_SERVER_CONFIG", config_dir / "rathole-server.toml"))
     client_dir_raw = os.getenv("AE_RATHOLE_CLIENT_DIR")
     client_dir = Path(client_dir_raw) if client_dir_raw else None
     site_suffix = os.getenv("AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX", "edge.local")
@@ -156,10 +171,9 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
     edge_local_addr = os.getenv("AE_EDGE_INGRESS_LOCAL_ADDR", "127.0.0.1:18081")
     reload_cmd = os.getenv("AE_EDGE_INGRESS_RELOAD_CMD")
     rathole_reload_cmd = os.getenv("AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD")
-    rathole_reload_enabled = (
-        str(os.getenv("AE_EDGE_INGRESS_RATHOLE_RELOAD", "1") or "1").strip().lower()
-        in {"1", "true", "yes", "on"}
-    )
+    rathole_reload_enabled = str(
+        os.getenv("AE_EDGE_INGRESS_RATHOLE_RELOAD", "1") or "1"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     tls_root = Path(os.getenv("AE_TLS_DIR", "state/tls")).expanduser()
     if not tls_root.is_absolute():
         tls_root = (Path.cwd() / tls_root).resolve()
@@ -177,6 +191,51 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
         tls_fallback_days = int(os.getenv("AE_EDGE_INGRESS_TLS_FALLBACK_DAYS", "7") or 7)
     except Exception:
         tls_fallback_days = 7
+    controlplane_public_enable = str(
+        os.getenv("AE_CONTROLPLANE_PUBLIC_ENABLE", "0") or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    controlplane_dash_host = (
+        str(os.getenv("AE_CONTROLPLANE_DASH_HOST", "dash.home.arpa") or "").strip().lower()
+    )
+    controlplane_docs_host = (
+        str(os.getenv("AE_CONTROLPLANE_DOCS_HOST", "docs.home.arpa") or "").strip().lower()
+    )
+    controlplane_api_host = (
+        str(os.getenv("AE_CONTROLPLANE_API_HOST", "api.home.arpa") or "").strip().lower()
+    )
+    controlplane_proxy_addr = str(
+        os.getenv("AE_CONTROLPLANE_PROXY_ADDR", "127.0.0.1") or "127.0.0.1"
+    ).strip()
+    try:
+        controlplane_proxy_port = int(os.getenv("AE_CONTROLPLANE_PROXY_PORT", "10081") or "10081")
+    except Exception:
+        controlplane_proxy_port = 10081
+    controller_upstream = _parse_upstream(
+        os.getenv("AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM")
+        or os.getenv("AE_CONTROLPLANE_CONTROLLER_UPSTREAM"),
+        default_host="127.0.0.1",
+        default_port=9108,
+    )
+    apishim_upstream = _parse_upstream(
+        os.getenv("AE_CONTROLPLANE_API_APISHIM_UPSTREAM")
+        or os.getenv("AE_CONTROLPLANE_APISHIM_UPSTREAM"),
+        default_host="127.0.0.1",
+        default_port=8445,
+    )
+    controlplane_apishim_use_tls = str(
+        os.getenv("AE_CONTROLPLANE_API_APISHIM_TLS")
+        or os.getenv("AE_CONTROLPLANE_APISHIM_TLS", "1")
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    fallback_sans = tuple(
+        host
+        for host in (
+            controlplane_dash_host,
+            controlplane_docs_host,
+            controlplane_api_host,
+        )
+        if host
+    )
     try:
         http_listen = int(os.getenv("AE_EDGE_INGRESS_HTTP_PORT", "10080") or 10080)
     except Exception:
@@ -199,6 +258,7 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
         tls_fallback=tls_fallback,
         tls_fallback_cn=tls_fallback_cn,
         tls_fallback_days=tls_fallback_days,
+        tls_fallback_sans=fallback_sans,
         rathole_bind_addr=rathole_bind,
         rathole_default_token=rathole_token,
         rathole_server_addr=rathole_server_addr,
@@ -206,13 +266,172 @@ def build_core_proxy_config() -> EdgeCoreProxyConfig | None:
         reload_cmd=reload_cmd,
         rathole_reload_cmd=rathole_reload_cmd,
         rathole_reload_enabled=rathole_reload_enabled,
+        controlplane_public_enable=controlplane_public_enable,
+        controlplane_proxy_addr=controlplane_proxy_addr,
+        controlplane_proxy_port=controlplane_proxy_port,
+        controlplane_dash_host=controlplane_dash_host,
+        controlplane_docs_host=controlplane_docs_host,
+        controlplane_api_host=controlplane_api_host,
+        controlplane_api_controller_addr=controller_upstream[0],
+        controlplane_api_controller_port=controller_upstream[1],
+        controlplane_api_apishim_addr=apishim_upstream[0],
+        controlplane_api_apishim_port=apishim_upstream[1],
+        controlplane_api_apishim_use_tls=controlplane_apishim_use_tls,
     )
+
+
+def render_core_proxy_bootstrap_from_env(*, state_db_path: Path | None = None) -> bool:
+    config = build_core_proxy_config()
+    if config is None:
+        return False
+    bootstrap_db = Path(state_db_path) if state_db_path is not None else (
+        config.config_dir / "bootstrap-state.db"
+    )
+    bootstrap_db.parent.mkdir(parents=True, exist_ok=True)
+    store = SQLiteStateStore(db_path=bootstrap_db)
+    EdgeCoreProxyRenderer(store, config).render()
+    return True
+
+
+def _parse_upstream(
+    raw_value: str | None,
+    *,
+    default_host: str,
+    default_port: int,
+) -> tuple[str, int]:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return default_host, int(default_port)
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    parsed = urlparse(raw)
+    host = str(parsed.hostname or "").strip() or default_host
+    port = parsed.port or int(default_port)
+    return host, int(port)
 
 
 def _core_proxy_services(
     endpoints: list[SiteIngressListItem],
 ) -> list[SiteIngressListItem]:
     return [ep for ep in endpoints if ep.core_proxy_port is not None]
+
+
+def _reserved_controlplane_hosts(config: EdgeCoreProxyConfig) -> set[str]:
+    if not config.controlplane_public_enable:
+        return set()
+    return {
+        host
+        for host in {
+            str(config.controlplane_dash_host or "").strip().lower(),
+            str(config.controlplane_docs_host or "").strip().lower(),
+            str(config.controlplane_api_host or "").strip().lower(),
+        }
+        if host
+    }
+
+
+def _append_controlplane_public_routes(
+    routes: list[CoreProxyRoute],
+    clusters: dict[str, CoreProxyCluster],
+    config: EdgeCoreProxyConfig,
+    *,
+    tls_enabled: bool,
+) -> None:
+    if not config.controlplane_public_enable:
+        return
+
+    redirect_https = bool(tls_enabled)
+    forward_proto = "https" if tls_enabled else "http"
+    proxy_cluster_name = "controlplane_proxy"
+    clusters.setdefault(
+        proxy_cluster_name,
+        CoreProxyCluster(
+            name=proxy_cluster_name,
+            endpoints=[(config.controlplane_proxy_addr, int(config.controlplane_proxy_port))],
+        ),
+    )
+    proxy_headers = [("x-forwarded-proto", forward_proto)]
+    for host in (config.controlplane_dash_host, config.controlplane_docs_host):
+        clean_host = str(host or "").strip().lower()
+        if not clean_host:
+            continue
+        routes.append(
+            CoreProxyRoute(
+                host=clean_host,
+                path_prefix="/",
+                cluster=proxy_cluster_name,
+                redirect_to_https=redirect_https,
+                request_headers_add=proxy_headers,
+            )
+        )
+
+    api_host = str(config.controlplane_api_host or "").strip().lower()
+    if not api_host:
+        return
+
+    controller_cluster_name = "controlplane_api_controller"
+    apishim_cluster_name = "controlplane_api_apishim"
+    clusters.setdefault(
+        controller_cluster_name,
+        CoreProxyCluster(
+            name=controller_cluster_name,
+            endpoints=[
+                (
+                    str(config.controlplane_api_controller_addr or "127.0.0.1"),
+                    int(config.controlplane_api_controller_port),
+                )
+            ],
+        ),
+    )
+    clusters.setdefault(
+        apishim_cluster_name,
+        CoreProxyCluster(
+            name=apishim_cluster_name,
+            endpoints=[
+                (
+                    str(config.controlplane_api_apishim_addr or "127.0.0.1"),
+                    int(config.controlplane_api_apishim_port),
+                )
+            ],
+            use_tls=bool(config.controlplane_api_apishim_use_tls),
+        ),
+    )
+    routes.extend(
+        [
+            CoreProxyRoute(
+                host=api_host,
+                path_prefix="/dashboard",
+                cluster=controller_cluster_name,
+                redirect_to_https=redirect_https,
+                direct_response_status=404,
+            ),
+            CoreProxyRoute(
+                host=api_host,
+                path_prefix="/playground",
+                cluster=controller_cluster_name,
+                redirect_to_https=redirect_https,
+                direct_response_status=404,
+            ),
+            CoreProxyRoute(
+                host=api_host,
+                path_prefix="/api/v1",
+                cluster=apishim_cluster_name,
+                redirect_to_https=redirect_https,
+            ),
+            CoreProxyRoute(
+                host=api_host,
+                path_prefix="/apis",
+                cluster=apishim_cluster_name,
+                redirect_to_https=redirect_https,
+            ),
+            CoreProxyRoute(
+                host=api_host,
+                path_prefix="/",
+                cluster=controller_cluster_name,
+                redirect_to_https=redirect_https,
+            ),
+        ]
+    )
 
 
 def _build_routes_and_clusters(
@@ -235,7 +454,12 @@ def _build_routes_and_clusters(
     forward_auth_url = _select_forward_auth_url(store, policy_cache)
     enable_local_ratelimit = False
     route_records = store.list_edge_ingress_routes()
-    downstream_tls, fallback_tls = _collect_downstream_tls(route_records, config)
+    reserved_hosts = _reserved_controlplane_hosts(config)
+    downstream_tls, fallback_tls = _collect_downstream_tls(
+        route_records,
+        config,
+        force_tls=bool(config.controlplane_public_enable),
+    )
     tls_enabled = bool(downstream_tls or fallback_tls)
 
     # Base per-site host for core-proxy mode.
@@ -263,14 +487,14 @@ def _build_routes_and_clusters(
     # Explicit EdgeIngressRoute resources.
     for record in route_records:
         spec = _edge_route_spec(record)
-        host = str(spec.get("host") or "").strip()
+        host = str(spec.get("host") or "").strip().lower()
         if not host:
+            continue
+        if host in reserved_hosts:
             continue
         exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
         mode = str(exposure.get("mode") or "").strip().lower()
-        placement = (
-            exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
-        )
+        placement = exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
         site_id = str(placement.get("site") or record.site_id or "").strip()
         policy_spec = _policy_for_route(record, store, policy_cache)
         route_opts = _policy_route_options(policy_spec) if policy_spec else {}
@@ -287,9 +511,7 @@ def _build_routes_and_clusters(
         ext_authz_enabled = False
         if forward_auth_url and policy_spec:
             route_forward_auth = _policy_forward_auth_url(policy_spec)
-            ext_authz_enabled = bool(
-                route_forward_auth and route_forward_auth == forward_auth_url
-            )
+            ext_authz_enabled = bool(route_forward_auth and route_forward_auth == forward_auth_url)
         redirect_https = False
         if tls_enabled:
             redirect_https = _route_redirect_https(exposure)
@@ -422,6 +644,13 @@ def _build_routes_and_clusters(
             clusters.setdefault(auth_cluster.name, auth_cluster)
             ext_authz_config = _forward_auth_ext_authz_config(forward_auth_url)
 
+    _append_controlplane_public_routes(
+        routes,
+        clusters,
+        config,
+        tls_enabled=tls_enabled,
+    )
+
     return (
         routes,
         list(clusters.values()),
@@ -441,15 +670,11 @@ def _route_path_entries(spec: dict) -> list[dict]:
         raw_path = str(entry.get("path") or "").strip() or "/"
         if not raw_path.startswith("/"):
             raw_path = f"/{raw_path}"
-        service_ref = (
-            entry.get("serviceRef") if isinstance(entry.get("serviceRef"), dict) else {}
-        )
+        service_ref = entry.get("serviceRef") if isinstance(entry.get("serviceRef"), dict) else {}
         port = _coerce_int(entry.get("port")) or _coerce_int(service_ref.get("port"))
         entries.append({"path": raw_path, "service_ref": service_ref, "port": port})
     if not entries:
-        service_ref = (
-            spec.get("serviceRef") if isinstance(spec.get("serviceRef"), dict) else {}
-        )
+        service_ref = spec.get("serviceRef") if isinstance(spec.get("serviceRef"), dict) else {}
         port = _coerce_int(service_ref.get("port"))
         entries.append({"path": "/", "service_ref": service_ref, "port": port})
     return entries
@@ -569,12 +794,14 @@ def _split_host_port(endpoint: str) -> tuple[str | None, int | None]:
 def _collect_downstream_tls(
     routes: list,
     config: EdgeCoreProxyConfig,
+    *,
+    force_tls: bool = False,
 ) -> tuple[list[DownstreamTlsCert], DownstreamTlsCert | None]:
     if config.tls_listen_port is None:
         return [], None
     resolver = TlsSecretResolver(config.tls_root)
     cert_map: dict[tuple[str, str], set[str]] = {}
-    want_tls = False
+    want_tls = bool(force_tls)
     for record in routes:
         spec = _edge_route_spec(record)
         exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
@@ -600,19 +827,18 @@ def _collect_downstream_tls(
         resolved = resolver.resolve(config.tls_default_secret)
         if resolved:
             crt_path, key_path = resolved
-            fallback_cert = DownstreamTlsCert(
-                cert_chain=str(crt_path), private_key=str(key_path)
-            )
+            fallback_cert = DownstreamTlsCert(cert_chain=str(crt_path), private_key=str(key_path))
 
     if want_tls and fallback_cert is None and config.tls_fallback:
         fallback = _ensure_fallback_tls(
-            config.tls_root, config.tls_fallback_cn, config.tls_fallback_days
+            config.tls_root,
+            config.tls_fallback_cn,
+            config.tls_fallback_days,
+            sans=config.tls_fallback_sans,
         )
         if fallback:
             crt_path, key_path = fallback
-            fallback_cert = DownstreamTlsCert(
-                cert_chain=str(crt_path), private_key=str(key_path)
-            )
+            fallback_cert = DownstreamTlsCert(cert_chain=str(crt_path), private_key=str(key_path))
 
     if not want_tls:
         return [], None
@@ -636,11 +862,7 @@ def _tls_secret_name(tls: dict) -> str | None:
     if not term:
         term = tls.get("terminate_core") if isinstance(tls.get("terminate_core"), dict) else {}
     if not secret:
-        secret = (
-            term.get("secretName")
-            or term.get("tlsSecretName")
-            or term.get("secret_name")
-        )
+        secret = term.get("secretName") or term.get("tlsSecretName") or term.get("secret_name")
     return str(secret).strip() if secret else None
 
 
@@ -650,7 +872,13 @@ def _tls_mode(tls: dict) -> str:
     return str(tls.get("mode") or "").strip().lower()
 
 
-def _ensure_fallback_tls(root: Path, cn: str, days: int) -> tuple[Path, Path] | None:
+def _ensure_fallback_tls(
+    root: Path,
+    cn: str,
+    days: int,
+    *,
+    sans: tuple[str, ...] = (),
+) -> tuple[Path, Path] | None:
     root.mkdir(parents=True, exist_ok=True)
     crt = root / "envoy-fallback.crt"
     key = root / "envoy-fallback.key"
@@ -676,7 +904,16 @@ def _ensure_fallback_tls(root: Path, cn: str, days: int) -> tuple[Path, Path] | 
         "-out",
         str(crt),
     ]
-    addext = f"subjectAltName=DNS:{cn}"
+    san_names = [str(cn).strip()] + [str(name).strip() for name in sans if str(name).strip()]
+    seen_names: set[str] = set()
+    san_entries = []
+    for name in san_names:
+        lowered = name.lower()
+        if lowered in seen_names:
+            continue
+        seen_names.add(lowered)
+        san_entries.append(f"DNS:{name}")
+    addext = "subjectAltName=" + ",".join(san_entries)
     cmd_with_san = cmd + ["-addext", addext]
     try:
         subprocess.run(cmd_with_san, check=False, capture_output=True)  # noqa: S603
@@ -689,7 +926,7 @@ def _ensure_fallback_tls(root: Path, cn: str, days: int) -> tuple[Path, Path] | 
             return None
     if crt.exists() and key.exists():
         try:
-            crt.chmod(0o600)
+            crt.chmod(0o644)
             key.chmod(0o600)
         except Exception:
             pass
@@ -766,9 +1003,7 @@ def _policy_route_options(policy: dict) -> dict:
         opts["timeout_ms"] = timeout_ms
     if idle_timeout_ms:
         opts["idle_timeout_ms"] = idle_timeout_ms
-    websockets = (
-        policy.get("websockets") if isinstance(policy.get("websockets"), dict) else {}
-    )
+    websockets = policy.get("websockets") if isinstance(policy.get("websockets"), dict) else {}
     ws_enabled = _coerce_bool(websockets.get("enabled"))
     if ws_enabled is not None:
         opts["websocket_enabled"] = ws_enabled
@@ -956,9 +1191,7 @@ def _forward_auth_ext_authz_config(url: str) -> dict | None:
                 "cluster": "auth_forward",
                 "timeout": "2s",
             },
-            "authorization_request": {
-                "allowed_headers": {"patterns": [{"regex": ".*"}]}
-            },
+            "authorization_request": {"allowed_headers": {"patterns": [{"regex": ".*"}]}},
             "authorization_response": {
                 "allowed_upstream_headers": {"patterns": [{"regex": ".*"}]},
                 "allowed_client_headers": {"patterns": [{"regex": ".*"}]},
@@ -1014,8 +1247,11 @@ def _coerce_bool(value) -> bool | None:
             return False
     return None
 
+
 def _run_reload(cmd: str) -> None:
-    lock_raw = os.getenv("AE_EDGE_INGRESS_RELOAD_LOCK", "state/profiles/k1s-core/edge-ingress/.reload.lock")
+    lock_raw = os.getenv(
+        "AE_EDGE_INGRESS_RELOAD_LOCK", "state/profiles/k1s-core/edge-ingress/.reload.lock"
+    )
     lock_path = Path(lock_raw).expanduser()
     if not lock_path.is_absolute():
         lock_path = (Path.cwd() / lock_path).resolve()

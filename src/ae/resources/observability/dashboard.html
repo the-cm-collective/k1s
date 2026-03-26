@@ -792,9 +792,36 @@ Connection: close
       var saveBtn = document.getElementById('save-token');
       var clearBtn = document.getElementById('clear-token');
       var authBanner = document.getElementById('auth-banner');
+      var dashboardInteractiveToolsEnabled = true;
       try { tokInput.value = localStorage.getItem('ae_token') || ''; } catch(e) {}
       saveBtn.addEventListener('click', function(){ try { localStorage.setItem('ae_token', tokInput.value||''); } catch(e){}; window.location.reload(); });
       clearBtn.addEventListener('click', function(){ try { localStorage.removeItem('ae_token'); } catch(e){}; window.location.reload(); });
+
+      function setDashboardInteractiveToolsEnabled(enabled){
+        dashboardInteractiveToolsEnabled = enabled !== false;
+        ['btn-shell', 'btn-portforward'].forEach(function(id){
+          try {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.disabled = !dashboardInteractiveToolsEnabled;
+            el.classList.toggle('hidden', !dashboardInteractiveToolsEnabled);
+          } catch(e){}
+        });
+        if (!dashboardInteractiveToolsEnabled) {
+          try { closeShellModal(); } catch(e){}
+          try { closePfModal(); } catch(e){}
+        }
+      }
+
+      function loadDashboardFeatures(){
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r){ return r.ok ? r.json() : null; })
+          .then(function(features){
+            if (!features) return;
+            setDashboardInteractiveToolsEnabled(features.dashboard_interactive_tools !== false);
+          })
+          .catch(function(){});
+      }
 
       // UI prefs: hide healthy pills / compact counters
       var hideHealthy = false, compactCounters = false;
@@ -2108,6 +2135,7 @@ Connection: close
       }
 
       function openShellModal(){
+        if (!dashboardInteractiveToolsEnabled) return;
         if (!shellModal) return;
         var sel = document.getElementById('shell-pod');
         fillReplicaSelect(sel);
@@ -2428,6 +2456,7 @@ Connection: close
       }
 
       function openPfModal(){
+        if (!dashboardInteractiveToolsEnabled) return;
         if (!pfModal) return;
         var sel = document.getElementById('pf-pod');
         fillReplicaSelect(sel);
@@ -2456,6 +2485,7 @@ Connection: close
       try { document.getElementById('pf-view-source').addEventListener('click', function(){ setPfView('source'); }); } catch(e){}
       try { document.getElementById('pf-view-preview').addEventListener('click', function(){ setPfView('preview'); }); } catch(e){}
       window.addEventListener('resize', function(){ if (shellModal && !shellModal.classList.contains('hidden')) { fitShellNow(); } });
+      loadDashboardFeatures();
 
       function updateLogsHTMX(){
         var el = document.getElementById('logs');

@@ -4496,9 +4496,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self._json_ok(payload)
 
     def _handle_ui_features(self) -> None:
+        controlplane_readonly = self._flag_enabled(
+            "AE_CONTROLPLANE_PUBLIC_ENABLE",
+            False,
+        ) and self._flag_enabled("AE_CONTROLPLANE_AUTH_ENABLE", False)
         payload = {
             "dashboard": bool(self._dashboard_enabled()),
-            "playground": bool(self._playground_enabled()),
+            "playground": False if controlplane_readonly else bool(self._playground_enabled()),
+            "dashboard_interactive_tools": bool(
+                self._flag_enabled("AE_DASHBOARD_INTERACTIVE_TOOLS", True)
+            ),
         }
         self._json_ok(payload)
 

@@ -14,6 +14,7 @@ class CoreProxyRoute:
     path_prefix: str
     cluster: str
     redirect_to_https: bool = False
+    direct_response_status: int | None = None
     request_headers_add: list[tuple[str, str]] = field(default_factory=list)
     request_headers_remove: list[str] = field(default_factory=list)
     response_headers_add: list[tuple[str, str]] = field(default_factory=list)
@@ -72,11 +73,17 @@ def render_envoy_config(
     listener_port = config.listen_port
     admin_addr = config.admin_address
     admin_port = config.admin_port
-    websocket_upgrade_enabled = any(
-        route.websocket_enabled is not False for route in routes
-    )
+    websocket_upgrade_enabled = any(route.websocket_enabled is not False for route in routes)
 
-    def _build_vhosts(redirect_https: bool) -> list[dict]:
+    def _domains_for_host(host: str, port: int | None) -> list[str]:
+        domains = [host]
+        if port is not None:
+            alias = f"{host}:{int(port)}"
+            if alias not in domains:
+                domains.append(alias)
+        return domains
+
+    def _build_vhosts(redirect_https: bool, port_alias: int | None) -> list[dict]:
         vhost_list: list[dict] = []
         vhost_map: dict[str, dict] = {}
         for route in sorted(routes, key=lambda r: len(r.path_prefix or ""), reverse=True):
@@ -85,7 +92,11 @@ def render_envoy_config(
                 continue
             vhost = vhost_map.get(host)
             if vhost is None:
-                vhost = {"name": f"vhost_{host}", "domains": [host], "routes": []}
+                vhost = {
+                    "name": f"vhost_{host}",
+                    "domains": _domains_for_host(host, port_alias),
+                    "routes": [],
+                }
                 vhost_map[host] = vhost
             if redirect_https and route.redirect_to_https:
                 route_entry = {
@@ -94,76 +105,75 @@ def render_envoy_config(
                 }
                 vhost["routes"].append(route_entry)
                 continue
-            route_entry = {
-                "match": {"prefix": route.path_prefix or "/"},
-                "route": {"cluster": route.cluster},
-            }
-            if route.timeout_ms:
-                route_entry["route"]["timeout"] = f"{route.timeout_ms/1000:.3f}s"
-            if route.idle_timeout_ms:
-                route_entry["route"]["idle_timeout"] = f"{route.idle_timeout_ms/1000:.3f}s"
-            if route.websocket_idle_timeout_ms:
-                route_entry["route"]["idle_timeout"] = (
-                    f"{route.websocket_idle_timeout_ms/1000:.3f}s"
-                )
-            if route.websocket_max_connection_duration_ms:
-                route_entry["route"]["max_stream_duration"] = {
-                    "max_stream_duration": (
-                        f"{route.websocket_max_connection_duration_ms/1000:.3f}s"
+            route_entry = {"match": {"prefix": route.path_prefix or "/"}}
+            if route.direct_response_status is not None:
+                route_entry["direct_response"] = {"status": int(route.direct_response_status)}
+            else:
+                route_entry["route"] = {"cluster": route.cluster}
+                if route.timeout_ms:
+                    route_entry["route"]["timeout"] = f"{route.timeout_ms / 1000:.3f}s"
+                if route.idle_timeout_ms:
+                    route_entry["route"]["idle_timeout"] = f"{route.idle_timeout_ms / 1000:.3f}s"
+                if route.websocket_idle_timeout_ms:
+                    route_entry["route"]["idle_timeout"] = (
+                        f"{route.websocket_idle_timeout_ms / 1000:.3f}s"
                     )
-                }
-            sticky_cookie_name = str(route.sticky_cookie_name or "").strip()
-            if sticky_cookie_name:
-                cookie_cfg: dict[str, object] = {
-                    "name": sticky_cookie_name,
-                    "path": "/",
-                }
-                if (
-                    route.sticky_cookie_ttl_seconds is not None
-                    and int(route.sticky_cookie_ttl_seconds) > 0
-                ):
-                    cookie_cfg["ttl"] = f"{int(route.sticky_cookie_ttl_seconds)}s"
-                route_entry["route"]["hash_policy"] = [
-                    {"cookie": cookie_cfg, "terminal": True}
-                ]
-            if route.websocket_enabled is False:
-                route_entry["route"]["upgrade_configs"] = [
-                    {"upgrade_type": "websocket", "enabled": False}
-                ]
-            per_filter: dict[str, dict] = {}
-            if ext_authz_config is not None:
-                per_filter["envoy.filters.http.ext_authz"] = {
-                    "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute",
-                    "disabled": not bool(route.ext_authz_enabled),
-                }
-            if route.local_rate_limit:
-                per_filter["envoy.filters.http.local_ratelimit"] = {
-                    "@type": "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit",
-                    "stat_prefix": "edge_local_ratelimit",
-                    "token_bucket": route.local_rate_limit,
-                    "filter_enabled": {
-                        "default_value": {"numerator": 100, "denominator": "HUNDRED"}
-                    },
-                    "filter_enforced": {
-                        "default_value": {"numerator": 100, "denominator": "HUNDRED"}
-                    },
-                }
-            if per_filter:
-                route_entry["typed_per_filter_config"] = per_filter
-            if route.request_headers_add:
-                route_entry["request_headers_to_add"] = [
-                    {"header": {"key": key, "value": value}}
-                    for key, value in route.request_headers_add
-                ]
-            if route.request_headers_remove:
-                route_entry["request_headers_to_remove"] = route.request_headers_remove
-            if route.response_headers_add:
-                route_entry["response_headers_to_add"] = [
-                    {"header": {"key": key, "value": value}}
-                    for key, value in route.response_headers_add
-                ]
-            if route.response_headers_remove:
-                route_entry["response_headers_to_remove"] = route.response_headers_remove
+                if route.websocket_max_connection_duration_ms:
+                    route_entry["route"]["max_stream_duration"] = {
+                        "max_stream_duration": (
+                            f"{route.websocket_max_connection_duration_ms / 1000:.3f}s"
+                        )
+                    }
+                sticky_cookie_name = str(route.sticky_cookie_name or "").strip()
+                if sticky_cookie_name:
+                    cookie_cfg: dict[str, object] = {
+                        "name": sticky_cookie_name,
+                        "path": "/",
+                    }
+                    if (
+                        route.sticky_cookie_ttl_seconds is not None
+                        and int(route.sticky_cookie_ttl_seconds) > 0
+                    ):
+                        cookie_cfg["ttl"] = f"{int(route.sticky_cookie_ttl_seconds)}s"
+                    route_entry["route"]["hash_policy"] = [{"cookie": cookie_cfg, "terminal": True}]
+                if route.websocket_enabled is False:
+                    route_entry["route"]["upgrade_configs"] = [
+                        {"upgrade_type": "websocket", "enabled": False}
+                    ]
+                per_filter: dict[str, dict] = {}
+                if ext_authz_config is not None:
+                    per_filter["envoy.filters.http.ext_authz"] = {
+                        "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute",
+                        "disabled": not bool(route.ext_authz_enabled),
+                    }
+                if route.local_rate_limit:
+                    per_filter["envoy.filters.http.local_ratelimit"] = {
+                        "@type": "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit",
+                        "stat_prefix": "edge_local_ratelimit",
+                        "token_bucket": route.local_rate_limit,
+                        "filter_enabled": {
+                            "default_value": {"numerator": 100, "denominator": "HUNDRED"}
+                        },
+                        "filter_enforced": {
+                            "default_value": {"numerator": 100, "denominator": "HUNDRED"}
+                        },
+                    }
+                if per_filter:
+                    route_entry["typed_per_filter_config"] = per_filter
+                if route.request_headers_add:
+                    route_entry["request_headers_to_add"] = [
+                        {"header": {"key": key, "value": value}}
+                        for key, value in route.request_headers_add
+                    ]
+                if route.request_headers_remove:
+                    route_entry["request_headers_to_remove"] = route.request_headers_remove
+                if route.response_headers_add:
+                    route_entry["response_headers_to_add"] = [
+                        {"header": {"key": key, "value": value}}
+                        for key, value in route.response_headers_add
+                    ]
+                if route.response_headers_remove:
+                    route_entry["response_headers_to_remove"] = route.response_headers_remove
             vhost["routes"].append(route_entry)
         vhost_list.extend(vhost_map.values())
         if not vhost_list:
@@ -181,8 +191,8 @@ def render_envoy_config(
             )
         return vhost_list
 
-    vhosts_http = _build_vhosts(redirect_https=True)
-    vhosts_https = _build_vhosts(redirect_https=False)
+    vhosts_http = _build_vhosts(redirect_https=True, port_alias=config.listen_port)
+    vhosts_https = _build_vhosts(redirect_https=False, port_alias=config.tls_listen_port)
 
     class _NoAliasDumper(yaml.SafeDumper):
         def ignore_aliases(self, _data):  # type: ignore[override]
@@ -198,9 +208,7 @@ def render_envoy_config(
         endpoints = [
             {
                 "endpoint": {
-                    "address": {
-                        "socket_address": {"address": host, "port_value": int(port)}
-                    }
+                    "address": {"socket_address": {"address": host, "port_value": int(port)}}
                 }
             }
             for host, port in cluster.endpoints
@@ -256,9 +264,7 @@ def render_envoy_config(
                         "tokens_per_fill": 1000000,
                         "fill_interval": "1s",
                     },
-                    "filter_enabled": {
-                        "default_value": {"numerator": 0, "denominator": "HUNDRED"}
-                    },
+                    "filter_enabled": {"default_value": {"numerator": 0, "denominator": "HUNDRED"}},
                     "filter_enforced": {
                         "default_value": {"numerator": 0, "denominator": "HUNDRED"}
                     },
@@ -322,9 +328,7 @@ def render_envoy_config(
                     "stat_prefix": "edge_ingress_tls",
                     "codec_type": "AUTO",
                     "upgrade_configs": (
-                        [{"upgrade_type": "websocket"}]
-                        if websocket_upgrade_enabled
-                        else []
+                        [{"upgrade_type": "websocket"}] if websocket_upgrade_enabled else []
                     ),
                     "route_config": {
                         "name": "edge_routes_tls",
@@ -350,7 +354,7 @@ def render_envoy_config(
                                 "certificate_chain": {"filename": cert.cert_chain},
                                 "private_key": {"filename": cert.private_key},
                             }
-                        ]
+                        ],
                     },
                 },
             }

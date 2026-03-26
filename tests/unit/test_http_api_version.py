@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -66,3 +67,20 @@ def test_controller_internal_version_endpoint(monkeypatch) -> None:
     assert '"component": "controller"' in body
     assert '"sha": "sha-123"' in body
     assert '"date": "2026-03-18"' in body
+
+
+def test_ui_features_report_controlplane_readonly_flags(monkeypatch) -> None:
+    monkeypatch.setenv("AE_PLAYGROUND", "1")
+    monkeypatch.setenv("AE_CONTROLPLANE_PUBLIC_ENABLE", "1")
+    monkeypatch.setenv("AE_CONTROLPLANE_AUTH_ENABLE", "1")
+    monkeypatch.setenv("AE_DASHBOARD_INTERACTIVE_TOOLS", "0")
+
+    req = make_handler("/ui/features")
+    handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
+    handler.do_GET()
+
+    body = bytes(req._wbuf).decode("utf-8", errors="ignore")
+    payload = json.loads(body.rsplit("\r\n\r\n", 1)[1])
+    assert 200 in req.responses
+    assert payload["playground"] is False
+    assert payload["dashboard_interactive_tools"] is False

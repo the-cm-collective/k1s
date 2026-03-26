@@ -7,8 +7,14 @@ from ae.controller.state import ServiceEndpoint, SQLiteStateStore
 from ae.ingress.edge_core_proxy import (
     EdgeCoreProxyConfig,
     EdgeCoreProxyRenderer,
+    _ensure_fallback_tls,
     build_core_proxy_config,
+    render_core_proxy_bootstrap_from_env,
 )
+
+
+def _find_vhost(vhosts: list[dict], domain: str) -> dict:
+    return next(vhost for vhost in vhosts if domain in vhost["domains"])
 
 
 def test_envoy_core_local_ingress_renders_tls(tmp_path: Path) -> None:
@@ -100,9 +106,7 @@ def test_envoy_core_local_ingress_renders_tls(tmp_path: Path) -> None:
     assert str(cert_path) in text
 
 
-def test_build_core_proxy_config_normalizes_relative_tls_root(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_build_core_proxy_config_normalizes_relative_tls_root(monkeypatch, tmp_path: Path) -> None:
     config_dir = tmp_path / "edge-ingress"
     config_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.chdir(tmp_path)
@@ -254,10 +258,11 @@ def test_core_proxy_policy_stickiness_sets_ring_hash_and_cookie(tmp_path: Path) 
     EdgeCoreProxyRenderer(store, cfg).render()
 
     payload = yaml.safe_load(cfg.envoy_config_path.read_text(encoding="utf-8"))
-    vhosts = (
-        payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0]["typed_config"]["route_config"]["virtual_hosts"]
-    )
-    sticky_vhost = next(v for v in vhosts if v["domains"] == ["sticky-core-proxy.home.arpa"])
+    vhosts = payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]["route_config"]["virtual_hosts"]
+    sticky_vhost = _find_vhost(vhosts, "sticky-core-proxy.home.arpa")
+    assert "sticky-core-proxy.home.arpa:10080" in sticky_vhost["domains"]
     route_action = sticky_vhost["routes"][0]["route"]
     cookie_policy = route_action["hash_policy"][0]["cookie"]
     assert cookie_policy["name"] == "k1s_route"
@@ -338,15 +343,14 @@ def test_core_proxy_policy_websocket_enabled_renders_upgrade_settings(
     EdgeCoreProxyRenderer(store, cfg).render()
 
     payload = yaml.safe_load(cfg.envoy_config_path.read_text(encoding="utf-8"))
-    hcm_http = (
-        payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
-            "typed_config"
-        ]
-    )
+    hcm_http = payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]
     assert hcm_http["upgrade_configs"] == [{"upgrade_type": "websocket"}]
 
     vhosts = hcm_http["route_config"]["virtual_hosts"]
-    ws_vhost = next(v for v in vhosts if v["domains"] == ["ws-core-proxy.home.arpa"])
+    ws_vhost = _find_vhost(vhosts, "ws-core-proxy.home.arpa")
+    assert "ws-core-proxy.home.arpa:10080" in ws_vhost["domains"]
     ws_route = ws_vhost["routes"][0]["route"]
     assert ws_route["idle_timeout"] == "120.000s"
     assert ws_route["max_stream_duration"]["max_stream_duration"] == "300.000s"
@@ -415,14 +419,185 @@ def test_core_proxy_policy_websocket_disabled_disables_upgrade_for_route(
     EdgeCoreProxyRenderer(store, cfg).render()
 
     payload = yaml.safe_load(cfg.envoy_config_path.read_text(encoding="utf-8"))
-    hcm_http = (
-        payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
-            "typed_config"
-        ]
-    )
-    vhosts = hcm_http["route_config"]["virtual_hosts"]
-    ws_vhost = next(v for v in vhosts if v["domains"] == ["ws-off-core-proxy.home.arpa"])
-    ws_route = ws_vhost["routes"][0]["route"]
-    assert ws_route["upgrade_configs"] == [
-        {"upgrade_type": "websocket", "enabled": False}
+    hcm_http = payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
     ]
+    vhosts = hcm_http["route_config"]["virtual_hosts"]
+    ws_vhost = _find_vhost(vhosts, "ws-off-core-proxy.home.arpa")
+    assert "ws-off-core-proxy.home.arpa:10080" in ws_vhost["domains"]
+    ws_route = ws_vhost["routes"][0]["route"]
+    assert ws_route["upgrade_configs"] == [{"upgrade_type": "websocket", "enabled": False}]
+
+
+def test_controlplane_public_routes_reserve_hosts_and_skip_conflicting_routes(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(db_path=tmp_path / "state.db")
+    app_name = app_key("demo", "default")
+    store.upsert_service_endpoints(
+        app_name,
+        [
+            ServiceEndpoint(
+                app_name=app_name,
+                port=8080,
+                ip="127.0.0.1",
+                target_port=8080,
+                ready=True,
+            )
+        ],
+    )
+    store.upsert_edge_ingress_route(
+        name="reserved-host",
+        namespace="default",
+        site_id="core",
+        policy_name=None,
+        policy_namespace=None,
+        document={
+            "apiVersion": "k1s.io/v1",
+            "kind": "EdgeIngressRoute",
+            "metadata": {"name": "reserved-host", "namespace": "default"},
+            "spec": {
+                "host": "dash.home.arpa",
+                "paths": [
+                    {
+                        "path": "/",
+                        "serviceRef": {"name": "demo", "namespace": "default", "port": 8080},
+                    }
+                ],
+                "exposure": {"mode": "core-local"},
+            },
+        },
+    )
+
+    cfg = EdgeCoreProxyConfig(
+        config_dir=tmp_path / "edge-ingress",
+        envoy_config_path=tmp_path / "edge-ingress" / "envoy.yaml",
+        rathole_server_path=tmp_path / "edge-ingress" / "rathole-server.toml",
+        rathole_client_dir=None,
+        site_domain_suffix="home.arpa",
+        http_listen_port=10080,
+        tls_listen_port=10443,
+        tls_root=tmp_path / "tls",
+        tls_default_secret=None,
+        tls_fallback=True,
+        tls_fallback_cn="edge.local",
+        tls_fallback_days=7,
+        rathole_bind_addr="0.0.0.0:2333",
+        rathole_default_token="dev",
+        rathole_server_addr="127.0.0.1:2333",
+        edge_local_addr="127.0.0.1:18081",
+        reload_cmd=None,
+        controlplane_public_enable=True,
+    )
+    EdgeCoreProxyRenderer(store, cfg).render()
+
+    payload = yaml.safe_load(cfg.envoy_config_path.read_text(encoding="utf-8"))
+    clusters = payload["static_resources"]["clusters"]
+    cluster_names = {cluster["name"] for cluster in clusters}
+    tls_listener = next(
+        listener
+        for listener in payload["static_resources"]["listeners"]
+        if listener["name"] == "edge_listener_tls"
+    )
+    vhosts = tls_listener["filter_chains"][0]["filters"][0]["typed_config"]["route_config"][
+        "virtual_hosts"
+    ]
+
+    assert "core_default_demo_8080" not in cluster_names
+    assert {"controlplane_proxy", "controlplane_api_controller", "controlplane_api_apishim"} <= (
+        cluster_names
+    )
+    assert (
+        _find_vhost(vhosts, "dash.home.arpa")["routes"][0]["route"]["cluster"]
+        == "controlplane_proxy"
+    )
+    assert "dash.home.arpa:10443" in _find_vhost(vhosts, "dash.home.arpa")["domains"]
+    assert "docs.home.arpa:10443" in _find_vhost(vhosts, "docs.home.arpa")["domains"]
+    assert "api.home.arpa:10443" in _find_vhost(vhosts, "api.home.arpa")["domains"]
+    assert _find_vhost(vhosts, "api.home.arpa")["routes"][0]["direct_response"] == {
+        "status": 404
+    }
+
+
+def test_build_core_proxy_config_reads_controlplane_api_upstreams(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "edge-ingress"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AE_EDGE_INGRESS_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("AE_CONTROLPLANE_PUBLIC_ENABLE", "1")
+    monkeypatch.setenv("AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM", "https://leader.home.arpa:9443")
+    monkeypatch.setenv("AE_CONTROLPLANE_API_APISHIM_UPSTREAM", "https://leader.home.arpa:9444")
+    monkeypatch.setenv("AE_CONTROLPLANE_API_APISHIM_TLS", "1")
+
+    config = build_core_proxy_config()
+
+    assert config is not None
+    assert config.controlplane_api_controller_addr == "leader.home.arpa"
+    assert config.controlplane_api_controller_port == 9443
+    assert config.controlplane_api_apishim_addr == "leader.home.arpa"
+    assert config.controlplane_api_apishim_port == 9444
+    assert config.controlplane_api_apishim_use_tls is True
+    assert set(config.tls_fallback_sans) == {
+        "dash.home.arpa",
+        "docs.home.arpa",
+        "api.home.arpa",
+    }
+
+
+def test_render_core_proxy_bootstrap_from_env_renders_controlplane_tls(monkeypatch, tmp_path: Path) -> None:
+    config_dir = tmp_path / "edge-ingress"
+    tls_root = tmp_path / "tls"
+    tls_root.mkdir(parents=True, exist_ok=True)
+    (tls_root / "envoy-fallback.crt").write_text("dummy cert", encoding="utf-8")
+    (tls_root / "envoy-fallback.key").write_text("dummy key", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AE_EDGE_INGRESS_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("AE_EDGE_INGRESS_ENVOY_CONFIG", str(config_dir / "envoy.yaml"))
+    monkeypatch.setenv("AE_EDGE_INGRESS_HTTP_PORT", "10080")
+    monkeypatch.setenv("AE_EDGE_INGRESS_TLS_PORT", "10443")
+    monkeypatch.setenv("AE_CONTROLPLANE_PUBLIC_ENABLE", "1")
+    monkeypatch.setenv("AE_CONTROLPLANE_PROXY_PORT", "10081")
+    monkeypatch.setenv("AE_TLS_DIR", str(tls_root))
+
+    rendered = render_core_proxy_bootstrap_from_env()
+
+    assert rendered is True
+    payload = yaml.safe_load((config_dir / "envoy.yaml").read_text(encoding="utf-8"))
+    listeners = {
+        listener["name"]: listener
+        for listener in payload["static_resources"]["listeners"]
+    }
+    assert {"edge_listener_http", "edge_listener_tls"} <= set(listeners)
+    assert listeners["edge_listener_tls"]["address"]["socket_address"]["port_value"] == 10443
+    tls_vhosts = listeners["edge_listener_tls"]["filter_chains"][0]["filters"][0]["typed_config"][
+        "route_config"
+    ]["virtual_hosts"]
+    assert {"dash.home.arpa", "dash.home.arpa:10443"} <= set(
+        _find_vhost(tls_vhosts, "dash.home.arpa")["domains"]
+    )
+    assert {"docs.home.arpa", "docs.home.arpa:10443"} <= set(
+        _find_vhost(tls_vhosts, "docs.home.arpa")["domains"]
+    )
+    assert {"api.home.arpa", "api.home.arpa:10443"} <= set(
+        _find_vhost(tls_vhosts, "api.home.arpa")["domains"]
+    )
+    cluster_names = {
+        cluster["name"] for cluster in payload["static_resources"]["clusters"]
+    }
+    assert {
+        "controlplane_proxy",
+        "controlplane_api_controller",
+        "controlplane_api_apishim",
+    } <= cluster_names
+
+
+def test_ensure_fallback_tls_sets_cert_and_key_modes(tmp_path: Path) -> None:
+    resolved = _ensure_fallback_tls(tmp_path / "tls", "edge.local", 1, sans=("dash.home.arpa",))
+
+    assert resolved is not None
+    crt_path, key_path = resolved
+    assert oct(crt_path.stat().st_mode & 0o777) == "0o644"
+    assert oct(key_path.stat().st_mode & 0o777) == "0o600"

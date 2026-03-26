@@ -515,6 +515,26 @@ def _translate_ingress_port(manifest: AppManifest) -> int | None:
     return None
 
 
+def _reserved_controlplane_hosts_from_env() -> set[str]:
+    enabled = str(os.getenv("AE_CONTROLPLANE_PUBLIC_ENABLE", "0") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled:
+        return set()
+    return {
+        host
+        for host in {
+            str(os.getenv("AE_CONTROLPLANE_DASH_HOST", "dash.home.arpa") or "").strip().lower(),
+            str(os.getenv("AE_CONTROLPLANE_DOCS_HOST", "docs.home.arpa") or "").strip().lower(),
+            str(os.getenv("AE_CONTROLPLANE_API_HOST", "api.home.arpa") or "").strip().lower(),
+        }
+        if host
+    }
+
+
 def _iter_yaml_docs(paths: Iterable[Path]) -> Iterable[dict]:
     for path in paths:
         try:
@@ -662,6 +682,7 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
     forward_auth_urls = _collect_core_forward_auth_urls(store, policy_cache)
     primary_forward_auth_url = sorted(forward_auth_urls)[0] if forward_auth_urls else None
     multiple_forward_auth = len(forward_auth_urls) > 1
+    reserved_hosts = _reserved_controlplane_hosts_from_env()
 
     for route in store.list_edge_ingress_routes():
         spec = _edge_ingress_route_spec(route)
@@ -672,9 +693,11 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
         errors: list[str] = []
         policy_unsupported: list[str] = []
 
-        host = str(spec.get("host") or "").strip()
+        host = str(spec.get("host") or "").strip().lower()
         if not host:
             errors.append("missing_host")
+        elif host in reserved_hosts:
+            errors.append("reserved_control_plane_host")
         if mode not in {"core-proxy", "core-to-edge-public", "edge-local", "core-local", "core"}:
             errors.append("invalid_exposure_mode")
         if mode not in {"core-local", "core"} and not site_id:

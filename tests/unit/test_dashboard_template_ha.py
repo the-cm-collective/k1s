@@ -15,7 +15,10 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert 'id="ha-etcd"' in html
     assert 'id="ha-transport"' in html
     assert 'id="ha-edge-sites"' in html
-    assert "HA disabled for this profile. Use make k1s-ha-core to view authority, etcd, transport, and edge site health." in html
+    assert (
+        "HA disabled for this profile. Use make k1s-ha-core to view authority, etcd, transport, and edge site health."
+        in html
+    )
     assert "summaryEl.classList.add('hidden');" in html
     assert "noteEl.classList.remove('hidden');" in html
     assert "gridEl.classList.add('hidden');" in html
@@ -50,6 +53,9 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert "Reconciliation loop for registered apps from controller desired state." in html
     assert "HA uses shared etcd-backed controller state; local specs import is disabled." in html
     assert "Local specs import feeds the registry in single-node and dev flows." in html
+    assert "dashboard_interactive_tools" in html
+    assert "setDashboardInteractiveToolsEnabled" in html
+    assert "loadDashboardFeatures()" in html
     assert "imported from specs/" not in html
     assert "var edgeInsetStart = 0.48;" in html
     assert "var edgeInsetEnd = 0.98;" in html
