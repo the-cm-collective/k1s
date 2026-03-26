@@ -1134,6 +1134,35 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert 'rm -rf "$run_path"' in text
     assert "localhost:5001/k1s-apishim:dev" in text
     assert "docker.io/library/demo-shell:latest" in text
+    assert "print_remote_ha_failure_context() {" in text
+    assert 'sudo tail -n 80 /home/ae/k1s-ha-core.log' in text
+    assert 'sudo crictl ps -a --name k1s-core-apishim -q' in text
+    assert 'focus="${3:-controller}"' in text
+    assert 'print_remote_ha_failure_context "$name" "$ip" controller' in text
+    assert 'print_remote_ha_failure_context "$name" "$ip" apishim' in text
+
+
+def test_ha_dashboard_smoke_status_guidance_covers_auth_and_api_only_ingress() -> None:
+    text = HA_DASHBOARD_SMOKE_SCRIPT.read_text(encoding="utf-8")
+    assert "read_system_summary_json_with_retry() {" in text
+    assert 'local attempts="${2:-6}"' in text
+    assert 'sleep "$delay_s"' in text
+    assert 'system_json="$(read_system_summary_json_with_retry "$ip" || true)"' in text
+    assert "system=reachable ha=redacted_or_converging" in text
+    assert (
+        'curl -sk --resolve api.home.arpa:10443:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://api.home.arpa:10443/system | jq .'
+        in text
+    )
+    assert (
+        "note: source the auth env before probing /system; unauthenticated responses redact HA authority."
+        in text
+    )
+    assert (
+        "note: api.home.arpa is API-only; https://api.home.arpa:10443/dashboard is expected to return 404."
+        in text
+    )
+
+
 def test_make_ha_closeout_e2e_uses_wrapper_script() -> None:
     text = MAKEFILE.read_text(encoding="utf-8")
     assert "ha-closeout-e2e:" in text

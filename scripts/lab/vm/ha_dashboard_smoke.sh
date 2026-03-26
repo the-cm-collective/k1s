@@ -181,6 +181,32 @@ wait_for_https_version() {
   return 1
 }
 
+read_system_summary_json_with_retry() {
+  local ip="$1"
+  local attempts="${2:-6}"
+  local delay_s="${3:-2}"
+  local system_json=""
+  local attempt=1
+
+  while (( attempt <= attempts )); do
+    system_json="$(
+      curl -fsS \
+        -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
+        "http://${ip}:${controller_port}/system" 2>/dev/null || true
+    )"
+    if [[ -n "$system_json" ]]; then
+      printf '%s' "$system_json"
+      return 0
+    fi
+    if (( attempt < attempts )); then
+      sleep "$delay_s"
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  return 1
+}
+
 wait_for_hub_node_registration() {
   local python_bin
   local deadline=$((SECONDS + 90))
@@ -211,10 +237,12 @@ check_stack_ready() {
     IFS=$'\t' read -r name ip node_id <<<"$row"
     if ! wait_for_http_version "http://${ip}:${controller_port}/__ae/version" 90; then
       err "controller not ready on ${name} (${ip}:${controller_port})"
+      print_remote_ha_failure_context "$name" "$ip" controller
       return 1
     fi
     if ! wait_for_https_version "https://${ip}:${apishim_port}/__ae/version" 90; then
       err "apishim not ready on ${name} (${ip}:${apishim_port})"
+      print_remote_ha_failure_context "$name" "$ip" apishim
       return 1
     fi
   done
@@ -235,6 +263,43 @@ run_remote_inline() {
   fi
   with_repo_host_mount "$ip" >/dev/null 2>&1 || true
   run_remote "$ip" "bash -s" <<<"$script_text"
+}
+
+print_remote_ha_failure_context() {
+  local name="$1"
+  local ip="$2"
+  local focus="${3:-controller}"
+  log "collecting HA failure context from ${name} (${ip})"
+  run_remote_inline "$ip" "$(cat <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[ha-debug] host=${name} ip=${ip} focus=${focus}"
+if [[ -f /home/ae/k1s-ha-core.log ]]; then
+  echo "[ha-debug] tail /home/ae/k1s-ha-core.log"
+  sudo tail -n 80 /home/ae/k1s-ha-core.log || true
+else
+  echo "[ha-debug] missing /home/ae/k1s-ha-core.log"
+fi
+echo "[ha-debug] crictl ps -a (ha filter)"
+ps_out="\$(sudo crictl ps -a 2>/dev/null || true)"
+if [[ -n "\$ps_out" ]]; then
+  printf '%s\n' "\$ps_out" | awk 'NR==1 || /k1s-ha-core|k1s-core-(nats-hub|apishim)/'
+else
+  echo "[ha-debug] crictl output unavailable"
+fi
+if [[ "${focus}" == "apishim" ]]; then
+  apishim_id="\$(sudo crictl ps -a --name k1s-core-apishim -q 2>/dev/null | head -n1)"
+  if [[ -n "\$apishim_id" ]]; then
+    echo "[ha-debug] apishim inspect summary"
+    sudo crictl inspect "\$apishim_id" 2>/dev/null | grep -E '"(state|reason|message|exitCode)"' | sed -n '1,20p' || true
+  else
+    echo "[ha-debug] apishim inspect unavailable"
+  fi
+fi
+echo "[ha-debug] ss -ltn (controller/apishim)"
+ss -ltn 2>/dev/null | awk 'NR==1 || \$4 ~ /:${controller_port}\$/ || \$4 ~ /:${apishim_port}\$/'
+EOF
+)" || true
 }
 
 reseed_target_rows() {
@@ -426,22 +491,25 @@ cmd_status() {
   printf 'Auth\n'
   printf '  source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)\n'
   printf '  curl -fsS -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" http://%s:%s/system | jq .\n' "$first_core_ip" "$controller_port"
+  printf '  curl -sk --resolve api.home.arpa:10443:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://api.home.arpa:10443/system | jq .\n' "$first_core_ip"
+  printf '  note: source the auth env before probing /system; unauthenticated responses redact HA authority.\n'
+  printf '  note: api.home.arpa is API-only; https://api.home.arpa:10443/dashboard is expected to return 404.\n'
   printf '\n'
 
   if [[ "$auth_loaded" -eq 1 ]]; then
     for row in "${ha_host_rows[@]}"; do
       IFS=$'\t' read -r name ip node_id <<<"$row"
-      system_json="$(
-        curl -fsS \
-          -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
-          "http://${ip}:${controller_port}/system" 2>/dev/null || true
-      )"
+      system_json="$(read_system_summary_json_with_retry "$ip" || true)"
       if [[ -z "$system_json" ]]; then
         printf '  %s: system=unavailable\n' "$name"
         continue
       fi
-      leader_id="$(printf '%s' "$system_json" | jq -r '.ha.authority.leader_id // "-"')"
-      member_count="$(printf '%s' "$system_json" | jq -r '.ha.authority.member_count // 0')"
+      leader_id="$(printf '%s' "$system_json" | jq -r '.ha.authority.leader_id // empty' 2>/dev/null || true)"
+      member_count="$(printf '%s' "$system_json" | jq -r '.ha.authority.member_count // empty' 2>/dev/null || true)"
+      if [[ -z "$leader_id" || -z "$member_count" ]]; then
+        printf '  %s: system=reachable ha=redacted_or_converging\n' "$name"
+        continue
+      fi
       etcd_healthy="$(printf '%s' "$system_json" | jq -r '.ha.etcd.healthy_endpoints // 0')"
       etcd_unhealthy="$(printf '%s' "$system_json" | jq -r '.ha.etcd.unhealthy_endpoints // 0')"
       transport_backend="$(printf '%s' "$system_json" | jq -r '.ha.transport.backend // "-"')"
