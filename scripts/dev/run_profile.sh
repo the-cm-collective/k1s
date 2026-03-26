@@ -166,9 +166,39 @@ run_cri_stack() {
 }
 
 STRICT_CRI_OWNERSHIP_REPAIR_PROFILE=""
+STRICT_CRI_OWNERSHIP_HELPER_ARGS=()
 
 run_controller_loop() {
   PYTHONPATH=src "$PYTHON_BIN" -m ae.controller "$@"
+}
+
+refresh_strict_cri_ownership_helper_args() {
+  STRICT_CRI_OWNERSHIP_HELPER_ARGS=()
+
+  local target_uid="${AE_STRICT_CRI_TARGET_UID:-}"
+  local target_gid="${AE_STRICT_CRI_TARGET_GID:-}"
+
+  if [[ -z "$target_uid" && -z "$target_gid" ]]; then
+    return 0
+  fi
+  if [[ -z "$target_uid" || -z "$target_gid" ]]; then
+    echo "error: AE_STRICT_CRI_TARGET_UID and AE_STRICT_CRI_TARGET_GID must be set together." >&2
+    return 1
+  fi
+  if [[ ! "$target_uid" =~ ^[0-9]+$ ]]; then
+    echo "error: AE_STRICT_CRI_TARGET_UID must be numeric: ${target_uid}" >&2
+    return 1
+  fi
+  if [[ ! "$target_gid" =~ ^[0-9]+$ ]]; then
+    echo "error: AE_STRICT_CRI_TARGET_GID must be numeric: ${target_gid}" >&2
+    return 1
+  fi
+
+  STRICT_CRI_OWNERSHIP_HELPER_ARGS=(--target-uid "$target_uid" --target-gid "$target_gid")
+}
+
+strict_cri_explicit_target_configured() {
+  [[ -n "${AE_STRICT_CRI_TARGET_UID:-}" || -n "${AE_STRICT_CRI_TARGET_GID:-}" ]]
 }
 
 repair_strict_cri_profile_state_ownership() {
@@ -177,7 +207,11 @@ repair_strict_cri_profile_state_ownership() {
   if [[ -z "$profile" || ! -f "$helper" ]]; then
     return 0
   fi
-  if ! bash "$helper" --profile "$profile" --repair; then
+  if ! refresh_strict_cri_ownership_helper_args; then
+    echo "warning: failed to resolve strict CRI ownership target args for ${profile}" >&2
+    return 1
+  fi
+  if ! bash "$helper" --profile "$profile" --repair "${STRICT_CRI_OWNERSHIP_HELPER_ARGS[@]}"; then
     echo "warning: failed to normalize strict CRI profile state ownership for ${profile}" >&2
   fi
 }
@@ -187,7 +221,15 @@ enable_strict_cri_profile_state_ownership_repair() {
   if ! is_strict_cri; then
     return 0
   fi
-  if [[ "$(id -u)" -ne 0 || -z "${SUDO_USER:-}" || -z "${SUDO_UID:-}" || ! "${SUDO_UID}" =~ ^[0-9]+$ ]]; then
+  if [[ "$(id -u)" -ne 0 ]]; then
+    return 0
+  fi
+  if strict_cri_explicit_target_configured; then
+    STRICT_CRI_OWNERSHIP_REPAIR_PROFILE="$profile"
+    trap repair_strict_cri_profile_state_ownership EXIT
+    return 0
+  fi
+  if [[ -z "${SUDO_USER:-}" || -z "${SUDO_UID:-}" || ! "${SUDO_UID}" =~ ^[0-9]+$ ]]; then
     return 0
   fi
   STRICT_CRI_OWNERSHIP_REPAIR_PROFILE="$profile"
@@ -204,12 +246,15 @@ ensure_strict_cri_profile_state_ownership() {
     echo "error: missing strict CRI profile state helper: $helper" >&2
     exit 1
   fi
-  if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && -n "${SUDO_UID:-}" && "${SUDO_UID}" =~ ^[0-9]+$ ]]; then
-    bash "$helper" --profile "$profile" --repair
+  if ! refresh_strict_cri_ownership_helper_args; then
+    exit 1
+  fi
+  if [[ "$(id -u)" -eq 0 ]] && { strict_cri_explicit_target_configured || [[ -n "${SUDO_USER:-}" && -n "${SUDO_UID:-}" && "${SUDO_UID}" =~ ^[0-9]+$ ]]; }; then
+    bash "$helper" --profile "$profile" --repair "${STRICT_CRI_OWNERSHIP_HELPER_ARGS[@]}"
     enable_strict_cri_profile_state_ownership_repair "$profile"
     return 0
   fi
-  if ! bash "$helper" --profile "$profile" --check; then
+  if ! bash "$helper" --profile "$profile" --check "${STRICT_CRI_OWNERSHIP_HELPER_ARGS[@]}"; then
     echo "error: strict CRI profile state under state/profiles/${profile} is not writable by $(id -un)." >&2
     echo "hint: this commonly happens after a prior sudo -E strict CRI run." >&2
     echo "hint: repair with sudo ./scripts/dev/profile_state_ownership.sh --profile ${profile} --repair" >&2

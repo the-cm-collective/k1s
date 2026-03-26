@@ -229,6 +229,396 @@ def test_profile_state_ownership_check_fails_for_unwritable_state(tmp_path: Path
     assert str(lock_file) in proc.stderr
 
 
+def test_profile_state_ownership_repair_allows_non_chownable_but_usable_state(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "state" / "profiles" / "k1s-core"
+    edge_dir = profile_dir / "edge-ingress"
+    edge_dir.mkdir(parents=True)
+    (edge_dir / "envoy.yaml").write_text("static_resources: {}\n", encoding="utf-8")
+
+    fake_id = tmp_path / "id"
+    _write_executable(
+        fake_id,
+        """#!/usr/bin/env bash
+set -euo pipefail
+mode="${FAKE_ID_MODE:-root}"
+case "${1:-}" in
+  -u)
+    if [[ "$mode" == "target" ]]; then
+      printf '%s\n' "${FAKE_TARGET_UID:-1000}"
+    else
+      printf '0\n'
+    fi
+    ;;
+  -g)
+    if [[ "$mode" == "target" ]]; then
+      printf '%s\n' "${FAKE_TARGET_GID:-1000}"
+    else
+      printf '0\n'
+    fi
+    ;;
+  -un)
+    if [[ "$mode" == "target" ]]; then
+      printf 'target\n'
+    else
+      printf 'root\n'
+    fi
+    ;;
+  *)
+    echo "unsupported id args: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    fake_chown = tmp_path / "chown"
+    _write_executable(
+        fake_chown,
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "Operation not permitted" >&2
+exit 1
+""",
+    )
+
+    fake_sudo = tmp_path / "sudo"
+    _write_executable(
+        fake_sudo,
+        """#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+idx=0
+while [[ $idx -lt ${#args[@]} ]]; do
+  case "${args[$idx]}" in
+    -u|-g)
+      idx=$((idx + 2))
+      ;;
+    env)
+      idx=$((idx + 1))
+      break
+      ;;
+    *)
+      idx=$((idx + 1))
+      ;;
+  esac
+done
+while [[ $idx -lt ${#args[@]} && "${args[$idx]}" == *=* ]]; do
+  export "${args[$idx]}"
+  idx=$((idx + 1))
+done
+export FAKE_ID_MODE=target
+exec "${args[@]:$idx}"
+""",
+    )
+
+    env = os.environ.copy()
+    env["K1S_ROOT_DIR_OVERRIDE"] = str(tmp_path)
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_ID_MODE"] = "root"
+    env["FAKE_TARGET_UID"] = str(os.getuid())
+    env["FAKE_TARGET_GID"] = str(os.getgid())
+    env["SUDO_UID"] = str(os.getuid())
+    env["SUDO_GID"] = str(os.getgid())
+
+    proc = subprocess.run(
+        ["bash", str(PROFILE_STATE_OWNERSHIP_SCRIPT), "--profile", "k1s-core", "--repair"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert proc.returncode == 0
+    assert "warning: ownership normalization skipped for" in proc.stderr
+    assert "Operation not permitted" in proc.stderr
+
+
+def test_profile_state_ownership_repair_prefers_explicit_target_ids(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "state" / "profiles" / "k1s-core"
+    edge_dir = profile_dir / "edge-ingress"
+    edge_dir.mkdir(parents=True)
+    (edge_dir / "envoy.yaml").write_text("static_resources: {}\n", encoding="utf-8")
+
+    fake_id = tmp_path / "id"
+    _write_executable(
+        fake_id,
+        """#!/usr/bin/env bash
+set -euo pipefail
+mode="${FAKE_ID_MODE:-root}"
+case "${1:-}" in
+  -u)
+    if [[ "$mode" == "target" ]]; then
+      printf '%s\n' "${FAKE_TARGET_UID:-1000}"
+    else
+      printf '0\n'
+    fi
+    ;;
+  -g)
+    if [[ "$mode" == "target" ]]; then
+      printf '%s\n' "${FAKE_TARGET_GID:-1000}"
+    else
+      printf '0\n'
+    fi
+    ;;
+  -un)
+    if [[ "$mode" == "target" ]]; then
+      printf 'target\n'
+    else
+      printf 'root\n'
+    fi
+    ;;
+  *)
+    echo "unsupported id args: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    fake_chown = tmp_path / "chown"
+    _write_executable(
+        fake_chown,
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "Operation not permitted" >&2
+exit 1
+""",
+    )
+
+    fake_sudo = tmp_path / "sudo"
+    _write_executable(
+        fake_sudo,
+        """#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+idx=0
+requested_uid=""
+requested_gid=""
+while [[ $idx -lt ${#args[@]} ]]; do
+  case "${args[$idx]}" in
+    -u)
+      requested_uid="${args[$((idx + 1))]}"
+      idx=$((idx + 2))
+      ;;
+    -g)
+      requested_gid="${args[$((idx + 1))]}"
+      idx=$((idx + 2))
+      ;;
+    env)
+      idx=$((idx + 1))
+      break
+      ;;
+    *)
+      idx=$((idx + 1))
+      ;;
+  esac
+done
+if [[ -n "${EXPECTED_SUDO_UID:-}" && "$requested_uid" != "#${EXPECTED_SUDO_UID}" ]]; then
+  echo "unexpected sudo uid: $requested_uid" >&2
+  exit 1
+fi
+if [[ -n "${EXPECTED_SUDO_GID:-}" && "$requested_gid" != "#${EXPECTED_SUDO_GID}" ]]; then
+  echo "unexpected sudo gid: $requested_gid" >&2
+  exit 1
+fi
+while [[ $idx -lt ${#args[@]} && "${args[$idx]}" == *=* ]]; do
+  export "${args[$idx]}"
+  idx=$((idx + 1))
+done
+export FAKE_ID_MODE=target
+exec "${args[@]:$idx}"
+""",
+    )
+
+    env = os.environ.copy()
+    env["K1S_ROOT_DIR_OVERRIDE"] = str(tmp_path)
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_ID_MODE"] = "root"
+    env["FAKE_TARGET_UID"] = str(os.getuid())
+    env["FAKE_TARGET_GID"] = str(os.getgid())
+    env["EXPECTED_SUDO_UID"] = str(os.getuid())
+    env["EXPECTED_SUDO_GID"] = str(os.getgid())
+    env["SUDO_UID"] = "4242"
+    env["SUDO_GID"] = "4343"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(PROFILE_STATE_OWNERSHIP_SCRIPT),
+            "--profile",
+            "k1s-core",
+            "--repair",
+            "--target-uid",
+            str(os.getuid()),
+            "--target-gid",
+            str(os.getgid()),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert proc.returncode == 0
+    assert "warning: ownership normalization skipped for" in proc.stderr
+    assert "unexpected sudo uid" not in proc.stderr
+
+
+def test_profile_state_ownership_repair_fails_when_non_chownable_state_is_not_usable(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "state" / "profiles" / "k1s-core"
+    edge_dir = profile_dir / "edge-ingress"
+    edge_dir.mkdir(parents=True)
+    (edge_dir / "envoy.yaml").write_text("static_resources: {}\n", encoding="utf-8")
+    (edge_dir / "envoy.yaml").chmod(0o444)
+
+    fake_id = tmp_path / "id"
+    _write_executable(
+        fake_id,
+        """#!/usr/bin/env bash
+set -euo pipefail
+mode="${FAKE_ID_MODE:-root}"
+case "${1:-}" in
+  -u)
+    if [[ "$mode" == "target" ]]; then
+      printf '%s\n' "${FAKE_TARGET_UID:-1000}"
+    else
+      printf '0\n'
+    fi
+    ;;
+  -g)
+    if [[ "$mode" == "target" ]]; then
+      printf '%s\n' "${FAKE_TARGET_GID:-1000}"
+    else
+      printf '0\n'
+    fi
+    ;;
+  -un)
+    if [[ "$mode" == "target" ]]; then
+      printf 'target\n'
+    else
+      printf 'root\n'
+    fi
+    ;;
+  *)
+    echo "unsupported id args: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    fake_chown = tmp_path / "chown"
+    _write_executable(
+        fake_chown,
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "Operation not permitted" >&2
+exit 1
+""",
+    )
+
+    fake_sudo = tmp_path / "sudo"
+    _write_executable(
+        fake_sudo,
+        """#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+idx=0
+while [[ $idx -lt ${#args[@]} ]]; do
+  case "${args[$idx]}" in
+    -u|-g)
+      idx=$((idx + 2))
+      ;;
+    env)
+      idx=$((idx + 1))
+      break
+      ;;
+    *)
+      idx=$((idx + 1))
+      ;;
+  esac
+done
+while [[ $idx -lt ${#args[@]} && "${args[$idx]}" == *=* ]]; do
+  export "${args[$idx]}"
+  idx=$((idx + 1))
+done
+export FAKE_ID_MODE=target
+exec "${args[@]:$idx}"
+""",
+    )
+
+    env = os.environ.copy()
+    env["K1S_ROOT_DIR_OVERRIDE"] = str(tmp_path)
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_ID_MODE"] = "root"
+    env["FAKE_TARGET_UID"] = str(os.getuid())
+    env["FAKE_TARGET_GID"] = str(os.getgid())
+    env["SUDO_UID"] = str(os.getuid())
+    env["SUDO_GID"] = str(os.getgid())
+
+    proc = subprocess.run(
+        ["bash", str(PROFILE_STATE_OWNERSHIP_SCRIPT), "--profile", "k1s-core", "--repair"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert proc.returncode == 1
+    assert "managed strict-CRI profile state requires repair" in proc.stderr
+    assert "failed to normalize strict-CRI profile state ownership" in proc.stderr
+
+
+def test_profile_state_ownership_rejects_incomplete_explicit_target_ids(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["K1S_ROOT_DIR_OVERRIDE"] = str(tmp_path)
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(PROFILE_STATE_OWNERSHIP_SCRIPT),
+            "--profile",
+            "k1s-core",
+            "--check",
+            "--target-uid",
+            "1001",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert proc.returncode == 1
+    assert "--target-uid and --target-gid must be provided together" in proc.stderr
+
+
+def test_profile_state_ownership_rejects_non_numeric_explicit_target_ids(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["K1S_ROOT_DIR_OVERRIDE"] = str(tmp_path)
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(PROFILE_STATE_OWNERSHIP_SCRIPT),
+            "--profile",
+            "k1s-core",
+            "--check",
+            "--target-uid",
+            "ae",
+            "--target-gid",
+            "1001",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert proc.returncode == 1
+    assert "--target-uid must be numeric" in proc.stderr
+
+
 def test_cri_smoke_runs_podsandbox_and_cleans_up(tmp_path: Path) -> None:
     log_path = tmp_path / "crictl.log"
     pod_cfg_copy = tmp_path / "pod.json"

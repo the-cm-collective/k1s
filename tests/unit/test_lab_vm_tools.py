@@ -734,8 +734,21 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_AGENT_API_TOKEN=${token}" in text
     assert "AE_APISHIM_ETCD_ENDPOINTS='${ha_etcd_endpoints}'" in text
     assert "AE_APISHIM_PRESEEDED=1" in text
+    assert "AE_APISHIM_IMAGE=\\${AE_APISHIM_IMAGE:-localhost:5001/k1s-apishim:dev}" in text
+    assert "AE_APISHIM_STARTUP_TIMEOUT=\\${AE_APISHIM_STARTUP_TIMEOUT:-60}" in text
     assert "APISHIM_HOST=\\${APISHIM_HOST:-0.0.0.0}" in text
     assert "APISHIM_CERT_SANS='${ha_apishim_cert_sans}'" in text
+    assert "print_ha_bootstrap_failure_context() {" in text
+    assert 'ha_profile_owner_path="/mnt/host/state/profiles/k1s-ha-core"' in text
+    assert 'stat -c \'%u %g\' "\\$ha_profile_owner_path"' in text
+    assert "failed to resolve strict-CRI target ownership" in text
+    assert 'sudo tail -n 80 /home/ae/k1s-ha-core.log' in text
+    assert 'sudo crictl ps -a 2>/dev/null || true' in text
+    assert 'bootstrap_pid=\\$!' in text
+    assert 'deadline=\\$((SECONDS + 90))' in text
+    assert 'AE_STRICT_CRI_TARGET_UID=\\${strict_cri_target_uid}' in text
+    assert 'AE_STRICT_CRI_TARGET_GID=\\${strict_cri_target_gid}' in text
+    assert "controller startup failed on ${name} (${ip})" in text
     assert "AE_ROSENPASS_ENABLED=\\${AE_ROSENPASS_ENABLED:-0}" in text
     assert "AE_NODE_PORT=${agent_port}" in text
     assert "AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db" in text
@@ -744,6 +757,12 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_CRI_CACHE_SEED_MODE" in text
     assert "AE_CRI_CACHE_SEED_BUNDLE" in text
     assert text.count("REGISTER_ONLY=1 SITE_ID") == 1
+
+    run_profile_text = RUN_PROFILE_SCRIPT.read_text(encoding="utf-8")
+    assert "STRICT_CRI_OWNERSHIP_HELPER_ARGS=()" in run_profile_text
+    assert "strict_cri_explicit_target_configured()" in run_profile_text
+    assert "AE_STRICT_CRI_TARGET_UID and AE_STRICT_CRI_TARGET_GID must be set together." in run_profile_text
+    assert 'STRICT_CRI_OWNERSHIP_HELPER_ARGS=(--target-uid "$target_uid" --target-gid "$target_gid")' in run_profile_text
 
 
 def test_guest_prereqs_script_requires_ready_image_by_default() -> None:
@@ -1115,8 +1134,6 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert 'rm -rf "$run_path"' in text
     assert "localhost:5001/k1s-apishim:dev" in text
     assert "docker.io/library/demo-shell:latest" in text
-
-
 def test_make_ha_closeout_e2e_uses_wrapper_script() -> None:
     text = MAKEFILE.read_text(encoding="utf-8")
     assert "ha-closeout-e2e:" in text

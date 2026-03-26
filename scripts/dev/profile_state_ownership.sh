@@ -2,21 +2,26 @@
 set -euo pipefail
 
 ROOT_DIR="${K1S_ROOT_DIR_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+SELF_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/dev/profile_state_ownership.sh --profile <name> [--check|--repair]
+Usage: scripts/dev/profile_state_ownership.sh --profile <name> [--check|--repair] [--target-uid <uid> --target-gid <gid>]
 
 Options:
   --profile <name>  Profile name (for example: k1s-core)
   --check           Verify managed strict-CRI profile state is accessible to the target user
   --repair          Chown managed strict-CRI profile state to the target user
+  --target-uid <n>  Override target uid used for repair/fallback checks
+  --target-gid <n>  Override target gid used for repair/fallback checks
   -h, --help        Show this help
 USAGE
 }
 
 profile=""
 mode=""
+target_uid_override=""
+target_gid_override=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,6 +34,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --repair)
       mode="repair"
+      ;;
+    --target-uid)
+      target_uid_override="${2:-}"
+      shift
+      ;;
+    --target-gid)
+      target_gid_override="${2:-}"
+      shift
       ;;
     -h|--help)
       usage
@@ -48,7 +61,26 @@ if [[ -z "$profile" || -z "$mode" ]]; then
   exit 1
 fi
 
+if [[ -n "$target_uid_override" || -n "$target_gid_override" ]]; then
+  if [[ -z "$target_uid_override" || -z "$target_gid_override" ]]; then
+    echo "error: --target-uid and --target-gid must be provided together" >&2
+    exit 1
+  fi
+  if [[ ! "$target_uid_override" =~ ^[0-9]+$ ]]; then
+    echo "error: --target-uid must be numeric: ${target_uid_override}" >&2
+    exit 1
+  fi
+  if [[ ! "$target_gid_override" =~ ^[0-9]+$ ]]; then
+    echo "error: --target-gid must be numeric: ${target_gid_override}" >&2
+    exit 1
+  fi
+fi
+
 resolve_target_ids() {
+  if [[ -n "$target_uid_override" && -n "$target_gid_override" ]]; then
+    printf '%s %s\n' "$target_uid_override" "$target_gid_override"
+    return 0
+  fi
   if [[ -n "${SUDO_UID:-}" && "${SUDO_UID}" =~ ^[0-9]+$ ]]; then
     local gid="${SUDO_GID:-}"
     if [[ -z "$gid" && -n "${SUDO_USER:-}" ]]; then
@@ -66,6 +98,11 @@ resolve_tls_root() {
     tls_root="${ROOT_DIR}/${tls_root}"
   fi
   printf '%s\n' "$tls_root"
+}
+
+filesystem_type() {
+  local path="$1"
+  stat -f -c %T "$path" 2>/dev/null || printf 'unknown'
 }
 
 managed_paths() {
@@ -138,6 +175,26 @@ check_access_issue() {
   return 1
 }
 
+run_check_as_target_user() {
+  if [[ -z "${target_uid:-}" || ! "${target_uid}" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local -a cmd=(sudo -u "#${target_uid}")
+  if [[ -n "${target_gid:-}" && "${target_gid}" =~ ^[0-9]+$ ]]; then
+    cmd+=(-g "#${target_gid}")
+  fi
+  cmd+=(env "K1S_ROOT_DIR_OVERRIDE=${ROOT_DIR}")
+  if [[ -n "${AE_TLS_DIR:-}" ]]; then
+    cmd+=("AE_TLS_DIR=${AE_TLS_DIR}")
+  fi
+  cmd+=(bash "$SELF_SCRIPT" --profile "$profile" --check)
+  "${cmd[@]}"
+}
+
 read -r target_uid target_gid < <(resolve_target_ids)
 
 case "$mode" in
@@ -155,7 +212,15 @@ case "$mode" in
       exit 1
     fi
     while IFS= read -r -d '' path; do
-      chown -R "${target_uid}:${target_gid}" "$path"
+      if ! chown_err="$(chown -R "${target_uid}:${target_gid}" "$path" 2>&1)"; then
+        fs_type="$(filesystem_type "$path")"
+        if run_check_as_target_user; then
+          echo "warning: ownership normalization skipped for ${path} on non-chownable filesystem (${fs_type}): ${chown_err}" >&2
+          continue
+        fi
+        echo "error: failed to normalize strict-CRI profile state ownership for ${path} on filesystem ${fs_type}: ${chown_err}" >&2
+        exit 1
+      fi
     done < <(managed_paths)
     ;;
   *)

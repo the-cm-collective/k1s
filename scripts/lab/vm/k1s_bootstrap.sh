@@ -177,6 +177,32 @@ CMD
 cd /mnt/host
 bootstrap_pip_install
 bootstrap_seed_cri_cache core
+print_ha_bootstrap_failure_context() {
+  echo "[ha-bootstrap] controller startup failed on ${name} (${ip})" >&2
+  if [[ -f /home/ae/k1s-ha-core.log ]]; then
+    echo "[ha-bootstrap] tail /home/ae/k1s-ha-core.log" >&2
+    sudo tail -n 80 /home/ae/k1s-ha-core.log | sed 's/^/[ha-bootstrap] /' >&2 || true
+  else
+    echo "[ha-bootstrap] missing /home/ae/k1s-ha-core.log" >&2
+  fi
+  echo "[ha-bootstrap] crictl ps -a (ha filter)" >&2
+  local ps_out=""
+  ps_out="\$(sudo crictl ps -a 2>/dev/null || true)"
+  if [[ -n "\$ps_out" ]]; then
+    printf '%s\n' "\$ps_out" | awk 'NR==1 || /k1s-ha-core|k1s-core-(nats-hub|apishim)/' | sed 's/^/[ha-bootstrap] /' >&2
+  else
+    echo "[ha-bootstrap] crictl output unavailable" >&2
+  fi
+  echo "[ha-bootstrap] ss -ltn (controller/apishim)" >&2
+  ss -ltn 2>/dev/null | awk 'NR==1 || \$4 ~ /:${controller_port}\$/ || \$4 ~ /:${apishim_port}\$/' | sed 's/^/[ha-bootstrap] /' >&2 || true
+}
+ha_profile_owner_path="/mnt/host/state/profiles/k1s-ha-core"
+ha_profile_owner_ids="\$(stat -c '%u %g' "\$ha_profile_owner_path" 2>/dev/null || true)"
+read -r strict_cri_target_uid strict_cri_target_gid <<<"\$ha_profile_owner_ids"
+if [[ ! "\${strict_cri_target_uid:-}" =~ ^[0-9]+$ || ! "\${strict_cri_target_gid:-}" =~ ^[0-9]+$ ]]; then
+  echo "[ha-bootstrap] failed to resolve strict-CRI target ownership for \$ha_profile_owner_path" >&2
+  exit 1
+fi
 nohup sudo env \
   PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
@@ -188,8 +214,12 @@ nohup sudo env \
   AE_CRI_REGISTRY_PRELOAD=\${AE_CRI_REGISTRY_PRELOAD:-1} \
   AE_APISHIM_MODE=\${AE_APISHIM_MODE:-cri} \
   AE_APISHIM_PRESEEDED=1 \
+  AE_APISHIM_IMAGE=\${AE_APISHIM_IMAGE:-localhost:5001/k1s-apishim:dev} \
+  AE_APISHIM_STARTUP_TIMEOUT=\${AE_APISHIM_STARTUP_TIMEOUT:-60} \
   APISHIM_HOST=\${APISHIM_HOST:-0.0.0.0} \
   APISHIM_CERT_SANS='${ha_apishim_cert_sans}' \
+  AE_STRICT_CRI_TARGET_UID=\${strict_cri_target_uid} \
+  AE_STRICT_CRI_TARGET_GID=\${strict_cri_target_gid} \
   AE_HA_MODE=1 \
   AE_AGENT_API_PORT=${controller_agent_port} \
   AE_AGENT_API_TOKEN=${token} \
@@ -201,6 +231,21 @@ nohup sudo env \
   AE_NATS_URL='${ha_nats_url}' \
   APISHIM_PORT=${apishim_port} \
   make k1s-ha-core > /home/ae/k1s-ha-core.log 2>&1 &
+bootstrap_pid=\$!
+deadline=\$((SECONDS + 90))
+while (( SECONDS < deadline )); do
+  if ss -ltn | awk '\$4 ~ /:${controller_port}\$/ {found=1} END {exit(found?0:1)}'; then
+    break
+  fi
+  if ! kill -0 "\$bootstrap_pid" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+if ! ss -ltn | awk '\$4 ~ /:${controller_port}\$/ {found=1} END {exit(found?0:1)}'; then
+  print_ha_bootstrap_failure_context
+  exit 1
+fi
 CMD
       ;;
     k1s-edge-core)

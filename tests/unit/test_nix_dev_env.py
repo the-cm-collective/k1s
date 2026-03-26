@@ -69,6 +69,9 @@ def test_run_profile_guards_compose_provider_and_host_fallback() -> None:
     assert "profile_state_ownership.sh" in text
     assert "ensure_strict_cri_profile_state_ownership" in text
     assert "STRICT_CRI_OWNERSHIP_REPAIR_PROFILE" in text
+    assert "STRICT_CRI_OWNERSHIP_HELPER_ARGS=()" in text
+    assert "strict_cri_explicit_target_configured()" in text
+    assert "AE_STRICT_CRI_TARGET_UID and AE_STRICT_CRI_TARGET_GID must be set together." in text
     assert "render_core_proxy_bootstrap_from_env" in text
     assert 'bootstrap-state.db' in text
     assert '--network host --user 0 \\' in text
