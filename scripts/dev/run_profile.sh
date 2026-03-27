@@ -1655,6 +1655,45 @@ read_env_var_file() {
   ' "$file"
 }
 
+sync_controller_env() {
+  local profile_dir="$1"
+  local controller_env_file="${CONTROLLER_ENV_FILE:-$profile_dir/controller.env}"
+  local apishim_env_file="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
+  local env_api_admin_token=""
+  local env_api_scaler_token=""
+  local env_api_read_token=""
+  local env_labs_token=""
+  local env_state_db=""
+  local env_state_backend=""
+  local env_etcd_endpoints=""
+  local env_etcd_prefix=""
+  local env_apishim_server=""
+
+  export CONTROLLER_ENV_FILE="$controller_env_file"
+  APISHIM_ENV_FILE="$apishim_env_file" CONTROLLER_ENV_FILE="$controller_env_file" PROFILE_DIR="$profile_dir" \
+    "$ROOT_DIR/scripts/ensure_controller_env.sh" >/dev/null 2>&1
+
+  env_api_admin_token="$(read_env_var_file "AE_API_ADMIN_TOKEN" "$controller_env_file" || true)"
+  env_api_scaler_token="$(read_env_var_file "AE_API_SCALER_TOKEN" "$controller_env_file" || true)"
+  env_api_read_token="$(read_env_var_file "AE_API_READ_TOKEN" "$controller_env_file" || true)"
+  env_labs_token="$(read_env_var_file "AE_LABS_TOKEN" "$controller_env_file" || true)"
+  env_state_db="$(read_env_var_file "AE_STATE_DB" "$controller_env_file" || true)"
+  env_state_backend="$(read_env_var_file "AE_STATE_BACKEND" "$controller_env_file" || true)"
+  env_etcd_endpoints="$(read_env_var_file "AE_ETCD_ENDPOINTS" "$controller_env_file" || true)"
+  env_etcd_prefix="$(read_env_var_file "AE_ETCD_PREFIX" "$controller_env_file" || true)"
+  env_apishim_server="$(read_env_var_file "AE_APISHIM_SERVER" "$controller_env_file" || true)"
+
+  [[ -n "$env_api_admin_token" ]] && export AE_API_ADMIN_TOKEN="$env_api_admin_token"
+  [[ -n "$env_api_scaler_token" ]] && export AE_API_SCALER_TOKEN="$env_api_scaler_token"
+  [[ -n "$env_api_read_token" ]] && export AE_API_READ_TOKEN="$env_api_read_token"
+  [[ -n "$env_labs_token" ]] && export AE_LABS_TOKEN="$env_labs_token"
+  [[ -n "$env_state_db" ]] && export AE_STATE_DB="$env_state_db"
+  [[ -n "$env_state_backend" ]] && export AE_STATE_BACKEND="$env_state_backend"
+  [[ -n "$env_etcd_endpoints" ]] && export AE_ETCD_ENDPOINTS="$env_etcd_endpoints"
+  [[ -n "$env_etcd_prefix" ]] && export AE_ETCD_PREFIX="$env_etcd_prefix"
+  [[ -n "$env_apishim_server" ]] && export AE_APISHIM_SERVER="$env_apishim_server"
+}
+
 normalize_apishim_port() {
   local candidate="${1:-}"
   local postgres_port="${2:-5432}"
@@ -2703,6 +2742,7 @@ case "$PROFILE" in
       fi
     fi
     start_apishim "$PROFILE_DIR"
+    sync_controller_env "$PROFILE_DIR"
     if [[ "${AE_LABS:-0}" == "1" ]]; then
       build_docs_with_labs_token
     fi
@@ -2846,6 +2886,7 @@ case "$PROFILE" in
       fi
     fi
     start_apishim "$PROFILE_DIR"
+    sync_controller_env "$PROFILE_DIR"
     if [[ "${AE_LABS:-0}" == "1" ]]; then
       build_docs_with_labs_token
     fi

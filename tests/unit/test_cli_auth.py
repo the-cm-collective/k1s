@@ -6,6 +6,9 @@ from ae.cli import __main__ as cli
 
 
 AUTH_ENV_KEYS = (
+    "AE_API_ADMIN_TOKEN",
+    "AE_API_SCALER_TOKEN",
+    "AE_API_READ_TOKEN",
     "AE_APISHIM_TOKEN",
     "AE_APISHIM_READ_TOKEN",
     "AE_APISHIM_EXEC_TOKEN",
@@ -302,6 +305,72 @@ def test_auth_local_infers_controller_http_tokens_from_sibling_profile_env(
     out = capsys.readouterr().out
     assert "export AE_APISHIM_MINT_TOKEN=shared-mint-token" in out
     assert "export AE_API_ADMIN_TOKEN=ha-admin-token" in out
+    assert "export AE_LABS_TOKEN=ha-labs-token" in out
+
+
+def test_auth_local_infers_sibling_profile_controller_env(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    profile_dir = tmp_path / "state" / "profiles" / "k1s-ha-core"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    root_env = profile_dir / "apishim.env"
+    cli_env = profile_dir / "apishim.cli.env"
+    controller_env = profile_dir / "controller.env"
+    dev_env = tmp_path / "state" / "dev.env"
+    pid_path = tmp_path / "state" / "apishim.pid"
+
+    root_env.write_text(
+        "\n".join(
+            [
+                "AE_API_ADMIN_TOKEN=ha-admin-token",
+                "AE_LABS_TOKEN=ha-labs-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cli_env.write_text(
+        "\n".join(
+            [
+                "AE_APISHIM_SERVER=https://127.0.0.1:8445",
+                "AE_APISHIM_MINT_TOKEN=shared-mint-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    controller_env.write_text(
+        "\n".join(
+            [
+                "AE_API_SCALER_TOKEN=ha-scaler-token",
+                "AE_API_READ_TOKEN=ha-read-token",
+                "AE_STATE_DB=state/profiles/k1s-ha-core/controller.db",
+                "AE_STATE_BACKEND=etcd",
+                "AE_ETCD_ENDPOINTS=http://127.0.0.1:2379",
+                "AE_ETCD_PREFIX=k1s/profiles/k1s-ha-core",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    dev_env.write_text("", encoding="utf-8")
+
+    rc = cli.main(
+        [
+            "auth",
+            "local",
+            "--strict",
+            "--dev-env",
+            str(dev_env),
+            "--apishim-pid",
+            str(pid_path),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "export AE_APISHIM_MINT_TOKEN=shared-mint-token" in out
+    assert "export AE_API_ADMIN_TOKEN=ha-admin-token" in out
+    assert "export AE_API_SCALER_TOKEN=ha-scaler-token" in out
+    assert "export AE_API_READ_TOKEN=ha-read-token" in out
     assert "export AE_LABS_TOKEN=ha-labs-token" in out
 
 

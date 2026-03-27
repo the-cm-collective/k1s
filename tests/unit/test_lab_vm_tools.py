@@ -31,6 +31,7 @@ GUEST_PREREQS_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "guest_prereqs.
 CRI_PREFLIGHT_SCRIPT = ROOT / "scripts" / "cri_preflight.sh"
 ENSURE_APISHIM_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_env.sh"
 ENSURE_APISHIM_CLI_ENV_SCRIPT = ROOT / "scripts" / "ensure_apishim_cli_env.sh"
+ENSURE_CONTROLLER_ENV_SCRIPT = ROOT / "scripts" / "ensure_controller_env.sh"
 HA_DRILL_ACTIONS_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "ha_drill_actions.sh"
 MAKEFILE = ROOT / "Makefile"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
@@ -823,6 +824,22 @@ def test_ensure_apishim_cli_env_uses_dedicated_ca_file() -> None:
     assert "warning: CA file missing; skipping CA bundle export: $CA_FILE" in text
 
 
+def test_ensure_controller_env_preserves_controller_tokens_and_profile_metadata() -> None:
+    text = ENSURE_CONTROLLER_ENV_SCRIPT.read_text(encoding="utf-8")
+    assert 'ENV_FILE="${CONTROLLER_ENV_FILE:-$ROOT_DIR/state/env.sh}"' in text
+    assert 'admin_token="$(read_env_var "AE_API_ADMIN_TOKEN" "$APISHIM_ENV_FILE" || true)"' in text
+    assert 'scaler_token="${AE_API_SCALER_TOKEN:-}"' in text
+    assert 'read_token="${AE_API_READ_TOKEN:-}"' in text
+    assert 'state_db="${AE_STATE_DB:-}"' in text
+    assert 'state_backend="${AE_STATE_BACKEND:-}"' in text
+    assert 'etcd_endpoints="${AE_ETCD_ENDPOINTS:-}"' in text
+    assert 'etcd_prefix="${AE_ETCD_PREFIX:-}"' in text
+    assert 'printf \'AE_API_SCALER_TOKEN=%s\\n\' "$scaler_token"' in text
+    assert 'printf \'AE_API_READ_TOKEN=%s\\n\' "$read_token"' in text
+    assert 'printf \'AE_STATE_BACKEND=%s\\n\' "$state_backend"' in text
+    assert 'printf \'AE_APISHIM_SERVER=%s\\n\' "$apishim_server"' in text
+
+
 def test_ha_shared_infra_script_bootstraps_clustered_backends() -> None:
     text = HA_SHARED_INFRA_SCRIPT.read_text(encoding="utf-8")
     assert "ha shared infra requires exactly 3 hosts with role=k1s-ha-core" in text
@@ -1008,10 +1025,10 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     assert "source <(ae auth local --strict)" in bring_up
     assert ("Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}") in bring_up
     assert (
-        "source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)"
+        "source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)"
     ) in bring_up
     assert (
-        "source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)"
+        "source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)"
     ) in runbook
     assert ("Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}") in runbook
     assert "scripts/lab/vm/labctl.sh image verify --variant all" in bring_up
@@ -1160,10 +1177,15 @@ def test_ha_dashboard_smoke_status_guidance_covers_auth_and_api_only_ingress() -
     assert 'api_redoc_code="$(probe_resolved_https_status "$api_host" "/redoc" "$ip")"' in text
     assert 'api_dashboard_code="$(probe_resolved_https_status "$api_host" "/dashboard" "$ip")"' in text
     assert 'system_result="$(read_api_system_summary_with_retry "$ip" || true)"' in text
+    assert 'local controller_env_file="$ROOT_DIR/state/profiles/k1s-ha-core/controller.env"' in text
     assert "system=000 unavailable" in text
     assert "system=401 auth_required" in text
     assert "system=403 forbidden" in text
     assert "system=200 ha=redacted_or_converging" in text
+    assert (
+        "source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)"
+        in text
+    )
     assert (
         'curl -sk --resolve %s:%s:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://%s:%s/system | jq .'
         in text

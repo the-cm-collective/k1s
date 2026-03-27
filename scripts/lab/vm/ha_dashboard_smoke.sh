@@ -139,13 +139,14 @@ require_remote_hosts() {
 }
 
 load_local_auth_env() {
-  local env_file="$ROOT_DIR/state/profiles/k1s-ha-core/apishim.env"
-  if [[ ! -f "$env_file" ]]; then
+  local apishim_env_file="$ROOT_DIR/state/profiles/k1s-ha-core/apishim.env"
+  local controller_env_file="$ROOT_DIR/state/profiles/k1s-ha-core/controller.env"
+  if [[ ! -f "$apishim_env_file" || ! -f "$controller_env_file" ]]; then
     return 1
   fi
   local exports_text=""
   exports_text="$(
-    APISHIM_ENV_FILE="$env_file" CONTROLLER_ENV_FILE="$env_file" \
+    APISHIM_ENV_FILE="$apishim_env_file" CONTROLLER_ENV_FILE="$controller_env_file" \
       "$ROOT_DIR/scripts/ae-env.sh" local
   )"
   if [[ -n "$exports_text" ]]; then
@@ -534,7 +535,7 @@ cmd_status() {
   printf '\n'
 
   printf 'Auth\n'
-  printf '  source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)\n'
+  printf '  source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)\n'
   printf '  curl -sk --resolve %s:%s:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://%s:%s/system | jq .\n' \
     "$api_host" "$ingress_tls_port" "$first_core_ip" "$api_host" "$ingress_tls_port"
   printf '  note: test dash/docs/api without auth first; bearer auth is only required for API reads like /system.\n'
@@ -577,7 +578,7 @@ cmd_status() {
         "$name" "$leader_id" "$member_count" "$etcd_healthy" "$etcd_unhealthy" "$transport_backend"
     done
   else
-    printf 'System summary unavailable: missing state/profiles/k1s-ha-core/apishim.env\n'
+    printf 'System summary unavailable: missing state/profiles/k1s-ha-core/apishim.env or state/profiles/k1s-ha-core/controller.env\n'
   fi
   printf '\n'
 

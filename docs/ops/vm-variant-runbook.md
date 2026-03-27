@@ -189,7 +189,7 @@ Use that retained HA run as the Envoy-host manual-smoke lane on one workstation:
 - export local auth, verify `/system`, and use the same bearer token for the dashboard data panels:
 
 ```bash
-source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)
+source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
 curl -sk \
   --resolve api.home.arpa:10443:192.168.155.10 \
   -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \

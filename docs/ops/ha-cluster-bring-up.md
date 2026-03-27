@@ -598,7 +598,7 @@ Direct per-node diagnostics remain available when you need them:
 Export local auth for the retained HA profile before reading `/system` or using the dashboard data panels:
 
 ```bash
-source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)
+source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
 curl -sk \
   --resolve api.home.arpa:10443:192.168.155.10 \
   -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \

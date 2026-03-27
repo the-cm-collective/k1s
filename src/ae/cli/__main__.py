@@ -881,7 +881,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--controller-env",
         type=Path,
         default=None,
-        help="Path to controller env file (default: state/env.sh)",
+        help="Path to controller env file (default: inferred profile controller.env or state/env.sh)",
     )
     auth_local.add_argument(
         "--dev-env",
@@ -3459,6 +3459,18 @@ def _profile_private_apishim_env(apishim_env: Path | None) -> Path | None:
         return None
 
 
+def _profile_controller_env(apishim_env: Path | None) -> Path | None:
+    if apishim_env is None:
+        return None
+    try:
+        candidate = apishim_env.expanduser().parent
+        if candidate.parent.name != "profiles":
+            return None
+        return candidate / "controller.env"
+    except Exception:
+        return None
+
+
 def _profile_state_db_from_env(apishim_env: Path | None) -> Path | None:
     if not apishim_env:
         return None
@@ -3603,11 +3615,8 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
     if args.auth_cmd == "local":
         import sys
 
-        controller_env = Path(
-            args.controller_env
-            if args.controller_env
-            else os.getenv("CONTROLLER_ENV_FILE", "state/env.sh")
-        )
+        explicit_controller_env = args.controller_env or os.getenv("CONTROLLER_ENV_FILE")
+        controller_env = Path(explicit_controller_env if explicit_controller_env else "state/env.sh")
         dev_env = Path(args.dev_env if args.dev_env else os.getenv("DEV_ENV_FILE", "state/dev.env"))
         apishim_pid = Path(
             args.apishim_pid
@@ -3642,6 +3651,10 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
         apishim_env = _detect_apishim_env(
             args.apishim_env if args.apishim_env else None, controller_env, proc_env
         )
+        if not explicit_controller_env:
+            inferred_controller_env = _profile_controller_env(apishim_env)
+            if inferred_controller_env and inferred_controller_env.is_file():
+                controller_env = inferred_controller_env
         private_apishim_env = _profile_private_apishim_env(apishim_env)
         profile_state_db_path = _profile_state_db_from_env(apishim_env)
         profile_state_db = None

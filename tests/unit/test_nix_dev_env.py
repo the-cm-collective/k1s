@@ -126,6 +126,18 @@ def test_run_profile_defaults_docs_on_for_public_controlplane_ingress() -> None:
     assert 'export CORE_DOCS="${CORE_DOCS:-0}"' not in ha_body
 
 
+def test_run_profile_syncs_profile_local_controller_env_for_core_profiles() -> None:
+    text = RUN_PROFILE.read_text(encoding="utf-8")
+    core_body = _case_body(text, "k1s-core", "k1s-ha-core")
+    ha_body = _case_body(text, "k1s-ha-core", "k1s-edge")
+    assert "sync_controller_env() {" in text
+    assert '"$ROOT_DIR/scripts/ensure_controller_env.sh"' in text
+    assert 'local controller_env_file="${CONTROLLER_ENV_FILE:-$profile_dir/controller.env}"' in text
+    assert 'local apishim_env_file="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"' in text
+    assert 'sync_controller_env "$PROFILE_DIR"' in core_body
+    assert 'sync_controller_env "$PROFILE_DIR"' in ha_body
+
+
 def test_ensure_dev_local_supports_nixos_bridge_and_real_ca_sources() -> None:
     text = ENSURE_DEV_LOCAL.read_text(encoding="utf-8")
     helper_text = NIXOS_BRIDGE_HELPER.read_text(encoding="utf-8")

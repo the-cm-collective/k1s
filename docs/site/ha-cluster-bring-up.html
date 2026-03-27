@@ -1147,7 +1147,7 @@ make lab-vm-smoke \
 <li>API shim: <code>https://192.168.155.10:8445</code>, <code>https://192.168.155.11:8445</code>, <code>https://192.168.155.12:8445</code></li>
 </ul>
 <p>Export local auth for the retained HA profile before reading <code>/system</code> or using the dashboard data panels:</p>
-<pre><code>source &lt;(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)
+<pre><code>source &lt;(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
 curl -sk \
   --resolve api.home.arpa:10443:192.168.155.10 \
   -H &quot;Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}&quot; \
@@ -1197,7 +1197,7 @@ python -m http.server 9109 --directory docs/site</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-27 00:45:11</span>
+        <span>Built 2026-03-26 18:56:17</span>
       </div>
     </footer>
     <script>
