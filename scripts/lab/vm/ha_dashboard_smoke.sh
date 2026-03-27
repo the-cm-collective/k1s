@@ -117,6 +117,10 @@ hub_node_id="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-
 hub_node_labels="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | (.node_labels // "")' | head -n1)"
 hub_node_agent_port="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | (.agent_port // 9111)' | head -n1)"
 first_core_ip="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-ha-core") | .ip' | head -n1)"
+ingress_tls_port="${AE_EDGE_INGRESS_TLS_PORT:-10443}"
+dash_host="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"
+docs_host="${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa}"
+api_host="${AE_CONTROLPLANE_API_HOST:-api.home.arpa}"
 
 require_local_sudo() {
   require_cmd sudo
@@ -181,21 +185,47 @@ wait_for_https_version() {
   return 1
 }
 
-read_system_summary_json_with_retry() {
+probe_resolved_https_status() {
+  local host="$1"
+  local path="$2"
+  local ip="$3"
+  local http_code=""
+
+  http_code="$(
+    curl -sk \
+      --resolve "${host}:${ingress_tls_port}:${ip}" \
+      -o /dev/null \
+      -w '%{http_code}' \
+      "https://${host}:${ingress_tls_port}${path}" 2>/dev/null || true
+  )"
+  if [[ -z "$http_code" ]]; then
+    http_code="000"
+  fi
+  printf '%s' "$http_code"
+}
+
+read_api_system_summary_with_retry() {
   local ip="$1"
   local attempts="${2:-6}"
   local delay_s="${3:-2}"
-  local system_json=""
+  local response_text=""
+  local http_code=""
+  local body=""
   local attempt=1
 
   while (( attempt <= attempts )); do
-    system_json="$(
-      curl -fsS \
+    response_text="$(
+      curl -sk \
+        --resolve "${api_host}:${ingress_tls_port}:${ip}" \
         -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
-        "http://${ip}:${controller_port}/system" 2>/dev/null || true
+        "https://${api_host}:${ingress_tls_port}/system" \
+        -w $'\n%{http_code}' 2>/dev/null || true
     )"
-    if [[ -n "$system_json" ]]; then
-      printf '%s' "$system_json"
+    http_code="${response_text##*$'\n'}"
+    if [[ "$http_code" =~ ^[0-9]{3}$ && "$http_code" != "000" ]]; then
+      body="${response_text%$'\n'*}"
+      printf '%s\n' "$http_code"
+      printf '%s' "$body"
       return 0
     fi
     if (( attempt < attempts )); then
@@ -462,7 +492,8 @@ cmd_up() {
 cmd_status() {
   local auth_loaded=0
   local row="" name="" ip="" node_id=""
-  local system_json="" leader_id="" member_count="" etcd_healthy="" etcd_unhealthy="" transport_backend=""
+  local system_result="" system_json="" system_http_code="" leader_id="" member_count="" etcd_healthy="" etcd_unhealthy="" transport_backend=""
+  local dash_code="" docs_code="" api_swagger_code="" api_redoc_code="" api_dashboard_code=""
 
   require_remote_hosts
   require_http_tools
@@ -474,40 +505,69 @@ cmd_status() {
   printf 'run_id=%s variant=%s\n' "$RUN_ID" "$variant_name"
   printf '\n'
 
-  printf 'Dashboard URLs\n'
+  printf 'Public Envoy URLs\n'
+  printf '  dashboard: https://%s:%s/dashboard\n' "$dash_host" "$ingress_tls_port"
+  printf '  docs: https://%s:%s/\n' "$docs_host" "$ingress_tls_port"
+  printf '  api swagger: https://%s:%s/swagger\n' "$api_host" "$ingress_tls_port"
+  printf '  api redoc: https://%s:%s/redoc\n' "$api_host" "$ingress_tls_port"
+  printf '\n'
+
+  printf 'Public ingress smoke\n'
   for row in "${ha_host_rows[@]}"; do
     IFS=$'\t' read -r name ip node_id <<<"$row"
-    printf '  %s: http://%s:%s/dashboard\n' "$name" "$ip" "$controller_port"
+    dash_code="$(probe_resolved_https_status "$dash_host" "/dashboard" "$ip")"
+    docs_code="$(probe_resolved_https_status "$docs_host" "/" "$ip")"
+    api_swagger_code="$(probe_resolved_https_status "$api_host" "/swagger" "$ip")"
+    api_redoc_code="$(probe_resolved_https_status "$api_host" "/redoc" "$ip")"
+    api_dashboard_code="$(probe_resolved_https_status "$api_host" "/dashboard" "$ip")"
+    printf '  %s: dash=%s docs=%s api_swagger=%s api_redoc=%s api_dashboard=%s\n' \
+      "$name" "$dash_code" "$docs_code" "$api_swagger_code" "$api_redoc_code" "$api_dashboard_code"
   done
   printf '\n'
 
-  printf 'Apishim URLs\n'
+  printf 'Direct diagnostics\n'
   for row in "${ha_host_rows[@]}"; do
     IFS=$'\t' read -r name ip node_id <<<"$row"
-    printf '  %s: https://%s:%s\n' "$name" "$ip" "$apishim_port"
+    printf '  %s: controller=http://%s:%s/dashboard apishim=https://%s:%s\n' \
+      "$name" "$ip" "$controller_port" "$ip" "$apishim_port"
   done
   printf '\n'
 
   printf 'Auth\n'
   printf '  source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)\n'
-  printf '  curl -fsS -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" http://%s:%s/system | jq .\n' "$first_core_ip" "$controller_port"
-  printf '  curl -sk --resolve api.home.arpa:10443:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://api.home.arpa:10443/system | jq .\n' "$first_core_ip"
-  printf '  note: source the auth env before probing /system; unauthenticated responses redact HA authority.\n'
-  printf '  note: api.home.arpa is API-only; https://api.home.arpa:10443/dashboard is expected to return 404.\n'
+  printf '  curl -sk --resolve %s:%s:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://%s:%s/system | jq .\n' \
+    "$api_host" "$ingress_tls_port" "$first_core_ip" "$api_host" "$ingress_tls_port"
+  printf '  note: test dash/docs/api without auth first; bearer auth is only required for API reads like /system.\n'
+  printf '  note: https://%s:%s/dashboard is expected to return 404; dashboard lives on %s.\n' \
+    "$api_host" "$ingress_tls_port" "$dash_host"
   printf '\n'
 
   if [[ "$auth_loaded" -eq 1 ]]; then
     for row in "${ha_host_rows[@]}"; do
       IFS=$'\t' read -r name ip node_id <<<"$row"
-      system_json="$(read_system_summary_json_with_retry "$ip" || true)"
-      if [[ -z "$system_json" ]]; then
-        printf '  %s: system=unavailable\n' "$name"
+      system_result="$(read_api_system_summary_with_retry "$ip" || true)"
+      if [[ -z "$system_result" ]]; then
+        printf '  %s: system=000 unavailable\n' "$name"
+        continue
+      fi
+      system_http_code="${system_result%%$'\n'*}"
+      system_json="${system_result#*$'\n'}"
+      if [[ "$system_http_code" == "401" ]]; then
+        printf '  %s: system=401 auth_required\n' "$name"
+        continue
+      fi
+      if [[ "$system_http_code" == "403" ]]; then
+        printf '  %s: system=403 forbidden\n' "$name"
+        continue
+      fi
+      if [[ "$system_http_code" != "200" ]]; then
+        printf '  %s: system=%s\n' "$name" "$system_http_code"
         continue
       fi
       leader_id="$(printf '%s' "$system_json" | jq -r '.ha.authority.leader_id // empty' 2>/dev/null || true)"
       member_count="$(printf '%s' "$system_json" | jq -r '.ha.authority.member_count // empty' 2>/dev/null || true)"
       if [[ -z "$leader_id" || -z "$member_count" ]]; then
-        printf '  %s: system=reachable ha=redacted_or_converging\n' "$name"
+        printf '  %s: system=200 ha=redacted_or_converging\n' "$name"
         continue
       fi
       etcd_healthy="$(printf '%s' "$system_json" | jq -r '.ha.etcd.healthy_endpoints // 0')"

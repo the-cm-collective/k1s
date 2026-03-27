@@ -1024,8 +1024,12 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     assert "artifacts/images/build-base" in runbook
     assert 'LAB_VM_SMOKE_ARGS="--teardown never"' in bring_up
     assert 'LAB_VM_SMOKE_ARGS="--teardown never"' in runbook
-    assert "http://192.168.155.10:9108/dashboard" in bring_up
-    assert "http://192.168.155.10:9108/dashboard" in runbook
+    assert "https://dash.home.arpa:10443/dashboard" in bring_up
+    assert "https://dash.home.arpa:10443/dashboard" in runbook
+    assert "https://docs.home.arpa:10443/" in bring_up
+    assert "https://docs.home.arpa:10443/" in runbook
+    assert "https://api.home.arpa:10443/swagger" in bring_up
+    assert "https://api.home.arpa:10443/swagger" in runbook
     assert "Use the same bearer token in the dashboard `Bearer` field" in bring_up
     assert "use the same bearer token for the dashboard data panels" in runbook
 
@@ -1144,21 +1148,32 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
 
 def test_ha_dashboard_smoke_status_guidance_covers_auth_and_api_only_ingress() -> None:
     text = HA_DASHBOARD_SMOKE_SCRIPT.read_text(encoding="utf-8")
-    assert "read_system_summary_json_with_retry() {" in text
+    assert 'ingress_tls_port="${AE_EDGE_INGRESS_TLS_PORT:-10443}"' in text
+    assert 'dash_host="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"' in text
+    assert "probe_resolved_https_status() {" in text
+    assert "read_api_system_summary_with_retry() {" in text
     assert 'local attempts="${2:-6}"' in text
     assert 'sleep "$delay_s"' in text
-    assert 'system_json="$(read_system_summary_json_with_retry "$ip" || true)"' in text
-    assert "system=reachable ha=redacted_or_converging" in text
+    assert 'dash_code="$(probe_resolved_https_status "$dash_host" "/dashboard" "$ip")"' in text
+    assert 'docs_code="$(probe_resolved_https_status "$docs_host" "/" "$ip")"' in text
+    assert 'api_swagger_code="$(probe_resolved_https_status "$api_host" "/swagger" "$ip")"' in text
+    assert 'api_redoc_code="$(probe_resolved_https_status "$api_host" "/redoc" "$ip")"' in text
+    assert 'api_dashboard_code="$(probe_resolved_https_status "$api_host" "/dashboard" "$ip")"' in text
+    assert 'system_result="$(read_api_system_summary_with_retry "$ip" || true)"' in text
+    assert "system=000 unavailable" in text
+    assert "system=401 auth_required" in text
+    assert "system=403 forbidden" in text
+    assert "system=200 ha=redacted_or_converging" in text
     assert (
-        'curl -sk --resolve api.home.arpa:10443:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://api.home.arpa:10443/system | jq .'
+        'curl -sk --resolve %s:%s:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://%s:%s/system | jq .'
         in text
     )
     assert (
-        "note: source the auth env before probing /system; unauthenticated responses redact HA authority."
+        "note: test dash/docs/api without auth first; bearer auth is only required for API reads like /system."
         in text
     )
     assert (
-        "note: api.home.arpa is API-only; https://api.home.arpa:10443/dashboard is expected to return 404."
+        "note: https://%s:%s/dashboard is expected to return 404; dashboard lives on %s."
         in text
     )
 

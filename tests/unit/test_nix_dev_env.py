@@ -20,6 +20,12 @@ NIXOS_CRI_HOST = ROOT / "ops" / "nixos" / "k1s-cri-host.nix"
 DOCKER_COMPOSE = ROOT / "ops" / "dev" / "docker-compose.yaml"
 
 
+def _case_body(text: str, label: str, next_label: str) -> str:
+    start = text.index(f"  {label})")
+    end = text.index(f"  {next_label})")
+    return text[start:end]
+
+
 def test_flake_declares_default_and_cri_shells() -> None:
     text = FLAKE.read_text(encoding="utf-8")
     assert 'description = "k1s additive development shells";' in text
@@ -103,6 +109,21 @@ def test_compose_and_dev_env_use_explicit_podman_safe_apishim_values() -> None:
     assert 'apishim_container_port="${APISHIM_CONTAINER_PORT:-8445}"' in dev_env_text
     assert 'apishim_upstream="apishim:${apishim_container_port}"' in dev_env_text
     assert "printf 'APISHIM_CONTAINER_PORT=%s\\n'" in dev_env_text
+
+
+def test_run_profile_defaults_docs_on_for_public_controlplane_ingress() -> None:
+    text = RUN_PROFILE.read_text(encoding="utf-8")
+    core_body = _case_body(text, "k1s-core", "k1s-ha-core")
+    ha_body = _case_body(text, "k1s-ha-core", "k1s-edge")
+    guard = (
+        'if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"; then\n'
+        "      # Public control-plane ingress expects the docs upstream to be live.\n"
+        '      export CORE_DOCS="${CORE_DOCS:-1}"\n'
+        "    fi"
+    )
+    assert guard in core_body
+    assert guard in ha_body
+    assert 'export CORE_DOCS="${CORE_DOCS:-0}"' not in ha_body
 
 
 def test_ensure_dev_local_supports_nixos_bridge_and_real_ca_sources() -> None:

@@ -584,33 +584,40 @@ This retained variant keeps the three HA controllers and replaces the previous `
 - `hub-1`: `192.168.155.20` (`role=hub,site=hub`)
 - the smoke helper automatically verifies that `hub-1` registers Ready and can run the pinned `shell-demo-node-hub` workload
 
-Direct controller access from the host:
-- `core-a`: `http://192.168.155.10:9108/dashboard`
-- `core-b`: `http://192.168.155.11:9108/dashboard`
-- `core-c`: `http://192.168.155.12:9108/dashboard`
+Public Envoy access from the host:
+- dashboard: `https://dash.home.arpa:10443/dashboard`
+- docs: `https://docs.home.arpa:10443/`
+- API docs: `https://api.home.arpa:10443/swagger` and `https://api.home.arpa:10443/redoc`
+- `https://api.home.arpa:10443/dashboard` returns `404` by design; dashboard lives on `dash.home.arpa`
+- verify one specific core with `curl --resolve dash.home.arpa:10443:192.168.155.10 ...`, `curl --resolve docs.home.arpa:10443:192.168.155.10 ...`, and `curl --resolve api.home.arpa:10443:192.168.155.10 ...`
+
+Direct per-node diagnostics remain available when you need them:
+- controller UI: `http://192.168.155.10:9108/dashboard`, `http://192.168.155.11:9108/dashboard`, `http://192.168.155.12:9108/dashboard`
 - API shim: `https://192.168.155.10:8445`, `https://192.168.155.11:8445`, `https://192.168.155.12:8445`
 
 Export local auth for the retained HA profile before reading `/system` or using the dashboard data panels:
 
 ```bash
 source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env bash scripts/ae-env.sh local)
-curl -fsS \
+curl -sk \
+  --resolve api.home.arpa:10443:192.168.155.10 \
   -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
-  http://192.168.155.10:9108/system | python -m json.tool
+  https://api.home.arpa:10443/system | python -m json.tool
 ```
 
 Use the same bearer token in the dashboard `Bearer` field when the data panels need auth.
 
-Host docs remain a static convenience layer. Point them at one controller URL and serve them locally:
+Host docs remain a static convenience layer. Point them at the Envoy hosts and serve them locally:
 
 ```bash
-DOCS_API_BASE=http://192.168.155.10:9108 \
-DOCS_DASHBOARD_URL=http://192.168.155.10:9108/dashboard \
+DOCS_API_BASE=https://docs.home.arpa:10443 \
+DOCS_DASHBOARD_URL=https://dash.home.arpa:10443/dashboard \
 python docs/build_docs.py
 python -m http.server 9109 --directory docs/site
 ```
 
 Notes:
+- Treat `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa` on `:10443` as the primary public control-plane surface in this retained VM lane.
 - Any healthy controller can serve `/dashboard`, `/system`, and `/metrics` during normal HA operation.
 - In this retained VM profile, `/system` is bearer-protected and only `AE_API_ADMIN_TOKEN` may be configured for controller HTTP reads.
 - `/dashboard` serves without auth, but its data panels fetch `/system`; paste the bearer token into the page when prompted.

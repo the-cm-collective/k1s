@@ -11,12 +11,14 @@ This snapshot captures a stable, working demo configuration.
   - Reloads validated with `caddy adapt` before `reload`
 
 - Hosts entries (optional, added by `init_demo.sh -y`)
-  - `blue.home.arpa`, `green.home.arpa`, `echo-mr.home.arpa`, `docs.home.arpa`, `api.home.arpa` → `127.0.0.1`
+  - `blue.home.arpa`, `green.home.arpa`, `echo-mr.home.arpa`, `docs.home.arpa`, `api.home.arpa`, `dash.home.arpa` → `127.0.0.1`
 
 - Controller + API
   - Supervisor auto-start enabled
   - API on `:9108` (Direct: `http://127.0.0.1:9108/`)
-- API via Caddy: `https://api.home.arpa:8443/` (Swagger `/swagger`, ReDoc `/redoc`, Dashboard `/dashboard`)
+  - Dashboard via Caddy: `https://dash.home.arpa:8443/dashboard`
+  - Docs via Caddy: `https://docs.home.arpa:8443/`
+  - API via Caddy: `https://api.home.arpa:8443/` (Swagger `/swagger`, ReDoc `/redoc`)
 
 - Docs
   - Built to `docs/site/`, served by `python -m http.server` on `:9109`

@@ -2632,6 +2632,10 @@ case "$PROFILE" in
     else
       export AE_CONTROLPLANE_PUBLIC_ENABLE="${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"
     fi
+    if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"; then
+      # Public control-plane ingress expects the docs upstream to be live.
+      export CORE_DOCS="${CORE_DOCS:-1}"
+    fi
     export AE_CONTROLPLANE_AUTH_ENABLE="${AE_CONTROLPLANE_AUTH_ENABLE:-0}"
     export AE_CONTROLPLANE_DASH_HOST="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"
     export AE_CONTROLPLANE_DOCS_HOST="${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa}"
@@ -2755,7 +2759,6 @@ case "$PROFILE" in
     else
       export AE_LABS="${AE_LABS:-0}"
       export CORE_CADDY="${CORE_CADDY:-0}"
-      export CORE_DOCS="${CORE_DOCS:-0}"
     fi
     ensure_cri_registry_preload_images
     run_ha_core_preflight
@@ -2779,6 +2782,10 @@ case "$PROFILE" in
       export AE_CONTROLPLANE_PUBLIC_ENABLE="${AE_CONTROLPLANE_PUBLIC_ENABLE:-1}"
     else
       export AE_CONTROLPLANE_PUBLIC_ENABLE="${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"
+    fi
+    if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"; then
+      # Public control-plane ingress expects the docs upstream to be live.
+      export CORE_DOCS="${CORE_DOCS:-1}"
     fi
     export AE_CONTROLPLANE_AUTH_ENABLE="${AE_CONTROLPLANE_AUTH_ENABLE:-0}"
     export AE_CONTROLPLANE_DASH_HOST="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"

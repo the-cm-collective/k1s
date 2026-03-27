@@ -17,6 +17,10 @@ def _find_vhost(vhosts: list[dict], domain: str) -> dict:
     return next(vhost for vhost in vhosts if domain in vhost["domains"])
 
 
+def _find_route(vhost: dict, prefix: str) -> dict:
+    return next(route for route in vhost["routes"] if route["match"]["prefix"] == prefix)
+
+
 def test_envoy_core_local_ingress_renders_tls(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     store = SQLiteStateStore(db_path=db_path)
@@ -514,9 +518,17 @@ def test_controlplane_public_routes_reserve_hosts_and_skip_conflicting_routes(
     assert "dash.home.arpa:10443" in _find_vhost(vhosts, "dash.home.arpa")["domains"]
     assert "docs.home.arpa:10443" in _find_vhost(vhosts, "docs.home.arpa")["domains"]
     assert "api.home.arpa:10443" in _find_vhost(vhosts, "api.home.arpa")["domains"]
-    assert _find_vhost(vhosts, "api.home.arpa")["routes"][0]["direct_response"] == {
-        "status": 404
-    }
+    api_vhost = _find_vhost(vhosts, "api.home.arpa")
+    assert _find_route(api_vhost, "/dashboard")["direct_response"] == {"status": 404}
+    assert _find_route(api_vhost, "/playground")["direct_response"] == {"status": 404}
+    assert _find_route(api_vhost, "/swagger")["route"]["cluster"] == "controlplane_api_controller"
+    assert _find_route(api_vhost, "/redoc")["route"]["cluster"] == "controlplane_api_controller"
+    assert _find_route(api_vhost, "/openapi")["route"]["cluster"] == "controlplane_api_controller"
+    assert _find_route(api_vhost, "/openapi.json")["route"]["cluster"] == "controlplane_api_controller"
+    assert _find_route(api_vhost, "/swagger.json")["route"]["cluster"] == "controlplane_api_controller"
+    assert _find_route(api_vhost, "/system")["route"]["cluster"] == "controlplane_api_controller"
+    assert _find_route(api_vhost, "/api/v1")["route"]["cluster"] == "controlplane_api_apishim"
+    assert _find_route(api_vhost, "/apis")["route"]["cluster"] == "controlplane_api_apishim"
 
 
 def test_build_core_proxy_config_reads_controlplane_api_upstreams(

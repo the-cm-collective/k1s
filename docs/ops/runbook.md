@@ -520,7 +520,7 @@ Dashboard reload vs. restart
   - Stops the supervisor, clears any stale lock, then starts fresh so env is re‑sourced.
 - Retained HA VM dashboard smoke:
   - Bring the retained stack up: `make lab-vm-ha-dashboard-up`
-  - Print direct controller/apishim URLs plus auth hints: `make lab-vm-ha-dashboard-status`
+  - Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: `make lab-vm-ha-dashboard-status`
   - retained-VM "rebuild and restart all" path: `make lab-vm-ha-dashboard-refresh-all`
   - Remove the retained test VMs and per-run VM state: `make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS="--purge"`
   - Full retained cleanup, including `runs/<RUN_ID>` and repo-built host images: `make lab-vm-ha-dashboard-purge`

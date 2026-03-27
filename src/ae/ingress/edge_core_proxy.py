@@ -412,6 +412,32 @@ def _append_controlplane_public_routes(
                 redirect_to_https=redirect_https,
                 direct_response_status=404,
             ),
+        ]
+    )
+    for prefix in (
+        "/swagger",
+        "/redoc",
+        "/openapi",
+        "/openapi.json",
+        "/swagger.json",
+        "/system",
+        "/health",
+        "/status",
+        "/events",
+        "/logs",
+        "/metrics",
+        "/ui/features",
+    ):
+        routes.append(
+            CoreProxyRoute(
+                host=api_host,
+                path_prefix=prefix,
+                cluster=controller_cluster_name,
+                redirect_to_https=redirect_https,
+            )
+        )
+    routes.extend(
+        [
             CoreProxyRoute(
                 host=api_host,
                 path_prefix="/api/v1",

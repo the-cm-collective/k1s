@@ -1597,7 +1597,7 @@
 <li>Retained HA VM dashboard smoke:
 <ul>
 <li>Bring the retained stack up: <code>make lab-vm-ha-dashboard-up</code></li>
-<li>Print direct controller/apishim URLs plus auth hints: <code>make lab-vm-ha-dashboard-status</code></li>
+<li>Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: <code>make lab-vm-ha-dashboard-status</code></li>
 <li>retained-VM &quot;rebuild and restart all&quot; path: <code>make lab-vm-ha-dashboard-refresh-all</code></li>
 <li>Remove the retained test VMs and per-run VM state: <code>make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS=&quot;--purge&quot;</code></li>
 <li>Full retained cleanup, including <code>runs/&lt;RUN_ID&gt;</code> and repo-built host images: <code>make lab-vm-ha-dashboard-purge</code></li>
@@ -2017,7 +2017,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-26 12:34:44</span>
+        <span>Built 2026-03-27 00:45:11</span>
       </div>
     </footer>
     <script>
