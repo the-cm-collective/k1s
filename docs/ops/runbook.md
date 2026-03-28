@@ -520,13 +520,14 @@ Dashboard reload vs. restart
   - Stops the supervisor, clears any stale lock, then starts fresh so env is re‑sourced.
 - Retained HA VM dashboard smoke:
   - Bring the retained stack up: `make lab-vm-ha-dashboard-up`
+  - On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`
   - Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: `make lab-vm-ha-dashboard-status`
   - After `up`, `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should resolve to the retained HA ingress IP instead of the local `127.0.0.1` dev mapping
   - retained-VM "rebuild and restart all" path: `make lab-vm-ha-dashboard-refresh-all`
-  - Remove the retained test VMs and per-run VM state: `make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS="--purge"`
-  - Full retained cleanup, including `runs/<RUN_ID>` and repo-built host images: `make lab-vm-ha-dashboard-purge`
-  - Hard reset the retained stack: `make lab-vm-ha-dashboard-reset`
-  - `purge` and `reset` restore the prior localhost-oriented mapping when one was already present
+  - Stop the retained VMs but keep retained run metadata for a later restart: `make lab-vm-ha-dashboard-down`
+  - Full retained cleanup, including best-effort orphan teardown, `runs/<RUN_ID>`, repo-built host images, and retained host-mapping cleanup: `make lab-vm-ha-dashboard-purge`
+  - Hard reset the retained stack (`purge` + `up`): `make lab-vm-ha-dashboard-reset`
+  - `purge` and `reset` restore the prior localhost-oriented mapping when one was already present, otherwise they remove the retained managed mapping
   - Hard reset plus guest image rebuild: `make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"`
   - These targets default to `VARIANT=lab/variants/ha-control-plane-hub-node.yaml` and `RUN_ID=ha-dashboard-local`.
 - Scope of apps shown and reconciled

@@ -833,6 +833,7 @@ scripts/lab/vm/labctl.sh image verify --variant all</code></pre>
 <pre><code>sudo -v
 make lab-vm-ha-dashboard-up
 make lab-vm-ha-dashboard-status</code></pre>
+<p>On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code>.</p>
 <p>Override the retained run id or variant when needed:</p>
 <pre><code>RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_smoke&quot; \
 VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
@@ -841,8 +842,7 @@ make lab-vm-ha-dashboard-up</code></pre>
 <pre><code>make lab-vm-ha-dashboard-refresh-all \
   LAB_VM_HA_DASHBOARD_ARGS=&quot;--target all&quot;
 
-make lab-vm-ha-dashboard-down \
-  LAB_VM_HA_DASHBOARD_ARGS=&quot;--purge&quot;
+make lab-vm-ha-dashboard-down
 
 make lab-vm-ha-dashboard-purge
 
@@ -852,9 +852,9 @@ make lab-vm-ha-dashboard-reset \
   LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></pre>
 <ul>
 <li><code>make lab-vm-ha-dashboard-refresh-all</code> is the retained-VM rebuild and restart path on the current VMs.</li>
-<li><code>make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS=&quot;--purge&quot;</code> removes the retained VMs plus their per-run VM state.</li>
-<li><code>make lab-vm-ha-dashboard-purge</code> additionally removes <code>runs/&lt;RUN_ID&gt;</code> plus the repo-built host images used by this retained lane.</li>
-<li><code>make lab-vm-ha-dashboard-reset</code> tears the retained lane down and brings it back.</li>
+<li><code>make lab-vm-ha-dashboard-down</code> stops the retained VMs but keeps retained run metadata for a later restart.</li>
+<li><code>make lab-vm-ha-dashboard-purge</code> is the authoritative retained cleanup path; it does best-effort teardown for partial or orphaned runs, removes retained VM state and <code>runs/&lt;RUN_ID&gt;</code>, cleans retained host mappings, and removes the repo-built host images used by this lane.</li>
+<li><code>make lab-vm-ha-dashboard-reset</code> runs that same purge logic and then brings the retained lane back up.</li>
 <li><code>make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code> is the full expensive path when guest/bootstrap contracts changed.</li>
 </ul>
 <p>Lower-level commands remain available when you want the raw orchestration steps:</p>
@@ -876,7 +876,8 @@ make lab-vm-smoke \
 <li>open <code>https://docs.home.arpa:10443/</code></li>
 <li>open <code>https://api.home.arpa:10443/swagger</code> or <code>https://api.home.arpa:10443/redoc</code></li>
 <li>after <code>make lab-vm-ha-dashboard-up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the prior localhost dev mapping</li>
-<li><code>make lab-vm-ha-dashboard-purge</code> and <code>make lab-vm-ha-dashboard-reset</code> restore the prior localhost-oriented mapping on purge/reset when one was already present</li>
+<li>successful retained <code>up</code> now verifies that host-side mapping before it reports success</li>
+<li><code>make lab-vm-ha-dashboard-purge</code> and <code>make lab-vm-ha-dashboard-reset</code> restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead</li>
 <li>treat <code>https://api.home.arpa:10443/dashboard</code> as an expected <code>404</code>; dashboard lives on <code>dash.home.arpa</code></li>
 <li>use <code>curl --resolve &lt;host&gt;:10443:&lt;core-ip&gt; ...</code> when you want to verify a specific core behind the shared hostnames</li>
 <li>keep direct controller <code>http://192.168.155.10:9108/dashboard</code> and direct API shim <code>https://192.168.155.10:8445</code> as secondary diagnostics</li>

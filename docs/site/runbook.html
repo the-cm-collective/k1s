@@ -1597,13 +1597,14 @@
 <li>Retained HA VM dashboard smoke:
 <ul>
 <li>Bring the retained stack up: <code>make lab-vm-ha-dashboard-up</code></li>
+<li>On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code></li>
 <li>Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: <code>make lab-vm-ha-dashboard-status</code></li>
 <li>After <code>up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the local <code>127.0.0.1</code> dev mapping</li>
 <li>retained-VM &quot;rebuild and restart all&quot; path: <code>make lab-vm-ha-dashboard-refresh-all</code></li>
-<li>Remove the retained test VMs and per-run VM state: <code>make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS=&quot;--purge&quot;</code></li>
-<li>Full retained cleanup, including <code>runs/&lt;RUN_ID&gt;</code> and repo-built host images: <code>make lab-vm-ha-dashboard-purge</code></li>
-<li>Hard reset the retained stack: <code>make lab-vm-ha-dashboard-reset</code></li>
-<li><code>purge</code> and <code>reset</code> restore the prior localhost-oriented mapping when one was already present</li>
+<li>Stop the retained VMs but keep retained run metadata for a later restart: <code>make lab-vm-ha-dashboard-down</code></li>
+<li>Full retained cleanup, including best-effort orphan teardown, <code>runs/&lt;RUN_ID&gt;</code>, repo-built host images, and retained host-mapping cleanup: <code>make lab-vm-ha-dashboard-purge</code></li>
+<li>Hard reset the retained stack (<code>purge</code> + <code>up</code>): <code>make lab-vm-ha-dashboard-reset</code></li>
+<li><code>purge</code> and <code>reset</code> restore the prior localhost-oriented mapping when one was already present, otherwise they remove the retained managed mapping</li>
 <li>Hard reset plus guest image rebuild: <code>make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></li>
 <li>These targets default to <code>VARIANT=lab/variants/ha-control-plane-hub-node.yaml</code> and <code>RUN_ID=ha-dashboard-local</code>.</li>
 </ul>

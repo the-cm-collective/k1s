@@ -532,6 +532,8 @@ make lab-vm-ha-dashboard-up
 make lab-vm-ha-dashboard-status
 ```
 
+On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`.
+
 Override the retained run id or variant when needed:
 
 ```bash
@@ -546,15 +548,14 @@ Retained iteration commands:
 make lab-vm-ha-dashboard-refresh-all \
   LAB_VM_HA_DASHBOARD_ARGS="--target all"
 
-make lab-vm-ha-dashboard-down \
-  LAB_VM_HA_DASHBOARD_ARGS="--purge"
+make lab-vm-ha-dashboard-down
 
 make lab-vm-ha-dashboard-purge
 
 make lab-vm-ha-dashboard-reset
 ```
 
-`make lab-vm-ha-dashboard-refresh-all` is the retained-VM "rebuild and restart all" path on the current VMs. `make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS="--purge"` removes the retained VMs plus their per-run VM state. `make lab-vm-ha-dashboard-purge` additionally removes `runs/<RUN_ID>` plus the repo-built host images used by this retained lane. `make lab-vm-ha-dashboard-reset` is the hard recycle path that tears the retained lane down and brings it back.
+`make lab-vm-ha-dashboard-refresh-all` is the retained-VM "rebuild and restart all" path on the current VMs. `make lab-vm-ha-dashboard-down` is the light stop path when you intend to restart the same retained lane. `make lab-vm-ha-dashboard-purge` is the authoritative retained cleanup path: it does best-effort teardown of partial or orphaned runs, removes `state/lab-vm/<RUN_ID>`, removes `runs/<RUN_ID>`, cleans retained host mappings, and removes the repo-built host images used by this lane. `make lab-vm-ha-dashboard-reset` is `purge` plus `up`.
 
 Lower-level equivalent commands remain available when you need the raw building blocks.
 
@@ -589,7 +590,8 @@ Public Envoy access from the host:
 - docs: `https://docs.home.arpa:10443/`
 - API docs: `https://api.home.arpa:10443/swagger` and `https://api.home.arpa:10443/redoc`
 - `make lab-vm-ha-dashboard-up` rewrites the host-side managed mapping for `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa` to the retained HA ingress IP, so `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should stop returning the local `127.0.0.1` dev mapping and start returning the HA core IP instead
-- `make lab-vm-ha-dashboard-purge` and `make lab-vm-ha-dashboard-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present
+- successful retained `up` now verifies that host-side mapping before it reports success
+- `make lab-vm-ha-dashboard-purge` and `make lab-vm-ha-dashboard-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead
 - `https://api.home.arpa:10443/dashboard` returns `404` by design; dashboard lives on `dash.home.arpa`
 - verify one specific core with `curl --resolve dash.home.arpa:10443:192.168.155.10 ...`, `curl --resolve docs.home.arpa:10443:192.168.155.10 ...`, and `curl --resolve api.home.arpa:10443:192.168.155.10 ...`
 
@@ -633,8 +635,8 @@ Notes:
 - If you are switching from another VM lane that used a different `k1s-br0` subnet, tear it down with `--destroy-network` before rerunning host prep for this HA variant.
 - If the controller used by `DOCS_API_BASE` goes away, rebuild docs with another core URL or open the remaining controllers directly.
 - Clean up manually when you are done. Use `--destroy-network` only when you want full bridge cleanup or are switching to another subnet.
-- Full retained cleanup is `make lab-vm-ha-dashboard-purge`; add `LAB_VM_HA_DASHBOARD_ARGS="--destroy-network"` if you also want bridge teardown.
-- The fast retained reset path is `make lab-vm-ha-dashboard-reset`.
+- Full retained cleanup is `make lab-vm-ha-dashboard-purge`; it is safe to rerun after partial teardown or orphaned retained runs. Add `LAB_VM_HA_DASHBOARD_ARGS="--destroy-network"` if you also want bridge teardown.
+- The fast retained reset path is `make lab-vm-ha-dashboard-reset`, which reuses the same purge logic before starting the lane again.
 - If you also changed guest/bootstrap contracts, run:
 
 ```bash

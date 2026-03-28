@@ -129,6 +129,8 @@ make lab-vm-ha-dashboard-up
 make lab-vm-ha-dashboard-status
 ```
 
+On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`.
+
 Override the retained run id or variant when needed:
 
 ```bash
@@ -143,8 +145,7 @@ Retained rebuild/restart commands:
 make lab-vm-ha-dashboard-refresh-all \
   LAB_VM_HA_DASHBOARD_ARGS="--target all"
 
-make lab-vm-ha-dashboard-down \
-  LAB_VM_HA_DASHBOARD_ARGS="--purge"
+make lab-vm-ha-dashboard-down
 
 make lab-vm-ha-dashboard-purge
 
@@ -155,9 +156,9 @@ make lab-vm-ha-dashboard-reset \
 ```
 
 - `make lab-vm-ha-dashboard-refresh-all` is the retained-VM rebuild and restart path on the current VMs.
-- `make lab-vm-ha-dashboard-down LAB_VM_HA_DASHBOARD_ARGS="--purge"` removes the retained VMs plus their per-run VM state.
-- `make lab-vm-ha-dashboard-purge` additionally removes `runs/<RUN_ID>` plus the repo-built host images used by this retained lane.
-- `make lab-vm-ha-dashboard-reset` tears the retained lane down and brings it back.
+- `make lab-vm-ha-dashboard-down` stops the retained VMs but keeps retained run metadata for a later restart.
+- `make lab-vm-ha-dashboard-purge` is the authoritative retained cleanup path; it does best-effort teardown for partial or orphaned runs, removes retained VM state and `runs/<RUN_ID>`, cleans retained host mappings, and removes the repo-built host images used by this lane.
+- `make lab-vm-ha-dashboard-reset` runs that same purge logic and then brings the retained lane back up.
 - `make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"` is the full expensive path when guest/bootstrap contracts changed.
 
 Lower-level commands remain available when you want the raw orchestration steps:
@@ -182,7 +183,8 @@ Use that retained HA run as the Envoy-host manual-smoke lane on one workstation:
 - open `https://docs.home.arpa:10443/`
 - open `https://api.home.arpa:10443/swagger` or `https://api.home.arpa:10443/redoc`
 - after `make lab-vm-ha-dashboard-up`, `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should resolve to the retained HA ingress IP instead of the prior localhost dev mapping
-- `make lab-vm-ha-dashboard-purge` and `make lab-vm-ha-dashboard-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present
+- successful retained `up` now verifies that host-side mapping before it reports success
+- `make lab-vm-ha-dashboard-purge` and `make lab-vm-ha-dashboard-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead
 - treat `https://api.home.arpa:10443/dashboard` as an expected `404`; dashboard lives on `dash.home.arpa`
 - use `curl --resolve <host>:10443:<core-ip> ...` when you want to verify a specific core behind the shared hostnames
 - keep direct controller `http://192.168.155.10:9108/dashboard` and direct API shim `https://192.168.155.10:8445` as secondary diagnostics
