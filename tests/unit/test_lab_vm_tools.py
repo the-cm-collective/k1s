@@ -1047,6 +1047,10 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     assert "https://docs.home.arpa:10443/" in runbook
     assert "https://api.home.arpa:10443/swagger" in bring_up
     assert "https://api.home.arpa:10443/swagger" in runbook
+    assert "getent hosts dash.home.arpa docs.home.arpa api.home.arpa" in bring_up
+    assert "getent hosts dash.home.arpa docs.home.arpa api.home.arpa" in runbook
+    assert "restore the prior localhost-oriented mapping on purge/reset" in bring_up
+    assert "restore the prior localhost-oriented mapping on purge/reset" in runbook
     assert "Use the same bearer token in the dashboard `Bearer` field" in bring_up
     assert "use the same bearer token for the dashboard data panels" in runbook
 
@@ -1126,6 +1130,7 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     text = HA_DASHBOARD_SMOKE_SCRIPT.read_text(encoding="utf-8")
     assert 'DEFAULT_VARIANT="$ROOT_DIR/lab/variants/ha-control-plane-hub-node.yaml"' in text
     assert 'DEFAULT_RUN_ID="ha-dashboard-local"' in text
+    assert 'source "$ROOT_DIR/scripts/lib/nixos_bridge.sh"' in text
     assert "reseed-core" in text
     assert "restart-core" in text
     assert "restart-apishim" in text
@@ -1156,6 +1161,18 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert "localhost:5001/k1s-apishim:dev" in text
     assert "docker.io/library/demo-shell:latest" in text
     assert "print_remote_ha_failure_context() {" in text
+    assert "snapshot_local_dev_hosts_state() {" in text
+    assert "render_retained_local_dev_apply_map() {" in text
+    assert "apply_retained_local_dev_hosts() {" in text
+    assert "restore_retained_local_dev_hosts() {" in text
+    assert 'local_dev_hosts_dir="$(run_dir "$RUN_ID")"' in text
+    assert 'local_dev_hosts_state_file="$local_dev_hosts_dir/local-dev-hosts.env"' in text
+    assert 'local_dev_hosts_snapshot_file="$local_dev_hosts_dir/local-dev-hosts.snapshot"' in text
+    assert 'local_dev_hosts_apply_file="$local_dev_hosts_dir/local-dev-hosts.apply"' in text
+    assert 'DEV_LOCAL_HOSTS_MAP_FILE="$local_dev_hosts_apply_file"' in text
+    assert 'DEV_LOCAL_HOSTS_MAP_FILE="$local_dev_hosts_snapshot_file"' in text
+    assert 'AE_DEV_LOCAL_ACTION=clean "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"' in text
+    assert "check_stack_ready\n  apply_retained_local_dev_hosts\n  cmd_status" in text
     assert 'sudo tail -n 80 /home/ae/k1s-ha-core.log' in text
     assert 'sudo crictl ps -a --name k1s-core-apishim -q' in text
     assert 'focus="${3:-controller}"' in text
@@ -1186,6 +1203,9 @@ def test_ha_dashboard_smoke_status_guidance_covers_auth_and_api_only_ingress() -
         "source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)"
         in text
     )
+    assert 'printf \'  dashboard bearer: %s\\n\' "$AE_API_ADMIN_TOKEN"' in text
+    assert "dashboard bearer: unavailable" in text
+    assert "paste the dashboard bearer value into the dashboard Bearer field." in text
     assert (
         'curl -sk --resolve %s:%s:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://%s:%s/system | jq .'
         in text
@@ -1198,6 +1218,10 @@ def test_ha_dashboard_smoke_status_guidance_covers_auth_and_api_only_ingress() -
         "note: https://%s:%s/dashboard is expected to return 404; dashboard lives on %s."
         in text
     )
+    assert "Local host mapping" in text
+    assert 'getent hosts %s %s %s' in text
+    assert "expected after up: dash/docs/api resolve to %s from this host" in text
+    assert "purge/reset restore the prior managed local-dev mapping when one was captured" in text
 
 
 def test_make_ha_closeout_e2e_uses_wrapper_script() -> None:

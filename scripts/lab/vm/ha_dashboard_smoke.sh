@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lab/vm/lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=scripts/lib/nixos_bridge.sh
+source "$ROOT_DIR/scripts/lib/nixos_bridge.sh"
 
 DEFAULT_VARIANT="$ROOT_DIR/lab/variants/ha-control-plane-hub-node.yaml"
 DEFAULT_RUN_ID="ha-dashboard-local"
@@ -121,6 +123,13 @@ ingress_tls_port="${AE_EDGE_INGRESS_TLS_PORT:-10443}"
 dash_host="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"
 docs_host="${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa}"
 api_host="${AE_CONTROLPLANE_API_HOST:-api.home.arpa}"
+local_dev_hosts_dir="$(run_dir "$RUN_ID")"
+local_dev_hosts_state_file="$local_dev_hosts_dir/local-dev-hosts.env"
+local_dev_hosts_snapshot_file="$local_dev_hosts_dir/local-dev-hosts.snapshot"
+local_dev_hosts_apply_file="$local_dev_hosts_dir/local-dev-hosts.apply"
+local_dev_hosts_block_begin="# BEGIN k1s-local-dev"
+local_dev_hosts_block_end="# END k1s-local-dev"
+nixos_bridge_hosts_file="$(k1s_nixos_bridge_hosts_file)"
 
 require_local_sudo() {
   require_cmd sudo
@@ -158,6 +167,123 @@ load_local_auth_env() {
 
 require_http_tools() {
   require_cmd curl
+}
+
+load_retained_local_dev_target_hosts() {
+  local hosts_raw="${DEV_LOCAL_HOSTS:-$dash_host $docs_host $api_host}"
+  local item=""
+  local -A seen=()
+  RETAINED_LOCAL_DEV_TARGET_HOSTS=()
+  for item in ${hosts_raw}; do
+    [[ -n "$item" ]] || continue
+    if [[ -z "${seen[$item]:-}" ]]; then
+      seen["$item"]=1
+      RETAINED_LOCAL_DEV_TARGET_HOSTS+=("$item")
+    fi
+  done
+}
+
+read_current_local_dev_hosts_lines() {
+  if [[ -s "$nixos_bridge_hosts_file" ]]; then
+    awk 'NF && $1 !~ /^#/' "$nixos_bridge_hosts_file"
+    return 0
+  fi
+  if grep -Fqx "$local_dev_hosts_block_begin" /etc/hosts 2>/dev/null; then
+    awk -v begin="$local_dev_hosts_block_begin" -v end="$local_dev_hosts_block_end" '
+      $0 == begin { capture = 1; next }
+      $0 == end { capture = 0; next }
+      capture && NF && $1 !~ /^#/ { print }
+    ' /etc/hosts
+    return 0
+  fi
+  return 1
+}
+
+snapshot_local_dev_hosts_state() {
+  local current_lines=""
+  local restore_mode="clean"
+  if [[ -f "$local_dev_hosts_state_file" ]]; then
+    return 0
+  fi
+  mkdir -p "$local_dev_hosts_dir"
+  current_lines="$(read_current_local_dev_hosts_lines || true)"
+  if [[ -n "${current_lines// }" ]]; then
+    printf '%s\n' "$current_lines" >"$local_dev_hosts_snapshot_file"
+    restore_mode="restore"
+  else
+    rm -f "$local_dev_hosts_snapshot_file"
+  fi
+  printf 'LOCAL_DEV_HOSTS_RESTORE_MODE=%q\n' "$restore_mode" >"$local_dev_hosts_state_file"
+}
+
+render_retained_local_dev_apply_map() {
+  local target_ip="${DEV_LOCAL_HOSTS_IP:-$first_core_ip}"
+  local line="" ip="" host="" rest=""
+  local -A host_ip=()
+  local -A seen=()
+  local -a ordered_hosts=()
+
+  load_retained_local_dev_target_hosts
+
+  if [[ -s "$local_dev_hosts_snapshot_file" ]]; then
+    while read -r ip host rest; do
+      [[ -n "${ip// }" && -n "${host// }" ]] || continue
+      if [[ -z "${seen[$host]:-}" ]]; then
+        ordered_hosts+=("$host")
+        seen["$host"]=1
+      fi
+      host_ip["$host"]="$ip"
+    done <"$local_dev_hosts_snapshot_file"
+  fi
+
+  for host in "${RETAINED_LOCAL_DEV_TARGET_HOSTS[@]}"; do
+    if [[ -z "${seen[$host]:-}" ]]; then
+      ordered_hosts+=("$host")
+      seen["$host"]=1
+    fi
+    host_ip["$host"]="$target_ip"
+  done
+
+  : >"$local_dev_hosts_apply_file"
+  for host in "${ordered_hosts[@]}"; do
+    printf '%s %s\n' "${host_ip[$host]}" "$host" >>"$local_dev_hosts_apply_file"
+  done
+}
+
+apply_retained_local_dev_hosts() {
+  local target_ip="${DEV_LOCAL_HOSTS_IP:-$first_core_ip}"
+  snapshot_local_dev_hosts_state
+  render_retained_local_dev_apply_map
+  load_retained_local_dev_target_hosts
+  log "mapping local DNS/TLS for ${RETAINED_LOCAL_DEV_TARGET_HOSTS[*]} to ${target_ip}"
+  DEV_LOCAL_HOSTS_MAP_FILE="$local_dev_hosts_apply_file" \
+    "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"
+}
+
+restore_retained_local_dev_hosts() {
+  local restore_mode=""
+  if [[ ! -f "$local_dev_hosts_state_file" ]]; then
+    return 0
+  fi
+  # shellcheck source=/dev/null
+  source "$local_dev_hosts_state_file"
+  case "${LOCAL_DEV_HOSTS_RESTORE_MODE:-clean}" in
+    restore)
+      if [[ -s "$local_dev_hosts_snapshot_file" ]]; then
+        log "restoring prior local DNS/TLS mapping for retained HA hosts"
+        DEV_LOCAL_HOSTS_MAP_FILE="$local_dev_hosts_snapshot_file" \
+          "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"
+      else
+        log "retained HA host snapshot missing; removing managed local DNS/TLS state"
+        AE_DEV_LOCAL_ACTION=clean "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"
+      fi
+      ;;
+    *)
+      log "removing retained HA local DNS/TLS state"
+      AE_DEV_LOCAL_ACTION=clean "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"
+      ;;
+  esac
+  rm -f "$local_dev_hosts_state_file" "$local_dev_hosts_snapshot_file" "$local_dev_hosts_apply_file"
 }
 
 wait_for_http_version() {
@@ -487,6 +613,7 @@ cmd_up() {
   AE_CRI_CACHE_SEED_BUNDLE="${AE_CRI_CACHE_SEED_BUNDLE:-$seed_bundle_path}" \
     "$SCRIPT_DIR/k1s_bootstrap.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute
   check_stack_ready
+  apply_retained_local_dev_hosts
   cmd_status
 }
 
@@ -513,6 +640,12 @@ cmd_status() {
   printf '  api redoc: https://%s:%s/redoc\n' "$api_host" "$ingress_tls_port"
   printf '\n'
 
+  printf 'Local host mapping\n'
+  printf '  getent hosts %s %s %s\n' "$dash_host" "$docs_host" "$api_host"
+  printf '  expected after up: dash/docs/api resolve to %s from this host\n' "${DEV_LOCAL_HOSTS_IP:-$first_core_ip}"
+  printf '  purge/reset restore the prior managed local-dev mapping when one was captured\n'
+  printf '\n'
+
   printf 'Public ingress smoke\n'
   for row in "${ha_host_rows[@]}"; do
     IFS=$'\t' read -r name ip node_id <<<"$row"
@@ -536,6 +669,12 @@ cmd_status() {
 
   printf 'Auth\n'
   printf '  source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)\n'
+  if [[ "$auth_loaded" -eq 1 && -n "${AE_API_ADMIN_TOKEN:-}" ]]; then
+    printf '  dashboard bearer: %s\n' "$AE_API_ADMIN_TOKEN"
+  else
+    printf '  dashboard bearer: unavailable\n'
+  fi
+  printf '  note: paste the dashboard bearer value into the dashboard Bearer field.\n'
   printf '  curl -sk --resolve %s:%s:%s -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" https://%s:%s/system | jq .\n' \
     "$api_host" "$ingress_tls_port" "$first_core_ip" "$api_host" "$ingress_tls_port"
   printf '  note: test dash/docs/api without auth first; bearer auth is only required for API reads like /system.\n'
@@ -607,6 +746,7 @@ cmd_purge() {
   run_path="$(run_dir "$RUN_ID")"
   [[ "$DESTROY_NETWORK" -eq 1 ]] && down_args+=(--destroy-network)
   "$SCRIPT_DIR/variant_down.sh" "${down_args[@]}" || true
+  restore_retained_local_dev_hosts
   if [[ -d "$state_dir" ]]; then
     if pgrep -f -- "$state_dir" >/dev/null 2>&1; then
       log "state dir still referenced by running processes; leaving in place: $state_dir"
@@ -842,6 +982,7 @@ cmd_reset() {
   local down_args=(--variant "$VARIANT" --run-id "$RUN_ID" --purge)
   [[ "$DESTROY_NETWORK" -eq 1 ]] && down_args+=(--destroy-network)
   "$SCRIPT_DIR/variant_down.sh" "${down_args[@]}" || true
+  restore_retained_local_dev_hosts
   cmd_up
 }
 
