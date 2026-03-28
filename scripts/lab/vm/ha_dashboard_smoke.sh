@@ -256,6 +256,7 @@ apply_retained_local_dev_hosts() {
   render_retained_local_dev_apply_map
   load_retained_local_dev_target_hosts
   log "mapping local DNS/TLS for ${RETAINED_LOCAL_DEV_TARGET_HOSTS[*]} to ${target_ip}"
+  AE_NIXOS_REBUILD=always \
   DEV_LOCAL_HOSTS_MAP_FILE="$local_dev_hosts_apply_file" \
     "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"
 }
@@ -271,19 +272,71 @@ restore_retained_local_dev_hosts() {
     restore)
       if [[ -s "$local_dev_hosts_snapshot_file" ]]; then
         log "restoring prior local DNS/TLS mapping for retained HA hosts"
+        AE_NIXOS_REBUILD=always \
         DEV_LOCAL_HOSTS_MAP_FILE="$local_dev_hosts_snapshot_file" \
           "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"
       else
         log "retained HA host snapshot missing; removing managed local DNS/TLS state"
+        AE_NIXOS_REBUILD=always \
         AE_DEV_LOCAL_ACTION=clean "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"
       fi
       ;;
     *)
       log "removing retained HA local DNS/TLS state"
+      AE_NIXOS_REBUILD=always \
       AE_DEV_LOCAL_ACTION=clean "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"
       ;;
   esac
   rm -f "$local_dev_hosts_state_file" "$local_dev_hosts_snapshot_file" "$local_dev_hosts_apply_file"
+}
+
+verify_retained_local_dev_hosts_applied() {
+  local target_ip="${DEV_LOCAL_HOSTS_IP:-$first_core_ip}"
+  local attempts="${1:-5}"
+  local delay_s="${2:-1}"
+  local attempt=1
+  local current_output="" host=""
+
+  require_cmd getent
+  load_retained_local_dev_target_hosts
+
+  while (( attempt <= attempts )); do
+    current_output="$(getent hosts "${RETAINED_LOCAL_DEV_TARGET_HOSTS[@]}" 2>/dev/null || true)"
+    if [[ -n "${current_output// }" ]]; then
+      local all_hosts_match=1
+      for host in "${RETAINED_LOCAL_DEV_TARGET_HOSTS[@]}"; do
+        if ! awk -v expected_ip="$target_ip" -v expected_host="$host" '
+          $1 == expected_ip && $2 == expected_host { found = 1 }
+          END { exit(found ? 0 : 1) }
+        ' <<<"$current_output"; then
+          all_hosts_match=0
+          break
+        fi
+      done
+      if [[ "$all_hosts_match" -eq 1 ]]; then
+        return 0
+      fi
+    fi
+
+    if (( attempt < attempts )); then
+      sleep "$delay_s"
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  err "retained HA local DNS/TLS mapping did not apply to ${target_ip}"
+  err "expected: getent hosts ${RETAINED_LOCAL_DEV_TARGET_HOSTS[*]}"
+  if [[ -n "${current_output// }" ]]; then
+    err "actual getent output:"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      err "  ${line}"
+    done <<<"$current_output"
+  else
+    err "actual getent output: <empty>"
+  fi
+  err "per-core Envoy smoke may still be healthy because retained status checks use curl --resolve"
+  return 1
 }
 
 wait_for_http_version() {
@@ -614,6 +667,7 @@ cmd_up() {
     "$SCRIPT_DIR/k1s_bootstrap.sh" --variant "$VARIANT" --run-id "$RUN_ID" --execute
   check_stack_ready
   apply_retained_local_dev_hosts
+  verify_retained_local_dev_hosts_applied
   cmd_status
 }
 
@@ -643,6 +697,7 @@ cmd_status() {
   printf 'Local host mapping\n'
   printf '  getent hosts %s %s %s\n' "$dash_host" "$docs_host" "$api_host"
   printf '  expected after up: dash/docs/api resolve to %s from this host\n' "${DEV_LOCAL_HOSTS_IP:-$first_core_ip}"
+  printf '  successful retained up verifies this host mapping before reporting success\n'
   printf '  purge/reset restore the prior managed local-dev mapping when one was captured\n'
   printf '\n'
 
@@ -730,20 +785,22 @@ cmd_status() {
 
 cmd_down() {
   require_local_sudo
+  if [[ "$PURGE" -eq 1 ]]; then
+    cmd_purge
+    return 0
+  fi
   log "tearing down retained HA dashboard smoke stack run_id=${RUN_ID}"
   local down_args=(--variant "$VARIANT" --run-id "$RUN_ID")
-  [[ "$PURGE" -eq 1 ]] && down_args+=(--purge)
   [[ "$DESTROY_NETWORK" -eq 1 ]] && down_args+=(--destroy-network)
   "$SCRIPT_DIR/variant_down.sh" "${down_args[@]}"
 }
 
-cmd_purge() {
-  require_local_sudo
-  log "purging retained HA dashboard smoke artifacts run_id=${RUN_ID}"
-  local down_args=(--variant "$VARIANT" --run-id "$RUN_ID" --purge)
+purge_retained_artifacts() {
   local state_dir="$ROOT_DIR/state/lab-vm/$RUN_ID"
   local run_path=""
   run_path="$(run_dir "$RUN_ID")"
+  local down_args=(--variant "$VARIANT" --run-id "$RUN_ID" --best-effort)
+
   [[ "$DESTROY_NETWORK" -eq 1 ]] && down_args+=(--destroy-network)
   "$SCRIPT_DIR/variant_down.sh" "${down_args[@]}" || true
   restore_retained_local_dev_hosts
@@ -764,6 +821,12 @@ cmd_purge() {
     log "run dir already absent: $run_path"
   fi
   cleanup_repo_built_host_images
+}
+
+cmd_purge() {
+  require_local_sudo
+  log "purging retained HA dashboard smoke artifacts run_id=${RUN_ID}"
+  purge_retained_artifacts
 }
 
 cmd_reseed_core() {
@@ -979,10 +1042,7 @@ cmd_reset() {
     "$SCRIPT_DIR/image_build.sh" --variant all
     "$SCRIPT_DIR/image_verify.sh" --variant all
   fi
-  local down_args=(--variant "$VARIANT" --run-id "$RUN_ID" --purge)
-  [[ "$DESTROY_NETWORK" -eq 1 ]] && down_args+=(--destroy-network)
-  "$SCRIPT_DIR/variant_down.sh" "${down_args[@]}" || true
-  restore_retained_local_dev_hosts
+  purge_retained_artifacts
   cmd_up
 }
 

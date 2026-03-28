@@ -701,12 +701,109 @@ exit 9
 
 def test_variant_down_uses_run_inventory_fallback() -> None:
     text = VARIANT_DOWN_SCRIPT.read_text(encoding="utf-8")
+    assert "[--purge] [--destroy-network] [--best-effort]" in text
     assert 'run_inventory="$(run_dir "$RUN_ID")/qemu_inventory.json"' in text
     assert 'log "using run inventory fallback for run_id=${RUN_ID}: $inventory"' in text
+    assert 'log "continuing with best-effort cleanup derived from variant topology"' in text
+    assert 'tap="k1s${i}"' in text
+    assert 'pid_file="$state_dir/pids/${name}.pid"' in text
     assert (
         'elif pids="$(pgrep -f -- "$overlay" 2>/dev/null || true)" && [[ -n "$pids" ]]; then'
         in text
     )
+    assert 'if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then' in text
+
+
+def test_variant_down_best_effort_handles_missing_inventories(tmp_path: Path) -> None:
+    fake_root = tmp_path / "root"
+    fake_root.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    ip_log = tmp_path / "ip.log"
+
+    _write_executable(
+        fake_bin / "sudo",
+        '#!/usr/bin/env bash\nexec "$@"\n',
+    )
+    _write_executable(
+        fake_bin / "ip",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "{ip_log}"
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "pgrep",
+        """#!/usr/bin/env bash
+set -euo pipefail
+pattern="${*: -1}"
+    if [[ "$pattern" == *"core-a.qcow2"* ]]; then
+      echo 4321
+      exit 0
+    fi
+    exit 1
+    """,
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            (
+                f'PATH="{fake_bin}:$PATH"; '
+                f'source "{VARIANT_DOWN_SCRIPT}"; '
+                f'ROOT_DIR="{fake_root}"; '
+                "variant_to_json() { "
+                "cat <<'EOF'\n"
+                '{"network":{"bridge":"k1s-br0","cidr":"192.168.155.0/24"},'
+                '"hosts":[{"name":"core-a"},{"name":"core-b"}]}'
+                "\nEOF\n"
+                "}; "
+                'main --variant fake-variant.yaml --run-id retained-test --best-effort'
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "continuing with best-effort cleanup derived from variant topology" in res.stdout
+    assert "stopped core-a" in res.stdout
+    assert "stopped core-b" in res.stdout
+    assert "variant down complete run_id=retained-test" in res.stdout
+    ip_calls = ip_log.read_text(encoding="utf-8")
+    assert "link show k1s0" in ip_calls
+    assert "link delete k1s0" in ip_calls
+    assert "link show k1s1" in ip_calls
+    assert "link delete k1s1" in ip_calls
+
+
+def test_variant_down_without_best_effort_rejects_missing_inventories(tmp_path: Path) -> None:
+    fake_root = tmp_path / "root"
+    fake_root.mkdir()
+
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            (
+                f'source "{VARIANT_DOWN_SCRIPT}"; '
+                f'ROOT_DIR="{fake_root}"; '
+                "variant_to_json() { "
+                "cat <<'EOF'\n"
+                '{"network":{"bridge":"k1s-br0","cidr":"192.168.155.0/24"},'
+                '"hosts":[{"name":"core-a"}]}'
+                "\nEOF\n"
+                "}; "
+                'main --variant fake-variant.yaml --run-id retained-test'
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 1
+    assert "inventory not found for run_id=retained-test" in res.stderr
+    assert "run inventory fallback also missing" in res.stderr
 
 
 def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
@@ -1049,8 +1146,12 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     assert "https://api.home.arpa:10443/swagger" in runbook
     assert "getent hosts dash.home.arpa docs.home.arpa api.home.arpa" in bring_up
     assert "getent hosts dash.home.arpa docs.home.arpa api.home.arpa" in runbook
+    assert "no separate `nixos-rebuild` should be required" in bring_up
+    assert "no separate `nixos-rebuild` should be required" in runbook
     assert "restore the prior localhost-oriented mapping on purge/reset" in bring_up
     assert "restore the prior localhost-oriented mapping on purge/reset" in runbook
+    assert "remove the retained managed mapping instead" in bring_up
+    assert "remove the retained managed mapping instead" in runbook
     assert "Use the same bearer token in the dashboard `Bearer` field" in bring_up
     assert "use the same bearer token for the dashboard data panels" in runbook
 
@@ -1066,6 +1167,9 @@ def test_retained_ha_dashboard_docs_use_make_helper_targets() -> None:
         assert "make lab-vm-ha-dashboard-down" in text
         assert "make lab-vm-ha-dashboard-purge" in text
         assert "make lab-vm-ha-dashboard-reset" in text
+    assert 'LAB_VM_HA_DASHBOARD_ARGS="--purge"' not in bring_up
+    assert 'LAB_VM_HA_DASHBOARD_ARGS="--purge"' not in runbook
+    assert 'LAB_VM_HA_DASHBOARD_ARGS="--purge"' not in ops
     assert 'LAB_VM_HA_DASHBOARD_ARGS="--target all"' in bring_up
     assert 'LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"' in runbook
     assert 'retained-VM "rebuild and restart all" path' in ops
@@ -1156,7 +1260,10 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert "python3 /mnt/host/scripts/dev/cri_stack.py up-apishim" in text
     assert "make k1s-core-node > /home/ae/k1s-core-node.log 2>&1 </dev/null &" in text
     assert '"$SCRIPT_DIR/image_build.sh" --variant all' in text
-    assert '"$SCRIPT_DIR/variant_down.sh" "${down_args[@]}" || true' in text
+    assert "cmd_purge\n    return 0" in text
+    assert 'local down_args=(--variant "$VARIANT" --run-id "$RUN_ID" --best-effort)' in text
+    assert 'purge_retained_artifacts() {' in text
+    assert 'purge_retained_artifacts\n  cmd_up' in text
     assert 'rm -rf "$run_path"' in text
     assert "localhost:5001/k1s-apishim:dev" in text
     assert "docker.io/library/demo-shell:latest" in text
@@ -1165,14 +1272,17 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert "render_retained_local_dev_apply_map() {" in text
     assert "apply_retained_local_dev_hosts() {" in text
     assert "restore_retained_local_dev_hosts() {" in text
+    assert "verify_retained_local_dev_hosts_applied() {" in text
     assert 'local_dev_hosts_dir="$(run_dir "$RUN_ID")"' in text
     assert 'local_dev_hosts_state_file="$local_dev_hosts_dir/local-dev-hosts.env"' in text
     assert 'local_dev_hosts_snapshot_file="$local_dev_hosts_dir/local-dev-hosts.snapshot"' in text
     assert 'local_dev_hosts_apply_file="$local_dev_hosts_dir/local-dev-hosts.apply"' in text
+    assert 'AE_NIXOS_REBUILD=always \\' in text
     assert 'DEV_LOCAL_HOSTS_MAP_FILE="$local_dev_hosts_apply_file"' in text
     assert 'DEV_LOCAL_HOSTS_MAP_FILE="$local_dev_hosts_snapshot_file"' in text
     assert 'AE_DEV_LOCAL_ACTION=clean "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"' in text
-    assert "check_stack_ready\n  apply_retained_local_dev_hosts\n  cmd_status" in text
+    assert 'current_output="$(getent hosts "${RETAINED_LOCAL_DEV_TARGET_HOSTS[@]}" 2>/dev/null || true)"' in text
+    assert "check_stack_ready\n  apply_retained_local_dev_hosts\n  verify_retained_local_dev_hosts_applied\n  cmd_status" in text
     assert 'sudo tail -n 80 /home/ae/k1s-ha-core.log' in text
     assert 'sudo crictl ps -a --name k1s-core-apishim -q' in text
     assert 'focus="${3:-controller}"' in text
@@ -1221,6 +1331,7 @@ def test_ha_dashboard_smoke_status_guidance_covers_auth_and_api_only_ingress() -
     assert "Local host mapping" in text
     assert 'getent hosts %s %s %s' in text
     assert "expected after up: dash/docs/api resolve to %s from this host" in text
+    assert "successful retained up verifies this host mapping before reporting success" in text
     assert "purge/reset restore the prior managed local-dev mapping when one was captured" in text
 
 
