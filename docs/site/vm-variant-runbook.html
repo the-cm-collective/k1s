@@ -875,6 +875,8 @@ make lab-vm-smoke \
 <li>open <code>https://dash.home.arpa:10443/dashboard</code></li>
 <li>open <code>https://docs.home.arpa:10443/</code></li>
 <li>open <code>https://api.home.arpa:10443/swagger</code> or <code>https://api.home.arpa:10443/redoc</code></li>
+<li>after <code>make lab-vm-ha-dashboard-up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the prior localhost dev mapping</li>
+<li><code>make lab-vm-ha-dashboard-purge</code> and <code>make lab-vm-ha-dashboard-reset</code> restore the prior localhost-oriented mapping on purge/reset when one was already present</li>
 <li>treat <code>https://api.home.arpa:10443/dashboard</code> as an expected <code>404</code>; dashboard lives on <code>dash.home.arpa</code></li>
 <li>use <code>curl --resolve &lt;host&gt;:10443:&lt;core-ip&gt; ...</code> when you want to verify a specific core behind the shared hostnames</li>
 <li>keep direct controller <code>http://192.168.155.10:9108/dashboard</code> and direct API shim <code>https://192.168.155.10:8445</code> as secondary diagnostics</li>
@@ -898,6 +900,8 @@ python -m http.server 9109 --directory docs/site</code></pre>
 <ul>
 <li>Treat this as a retained VM smoke environment, not a supported single-host HA dev profile.</li>
 <li>Treat <code>dash.home.arpa</code>, <code>docs.home.arpa</code>, and <code>api.home.arpa</code> on <code>:10443</code> as the primary public control-plane surface for this retained lane.</li>
+<li>In HA, the docs Playground is disabled by default, including this retained VM lane. Use <code>AE_PLAYGROUND=1</code> only for exceptional local testing on a non-public control plane.</li>
+<li>Quick host check from this workstation: <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code></li>
 <li>Read surfaces stay usable on any healthy controller; leader-only mutations still return <code>not_leader</code> on followers.</li>
 <li>In this HA VM profile, <code>/system</code> is bearer-protected and the dashboard needs the same bearer token for its data panels.</li>
 <li>If <code>AE_API_READ_TOKEN</code> is unset, use <code>AE_API_ADMIN_TOKEN</code> in the header above and in the dashboard <code>Bearer</code> field.</li>
