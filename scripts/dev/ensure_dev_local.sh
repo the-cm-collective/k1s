@@ -24,6 +24,8 @@ MANAGED_CERT_FILES=(
   "k1s-apishim-ca.crt"
   "k1s-envoy-fallback.crt"
 )
+HOSTS=()
+HOST_ENTRY_LINES=()
 
 if [[ -t 0 && -t 1 ]]; then
   HAS_TTY=1
@@ -173,6 +175,48 @@ dedupe_words() {
   printf '%s\n' "${ordered[*]}"
 }
 
+load_hosts_from_map_file() {
+  local map_file="$1"
+  local ip="" host="" rest=""
+  if [[ ! -f "$map_file" ]]; then
+    warn "DEV_LOCAL_HOSTS_MAP_FILE not found: $map_file"
+    return 1
+  fi
+  HOSTS=()
+  HOST_ENTRY_LINES=()
+  while read -r ip host rest; do
+    [[ -n "${ip// }" ]] || continue
+    [[ "$ip" == \#* ]] && continue
+    [[ -n "${host// }" ]] || continue
+    HOST_ENTRY_LINES+=("$ip $host")
+    HOSTS+=("$host")
+  done <"$map_file"
+  if [[ ${#HOST_ENTRY_LINES[@]} -eq 0 ]]; then
+    warn "DEV_LOCAL_HOSTS_MAP_FILE did not contain any host entries: $map_file"
+    return 1
+  fi
+  local deduped_hosts="" item=""
+  deduped_hosts="$(dedupe_words "${HOSTS[@]}")"
+  HOSTS=()
+  for item in ${deduped_hosts}; do
+    HOSTS+=("$item")
+  done
+}
+
+lookup_host_ip() {
+  local host="$1"
+  local entry="" ip="" entry_host=""
+  for entry in "${HOST_ENTRY_LINES[@]}"; do
+    ip="${entry%% *}"
+    entry_host="${entry#* }"
+    if [[ "$entry_host" == "$host" ]]; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  done
+  printf '%s' "$HOSTS_IP"
+}
+
 default_hosts() {
   local -a hosts=(
     "docs.home.arpa"
@@ -191,8 +235,16 @@ default_hosts() {
 }
 
 load_hosts() {
+  local map_file="${DEV_LOCAL_HOSTS_MAP_FILE:-}"
   local hosts_raw="${DEV_LOCAL_HOSTS:-}"
   local item=""
+  HOSTS=()
+  HOST_ENTRY_LINES=()
+  if [[ -n "${map_file// }" ]]; then
+    if load_hosts_from_map_file "$map_file"; then
+      return 0
+    fi
+  fi
   if [[ -z "${hosts_raw// }" ]]; then
     hosts_raw="$(default_hosts)"
   fi
@@ -239,6 +291,7 @@ ensure_state_certs_dir() {
 
 discover_caddy_ca() {
   local https_port="${CADDY_HTTPS_PORT:-8443}"
+  local docs_host_ip=""
   local root_ca_primary="${ROOT_DIR}/state/caddy-data/caddy/pki/authorities/local/root.crt"
   local root_ca_legacy="${ROOT_DIR}/state/caddy-data/pki/authorities/local/root.crt"
   local root_ca=""
@@ -247,8 +300,9 @@ discover_caddy_ca() {
   local touched=0
 
   ensure_state_certs_dir
+  docs_host_ip="$(lookup_host_ip "docs.home.arpa")"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    curl -ksS --resolve "docs.home.arpa:${https_port}:${HOSTS_IP}" \
+    curl -ksS --resolve "docs.home.arpa:${https_port}:${docs_host_ip}" \
       "https://docs.home.arpa:${https_port}/" >/dev/null 2>&1 || true
     touched=1
     if [[ -s "$root_ca_primary" || -s "$root_ca_legacy" ]]; then
@@ -450,9 +504,13 @@ apply_direct_hosts() {
   strip_managed_hosts_block /etc/hosts >"$tmp"
   {
     printf '\n%s\n' "$HOSTS_BLOCK_BEGIN"
-    for host in "${HOSTS[@]}"; do
-      printf '%s %s\n' "$HOSTS_IP" "$host"
-    done
+    if [[ ${#HOST_ENTRY_LINES[@]} -gt 0 ]]; then
+      printf '%s\n' "${HOST_ENTRY_LINES[@]}"
+    else
+      for host in "${HOSTS[@]}"; do
+        printf '%s %s\n' "$HOSTS_IP" "$host"
+      done
+    fi
     printf '%s\n' "$HOSTS_BLOCK_END"
   } >>"$tmp"
   if cmp -s "$tmp" /etc/hosts; then
@@ -552,9 +610,13 @@ sync_nixos_state() {
   run_priv mkdir -p "$NIXOS_BRIDGE_CERT_DIR"
 
   tmp="$(mktemp)"
-  for host in "${HOSTS[@]}"; do
-    printf '%s %s\n' "$HOSTS_IP" "$host" >>"$tmp"
-  done
+  if [[ ${#HOST_ENTRY_LINES[@]} -gt 0 ]]; then
+    printf '%s\n' "${HOST_ENTRY_LINES[@]}" >>"$tmp"
+  else
+    for host in "${HOSTS[@]}"; do
+      printf '%s %s\n' "$HOSTS_IP" "$host" >>"$tmp"
+    done
+  fi
   write_file_if_changed "$tmp" "$NIXOS_BRIDGE_HOSTS_FILE" changed
   rm -f "$tmp"
 

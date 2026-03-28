@@ -142,6 +142,9 @@ def test_ensure_dev_local_supports_nixos_bridge_and_real_ca_sources() -> None:
     text = ENSURE_DEV_LOCAL.read_text(encoding="utf-8")
     helper_text = NIXOS_BRIDGE_HELPER.read_text(encoding="utf-8")
     assert 'source "${ROOT_DIR}/scripts/lib/nixos_bridge.sh"' in text
+    assert 'local map_file="${DEV_LOCAL_HOSTS_MAP_FILE:-}"' in text
+    assert "load_hosts_from_map_file() {" in text
+    assert "lookup_host_ip() {" in text
     assert "/var/lib/k1s-dev" in helper_text
     assert "nixos-rebuild switch --impure" in helper_text
     assert "AE_NIXOS_REBUILD" in helper_text
