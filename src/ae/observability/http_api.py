@@ -1605,8 +1605,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _dashboard_enabled(self) -> bool:
         return self._flag_enabled("AE_DASHBOARD", True)
 
+    def _controlplane_readonly_enabled(self) -> bool:
+        return self._flag_enabled(
+            "AE_CONTROLPLANE_PUBLIC_ENABLE",
+            False,
+        ) and self._flag_enabled("AE_CONTROLPLANE_AUTH_ENABLE", False)
+
     def _playground_enabled(self) -> bool:
-        return self._flag_enabled("AE_PLAYGROUND", True)
+        if self._controlplane_readonly_enabled():
+            return False
+        try:
+            raw = os.getenv("AE_PLAYGROUND")
+        except Exception:
+            raw = None
+        if raw is None or str(raw).strip() == "":
+            return not self._flag_enabled("AE_HA_MODE", False)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
     def _labs_token_valid(self) -> bool:
         if not self._labs_enabled():
@@ -4496,13 +4510,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self._json_ok(payload)
 
     def _handle_ui_features(self) -> None:
-        controlplane_readonly = self._flag_enabled(
-            "AE_CONTROLPLANE_PUBLIC_ENABLE",
-            False,
-        ) and self._flag_enabled("AE_CONTROLPLANE_AUTH_ENABLE", False)
+        controlplane_readonly = self._controlplane_readonly_enabled()
         payload = {
             "dashboard": bool(self._dashboard_enabled()),
-            "playground": False if controlplane_readonly else bool(self._playground_enabled()),
+            "playground": bool(self._playground_enabled()),
             "dashboard_interactive_tools": bool(
                 self._flag_enabled("AE_DASHBOARD_INTERACTIVE_TOOLS", True)
             ),
