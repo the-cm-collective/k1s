@@ -181,6 +181,8 @@ Use that retained HA run as the Envoy-host manual-smoke lane on one workstation:
 - open `https://dash.home.arpa:10443/dashboard`
 - open `https://docs.home.arpa:10443/`
 - open `https://api.home.arpa:10443/swagger` or `https://api.home.arpa:10443/redoc`
+- after `make lab-vm-ha-dashboard-up`, `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should resolve to the retained HA ingress IP instead of the prior localhost dev mapping
+- `make lab-vm-ha-dashboard-purge` and `make lab-vm-ha-dashboard-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present
 - treat `https://api.home.arpa:10443/dashboard` as an expected `404`; dashboard lives on `dash.home.arpa`
 - use `curl --resolve <host>:10443:<core-ip> ...` when you want to verify a specific core behind the shared hostnames
 - keep direct controller `http://192.168.155.10:9108/dashboard` and direct API shim `https://192.168.155.10:8445` as secondary diagnostics
@@ -208,6 +210,8 @@ python -m http.server 9109 --directory docs/site
 Notes:
 - Treat this as a retained VM smoke environment, not a supported single-host HA dev profile.
 - Treat `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa` on `:10443` as the primary public control-plane surface for this retained lane.
+- In HA, the docs Playground is disabled by default, including this retained VM lane. Use `AE_PLAYGROUND=1` only for exceptional local testing on a non-public control plane.
+- Quick host check from this workstation: `getent hosts dash.home.arpa docs.home.arpa api.home.arpa`
 - Read surfaces stay usable on any healthy controller; leader-only mutations still return `not_leader` on followers.
 - In this HA VM profile, `/system` is bearer-protected and the dashboard needs the same bearer token for its data panels.
 - If `AE_API_READ_TOKEN` is unset, use `AE_API_ADMIN_TOKEN` in the header above and in the dashboard `Bearer` field.

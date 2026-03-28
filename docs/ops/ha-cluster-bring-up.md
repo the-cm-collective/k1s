@@ -196,7 +196,7 @@ sudo -E \
 
 Notes:
 - For `core-b` and `core-c`, rerun the chosen block with that host's `AE_CONTROLLER_ID` and `AE_CONTROLLER_ADVERTISE_ADDR`.
-- If you want local docs and playground helpers while testing, layer `AE_DEV_LOCAL=1` on top. Do not treat that as the default operator bootstrap posture.
+- If you want local docs helpers while testing, layer `AE_DEV_LOCAL=1` on top. In HA, the docs Playground is disabled by default; set `AE_PLAYGROUND=1` only for exceptional local testing on a non-public control plane. Do not treat `AE_DEV_LOCAL=1` as the default operator bootstrap posture.
 
 ### Core Node
 
@@ -588,6 +588,8 @@ Public Envoy access from the host:
 - dashboard: `https://dash.home.arpa:10443/dashboard`
 - docs: `https://docs.home.arpa:10443/`
 - API docs: `https://api.home.arpa:10443/swagger` and `https://api.home.arpa:10443/redoc`
+- `make lab-vm-ha-dashboard-up` rewrites the host-side managed mapping for `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa` to the retained HA ingress IP, so `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should stop returning the local `127.0.0.1` dev mapping and start returning the HA core IP instead
+- `make lab-vm-ha-dashboard-purge` and `make lab-vm-ha-dashboard-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present
 - `https://api.home.arpa:10443/dashboard` returns `404` by design; dashboard lives on `dash.home.arpa`
 - verify one specific core with `curl --resolve dash.home.arpa:10443:192.168.155.10 ...`, `curl --resolve docs.home.arpa:10443:192.168.155.10 ...`, and `curl --resolve api.home.arpa:10443:192.168.155.10 ...`
 
@@ -607,6 +609,8 @@ curl -sk \
 
 Use the same bearer token in the dashboard `Bearer` field when the data panels need auth.
 
+In HA, the docs Playground is disabled by default, including this retained VM lane. Use `AE_PLAYGROUND=1` only for exceptional local testing on a non-public control plane.
+
 Host docs remain a static convenience layer. Point them at the Envoy hosts and serve them locally:
 
 ```bash
@@ -618,6 +622,7 @@ python -m http.server 9109 --directory docs/site
 
 Notes:
 - Treat `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa` on `:10443` as the primary public control-plane surface in this retained VM lane.
+- Quick host check from this workstation: `getent hosts dash.home.arpa docs.home.arpa api.home.arpa`
 - Any healthy controller can serve `/dashboard`, `/system`, and `/metrics` during normal HA operation.
 - In this retained VM profile, `/system` is bearer-protected and only `AE_API_ADMIN_TOKEN` may be configured for controller HTTP reads.
 - `/dashboard` serves without auth, but its data panels fetch `/system`; paste the bearer token into the page when prompted.
