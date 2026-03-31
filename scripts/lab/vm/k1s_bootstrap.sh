@@ -104,7 +104,7 @@ ensure_ha_shared_apishim_tls() {
 
 build_command() {
   local host_json="$1"
-  local name role site_id node_id labels ip agent_port
+  local name role site_id node_id labels ip agent_port pod_cidr
   name="$(echo "$host_json" | jq -r '.name')"
   role="$(echo "$host_json" | jq -r '.role')"
   site_id="$(echo "$host_json" | jq -r '.site_id // empty')"
@@ -112,6 +112,7 @@ build_command() {
   labels="$(echo "$host_json" | jq -r '.node_labels // empty')"
   ip="$(echo "$host_json" | jq -r '.ip')"
   agent_port="$(echo "$host_json" | jq -r '.agent_port')"
+  pod_cidr="$(echo "$host_json" | jq -r '.pod_cidr // empty')"
 
   case "$role" in
     k1s-core)
@@ -154,6 +155,11 @@ CMD
       if [[ -z "$labels" ]]; then
         labels="role=hub,site=${site_id:-hub}"
       fi
+      local pod_cidr_env=""
+      if [[ -n "$pod_cidr" ]]; then
+        pod_cidr_env=$'  AE_POD_CIDR='"${pod_cidr}"$' \\\n'
+        pod_cidr_env+=$'  AE_CNI_SUBNET='"${pod_cidr}"$' \\\n'
+      fi
       cat <<CMD
 cd /mnt/host
 bootstrap_pip_install
@@ -164,6 +170,9 @@ nohup sudo env \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_NODE_ID=${node_id} \
   AE_NODE_LABELS='${labels}' \
+${pod_cidr_env}  AE_CNI_FORCE=\${AE_CNI_FORCE:-1} \
+  AE_POD_BRIDGE=\${AE_POD_BRIDGE:-cni0} \
+  AE_CNI_BRIDGE_NAME=\${AE_CNI_BRIDGE_NAME:-\${AE_POD_BRIDGE:-cni0}} \
   AE_ROSENPASS_ENABLED=\${AE_ROSENPASS_ENABLED:-0} \
   AE_CONTROLLER_URL=http://${controller_ip}:${controller_agent_port} \
   AE_AGENT_ENDPOINT=http://${ip}:${agent_port} \
@@ -277,6 +286,11 @@ CMD
       if [[ -z "$labels" ]]; then
         labels="site=${site_id:-edge}"
       fi
+      local pod_cidr_env=""
+      if [[ -n "$pod_cidr" ]]; then
+        pod_cidr_env=$'  AE_POD_CIDR='"${pod_cidr}"$' \\\n'
+        pod_cidr_env+=$'  AE_CNI_SUBNET='"${pod_cidr}"$' \\\n'
+      fi
       cat <<CMD
 cd /mnt/host
 bootstrap_pip_install
@@ -286,6 +300,9 @@ nohup sudo env \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_NODE_ID=${node_id} \
   AE_NODE_LABELS='${labels}' \
+${pod_cidr_env}  AE_CNI_FORCE=\${AE_CNI_FORCE:-1} \
+  AE_POD_BRIDGE=\${AE_POD_BRIDGE:-cni0} \
+  AE_CNI_BRIDGE_NAME=\${AE_CNI_BRIDGE_NAME:-\${AE_POD_BRIDGE:-cni0}} \
   AE_CONTROLLER_URL=http://${controller_ip}:${controller_agent_port} \
   AE_AGENT_ENDPOINT=http://${ip}:${agent_port} \
   AE_AGENT_TOKEN=${token} \

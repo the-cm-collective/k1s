@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+TAP_PREFIX="${TAP_PREFIX:-k1s}"
 
 log() {
   echo "[lab-vm] $*"
@@ -105,9 +106,22 @@ wait_for_ssh() {
   return 1
 }
 
+wait_for_cloud_init() {
+  local ip="$1"
+  local timeout_s="${2:-300}"
+  local key_path="${SSH_KEY_PATH:-$HOME/.ssh/id_rsa}"
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$key_path" "ae@${ip}" \
+    "timeout ${timeout_s}s cloud-init status --wait >/dev/null 2>&1"
+}
+
 run_remote() {
   local ip="$1"
   shift
   local key_path="${SSH_KEY_PATH:-$HOME/.ssh/id_rsa}"
   ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$key_path" "ae@${ip}" "$@"
+}
+
+lane_tap_name() {
+  local index="$1"
+  printf '%s%s' "$TAP_PREFIX" "$index"
 }

@@ -138,3 +138,39 @@ def test_remote_runtime_proxies_workload_metrics() -> None:
     assert samples[0].cpu_cores == 1.5
     assert samples[0].memory_bytes == 268435456
     assert samples[0].pod_count == 3
+
+
+def test_remote_runtime_port_forward_uses_upgrade_endpoint() -> None:
+    runtime = RemoteRuntime(
+        "http://agent:9112",
+        StubRuntime(),
+        authority=_Authority("ctrl-a", 11),
+        node_id="node-a",
+    )
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def _fake_open_upgrade(path: str, payload: dict, upgrade: str):
+        captured["path"] = path
+        captured["payload"] = payload
+        captured["upgrade"] = upgrade
+        return sentinel, {}
+
+    runtime._open_upgrade = _fake_open_upgrade  # type: ignore[method-assign]
+
+    sock = runtime.port_forward_socket(
+        pod_id=None,
+        pod_name="demo-rev1-0",
+        namespace="default",
+        port=8080,
+    )
+
+    assert sock is sentinel
+    assert captured["path"] == "/v1/portforward/attach"
+    assert captured["upgrade"] == "ae-portforward"
+    assert captured["payload"] == {
+        "pod_id": None,
+        "pod_name": "demo-rev1-0",
+        "namespace": "default",
+        "port": 8080,
+    }

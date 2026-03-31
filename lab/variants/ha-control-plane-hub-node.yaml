@@ -38,6 +38,7 @@ hosts:
     site_id: hub
     node_id: hub-1
     node_labels: role=hub,site=hub
+    pod_cidr: 10.42.0.0/24
 k1s:
   agent_token: devtoken
   controller_port: 9108

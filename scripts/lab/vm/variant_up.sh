@@ -43,11 +43,14 @@ vm_mem="$(echo "$variant_json" | jq -r '.vm.memory_mb')"
 vm_cpus="$(echo "$variant_json" | jq -r '.vm.vcpus')"
 base_img="$(echo "$variant_json" | jq -r '.images.base')"
 gpu_img="$(echo "$variant_json" | jq -r '.images.gpu')"
+pod_route_rows="$(
+  echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node" and (.pod_cidr // "") != "") | [.pod_cidr, .ip] | @tsv'
+)"
 
 [[ -f "$base_img" ]] || { err "base image missing: $base_img"; exit 2; }
 [[ -f "$gpu_img" ]] || { err "gpu image missing: $gpu_img"; exit 2; }
 
-"$ROOT_DIR/scripts/lab/vm/host_prepare.sh" --bridge "$bridge" --cidr "$cidr" --gateway "$gateway" --apply
+"$ROOT_DIR/scripts/lab/vm/host_prepare.sh" --variant "$VARIANT" --apply
 
 state_dir="$ROOT_DIR/state/lab-vm/$RUN_ID"
 log_dir="$state_dir/logs"
@@ -74,6 +77,7 @@ make_seed() {
   local ip="$2"
   local seed_path="$3"
   local dns_csv="$4"
+  local route_yaml="${5:-}"
   local tmp
   tmp="$(mktemp -d)"
 
@@ -113,6 +117,7 @@ network:
       gateway4: ${gateway}
       nameservers:
         addresses: [${dns_csv}]
+${route_yaml}
 CFG
 
   cat >"$tmp/meta-data" <<CFG
@@ -124,17 +129,35 @@ CFG
   rm -rf "$tmp"
 }
 
+render_guest_route_yaml() {
+  local role="$1"
+  if [[ "$role" != "k1s-core" && "$role" != "k1s-ha-core" ]]; then
+    return 0
+  fi
+  if [[ -z "$pod_route_rows" ]]; then
+    return 0
+  fi
+
+  printf '      routes:\n'
+  while IFS=$'\t' read -r route_cidr route_ip; do
+    [[ -n "$route_cidr" && -n "$route_ip" ]] || continue
+    printf '        - to: %s\n' "$route_cidr"
+    printf '          via: %s\n' "$route_ip"
+  done <<<"$pod_route_rows"
+}
+
 start_one() {
   local index="$1"
   local row_b64="$2"
   local row
   row="$(printf '%s' "$row_b64" | base64 -d)"
 
-  local name ip gpu tap seed img overlay pid log mac dns_csv
+  local name ip role gpu tap seed img overlay pid log mac dns_csv route_yaml
   name="$(echo "$row" | jq -r '.name')"
   ip="$(echo "$row" | jq -r '.ip')"
+  role="$(echo "$row" | jq -r '.role')"
   gpu="$(echo "$row" | jq -r '.gpu')"
-  tap="k1s${index}"
+  tap="$(lane_tap_name "$index")"
   seed="$seed_dir/${name}.seed.iso"
   overlay="$state_dir/${name}.qcow2"
   pid="$pid_dir/${name}.pid"
@@ -149,7 +172,8 @@ start_one() {
     qemu-img create -f qcow2 -F qcow2 -b "$img" "$overlay" "${disk_gb}G" >/dev/null
   fi
 
-  make_seed "$name" "$ip" "$seed" "$dns_csv"
+  route_yaml="$(render_guest_route_yaml "$role")"
+  make_seed "$name" "$ip" "$seed" "$dns_csv" "$route_yaml"
   tap_up "$tap"
 
   mac="$(printf '52:54:00:%02x:%02x:%02x' $((index & 0xff)) $(((index + 16) & 0xff)) $(((index + 32) & 0xff)))"
@@ -214,6 +238,11 @@ for row in "${hosts[@]}"; do
   log "waiting for ssh: ${name} (${ip})"
   if ! wait_for_ssh "$ip" 150; then
     err "ssh did not become ready for ${name} (${ip})"
+    exit 1
+  fi
+  log "waiting for cloud-init: ${name} (${ip})"
+  if ! wait_for_cloud_init "$ip" 180; then
+    err "cloud-init did not complete for ${name} (${ip})"
     exit 1
   fi
   with_repo_host_mount "$ip" >/dev/null 2>&1 || true

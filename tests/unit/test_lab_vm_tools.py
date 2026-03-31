@@ -20,11 +20,13 @@ COMMON_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "common-bootstrap.s
 IMAGE_BUILD_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_build.sh"
 IMAGE_VERIFY_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_verify.sh"
 RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
+CRI_NODE_CNI_HELPER_SCRIPT = ROOT / "scripts" / "dev" / "ensure_cri_node_cni.sh"
 HA_CLOSEOUT_E2E_SCRIPT = ROOT / "scripts" / "dev" / "ha_closeout_e2e.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
 HA_DASHBOARD_SMOKE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "ha_dashboard_smoke.sh"
 HOST_PREPARE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "host_prepare.sh"
+VARIANT_UP_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "variant_up.sh"
 VARIANT_DOWN_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "variant_down.sh"
 COMMON_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "common.sh"
 GUEST_PREREQS_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "guest_prereqs.sh"
@@ -115,6 +117,7 @@ def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
     assert [item["name"] for item in payload["ha"]["hub_nodes"]] == ["core-a", "core-b", "core-c"]
     assert payload["ha"]["edge_sites"][0]["monitor_url"] == "http://192.168.155.20:8223"
     assert payload["ha"]["edge_sites"][0]["expected_gateways"] == ["sea--sea-gw"]
+    assert payload["hosts"][4]["pod_cidr"] == "10.42.1.0/24"
     assert payload["smoke"]["lanes"] == ["ha_control_plane"]
 
 
@@ -141,6 +144,7 @@ def test_checked_in_ha_hub_node_variant_normalizes_for_manual_smoke_lane() -> No
     assert payload["hosts"][3]["role"] == "k1s-core-node"
     assert payload["hosts"][3]["node_id"] == "hub-1"
     assert payload["hosts"][3]["node_labels"] == "role=hub,site=hub"
+    assert payload["hosts"][3]["pod_cidr"] == "10.42.0.0/24"
     assert payload["k1s"]["agent_api_port"] == 9110
     assert payload["ha"]["enabled"] is True
     assert payload["ha"]["edge_sites"] == []
@@ -201,6 +205,12 @@ def test_ha_drill_actions_require_guest_prereqs() -> None:
 def test_ha_drill_actions_restart_processes_without_profile_reentry() -> None:
     text = HA_DRILL_ACTIONS_SCRIPT.read_text(encoding="utf-8")
     assert "python3 -m ae.controller --loop --metrics-port" in text
+    assert "old_pids=" in text
+    assert 'sudo pkill -TERM -f -- "\\$controller_pattern"' in text
+    assert 'sudo kill -KILL "\\$pid"' in text
+    assert 'wait_for_local_process "\\$new_pid" 45 1' in text
+    assert "AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS=\\${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1}" in text
+    assert "AE_EDGE_INGRESS_CONFIG_DIR=\\${AE_EDGE_INGRESS_CONFIG_DIR:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress}" in text
     assert "python3 -m ae.gateway" in text
     assert "wait_for_local_tcp_port" in text
     assert "wait_for_local_process" in text
@@ -699,14 +709,97 @@ exit 9
     assert res.stdout.strip() == "ok"
 
 
+def test_host_prepare_adds_bridge_and_pod_cidr_nat_exemptions() -> None:
+    text = HOST_PREPARE_SCRIPT.read_text(encoding="utf-8")
+    assert 'declare -a POD_CIDRS=()' in text
+    assert 'declare -a TAP_INTERFACES=()' in text
+    assert "mapfile -t POD_CIDRS" in text
+    assert 'ensure_nat_return_rule -s "$NET_CIDR" -o "$BRIDGE" -j RETURN' in text
+    assert 'ensure_nat_return_rule -s "$NET_CIDR" -d "$pod_cidr" -j RETURN' in text
+    assert 'sudo iptables -t nat -I POSTROUTING 1 "$@"' in text
+    assert 'sudo iptables -N "$FORWARD_CHAIN" 2>/dev/null || true' in text
+    assert 'sudo iptables -I FORWARD 1 -j "$FORWARD_CHAIN"' in text
+    assert 'ensure_forward_chain_rule -i "$tap" -j ACCEPT' in text
+    assert 'ensure_forward_chain_rule -o "$tap" -j ACCEPT' in text
+
+
+def test_host_prepare_installs_forward_chain_before_host_firewall_jumps(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    iptables_log = tmp_path / "iptables.log"
+
+    _write_executable(
+        fake_bin / "sudo",
+        '#!/usr/bin/env bash\nexec "$@"\n',
+    )
+    _write_executable(
+        fake_bin / "iptables",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "{iptables_log}"
+for arg in "$@"; do
+  if [[ "$arg" == "-C" ]]; then
+    exit 1
+  fi
+done
+exit 0
+""",
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            (
+                f'PATH="{fake_bin}:$PATH"; '
+                f'source "{HOST_PREPARE_SCRIPT}"; '
+                'FORWARD_CHAIN="K1S_VM_FORWARD"; '
+                'BRIDGE="k1s-br0"; NET_CIDR="192.168.155.0/24"; '
+                'POD_CIDRS=("10.42.0.0/24"); '
+                'TAP_INTERFACES=("k1s0" "k1s1" "k1s2" "k1s3"); '
+                "ensure_nat_rules"
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr
+    iptables_calls = iptables_log.read_text(encoding="utf-8")
+    assert '-N K1S_VM_FORWARD' in iptables_calls
+    assert '-F K1S_VM_FORWARD' in iptables_calls
+    assert '-A K1S_VM_FORWARD -i k1s0 -j ACCEPT' in iptables_calls
+    assert '-A K1S_VM_FORWARD -o k1s3 -j ACCEPT' in iptables_calls
+    assert '-I FORWARD 1 -j K1S_VM_FORWARD' in iptables_calls
+    assert '-A FORWARD -j K1S_VM_FORWARD' not in iptables_calls
+
+
+def test_variant_up_uses_variant_aware_host_prepare() -> None:
+    text = VARIANT_UP_SCRIPT.read_text(encoding="utf-8")
+    assert '"$ROOT_DIR/scripts/lab/vm/host_prepare.sh" --variant "$VARIANT" --apply' in text
+    assert 'pod_route_rows="$(' in text
+    assert 'select(.role=="k1s-core-node" and (.pod_cidr // "") != "")' in text
+    assert 'render_guest_route_yaml() {' in text
+    assert "printf '      routes:" in text
+    assert 'route_yaml="$(render_guest_route_yaml "$role")"' in text
+    assert 'tap="$(lane_tap_name "$index")"' in text
+    assert 'wait_for_cloud_init "$ip" 180' in text
+    assert 'err "cloud-init did not complete for ${name} (${ip})"' in text
+
+
 def test_variant_down_uses_run_inventory_fallback() -> None:
     text = VARIANT_DOWN_SCRIPT.read_text(encoding="utf-8")
     assert "[--purge] [--destroy-network] [--best-effort]" in text
     assert 'run_inventory="$(run_dir "$RUN_ID")/qemu_inventory.json"' in text
     assert 'log "using run inventory fallback for run_id=${RUN_ID}: $inventory"' in text
     assert 'log "continuing with best-effort cleanup derived from variant topology"' in text
-    assert 'tap="k1s${i}"' in text
+    assert 'FORWARD_CHAIN="${FORWARD_CHAIN:-K1S_VM_FORWARD}"' in text
+    assert 'tap="$(lane_tap_name "$i")"' in text
     assert 'pid_file="$state_dir/pids/${name}.pid"' in text
+    assert "while sudo iptables -t nat -D POSTROUTING -s \"$cidr\" -d \"$pod_cidr\" -j RETURN 2>/dev/null; do" in text
+    assert "while sudo iptables -t nat -D POSTROUTING -s \"$cidr\" -o \"$bridge\" -j RETURN 2>/dev/null; do" in text
+    assert 'while sudo iptables -D FORWARD -j "$FORWARD_CHAIN" 2>/dev/null; do' in text
+    assert 'sudo iptables -F "$FORWARD_CHAIN" 2>/dev/null || true' in text
+    assert 'sudo iptables -X "$FORWARD_CHAIN" 2>/dev/null || true' in text
     assert (
         'elif pids="$(pgrep -f -- "$overlay" 2>/dev/null || true)" && [[ -n "$pids" ]]; then'
         in text
@@ -776,6 +869,72 @@ pattern="${*: -1}"
     assert "link delete k1s0" in ip_calls
     assert "link show k1s1" in ip_calls
     assert "link delete k1s1" in ip_calls
+
+
+def test_variant_down_removes_forward_chain_when_destroying_network(tmp_path: Path) -> None:
+    fake_root = tmp_path / "root"
+    fake_root.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    iptables_log = tmp_path / "iptables.log"
+
+    _write_executable(
+        fake_bin / "sudo",
+        '#!/usr/bin/env bash\nexec "$@"\n',
+    )
+    _write_executable(
+        fake_bin / "iptables",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "{iptables_log}"
+for arg in "$@"; do
+  if [[ "$arg" == "-D" ]]; then
+    exit 1
+  fi
+done
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "ip",
+        """#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "pgrep",
+        """#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+""",
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            (
+                f'PATH="{fake_bin}:$PATH"; '
+                f'source "{VARIANT_DOWN_SCRIPT}"; '
+                f'ROOT_DIR="{fake_root}"; '
+                "variant_to_json() { "
+                "cat <<'EOF'\n"
+                '{"network":{"bridge":"k1s-br0","cidr":"192.168.155.0/24"},'
+                '"hosts":[{"name":"core-a"},{"name":"core-b"}]}'
+                "\nEOF\n"
+                "}; "
+                'main --variant fake-variant.yaml --run-id retained-test --best-effort --destroy-network'
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr
+    iptables_calls = iptables_log.read_text(encoding="utf-8")
+    assert '-D FORWARD -j K1S_VM_FORWARD' in iptables_calls
+    assert '-F K1S_VM_FORWARD' in iptables_calls
+    assert '-X K1S_VM_FORWARD' in iptables_calls
 
 
 def test_variant_down_without_best_effort_rejects_missing_inventories(tmp_path: Path) -> None:
@@ -854,13 +1013,42 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "sudo mkdir -p /var/lib/ae/gateway" in text
     assert "AE_CRI_CACHE_SEED_MODE" in text
     assert "AE_CRI_CACHE_SEED_BUNDLE" in text
+    assert 'pod_cidr="$(echo "$host_json" | jq -r \'.pod_cidr // empty\')"' in text
+    assert "pod_cidr_env=$'  AE_POD_CIDR='" in text
+    assert "pod_cidr_env+=$'  AE_CNI_SUBNET='" in text
+    assert "AE_CNI_FORCE=\\${AE_CNI_FORCE:-1}" in text
+    assert "AE_POD_BRIDGE=\\${AE_POD_BRIDGE:-cni0}" in text
+    assert "AE_CNI_BRIDGE_NAME=\\${AE_CNI_BRIDGE_NAME:-\\${AE_POD_BRIDGE:-cni0}}" in text
     assert text.count("REGISTER_ONLY=1 SITE_ID") == 1
+
+    helper_text = CRI_NODE_CNI_HELPER_SCRIPT.read_text(encoding="utf-8")
+    assert 'pod_cidr="${AE_POD_CIDR:-}"' in helper_text
+    assert 'export AE_CNI_SUBNET="${AE_CNI_SUBNET:-$pod_cidr}"' in helper_text
+    assert 'export AE_CNI_FORCE="${AE_CNI_FORCE:-1}"' in helper_text
+    assert 'export AE_CNI_BRIDGE_NAME="${AE_CNI_BRIDGE_NAME:-cni0}"' in helper_text
+    assert 'bash "${ROOT_DIR}/scripts/cni_init.sh"' in helper_text
+
+    makefile_text = MAKEFILE.read_text(encoding="utf-8")
+    assert "AE_CNI_SUBNET=$${AE_CNI_SUBNET:-$${AE_POD_CIDR:-10.42.0.0/24}}" in makefile_text
+    assert "AE_CNI_SUBNET=$${AE_CNI_SUBNET:-$${AE_POD_CIDR:-10.42.1.0/24}}" in makefile_text
+    assert "AE_CNI_FORCE=$${AE_CNI_FORCE:-1}" in makefile_text
+    assert "AE_POD_BRIDGE=$${AE_POD_BRIDGE:-cni0}" in makefile_text
+    assert "AE_CNI_BRIDGE_NAME=$${AE_CNI_BRIDGE_NAME:-$${AE_POD_BRIDGE:-cni0}}" in makefile_text
+    assert "./scripts/dev/ensure_cri_node_cni.sh && PYTHONPATH=src python -m ae.node --ensure-pod-net" in makefile_text
 
     run_profile_text = RUN_PROFILE_SCRIPT.read_text(encoding="utf-8")
     assert "STRICT_CRI_OWNERSHIP_HELPER_ARGS=()" in run_profile_text
     assert "strict_cri_explicit_target_configured()" in run_profile_text
     assert "AE_STRICT_CRI_TARGET_UID and AE_STRICT_CRI_TARGET_GID must be set together." in run_profile_text
     assert 'STRICT_CRI_OWNERSHIP_HELPER_ARGS=(--target-uid "$target_uid" --target-gid "$target_gid")' in run_profile_text
+    assert (
+        'export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1}"'
+        in run_profile_text
+    )
+    assert (
+        'export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-0}"'
+        in run_profile_text
+    )
 
 
 def test_guest_prereqs_script_requires_ready_image_by_default() -> None:
@@ -940,9 +1128,14 @@ def test_ensure_controller_env_preserves_controller_tokens_and_profile_metadata(
 def test_ha_shared_infra_script_bootstraps_clustered_backends() -> None:
     text = HA_SHARED_INFRA_SCRIPT.read_text(encoding="utf-8")
     assert "ha shared infra requires exactly 3 hosts with role=k1s-ha-core" in text
+    assert 'seed_manifest_default="/mnt/host/lab/variants/cri_seed_images.lock.json"' in text
+    assert 'seed_bundle_default="/mnt/host/state/lab-vm/${RUN_ID}/seeds/cri-seed-images.oci.tar"' in text
+    assert "bootstrap_seed_cri_cache() {" in text
     assert "source /mnt/host/scripts/lab/vm/lib/guest_prereqs.sh" in text
     assert "ensure_vm_bootstrap_prereqs" in text
+    assert "bootstrap_seed_cri_cache core" in text
     assert "python3 /mnt/host/scripts/dev/cri_stack.py up-etcd \\" in text
+    assert 'AE_CRI_IMAGE_POLICY=\\${AE_CRI_IMAGE_POLICY:-fail}' in text
     assert "--initial-cluster '" in text
     assert "python3 /mnt/host/scripts/dev/cri_stack.py up-nats-hub \\" in text
     assert "HA shared infra NATS cluster did not converge" in text
@@ -1163,6 +1356,7 @@ def test_retained_ha_dashboard_docs_use_make_helper_targets() -> None:
     for text in (bring_up, runbook, ops):
         assert "make lab-vm-ha-dashboard-up" in text
         assert "make lab-vm-ha-dashboard-status" in text
+        assert "make lab-vm-ha-dashboard-workload-smoke" in text
         assert "make lab-vm-ha-dashboard-refresh-all" in text
         assert "make lab-vm-ha-dashboard-down" in text
         assert "make lab-vm-ha-dashboard-purge" in text
@@ -1173,6 +1367,11 @@ def test_retained_ha_dashboard_docs_use_make_helper_targets() -> None:
     assert 'LAB_VM_HA_DASHBOARD_ARGS="--target all"' in bring_up
     assert 'LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"' in runbook
     assert 'retained-VM "rebuild and restart all" path' in ops
+    assert "ha-web-smoke.home.arpa" in bring_up
+    assert "ha-web-smoke.home.arpa" in runbook
+    assert "ha-web-smoke.home.arpa" in ops
+    assert "ha-web-smoke.home.arpa:10443:192.168.155.10" in bring_up
+    assert "ha-web-smoke.home.arpa:10443:192.168.155.10" in runbook
 
 
 def test_vm_golden_image_pipeline_docs_cover_auto_cleanup_and_manual_recovery() -> None:
@@ -1207,6 +1406,8 @@ def test_make_lab_vm_ha_dashboard_targets_use_helper_wrapper() -> None:
         "lab-vm-ha-dashboard-status:",
         "lab-vm-ha-dashboard-down:",
         "lab-vm-ha-dashboard-purge:",
+        "lab-vm-ha-dashboard-workload-smoke:",
+        "lab-vm-ha-core-workload-smoke:",
         "lab-vm-ha-dashboard-reseed-core:",
         "lab-vm-ha-dashboard-restart-core:",
         "lab-vm-ha-dashboard-restart-apishim:",
@@ -1219,6 +1420,8 @@ def test_make_lab_vm_ha_dashboard_targets_use_helper_wrapper() -> None:
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh status" in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh down" in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh purge" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh workload-smoke" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh core-workload-smoke" in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh reseed-core" in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh restart-core" in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh restart-apishim" in text
@@ -1227,6 +1430,7 @@ def test_make_lab_vm_ha_dashboard_targets_use_helper_wrapper() -> None:
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh reset" in text
     assert "RUN_ID=$${RUN_ID:-ha-dashboard-local}" in text
     assert "VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml}" in text
+    assert "VARIANT=$${VARIANT:-lab/variants/ha-control-plane-core.yaml}" in text
     assert "$${LAB_VM_HA_DASHBOARD_ARGS:-}" in text
 
 
@@ -1235,6 +1439,8 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert 'DEFAULT_VARIANT="$ROOT_DIR/lab/variants/ha-control-plane-hub-node.yaml"' in text
     assert 'DEFAULT_RUN_ID="ha-dashboard-local"' in text
     assert 'source "$ROOT_DIR/scripts/lib/nixos_bridge.sh"' in text
+    assert "workload-smoke" in text
+    assert "core-workload-smoke" in text
     assert "reseed-core" in text
     assert "restart-core" in text
     assert "restart-apishim" in text
@@ -1263,10 +1469,16 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert "cmd_purge\n    return 0" in text
     assert 'local down_args=(--variant "$VARIANT" --run-id "$RUN_ID" --best-effort)' in text
     assert 'purge_retained_artifacts() {' in text
+    assert 'cmd_workload_smoke() {' in text
     assert 'purge_retained_artifacts\n  cmd_up' in text
     assert 'rm -rf "$run_path"' in text
     assert "localhost:5001/k1s-apishim:dev" in text
     assert "docker.io/library/demo-shell:latest" in text
+    assert 'retained_workload_smoke_manifest="${AE_RETAINED_WORKLOAD_SMOKE_MANIFEST:-$ROOT_DIR/docs/site/examples/ha-web-smoke.yaml}"' in text
+    assert 'retained_workload_smoke_host="${AE_RETAINED_WORKLOAD_SMOKE_HOST:-ha-web-smoke.home.arpa}"' in text
+    assert 'retained_workload_smoke_expected_text="${AE_RETAINED_WORKLOAD_SMOKE_EXPECTED_TEXT:-Shell + Port-Forward Smoke}"' in text
+    assert 'ha_core_workload_smoke_manifest="${AE_HA_CORE_WORKLOAD_SMOKE_MANIFEST:-$ROOT_DIR/docs/site/examples/ha-web-smoke-edge.yaml}"' in text
+    assert 'ha_core_workload_smoke_host="${AE_HA_CORE_WORKLOAD_SMOKE_HOST:-ha-edge-web-smoke.home.arpa}"' in text
     assert "print_remote_ha_failure_context() {" in text
     assert "snapshot_local_dev_hosts_state() {" in text
     assert "render_retained_local_dev_apply_map() {" in text
@@ -1283,11 +1495,35 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert 'AE_DEV_LOCAL_ACTION=clean "$ROOT_DIR/scripts/dev/ensure_dev_local.sh"' in text
     assert 'current_output="$(getent hosts "${RETAINED_LOCAL_DEV_TARGET_HOSTS[@]}" 2>/dev/null || true)"' in text
     assert "check_stack_ready\n  apply_retained_local_dev_hosts\n  verify_retained_local_dev_hosts_applied\n  cmd_status" in text
+    assert "append_label_args_from_csv() {" in text
+    assert '"$ROOT_DIR/scripts/dev/ha_core_node_smoke.py" ingress-smoke' in text
+    assert '--manifest "$retained_workload_smoke_manifest"' in text
+    assert '--app-name "$retained_workload_smoke_app"' in text
+    assert 'log "verifying core-local Envoy ingress host=${retained_workload_smoke_host}:${ingress_tls_port} via ${first_core_ip}"' in text
+    assert '--direct-probe-host "$first_core_ip"' in text
+    assert 'cmd_core_workload_smoke() {' in text
+    assert '--manifest "$ha_core_workload_smoke_manifest"' in text
+    assert '--app-name "$ha_core_workload_smoke_app"' in text
+    assert '--ingress-host "$ha_core_workload_smoke_host"' in text
+    assert '--ingress-host "$retained_workload_smoke_host"' in text
+    assert '--resolve-ip "$first_core_ip"' in text
+    assert '--expected-text "$retained_workload_smoke_expected_text"' in text
     assert 'sudo tail -n 80 /home/ae/k1s-ha-core.log' in text
     assert 'sudo crictl ps -a --name k1s-core-apishim -q' in text
     assert 'focus="${3:-controller}"' in text
     assert 'print_remote_ha_failure_context "$name" "$ip" controller' in text
     assert 'print_remote_ha_failure_context "$name" "$ip" apishim' in text
+    assert 'mapfile -t selected_rows < <(core_target_rows "$TARGET")' in text
+    assert 'for row in "${selected_rows[@]}"; do' in text
+    assert "old_pids=" in text
+    assert 'sudo pkill -TERM -f -- "\\$controller_pattern"' in text
+    assert 'sudo kill -KILL "\\$pid"' in text
+    assert 'new_pid=\\$!' in text
+    assert 'kill -0 "\\$new_pid"' in text
+    assert "AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS=\\${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1}" in text
+    assert "AE_EDGE_INGRESS_RELOAD_CMD=\"python3 /mnt/host/scripts/dev/cri_stack.py up-envoy --profile k1s-ha-core" in text
+    assert "workload-smoke requires a live retained HA run; run 'make lab-vm-ha-dashboard-up' first" in text
+    assert "requires a live retained HA run; run 'make lab-vm-ha-dashboard-up' first" in text
 
 
 def test_ha_dashboard_smoke_status_guidance_covers_auth_and_api_only_ingress() -> None:
@@ -1677,6 +1913,89 @@ def test_run_ha_acceptance_checks_includes_core_node_smoke_when_runtime_node_pre
             captured_commands["ha_core_node_workload_smoke"].index("--manifest") + 1
         ]
     )
+
+
+def test_run_ha_acceptance_checks_includes_edge_runtime_ingress_smoke_when_edge_worker_present(
+    monkeypatch,
+) -> None:
+    captured_commands: dict[str, list[str]] = {}
+
+    def _fake_run_helper_check(
+        name: str,
+        command: list[str],
+        *,
+        timeout_s: int,
+        optional: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        _ = timeout_s, optional, env
+        captured_commands[name] = command
+        return {
+            "name": name,
+            "status": "passed",
+            "optional": optional,
+            "detail": "ok",
+            "command": command,
+        }
+
+    monkeypatch.setattr(smoke_v2, "_run_helper_check", _fake_run_helper_check)
+
+    result = smoke_v2.run_ha_acceptance_checks(
+        {
+            "core_nodes": [
+                {
+                    "name": "core-a",
+                    "node_id": "core-a",
+                    "ip": "192.168.155.10",
+                    "controller_url": "http://192.168.155.10:9108",
+                    "apishim_url": "https://192.168.155.10:8445",
+                }
+            ],
+            "runtime_nodes": [],
+            "edge_runtime_nodes": [
+                {
+                    "name": "edge-sea-node",
+                    "node_id": "sea-node-1",
+                    "ip": "192.168.155.21",
+                    "site_id": "sea",
+                    "agent_url": "http://192.168.155.21:9112",
+                    "labels": {"role": "worker", "site": "sea"},
+                }
+            ],
+            "controller_metrics_url": "http://192.168.155.10:9108/metrics",
+            "etcd_endpoints": [
+                "http://192.168.155.10:2379",
+                "http://192.168.155.11:2379",
+                "http://192.168.155.12:2379",
+            ],
+            "etcd_prefix": "k1s/lab/ha-control-plane",
+            "nats_url": "nats://hub-controller:dev@192.168.155.10:4222",
+            "hub_nodes": [{"name": "core-a", "monitor_url": "http://192.168.155.10:8222"}],
+            "edge_core_sites": ["sea"],
+            "edge_sites": [
+                {
+                    "site_id": "sea",
+                    "monitor_url": "http://192.168.155.20:8223",
+                    "expected_gateways": ["sea--sea-gw"],
+                }
+            ],
+            "expected_version": "0.1.3.dev0",
+        },
+        timeout_s=30,
+    )
+
+    assert result["status"] == "passed"
+    command = captured_commands["ha_edge_runtime_ingress_smoke:sea"]
+    assert command[:3] == [
+        sys.executable,
+        str(ROOT / "scripts" / "dev" / "ha_core_node_smoke.py"),
+        "ingress-smoke",
+    ]
+    assert command[command.index("--node-id") + 1] == "sea-node-1"
+    assert "role=worker" in command
+    assert "site=sea" in command
+    assert "ha-web-smoke-edge.yaml" in command[command.index("--manifest") + 1]
+    assert command[command.index("--ingress-host") + 1] == "ha-edge-web-smoke.home.arpa"
 
 
 def test_smoke_v2_skips_vm_managed_ha_infra_for_external_backends() -> None:

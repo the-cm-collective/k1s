@@ -1731,6 +1731,14 @@ class EtcdStateStore(SQLiteStateStore):
             updated_at=updated,
         )
 
+    def delete_edge_ingress_route(self, *, name: str, namespace: str) -> bool:
+        key = self._k("ingress", "routes", namespace or "default", name)
+        rec, _rev = self._get_json(key)
+        if not rec:
+            return False
+        self._delete(key)
+        return True
+
     def list_edge_ingress_routes_for_site(self, site_id: str) -> list[EdgeIngressRouteRecord]:
         return [r for r in self.list_edge_ingress_routes() if r.site_id == site_id]
 

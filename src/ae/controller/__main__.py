@@ -38,6 +38,7 @@ from ae.controller.hpa_authority import (
     WorkloadMetricsCollector,
     WorkloadMetricsCollectorConfig,
 )
+from ae.controller.app_ingress import sync_translated_app_ingress
 from ae.controller.storage_authority import (
     StorageAuthorityRunner,
     build_storage_authority_store,
@@ -370,149 +371,12 @@ def _import_specs(specs_dir: Path, store: SQLiteStateStore, source: str = "specs
         manifest_map = _load_all(_find_manifests(specs_dir))
     except Exception:
         return
-    translate_ingress = _truthy_env("AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS")
     for manifest, _path in manifest_map.values():
         try:
             labels = getattr(getattr(manifest, "metadata", None), "labels", None)
             store.register_app(manifest, source=source, labels=labels)
-            if translate_ingress:
-                _translate_app_ingress(manifest, store)
         except Exception:
             continue
-
-
-def _translate_app_ingress(manifest: AppManifest, store: SQLiteStateStore) -> None:
-    ingress = getattr(manifest.spec, "ingress", None)
-    if ingress is None:
-        return
-    ns = getattr(manifest.metadata, "namespace", None) or DEFAULT_NAMESPACE
-    app_name = manifest.metadata.name
-    route_name = f"{app_name}-ingress"
-    existing = store.get_edge_ingress_route(name=route_name, namespace=ns)
-    if existing is not None and not _edge_ingress_is_translated(existing):
-        return
-    mode = _translate_ingress_mode()
-    site_id = _translate_ingress_site(mode)
-    exposure: dict = {"mode": mode}
-    if mode not in {"core-local", "core"}:
-        exposure["placement"] = {"site": site_id}
-    tls_block = _translate_ingress_tls(ingress)
-    if tls_block:
-        exposure["tls"] = tls_block
-
-    port = _translate_ingress_port(manifest)
-    paths_raw = list(getattr(ingress, "paths", []) or [])
-    if not paths_raw:
-        paths_raw = [getattr(ingress, "path", "/") or "/"]
-    paths = []
-    for p in paths_raw:
-        path = str(p or "/").strip() or "/"
-        if not path.startswith("/"):
-            path = f"/{path}"
-        entry = {
-            "path": path,
-            "serviceRef": {
-                "name": app_name,
-                "namespace": ns,
-                **({"port": port} if port is not None else {}),
-            },
-        }
-        paths.append(entry)
-
-    payload = {
-        "apiVersion": "k1s.io/v1",
-        "kind": "EdgeIngressRoute",
-        "metadata": {
-            "name": route_name,
-            "namespace": ns,
-            "annotations": {"k1s.io/translated-from": "AppManifest"},
-        },
-        "spec": {
-            "host": ingress.host,
-            "paths": paths,
-            "exposure": exposure,
-        },
-    }
-    store.upsert_edge_ingress_route(
-        name=route_name,
-        namespace=ns,
-        site_id=site_id if mode not in {"core-local", "core"} else "core",
-        policy_name=None,
-        policy_namespace=None,
-        document=payload,
-    )
-
-
-def _edge_ingress_is_translated(record) -> bool:
-    doc = record.spec if isinstance(record.spec, dict) else {}
-    meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
-    ann = meta.get("annotations") if isinstance(meta.get("annotations"), dict) else {}
-    return ann.get("k1s.io/translated-from") == "AppManifest"
-
-
-def _translate_ingress_mode() -> str:
-    raw = (
-        os.getenv("AE_EDGE_INGRESS_TRANSLATE_MODE")
-        or os.getenv("AE_EDGE_INGRESS_MODE")
-        or os.getenv("EDGE_INGRESS_MODE")
-        or ""
-    ).strip()
-    if raw:
-        raw = raw.lower().replace("_", "-")
-        if raw in {"core", "core-local"}:
-            return "core-local"
-        if raw in {"core-proxy", "core-proxy"}:
-            return "core-proxy"
-        if raw in {"core-to-edge-public", "core-to-edge", "public"}:
-            return "core-to-edge-public"
-        if raw in {"edge-local", "edge"}:
-            return "edge-local"
-    backend = (os.getenv("AE_TRANSPORT_BACKEND") or "http").lower()
-    if backend == "http":
-        return "core-local"
-    return "core-proxy"
-
-
-def _translate_ingress_site(mode: str) -> str:
-    site = (os.getenv("AE_EDGE_INGRESS_APP_SITE") or os.getenv("AE_SITE_ID") or "").strip()
-    if not site or site == "core":
-        site = "sfo-edge-01"
-    if mode in {"core-local", "core"}:
-        return "core"
-    return site
-
-
-def _translate_ingress_tls(ingress) -> dict | None:
-    if getattr(ingress, "tls", True) is False and not getattr(ingress, "tls_secret_name", None):
-        return None
-    tls_block = {"mode": "terminate-core", "terminateCore": {"redirectHttpToHttps": True}}
-    secret = getattr(ingress, "tls_secret_name", None)
-    if secret:
-        tls_block["terminateCore"]["secretName"] = str(secret)
-    return tls_block
-
-
-def _translate_ingress_port(manifest: AppManifest) -> int | None:
-    try:
-        if manifest.spec.health and manifest.spec.health.readiness:
-            r = manifest.spec.health.readiness
-            if getattr(r, "http_get", None) is not None:
-                return int(r.http_get.port)
-            if getattr(r, "tcp_socket", None) is not None:
-                return int(r.tcp_socket.port)
-    except Exception:
-        pass
-    try:
-        if manifest.spec.service and getattr(manifest.spec.service, "target_port", None):
-            return int(manifest.spec.service.target_port)
-    except Exception:
-        pass
-    try:
-        if manifest.spec.ports:
-            return int(manifest.spec.ports[0].container_port)
-    except Exception:
-        pass
-    return None
 
 
 def _reserved_controlplane_hosts_from_env() -> set[str]:
@@ -3053,7 +2917,6 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             else:
                 _import_specs(specs_dir, store, source="specs")
                 _import_edge_ingress_specs(specs_dir, store, source="specs")
-            _reconcile_edge_ingress(store, _edge_renderer)
         except Exception:
             pass
         if not authority_config.enabled:
@@ -3061,6 +2924,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 _sync_apishim_registry(store, reconciler)
             except Exception:
                 pass
+        try:
+            sync_translated_app_ingress(store)
+            _reconcile_edge_ingress(store, _edge_renderer)
+        except Exception:
+            pass
         try:
             entries = store.list_registered_apps()
         except Exception:
@@ -3210,7 +3078,6 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     if not authority_config.enabled:
                         _import_specs(specs_dir, store, source="specs")
                         _import_edge_ingress_specs(specs_dir, store, source="specs")
-                    _reconcile_edge_ingress(store, _edge_renderer)
                 except Exception:
                     pass
                 if not authority_config.enabled:
@@ -3218,6 +3085,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                         _sync_apishim_registry(store, reconciler)
                     except Exception:
                         pass
+                try:
+                    sync_translated_app_ingress(store)
+                    _reconcile_edge_ingress(store, _edge_renderer)
+                except Exception:
+                    pass
                 try:
                     entries = store.list_registered_apps()
                 except Exception:

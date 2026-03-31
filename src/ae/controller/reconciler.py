@@ -96,6 +96,10 @@ class Reconciler:
         except Exception:
             pass
         try:
+            self._health_manager.set_portforward_callback(self._portforward_across_runtimes)
+        except Exception:
+            pass
+        try:
             self._health_manager.set_event_callback(self._on_probe_event)
         except Exception:
             pass
@@ -141,6 +145,33 @@ class Reconciler:
             except Exception:
                 continue
         return 127
+
+    def _portforward_across_runtimes(self, pod_name: str, namespace: str | None, port: int):
+        """Try port-forward across cached remote runtimes, then the base runtime."""
+        runtimes = list(self._runtime_cache.values()) + [self._runtime]
+        last_error: Exception | None = None
+        seen: set[int] = set()
+        for rt in runtimes:
+            ident = id(rt)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            fn = getattr(rt, "port_forward_socket", None)
+            if not callable(fn):
+                continue
+            try:
+                return fn(
+                    pod_id=None,
+                    pod_name=pod_name,
+                    namespace=namespace,
+                    port=int(port),
+                )
+            except Exception as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise RuntimeError(f"port-forward failed for {pod_name}:{int(port)}: {last_error}") from last_error
+        raise RuntimeError(f"port-forward unsupported for {pod_name}:{int(port)}")
 
     def _runtime_backend_name(self) -> str:
         env_backend = os.getenv("AE_RUNTIME_BACKEND")

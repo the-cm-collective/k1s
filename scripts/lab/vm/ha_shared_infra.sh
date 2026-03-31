@@ -35,6 +35,8 @@ ensure_run_dir "$RUN_ID"
 python_bin="$(lab_python)"
 state_dir="$ROOT_DIR/state/lab-vm/$RUN_ID/ha-infra"
 run_dir_path="$(run_dir "$RUN_ID")/ha-shared-infra"
+seed_manifest_default="/mnt/host/lab/variants/cri_seed_images.lock.json"
+seed_bundle_default="/mnt/host/state/lab-vm/${RUN_ID}/seeds/cri-seed-images.oci.tar"
 mkdir -p "$state_dir" "$run_dir_path"
 
 mapfile -t ha_rows < <(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-ha-core") | @base64')
@@ -194,16 +196,64 @@ PY
 #!/usr/bin/env bash
 set -euo pipefail
 export AE_CRI_ENDPOINT=\${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}
+bootstrap_seed_cri_cache() {
+  local profile="\${1:-}"
+  if [[ -z "\$profile" ]]; then
+    echo "[cri-seed] missing profile argument" >&2
+    return 1
+  fi
+  local mode_raw="\${AE_CRI_CACHE_SEED_MODE:-required}"
+  local mode="\$(printf '%s' "\$mode_raw" | tr '[:upper:]' '[:lower:]')"
+  local manifest="\${AE_CRI_CACHE_SEED_MANIFEST:-${seed_manifest_default}}"
+  local bundle="\${AE_CRI_CACHE_SEED_BUNDLE:-${seed_bundle_default}}"
+  case "\$mode" in
+    off|0|false|no)
+      echo "[cri-seed] mode=off profile=\$profile"
+      return 0
+      ;;
+  esac
+  if [[ ! -f "\$manifest" ]]; then
+    echo "[cri-seed] manifest missing: \$manifest" >&2
+    [[ "\$mode" == "required" ]] && return 1
+    return 0
+  fi
+  if [[ -f "\$bundle" ]]; then
+    echo "[cri-seed] import bundle=\$bundle profile=\$profile"
+    if ! sudo ctr -n k8s.io images import "\$bundle" >/dev/null 2>&1; then
+      echo "[cri-seed] import failed: \$bundle" >&2
+      [[ "\$mode" == "required" ]] && return 1
+    fi
+  else
+    echo "[cri-seed] bundle missing: \$bundle" >&2
+    [[ "\$mode" == "required" ]] && return 1
+  fi
+  mapfile -t required_images < <(jq -r --arg p "\$profile" '.images[\$p][]?' "\$manifest")
+  mapfile -t image_refs < <(sudo ctr -n k8s.io images ls -q 2>/dev/null || true)
+  local missing=()
+  local image
+  for image in "\${required_images[@]}"; do
+    if ! printf '%s\n' "\${image_refs[@]}" | grep -Fx -- "\$image" >/dev/null 2>&1; then
+      missing+=("\$image")
+    fi
+  done
+  if [[ "\${#missing[@]}" -gt 0 ]]; then
+    echo "[cri-seed] missing_images profile=\$profile: \${missing[*]}" >&2
+    [[ "\$mode" == "required" ]] && return 1
+  fi
+  echo "[cri-seed] ready profile=\$profile missing=\${#missing[@]}"
+  return 0
+}
 sudo mkdir -p /mnt/host
 sudo mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host || true
 source /mnt/host/scripts/lab/vm/lib/guest_prereqs.sh
 ensure_vm_bootstrap_prereqs
+bootstrap_seed_cri_cache core
 sudo env \
   PYTHONPATH=/mnt/host/src \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_CRI_DATA_ROOT=/var/lib/ae/cri \
   AE_CRI_RUNTIME_HANDLER=\${AE_CRI_RUNTIME_HANDLER:-runc} \
-  AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
+  AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-fail} \
   AE_CRI_REGISTRY_TRUST_SYSTEM=\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1} \
   AE_CRI_REGISTRY_PRELOAD=\${AE_CRI_REGISTRY_PRELOAD:-1} \
   python3 /mnt/host/scripts/dev/cri_stack.py up-etcd \
@@ -223,7 +273,7 @@ sudo env \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
   AE_CRI_DATA_ROOT=/var/lib/ae/cri \
   AE_CRI_RUNTIME_HANDLER=\${AE_CRI_RUNTIME_HANDLER:-runc} \
-  AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
+  AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-fail} \
   AE_CRI_REGISTRY_TRUST_SYSTEM=\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1} \
   AE_CRI_REGISTRY_PRELOAD=\${AE_CRI_REGISTRY_PRELOAD:-1} \
   python3 /mnt/host/scripts/dev/cri_stack.py up-nats-hub \

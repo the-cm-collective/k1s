@@ -203,8 +203,40 @@ build_ha_core_restart_script() {
   cat <<EOF
 $(emit_runtime_preamble)
 cd /mnt/host
-sudo pkill -f -- 'ae\.controller --loop --metrics-port ${controller_port}' >/dev/null 2>&1 || true
-sleep 2
+controller_pattern='python3 -m ae.controller --loop --metrics-port ${controller_port}'
+old_pids="\$(sudo pgrep -f -- "\$controller_pattern" | tr '\n' ' ' || true)"
+if [[ -n "\$old_pids" ]]; then
+  sudo pkill -TERM -f -- "\$controller_pattern" >/dev/null 2>&1 || true
+fi
+drain_deadline=\$((SECONDS + 45))
+while (( SECONDS < drain_deadline )); do
+  port_busy=0
+  if ss -ltn | awk '\$4 ~ /:${controller_port}\$/ {found=1} END {exit(found?0:1)}'; then
+    port_busy=1
+  fi
+  stale_pid=0
+  for pid in \$old_pids; do
+    if sudo kill -0 "\$pid" >/dev/null 2>&1; then
+      stale_pid=1
+      break
+    fi
+  done
+  if (( stale_pid == 0 && port_busy == 0 )); then
+    break
+  fi
+  sleep 1
+done
+if [[ -n "\$old_pids" ]]; then
+  for pid in \$old_pids; do
+    if sudo kill -0 "\$pid" >/dev/null 2>&1; then
+      sudo kill -KILL "\$pid" >/dev/null 2>&1 || true
+    fi
+  done
+fi
+if ss -ltn | awk '\$4 ~ /:${controller_port}\$/ {found=1} END {exit(found?0:1)}'; then
+  echo "controller port ${controller_port} is still busy after stop attempt" >&2
+  exit 1
+fi
 nohup sudo env \
   PYTHONPATH=/mnt/host/src \
   AE_RUNTIME_BACKEND=cri \
@@ -222,6 +254,34 @@ nohup sudo env \
   AE_TRANSPORT_BACKEND=\${AE_TRANSPORT_BACKEND:-nats-js} \
   AE_JS_DOMAIN=\${AE_JS_DOMAIN:-K1S} \
   AE_NODE_PROFILE=\${AE_NODE_PROFILE:-k1s-ha-core} \
+  AE_EDGE_INGRESS_MODE=\${AE_EDGE_INGRESS_MODE:-core-proxy} \
+  AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS=\${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1} \
+  AE_EDGE_INGRESS_CONFIG_DIR=\${AE_EDGE_INGRESS_CONFIG_DIR:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress} \
+  AE_EDGE_INGRESS_ENVOY_CONFIG=\${AE_EDGE_INGRESS_ENVOY_CONFIG:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/envoy.yaml} \
+  AE_RATHOLE_SERVER_CONFIG=\${AE_RATHOLE_SERVER_CONFIG:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/rathole-server.toml} \
+  AE_RATHOLE_CLIENT_DIR=\${AE_RATHOLE_CLIENT_DIR:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/clients} \
+  AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX=\${AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX:-edge.local} \
+  AE_EDGE_INGRESS_LOCAL_ADDR=\${AE_EDGE_INGRESS_LOCAL_ADDR:-127.0.0.1:18081} \
+  AE_EDGE_INGRESS_HTTP_PORT=\${AE_EDGE_INGRESS_HTTP_PORT:-10080} \
+  AE_EDGE_INGRESS_TLS_PORT=\${AE_EDGE_INGRESS_TLS_PORT:-10443} \
+  AE_EDGE_INGRESS_CORE_PROXY=\${AE_EDGE_INGRESS_CORE_PROXY:-1} \
+  AE_EDGE_INGRESS_RATHOLE_RELOAD=\${AE_EDGE_INGRESS_RATHOLE_RELOAD:-1} \
+  AE_EDGE_INGRESS_RELOAD_CMD="python3 /mnt/host/scripts/dev/cri_stack.py up-envoy --profile k1s-ha-core --config \${AE_EDGE_INGRESS_ENVOY_CONFIG:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/envoy.yaml}" \
+  AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD="python3 /mnt/host/scripts/dev/cri_stack.py up-rathole-server --profile k1s-ha-core --config \${AE_RATHOLE_SERVER_CONFIG:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/rathole-server.toml}" \
+  AE_RATHOLE_BIND_ADDR=\${AE_RATHOLE_BIND_ADDR:-0.0.0.0:2333} \
+  AE_RATHOLE_DEFAULT_TOKEN=\${AE_RATHOLE_DEFAULT_TOKEN:-dev} \
+  AE_RATHOLE_SERVER_ADDR=\${AE_RATHOLE_SERVER_ADDR:-127.0.0.1:2333} \
+  AE_CONTROLPLANE_PUBLIC_ENABLE=\${AE_CONTROLPLANE_PUBLIC_ENABLE:-1} \
+  AE_CONTROLPLANE_DASH_HOST=\${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa} \
+  AE_CONTROLPLANE_DOCS_HOST=\${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa} \
+  AE_CONTROLPLANE_API_HOST=\${AE_CONTROLPLANE_API_HOST:-api.home.arpa} \
+  AE_CONTROLPLANE_PROXY_ADDR=\${AE_CONTROLPLANE_PROXY_ADDR:-127.0.0.1} \
+  AE_CONTROLPLANE_PROXY_PORT=\${AE_CONTROLPLANE_PROXY_PORT:-10081} \
+  AE_CONTROLPLANE_CONTROLLER_UPSTREAM=\${AE_CONTROLPLANE_CONTROLLER_UPSTREAM:-127.0.0.1:${controller_port}} \
+  AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM=\${AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM:-127.0.0.1:${controller_port}} \
+  AE_CONTROLPLANE_APISHIM_UPSTREAM=\${AE_CONTROLPLANE_APISHIM_UPSTREAM:-127.0.0.1:${apishim_port}} \
+  AE_CONTROLPLANE_API_APISHIM_UPSTREAM=\${AE_CONTROLPLANE_API_APISHIM_UPSTREAM:-127.0.0.1:${apishim_port}} \
+  AE_CONTROLPLANE_API_APISHIM_TLS=\${AE_CONTROLPLANE_API_APISHIM_TLS:-1} \
   AE_ETCD_MAINTENANCE_ENABLE=\${AE_ETCD_MAINTENANCE_ENABLE:-0} \
   AE_ETCD_MAINTENANCE_THRESHOLD_PCT=\${AE_ETCD_MAINTENANCE_THRESHOLD_PCT:-80} \
   APISHIM_HOST=\${APISHIM_HOST:-0.0.0.0} \
@@ -236,7 +296,13 @@ nohup sudo env \
   AE_NATS_URL='${ha_nats_url}' \
   APISHIM_PORT=${apishim_port} \
   python3 -m ae.controller --loop --metrics-port ${controller_port} > /home/ae/k1s-ha-core.log 2>&1 </dev/null &
+new_pid=\$!
 disown || true
+wait_for_local_process "\$new_pid" 45 1 || {
+  echo "controller process exited early; tailing /home/ae/k1s-ha-core.log" >&2
+  tail -n 80 /home/ae/k1s-ha-core.log >&2 || true
+  exit 1
+}
 wait_for_local_tcp_port ${controller_port} 45 1 || {
   echo "controller restart was not observed on port ${controller_port}" >&2
   exit 1

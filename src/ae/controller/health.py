@@ -73,6 +73,7 @@ class HealthManager:
         # (replica_id, probe_type) -> state
         self._state: dict[tuple[str, str], dict] = {}
         self._exec_cb = None
+        self._portforward_cb = None
         self._loopback_fallback = os.getenv("AE_PROBE_LOOPBACK_FALLBACK", "").strip()
         # optional callback: (replica_id, probe_type, success, message)
         self._event_cb = None
@@ -81,12 +82,17 @@ class HealthManager:
         """Inject a callback taking (replica_id, command:list[str], timeout:int|None)->int."""
         self._exec_cb = fn
 
+    def set_portforward_callback(self, fn):  # type: ignore[no-untyped-def]
+        """Inject a callback taking (pod_name, namespace, port)->socket-like object."""
+        self._portforward_cb = fn
+
     def set_event_callback(self, fn):  # type: ignore[no-untyped-def]
         """Inject a callback taking (replica_id, probe_type, success, message)."""
         self._event_cb = fn
 
     def evaluate(self, manifest: AppManifest, result: RuntimeResult) -> HealthReport:
         pods: list[PodHealth] = []
+        namespace = getattr(manifest.metadata, "namespace", None)
 
         readiness_spec = manifest.spec.health.readiness if manifest.spec.health else None
         liveness_spec = manifest.spec.health.liveness if manifest.spec.health else None
@@ -126,6 +132,7 @@ class HealthManager:
                     probe=startup_spec,
                     default_success=False,
                     probe_type="startup",
+                    namespace=namespace,
                 )
                 if not startup.success:
                     # While startup is pending/failing, treat liveness as OK and readiness as False.
@@ -150,12 +157,14 @@ class HealthManager:
                 probe=readiness_spec,
                 default_success=pod.ready,
                 probe_type="readiness",
+                namespace=namespace,
             )
             liveness = self._evaluate_probe(
                 pod=pod,
                 probe=liveness_spec,
                 default_success=True,
                 probe_type="liveness",
+                namespace=namespace,
             )
 
             # Align with Kubernetes semantics:
@@ -187,6 +196,7 @@ class HealthManager:
         *,
         default_success: bool,
         probe_type: str,
+        namespace: str | None,
     ) -> ProbeOutcome:
         key = (pod.pod_name, probe_type)
         st = self._state.get(
@@ -292,9 +302,21 @@ class HealthManager:
                     )
 
         if probe.http_get:
-            outcome = self._evaluate_http_probe(pod, probe.http_get.path, probe, probe_type)
+            outcome = self._evaluate_http_probe(
+                pod,
+                probe.http_get.path,
+                probe,
+                probe_type,
+                namespace=namespace,
+            )
         elif getattr(probe, "tcp_socket", None) is not None:
-            outcome = self._evaluate_tcp_probe(pod, probe.tcp_socket.port, probe, probe_type)  # type: ignore[union-attr]
+            outcome = self._evaluate_tcp_probe(
+                pod,
+                probe.tcp_socket.port,
+                probe,
+                probe_type,
+                namespace=namespace,
+            )  # type: ignore[union-attr]
         elif getattr(probe, "exec", None) is not None:
             outcome = self._evaluate_exec_probe(pod, probe.exec.command, probe, probe_type)  # type: ignore[union-attr]
         else:
@@ -406,45 +428,184 @@ class HealthManager:
             return self._loopback_fallback
         return host
 
+    def _close_socket(self, sock) -> None:  # type: ignore[no-untyped-def]
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+    def _recv_until(self, sock, marker: bytes, *, limit: int = 65536) -> bytes:  # type: ignore[no-untyped-def]
+        buf = b""
+        while marker not in buf and len(buf) < limit:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        return buf
+
+    def _probe_via_portforward(self, pod_name: str, namespace: str | None, port: int):  # type: ignore[no-untyped-def]
+        if not callable(getattr(self, "_portforward_cb", None)):
+            raise RuntimeError("remote probe unsupported")
+        return self._portforward_cb(pod_name, namespace, int(port))
+
+    def _evaluate_http_probe_via_portforward(
+        self,
+        pod: PodState,
+        path: str,
+        *,
+        port: int,
+        timeout: int,
+        probe_type: str,
+        namespace: str | None,
+    ) -> ProbeOutcome:
+        request_path = path if path.startswith("/") else f"/{path}"
+        try:
+            sock = self._probe_via_portforward(pod.pod_name, namespace, port)
+        except Exception as exc:
+            return ProbeOutcome(
+                False,
+                f"{probe_type} remote http error: {exc} (pod={pod.pod_name} port={port} path={request_path})",
+            )
+        try:
+            try:
+                sock.settimeout(timeout)
+            except Exception:
+                pass
+            request = (
+                f"GET {request_path} HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{int(port)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            ).encode("ascii", "strict")
+            sock.sendall(request)
+            header = self._recv_until(sock, b"\r\n\r\n")
+            if b"\r\n" not in header:
+                return ProbeOutcome(
+                    False,
+                    f"{probe_type} remote http invalid response (pod={pod.pod_name} port={port} path={request_path})",
+                )
+            status_line = header.split(b"\r\n", 1)[0].decode("iso-8859-1", "replace")
+            parts = status_line.split()
+            status_code = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            if 200 <= status_code < 300:
+                return ProbeOutcome(
+                    True,
+                    f"{probe_type} remote http {status_code} (pod={pod.pod_name} port={port} path={request_path})",
+                )
+            return ProbeOutcome(
+                False,
+                f"{probe_type} remote http {status_code} (pod={pod.pod_name} port={port} path={request_path})",
+            )
+        except Exception as exc:
+            return ProbeOutcome(
+                False,
+                f"{probe_type} remote http error: {exc} (pod={pod.pod_name} port={port} path={request_path})",
+            )
+        finally:
+            self._close_socket(sock)
+
+    def _evaluate_tcp_probe_via_portforward(
+        self,
+        pod: PodState,
+        *,
+        port: int,
+        timeout: int,
+        probe_type: str,
+        namespace: str | None,
+    ) -> ProbeOutcome:
+        try:
+            sock = self._probe_via_portforward(pod.pod_name, namespace, port)
+        except Exception as exc:
+            return ProbeOutcome(
+                False,
+                f"{probe_type} remote tcp error: {exc} (pod={pod.pod_name} port={port})",
+            )
+        try:
+            try:
+                sock.settimeout(timeout)
+            except Exception:
+                pass
+            return ProbeOutcome(
+                True,
+                f"{probe_type} remote tcp ok (pod={pod.pod_name} port={port})",
+            )
+        finally:
+            self._close_socket(sock)
+
     def _evaluate_http_probe(
         self,
         pod: PodState,
         path: str,
         probe: ProbeSpec,
         probe_type: str,
+        *,
+        namespace: str | None,
     ) -> ProbeOutcome:
-        if not pod.endpoint:
-            return ProbeOutcome(False, f"{probe_type} endpoint missing")
-
-        host, port = self._split_endpoint(str(pod.endpoint))
-        host = self._rewrite_probe_host(host)
-        endpoint = self._format_endpoint(host, port)
-        url = f"http://{endpoint}{path}"
+        timeout = max(probe.timeout_seconds, 1)
+        request_path = path if path.startswith("/") else f"/{path}"
+        probe_port = None
         try:
-            timeout = max(probe.timeout_seconds, 1)
-            trust_env = os.getenv("AE_PROBE_TRUST_ENV", "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-            }
-            import requests as _requests
+            probe_port = int(probe.http_get.port) if probe.http_get else None
+        except Exception:
+            probe_port = None
 
-            # If tests monkeypatch the module-level get, honor it regardless of trust_env.
-            if trust_env or get is not _requests.get:
-                response = get(url, timeout=timeout)
-            else:
-                sess = _requests.Session()
-                sess.trust_env = False
+        direct_error = None
+        if pod.endpoint:
+            host, endpoint_port = self._split_endpoint(str(pod.endpoint))
+            host = self._rewrite_probe_host(host)
+            target_port = probe_port or (int(endpoint_port) if endpoint_port else None)
+            if host and target_port is not None:
+                endpoint = self._format_endpoint(host, str(target_port))
+                url = f"http://{endpoint}{request_path}"
                 try:
-                    response = sess.get(url, timeout=timeout)
-                finally:
-                    sess.close()
-        except RequestException as exc:  # pragma: no cover - network path depends on runtime
-            return ProbeOutcome(False, f"{probe_type} http error: {exc} (url={url})")
+                    trust_env = os.getenv("AE_PROBE_TRUST_ENV", "").strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                    }
+                    import requests as _requests
 
-        if 200 <= response.status_code < 300:
-            return ProbeOutcome(True, f"{probe_type} http {response.status_code} (url={url})")
-        return ProbeOutcome(False, f"{probe_type} http {response.status_code} (url={url})")
+                    # If tests monkeypatch the module-level get, honor it regardless of trust_env.
+                    if trust_env or get is not _requests.get:
+                        response = get(url, timeout=timeout)
+                    else:
+                        sess = _requests.Session()
+                        sess.trust_env = False
+                        try:
+                            response = sess.get(url, timeout=timeout)
+                        finally:
+                            sess.close()
+                except RequestException as exc:  # pragma: no cover - network path depends on runtime
+                    direct_error = f"{probe_type} http error: {exc} (url={url})"
+                else:
+                    if 200 <= response.status_code < 300:
+                        return ProbeOutcome(
+                            True,
+                            f"{probe_type} http {response.status_code} (url={url})",
+                        )
+                    return ProbeOutcome(
+                        False,
+                        f"{probe_type} http {response.status_code} (url={url})",
+                    )
+            else:
+                direct_error = f"{probe_type} endpoint missing"
+        else:
+            direct_error = f"{probe_type} endpoint missing"
+
+        if probe_port is None:
+            return ProbeOutcome(False, direct_error or f"{probe_type} endpoint missing")
+
+        remote = self._evaluate_http_probe_via_portforward(
+            pod,
+            request_path,
+            port=probe_port,
+            timeout=timeout,
+            probe_type=probe_type,
+            namespace=namespace,
+        )
+        if remote.success or not direct_error:
+            return remote
+        return ProbeOutcome(False, f"{direct_error}; {remote.message}")
 
     def _evaluate_tcp_probe(
         self,
@@ -452,20 +613,35 @@ class HealthManager:
         port: int,
         probe: ProbeSpec,
         probe_type: str,
+        *,
+        namespace: str | None,
     ) -> ProbeOutcome:
         import socket as _sock
 
-        if not pod.endpoint:
-            return ProbeOutcome(False, f"{probe_type} endpoint missing")
-        host, ep_port = self._split_endpoint(str(pod.endpoint))
-        host = self._rewrite_probe_host(host)
-        target_port = int(ep_port or port)
-        try:
-            timeout = max(probe.timeout_seconds, 1)
-            with _sock.create_connection((host, int(target_port)), timeout=timeout):
-                return ProbeOutcome(True, f"{probe_type} tcp ok ({host}:{target_port})")
-        except OSError as exc:
-            return ProbeOutcome(False, f"{probe_type} tcp error: {exc} ({host}:{target_port})")
+        timeout = max(probe.timeout_seconds, 1)
+        direct_error = None
+        if pod.endpoint:
+            host, _ep_port = self._split_endpoint(str(pod.endpoint))
+            host = self._rewrite_probe_host(host)
+            target_port = int(port)
+            try:
+                with _sock.create_connection((host, target_port), timeout=timeout):
+                    return ProbeOutcome(True, f"{probe_type} tcp ok ({host}:{target_port})")
+            except OSError as exc:
+                direct_error = f"{probe_type} tcp error: {exc} ({host}:{target_port})"
+        else:
+            direct_error = f"{probe_type} endpoint missing"
+
+        remote = self._evaluate_tcp_probe_via_portforward(
+            pod,
+            port=int(port),
+            timeout=timeout,
+            probe_type=probe_type,
+            namespace=namespace,
+        )
+        if remote.success or not direct_error:
+            return remote
+        return ProbeOutcome(False, f"{direct_error}; {remote.message}")
 
     def _evaluate_exec_probe(
         self,

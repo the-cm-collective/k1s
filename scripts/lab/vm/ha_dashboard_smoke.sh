@@ -31,6 +31,8 @@ usage() {
 Usage:
   $0 up [--variant <path>] [--run-id <id>]
   $0 status [--variant <path>] [--run-id <id>]
+  $0 workload-smoke [--variant <path>] [--run-id <id>]
+  $0 core-workload-smoke [--variant <path>] [--run-id <id>]
   $0 down [--variant <path>] [--run-id <id>] [--purge] [--destroy-network]
   $0 purge [--variant <path>] [--run-id <id>] [--destroy-network]
   $0 reseed-core [--variant <path>] [--run-id <id>] [--target <csv|all>]
@@ -123,6 +125,18 @@ ingress_tls_port="${AE_EDGE_INGRESS_TLS_PORT:-10443}"
 dash_host="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"
 docs_host="${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa}"
 api_host="${AE_CONTROLPLANE_API_HOST:-api.home.arpa}"
+retained_workload_smoke_manifest="${AE_RETAINED_WORKLOAD_SMOKE_MANIFEST:-$ROOT_DIR/docs/site/examples/ha-web-smoke.yaml}"
+retained_workload_smoke_app="${AE_RETAINED_WORKLOAD_SMOKE_APP:-ha-web-smoke}"
+retained_workload_smoke_host="${AE_RETAINED_WORKLOAD_SMOKE_HOST:-ha-web-smoke.home.arpa}"
+retained_workload_smoke_expected_text="${AE_RETAINED_WORKLOAD_SMOKE_EXPECTED_TEXT:-Shell + Port-Forward Smoke}"
+ha_core_workload_smoke_manifest="${AE_HA_CORE_WORKLOAD_SMOKE_MANIFEST:-$ROOT_DIR/docs/site/examples/ha-web-smoke-edge.yaml}"
+ha_core_workload_smoke_app="${AE_HA_CORE_WORKLOAD_SMOKE_APP:-ha-edge-web-smoke}"
+ha_core_workload_smoke_host="${AE_HA_CORE_WORKLOAD_SMOKE_HOST:-ha-edge-web-smoke.home.arpa}"
+ha_core_workload_smoke_expected_text="${AE_HA_CORE_WORKLOAD_SMOKE_EXPECTED_TEXT:-Shell + Port-Forward Smoke}"
+edge_runtime_name="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-node") | .name' | head -n1)"
+edge_runtime_ip="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-node") | .ip' | head -n1)"
+edge_runtime_id="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-node") | (.node_id // .name)' | head -n1)"
+edge_runtime_labels="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-node") | (.node_labels // "")' | head -n1)"
 local_dev_hosts_dir="$(run_dir "$RUN_ID")"
 local_dev_hosts_state_file="$local_dev_hosts_dir/local-dev-hosts.env"
 local_dev_hosts_snapshot_file="$local_dev_hosts_dir/local-dev-hosts.snapshot"
@@ -143,6 +157,17 @@ require_remote_hosts() {
   local state_dir="$ROOT_DIR/state/lab-vm/$RUN_ID"
   if [[ ! -d "$state_dir" ]]; then
     err "state dir not found for run_id=${RUN_ID}: $state_dir"
+    case "$SUBCOMMAND" in
+      workload-smoke)
+        err "workload-smoke requires a live retained HA run; run 'make lab-vm-ha-dashboard-up' first"
+        ;;
+      core-workload-smoke)
+        err "core-workload-smoke requires a live HA VM run; bring the target variant up first"
+        ;;
+      status|reseed-core|restart-core|restart-apishim|restart-hub-node|refresh-all)
+        err "${SUBCOMMAND} requires a live retained HA run; run 'make lab-vm-ha-dashboard-up' first"
+        ;;
+    esac
     exit 1
   fi
 }
@@ -439,6 +464,19 @@ wait_for_hub_node_registration() {
     sleep 2
   done
   return 1
+}
+
+append_label_args_from_csv() {
+  local -n out_args="$1"
+  local raw_labels="${2:-}"
+  local item=""
+  local -a items=()
+  IFS=',' read -r -a items <<<"$raw_labels"
+  for item in "${items[@]}"; do
+    item="${item//[[:space:]]/}"
+    [[ -n "$item" && "$item" == *=* ]] || continue
+    out_args+=(--label "$item")
+  done
 }
 
 check_stack_ready() {
@@ -783,6 +821,79 @@ cmd_status() {
   fi
 }
 
+cmd_workload_smoke() {
+  require_remote_hosts
+  require_http_tools
+  [[ -n "$hub_node_id" ]] || { err "variant does not include a retained hub node"; exit 2; }
+  [[ -f "$retained_workload_smoke_manifest" ]] || {
+    err "retained workload smoke manifest not found: $retained_workload_smoke_manifest"
+    exit 2
+  }
+  if ! wait_for_hub_node_registration; then
+    err "retained hub node did not register as Ready"
+    exit 1
+  fi
+  local -a label_args=()
+  append_label_args_from_csv label_args "${hub_node_labels:-role=hub,site=hub}"
+  if [[ "${#label_args[@]}" -eq 0 ]]; then
+    label_args=(--label "role=hub" --label "site=hub")
+  fi
+  log "deploying retained HA workload smoke app=${retained_workload_smoke_app} on ${hub_node_id}"
+  log "verifying core-local Envoy ingress host=${retained_workload_smoke_host}:${ingress_tls_port} via ${first_core_ip}"
+  PYTHONPATH="$ROOT_DIR/src" \
+    AE_STATE_BACKEND=etcd \
+    AE_ETCD_ENDPOINTS="$ha_etcd_endpoints" \
+    AE_ETCD_PREFIX="$ha_etcd_prefix" \
+    "$(lab_python)" "$ROOT_DIR/scripts/dev/ha_core_node_smoke.py" ingress-smoke \
+      --node-id "$hub_node_id" \
+      "${label_args[@]}" \
+      --manifest "$retained_workload_smoke_manifest" \
+      --app-name "$retained_workload_smoke_app" \
+      --ingress-host "$retained_workload_smoke_host" \
+      --ingress-port "$ingress_tls_port" \
+      --resolve-ip "$first_core_ip" \
+      --direct-probe-host "$first_core_ip" \
+      --health-path /healthz \
+      --root-path / \
+      --expected-text "$retained_workload_smoke_expected_text" \
+      --timeout 180 \
+      --poll 2 \
+      --purge-history
+}
+
+cmd_core_workload_smoke() {
+  require_remote_hosts
+  require_http_tools
+  [[ -n "$edge_runtime_id" ]] || { err "variant does not include an HA edge runtime node"; exit 2; }
+  [[ -f "$ha_core_workload_smoke_manifest" ]] || {
+    err "HA core workload smoke manifest not found: $ha_core_workload_smoke_manifest"
+    exit 2
+  }
+  local -a label_args=()
+  append_label_args_from_csv label_args "$edge_runtime_labels"
+  [[ "${#label_args[@]}" -gt 0 ]] || { err "edge runtime node labels missing for ${edge_runtime_id}"; exit 2; }
+  log "deploying HA core-proxy workload smoke app=${ha_core_workload_smoke_app} on ${edge_runtime_id}"
+  log "verifying Envoy core-proxy host=${ha_core_workload_smoke_host}:${ingress_tls_port} via ${first_core_ip}"
+  PYTHONPATH="$ROOT_DIR/src" \
+    AE_STATE_BACKEND=etcd \
+    AE_ETCD_ENDPOINTS="$ha_etcd_endpoints" \
+    AE_ETCD_PREFIX="$ha_etcd_prefix" \
+    "$(lab_python)" "$ROOT_DIR/scripts/dev/ha_core_node_smoke.py" ingress-smoke \
+      --node-id "$edge_runtime_id" \
+      "${label_args[@]}" \
+      --manifest "$ha_core_workload_smoke_manifest" \
+      --app-name "$ha_core_workload_smoke_app" \
+      --ingress-host "$ha_core_workload_smoke_host" \
+      --ingress-port "$ingress_tls_port" \
+      --resolve-ip "$first_core_ip" \
+      --health-path /healthz \
+      --root-path / \
+      --expected-text "$ha_core_workload_smoke_expected_text" \
+      --timeout 180 \
+      --poll 2 \
+      --purge-history
+}
+
 cmd_down() {
   require_local_sudo
   if [[ "$PURGE" -eq 1 ]]; then
@@ -831,15 +942,18 @@ cmd_purge() {
 
 cmd_reseed_core() {
   require_remote_hosts
-  local selected_rows=""
+  local -a selected_rows=()
   local row="" name="" ip="" role="" node_id=""
-  selected_rows="$(reseed_target_rows "$TARGET")"
-  ensure_non_empty_selection "$selected_rows" "reseed-core"
+  mapfile -t selected_rows < <(reseed_target_rows "$TARGET")
+  if [[ "${#selected_rows[@]}" -eq 0 ]]; then
+    err "no hosts matched target=${TARGET} for reseed-core"
+    exit 2
+  fi
   log "rebuilding core seed bundle for run_id=${RUN_ID}"
   AE_CRI_CACHE_SEED_ENGINE="${AE_CRI_CACHE_SEED_ENGINE:-}" \
   AE_CRI_CACHE_SEED_ALWAYS_PULL="${AE_CRI_CACHE_SEED_ALWAYS_PULL:-0}" \
     "$SCRIPT_DIR/image_seed_bundle.sh" --run-id "$RUN_ID" --profile core --output "$seed_bundle_path"
-  while IFS= read -r row; do
+  for row in "${selected_rows[@]}"; do
     [[ -n "$row" ]] || continue
     IFS=$'\t' read -r name ip role node_id <<<"$row"
     log "importing core seed bundle on ${name} (${ip})"
@@ -859,16 +973,19 @@ sudo ctr -n k8s.io images import "\$bundle" >/dev/null
 echo seed-import-complete
 EOF
 )"
-  done <<<"$selected_rows"
+  done
 }
 
 cmd_restart_core() {
   require_remote_hosts
-  local selected_rows=""
+  local -a selected_rows=()
   local row="" name="" ip="" node_id=""
-  selected_rows="$(core_target_rows "$TARGET")"
-  ensure_non_empty_selection "$selected_rows" "restart-core"
-  while IFS= read -r row; do
+  mapfile -t selected_rows < <(core_target_rows "$TARGET")
+  if [[ "${#selected_rows[@]}" -eq 0 ]]; then
+    err "no hosts matched target=${TARGET} for restart-core"
+    exit 2
+  fi
+  for row in "${selected_rows[@]}"; do
     [[ -n "$row" ]] || continue
     IFS=$'\t' read -r name ip node_id <<<"$row"
     log "restarting controller on ${name} (${ip})"
@@ -879,8 +996,40 @@ sudo mkdir -p /mnt/host
 sudo mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host || true
 source /mnt/host/scripts/lab/vm/lib/guest_prereqs.sh
 ensure_vm_bootstrap_prereqs
-sudo pkill -f -- 'ae\.controller --loop --metrics-port ${controller_port}' >/dev/null 2>&1 || true
-sleep 2
+controller_pattern='python3 -m ae.controller --loop --metrics-port ${controller_port}'
+old_pids="\$(sudo pgrep -f -- "\$controller_pattern" | tr '\n' ' ' || true)"
+if [[ -n "\$old_pids" ]]; then
+  sudo pkill -TERM -f -- "\$controller_pattern" >/dev/null 2>&1 || true
+fi
+drain_deadline=\$((SECONDS + 45))
+while (( SECONDS < drain_deadline )); do
+  port_busy=0
+  if ss -ltn | awk '\$4 ~ /:${controller_port}\$/ {found=1} END {exit(found?0:1)}'; then
+    port_busy=1
+  fi
+  stale_pid=0
+  for pid in \$old_pids; do
+    if sudo kill -0 "\$pid" >/dev/null 2>&1; then
+      stale_pid=1
+      break
+    fi
+  done
+  if (( stale_pid == 0 && port_busy == 0 )); then
+    break
+  fi
+  sleep 1
+done
+if [[ -n "\$old_pids" ]]; then
+  for pid in \$old_pids; do
+    if sudo kill -0 "\$pid" >/dev/null 2>&1; then
+      sudo kill -KILL "\$pid" >/dev/null 2>&1 || true
+    fi
+  done
+fi
+if ss -ltn | awk '\$4 ~ /:${controller_port}\$/ {found=1} END {exit(found?0:1)}'; then
+  echo "controller port ${controller_port} is still busy after stop attempt" >&2
+  exit 1
+fi
 cd /mnt/host
 nohup sudo env \
   PYTHONPATH=/mnt/host/src \
@@ -900,6 +1049,34 @@ nohup sudo env \
   AE_TRANSPORT_BACKEND=\${AE_TRANSPORT_BACKEND:-nats-js} \
   AE_JS_DOMAIN=\${AE_JS_DOMAIN:-K1S} \
   AE_NODE_PROFILE=\${AE_NODE_PROFILE:-k1s-ha-core} \
+  AE_EDGE_INGRESS_MODE=\${AE_EDGE_INGRESS_MODE:-core-proxy} \
+  AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS=\${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1} \
+  AE_EDGE_INGRESS_CONFIG_DIR=\${AE_EDGE_INGRESS_CONFIG_DIR:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress} \
+  AE_EDGE_INGRESS_ENVOY_CONFIG=\${AE_EDGE_INGRESS_ENVOY_CONFIG:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/envoy.yaml} \
+  AE_RATHOLE_SERVER_CONFIG=\${AE_RATHOLE_SERVER_CONFIG:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/rathole-server.toml} \
+  AE_RATHOLE_CLIENT_DIR=\${AE_RATHOLE_CLIENT_DIR:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/clients} \
+  AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX=\${AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX:-edge.local} \
+  AE_EDGE_INGRESS_LOCAL_ADDR=\${AE_EDGE_INGRESS_LOCAL_ADDR:-127.0.0.1:18081} \
+  AE_EDGE_INGRESS_HTTP_PORT=\${AE_EDGE_INGRESS_HTTP_PORT:-10080} \
+  AE_EDGE_INGRESS_TLS_PORT=\${AE_EDGE_INGRESS_TLS_PORT:-10443} \
+  AE_EDGE_INGRESS_CORE_PROXY=\${AE_EDGE_INGRESS_CORE_PROXY:-1} \
+  AE_EDGE_INGRESS_RATHOLE_RELOAD=\${AE_EDGE_INGRESS_RATHOLE_RELOAD:-1} \
+  AE_EDGE_INGRESS_RELOAD_CMD="python3 /mnt/host/scripts/dev/cri_stack.py up-envoy --profile k1s-ha-core --config \${AE_EDGE_INGRESS_ENVOY_CONFIG:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/envoy.yaml}" \
+  AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD="python3 /mnt/host/scripts/dev/cri_stack.py up-rathole-server --profile k1s-ha-core --config \${AE_RATHOLE_SERVER_CONFIG:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress/rathole-server.toml}" \
+  AE_RATHOLE_BIND_ADDR=\${AE_RATHOLE_BIND_ADDR:-0.0.0.0:2333} \
+  AE_RATHOLE_DEFAULT_TOKEN=\${AE_RATHOLE_DEFAULT_TOKEN:-dev} \
+  AE_RATHOLE_SERVER_ADDR=\${AE_RATHOLE_SERVER_ADDR:-127.0.0.1:2333} \
+  AE_CONTROLPLANE_PUBLIC_ENABLE=\${AE_CONTROLPLANE_PUBLIC_ENABLE:-1} \
+  AE_CONTROLPLANE_DASH_HOST=\${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa} \
+  AE_CONTROLPLANE_DOCS_HOST=\${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa} \
+  AE_CONTROLPLANE_API_HOST=\${AE_CONTROLPLANE_API_HOST:-api.home.arpa} \
+  AE_CONTROLPLANE_PROXY_ADDR=\${AE_CONTROLPLANE_PROXY_ADDR:-127.0.0.1} \
+  AE_CONTROLPLANE_PROXY_PORT=\${AE_CONTROLPLANE_PROXY_PORT:-10081} \
+  AE_CONTROLPLANE_CONTROLLER_UPSTREAM=\${AE_CONTROLPLANE_CONTROLLER_UPSTREAM:-127.0.0.1:${controller_port}} \
+  AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM=\${AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM:-127.0.0.1:${controller_port}} \
+  AE_CONTROLPLANE_APISHIM_UPSTREAM=\${AE_CONTROLPLANE_APISHIM_UPSTREAM:-127.0.0.1:${apishim_port}} \
+  AE_CONTROLPLANE_API_APISHIM_UPSTREAM=\${AE_CONTROLPLANE_API_APISHIM_UPSTREAM:-127.0.0.1:${apishim_port}} \
+  AE_CONTROLPLANE_API_APISHIM_TLS=\${AE_CONTROLPLANE_API_APISHIM_TLS:-1} \
   AE_ETCD_MAINTENANCE_ENABLE=\${AE_ETCD_MAINTENANCE_ENABLE:-0} \
   AE_ETCD_MAINTENANCE_THRESHOLD_PCT=\${AE_ETCD_MAINTENANCE_THRESHOLD_PCT:-80} \
   APISHIM_HOST=\${APISHIM_HOST:-0.0.0.0} \
@@ -914,8 +1091,14 @@ nohup sudo env \
   AE_NATS_URL='${ha_nats_url}' \
   APISHIM_PORT=${apishim_port} \
   python3 -m ae.controller --loop --metrics-port ${controller_port} > /home/ae/k1s-ha-core.log 2>&1 </dev/null &
+new_pid=\$!
 deadline=\$((SECONDS + 45))
 while (( SECONDS < deadline )); do
+  if ! kill -0 "\$new_pid" >/dev/null 2>&1; then
+    echo "controller process exited early; tailing /home/ae/k1s-ha-core.log" >&2
+    tail -n 80 /home/ae/k1s-ha-core.log >&2 || true
+    exit 1
+  fi
   if ss -ltn | awk '\$4 ~ /:${controller_port}\$/ {found=1} END {exit(found?0:1)}'; then
     echo controller-restart-complete
     exit 0
@@ -926,16 +1109,19 @@ echo "controller restart was not observed on port ${controller_port}" >&2
 exit 1
 EOF
 )"
-  done <<<"$selected_rows"
+  done
 }
 
 cmd_restart_apishim() {
   require_remote_hosts
-  local selected_rows=""
+  local -a selected_rows=()
   local row="" name="" ip="" node_id=""
-  selected_rows="$(core_target_rows "$TARGET")"
-  ensure_non_empty_selection "$selected_rows" "restart-apishim"
-  while IFS= read -r row; do
+  mapfile -t selected_rows < <(core_target_rows "$TARGET")
+  if [[ "${#selected_rows[@]}" -eq 0 ]]; then
+    err "no hosts matched target=${TARGET} for restart-apishim"
+    exit 2
+  fi
+  for row in "${selected_rows[@]}"; do
     [[ -n "$row" ]] || continue
     IFS=$'\t' read -r name ip node_id <<<"$row"
     log "restarting apishim on ${name} (${ip})"
@@ -975,7 +1161,7 @@ echo "apishim restart was not observed on port ${apishim_port}" >&2
 exit 1
 EOF
 )"
-  done <<<"$selected_rows"
+  done
 }
 
 cmd_restart_hub_node() {
@@ -1052,6 +1238,12 @@ case "$SUBCOMMAND" in
     ;;
   status)
     cmd_status
+    ;;
+  workload-smoke)
+    cmd_workload_smoke
+    ;;
+  core-workload-smoke)
+    cmd_core_workload_smoke
     ;;
   down)
     cmd_down

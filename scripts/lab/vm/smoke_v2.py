@@ -440,6 +440,18 @@ def build_ha_lane_config(
             for host in lane_hosts_full
             if host["role"] == "k1s-core-node"
         ],
+        "edge_runtime_nodes": [
+            {
+                "name": host["name"],
+                "node_id": host.get("node_id") or host["name"],
+                "ip": host["ip"],
+                "site_id": str(host.get("site_id") or "").strip(),
+                "agent_url": f"http://{host['ip']}:{int(host.get('agent_port') or 9112)}",
+                "labels": parse_label_csv(host.get("node_labels")),
+            }
+            for host in lane_hosts_full
+            if host["role"] == "k1s-edge-node"
+        ],
         "edge_core_sites": sorted(
             {
                 str(host.get("site_id") or "").strip()
@@ -1019,6 +1031,48 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             _run_helper_check(
                 f"ha_edge_verify:{site['site_id']}",
                 verify_cmd,
+                timeout_s=timeout_s,
+                env=env,
+            )
+        )
+
+    edge_runtime_nodes = list(config.get("edge_runtime_nodes") or [])
+    if edge_runtime_nodes and config.get("edge_sites"):
+        edge_runtime = edge_runtime_nodes[0]
+        ingress_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_core_node_smoke.py"),
+            "ingress-smoke",
+            "--node-id",
+            str(edge_runtime["node_id"]),
+            "--manifest",
+            str(ROOT / "docs" / "site" / "examples" / "ha-web-smoke-edge.yaml"),
+            "--app-name",
+            "ha-edge-web-smoke",
+            "--ingress-host",
+            "ha-edge-web-smoke.home.arpa",
+            "--ingress-port",
+            "10443",
+            "--resolve-ip",
+            str(config["core_nodes"][0]["ip"]),
+            "--health-path",
+            "/healthz",
+            "--root-path",
+            "/",
+            "--expected-text",
+            "Shell + Port-Forward Smoke",
+            "--timeout",
+            str(timeout_s),
+            "--poll",
+            "2",
+            "--purge-history",
+        ]
+        for key, value in sorted((edge_runtime.get("labels") or {}).items()):
+            ingress_cmd.extend(["--label", f"{key}={value}"])
+        checks.append(
+            _run_helper_check(
+                f"ha_edge_runtime_ingress_smoke:{edge_runtime.get('site_id') or edge_runtime['node_id']}",
+                ingress_cmd,
                 timeout_s=timeout_s,
                 env=env,
             )

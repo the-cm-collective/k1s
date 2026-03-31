@@ -2705,6 +2705,11 @@ case "$PROFILE" in
       export AE_EDGE_INGRESS_CORE_PROXY=0
       unset AE_EDGE_INGRESS_RATHOLE_RELOAD
     fi
+    if [[ "$INGRESS_MODE" == "core-proxy" || "$INGRESS_MODE" == "core-to-edge-public" ]]; then
+      export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1}"
+    else
+      export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-0}"
+    fi
     if [[ "$EDGE_INGRESS_START" == "1" ]]; then
       write_envoy_bootstrap "$EDGE_ENVOY_CONFIG"
       if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}" && is_strict_cri; then
@@ -2861,6 +2866,11 @@ case "$PROFILE" in
     else
       export AE_EDGE_INGRESS_CORE_PROXY=0
       unset AE_EDGE_INGRESS_RATHOLE_RELOAD
+    fi
+    if [[ "$INGRESS_MODE" == "core-proxy" || "$INGRESS_MODE" == "core-to-edge-public" ]]; then
+      export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1}"
+    else
+      export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-0}"
     fi
     if [[ "$EDGE_INGRESS_START" == "1" ]]; then
       write_envoy_bootstrap "$EDGE_ENVOY_CONFIG"

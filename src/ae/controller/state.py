@@ -2968,6 +2968,16 @@ class SQLiteStateStore:
             )
             conn.commit()
 
+    def delete_edge_ingress_route(self, *, name: str, namespace: str) -> bool:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM edge_ingress_routes WHERE name = ? AND namespace = ?",
+                (name, namespace),
+            )
+            deleted = bool(getattr(conn, "total_changes", 0))
+            conn.commit()
+        return deleted
+
     def update_edge_ingress_policy_status(
         self,
         *,

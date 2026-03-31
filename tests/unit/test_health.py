@@ -2,11 +2,33 @@
 
 from datetime import UTC
 
-from requests import Response
+from requests import RequestException, Response
 
 from ae.controller.health import HealthManager
 from ae.controller.spec import AppManifest, AppSpec, HealthSpec, Metadata, ProbeSpec
 from ae.runtime.base import PodState, RuntimeResult
+
+
+class _SocketStub:
+    def __init__(self, *chunks: bytes) -> None:
+        self._chunks = list(chunks)
+        self.sent: list[bytes] = []
+        self.closed = False
+        self.timeout: int | None = None
+
+    def settimeout(self, value: int) -> None:
+        self.timeout = value
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def recv(self, _size: int) -> bytes:
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_health_manager_counts_ready():
@@ -50,6 +72,7 @@ def test_health_manager_http_probe(monkeypatch):
                     {
                         "httpGet": {"path": "/healthz", "port": 8080},
                         "timeoutSeconds": 1,
+                        "failureThreshold": 1,
                     }
                 )
             ),
@@ -98,6 +121,7 @@ def test_health_manager_loopback_fallback(monkeypatch):
                     {
                         "httpGet": {"path": "/healthz", "port": 8080},
                         "timeoutSeconds": 1,
+                        "failureThreshold": 1,
                     }
                 )
             ),
@@ -177,3 +201,189 @@ def test_health_manager_initial_delay(monkeypatch):
 
     assert report.ready_replicas == 0
     assert report.pods[0].readiness_message.startswith("waiting initial delay")
+
+
+def test_health_manager_http_probe_falls_back_to_portforward(monkeypatch):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "httpGet": {"path": "/healthz", "port": 8080},
+                        "timeoutSeconds": 1,
+                    }
+                )
+            ),
+        ),
+    )
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[PodState(pod_name="demo-0", ready=False, endpoint="10.88.0.3:8080")],
+    )
+    socket_stub = _SocketStub(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    )
+    captured: list[tuple[str, str | None, int]] = []
+
+    def fake_get(_url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
+        raise RequestException("timed out")
+
+    monkeypatch.setattr("ae.controller.health.get", fake_get)
+    hm = HealthManager()
+    hm.set_portforward_callback(
+        lambda pod_name, namespace, port: captured.append((pod_name, namespace, port)) or socket_stub
+    )
+
+    report = hm.evaluate(manifest, result)
+
+    assert report.ready_replicas == 1
+    assert "remote http 200" in report.pods[0].readiness_message
+    assert captured == [("demo-0", "default", 8080)]
+    assert socket_stub.closed is True
+    assert socket_stub.timeout == 1
+    assert b"GET /healthz HTTP/1.1" in socket_stub.sent[0]
+
+
+def test_health_manager_http_probe_missing_endpoint_can_use_portforward(monkeypatch):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "httpGet": {"path": "/healthz", "port": 8080},
+                        "timeoutSeconds": 1,
+                    }
+                )
+            ),
+        ),
+    )
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[PodState(pod_name="demo-0", ready=False, endpoint=None)],
+    )
+    socket_stub = _SocketStub(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    )
+
+    def fake_get(_url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
+        raise AssertionError("direct HTTP probe should not run without an endpoint")
+
+    monkeypatch.setattr("ae.controller.health.get", fake_get)
+    hm = HealthManager()
+    hm.set_portforward_callback(lambda _pod_name, _namespace, _port: socket_stub)
+
+    report = hm.evaluate(manifest, result)
+
+    assert report.ready_replicas == 1
+    assert "remote http 200" in report.pods[0].readiness_message
+
+
+def test_health_manager_http_probe_non_2xx_does_not_fallback(monkeypatch):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "httpGet": {"path": "/healthz", "port": 8080},
+                        "timeoutSeconds": 1,
+                        "failureThreshold": 1,
+                    }
+                )
+            ),
+        ),
+    )
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[PodState(pod_name="demo-0", ready=False, endpoint="10.88.0.3:8080")],
+    )
+    response = Response()
+    response.status_code = 503
+    callback_calls = 0
+
+    def fake_get(url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
+        assert url == "http://10.88.0.3:8080/healthz"
+        return response
+
+    def fake_portforward(_pod_name, _namespace, _port):  # noqa: ANN001
+        nonlocal callback_calls
+        callback_calls += 1
+        return _SocketStub(b"HTTP/1.1 200 OK\r\n\r\n")
+
+    monkeypatch.setattr("ae.controller.health.get", fake_get)
+    hm = HealthManager()
+    hm.set_portforward_callback(fake_portforward)
+
+    report = hm.evaluate(manifest, result)
+
+    assert report.ready_replicas == 0
+    assert "http 503" in report.pods[0].readiness_message
+    assert callback_calls == 0
+
+
+def test_health_manager_tcp_probe_falls_back_to_portforward(monkeypatch):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "tcpSocket": {"port": 8080},
+                        "timeoutSeconds": 1,
+                    }
+                )
+            ),
+        ),
+    )
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[PodState(pod_name="demo-0", ready=False, endpoint="10.88.0.3:8080")],
+    )
+    socket_stub = _SocketStub()
+
+    def fake_connect(_addr, timeout):  # noqa: ANN001
+        _ = timeout
+        raise OSError("timed out")
+
+    monkeypatch.setattr("socket.create_connection", fake_connect)
+    hm = HealthManager()
+    hm.set_portforward_callback(lambda _pod_name, _namespace, _port: socket_stub)
+
+    report = hm.evaluate(manifest, result)
+
+    assert report.ready_replicas == 1
+    assert "remote tcp ok" in report.pods[0].readiness_message
+    assert socket_stub.closed is True

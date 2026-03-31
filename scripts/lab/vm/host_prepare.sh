@@ -8,9 +8,12 @@ source "$SCRIPT_DIR/lib/common.sh"
 BRIDGE="${BRIDGE:-k1s-br0}"
 NET_CIDR="${NET_CIDR:-192.168.152.0/24}"
 GATEWAY="${GATEWAY:-192.168.152.1}"
+FORWARD_CHAIN="${FORWARD_CHAIN:-K1S_VM_FORWARD}"
 VARIANT=""
 APPLY=0
 MANUAL_NETWORK_FLAGS=0
+declare -a POD_CIDRS=()
+declare -a TAP_INTERFACES=()
 
 usage() {
   cat <<USAGE
@@ -102,10 +105,20 @@ load_variant_network() {
   [[ -n "$VARIANT" ]] || return 0
 
   local variant_json
+  local host_count=0
+  local i=0
   variant_json="$(variant_to_json "$VARIANT")"
   BRIDGE="$(echo "$variant_json" | jq -r '.network.bridge')"
   NET_CIDR="$(echo "$variant_json" | jq -r '.network.cidr')"
   GATEWAY="$(echo "$variant_json" | jq -r '.network.gateway')"
+  mapfile -t POD_CIDRS < <(
+    echo "$variant_json" | jq -r '.hosts[] | .pod_cidr // empty' | awk 'NF && !seen[$0]++'
+  )
+  host_count="$(echo "$variant_json" | jq -r '.hosts | length')"
+  TAP_INTERFACES=()
+  for ((i=0; i<host_count; i++)); do
+    TAP_INTERFACES+=("$(lane_tap_name "$i")")
+  done
 }
 
 require_prereqs() {
@@ -157,12 +170,60 @@ ensure_bridge() {
   sudo ip link set "$BRIDGE" up
 }
 
+delete_nat_rule() {
+  local table="$1"
+  shift
+  while sudo iptables -t "$table" -C "$@" >/dev/null 2>&1; do
+    sudo iptables -t "$table" -D "$@" >/dev/null 2>&1 || break
+  done
+}
+
+ensure_nat_return_rule() {
+  delete_nat_rule nat POSTROUTING "$@"
+  sudo iptables -t nat -I POSTROUTING 1 "$@"
+}
+
+delete_filter_rule() {
+  while sudo iptables -C "$@" >/dev/null 2>&1; do
+    sudo iptables -D "$@" >/dev/null 2>&1 || break
+  done
+}
+
+ensure_forward_chain_rule() {
+  delete_filter_rule "$FORWARD_CHAIN" "$@"
+  sudo iptables -A "$FORWARD_CHAIN" "$@"
+}
+
+ensure_forward_rules() {
+  local tap=""
+
+  sudo iptables -N "$FORWARD_CHAIN" 2>/dev/null || true
+  sudo iptables -F "$FORWARD_CHAIN"
+
+  # Bridge netfilter can surface these packets as either the bridge device or
+  # the individual tap ports. Accept both views before Docker/libvirt jumps.
+  ensure_forward_chain_rule -i "$BRIDGE" -j ACCEPT
+  ensure_forward_chain_rule -o "$BRIDGE" -j ACCEPT
+  for tap in "${TAP_INTERFACES[@]}"; do
+    ensure_forward_chain_rule -i "$tap" -j ACCEPT
+    ensure_forward_chain_rule -o "$tap" -j ACCEPT
+  done
+
+  delete_filter_rule FORWARD -j "$FORWARD_CHAIN"
+  sudo iptables -I FORWARD 1 -j "$FORWARD_CHAIN"
+}
+
 ensure_nat_rules() {
+  ensure_nat_return_rule -s "$NET_CIDR" -o "$BRIDGE" -j RETURN
+  local pod_cidr=""
+  for pod_cidr in "${POD_CIDRS[@]}"; do
+    [[ -n "$pod_cidr" ]] || continue
+    ensure_nat_return_rule -s "$NET_CIDR" -d "$pod_cidr" -j RETURN
+  done
   sudo iptables -t nat -C POSTROUTING -s "$NET_CIDR" ! -d "$NET_CIDR" -j MASQUERADE >/dev/null 2>&1 || \
     sudo iptables -t nat -A POSTROUTING -s "$NET_CIDR" ! -d "$NET_CIDR" -j MASQUERADE
 
-  sudo iptables -C FORWARD -i "$BRIDGE" -j ACCEPT >/dev/null 2>&1 || sudo iptables -A FORWARD -i "$BRIDGE" -j ACCEPT
-  sudo iptables -C FORWARD -o "$BRIDGE" -j ACCEPT >/dev/null 2>&1 || sudo iptables -A FORWARD -o "$BRIDGE" -j ACCEPT
+  ensure_forward_rules
 }
 
 main() {

@@ -10,6 +10,7 @@ VARIANT=""
 PURGE=0
 DESTROY_NETWORK=0
 BEST_EFFORT=0
+FORWARD_CHAIN="${FORWARD_CHAIN:-K1S_VM_FORWARD}"
 
 state_dir=""
 inventory=""
@@ -124,7 +125,7 @@ stop_variant_hosts_best_effort() {
   for i in "${!hosts[@]}"; do
     decoded="$(printf '%s' "${hosts[$i]}" | base64 -d)"
     name="$(echo "$decoded" | jq -r '.name')"
-    tap="k1s${i}"
+    tap="$(lane_tap_name "$i")"
     pid_file="$state_dir/pids/${name}.pid"
     overlay="$state_dir/${name}.qcow2"
     stop_host "$name" "$tap" "$pid_file" "$overlay"
@@ -133,7 +134,22 @@ stop_variant_hosts_best_effort() {
 
 destroy_network_if_requested() {
   if [[ "$DESTROY_NETWORK" -eq 1 ]]; then
+    local pod_cidr=""
+    while IFS= read -r pod_cidr; do
+      [[ -n "$pod_cidr" ]] || continue
+      while sudo iptables -t nat -D POSTROUTING -s "$cidr" -d "$pod_cidr" -j RETURN 2>/dev/null; do
+        :
+      done
+    done < <(echo "$variant_json" | jq -r '.hosts[] | .pod_cidr // empty' | awk 'NF && !seen[$0]++')
+    while sudo iptables -t nat -D POSTROUTING -s "$cidr" -o "$bridge" -j RETURN 2>/dev/null; do
+      :
+    done
     sudo iptables -t nat -D POSTROUTING -s "$cidr" ! -d "$cidr" -j MASQUERADE 2>/dev/null || true
+    while sudo iptables -D FORWARD -j "$FORWARD_CHAIN" 2>/dev/null; do
+      :
+    done
+    sudo iptables -F "$FORWARD_CHAIN" 2>/dev/null || true
+    sudo iptables -X "$FORWARD_CHAIN" 2>/dev/null || true
     sudo iptables -D FORWARD -i "$bridge" -j ACCEPT 2>/dev/null || true
     sudo iptables -D FORWARD -o "$bridge" -j ACCEPT 2>/dev/null || true
     if ip link show "$bridge" >/dev/null 2>&1; then

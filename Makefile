@@ -10,7 +10,7 @@
 .PHONY: lab-vm-ha-dashboard-up lab-vm-ha-dashboard-status lab-vm-ha-dashboard-down lab-vm-ha-dashboard-purge
 .PHONY: lab-vm-ha-dashboard-reseed-core lab-vm-ha-dashboard-restart-core
 .PHONY: lab-vm-ha-dashboard-restart-apishim lab-vm-ha-dashboard-restart-hub-node
-.PHONY: lab-vm-ha-dashboard-refresh-all lab-vm-ha-dashboard-reset
+.PHONY: lab-vm-ha-dashboard-refresh-all lab-vm-ha-dashboard-reset lab-vm-ha-dashboard-workload-smoke lab-vm-ha-core-workload-smoke
 
 install:
 	python -m pip install -e .[dev]
@@ -93,25 +93,33 @@ k1s-core-node:
 	@AE_NODE_ID=$${AE_NODE_ID:-hub-1} \
 	  AE_NODE_LABELS="$${AE_NODE_LABELS:-role=hub,site=hub}$${AE_WG_ENDPOINT:+,wg_endpoint=$${AE_WG_ENDPOINT}}" \
 	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.0.0/24} \
+	  AE_CNI_SUBNET=$${AE_CNI_SUBNET:-$${AE_POD_CIDR:-10.42.0.0/24}} \
+	  AE_CNI_FORCE=$${AE_CNI_FORCE:-1} \
+	  AE_POD_BRIDGE=$${AE_POD_BRIDGE:-cni0} \
+	  AE_CNI_BRIDGE_NAME=$${AE_CNI_BRIDGE_NAME:-$${AE_POD_BRIDGE:-cni0}} \
 	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
 	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
 	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-$$(if [ "$$(id -u)" -eq 0 ]; then echo /var/lib/ae/rosenpass; else echo state/rosenpass; fi)} \
 	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
 	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
 	  AE_NODE_PORT=$${AE_NODE_PORT:-9111} \
-	  PYTHONPATH=src python -m ae.node --ensure-pod-net
+	  ./scripts/dev/ensure_cri_node_cni.sh && PYTHONPATH=src python -m ae.node --ensure-pod-net
 
 k1s-edge-node:
 	@AE_NODE_ID=$${AE_NODE_ID:-edge-1} \
 	  AE_NODE_LABELS="$${AE_NODE_LABELS:-site=edge}" \
 	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.1.0/24} \
+	  AE_CNI_SUBNET=$${AE_CNI_SUBNET:-$${AE_POD_CIDR:-10.42.1.0/24}} \
+	  AE_CNI_FORCE=$${AE_CNI_FORCE:-1} \
+	  AE_POD_BRIDGE=$${AE_POD_BRIDGE:-cni0} \
+	  AE_CNI_BRIDGE_NAME=$${AE_CNI_BRIDGE_NAME:-$${AE_POD_BRIDGE:-cni0}} \
 	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
 	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
 	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-$$(if [ "$$(id -u)" -eq 0 ]; then echo /var/lib/ae/rosenpass; else echo state/rosenpass; fi)} \
 	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
 	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
 	  AE_NODE_PORT=$${AE_NODE_PORT:-9112} \
-	  PYTHONPATH=src python -m ae.node --ensure-pod-net
+	  ./scripts/dev/ensure_cri_node_cni.sh && PYTHONPATH=src python -m ae.node --ensure-pod-net
 
 k1s-core-caddy:
 	@CORE_CADDY=1 ./scripts/dev/run_profile.sh k1s-core
@@ -306,6 +314,16 @@ lab-vm-ha-dashboard-status:
 	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
 	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
 	  ./scripts/lab/vm/ha_dashboard_smoke.sh status $${LAB_VM_HA_DASHBOARD_ARGS:-}
+
+lab-vm-ha-dashboard-workload-smoke:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh workload-smoke $${LAB_VM_HA_DASHBOARD_ARGS:-}
+
+lab-vm-ha-core-workload-smoke:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-core.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-control-plane-core} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh core-workload-smoke $${LAB_VM_HA_CORE_ARGS:-$${LAB_VM_HA_DASHBOARD_ARGS:-}}
 
 lab-vm-ha-dashboard-down:
 	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \

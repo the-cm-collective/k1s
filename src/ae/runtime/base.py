@@ -186,3 +186,14 @@ class RuntimeAdapter(Protocol):
         """Optionally return exit code for a completed exec session."""
         _ = exec_id
         return 0
+
+    def port_forward_socket(
+        self,
+        *,
+        pod_id: str | None,
+        pod_name: str | None,
+        namespace: str | None,
+        port: int,
+    ):  # pragma: no cover
+        """Optionally open a raw port-forward socket to a pod port."""
+        ...

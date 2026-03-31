@@ -108,6 +108,7 @@ def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
         "site_id": str(host.get("site_id", "")).strip() or None,
         "node_id": str(host.get("node_id", "")).strip() or name,
         "node_labels": str(host.get("node_labels", "")).strip() or None,
+        "pod_cidr": str(host.get("pod_cidr", "")).strip() or None,
         "agent_port": int(
             host.get(
                 "agent_port",
