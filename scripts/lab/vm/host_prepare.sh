@@ -9,10 +9,12 @@ BRIDGE="${BRIDGE:-k1s-br0}"
 NET_CIDR="${NET_CIDR:-192.168.152.0/24}"
 GATEWAY="${GATEWAY:-192.168.152.1}"
 FORWARD_CHAIN="${FORWARD_CHAIN:-K1S_VM_FORWARD}"
+BRIDGE_FORWARD_CHAIN="${BRIDGE_FORWARD_CHAIN:-K1S_VM_BRIDGE_FORWARD}"
 VARIANT=""
 APPLY=0
 MANUAL_NETWORK_FLAGS=0
 declare -a POD_CIDRS=()
+declare -a POD_ROUTE_ROWS=()
 declare -a TAP_INTERFACES=()
 
 usage() {
@@ -114,6 +116,11 @@ load_variant_network() {
   mapfile -t POD_CIDRS < <(
     echo "$variant_json" | jq -r '.hosts[] | .pod_cidr // empty' | awk 'NF && !seen[$0]++'
   )
+  mapfile -t POD_ROUTE_ROWS < <(
+    echo "$variant_json" |
+      jq -r '.hosts[] | select(.role=="k1s-core-node" and (.pod_cidr // "") != "") | [.pod_cidr, .ip] | @tsv' |
+      awk 'NF && !seen[$0]++'
+  )
   host_count="$(echo "$variant_json" | jq -r '.hosts | length')"
   TAP_INTERFACES=()
   for ((i=0; i<host_count; i++)); do
@@ -130,6 +137,10 @@ require_prereqs() {
     err "/dev/kvm missing"
     return 2
   fi
+}
+
+require_apply_prereqs() {
+  require_cmd ebtables
 }
 
 validate_existing_bridge() {
@@ -193,6 +204,16 @@ ensure_forward_chain_rule() {
   sudo iptables -A "$FORWARD_CHAIN" "$@"
 }
 
+delete_bridge_filter_rule() {
+  while sudo ebtables -t filter -D "$@" >/dev/null 2>&1; do
+    :
+  done
+}
+
+ensure_bridge_forward_chain_rule() {
+  sudo ebtables -t filter -A "$BRIDGE_FORWARD_CHAIN" "$@"
+}
+
 ensure_forward_rules() {
   local tap=""
 
@@ -212,6 +233,21 @@ ensure_forward_rules() {
   sudo iptables -I FORWARD 1 -j "$FORWARD_CHAIN"
 }
 
+ensure_bridge_forward_rules() {
+  local tap=""
+
+  sudo ebtables -t filter -N "$BRIDGE_FORWARD_CHAIN" 2>/dev/null || true
+  sudo ebtables -t filter -F "$BRIDGE_FORWARD_CHAIN"
+
+  for tap in "${TAP_INTERFACES[@]}"; do
+    ensure_bridge_forward_chain_rule -i "$tap" -j ACCEPT
+    ensure_bridge_forward_chain_rule -o "$tap" -j ACCEPT
+  done
+
+  delete_bridge_filter_rule FORWARD -j "$BRIDGE_FORWARD_CHAIN"
+  sudo ebtables -t filter -I FORWARD 1 -j "$BRIDGE_FORWARD_CHAIN"
+}
+
 ensure_nat_rules() {
   ensure_nat_return_rule -s "$NET_CIDR" -o "$BRIDGE" -j RETURN
   local pod_cidr=""
@@ -223,6 +259,18 @@ ensure_nat_rules() {
     sudo iptables -t nat -A POSTROUTING -s "$NET_CIDR" ! -d "$NET_CIDR" -j MASQUERADE
 
   ensure_forward_rules
+  ensure_bridge_forward_rules
+}
+
+ensure_pod_routes() {
+  local route_cidr=""
+  local route_ip=""
+
+  for row in "${POD_ROUTE_ROWS[@]}"; do
+    IFS=$'\t' read -r route_cidr route_ip <<<"$row"
+    [[ -n "$route_cidr" && -n "$route_ip" ]] || continue
+    sudo ip route replace "$route_cidr" via "$route_ip" dev "$BRIDGE"
+  done
 }
 
 main() {
@@ -236,9 +284,11 @@ main() {
     return 0
   fi
 
+  require_apply_prereqs
   validate_existing_bridge
   ensure_bridge
   ensure_nat_rules
+  ensure_pod_routes
 
   echo "[host-prepare] configured bridge=${BRIDGE} cidr=${NET_CIDR} gateway=${GATEWAY}"
 }

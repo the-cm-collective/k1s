@@ -11,6 +11,7 @@ PURGE=0
 DESTROY_NETWORK=0
 BEST_EFFORT=0
 FORWARD_CHAIN="${FORWARD_CHAIN:-K1S_VM_FORWARD}"
+BRIDGE_FORWARD_CHAIN="${BRIDGE_FORWARD_CHAIN:-K1S_VM_BRIDGE_FORWARD}"
 
 state_dir=""
 inventory=""
@@ -18,6 +19,7 @@ run_inventory=""
 variant_json=""
 bridge=""
 cidr=""
+pod_route_rows=""
 INVENTORY_MODE=""
 
 usage() {
@@ -45,6 +47,10 @@ load_variant_context() {
   variant_json="$(variant_to_json "$VARIANT")"
   bridge="$(echo "$variant_json" | jq -r '.network.bridge')"
   cidr="$(echo "$variant_json" | jq -r '.network.cidr')"
+  pod_route_rows="$(
+    echo "$variant_json" |
+      jq -r '.hosts[] | select(.role=="k1s-core-node" and (.pod_cidr // "") != "") | [.pod_cidr, .ip] | @tsv'
+  )"
 
   state_dir="$ROOT_DIR/state/lab-vm/$RUN_ID"
   inventory="$state_dir/inventory.json"
@@ -132,6 +138,16 @@ stop_variant_hosts_best_effort() {
   done
 }
 
+delete_host_pod_routes() {
+  local route_cidr=""
+  local route_ip=""
+
+  while IFS=$'\t' read -r route_cidr route_ip; do
+    [[ -n "$route_cidr" && -n "$route_ip" ]] || continue
+    sudo ip route del "$route_cidr" via "$route_ip" dev "$bridge" 2>/dev/null || true
+  done <<<"$pod_route_rows"
+}
+
 destroy_network_if_requested() {
   if [[ "$DESTROY_NETWORK" -eq 1 ]]; then
     local pod_cidr=""
@@ -150,6 +166,14 @@ destroy_network_if_requested() {
     done
     sudo iptables -F "$FORWARD_CHAIN" 2>/dev/null || true
     sudo iptables -X "$FORWARD_CHAIN" 2>/dev/null || true
+    if command -v ebtables >/dev/null 2>&1; then
+      while sudo ebtables -t filter -D FORWARD -j "$BRIDGE_FORWARD_CHAIN" 2>/dev/null; do
+        :
+      done
+      sudo ebtables -t filter -F "$BRIDGE_FORWARD_CHAIN" 2>/dev/null || true
+      sudo ebtables -t filter -X "$BRIDGE_FORWARD_CHAIN" 2>/dev/null || true
+    fi
+    delete_host_pod_routes
     sudo iptables -D FORWARD -i "$bridge" -j ACCEPT 2>/dev/null || true
     sudo iptables -D FORWARD -o "$bridge" -j ACCEPT 2>/dev/null || true
     if ip link show "$bridge" >/dev/null 2>&1; then

@@ -712,21 +712,31 @@ exit 9
 def test_host_prepare_adds_bridge_and_pod_cidr_nat_exemptions() -> None:
     text = HOST_PREPARE_SCRIPT.read_text(encoding="utf-8")
     assert 'declare -a POD_CIDRS=()' in text
+    assert 'declare -a POD_ROUTE_ROWS=()' in text
     assert 'declare -a TAP_INTERFACES=()' in text
+    assert 'BRIDGE_FORWARD_CHAIN="${BRIDGE_FORWARD_CHAIN:-K1S_VM_BRIDGE_FORWARD}"' in text
     assert "mapfile -t POD_CIDRS" in text
+    assert "mapfile -t POD_ROUTE_ROWS" in text
+    assert 'select(.role=="k1s-core-node" and (.pod_cidr // "") != "")' in text
     assert 'ensure_nat_return_rule -s "$NET_CIDR" -o "$BRIDGE" -j RETURN' in text
     assert 'ensure_nat_return_rule -s "$NET_CIDR" -d "$pod_cidr" -j RETURN' in text
+    assert 'sudo ip route replace "$route_cidr" via "$route_ip" dev "$BRIDGE"' in text
     assert 'sudo iptables -t nat -I POSTROUTING 1 "$@"' in text
     assert 'sudo iptables -N "$FORWARD_CHAIN" 2>/dev/null || true' in text
     assert 'sudo iptables -I FORWARD 1 -j "$FORWARD_CHAIN"' in text
+    assert 'sudo ebtables -t filter -N "$BRIDGE_FORWARD_CHAIN" 2>/dev/null || true' in text
+    assert 'sudo ebtables -t filter -I FORWARD 1 -j "$BRIDGE_FORWARD_CHAIN"' in text
     assert 'ensure_forward_chain_rule -i "$tap" -j ACCEPT' in text
     assert 'ensure_forward_chain_rule -o "$tap" -j ACCEPT' in text
+    assert 'ensure_bridge_forward_chain_rule -i "$tap" -j ACCEPT' in text
+    assert 'ensure_bridge_forward_chain_rule -o "$tap" -j ACCEPT' in text
 
 
 def test_host_prepare_installs_forward_chain_before_host_firewall_jumps(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     iptables_log = tmp_path / "iptables.log"
+    ebtables_log = tmp_path / "ebtables.log"
 
     _write_executable(
         fake_bin / "sudo",
@@ -739,6 +749,19 @@ set -euo pipefail
 echo "$*" >> "{iptables_log}"
 for arg in "$@"; do
   if [[ "$arg" == "-C" ]]; then
+    exit 1
+  fi
+done
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "ebtables",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "{ebtables_log}"
+for arg in "$@"; do
+  if [[ "$arg" == "-D" ]]; then
     exit 1
   fi
 done
@@ -773,6 +796,55 @@ exit 0
     assert '-D K1S_VM_FORWARD ' not in iptables_calls
     assert '-I FORWARD 1 -j K1S_VM_FORWARD' in iptables_calls
     assert '-A FORWARD -j K1S_VM_FORWARD' not in iptables_calls
+    ebtables_calls = ebtables_log.read_text(encoding="utf-8")
+    assert '-t filter -N K1S_VM_BRIDGE_FORWARD' in ebtables_calls
+    assert '-t filter -F K1S_VM_BRIDGE_FORWARD' in ebtables_calls
+    assert '-t filter -A K1S_VM_BRIDGE_FORWARD -i k1s0 -j ACCEPT' in ebtables_calls
+    assert '-t filter -A K1S_VM_BRIDGE_FORWARD -o k1s3 -j ACCEPT' in ebtables_calls
+    assert '-t filter -D K1S_VM_BRIDGE_FORWARD ' not in ebtables_calls
+    assert '-t filter -I FORWARD 1 -j K1S_VM_BRIDGE_FORWARD' in ebtables_calls
+    assert '-t filter -A FORWARD -j K1S_VM_BRIDGE_FORWARD' not in ebtables_calls
+
+
+def test_host_prepare_installs_pod_routes_on_bridge(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    ip_log = tmp_path / "ip.log"
+
+    _write_executable(
+        fake_bin / "sudo",
+        '#!/usr/bin/env bash\nexec "$@"\n',
+    )
+    _write_executable(
+        fake_bin / "ip",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "{ip_log}"
+exit 0
+""",
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-lc",
+            (
+                f'PATH="{fake_bin}:$PATH"; '
+                f'source "{HOST_PREPARE_SCRIPT}"; '
+                'BRIDGE="k1s-br0"; '
+                "POD_ROUTE_ROWS=(); "
+                "POD_ROUTE_ROWS+=($'10.42.0.0/24\\t192.168.155.20'); "
+                "POD_ROUTE_ROWS+=($'10.42.1.0/24\\t192.168.155.21'); "
+                "ensure_pod_routes"
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr
+    ip_calls = ip_log.read_text(encoding="utf-8")
+    assert "route replace 10.42.0.0/24 via 192.168.155.20 dev k1s-br0" in ip_calls
+    assert "route replace 10.42.1.0/24 via 192.168.155.21 dev k1s-br0" in ip_calls
 
 
 def test_variant_up_uses_variant_aware_host_prepare() -> None:
@@ -792,9 +864,12 @@ def test_variant_down_uses_run_inventory_fallback() -> None:
     text = VARIANT_DOWN_SCRIPT.read_text(encoding="utf-8")
     assert "[--purge] [--destroy-network] [--best-effort]" in text
     assert 'run_inventory="$(run_dir "$RUN_ID")/qemu_inventory.json"' in text
+    assert 'pod_route_rows="$(' in text
+    assert 'select(.role=="k1s-core-node" and (.pod_cidr // "") != "")' in text
     assert 'log "using run inventory fallback for run_id=${RUN_ID}: $inventory"' in text
     assert 'log "continuing with best-effort cleanup derived from variant topology"' in text
     assert 'FORWARD_CHAIN="${FORWARD_CHAIN:-K1S_VM_FORWARD}"' in text
+    assert 'BRIDGE_FORWARD_CHAIN="${BRIDGE_FORWARD_CHAIN:-K1S_VM_BRIDGE_FORWARD}"' in text
     assert 'tap="$(lane_tap_name "$i")"' in text
     assert 'pid_file="$state_dir/pids/${name}.pid"' in text
     assert "while sudo iptables -t nat -D POSTROUTING -s \"$cidr\" -d \"$pod_cidr\" -j RETURN 2>/dev/null; do" in text
@@ -802,6 +877,10 @@ def test_variant_down_uses_run_inventory_fallback() -> None:
     assert 'while sudo iptables -D FORWARD -j "$FORWARD_CHAIN" 2>/dev/null; do' in text
     assert 'sudo iptables -F "$FORWARD_CHAIN" 2>/dev/null || true' in text
     assert 'sudo iptables -X "$FORWARD_CHAIN" 2>/dev/null || true' in text
+    assert 'while sudo ebtables -t filter -D FORWARD -j "$BRIDGE_FORWARD_CHAIN" 2>/dev/null; do' in text
+    assert 'sudo ebtables -t filter -F "$BRIDGE_FORWARD_CHAIN" 2>/dev/null || true' in text
+    assert 'sudo ebtables -t filter -X "$BRIDGE_FORWARD_CHAIN" 2>/dev/null || true' in text
+    assert 'sudo ip route del "$route_cidr" via "$route_ip" dev "$bridge" 2>/dev/null || true' in text
     assert (
         'elif pids="$(pgrep -f -- "$overlay" 2>/dev/null || true)" && [[ -n "$pids" ]]; then'
         in text
@@ -879,6 +958,8 @@ def test_variant_down_removes_forward_chain_when_destroying_network(tmp_path: Pa
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     iptables_log = tmp_path / "iptables.log"
+    ebtables_log = tmp_path / "ebtables.log"
+    ip_log = tmp_path / "ip.log"
 
     _write_executable(
         fake_bin / "sudo",
@@ -898,9 +979,23 @@ exit 0
 """,
     )
     _write_executable(
-        fake_bin / "ip",
-        """#!/usr/bin/env bash
+        fake_bin / "ebtables",
+        f"""#!/usr/bin/env bash
 set -euo pipefail
+echo "$*" >> "{ebtables_log}"
+for arg in "$@"; do
+  if [[ "$arg" == "-D" ]]; then
+    exit 1
+  fi
+done
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "ip",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "{ip_log}"
 exit 0
 """,
     )
@@ -923,7 +1018,7 @@ exit 1
                 "variant_to_json() { "
                 "cat <<'EOF'\n"
                 '{"network":{"bridge":"k1s-br0","cidr":"192.168.155.0/24"},'
-                '"hosts":[{"name":"core-a"},{"name":"core-b"}]}'
+                '"hosts":[{"name":"core-a","role":"k1s-core-node","ip":"192.168.155.20","pod_cidr":"10.42.0.0/24"},{"name":"core-b"}]}'
                 "\nEOF\n"
                 "}; "
                 'main --variant fake-variant.yaml --run-id retained-test --best-effort --destroy-network'
@@ -937,6 +1032,12 @@ exit 1
     assert '-D FORWARD -j K1S_VM_FORWARD' in iptables_calls
     assert '-F K1S_VM_FORWARD' in iptables_calls
     assert '-X K1S_VM_FORWARD' in iptables_calls
+    ebtables_calls = ebtables_log.read_text(encoding="utf-8")
+    assert '-t filter -D FORWARD -j K1S_VM_BRIDGE_FORWARD' in ebtables_calls
+    assert '-t filter -F K1S_VM_BRIDGE_FORWARD' in ebtables_calls
+    assert '-t filter -X K1S_VM_BRIDGE_FORWARD' in ebtables_calls
+    ip_calls = ip_log.read_text(encoding="utf-8")
+    assert "route del 10.42.0.0/24 via 192.168.155.20 dev k1s-br0" in ip_calls
 
 
 def test_variant_down_without_best_effort_rejects_missing_inventories(tmp_path: Path) -> None:
