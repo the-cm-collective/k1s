@@ -190,7 +190,6 @@ delete_filter_rule() {
 }
 
 ensure_forward_chain_rule() {
-  delete_filter_rule "$FORWARD_CHAIN" "$@"
   sudo iptables -A "$FORWARD_CHAIN" "$@"
 }
 

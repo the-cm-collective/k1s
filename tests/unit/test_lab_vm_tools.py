@@ -769,6 +769,8 @@ exit 0
     assert '-F K1S_VM_FORWARD' in iptables_calls
     assert '-A K1S_VM_FORWARD -i k1s0 -j ACCEPT' in iptables_calls
     assert '-A K1S_VM_FORWARD -o k1s3 -j ACCEPT' in iptables_calls
+    assert '-C K1S_VM_FORWARD ' not in iptables_calls
+    assert '-D K1S_VM_FORWARD ' not in iptables_calls
     assert '-I FORWARD 1 -j K1S_VM_FORWARD' in iptables_calls
     assert '-A FORWARD -j K1S_VM_FORWARD' not in iptables_calls
 
