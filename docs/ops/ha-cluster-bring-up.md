@@ -530,9 +530,22 @@ Preferred retained operator path:
 sudo -v
 make lab-vm-ha-dashboard-up
 make lab-vm-ha-dashboard-status
+make lab-vm-ha-dashboard-workload-smoke
+
+# stage 2, against the gateway-capable HA topology
+RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
 ```
 
 On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`.
+
+Normal retained rerun sequence:
+
+```bash
+make lab-vm-ha-dashboard-purge
+make lab-vm-ha-dashboard-up
+make lab-vm-ha-dashboard-status
+make lab-vm-ha-dashboard-workload-smoke
+```
 
 Override the retained run id or variant when needed:
 
@@ -552,10 +565,14 @@ make lab-vm-ha-dashboard-down
 
 make lab-vm-ha-dashboard-purge
 
+make lab-vm-ha-dashboard-workload-smoke
+
+RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
+
 make lab-vm-ha-dashboard-reset
 ```
 
-`make lab-vm-ha-dashboard-refresh-all` is the retained-VM "rebuild and restart all" path on the current VMs. `make lab-vm-ha-dashboard-down` is the light stop path when you intend to restart the same retained lane. `make lab-vm-ha-dashboard-purge` is the authoritative retained cleanup path: it does best-effort teardown of partial or orphaned runs, removes `state/lab-vm/<RUN_ID>`, removes `runs/<RUN_ID>`, cleans retained host mappings, and removes the repo-built host images used by this lane. `make lab-vm-ha-dashboard-reset` is `purge` plus `up`.
+`make lab-vm-ha-dashboard-refresh-all` is the retained-VM "rebuild and restart all" path on the current VMs. `make lab-vm-ha-dashboard-down` is the light stop path when you intend to restart the same retained lane. `make lab-vm-ha-dashboard-purge` is the authoritative retained cleanup path: it does best-effort teardown of partial or orphaned runs, removes `state/lab-vm/<RUN_ID>`, removes `runs/<RUN_ID>`, cleans retained host mappings, and removes the repo-built host images used by this lane. `make lab-vm-ha-dashboard-workload-smoke` is the stage-1 retained ingress check: it deploys the retained HA web smoke app on `hub-1`, translates app ingress to `core-local`, verifies `/healthz` and `/` through the HA core Envoy with `curl --resolve`, and then cleans the workload up again. `make lab-vm-ha-core-workload-smoke` is the stage-2 gateway-capable helper for live `lab/variants/ha-control-plane-core.yaml` runs; it deploys a worker-pinned app on `edge-sea-node` and verifies true `core-proxy` routing through the edge gateway/worker path. `make lab-vm-ha-dashboard-reset` is `purge` plus `up`.
 
 Lower-level equivalent commands remain available when you need the raw building blocks.
 
@@ -611,6 +628,34 @@ curl -sk \
 
 Use the same bearer token in the dashboard `Bearer` field when the data panels need auth.
 
+Retained stage-1 workload deploy and core-local Envoy validation:
+
+```bash
+make lab-vm-ha-dashboard-workload-smoke
+
+curl -sk \
+  --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 \
+  https://ha-web-smoke.home.arpa:10443/healthz
+
+curl -sk \
+  --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 \
+  https://ha-web-smoke.home.arpa:10443/ | rg 'Shell + Port-Forward Smoke'
+```
+
+Stage-2 gateway/worker `core-proxy` validation against a live `ha-control-plane-core` run:
+
+```bash
+RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
+
+curl -sk \
+  --resolve ha-edge-web-smoke.home.arpa:10443:192.168.155.10 \
+  https://ha-edge-web-smoke.home.arpa:10443/healthz
+
+curl -sk \
+  --resolve ha-edge-web-smoke.home.arpa:10443:192.168.155.10 \
+  https://ha-edge-web-smoke.home.arpa:10443/ | rg 'Shell + Port-Forward Smoke'
+```
+
 In HA, the docs Playground is disabled by default, including this retained VM lane. Use `AE_PLAYGROUND=1` only for exceptional local testing on a non-public control plane.
 
 Host docs remain a static convenience layer. Point them at the Envoy hosts and serve them locally:
@@ -628,10 +673,11 @@ Notes:
 - Any healthy controller can serve `/dashboard`, `/system`, and `/metrics` during normal HA operation.
 - In this retained VM profile, `/system` is bearer-protected and only `AE_API_ADMIN_TOKEN` may be configured for controller HTTP reads.
 - `/dashboard` serves without auth, but its data panels fetch `/system`; paste the bearer token into the page when prompted.
-- `hub-1` reaches the HA controller agent API on `:9110` and runs with Rosenpass/WireGuard disabled in this retained lane; this lane validates HA control-plane health plus workload placement, not overlay networking.
+- `hub-1` reaches the HA controller agent API on `:9110` and runs with Rosenpass/WireGuard disabled in this retained lane; this lane now validates HA control-plane health, workload placement, and `core-local` ingress from the HA cores to the retained compute node, not edge gateway transport.
 - Followers still reject leader-only mutation with `not_leader`; use the current leader for apply/scale/delete or retry after reading the leader hint.
 - The retained workload smoke uses the shared HA state store, not controller HTTP mutations, because this lane keeps `AE_API_MUTATIONS=0`.
-- `lab/variants/ha-control-plane-core.yaml` remains the separate HA closeout topology when you want edge/gateway transport coverage instead of a hub workload node.
+- `ha-web-smoke.home.arpa` is intentionally not added to the managed workstation host mapping; use `make lab-vm-ha-dashboard-workload-smoke` or `curl --resolve ...` instead of extending `/etc/hosts`.
+- `lab/variants/ha-control-plane-core.yaml` remains the separate stage-2 HA topology when you want true `core-proxy` coverage through `k1s-edge-core` and `k1s-edge-node`. Use `make lab-vm-ha-core-workload-smoke` there.
 - If you are switching from another VM lane that used a different `k1s-br0` subnet, tear it down with `--destroy-network` before rerunning host prep for this HA variant.
 - If the controller used by `DOCS_API_BASE` goes away, rebuild docs with another core URL or open the remaining controllers directly.
 - Clean up manually when you are done. Use `--destroy-network` only when you want full bridge cleanup or are switching to another subnet.

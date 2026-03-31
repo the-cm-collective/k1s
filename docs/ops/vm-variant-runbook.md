@@ -127,9 +127,19 @@ Preferred retained operator flow:
 sudo -v
 make lab-vm-ha-dashboard-up
 make lab-vm-ha-dashboard-status
+make lab-vm-ha-dashboard-workload-smoke
 ```
 
 On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`.
+
+Normal retained rerun sequence:
+
+```bash
+make lab-vm-ha-dashboard-purge
+make lab-vm-ha-dashboard-up
+make lab-vm-ha-dashboard-status
+make lab-vm-ha-dashboard-workload-smoke
+```
 
 Override the retained run id or variant when needed:
 
@@ -149,6 +159,10 @@ make lab-vm-ha-dashboard-down
 
 make lab-vm-ha-dashboard-purge
 
+make lab-vm-ha-dashboard-workload-smoke
+
+RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
+
 make lab-vm-ha-dashboard-reset
 
 make lab-vm-ha-dashboard-reset \
@@ -158,6 +172,8 @@ make lab-vm-ha-dashboard-reset \
 - `make lab-vm-ha-dashboard-refresh-all` is the retained-VM rebuild and restart path on the current VMs.
 - `make lab-vm-ha-dashboard-down` stops the retained VMs but keeps retained run metadata for a later restart.
 - `make lab-vm-ha-dashboard-purge` is the authoritative retained cleanup path; it does best-effort teardown for partial or orphaned runs, removes retained VM state and `runs/<RUN_ID>`, cleans retained host mappings, and removes the repo-built host images used by this lane.
+- `make lab-vm-ha-dashboard-workload-smoke` is the retained stage-1 ingress check: it deploys the retained HA web smoke app onto `hub-1`, translates app ingress to `core-local`, verifies `/healthz` and `/` through the HA core Envoy with `curl --resolve`, and then cleans the workload up again.
+- `make lab-vm-ha-core-workload-smoke` is the stage-2 helper for a live `lab/variants/ha-control-plane-core.yaml` run; it deploys a worker-pinned smoke app onto `edge-sea-node` and verifies true `core-proxy` routing through the gateway-capable HA topology.
 - `make lab-vm-ha-dashboard-reset` runs that same purge logic and then brings the retained lane back up.
 - `make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"` is the full expensive path when guest/bootstrap contracts changed.
 
@@ -189,7 +205,7 @@ Use that retained HA run as the Envoy-host manual-smoke lane on one workstation:
 - use `curl --resolve <host>:10443:<core-ip> ...` when you want to verify a specific core behind the shared hostnames
 - keep direct controller `http://192.168.155.10:9108/dashboard` and direct API shim `https://192.168.155.10:8445` as secondary diagnostics
 - the harness automatically validates that `hub-1` (`192.168.155.20`, `role=hub,site=hub`) registers and runs the pinned `shell-demo-node-hub` workload
-- `hub-1` reaches the controller agent API on `:9110` and runs without Rosenpass/WireGuard in this retained lane; overlay validation stays with the edge/gateway HA closeout topology
+- `hub-1` reaches the controller agent API on `:9110` and runs without Rosenpass/WireGuard in this retained lane; this stage-1 lane validates HA control-plane health plus `core-local` ingress to the retained compute node, while edge/gateway transport validation stays with the stage-2 HA closeout topology
 - export local auth, verify `/system`, and use the same bearer token for the dashboard data panels:
 
 ```bash
@@ -209,6 +225,34 @@ python docs/build_docs.py
 python -m http.server 9109 --directory docs/site
 ```
 
+- retained stage-1 workload deploy and core-local Envoy validation:
+
+```bash
+make lab-vm-ha-dashboard-workload-smoke
+
+curl -sk \
+  --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 \
+  https://ha-web-smoke.home.arpa:10443/healthz
+
+curl -sk \
+  --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 \
+  https://ha-web-smoke.home.arpa:10443/ | rg 'Shell + Port-Forward Smoke'
+```
+
+- stage-2 gateway/worker `core-proxy` validation against a live `ha-control-plane-core` run:
+
+```bash
+RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
+
+curl -sk \
+  --resolve ha-edge-web-smoke.home.arpa:10443:192.168.155.10 \
+  https://ha-edge-web-smoke.home.arpa:10443/healthz
+
+curl -sk \
+  --resolve ha-edge-web-smoke.home.arpa:10443:192.168.155.10 \
+  https://ha-edge-web-smoke.home.arpa:10443/ | rg 'Shell + Port-Forward Smoke'
+```
+
 Notes:
 - Treat this as a retained VM smoke environment, not a supported single-host HA dev profile.
 - Treat `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa` on `:10443` as the primary public control-plane surface for this retained lane.
@@ -218,7 +262,8 @@ Notes:
 - In this HA VM profile, `/system` is bearer-protected and the dashboard needs the same bearer token for its data panels.
 - If `AE_API_READ_TOKEN` is unset, use `AE_API_ADMIN_TOKEN` in the header above and in the dashboard `Bearer` field.
 - The retained workload smoke uses the shared HA state store because controller HTTP mutations stay disabled in this profile.
-- Use `lab/variants/ha-control-plane-core.yaml` instead when you want the checked-in HA edge/gateway transport topology.
+- `ha-web-smoke.home.arpa` is intentionally not added to the managed workstation host mapping; use `make lab-vm-ha-dashboard-workload-smoke` or `curl --resolve ...` instead of extending `/etc/hosts`.
+- Use `lab/variants/ha-control-plane-core.yaml` instead when you want the checked-in stage-2 HA edge/gateway transport topology and true `core-proxy` validation.
 - If you are reusing `k1s-br0` from a different variant CIDR, tear that lane down with `--destroy-network` before running the HA host prep command above.
 - If the controller backing the local docs build changes, rebuild with another core URL.
 

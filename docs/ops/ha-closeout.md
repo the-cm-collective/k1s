@@ -90,6 +90,23 @@ Operator bootstrap entrypoint: [HA Cluster Bring-Up](ha-cluster-bring-up.html). 
   - the reduced harness forces `AE_JS_REPLICAS=1`; it is not the milestone transport-fidelity lane
   - the wrapper-backed entrypoint validates the supported local runtime path for gRPC-backed HA authority before the test begins
 
+### Companion: Retained Local HA VM Harness
+
+- Entry points:
+  - `make lab-vm-ha-dashboard-up`
+  - `make lab-vm-ha-dashboard-status`
+  - `make lab-vm-ha-dashboard-workload-smoke`
+  - `make lab-vm-ha-dashboard-purge`
+- What it proves:
+  - the workstation-facing retained HA lane can be rerun as `purge -> up` without manual bridge cleanup
+  - on NixOS, the retained helper applies and verifies the local DNS/TLS bridge before `up` reports success
+  - the public Envoy docs/dashboard/API hosts are reachable from one workstation in the retained lane
+  - a hub-pinned sample workload can be deployed through shared HA state and verified through Envoy edge with `curl --resolve`
+- What it is not:
+  - not the milestone-defining closeout evidence lane
+  - not a replacement for the checked-in `ha_control_plane` and drill-enabled variants
+  - not a widened workstation host-mapping contract; `ha-web-smoke.home.arpa` stays helper-only / `curl --resolve` only
+
 ## Gap Register
 
 ### must_fix_before_closeout
@@ -135,7 +152,7 @@ The HA track can be marked complete only when all of the following are true:
    - Current strongest evidence command: `make ha-closeout-e2e`
    - Current result: passed locally on 2026-03-19 through the wrapper-backed reduced harness entrypoint.
 3. [HA Control Plane Roadmap](high-availability-control-plane.html), [Roadmap Status](roadmap-status.html), [Operations Runbook](runbook.html), and generated `docs/site` output match the implemented HA surface.
-   - The canonical day-0 operator bootstrap page is [HA Cluster Bring-Up](ha-cluster-bring-up.html).
+   - The canonical day-0 operator bootstrap page is [HA Cluster Bring-Up](ha-cluster-bring-up.html), including the retained VM companion harness and its workload-through-Envoy smoke path.
 4. No `must_fix_before_closeout` gaps remain in this document.
 5. A final roadmap decision checkpoint is recorded when the status table flips from `In progress` to complete.
    - Current checkpoint: 2026-03-19 HA control-plane closeout checkpoint recorded in [Roadmap Status](roadmap-status.html).
@@ -145,3 +162,6 @@ The HA track can be marked complete only when all of the following are true:
 - The milestone-defining control-plane role is `k1s-ha-core`, not `k1s-core`.
 - The milestone-defining edge lane remains `k1s-edge-core` / `k1s-edge-core-cri`.
 - The helper scripts listed above are the real operator contract; the closeout lane is an integration wrapper around them, not a second HA API.
+- The retained HA VM harness is the preferred workstation companion lane for manual docs/dashboard smoke, NixOS bridge validation, and stage-1 `core-local` workload ingress checks on `hub-1`.
+- `make lab-vm-ha-dashboard-workload-smoke` deploys `ha-web-smoke` on `hub-1` and verifies stage-1 `core-local` routing through the HA core Envoy with `curl --resolve`.
+- `make lab-vm-ha-core-workload-smoke` is the stage-2 helper for live `lab/variants/ha-control-plane-core.yaml` runs; it deploys `ha-edge-web-smoke` on `edge-sea-node` and verifies true `core-proxy` routing through the edge gateway/worker topology.

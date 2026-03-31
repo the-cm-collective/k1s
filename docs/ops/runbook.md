@@ -523,9 +523,14 @@ Dashboard reload vs. restart
   - On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`
   - Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: `make lab-vm-ha-dashboard-status`
   - After `up`, `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should resolve to the retained HA ingress IP instead of the local `127.0.0.1` dev mapping
+  - Normal retained rerun sequence: `make lab-vm-ha-dashboard-purge`, `make lab-vm-ha-dashboard-up`, `make lab-vm-ha-dashboard-status`, `make lab-vm-ha-dashboard-workload-smoke`
   - retained-VM "rebuild and restart all" path: `make lab-vm-ha-dashboard-refresh-all`
   - Stop the retained VMs but keep retained run metadata for a later restart: `make lab-vm-ha-dashboard-down`
   - Full retained cleanup, including best-effort orphan teardown, `runs/<RUN_ID>`, repo-built host images, and retained host-mapping cleanup: `make lab-vm-ha-dashboard-purge`
+  - Stage 1 retained ingress check: deploy the retained HA web smoke app on `hub-1`, translate app ingress to `core-local`, verify `/healthz` and `/` through the HA core Envoy, and clean it up again: `make lab-vm-ha-dashboard-workload-smoke`
+  - Stage 2 gateway-capable check against a live `lab/variants/ha-control-plane-core.yaml` run: `RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke`
+  - `ha-web-smoke.home.arpa` is intentionally not added to the managed workstation host mapping; use the helper or `curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...` instead of extending `/etc/hosts`
+  - `ha-edge-web-smoke.home.arpa` is also helper-only / `curl --resolve` only for the stage-2 `core-proxy` lane
   - Hard reset the retained stack (`purge` + `up`): `make lab-vm-ha-dashboard-reset`
   - `purge` and `reset` restore the prior localhost-oriented mapping when one was already present, otherwise they remove the retained managed mapping
   - Hard reset plus guest image rebuild: `make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"`

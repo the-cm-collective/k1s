@@ -825,6 +825,32 @@
 </ul>
 </li>
 </ul>
+<h3 id="companion-retained-local-ha-vm-harness">Companion: Retained Local HA VM Harness</h3>
+<ul>
+<li>Entry points:
+<ul>
+<li><code>make lab-vm-ha-dashboard-up</code></li>
+<li><code>make lab-vm-ha-dashboard-status</code></li>
+<li><code>make lab-vm-ha-dashboard-workload-smoke</code></li>
+<li><code>make lab-vm-ha-dashboard-purge</code></li>
+</ul>
+</li>
+<li>What it proves:
+<ul>
+<li>the workstation-facing retained HA lane can be rerun as <code>purge -&gt; up</code> without manual bridge cleanup</li>
+<li>on NixOS, the retained helper applies and verifies the local DNS/TLS bridge before <code>up</code> reports success</li>
+<li>the public Envoy docs/dashboard/API hosts are reachable from one workstation in the retained lane</li>
+<li>a hub-pinned sample workload can be deployed through shared HA state and verified through Envoy edge with <code>curl --resolve</code></li>
+</ul>
+</li>
+<li>What it is not:
+<ul>
+<li>not the milestone-defining closeout evidence lane</li>
+<li>not a replacement for the checked-in <code>ha_control_plane</code> and drill-enabled variants</li>
+<li>not a widened workstation host-mapping contract; <code>ha-web-smoke.home.arpa</code> stays helper-only / <code>curl --resolve</code> only</li>
+</ul>
+</li>
+</ul>
 <h2 id="gap-register">Gap Register</h2>
 <h3 id="mustfixbeforecloseout">must_fix_before_closeout</h3>
 <ul>
@@ -871,7 +897,7 @@
 </ul>
 <p>3. <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>, <a href="roadmap-status.html">Roadmap Status</a>, <a href="runbook.html">Operations Runbook</a>, and generated <code>docs/site</code> output match the implemented HA surface.</p>
 <ul>
-<li>The canonical day-0 operator bootstrap page is <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>.</li>
+<li>The canonical day-0 operator bootstrap page is <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>, including the retained VM companion harness and its workload-through-Envoy smoke path.</li>
 </ul>
 <p>4. No <code>must_fix_before_closeout</code> gaps remain in this document. 5. A final roadmap decision checkpoint is recorded when the status table flips from <code>In progress</code> to complete.</p>
 <ul>
@@ -882,6 +908,9 @@
 <li>The milestone-defining control-plane role is <code>k1s-ha-core</code>, not <code>k1s-core</code>.</li>
 <li>The milestone-defining edge lane remains <code>k1s-edge-core</code> / <code>k1s-edge-core-cri</code>.</li>
 <li>The helper scripts listed above are the real operator contract; the closeout lane is an integration wrapper around them, not a second HA API.</li>
+<li>The retained HA VM harness is the preferred workstation companion lane for manual docs/dashboard smoke, NixOS bridge validation, and stage-1 <code>core-local</code> workload ingress checks on <code>hub-1</code>.</li>
+<li><code>make lab-vm-ha-dashboard-workload-smoke</code> deploys <code>ha-web-smoke</code> on <code>hub-1</code> and verifies stage-1 <code>core-local</code> routing through the HA core Envoy with <code>curl --resolve</code>.</li>
+<li><code>make lab-vm-ha-core-workload-smoke</code> is the stage-2 helper for live <code>lab/variants/ha-control-plane-core.yaml</code> runs; it deploys <code>ha-edge-web-smoke</code> on <code>edge-sea-node</code> and verifies true <code>core-proxy</code> routing through the edge gateway/worker topology.</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -890,7 +919,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-26 12:34:44</span>
+        <span>Built 2026-03-30 19:37:44</span>
       </div>
     </footer>
     <script>

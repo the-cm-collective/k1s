@@ -1600,9 +1600,14 @@
 <li>On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code></li>
 <li>Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: <code>make lab-vm-ha-dashboard-status</code></li>
 <li>After <code>up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the local <code>127.0.0.1</code> dev mapping</li>
+<li>Normal retained rerun sequence: <code>make lab-vm-ha-dashboard-purge</code>, <code>make lab-vm-ha-dashboard-up</code>, <code>make lab-vm-ha-dashboard-status</code>, <code>make lab-vm-ha-dashboard-workload-smoke</code></li>
 <li>retained-VM &quot;rebuild and restart all&quot; path: <code>make lab-vm-ha-dashboard-refresh-all</code></li>
 <li>Stop the retained VMs but keep retained run metadata for a later restart: <code>make lab-vm-ha-dashboard-down</code></li>
 <li>Full retained cleanup, including best-effort orphan teardown, <code>runs/&lt;RUN_ID&gt;</code>, repo-built host images, and retained host-mapping cleanup: <code>make lab-vm-ha-dashboard-purge</code></li>
+<li>Stage 1 retained ingress check: deploy the retained HA web smoke app on <code>hub-1</code>, translate app ingress to <code>core-local</code>, verify <code>/healthz</code> and <code>/</code> through the HA core Envoy, and clean it up again: <code>make lab-vm-ha-dashboard-workload-smoke</code></li>
+<li>Stage 2 gateway-capable check against a live <code>lab/variants/ha-control-plane-core.yaml</code> run: <code>RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke</code></li>
+<li><code>ha-web-smoke.home.arpa</code> is intentionally not added to the managed workstation host mapping; use the helper or <code>curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...</code> instead of extending <code>/etc/hosts</code></li>
+<li><code>ha-edge-web-smoke.home.arpa</code> is also helper-only / <code>curl --resolve</code> only for the stage-2 <code>core-proxy</code> lane</li>
 <li>Hard reset the retained stack (<code>purge</code> + <code>up</code>): <code>make lab-vm-ha-dashboard-reset</code></li>
 <li><code>purge</code> and <code>reset</code> restore the prior localhost-oriented mapping when one was already present, otherwise they remove the retained managed mapping</li>
 <li>Hard reset plus guest image rebuild: <code>make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></li>
@@ -2020,7 +2025,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-27 00:45:11</span>
+        <span>Built 2026-03-30 19:37:44</span>
       </div>
     </footer>
     <script>
