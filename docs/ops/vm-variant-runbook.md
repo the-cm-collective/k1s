@@ -172,7 +172,7 @@ make lab-vm-ha-dashboard-reset \
 - `make lab-vm-ha-dashboard-refresh-all` is the retained-VM rebuild and restart path on the current VMs.
 - `make lab-vm-ha-dashboard-down` stops the retained VMs but keeps retained run metadata for a later restart.
 - `make lab-vm-ha-dashboard-purge` is the authoritative retained cleanup path; it does best-effort teardown for partial or orphaned runs, removes retained VM state and `runs/<RUN_ID>`, cleans retained host mappings, and removes the repo-built host images used by this lane.
-- `make lab-vm-ha-dashboard-workload-smoke` is the retained stage-1 ingress check: it deploys the retained HA web smoke app onto `hub-1`, translates app ingress to `core-local`, verifies `/healthz` and `/` through the HA core Envoy with `curl --resolve`, and then cleans the workload up again.
+- `make lab-vm-ha-dashboard-workload-smoke` is the retained stage-1 ingress check: it deploys the retained HA web smoke app onto `hub-1`, translates app ingress to `core-local`, verifies `/healthz` and `/` through the HA core Envoy, and then cleans the workload up again before exiting.
 - `make lab-vm-ha-core-workload-smoke` is the stage-2 helper for a live `lab/variants/ha-control-plane-core.yaml` run; it deploys a worker-pinned smoke app onto `edge-sea-node` and verifies true `core-proxy` routing through the gateway-capable HA topology.
 - `make lab-vm-ha-dashboard-reset` runs that same purge logic and then brings the retained lane back up.
 - `make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"` is the full expensive path when guest/bootstrap contracts changed.
@@ -225,21 +225,51 @@ python docs/build_docs.py
 python -m http.server 9109 --directory docs/site
 ```
 
-- retained stage-1 workload deploy and core-local Envoy validation:
+Retained stage-1 workload deploy and core-local Envoy validation (self-cleaning smoke):
 
 ```bash
 make lab-vm-ha-dashboard-workload-smoke
+```
 
-curl -sk \
+This helper deploys `ha-web-smoke`, verifies direct pod reachability plus Envoy ingress, and then removes the workload during cleanup. A later host-side `curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...` is expected to return `404` unless you deploy the manifest manually and leave it running.
+
+For persistent manual deploys that stay up for host-side dev testing:
+
+```bash
+set -a
+source state/profiles/k1s-ha-core/controller.env
+set +a
+
+source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
+
+PYTHONPATH=src ./.venv/bin/python -m ae.cli apply \
+  -f docs/site/examples/ha-web-smoke.yaml
+
+PYTHONPATH=src ./.venv/bin/python -m ae.cli status \
+  --watch 2 \
+  --timeout 180 \
+  ha-web-smoke
+
+PYTHONPATH=src ./.venv/bin/python -m ae.cli events \
+  --limit 20 \
+  ha-web-smoke
+
+curl --noproxy "*" -sk \
   --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 \
   https://ha-web-smoke.home.arpa:10443/healthz
 
-curl -sk \
+curl --noproxy "*" -sk \
   --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 \
   https://ha-web-smoke.home.arpa:10443/ | rg 'Shell + Port-Forward Smoke'
 ```
 
-- stage-2 gateway/worker `core-proxy` validation against a live `ha-control-plane-core` run:
+Clean it up when you are done:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m ae.cli delete --purge ha-web-smoke
+```
+
+Stage-2 gateway/worker `core-proxy` validation against a live `ha-control-plane-core` run:
 
 ```bash
 RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
@@ -262,7 +292,8 @@ Notes:
 - In this HA VM profile, `/system` is bearer-protected and the dashboard needs the same bearer token for its data panels.
 - If `AE_API_READ_TOKEN` is unset, use `AE_API_ADMIN_TOKEN` in the header above and in the dashboard `Bearer` field.
 - The retained workload smoke uses the shared HA state store because controller HTTP mutations stay disabled in this profile.
-- `ha-web-smoke.home.arpa` is intentionally not added to the managed workstation host mapping; use `make lab-vm-ha-dashboard-workload-smoke` or `curl --resolve ...` instead of extending `/etc/hosts`.
+- For manual persistent deploys, load the generated shared-store env from `state/profiles/k1s-ha-core/controller.env` before running `ae apply/status/delete` so the CLI targets the HA etcd authority instead of the default local SQLite DB.
+- `ha-web-smoke.home.arpa` is intentionally not added to the managed workstation host mapping; use `curl --resolve ...` for both the self-cleaning smoke follow-up and the manual persistent deploy path instead of extending `/etc/hosts`.
 - Use `lab/variants/ha-control-plane-core.yaml` instead when you want the checked-in stage-2 HA edge/gateway transport topology and true `core-proxy` validation.
 - If you are reusing `k1s-br0` from a different variant CIDR, tear that lane down with `--destroy-network` before running the HA host prep command above.
 - If the controller backing the local docs build changes, rebuild with another core URL.

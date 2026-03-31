@@ -527,7 +527,8 @@ Dashboard reload vs. restart
   - retained-VM "rebuild and restart all" path: `make lab-vm-ha-dashboard-refresh-all`
   - Stop the retained VMs but keep retained run metadata for a later restart: `make lab-vm-ha-dashboard-down`
   - Full retained cleanup, including best-effort orphan teardown, `runs/<RUN_ID>`, repo-built host images, and retained host-mapping cleanup: `make lab-vm-ha-dashboard-purge`
-  - Stage 1 retained ingress check: deploy the retained HA web smoke app on `hub-1`, translate app ingress to `core-local`, verify `/healthz` and `/` through the HA core Envoy, and clean it up again: `make lab-vm-ha-dashboard-workload-smoke`
+  - Stage 1 retained ingress check: deploy the retained HA web smoke app on `hub-1`, translate app ingress to `core-local`, verify `/healthz` and `/` through the HA core Envoy, and clean it up again before the helper exits: `make lab-vm-ha-dashboard-workload-smoke`
+  - For persistent host-side testing after the smoke, source `state/profiles/k1s-ha-core/controller.env`, apply `docs/site/examples/ha-web-smoke.yaml` with `PYTHONPATH=src ./.venv/bin/python -m ae.cli apply -f ...`, keep testing with `curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...`, and clean it up later with `PYTHONPATH=src ./.venv/bin/python -m ae.cli delete --purge ha-web-smoke`
   - Stage 2 gateway-capable check against a live `lab/variants/ha-control-plane-core.yaml` run: `RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke`
   - `ha-web-smoke.home.arpa` is intentionally not added to the managed workstation host mapping; use the helper or `curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...` instead of extending `/etc/hosts`
   - `ha-edge-web-smoke.home.arpa` is also helper-only / `curl --resolve` only for the stage-2 `core-proxy` lane
