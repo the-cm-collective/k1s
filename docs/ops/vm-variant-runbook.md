@@ -134,6 +134,8 @@ On NixOS, this retained helper path now applies the local DNS/TLS bridge automat
 
 For one-shot VM harness validation, do not use the retained targets. Use `make lab-vm-smoke`, which wraps `smoke_helper.py` and auto-runs teardown on success by default (`--teardown on-success`).
 
+Canonical HA rerun order is: stage 1 one-shot on `ha-control-plane-attached-node`, stage 2 one-shot on `ha-control-plane-core`, then optional drills on `ha-control-plane-core-drills`; retained attached-node restart/rejoin flows are supplemental scenarios, not replacements for those one-shot acceptance runs.
+
 Stage-1 one-shot rerun:
 
 ```bash
@@ -159,6 +161,20 @@ AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
 make lab-vm-smoke \
   VARIANT=lab/variants/ha-control-plane-core.yaml \
+  RUN_ID="$RUN_ID"
+```
+
+Optional deeper disruptive validation after the two one-shot passes:
+
+```bash
+sudo -v
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_core_drills"
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core-drills.yaml \
   RUN_ID="$RUN_ID"
 ```
 

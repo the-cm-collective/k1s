@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -716,7 +716,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -836,6 +836,7 @@ make lab-vm-ha-attached-node-status
 make lab-vm-ha-attached-node-workload-smoke</code></pre>
 <p>On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code>.</p>
 <p>For one-shot VM harness validation, do not use the retained targets. Use <code>make lab-vm-smoke</code>, which wraps <code>smoke_helper.py</code> and auto-runs teardown on success by default (<code>--teardown on-success</code>).</p>
+<p>Canonical HA rerun order is: stage 1 one-shot on <code>ha-control-plane-attached-node</code>, stage 2 one-shot on <code>ha-control-plane-core</code>, then optional drills on <code>ha-control-plane-core-drills</code>; retained attached-node restart/rejoin flows are supplemental scenarios, not replacements for those one-shot acceptance runs.</p>
 <p>Stage-1 one-shot rerun:</p>
 <pre><code>sudo -v
 RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1&quot;
@@ -855,6 +856,16 @@ AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
 make lab-vm-smoke \
   VARIANT=lab/variants/ha-control-plane-core.yaml \
+  RUN_ID=&quot;$RUN_ID&quot;</code></pre>
+<p>Optional deeper disruptive validation after the two one-shot passes:</p>
+<pre><code>sudo -v
+RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_core_drills&quot;
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core-drills.yaml \
   RUN_ID=&quot;$RUN_ID&quot;</code></pre>
 <p>Normal retained rerun sequence:</p>
 <pre><code>make lab-vm-ha-attached-node-purge
@@ -1092,7 +1103,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 14:35:48</span>
+        <span>Built 2026-04-01 11:50:57</span>
       </div>
     </footer>
     <script>
