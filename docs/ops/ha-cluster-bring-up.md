@@ -718,6 +718,24 @@ Remove the manual workload when you are done:
 PYTHONPATH=src ./.venv/bin/python -m ae.cli delete --purge ha-web-smoke
 ```
 
+Retained stage-1 node inventory and `cordon` / `uncordon` validation:
+
+```bash
+set -a
+source state/profiles/k1s-ha-core/controller.env
+set +a
+
+source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
+
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes attached-node-1 --cordon
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes attached-node-1
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes attached-node-1 --uncordon
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes attached-node-1
+```
+
+This retained topology currently validates node inventory plus `cordon` / `uncordon` semantics only. `ae.cli nodes --drain` is available, but true drain-plus-reschedule is not covered here because `attached-node-1` is the only schedulable `role=worker,site=core` node in `ha-control-plane-attached-node`.
+
 Stage-2 gateway/worker `core-proxy` validation against a live `ha-control-plane-core` run:
 
 ```bash

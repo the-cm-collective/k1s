@@ -972,6 +972,19 @@ curl --noproxy &quot;*&quot; -sk \
   https://ha-web-smoke.home.arpa:10443/ | rg &#x27;Shell + Port-Forward Smoke&#x27;</code></pre>
 <p>Clean it up when you are done:</p>
 <pre><code>PYTHONPATH=src ./.venv/bin/python -m ae.cli delete --purge ha-web-smoke</code></pre>
+<p>Retained stage-1 node inventory and <code>cordon</code> / <code>uncordon</code> validation:</p>
+<pre><code>set -a
+source state/profiles/k1s-ha-core/controller.env
+set +a
+
+source &lt;(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
+
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes attached-node-1 --cordon
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes attached-node-1
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes attached-node-1 --uncordon
+PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes attached-node-1</code></pre>
+<p>This retained topology currently validates node inventory plus <code>cordon</code> / <code>uncordon</code> semantics only. <code>ae.cli nodes --drain</code> is available, but true drain-plus-reschedule is not covered here because <code>attached-node-1</code> is the only schedulable <code>role=worker,site=core</code> node in <code>ha-control-plane-attached-node</code>.</p>
 <p>Stage-2 gateway/worker <code>core-proxy</code> validation against a live <code>ha-control-plane-core</code> run:</p>
 <pre><code>RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke
 
@@ -1103,7 +1116,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 11:50:57</span>
+        <span>Built 2026-04-01 13:22:29</span>
       </div>
     </footer>
     <script>
