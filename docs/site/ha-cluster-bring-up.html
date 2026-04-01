@@ -1103,6 +1103,27 @@ make lab-vm-ha-attached-node-workload-smoke
 # stage 2, against the gateway-capable HA topology
 RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke</code></pre>
 <p>On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code>.</p>
+<p>For final one-shot HA harness reruns, prefer <code>make lab-vm-smoke</code> instead of the retained targets. The one-shot wrapper goes through <code>smoke_helper.py</code>, and <code>variant_down.sh</code> runs automatically on success because <code>--teardown on-success</code> is the default.</p>
+<p>Stage-1 one-shot rerun sequence:</p>
+<pre><code>sudo -v
+RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1&quot;
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
+  RUN_ID=&quot;$RUN_ID&quot;</code></pre>
+<p>Stage-2 one-shot rerun sequence:</p>
+<pre><code>sudo -v
+RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2&quot;
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core.yaml \
+  RUN_ID=&quot;$RUN_ID&quot;</code></pre>
 <p>Normal retained rerun sequence:</p>
 <pre><code>make lab-vm-ha-attached-node-purge
 make lab-vm-ha-attached-node-up
@@ -1131,7 +1152,7 @@ make lab-vm-ha-attached-node-reset</code></pre>
 <pre><code>scripts/lab/vm/labctl.sh host prepare \
   --variant lab/variants/ha-control-plane-attached-node.yaml \
   --apply</code></pre>
-<p>Bring the retained HA lane up without auto teardown via the older generic wrapper:</p>
+<p>Bring the retained HA lane up without auto teardown via the generic wrapper only when you intentionally want to inspect the live run after the smoke:</p>
 <pre><code>sudo -v
 export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_ha_manual
 AE_CRI_CACHE_SEED_ENGINE=docker \
@@ -1258,7 +1279,7 @@ python -m http.server 9109 --directory docs/site</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 02:19:30</span>
+        <span>Built 2026-04-01 14:35:48</span>
       </div>
     </footer>
     <script>

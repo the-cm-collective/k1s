@@ -132,6 +132,36 @@ make lab-vm-ha-attached-node-workload-smoke
 
 On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`.
 
+For one-shot VM harness validation, do not use the retained targets. Use `make lab-vm-smoke`, which wraps `smoke_helper.py` and auto-runs teardown on success by default (`--teardown on-success`).
+
+Stage-1 one-shot rerun:
+
+```bash
+sudo -v
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1"
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
+  RUN_ID="$RUN_ID"
+```
+
+Stage-2 one-shot rerun:
+
+```bash
+sudo -v
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2"
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core.yaml \
+  RUN_ID="$RUN_ID"
+```
+
 Normal retained rerun sequence:
 
 ```bash
@@ -194,7 +224,7 @@ make lab-vm-smoke \
   LAB_VM_SMOKE_ARGS="--teardown never"
 ```
 
-Use that retained HA run as the Envoy-host manual-smoke lane on one workstation:
+Use that retained HA run as the Envoy-host manual-smoke lane on one workstation only when you intentionally passed `LAB_VM_SMOKE_ARGS="--teardown never"` or used the retained targets:
 - open `https://dash.home.arpa:10443/dashboard`
 - open `https://docs.home.arpa:10443/`
 - open `https://api.home.arpa:10443/swagger` or `https://api.home.arpa:10443/redoc`

@@ -523,6 +523,9 @@ Dashboard reload vs. restart
   - On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`
   - Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: `make lab-vm-ha-attached-node-status`
   - After `up`, `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should resolve to the retained HA ingress IP instead of the local `127.0.0.1` dev mapping
+  - For one-shot HA harness tests, prefer `make lab-vm-smoke`; unlike the retained targets, it goes through `smoke_helper.py` and auto-runs `variant_down.sh` on success by default (`--teardown on-success`)
+  - Stage 1 one-shot rerun sequence: `sudo -v && RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1" && AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-attached-node.yaml RUN_ID="$RUN_ID"`
+  - Stage 2 one-shot rerun sequence: `sudo -v && RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2" && AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-core.yaml RUN_ID="$RUN_ID"`
   - Normal retained rerun sequence: `make lab-vm-ha-attached-node-purge`, `make lab-vm-ha-attached-node-up`, `make lab-vm-ha-attached-node-status`, `make lab-vm-ha-attached-node-workload-smoke`
   - retained-VM "rebuild and restart all" path: `make lab-vm-ha-attached-node-refresh-all`
   - Stop the retained VMs but keep retained run metadata for a later restart: `make lab-vm-ha-attached-node-down`

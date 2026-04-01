@@ -835,6 +835,27 @@ make lab-vm-ha-attached-node-up
 make lab-vm-ha-attached-node-status
 make lab-vm-ha-attached-node-workload-smoke</code></pre>
 <p>On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code>.</p>
+<p>For one-shot VM harness validation, do not use the retained targets. Use <code>make lab-vm-smoke</code>, which wraps <code>smoke_helper.py</code> and auto-runs teardown on success by default (<code>--teardown on-success</code>).</p>
+<p>Stage-1 one-shot rerun:</p>
+<pre><code>sudo -v
+RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1&quot;
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
+  RUN_ID=&quot;$RUN_ID&quot;</code></pre>
+<p>Stage-2 one-shot rerun:</p>
+<pre><code>sudo -v
+RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2&quot;
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core.yaml \
+  RUN_ID=&quot;$RUN_ID&quot;</code></pre>
 <p>Normal retained rerun sequence:</p>
 <pre><code>make lab-vm-ha-attached-node-purge
 make lab-vm-ha-attached-node-up
@@ -882,7 +903,7 @@ make lab-vm-smoke \
   VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
   RUN_ID=&quot;$RUN_ID&quot; \
   LAB_VM_SMOKE_ARGS=&quot;--teardown never&quot;</code></pre>
-<p>Use that retained HA run as the Envoy-host manual-smoke lane on one workstation:</p>
+<p>Use that retained HA run as the Envoy-host manual-smoke lane on one workstation only when you intentionally passed <code>LAB_VM_SMOKE_ARGS=&quot;--teardown never&quot;</code> or used the retained targets:</p>
 <ul>
 <li>open <code>https://dash.home.arpa:10443/dashboard</code></li>
 <li>open <code>https://docs.home.arpa:10443/</code></li>
@@ -1071,7 +1092,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 02:19:30</span>
+        <span>Built 2026-04-01 14:35:48</span>
       </div>
     </footer>
     <script>

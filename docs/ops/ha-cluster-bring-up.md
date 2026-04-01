@@ -538,6 +538,36 @@ RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
 
 On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`.
 
+For final one-shot HA harness reruns, prefer `make lab-vm-smoke` instead of the retained targets. The one-shot wrapper goes through `smoke_helper.py`, and `variant_down.sh` runs automatically on success because `--teardown on-success` is the default.
+
+Stage-1 one-shot rerun sequence:
+
+```bash
+sudo -v
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1"
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
+  RUN_ID="$RUN_ID"
+```
+
+Stage-2 one-shot rerun sequence:
+
+```bash
+sudo -v
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2"
+
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core.yaml \
+  RUN_ID="$RUN_ID"
+```
+
 Normal retained rerun sequence:
 
 ```bash
@@ -584,7 +614,7 @@ scripts/lab/vm/labctl.sh host prepare \
   --apply
 ```
 
-Bring the retained HA lane up without auto teardown via the older generic wrapper:
+Bring the retained HA lane up without auto teardown via the generic wrapper only when you intentionally want to inspect the live run after the smoke:
 
 ```bash
 sudo -v

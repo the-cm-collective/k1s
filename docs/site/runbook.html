@@ -1600,6 +1600,9 @@
 <li>On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code></li>
 <li>Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: <code>make lab-vm-ha-attached-node-status</code></li>
 <li>After <code>up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the local <code>127.0.0.1</code> dev mapping</li>
+<li>For one-shot HA harness tests, prefer <code>make lab-vm-smoke</code>; unlike the retained targets, it goes through <code>smoke_helper.py</code> and auto-runs <code>variant_down.sh</code> on success by default (<code>--teardown on-success</code>)</li>
+<li>Stage 1 one-shot rerun sequence: <code>sudo -v &amp;&amp; RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1&quot; &amp;&amp; AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-attached-node.yaml RUN_ID=&quot;$RUN_ID&quot;</code></li>
+<li>Stage 2 one-shot rerun sequence: <code>sudo -v &amp;&amp; RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2&quot; &amp;&amp; AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-core.yaml RUN_ID=&quot;$RUN_ID&quot;</code></li>
 <li>Normal retained rerun sequence: <code>make lab-vm-ha-attached-node-purge</code>, <code>make lab-vm-ha-attached-node-up</code>, <code>make lab-vm-ha-attached-node-status</code>, <code>make lab-vm-ha-attached-node-workload-smoke</code></li>
 <li>retained-VM &quot;rebuild and restart all&quot; path: <code>make lab-vm-ha-attached-node-refresh-all</code></li>
 <li>Stop the retained VMs but keep retained run metadata for a later restart: <code>make lab-vm-ha-attached-node-down</code></li>
@@ -2026,7 +2029,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 02:19:30</span>
+        <span>Built 2026-04-01 14:35:48</span>
       </div>
     </footer>
     <script>
