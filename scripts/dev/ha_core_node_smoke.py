@@ -21,6 +21,9 @@ if str(SRC) not in sys.path:
 from ae.controller.spec import app_key_for_manifest, load_manifest  # noqa: E402
 from ae.controller.state import RegistryConflictError, state_store_from_env  # noqa: E402
 
+TERMINAL_INGRESS_STATUSES = frozenset({404, 502, 503})
+TERMINAL_INGRESS_STREAK = 5
+
 
 @dataclass(frozen=True)
 class ReadyWorkloadEndpoint:
@@ -75,10 +78,12 @@ def parse_args() -> argparse.Namespace:
     ingress.add_argument("--expected-text", default="Shell + Port-Forward Smoke")
     ingress.add_argument("--direct-probe-host")
     ingress.add_argument("--direct-probe-user", default="ae")
+    ingress.add_argument("--direct-probe-timeout", type=int)
     ingress.add_argument("--target-probe-host")
     ingress.add_argument("--target-probe-user", default="ae")
     ingress.add_argument("--target-probe-url")
     ingress.add_argument("--target-probe-timeout", type=int, default=60)
+    ingress.add_argument("--ingress-timeout", type=int)
     return parser.parse_args()
 
 
@@ -573,6 +578,8 @@ def wait_for_ingress_response(
 ) -> str:
     deadline = time.monotonic() + float(timeout_s)
     last_detail = f"ingress not yet ready: host={host} path={path}"
+    terminal_status = None
+    terminal_streak = 0
     while True:
         try:
             status_code, body = curl_https_resolved(
@@ -596,13 +603,31 @@ def wait_for_ingress_response(
                         f"ingress ok: host={host} path={path} status={status_code}"
                         + (f" matched={expected_text!r}" if expected_text else "")
                     )
+                terminal_status = None
+                terminal_streak = 0
             else:
                 last_detail = (
                     f"ingress status mismatch: host={host} path={path} "
                     f"expected={expected_status} actual={status_code}"
                 )
+                if status_code in TERMINAL_INGRESS_STATUSES:
+                    if terminal_status == status_code:
+                        terminal_streak += 1
+                    else:
+                        terminal_status = status_code
+                        terminal_streak = 1
+                    if terminal_streak >= TERMINAL_INGRESS_STREAK:
+                        raise SystemExit(
+                            f"ingress stable terminal status: host={host} path={path} "
+                            f"status={status_code} streak={terminal_streak}"
+                        )
+                else:
+                    terminal_status = None
+                    terminal_streak = 0
         except Exception as exc:  # noqa: BLE001
             last_detail = str(exc)
+            terminal_status = None
+            terminal_streak = 0
         if time.monotonic() >= deadline:
             raise SystemExit(last_detail)
         time.sleep(max(poll_s, 0.1))
@@ -697,7 +722,7 @@ def run_ingress_smoke(args: argparse.Namespace) -> int:
                 probe_user=str(getattr(args, "direct_probe_user", "ae") or "ae"),
                 endpoint=endpoint,
                 path=str(args.health_path),
-                timeout_s=int(args.timeout),
+                timeout_s=max(int(getattr(args, "direct_probe_timeout", 0) or args.timeout), 1),
                 poll_s=float(args.poll),
             )
         target_probe_host = str(getattr(args, "target_probe_host", "") or "").strip()
@@ -720,7 +745,7 @@ def run_ingress_smoke(args: argparse.Namespace) -> int:
             port=int(args.ingress_port),
             resolve_ip=str(args.resolve_ip),
             path=str(args.health_path),
-            timeout_s=int(args.timeout),
+            timeout_s=max(int(getattr(args, "ingress_timeout", 0) or args.timeout), 1),
             poll_s=float(args.poll),
             expected_status=200,
         )
@@ -729,7 +754,7 @@ def run_ingress_smoke(args: argparse.Namespace) -> int:
             port=int(args.ingress_port),
             resolve_ip=str(args.resolve_ip),
             path=str(args.root_path),
-            timeout_s=int(args.timeout),
+            timeout_s=max(int(getattr(args, "ingress_timeout", 0) or args.timeout), 1),
             poll_s=float(args.poll),
             expected_status=200,
             expected_text=str(args.expected_text),

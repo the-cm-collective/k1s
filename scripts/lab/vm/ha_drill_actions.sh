@@ -113,6 +113,29 @@ wait_for_local_process() {
   return 1
 }
 
+wait_for_local_pid() {
+  local pid="$1"
+  local attempts="${2:-30}"
+  local delay_s="${3:-1}"
+  local attempt=""
+  for attempt in $(seq 1 "$attempts"); do
+    if sudo kill -0 "$pid" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$delay_s"
+  done
+  return 1
+}
+
+local_tcp_listener_pids() {
+  local port="$1"
+  sudo ss -ltnpH 2>/dev/null \
+    | awk -v port=":${port}" '$4 ~ port"$" {print}' \
+    | grep -o 'pid=[0-9]\+' \
+    | cut -d= -f2 \
+    | sort -u || true
+}
+
 wait_for_local_etcd_health() {
   local url="${1:-http://127.0.0.1:2379/health}"
   local attempts="${2:-30}"
@@ -197,6 +220,17 @@ edge_host_json() {
   fi
 }
 
+edge_runtime_host_json() {
+  if [[ -n "$SITE_ID" ]]; then
+    echo "$variant_json" | jq -c --arg site "$SITE_ID" '
+      .hosts[]
+      | select(.role == "k1s-edge-node" and (.site_id // "") == $site)
+    ' | head -n1
+  else
+    echo "$variant_json" | jq -c '.hosts[] | select(.role == "k1s-edge-node")' | head -n1
+  fi
+}
+
 build_ha_core_restart_script() {
   local ip="$1"
   local node_id="$2"
@@ -204,14 +238,20 @@ build_ha_core_restart_script() {
 $(emit_runtime_preamble)
 cd /mnt/host
 controller_pattern='python3 -m ae.controller --loop --metrics-port ${controller_port}'
-old_pids="\$(sudo pgrep -f -- "\$controller_pattern" | tr '\n' ' ' || true)"
-if [[ -n "\$old_pids" ]]; then
+pattern_pids="\$(sudo pgrep -f -- "\$controller_pattern" | tr '\n' ' ' || true)"
+port_pids="\$(local_tcp_listener_pids ${controller_port} | tr '\n' ' ' || true)"
+old_pids="\$(printf '%s\n%s\n' "\$pattern_pids" "\$port_pids" | tr ' ' '\n' | awk 'NF && !seen[\$0]++' | tr '\n' ' ')"
+if [[ -n "\$pattern_pids" ]]; then
   sudo pkill -TERM -f -- "\$controller_pattern" >/dev/null 2>&1 || true
 fi
+for pid in \$old_pids; do
+  sudo kill -TERM "\$pid" >/dev/null 2>&1 || true
+done
 drain_deadline=\$((SECONDS + 45))
 while (( SECONDS < drain_deadline )); do
+  current_port_pids="\$(local_tcp_listener_pids ${controller_port} | tr '\n' ' ' || true)"
   port_busy=0
-  if ss -ltn | awk '\$4 ~ /:${controller_port}\$/ {found=1} END {exit(found?0:1)}'; then
+  if [[ -n "\$current_port_pids" ]]; then
     port_busy=1
   fi
   stale_pid=0
@@ -233,8 +273,15 @@ if [[ -n "\$old_pids" ]]; then
     fi
   done
 fi
-if ss -ltn | awk '\$4 ~ /:${controller_port}\$/ {found=1} END {exit(found?0:1)}'; then
-  echo "controller port ${controller_port} is still busy after stop attempt" >&2
+current_port_pids="\$(local_tcp_listener_pids ${controller_port} | tr '\n' ' ' || true)"
+if [[ -n "\$current_port_pids" ]]; then
+  for pid in \$current_port_pids; do
+    sudo kill -KILL "\$pid" >/dev/null 2>&1 || true
+  done
+fi
+current_port_pids="\$(local_tcp_listener_pids ${controller_port} | tr '\n' ' ' || true)"
+if [[ -n "\$current_port_pids" ]]; then
+  echo "controller port ${controller_port} is still busy after stop attempt; pids=\$current_port_pids" >&2
   exit 1
 fi
 nohup sudo env \
@@ -298,7 +345,7 @@ nohup sudo env \
   python3 -m ae.controller --loop --metrics-port ${controller_port} > /home/ae/k1s-ha-core.log 2>&1 </dev/null &
 new_pid=\$!
 disown || true
-wait_for_local_process "\$new_pid" 45 1 || {
+wait_for_local_pid "\$new_pid" 45 1 || {
   echo "controller process exited early; tailing /home/ae/k1s-ha-core.log" >&2
   tail -n 80 /home/ae/k1s-ha-core.log >&2 || true
   exit 1
@@ -351,6 +398,14 @@ EOF
 build_edge_transport_restart_script() {
   local site_id="$1"
   local node_id="$2"
+  local edge_runtime_ip="${3:-}"
+  local edge_rathole_server_addr="${4:-}"
+  local edge_local_target_addr=""
+  if [[ -n "$edge_runtime_ip" ]]; then
+    edge_local_target_addr="${edge_runtime_ip}:18081"
+  fi
+  edge_local_target_addr="${edge_local_target_addr:-127.0.0.1:18081}"
+  edge_rathole_server_addr="${edge_rathole_server_addr:-127.0.0.1:2333}"
   cat <<EOF
 $(emit_runtime_preamble)
 cd /mnt/host
@@ -371,6 +426,8 @@ nohup sudo env \
   AE_NODE_ID=${node_id} \
   AE_NODE_LABELS=\${AE_NODE_LABELS:-role=gateway,profile=k1s-core} \
   AE_NATS_URL=\${AE_NATS_URL:-${edge_nats_url}} \
+  AE_EDGE_INGRESS_LOCAL_ADDR=\${AE_EDGE_INGRESS_LOCAL_ADDR:-${edge_local_target_addr}} \
+  AE_RATHOLE_SERVER_ADDR=\${AE_RATHOLE_SERVER_ADDR:-${edge_rathole_server_addr}} \
   AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db \
   AE_GATEWAY_FENCE_DB=/var/lib/ae/gateway/fence-${site_id}-${node_id}.db \
   AE_NATS_HUB_LEAF_HOST=${edge_hub_leaf_host} \
@@ -426,6 +483,13 @@ case "$ACTION" in
       err "target edge host is missing site_id"
       exit 1
     }
-    run_remote_script "$name" "$ip" "$(build_edge_transport_restart_script "$site_id" "$node_id")"
+    runtime_host_json="$(edge_runtime_host_json)"
+    [[ -n "$runtime_host_json" ]] || {
+      err "variant does not include a matching k1s-edge-node host"
+      exit 1
+    }
+    edge_runtime_ip="$(echo "$runtime_host_json" | jq -r '.ip')"
+    edge_rathole_server_addr="${edge_hub_leaf_host:-127.0.0.1}:2333"
+    run_remote_script "$name" "$ip" "$(build_edge_transport_restart_script "$site_id" "$node_id" "$edge_runtime_ip" "$edge_rathole_server_addr")"
     ;;
 esac

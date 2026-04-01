@@ -47,12 +47,14 @@ hosts:
     site_id: sea
     node_id: sea-node-1
     node_labels: role=worker,site=sea
+    pod_cidr: 10.42.1.0/24
     vm:
       memory_mb: 3072
       vcpus: 2
 k1s:
   agent_token: devtoken
   controller_port: 9108
+  agent_api_port: 9110
   apishim_port: 8445
   inference_experimental: false
 transport:

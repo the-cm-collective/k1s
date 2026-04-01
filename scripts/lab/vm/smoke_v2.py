@@ -38,6 +38,26 @@ DEFAULT_PHASE_TIMEOUTS = {
     "functional_basic": 300,
     "ha_acceptance": 900,
 }
+DEFAULT_HA_HELPER_TIMEOUTS = {
+    "ha_core_preflight": 30,
+    "ha_core_precheck": 60,
+    "ha_core_cluster_verify": 60,
+    "ha_hub_transport_precheck": 45,
+    "ha_attached_node_precheck": 45,
+    "ha_edge_precheck": 45,
+    "ha_edge_verify": 45,
+    "ha_attached_node_ingress_smoke": 180,
+    "ha_edge_runtime_ingress_smoke": 180,
+    "ha_drill_leader_failover": 90,
+    "ha_drill_etcd_restart": 90,
+    "ha_drill_transport_recovery": 90,
+}
+ATTACHED_NODE_INGRESS_TIMEOUT_S = 120
+ATTACHED_NODE_DIRECT_PROBE_TIMEOUT_S = 45
+ATTACHED_NODE_INGRESS_CHECK_TIMEOUT_S = 45
+EDGE_RUNTIME_INGRESS_TIMEOUT_S = 120
+EDGE_RUNTIME_TARGET_PROBE_TIMEOUT_S = 60
+EDGE_RUNTIME_INGRESS_CHECK_TIMEOUT_S = 45
 DEFAULT_RETRY_POLICY = {
     "initial_backoff_s": 2.0,
     "max_backoff_s": 15.0,
@@ -803,6 +823,18 @@ def _run_helper_check(
     }
 
 
+def _ha_helper_timeout(name: str, phase_timeout_s: int) -> int:
+    if name.startswith("ha_edge_precheck:"):
+        cap = DEFAULT_HA_HELPER_TIMEOUTS["ha_edge_precheck"]
+    elif name.startswith("ha_edge_verify:"):
+        cap = DEFAULT_HA_HELPER_TIMEOUTS["ha_edge_verify"]
+    elif name.startswith("ha_edge_runtime_ingress_smoke:"):
+        cap = DEFAULT_HA_HELPER_TIMEOUTS["ha_edge_runtime_ingress_smoke"]
+    else:
+        cap = DEFAULT_HA_HELPER_TIMEOUTS.get(name, phase_timeout_s)
+    return max(1, min(int(phase_timeout_s), int(cap)))
+
+
 def _skip_helper_check(name: str, detail: str, *, optional: bool = False) -> dict[str, Any]:
     now = utc_now()
     return {
@@ -882,33 +914,45 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             "checks": [_skip_helper_check("ha_acceptance", "; ".join(issues))],
         }
 
-    checks.append(
-        _run_helper_check(
-            "ha_core_preflight",
-            [sys.executable, str(scripts_dir / "ha_core_preflight.py")],
-            timeout_s=timeout_s,
-            env=env,
+    def _append_required_check(name: str, command: list[str]) -> None:
+        checks.append(
+            _run_helper_check(
+                name,
+                command,
+                timeout_s=_ha_helper_timeout(name, timeout_s),
+                env=env,
+            )
         )
+
+    def _append_optional_check(name: str, command: list[str]) -> None:
+        checks.append(
+            _run_helper_check(
+                name,
+                command,
+                timeout_s=_ha_helper_timeout(name, timeout_s),
+                optional=True,
+            )
+        )
+
+    _append_required_check(
+        "ha_core_preflight",
+        [sys.executable, str(scripts_dir / "ha_core_preflight.py")],
     )
-    checks.append(
-        _run_helper_check(
-            "ha_core_precheck",
-            [
-                sys.executable,
-                str(scripts_dir / "ha_core_upgrade.py"),
-                "precheck",
-                "--metrics-url",
-                str(config["controller_metrics_url"]),
-                "--etcd-endpoints",
-                ",".join(config["etcd_endpoints"]),
-                "--etcd-prefix",
-                str(config["etcd_prefix"]),
-                "--nats-urls",
-                str(config["nats_url"]),
-            ],
-            timeout_s=timeout_s,
-            env=env,
-        )
+    _append_required_check(
+        "ha_core_precheck",
+        [
+            sys.executable,
+            str(scripts_dir / "ha_core_upgrade.py"),
+            "precheck",
+            "--metrics-url",
+            str(config["controller_metrics_url"]),
+            "--etcd-endpoints",
+            ",".join(config["etcd_endpoints"]),
+            "--etcd-prefix",
+            str(config["etcd_prefix"]),
+            "--nats-urls",
+            str(config["nats_url"]),
+        ],
     )
     cluster_cmd = [
         sys.executable,
@@ -920,14 +964,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
     ]
     if config.get("expected_sha"):
         cluster_cmd.extend(["--expected-sha", str(config["expected_sha"])])
-    checks.append(
-        _run_helper_check(
-            "ha_core_cluster_verify",
-            cluster_cmd,
-            timeout_s=timeout_s,
-            env=env,
-        )
-    )
+    _append_required_check("ha_core_cluster_verify", cluster_cmd)
 
     hub_cmd = [
         sys.executable,
@@ -938,14 +975,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
     ]
     for node in config.get("hub_nodes") or []:
         hub_cmd.extend(["--node", f"{node['name']}={node['monitor_url']}"])
-    checks.append(
-        _run_helper_check(
-            "ha_hub_transport_precheck",
-            hub_cmd,
-            timeout_s=timeout_s,
-            env=env,
-        )
-    )
+    _append_required_check("ha_hub_transport_precheck", hub_cmd)
 
     runtime_nodes = list(config.get("runtime_nodes") or [])
     if runtime_nodes:
@@ -962,14 +992,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
         ]
         for key, value in sorted((runtime_node.get("labels") or {}).items()):
             precheck_cmd.extend(["--label", f"{key}={value}"])
-        checks.append(
-            _run_helper_check(
-                "ha_attached_node_precheck",
-                precheck_cmd,
-                timeout_s=timeout_s,
-                env=env,
-            )
-        )
+        _append_required_check("ha_attached_node_precheck", precheck_cmd)
 
         ingress_cmd = [
             sys.executable,
@@ -996,21 +1019,18 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             "--expected-text",
             "Shell + Port-Forward Smoke",
             "--timeout",
-            str(timeout_s),
+            str(min(int(timeout_s), ATTACHED_NODE_INGRESS_TIMEOUT_S)),
+            "--direct-probe-timeout",
+            str(min(int(timeout_s), ATTACHED_NODE_DIRECT_PROBE_TIMEOUT_S)),
+            "--ingress-timeout",
+            str(min(int(timeout_s), ATTACHED_NODE_INGRESS_CHECK_TIMEOUT_S)),
             "--poll",
             "2",
             "--purge-history",
         ]
         for key, value in sorted((runtime_node.get("labels") or {}).items()):
             ingress_cmd.extend(["--label", f"{key}={value}"])
-        checks.append(
-            _run_helper_check(
-                "ha_attached_node_ingress_smoke",
-                ingress_cmd,
-                timeout_s=timeout_s,
-                env=env,
-            )
-        )
+        _append_required_check("ha_attached_node_ingress_smoke", ingress_cmd)
 
     for site in config.get("edge_sites") or []:
         expected_gateways = [str(item) for item in site.get("expected_gateways") or []]
@@ -1036,22 +1056,8 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
         for gateway in expected_gateways:
             precheck_cmd.extend(["--expected-gateway", gateway])
             verify_cmd.extend(["--expected-gateway", gateway])
-        checks.append(
-            _run_helper_check(
-                f"ha_edge_precheck:{site['site_id']}",
-                precheck_cmd,
-                timeout_s=timeout_s,
-                env=env,
-            )
-        )
-        checks.append(
-            _run_helper_check(
-                f"ha_edge_verify:{site['site_id']}",
-                verify_cmd,
-                timeout_s=timeout_s,
-                env=env,
-            )
-        )
+        _append_required_check(f"ha_edge_precheck:{site['site_id']}", precheck_cmd)
+        _append_required_check(f"ha_edge_verify:{site['site_id']}", verify_cmd)
 
     edge_runtime_nodes = list(config.get("edge_runtime_nodes") or [])
     if edge_runtime_nodes and config.get("edge_sites"):
@@ -1092,7 +1098,9 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             "--expected-text",
             "Shell + Port-Forward Smoke",
             "--timeout",
-            str(timeout_s),
+            str(min(int(timeout_s), EDGE_RUNTIME_INGRESS_TIMEOUT_S)),
+            "--ingress-timeout",
+            str(min(int(timeout_s), EDGE_RUNTIME_INGRESS_CHECK_TIMEOUT_S)),
             "--poll",
             "2",
             "--purge-history",
@@ -1107,25 +1115,33 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
                     "--target-probe-url",
                     f"http://{edge_runtime_ip}:18081/healthz",
                     "--target-probe-timeout",
-                    "60",
+                    str(min(int(timeout_s), EDGE_RUNTIME_TARGET_PROBE_TIMEOUT_S)),
                 ]
             )
         for key, value in sorted((edge_runtime.get("labels") or {}).items()):
             ingress_cmd.extend(["--label", f"{key}={value}"])
-        checks.append(
-            _run_helper_check(
-                f"ha_edge_runtime_ingress_smoke:{edge_runtime.get('site_id') or edge_runtime['node_id']}",
-                ingress_cmd,
-                timeout_s=timeout_s,
-                env=env,
-            )
+        _append_required_check(
+            f"ha_edge_runtime_ingress_smoke:{edge_runtime.get('site_id') or edge_runtime['node_id']}",
+            ingress_cmd,
         )
+
+    required_failures = [
+        check for check in checks if check["status"] == "failed" and not check["optional"]
+    ]
 
     drills = config.get("drills") if isinstance(config.get("drills"), dict) else {}
     leader_failover_command = str(drills.get("leader_failover_command") or "").strip()
     if leader_failover_command:
-        checks.append(
-            _run_helper_check(
+        if required_failures:
+            checks.append(
+                _skip_helper_check(
+                    "ha_drill_leader_failover",
+                    "skipped after required HA failure",
+                    optional=True,
+                )
+            )
+        else:
+            _append_optional_check(
                 "ha_drill_leader_failover",
                 [
                     sys.executable,
@@ -1139,10 +1155,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
                     str(config["etcd_prefix"]),
                     "--require-controller-change",
                 ],
-                timeout_s=timeout_s,
-                optional=True,
             )
-        )
     else:
         checks.append(
             _skip_helper_check(
@@ -1154,8 +1167,16 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
 
     etcd_restart_command = str(drills.get("etcd_restart_command") or "").strip()
     if etcd_restart_command:
-        checks.append(
-            _run_helper_check(
+        if required_failures:
+            checks.append(
+                _skip_helper_check(
+                    "ha_drill_etcd_restart",
+                    "skipped after required HA failure",
+                    optional=True,
+                )
+            )
+        else:
+            _append_optional_check(
                 "ha_drill_etcd_restart",
                 [
                     sys.executable,
@@ -1170,10 +1191,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
                     "--etcd-prefix",
                     str(config["etcd_prefix"]),
                 ],
-                timeout_s=timeout_s,
-                optional=True,
             )
-        )
     else:
         checks.append(
             _skip_helper_check(
@@ -1186,8 +1204,16 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
     transport_recovery_command = str(drills.get("transport_recovery_command") or "").strip()
     first_site = next(iter(config.get("edge_sites") or []), None)
     if transport_recovery_command and isinstance(first_site, dict):
-        checks.append(
-            _run_helper_check(
+        if required_failures:
+            checks.append(
+                _skip_helper_check(
+                    "ha_drill_transport_recovery",
+                    "skipped after required HA failure",
+                    optional=True,
+                )
+            )
+        else:
+            _append_optional_check(
                 "ha_drill_transport_recovery",
                 [
                     sys.executable,
@@ -1204,10 +1230,7 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
                     "--site",
                     str(first_site["site_id"]),
                 ],
-                timeout_s=timeout_s,
-                optional=True,
             )
-        )
     else:
         checks.append(
             _skip_helper_check(

@@ -234,6 +234,8 @@ def test_checked_in_ha_drill_variant_exposes_optional_commands() -> None:
     assert payload["vm"] == {"memory_mb": 5120, "vcpus": 4, "disk_gb": 50}
     assert payload["hosts"][3]["vm"] == {"memory_mb": 3072, "vcpus": 2, "disk_gb": 50}
     assert payload["hosts"][4]["vm"] == {"memory_mb": 3072, "vcpus": 2, "disk_gb": 50}
+    assert payload["hosts"][4]["pod_cidr"] == "10.42.1.0/24"
+    assert payload["k1s"]["agent_api_port"] == 9110
     assert payload["ha"]["drills"]["leader_failover_command"] == (
         "./scripts/lab/vm/ha_drill_actions.sh leader-failover "
         "--variant lab/variants/ha-control-plane-core-drills.yaml"
@@ -264,6 +266,25 @@ def test_ha_drill_actions_dry_run_works_without_live_vms() -> None:
     assert "dry-run leader-failover target=current controller leader via etcd" in res.stdout
 
 
+def test_ha_drill_actions_transport_recovery_dry_run_preserves_split_edge_targets() -> None:
+    res = subprocess.run(  # noqa: S603
+        [
+            str(HA_DRILL_ACTIONS_SCRIPT),
+            "transport-recovery",
+            "--variant",
+            str(HA_DRILL_VARIANT_FILE),
+            "--site",
+            "sea",
+            "--dry-run",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "AE_EDGE_INGRESS_LOCAL_ADDR=${AE_EDGE_INGRESS_LOCAL_ADDR:-192.168.155.21:18081}" in res.stdout
+    assert "AE_RATHOLE_SERVER_ADDR=${AE_RATHOLE_SERVER_ADDR:-192.168.155.10:2333}" in res.stdout
+
+
 def test_ha_drill_actions_require_guest_prereqs() -> None:
     text = HA_DRILL_ACTIONS_SCRIPT.read_text(encoding="utf-8")
     assert "source /mnt/host/scripts/lab/vm/lib/guest_prereqs.sh" in text
@@ -273,16 +294,29 @@ def test_ha_drill_actions_require_guest_prereqs() -> None:
 def test_ha_drill_actions_restart_processes_without_profile_reentry() -> None:
     text = HA_DRILL_ACTIONS_SCRIPT.read_text(encoding="utf-8")
     assert "python3 -m ae.controller --loop --metrics-port" in text
+    assert "wait_for_local_pid() {" in text
+    assert "local_tcp_listener_pids() {" in text
+    assert "sudo ss -ltnpH" in text
     assert "old_pids=" in text
+    assert "pattern_pids=" in text
+    assert "port_pids=" in text
     assert 'sudo pkill -TERM -f -- "\\$controller_pattern"' in text
+    assert 'sudo kill -TERM "\\$pid"' in text
     assert 'sudo kill -KILL "\\$pid"' in text
-    assert 'wait_for_local_process "\\$new_pid" 45 1' in text
+    assert 'current_port_pids="\\$(local_tcp_listener_pids ${controller_port} | tr' in text
+    assert "controller port ${controller_port} is still busy after stop attempt; pids=" in text
+    assert 'wait_for_local_pid "\\$new_pid" 45 1' in text
     assert "AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS=\\${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1}" in text
     assert "AE_EDGE_INGRESS_CONFIG_DIR=\\${AE_EDGE_INGRESS_CONFIG_DIR:-/mnt/host/state/profiles/k1s-ha-core/edge-ingress}" in text
     assert "python3 -m ae.gateway" in text
     assert "wait_for_local_tcp_port" in text
     assert "wait_for_local_process" in text
     assert "wait_for_local_etcd_health" in text
+    assert "edge_runtime_host_json() {" in text
+    assert 'local edge_runtime_ip="${3:-}"' in text
+    assert 'local edge_rathole_server_addr="${4:-}"' in text
+    assert 'edge_local_target_addr="${edge_runtime_ip}:18081"' in text
+    assert 'edge_rathole_server_addr="${edge_rathole_server_addr:-127.0.0.1:2333}"' in text
     assert "make k1s-ha-core > /home/ae/k1s-ha-core.log 2>&1 </dev/null &" not in text
     assert "make k1s-edge-core-cri > /home/ae/k1s-edge-core.log 2>&1 </dev/null &" not in text
 
@@ -2038,6 +2072,101 @@ def test_run_ha_acceptance_checks_passes_ha_discovery_to_transport_drill(monkeyp
     assert command[command.index("--etcd-prefix") + 1] == "k1s/lab/ha-control-plane"
 
 
+def test_run_ha_acceptance_checks_caps_internal_helper_timeouts(monkeypatch) -> None:
+    captured_timeouts: dict[str, int] = {}
+
+    def _fake_run_helper_check(
+        name: str,
+        command: list[str],
+        *,
+        timeout_s: int,
+        optional: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        _ = command, optional, env
+        captured_timeouts[name] = timeout_s
+        return {
+            "name": name,
+            "status": "passed",
+            "optional": optional,
+            "detail": "ok",
+            "command": command,
+        }
+
+    monkeypatch.setattr(smoke_v2, "_run_helper_check", _fake_run_helper_check)
+
+    result = smoke_v2.run_ha_acceptance_checks(
+        {
+            "core_nodes": [
+                {
+                    "name": "core-a",
+                    "node_id": "core-a",
+                    "ip": "192.168.155.10",
+                    "controller_url": "http://192.168.155.10:9108",
+                    "apishim_url": "https://192.168.155.10:8445",
+                }
+            ],
+            "runtime_nodes": [
+                {
+                    "name": "attached-node-1",
+                    "node_id": "attached-node-1",
+                    "ip": "192.168.155.20",
+                    "agent_url": "http://192.168.155.20:9111",
+                    "labels": {"role": "worker", "site": "core"},
+                }
+            ],
+            "edge_runtime_nodes": [
+                {
+                    "name": "edge-sea-node",
+                    "node_id": "sea-node-1",
+                    "ip": "192.168.155.21",
+                    "site_id": "sea",
+                    "agent_url": "http://192.168.155.21:9112",
+                    "labels": {"role": "worker", "site": "sea"},
+                }
+            ],
+            "controller_metrics_url": "http://192.168.155.10:9108/metrics",
+            "etcd_endpoints": [
+                "http://192.168.155.10:2379",
+                "http://192.168.155.11:2379",
+                "http://192.168.155.12:2379",
+            ],
+            "etcd_prefix": "k1s/lab/ha-control-plane",
+            "nats_url": "nats://hub-controller:dev@192.168.155.10:4222",
+            "hub_nodes": [{"name": "core-a", "monitor_url": "http://192.168.155.10:8222"}],
+            "edge_core_sites": ["sea"],
+            "edge_sites": [
+                {
+                    "site_id": "sea",
+                    "monitor_url": "http://192.168.155.20:8223",
+                    "expected_gateways": ["sea--sea-gw"],
+                }
+            ],
+            "drills": {
+                "leader_failover_command": "./scripts/lab/vm/ha_drill_actions.sh leader-failover",
+                "etcd_restart_command": "./scripts/lab/vm/ha_drill_actions.sh etcd-restart",
+                "transport_recovery_command": "./scripts/lab/vm/ha_drill_actions.sh transport-recovery --site sea",
+            },
+            "expected_version": "0.1.3.dev0",
+        },
+        timeout_s=900,
+    )
+
+    assert result["status"] == "passed"
+    assert captured_timeouts["ha_core_preflight"] == 30
+    assert captured_timeouts["ha_core_precheck"] == 60
+    assert captured_timeouts["ha_core_cluster_verify"] == 60
+    assert captured_timeouts["ha_hub_transport_precheck"] == 45
+    assert captured_timeouts["ha_attached_node_precheck"] == 45
+    assert captured_timeouts["ha_attached_node_ingress_smoke"] == 180
+    assert captured_timeouts["ha_edge_precheck:sea"] == 45
+    assert captured_timeouts["ha_edge_verify:sea"] == 45
+    assert captured_timeouts["ha_edge_runtime_ingress_smoke:sea"] == 180
+    assert captured_timeouts["ha_drill_leader_failover"] == 90
+    assert captured_timeouts["ha_drill_etcd_restart"] == 90
+    assert captured_timeouts["ha_drill_transport_recovery"] == 90
+
+
 def test_run_ha_acceptance_checks_includes_core_node_smoke_when_runtime_node_present(
     monkeypatch,
 ) -> None:
@@ -2125,6 +2254,24 @@ def test_run_ha_acceptance_checks_includes_core_node_smoke_when_runtime_node_pre
     assert "ha-web-smoke.home.arpa" in captured_commands["ha_attached_node_ingress_smoke"]
     assert "--direct-probe-host" in captured_commands["ha_attached_node_ingress_smoke"]
     assert "192.168.155.10" in captured_commands["ha_attached_node_ingress_smoke"]
+    assert (
+        captured_commands["ha_attached_node_ingress_smoke"][
+            captured_commands["ha_attached_node_ingress_smoke"].index("--timeout") + 1
+        ]
+        == "30"
+    )
+    assert (
+        captured_commands["ha_attached_node_ingress_smoke"][
+            captured_commands["ha_attached_node_ingress_smoke"].index("--direct-probe-timeout") + 1
+        ]
+        == "30"
+    )
+    assert (
+        captured_commands["ha_attached_node_ingress_smoke"][
+            captured_commands["ha_attached_node_ingress_smoke"].index("--ingress-timeout") + 1
+        ]
+        == "30"
+    )
 
 
 def test_run_ha_acceptance_checks_includes_edge_runtime_ingress_smoke_when_edge_worker_present(
@@ -2211,7 +2358,95 @@ def test_run_ha_acceptance_checks_includes_edge_runtime_ingress_smoke_when_edge_
     assert command[command.index("--target-probe-host") + 1] == "192.168.155.20"
     assert command[command.index("--target-probe-user") + 1] == "ae"
     assert command[command.index("--target-probe-url") + 1] == "http://192.168.155.21:18081/healthz"
-    assert command[command.index("--target-probe-timeout") + 1] == "60"
+    assert command[command.index("--target-probe-timeout") + 1] == "30"
+    assert command[command.index("--ingress-timeout") + 1] == "30"
+
+
+def test_run_ha_acceptance_checks_skips_optional_drills_after_required_failure(monkeypatch) -> None:
+    executed_checks: list[str] = []
+
+    def _fake_run_helper_check(
+        name: str,
+        command: list[str],
+        *,
+        timeout_s: int,
+        optional: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        _ = command, timeout_s, optional, env
+        executed_checks.append(name)
+        status = "failed" if name == "ha_edge_runtime_ingress_smoke:sea" else "passed"
+        return {
+            "name": name,
+            "status": status,
+            "optional": optional,
+            "detail": "edge ingress timed out" if status == "failed" else "ok",
+            "command": command,
+        }
+
+    monkeypatch.setattr(smoke_v2, "_run_helper_check", _fake_run_helper_check)
+
+    result = smoke_v2.run_ha_acceptance_checks(
+        {
+            "core_nodes": [
+                {
+                    "name": "core-a",
+                    "node_id": "core-a",
+                    "ip": "192.168.155.10",
+                    "controller_url": "http://192.168.155.10:9108",
+                    "apishim_url": "https://192.168.155.10:8445",
+                }
+            ],
+            "runtime_nodes": [],
+            "edge_runtime_nodes": [
+                {
+                    "name": "edge-sea-node",
+                    "node_id": "sea-node-1",
+                    "ip": "192.168.155.21",
+                    "site_id": "sea",
+                    "agent_url": "http://192.168.155.21:9112",
+                    "labels": {"role": "worker", "site": "sea"},
+                }
+            ],
+            "controller_metrics_url": "http://192.168.155.10:9108/metrics",
+            "etcd_endpoints": [
+                "http://192.168.155.10:2379",
+                "http://192.168.155.11:2379",
+                "http://192.168.155.12:2379",
+            ],
+            "etcd_prefix": "k1s/lab/ha-control-plane",
+            "nats_url": "nats://hub-controller:dev@192.168.155.10:4222",
+            "hub_nodes": [{"name": "core-a", "monitor_url": "http://192.168.155.10:8222"}],
+            "edge_core_sites": ["sea"],
+            "edge_sites": [
+                {
+                    "site_id": "sea",
+                    "monitor_url": "http://192.168.155.20:8223",
+                    "expected_gateways": ["sea--sea-gw"],
+                }
+            ],
+            "drills": {
+                "leader_failover_command": "./scripts/lab/vm/ha_drill_actions.sh leader-failover",
+                "etcd_restart_command": "./scripts/lab/vm/ha_drill_actions.sh etcd-restart",
+                "transport_recovery_command": "./scripts/lab/vm/ha_drill_actions.sh transport-recovery --site sea",
+            },
+            "expected_version": "0.1.3.dev0",
+        },
+        timeout_s=900,
+    )
+
+    assert result["status"] == "failed"
+    assert "ha_edge_runtime_ingress_smoke:sea" in result["detail"]
+    assert "ha_drill_leader_failover" not in executed_checks
+    assert "ha_drill_etcd_restart" not in executed_checks
+    assert "ha_drill_transport_recovery" not in executed_checks
+    checks = {item["name"]: item for item in result["checks"]}
+    assert checks["ha_drill_leader_failover"]["status"] == "skipped"
+    assert checks["ha_drill_etcd_restart"]["status"] == "skipped"
+    assert checks["ha_drill_transport_recovery"]["status"] == "skipped"
+    assert checks["ha_drill_leader_failover"]["detail"] == "skipped after required HA failure"
+    assert checks["ha_drill_etcd_restart"]["detail"] == "skipped after required HA failure"
+    assert checks["ha_drill_transport_recovery"]["detail"] == "skipped after required HA failure"
 
 
 def test_smoke_v2_skips_vm_managed_ha_infra_for_external_backends() -> None:

@@ -253,14 +253,18 @@ def test_run_ingress_smoke_direct_probe_precedes_ingress(monkeypatch, tmp_path: 
             pod_cidr="10.42.0.0/24",
         ),
     )
+    direct_probe_calls: list[dict[str, object]] = []
+    ingress_calls: list[dict[str, object]] = []
 
     def _direct_probe(**kwargs):
+        direct_probe_calls.append(kwargs)
         call_order.append("direct")
         return "direct probe ok: core=192.168.155.10 endpoint=10.42.0.3:8080 path=/healthz status=200"
 
     monkeypatch.setattr(ha_core_node_smoke, "wait_for_direct_endpoint_response", _direct_probe)
 
     def _ingress(**kwargs):
+        ingress_calls.append(kwargs)
         call_order.append(f"ingress:{kwargs['path']}")
         return f"ingress ok: host={kwargs['host']} path={kwargs['path']} status=200"
 
@@ -282,12 +286,17 @@ def test_run_ingress_smoke_direct_probe_precedes_ingress(monkeypatch, tmp_path: 
         expected_text="Shell + Port-Forward Smoke",
         direct_probe_host="192.168.155.10",
         direct_probe_user="ae",
+        direct_probe_timeout=3,
+        ingress_timeout=4,
     )
 
     rc = ha_core_node_smoke.run_ingress_smoke(args)
 
     assert rc == 0
     assert call_order == ["endpoint", "direct", "ingress:/healthz", "ingress:/"]
+    assert direct_probe_calls[0]["timeout_s"] == 3
+    assert ingress_calls[0]["timeout_s"] == 4
+    assert ingress_calls[1]["timeout_s"] == 4
 
 
 def test_run_ingress_smoke_target_probe_precedes_ingress(monkeypatch, tmp_path: Path) -> None:
@@ -314,14 +323,18 @@ def test_run_ingress_smoke_target_probe_precedes_ingress(monkeypatch, tmp_path: 
         return "pod endpoint ok: app=ha-edge-web-smoke pod=ha-edge-web-smoke-rev1-0 endpoint=10.42.1.2:8080 pod_cidr=10.42.1.0/24"
 
     monkeypatch.setattr(ha_core_node_smoke, "verify_workload_endpoint_cidr", _verify)
+    target_probe_calls: list[dict[str, object]] = []
+    ingress_calls: list[dict[str, object]] = []
 
     def _target_probe(**kwargs):
+        target_probe_calls.append(kwargs)
         call_order.append("target")
         return "target probe ok: host=192.168.155.20 url=http://192.168.155.21:18081/healthz status=200"
 
     monkeypatch.setattr(ha_core_node_smoke, "wait_for_target_probe_response", _target_probe)
 
     def _ingress(**kwargs):
+        ingress_calls.append(kwargs)
         call_order.append(f"ingress:{kwargs['path']}")
         return f"ingress ok: host={kwargs['host']} path={kwargs['path']} status=200"
 
@@ -344,13 +357,17 @@ def test_run_ingress_smoke_target_probe_precedes_ingress(monkeypatch, tmp_path: 
         target_probe_host="192.168.155.20",
         target_probe_user="ae",
         target_probe_url="http://192.168.155.21:18081/healthz",
-        target_probe_timeout=60,
+        target_probe_timeout=6,
+        ingress_timeout=4,
     )
 
     rc = ha_core_node_smoke.run_ingress_smoke(args)
 
     assert rc == 0
     assert call_order == ["endpoint", "target", "ingress:/healthz", "ingress:/"]
+    assert target_probe_calls[0]["timeout_s"] == 6
+    assert ingress_calls[0]["timeout_s"] == 4
+    assert ingress_calls[1]["timeout_s"] == 4
 
 
 def test_run_ingress_smoke_cleans_up_on_ingress_failure(monkeypatch, tmp_path: Path) -> None:
@@ -497,6 +514,44 @@ def test_run_ingress_smoke_cleans_up_on_target_probe_failure(monkeypatch, tmp_pa
 
     assert store.get_registered_entry(app_name) is None
     assert cleanup_calls == [(app_name, True)]
+
+
+def test_wait_for_ingress_response_fails_fast_on_stable_terminal_status(monkeypatch) -> None:
+    responses = iter([(503, "")] * ha_core_node_smoke.TERMINAL_INGRESS_STREAK)
+    monkeypatch.setattr(ha_core_node_smoke, "curl_https_resolved", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(ha_core_node_smoke.time, "sleep", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(
+        SystemExit,
+        match=r"ingress stable terminal status: host=ha-web-smoke\.home\.arpa path=/healthz status=503 streak=5",
+    ):
+        ha_core_node_smoke.wait_for_ingress_response(
+            host="ha-web-smoke.home.arpa",
+            port=10443,
+            resolve_ip="192.168.155.10",
+            path="/healthz",
+            timeout_s=30,
+            poll_s=0.01,
+            expected_status=200,
+        )
+
+
+def test_wait_for_ingress_response_allows_transient_terminal_status_recovery(monkeypatch) -> None:
+    responses = iter([(503, ""), (503, ""), (200, "ok")])
+    monkeypatch.setattr(ha_core_node_smoke, "curl_https_resolved", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(ha_core_node_smoke.time, "sleep", lambda *_args, **_kwargs: None)
+
+    detail = ha_core_node_smoke.wait_for_ingress_response(
+        host="ha-web-smoke.home.arpa",
+        port=10443,
+        resolve_ip="192.168.155.10",
+        path="/healthz",
+        timeout_s=30,
+        poll_s=0.01,
+        expected_status=200,
+    )
+
+    assert detail == "ingress ok: host=ha-web-smoke.home.arpa path=/healthz status=200"
 
 
 def test_verify_workload_endpoint_cidr_accepts_ready_pod_within_node_cidr() -> None:
