@@ -74,6 +74,8 @@ def test_variant_parser_prints_normalized_json() -> None:
     assert any(h["gpu"] for h in payload["hosts"])
     assert Path(payload["images"]["base"]).is_absolute()
     assert Path(payload["images"]["gpu"]).is_absolute()
+    assert payload["vm"] == {"memory_mb": 6144, "vcpus": 4, "disk_gb": 50}
+    assert all(host["vm"] == {"memory_mb": 6144, "vcpus": 4, "disk_gb": 50} for host in payload["hosts"])
     assert payload["k1s"]["apishim_port"] == 8445
     assert payload["k1s"]["agent_api_port"] == 9110
     assert payload["transport"]["leaf_uplink_mode"] == "direct_ip"
@@ -93,6 +95,63 @@ def test_variant_parser_prints_normalized_json() -> None:
     assert payload["secrets"]["refs"] == {}
 
 
+def test_variant_parser_allows_partial_host_vm_overrides(tmp_path: Path) -> None:
+    variant = tmp_path / "host-vm-overrides.yaml"
+    variant.write_text(
+        """
+name: unit-test-host-vm-overrides
+test_id: 77
+network:
+  bridge: k1s-br0
+  cidr: 192.168.155.0/24
+  gateway: 192.168.155.1
+images:
+  base: artifacts/images/ubuntu-22.04-k1s-base.qcow2
+  gpu: artifacts/images/ubuntu-22.04-k1s-gpu.qcow2
+vm:
+  memory_mb: 4096
+  vcpus: 4
+  disk_gb: 50
+hosts:
+  - name: core-a
+    ip: 192.168.155.10
+    role: k1s-ha-core
+    vm:
+      memory_mb: 5120
+  - name: edge-a
+    ip: 192.168.155.20
+    role: k1s-edge-node
+    vm:
+      memory_mb: 2048
+      vcpus: 2
+      disk_gb: 25
+ha:
+  etcd_endpoints:
+    - http://192.168.155.10:2379
+  etcd_prefix: k1s/lab/unit-test
+  nats_url: nats://unit:dev@192.168.155.10:4222
+  hub_nodes:
+    - name: core-a
+      monitor_url: http://192.168.155.10:8222
+smoke:
+  lanes:
+    - ha_control_plane
+""".strip(),
+        encoding="utf-8",
+    )
+
+    res = subprocess.run(  # noqa: S603
+        [sys.executable, str(VARIANT_SCRIPT), "--variant", str(variant), "--print-json"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    payload = json.loads(res.stdout)
+    assert payload["vm"] == {"memory_mb": 4096, "vcpus": 4, "disk_gb": 50}
+    assert payload["hosts"][0]["vm"] == {"memory_mb": 5120, "vcpus": 4, "disk_gb": 50}
+    assert payload["hosts"][1]["vm"] == {"memory_mb": 2048, "vcpus": 2, "disk_gb": 25}
+
+
 def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
     res = subprocess.run(  # noqa: S603
         [sys.executable, str(VARIANT_SCRIPT), "--variant", str(HA_VARIANT_FILE), "--print-json"],
@@ -102,11 +161,15 @@ def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
     )
     payload = json.loads(res.stdout)
     assert payload["name"] == "ha-control-plane-core"
+    assert payload["vm"] == {"memory_mb": 5120, "vcpus": 4, "disk_gb": 50}
     assert [host["role"] for host in payload["hosts"][:3]] == [
         "k1s-ha-core",
         "k1s-ha-core",
         "k1s-ha-core",
     ]
+    assert payload["hosts"][0]["vm"] == {"memory_mb": 5120, "vcpus": 4, "disk_gb": 50}
+    assert payload["hosts"][3]["vm"] == {"memory_mb": 3072, "vcpus": 2, "disk_gb": 50}
+    assert payload["hosts"][4]["vm"] == {"memory_mb": 3072, "vcpus": 2, "disk_gb": 50}
     assert payload["ha"]["enabled"] is True
     assert payload["ha"]["etcd_endpoints"] == [
         "http://192.168.155.10:2379",
@@ -136,6 +199,7 @@ def test_checked_in_ha_hub_node_variant_normalizes_for_manual_smoke_lane() -> No
     )
     payload = json.loads(res.stdout)
     assert payload["name"] == "ha-control-plane-hub-node"
+    assert payload["vm"] == {"memory_mb": 5120, "vcpus": 4, "disk_gb": 50}
     assert [host["role"] for host in payload["hosts"][:3]] == [
         "k1s-ha-core",
         "k1s-ha-core",
@@ -145,6 +209,7 @@ def test_checked_in_ha_hub_node_variant_normalizes_for_manual_smoke_lane() -> No
     assert payload["hosts"][3]["node_id"] == "hub-1"
     assert payload["hosts"][3]["node_labels"] == "role=hub,site=hub"
     assert payload["hosts"][3]["pod_cidr"] == "10.42.0.0/24"
+    assert payload["hosts"][3]["vm"] == {"memory_mb": 3072, "vcpus": 2, "disk_gb": 50}
     assert payload["k1s"]["agent_api_port"] == 9110
     assert payload["ha"]["enabled"] is True
     assert payload["ha"]["edge_sites"] == []
@@ -166,6 +231,9 @@ def test_checked_in_ha_drill_variant_exposes_optional_commands() -> None:
     )
     payload = json.loads(res.stdout)
     assert payload["name"] == "ha-control-plane-core-drills"
+    assert payload["vm"] == {"memory_mb": 5120, "vcpus": 4, "disk_gb": 50}
+    assert payload["hosts"][3]["vm"] == {"memory_mb": 3072, "vcpus": 2, "disk_gb": 50}
+    assert payload["hosts"][4]["vm"] == {"memory_mb": 3072, "vcpus": 2, "disk_gb": 50}
     assert payload["ha"]["drills"]["leader_failover_command"] == (
         "./scripts/lab/vm/ha_drill_actions.sh leader-failover "
         "--variant lab/variants/ha-control-plane-core-drills.yaml"
@@ -856,6 +924,11 @@ def test_variant_up_uses_variant_aware_host_prepare() -> None:
     assert "printf '      routes:" in text
     assert 'route_yaml="$(render_guest_route_yaml "$role")"' in text
     assert 'tap="$(lane_tap_name "$index")"' in text
+    assert 'host_disk_gb="$(echo "$row" | jq -r \'.vm.disk_gb\')"' in text
+    assert 'host_mem="$(echo "$row" | jq -r \'.vm.memory_mb\')"' in text
+    assert 'host_cpus="$(echo "$row" | jq -r \'.vm.vcpus\')"' in text
+    assert 'qemu-img create -f qcow2 -F qcow2 -b "$img" "$overlay" "${host_disk_gb}G" >/dev/null' in text
+    assert '-m "$host_mem" -smp "$host_cpus"' in text
     assert 'wait_for_cloud_init "$ip" 180' in text
     assert 'err "cloud-init did not complete for ${name} (${ip})"' in text
 
@@ -1086,6 +1159,7 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_APISHIM_MODE=\\${AE_APISHIM_MODE:-host}" in text
     assert "bootstrap_seed_cri_cache core" in text
     assert "bootstrap_seed_cri_cache edge" in text
+    assert text.count("bootstrap_seed_cri_cache edge") == 2
     assert "make k1s-core-node" in text
     assert "make k1s-ha-core" in text
     assert "AE_CONTROLLER_URL=http://${controller_ip}:${controller_agent_port}" in text
@@ -1114,6 +1188,25 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db" in text
     assert "AE_GATEWAY_FENCE_DB=/var/lib/ae/gateway/fence-${site_id}-${node_id}.db" in text
     assert "sudo mkdir -p /var/lib/ae/gateway" in text
+    assert 'edge_local_target_addr="${edge_site_runtime_ip:+${edge_site_runtime_ip}:18081}"' in text
+    assert 'edge_local_target_addr="\\${edge_local_target_addr:-127.0.0.1:18081}"' in text
+    assert 'edge_profile_owner_path="/mnt/host/state/profiles/k1s-edge"' in text
+    assert 'edge_profile_owner_ids="\\$(stat -c \'%u %g\' "\\$edge_profile_owner_path" 2>/dev/null || true)"' in text
+    assert "failed to resolve strict-CRI target ownership for \\$edge_profile_owner_path" in text
+    assert 'expected_gateway_node="${site_id}--${node_id}"' in text
+    assert 'edge_metrics_url="http://${controller_ip}:${controller_port}/metrics"' in text
+    assert 'expected_gateway_metric="ae_site_gateway_last_seen_seconds{site=\\"${site_id}\\",node=\\"\\${expected_gateway_node}\\"}"' in text
+    assert "print_edge_bootstrap_failure_context() {" in text
+    assert "gateway startup failed on ${name} (${ip})" in text
+    assert "edge_gateway_metric_present() {" in text
+    assert "urllib.request.urlopen(url, timeout=2)" in text
+    assert 'sudo tail -n 80 /home/ae/k1s-edge-core.log' in text
+    assert "pgrep -a -f 'python(3)? -m ae\\.gateway|run_profile\\.sh k1s-edge|ae\\.worker_stub'" in text
+    assert 'sudo crictl pods -a 2>/dev/null | sed' in text
+    assert 'deadline=\\$((SECONDS + 120))' in text
+    assert 'AE_STRICT_CRI_TARGET_UID=\\${strict_cri_target_uid}' in text
+    assert 'AE_STRICT_CRI_TARGET_GID=\\${strict_cri_target_gid}' in text
+    assert 'AE_EDGE_INGRESS_LOCAL_ADDR=\\${AE_EDGE_INGRESS_LOCAL_ADDR:-\\${edge_local_target_addr}}' in text
     assert "AE_CRI_CACHE_SEED_MODE" in text
     assert "AE_CRI_CACHE_SEED_BUNDLE" in text
     assert 'pod_cidr="$(echo "$host_json" | jq -r \'.pod_cidr // empty\')"' in text
@@ -1582,6 +1675,9 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert 'retained_workload_smoke_expected_text="${AE_RETAINED_WORKLOAD_SMOKE_EXPECTED_TEXT:-Shell + Port-Forward Smoke}"' in text
     assert 'ha_core_workload_smoke_manifest="${AE_HA_CORE_WORKLOAD_SMOKE_MANIFEST:-$ROOT_DIR/docs/site/examples/ha-web-smoke-edge.yaml}"' in text
     assert 'ha_core_workload_smoke_host="${AE_HA_CORE_WORKLOAD_SMOKE_HOST:-ha-edge-web-smoke.home.arpa}"' in text
+    assert 'edge_runtime_site_id="$(echo "$variant_json" | jq -r \'.hosts[] | select(.role=="k1s-edge-node") | (.site_id // "")\' | head -n1)"' in text
+    assert 'edge_gateway_ip="$(' in text
+    assert '.hosts[] | select(.role=="k1s-edge-core" and (.site_id // "") == $site) | .ip' in text
     assert "print_remote_ha_failure_context() {" in text
     assert "snapshot_local_dev_hosts_state() {" in text
     assert "render_retained_local_dev_apply_map() {" in text
@@ -1608,6 +1704,10 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert '--manifest "$ha_core_workload_smoke_manifest"' in text
     assert '--app-name "$ha_core_workload_smoke_app"' in text
     assert '--ingress-host "$ha_core_workload_smoke_host"' in text
+    assert '--target-probe-host "$edge_gateway_ip"' in text
+    assert '--target-probe-user ae' in text
+    assert '--target-probe-url "http://${edge_runtime_ip}:18081/healthz"' in text
+    assert '--target-probe-timeout 60' in text
     assert '--ingress-host "$retained_workload_smoke_host"' in text
     assert '--resolve-ip "$first_core_ip"' in text
     assert '--expected-text "$retained_workload_smoke_expected_text"' in text
@@ -1716,6 +1816,7 @@ def test_cri_seed_lock_contains_core_and_edge_images() -> None:
     assert "quay.io/coreos/etcd:v3.5.13" in payload["images"]["core"]
     assert "docker.io/library/nats:2.10" in payload["images"]["edge"]
     assert "docker.io/library/demo-shell:latest" in payload["images"]["core"]
+    assert "docker.io/library/demo-shell:latest" in payload["images"]["edge"]
     assert "localhost:5001/k1s-apishim:dev" in payload["images"]["core"]
 
 
@@ -2099,6 +2200,10 @@ def test_run_ha_acceptance_checks_includes_edge_runtime_ingress_smoke_when_edge_
     assert "site=sea" in command
     assert "ha-web-smoke-edge.yaml" in command[command.index("--manifest") + 1]
     assert command[command.index("--ingress-host") + 1] == "ha-edge-web-smoke.home.arpa"
+    assert command[command.index("--target-probe-host") + 1] == "192.168.155.20"
+    assert command[command.index("--target-probe-user") + 1] == "ae"
+    assert command[command.index("--target-probe-url") + 1] == "http://192.168.155.21:18081/healthz"
+    assert command[command.index("--target-probe-timeout") + 1] == "60"
 
 
 def test_smoke_v2_skips_vm_managed_ha_infra_for_external_backends() -> None:

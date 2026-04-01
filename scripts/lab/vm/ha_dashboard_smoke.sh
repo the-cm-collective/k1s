@@ -136,7 +136,17 @@ ha_core_workload_smoke_expected_text="${AE_HA_CORE_WORKLOAD_SMOKE_EXPECTED_TEXT:
 edge_runtime_name="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-node") | .name' | head -n1)"
 edge_runtime_ip="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-node") | .ip' | head -n1)"
 edge_runtime_id="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-node") | (.node_id // .name)' | head -n1)"
+edge_runtime_site_id="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-node") | (.site_id // "")' | head -n1)"
 edge_runtime_labels="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-node") | (.node_labels // "")' | head -n1)"
+edge_gateway_ip="$(
+  if [[ -n "$edge_runtime_site_id" ]]; then
+    echo "$variant_json" \
+      | jq -r --arg site "$edge_runtime_site_id" '.hosts[] | select(.role=="k1s-edge-core" and (.site_id // "") == $site) | .ip' \
+      | head -n1
+  else
+    echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-edge-core") | .ip' | head -n1
+  fi
+)"
 local_dev_hosts_dir="$(run_dir "$RUN_ID")"
 local_dev_hosts_state_file="$local_dev_hosts_dir/local-dev-hosts.env"
 local_dev_hosts_snapshot_file="$local_dev_hosts_dir/local-dev-hosts.snapshot"
@@ -865,6 +875,8 @@ cmd_core_workload_smoke() {
   require_remote_hosts
   require_http_tools
   [[ -n "$edge_runtime_id" ]] || { err "variant does not include an HA edge runtime node"; exit 2; }
+  [[ -n "$edge_runtime_ip" ]] || { err "variant does not include an HA edge runtime IP"; exit 2; }
+  [[ -n "$edge_gateway_ip" ]] || { err "variant does not include an HA edge gateway"; exit 2; }
   [[ -f "$ha_core_workload_smoke_manifest" ]] || {
     err "HA core workload smoke manifest not found: $ha_core_workload_smoke_manifest"
     exit 2
@@ -886,6 +898,10 @@ cmd_core_workload_smoke() {
       --ingress-host "$ha_core_workload_smoke_host" \
       --ingress-port "$ingress_tls_port" \
       --resolve-ip "$first_core_ip" \
+      --target-probe-host "$edge_gateway_ip" \
+      --target-probe-user ae \
+      --target-probe-url "http://${edge_runtime_ip}:18081/healthz" \
+      --target-probe-timeout 60 \
       --health-path /healthz \
       --root-path / \
       --expected-text "$ha_core_workload_smoke_expected_text" \

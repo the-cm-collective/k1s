@@ -91,7 +91,25 @@ def _validate_image_metadata(image_name: str, image_path: str) -> None:
             )
 
 
-def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
+def _normalize_host_vm(host: dict[str, Any], idx: int, default_vm: dict[str, int]) -> dict[str, int]:
+    raw_vm = host.get("vm")
+    if raw_vm is None:
+        return dict(default_vm)
+    if not isinstance(raw_vm, dict):
+        raise ValueError(f"hosts[{idx}].vm must be a mapping")
+
+    vm = {
+        "memory_mb": int(raw_vm.get("memory_mb", default_vm["memory_mb"])),
+        "vcpus": int(raw_vm.get("vcpus", default_vm["vcpus"])),
+        "disk_gb": int(raw_vm.get("disk_gb", default_vm["disk_gb"])),
+    }
+    for key, value in vm.items():
+        if value <= 0:
+            raise ValueError(f"hosts[{idx}].vm.{key} must be > 0")
+    return vm
+
+
+def _normalize_host(host: dict[str, Any], idx: int, default_vm: dict[str, int]) -> dict[str, Any]:
     name = _must(host, "name", str, f"hosts[{idx}]")
     ip = _must(host, "ip", str, f"hosts[{idx}]")
     role = _must(host, "role", str, f"hosts[{idx}]")
@@ -109,6 +127,7 @@ def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
         "node_id": str(host.get("node_id", "")).strip() or name,
         "node_labels": str(host.get("node_labels", "")).strip() or None,
         "pod_cidr": str(host.get("pod_cidr", "")).strip() or None,
+        "vm": _normalize_host_vm(host, idx, default_vm),
         "agent_port": int(
             host.get(
                 "agent_port",
@@ -340,7 +359,12 @@ def parse_variant(path: Path, *, validate_images: bool = False) -> dict[str, Any
     hosts_raw = _must(raw, "hosts", list, "variant")
     if not hosts_raw:
         raise ValueError("hosts must contain at least one item")
-    hosts = [_normalize_host(item, i) for i, item in enumerate(hosts_raw)]
+    default_vm = {
+        "memory_mb": memory_mb,
+        "vcpus": vcpus,
+        "disk_gb": disk_gb,
+    }
+    hosts = [_normalize_host(item, i, default_vm) for i, item in enumerate(hosts_raw)]
 
     k1s = raw.get("k1s") or {}
     if not isinstance(k1s, dict):

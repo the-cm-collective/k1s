@@ -464,6 +464,151 @@ exec "${args[@]:$idx}"
     assert "unexpected sudo uid" not in proc.stderr
 
 
+def test_profile_state_ownership_repair_skips_missing_guest_group_for_fallback(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "state" / "profiles" / "k1s-core"
+    edge_dir = profile_dir / "edge-ingress"
+    edge_dir.mkdir(parents=True)
+    (edge_dir / "envoy.yaml").write_text("static_resources: {}\n", encoding="utf-8")
+    missing_gid = str(os.getgid() + 1000)
+
+    fake_id = tmp_path / "id"
+    _write_executable(
+        fake_id,
+        """#!/usr/bin/env bash
+set -euo pipefail
+mode="${FAKE_ID_MODE:-root}"
+case "${1:-}" in
+  -u)
+    if [[ "$mode" == "target" ]]; then
+      printf '%s\n' "${FAKE_TARGET_UID:-1000}"
+    else
+      printf '0\n'
+    fi
+    ;;
+  -g)
+    if [[ "$mode" == "target" ]]; then
+      printf '%s\n' "${FAKE_TARGET_GID:-1000}"
+    else
+      printf '0\n'
+    fi
+    ;;
+  -un)
+    if [[ "$mode" == "target" ]]; then
+      printf 'target\n'
+    else
+      printf 'root\n'
+    fi
+    ;;
+  *)
+    echo "unsupported id args: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    fake_chown = tmp_path / "chown"
+    _write_executable(
+        fake_chown,
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "Operation not permitted" >&2
+exit 1
+""",
+    )
+
+    fake_getent = tmp_path / "getent"
+    _write_executable(
+        fake_getent,
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "group" && "${2:-}" == "${FAKE_EXISTING_GROUP_ID:-}" ]]; then
+  printf 'target:x:%s:\n' "${2:-}"
+  exit 0
+fi
+exit 2
+""",
+    )
+
+    fake_sudo = tmp_path / "sudo"
+    _write_executable(
+        fake_sudo,
+        """#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+idx=0
+requested_uid=""
+requested_gid=""
+while [[ $idx -lt ${#args[@]} ]]; do
+  case "${args[$idx]}" in
+    -u)
+      requested_uid="${args[$((idx + 1))]}"
+      idx=$((idx + 2))
+      ;;
+    -g)
+      requested_gid="${args[$((idx + 1))]}"
+      idx=$((idx + 2))
+      ;;
+    env)
+      idx=$((idx + 1))
+      break
+      ;;
+    *)
+      idx=$((idx + 1))
+      ;;
+  esac
+done
+if [[ -n "${EXPECTED_SUDO_UID:-}" && "$requested_uid" != "#${EXPECTED_SUDO_UID}" ]]; then
+  echo "unexpected sudo uid: $requested_uid" >&2
+  exit 1
+fi
+if [[ -n "$requested_gid" ]]; then
+  echo "unexpected sudo gid: $requested_gid" >&2
+  exit 1
+fi
+while [[ $idx -lt ${#args[@]} && "${args[$idx]}" == *=* ]]; do
+  export "${args[$idx]}"
+  idx=$((idx + 1))
+done
+export FAKE_ID_MODE=target
+exec "${args[@]:$idx}"
+""",
+    )
+
+    env = os.environ.copy()
+    env["K1S_ROOT_DIR_OVERRIDE"] = str(tmp_path)
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_ID_MODE"] = "root"
+    env["FAKE_TARGET_UID"] = str(os.getuid())
+    env["FAKE_TARGET_GID"] = str(os.getgid())
+    env["FAKE_EXISTING_GROUP_ID"] = str(os.getgid())
+    env["EXPECTED_SUDO_UID"] = str(os.getuid())
+    env["SUDO_UID"] = "4242"
+    env["SUDO_GID"] = "4343"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(PROFILE_STATE_OWNERSHIP_SCRIPT),
+            "--profile",
+            "k1s-core",
+            "--repair",
+            "--target-uid",
+            str(os.getuid()),
+            "--target-gid",
+            missing_gid,
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert proc.returncode == 0
+    assert "warning: ownership normalization skipped for" in proc.stderr
+    assert "unexpected sudo gid" not in proc.stderr
+
+
 def test_profile_state_ownership_repair_fails_when_non_chownable_state_is_not_usable(tmp_path: Path) -> None:
     profile_dir = tmp_path / "state" / "profiles" / "k1s-core"
     edge_dir = profile_dir / "edge-ingress"

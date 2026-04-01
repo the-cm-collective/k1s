@@ -1604,7 +1604,8 @@
 <li>retained-VM &quot;rebuild and restart all&quot; path: <code>make lab-vm-ha-dashboard-refresh-all</code></li>
 <li>Stop the retained VMs but keep retained run metadata for a later restart: <code>make lab-vm-ha-dashboard-down</code></li>
 <li>Full retained cleanup, including best-effort orphan teardown, <code>runs/&lt;RUN_ID&gt;</code>, repo-built host images, and retained host-mapping cleanup: <code>make lab-vm-ha-dashboard-purge</code></li>
-<li>Stage 1 retained ingress check: deploy the retained HA web smoke app on <code>hub-1</code>, translate app ingress to <code>core-local</code>, verify <code>/healthz</code> and <code>/</code> through the HA core Envoy, and clean it up again: <code>make lab-vm-ha-dashboard-workload-smoke</code></li>
+<li>Stage 1 retained ingress check: deploy the retained HA web smoke app on <code>hub-1</code>, translate app ingress to <code>core-local</code>, verify <code>/healthz</code> and <code>/</code> through the HA core Envoy, and clean it up again before the helper exits: <code>make lab-vm-ha-dashboard-workload-smoke</code></li>
+<li>For persistent host-side testing after the smoke, source <code>state/profiles/k1s-ha-core/controller.env</code>, apply <code>docs/site/examples/ha-web-smoke.yaml</code> with <code>PYTHONPATH=src ./.venv/bin/python -m ae.cli apply -f ...</code>, keep testing with <code>curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...</code>, and clean it up later with <code>PYTHONPATH=src ./.venv/bin/python -m ae.cli delete --purge ha-web-smoke</code></li>
 <li>Stage 2 gateway-capable check against a live <code>lab/variants/ha-control-plane-core.yaml</code> run: <code>RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke</code></li>
 <li><code>ha-web-smoke.home.arpa</code> is intentionally not added to the managed workstation host mapping; use the helper or <code>curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...</code> instead of extending <code>/etc/hosts</code></li>
 <li><code>ha-edge-web-smoke.home.arpa</code> is also helper-only / <code>curl --resolve</code> only for the stage-2 <code>core-proxy</code> lane</li>
@@ -2025,7 +2026,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-30 19:37:44</span>
+        <span>Built 2026-03-31 19:05:29</span>
       </div>
     </footer>
     <script>

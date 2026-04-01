@@ -9,7 +9,7 @@ network:
     - 1.1.1.1
     - 8.8.8.8
 vm:
-  memory_mb: 6144
+  memory_mb: 5120
   vcpus: 4
   disk_gb: 50
 images:
@@ -39,6 +39,9 @@ hosts:
     node_id: hub-1
     node_labels: role=hub,site=hub
     pod_cidr: 10.42.0.0/24
+    vm:
+      memory_mb: 3072
+      vcpus: 2
 k1s:
   agent_token: devtoken
   controller_port: 9108

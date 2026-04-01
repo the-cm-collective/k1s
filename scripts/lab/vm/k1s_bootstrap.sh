@@ -104,7 +104,7 @@ ensure_ha_shared_apishim_tls() {
 
 build_command() {
   local host_json="$1"
-  local name role site_id node_id labels ip agent_port pod_cidr
+  local name role site_id node_id labels ip agent_port pod_cidr edge_site_runtime_ip
   name="$(echo "$host_json" | jq -r '.name')"
   role="$(echo "$host_json" | jq -r '.role')"
   site_id="$(echo "$host_json" | jq -r '.site_id // empty')"
@@ -113,6 +113,14 @@ build_command() {
   ip="$(echo "$host_json" | jq -r '.ip')"
   agent_port="$(echo "$host_json" | jq -r '.agent_port')"
   pod_cidr="$(echo "$host_json" | jq -r '.pod_cidr // empty')"
+  edge_site_runtime_ip=""
+  if [[ -n "$site_id" ]]; then
+    edge_site_runtime_ip="$(
+      echo "$variant_json" \
+        | jq -r --arg site "$site_id" '.hosts[] | select(.role=="k1s-edge-node" and (.site_id // "") == $site) | .ip' \
+        | head -n1
+    )"
+  fi
 
   case "$role" in
     k1s-core)
@@ -267,19 +275,88 @@ cd /mnt/host
 bootstrap_pip_install
 bootstrap_seed_cri_cache edge
 sudo mkdir -p /var/lib/ae/gateway
+edge_local_target_addr="${edge_site_runtime_ip:+${edge_site_runtime_ip}:18081}"
+edge_local_target_addr="\${edge_local_target_addr:-127.0.0.1:18081}"
+edge_profile_owner_path="/mnt/host/state/profiles/k1s-edge"
+edge_profile_owner_ids="\$(stat -c '%u %g' "\$edge_profile_owner_path" 2>/dev/null || true)"
+read -r strict_cri_target_uid strict_cri_target_gid <<<"\$edge_profile_owner_ids"
+if [[ ! "\${strict_cri_target_uid:-}" =~ ^[0-9]+$ || ! "\${strict_cri_target_gid:-}" =~ ^[0-9]+$ ]]; then
+  echo "[edge-bootstrap] failed to resolve strict-CRI target ownership for \$edge_profile_owner_path" >&2
+  exit 1
+fi
+edge_runtime_port="\${EDGE_PORT:-4223}"
+edge_monitor_port="\${EDGE_HTTP_PORT:-8223}"
+expected_gateway_node="${site_id}--${node_id}"
+edge_metrics_url="http://${controller_ip}:${controller_port}/metrics"
+expected_gateway_metric="ae_site_gateway_last_seen_seconds{site=\"${site_id}\",node=\"\${expected_gateway_node}\"}"
+print_edge_bootstrap_failure_context() {
+  echo "[edge-bootstrap] gateway startup failed on ${name} (${ip})" >&2
+  if [[ -f /home/ae/k1s-edge-core.log ]]; then
+    echo "[edge-bootstrap] tail /home/ae/k1s-edge-core.log" >&2
+    sudo tail -n 80 /home/ae/k1s-edge-core.log | sed 's/^/[edge-bootstrap] /' >&2 || true
+  else
+    echo "[edge-bootstrap] missing /home/ae/k1s-edge-core.log" >&2
+  fi
+  echo "[edge-bootstrap] gateway process search" >&2
+  (pgrep -a -f 'python(3)? -m ae\.gateway|run_profile\.sh k1s-edge|ae\.worker_stub' || true) | sed 's/^/[edge-bootstrap] /' >&2
+  echo "[edge-bootstrap] crictl ps -a (edge filter)" >&2
+  local ps_out=""
+  ps_out="\$(sudo crictl ps -a 2>/dev/null || true)"
+  if [[ -n "\$ps_out" ]]; then
+    printf '%s\n' "\$ps_out" | awk 'NR==1 || /k1s-edge|rathole|nats/' | sed 's/^/[edge-bootstrap] /' >&2
+  else
+    echo "[edge-bootstrap] crictl output unavailable" >&2
+  fi
+  echo "[edge-bootstrap] crictl pods -a" >&2
+  sudo crictl pods -a 2>/dev/null | sed 's/^/[edge-bootstrap] /' >&2 || true
+  echo "[edge-bootstrap] ss -ltn (edge/controller ports)" >&2
+  ss -ltn 2>/dev/null | awk -v controller_port="${controller_port}" -v edge_port="\$edge_runtime_port" -v edge_http_port="\$edge_monitor_port" 'NR==1 || \$4 ~ (":" controller_port "\$") || \$4 ~ (":" edge_port "\$") || \$4 ~ (":" edge_http_port "\$") {print}' | sed 's/^/[edge-bootstrap] /' >&2 || true
+}
+edge_gateway_metric_present() {
+  python3 - "\$edge_metrics_url" "\$expected_gateway_metric" <<'PY'
+import sys
+import urllib.request
+
+url, needle = sys.argv[1], sys.argv[2]
+try:
+    with urllib.request.urlopen(url, timeout=2) as response:
+        body = response.read().decode("utf-8", errors="replace")
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if needle in body else 1)
+PY
+}
 nohup sudo env \
   PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
   AE_INFRA_BACKEND=cri \
   AE_CRI_DATA_ROOT=\${AE_CRI_DATA_ROOT:-/var/lib/ae/cri} \
   AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
+  AE_STRICT_CRI_TARGET_UID=\${strict_cri_target_uid} \
+  AE_STRICT_CRI_TARGET_GID=\${strict_cri_target_gid} \
   AE_SITE_ID=${site_id} \
   AE_NODE_ID=${node_id} \
+  AE_EDGE_INGRESS_LOCAL_ADDR=\${AE_EDGE_INGRESS_LOCAL_ADDR:-\${edge_local_target_addr}} \
   AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db \
   AE_GATEWAY_FENCE_DB=/var/lib/ae/gateway/fence-${site_id}-${node_id}.db \
   AE_NATS_HUB_LEAF_HOST=${edge_hub_leaf_host} \
   AE_NATS_HUB_LEAF_PORT=${edge_hub_leaf_port} \
   make k1s-edge-core-cri > /home/ae/k1s-edge-core.log 2>&1 &
+bootstrap_pid=\$!
+deadline=\$((SECONDS + 120))
+while (( SECONDS < deadline )); do
+  if edge_gateway_metric_present; then
+    break
+  fi
+  if ! kill -0 "\$bootstrap_pid" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+if ! edge_gateway_metric_present; then
+  print_edge_bootstrap_failure_context
+  exit 1
+fi
 CMD
       ;;
     k1s-edge-node)
@@ -294,6 +371,7 @@ CMD
       cat <<CMD
 cd /mnt/host
 bootstrap_pip_install
+bootstrap_seed_cri_cache edge
 nohup sudo env \
   PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \

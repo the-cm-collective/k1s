@@ -61,6 +61,17 @@ def test_load_smoke_manifest_overrides_name() -> None:
     assert manifest.spec.node_selector == {"role": "hub", "site": "hub"}
 
 
+def test_load_edge_smoke_manifest_exposes_core_proxy_service_port() -> None:
+    manifest = ha_core_node_smoke.load_smoke_manifest(
+        ROOT / "docs" / "site" / "examples" / "ha-web-smoke-edge.yaml",
+        "ha-edge-web-smoke",
+    )
+
+    assert manifest.spec.service is not None
+    assert manifest.spec.service.port == 18081
+    assert manifest.spec.service.target_port == 8080
+
+
 def test_run_workload_smoke_cleans_up_registered_state(monkeypatch, tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "controller.db")
     manifest = ha_core_node_smoke.load_smoke_manifest(
@@ -250,6 +261,69 @@ def test_run_ingress_smoke_direct_probe_precedes_ingress(monkeypatch, tmp_path: 
     assert call_order == ["endpoint", "direct", "ingress:/healthz", "ingress:/"]
 
 
+def test_run_ingress_smoke_target_probe_precedes_ingress(monkeypatch, tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "controller.db")
+    manifest = ha_core_node_smoke.load_smoke_manifest(
+        ROOT / "docs" / "site" / "examples" / "ha-web-smoke-edge.yaml",
+        "ha-edge-web-smoke",
+    )
+    call_order: list[str] = []
+
+    monkeypatch.setattr(ha_core_node_smoke, "state_store_from_env", lambda: store)
+    monkeypatch.setattr(
+        ha_core_node_smoke, "wait_for_node_ready", lambda *args, **kwargs: "node ready: sea-node-1"
+    )
+    monkeypatch.setattr(ha_core_node_smoke, "load_smoke_manifest", lambda path, name: manifest)
+    monkeypatch.setattr(
+        ha_core_node_smoke,
+        "wait_for_workload_ready",
+        lambda *args, **kwargs: "workload ready: app=ha-edge-web-smoke desired=1 ready=1 live=1",
+    )
+
+    def _verify(*args, **kwargs):
+        call_order.append("endpoint")
+        return "pod endpoint ok: app=ha-edge-web-smoke pod=ha-edge-web-smoke-rev1-0 endpoint=10.42.1.2:8080 pod_cidr=10.42.1.0/24"
+
+    monkeypatch.setattr(ha_core_node_smoke, "verify_workload_endpoint_cidr", _verify)
+
+    def _target_probe(**kwargs):
+        call_order.append("target")
+        return "target probe ok: host=192.168.155.20 url=http://127.0.0.1:18081/healthz status=200"
+
+    monkeypatch.setattr(ha_core_node_smoke, "wait_for_target_probe_response", _target_probe)
+
+    def _ingress(**kwargs):
+        call_order.append(f"ingress:{kwargs['path']}")
+        return f"ingress ok: host={kwargs['host']} path={kwargs['path']} status=200"
+
+    monkeypatch.setattr(ha_core_node_smoke, "wait_for_ingress_response", _ingress)
+
+    args = SimpleNamespace(
+        node_id="sea-node-1",
+        label=["role=worker", "site=sea"],
+        manifest=ROOT / "docs" / "site" / "examples" / "ha-web-smoke-edge.yaml",
+        app_name="ha-edge-web-smoke",
+        timeout=5,
+        poll=0.01,
+        purge_history=True,
+        ingress_host="ha-edge-web-smoke.home.arpa",
+        ingress_port=10443,
+        resolve_ip="192.168.155.10",
+        health_path="/healthz",
+        root_path="/",
+        expected_text="Shell + Port-Forward Smoke",
+        target_probe_host="192.168.155.20",
+        target_probe_user="ae",
+        target_probe_url="http://127.0.0.1:18081/healthz",
+        target_probe_timeout=60,
+    )
+
+    rc = ha_core_node_smoke.run_ingress_smoke(args)
+
+    assert rc == 0
+    assert call_order == ["endpoint", "target", "ingress:/healthz", "ingress:/"]
+
+
 def test_run_ingress_smoke_cleans_up_on_ingress_failure(monkeypatch, tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "controller.db")
     manifest = ha_core_node_smoke.load_smoke_manifest(
@@ -311,6 +385,81 @@ def test_run_ingress_smoke_cleans_up_on_ingress_failure(monkeypatch, tmp_path: P
     )
 
     with pytest.raises(SystemExit, match="ingress status mismatch"):
+        ha_core_node_smoke.run_ingress_smoke(args)
+
+    assert store.get_registered_entry(app_name) is None
+    assert cleanup_calls == [(app_name, True)]
+
+
+def test_run_ingress_smoke_cleans_up_on_target_probe_failure(monkeypatch, tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "controller.db")
+    manifest = ha_core_node_smoke.load_smoke_manifest(
+        ROOT / "docs" / "site" / "examples" / "ha-web-smoke-edge.yaml",
+        "ha-edge-web-smoke",
+    )
+    app_name = manifest.metadata.name
+    cleanup_calls: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(ha_core_node_smoke, "state_store_from_env", lambda: store)
+    monkeypatch.setattr(
+        ha_core_node_smoke, "wait_for_node_ready", lambda *args, **kwargs: "node ready: sea-node-1"
+    )
+    monkeypatch.setattr(ha_core_node_smoke, "load_smoke_manifest", lambda path, name: manifest)
+    monkeypatch.setattr(
+        ha_core_node_smoke,
+        "wait_for_workload_ready",
+        lambda *args, **kwargs: "workload ready: app=ha-edge-web-smoke desired=1 ready=1 live=1",
+    )
+    monkeypatch.setattr(
+        ha_core_node_smoke,
+        "verify_workload_endpoint_cidr",
+        lambda *args, **kwargs: "pod endpoint ok: app=ha-edge-web-smoke pod=ha-edge-web-smoke-rev1-0 endpoint=10.42.1.2:8080 pod_cidr=10.42.1.0/24",
+    )
+    monkeypatch.setattr(
+        ha_core_node_smoke,
+        "wait_for_target_probe_response",
+        lambda **kwargs: (_ for _ in ()).throw(
+            SystemExit(
+                "target probe failed: host=192.168.155.20 url=http://127.0.0.1:18081/healthz status=503"
+            )
+        ),
+    )
+
+    original_cleanup = ha_core_node_smoke.cleanup_workload
+
+    def _wrapped_cleanup(store_obj, app_key: str, *, timeout_s: int, poll_s: float, purge_history: bool) -> None:
+        cleanup_calls.append((app_key, purge_history))
+        original_cleanup(
+            store_obj,
+            app_key,
+            timeout_s=timeout_s,
+            poll_s=poll_s,
+            purge_history=purge_history,
+        )
+
+    monkeypatch.setattr(ha_core_node_smoke, "cleanup_workload", _wrapped_cleanup)
+
+    args = SimpleNamespace(
+        node_id="sea-node-1",
+        label=["role=worker", "site=sea"],
+        manifest=ROOT / "docs" / "site" / "examples" / "ha-web-smoke-edge.yaml",
+        app_name=app_name,
+        timeout=5,
+        poll=0.01,
+        purge_history=True,
+        ingress_host="ha-edge-web-smoke.home.arpa",
+        ingress_port=10443,
+        resolve_ip="192.168.155.10",
+        health_path="/healthz",
+        root_path="/",
+        expected_text="Shell + Port-Forward Smoke",
+        target_probe_host="192.168.155.20",
+        target_probe_user="ae",
+        target_probe_url="http://127.0.0.1:18081/healthz",
+        target_probe_timeout=60,
+    )
+
+    with pytest.raises(SystemExit, match="target probe failed"):
         ha_core_node_smoke.run_ingress_smoke(args)
 
     assert store.get_registered_entry(app_name) is None

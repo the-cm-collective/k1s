@@ -75,6 +75,10 @@ def parse_args() -> argparse.Namespace:
     ingress.add_argument("--expected-text", default="Shell + Port-Forward Smoke")
     ingress.add_argument("--direct-probe-host")
     ingress.add_argument("--direct-probe-user", default="ae")
+    ingress.add_argument("--target-probe-host")
+    ingress.add_argument("--target-probe-user", default="ae")
+    ingress.add_argument("--target-probe-url")
+    ingress.add_argument("--target-probe-timeout", type=int, default=60)
     return parser.parse_args()
 
 
@@ -416,6 +420,86 @@ def wait_for_direct_endpoint_response(
         time.sleep(max(poll_s, 0.1))
 
 
+def _target_probe_debug(
+    *,
+    probe_host: str,
+    probe_user: str,
+    timeout_s: int,
+) -> str:
+    debug_result = _run_ssh_command(
+        probe_host,
+        user=probe_user,
+        command=(
+            "ss -ltn | egrep ':(10080|10443|18080|18081|2333|4223|8223)' || true"
+        ),
+        timeout_s=timeout_s,
+    )
+    return _collapse_output(debug_result.stdout, debug_result.stderr)
+
+
+def probe_target_url_via_ssh(
+    *,
+    probe_host: str,
+    probe_user: str,
+    url: str,
+    timeout_s: int,
+) -> str:
+    normalized_url = str(url or "").strip()
+    if not normalized_url:
+        raise RuntimeError("target probe URL is empty")
+
+    curl_result = _run_ssh_command(
+        probe_host,
+        user=probe_user,
+        command=(
+            "curl --noproxy '*' -sS -o /dev/null "
+            f"-w '%{{http_code}}' -m {max(int(timeout_s), 5)} "
+            f"{shlex.quote(normalized_url)}"
+        ),
+        timeout_s=timeout_s,
+    )
+    status_text = (curl_result.stdout or "").strip()
+    if curl_result.returncode == 0 and status_text == "200":
+        return f"target probe ok: host={probe_host} url={normalized_url} status=200"
+
+    debug_detail = _target_probe_debug(
+        probe_host=probe_host,
+        probe_user=probe_user,
+        timeout_s=timeout_s,
+    )
+    curl_detail = _collapse_output(curl_result.stdout, curl_result.stderr)
+    raise RuntimeError(
+        f"target probe failed: host={probe_host} url={normalized_url} "
+        f"status={status_text or 'unknown'} detail={curl_detail or 'unknown'}\n"
+        f"{debug_detail}"
+    )
+
+
+def wait_for_target_probe_response(
+    *,
+    probe_host: str,
+    probe_user: str,
+    url: str,
+    timeout_s: int,
+    poll_s: float,
+) -> str:
+    deadline = time.monotonic() + float(timeout_s)
+    last_detail = f"target probe not yet ready: host={probe_host} url={url}"
+    while True:
+        try:
+            return probe_target_url_via_ssh(
+                probe_host=probe_host,
+                probe_user=probe_user,
+                url=url,
+                timeout_s=max(int(poll_s * 5), 5),
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_detail = str(exc)
+        if time.monotonic() >= deadline:
+            raise SystemExit(last_detail)
+        time.sleep(max(poll_s, 0.1))
+
+
 def cleanup_workload(store, app_name: str, *, timeout_s: int, poll_s: float, purge_history: bool) -> None:
     existing = store.get_registered_entry(app_name)
     if existing is not None:
@@ -616,6 +700,21 @@ def run_ingress_smoke(args: argparse.Namespace) -> int:
                 timeout_s=int(args.timeout),
                 poll_s=float(args.poll),
             )
+        target_probe_host = str(getattr(args, "target_probe_host", "") or "").strip()
+        target_probe_url = str(getattr(args, "target_probe_url", "") or "").strip()
+        target_detail = None
+        if target_probe_host or target_probe_url:
+            if not target_probe_host or not target_probe_url:
+                raise SystemExit(
+                    "target probe requires both --target-probe-host and --target-probe-url"
+                )
+            target_detail = wait_for_target_probe_response(
+                probe_host=target_probe_host,
+                probe_user=str(getattr(args, "target_probe_user", "ae") or "ae"),
+                url=target_probe_url,
+                timeout_s=max(int(getattr(args, "target_probe_timeout", 60) or 60), 5),
+                poll_s=float(args.poll),
+            )
         health_detail = wait_for_ingress_response(
             host=str(args.ingress_host),
             port=int(args.ingress_port),
@@ -640,6 +739,8 @@ def run_ingress_smoke(args: argparse.Namespace) -> int:
         print(endpoint_detail)
         if direct_detail:
             print(direct_detail)
+        if target_detail:
+            print(target_detail)
         print(health_detail)
         print(root_detail)
         return 0

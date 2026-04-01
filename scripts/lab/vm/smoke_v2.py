@@ -1039,6 +1039,19 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
     edge_runtime_nodes = list(config.get("edge_runtime_nodes") or [])
     if edge_runtime_nodes and config.get("edge_sites"):
         edge_runtime = edge_runtime_nodes[0]
+        edge_site = next(
+            (
+                site
+                for site in config.get("edge_sites") or []
+                if str(site.get("site_id") or "").strip()
+                == str(edge_runtime.get("site_id") or "").strip()
+            ),
+            None,
+        )
+        target_probe_host = _url_host(
+            edge_site.get("monitor_url") if isinstance(edge_site, dict) else ""
+        )
+        edge_runtime_ip = str(edge_runtime.get("ip") or "").strip()
         ingress_cmd = [
             sys.executable,
             str(scripts_dir / "ha_core_node_smoke.py"),
@@ -1067,6 +1080,19 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             "2",
             "--purge-history",
         ]
+        if target_probe_host and edge_runtime_ip:
+            ingress_cmd.extend(
+                [
+                    "--target-probe-host",
+                    target_probe_host,
+                    "--target-probe-user",
+                    "ae",
+                    "--target-probe-url",
+                    f"http://{edge_runtime_ip}:18081/healthz",
+                    "--target-probe-timeout",
+                    "60",
+                ]
+            )
         for key, value in sorted((edge_runtime.get("labels") or {}).items()):
             ingress_cmd.extend(["--label", f"{key}={value}"])
         checks.append(

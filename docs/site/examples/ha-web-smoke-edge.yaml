@@ -8,6 +8,9 @@ spec:
   ports:
     - name: http
       containerPort: 8080
+  service:
+    port: 18081
+    targetPort: 8080
   nodeSelector:
     role: worker
     site: sea

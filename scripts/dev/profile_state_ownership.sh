@@ -185,7 +185,12 @@ run_check_as_target_user() {
 
   local -a cmd=(sudo -u "#${target_uid}")
   if [[ -n "${target_gid:-}" && "${target_gid}" =~ ^[0-9]+$ ]]; then
-    cmd+=(-g "#${target_gid}")
+    # VM hostshare mounts can preserve a host-side numeric GID that is not mapped
+    # inside the guest. In that case, probing access as the target UID is still
+    # sufficient to verify usability after a non-chownable filesystem fallback.
+    if ! command -v getent >/dev/null 2>&1 || getent group "${target_gid}" >/dev/null 2>&1; then
+      cmd+=(-g "#${target_gid}")
+    fi
   fi
   cmd+=(env "K1S_ROOT_DIR_OVERRIDE=${ROOT_DIR}")
   if [[ -n "${AE_TLS_DIR:-}" ]]; then

@@ -864,7 +864,7 @@ make lab-vm-ha-dashboard-reset \
 <li><code>make lab-vm-ha-dashboard-refresh-all</code> is the retained-VM rebuild and restart path on the current VMs.</li>
 <li><code>make lab-vm-ha-dashboard-down</code> stops the retained VMs but keeps retained run metadata for a later restart.</li>
 <li><code>make lab-vm-ha-dashboard-purge</code> is the authoritative retained cleanup path; it does best-effort teardown for partial or orphaned runs, removes retained VM state and <code>runs/&lt;RUN_ID&gt;</code>, cleans retained host mappings, and removes the repo-built host images used by this lane.</li>
-<li><code>make lab-vm-ha-dashboard-workload-smoke</code> is the retained stage-1 ingress check: it deploys the retained HA web smoke app onto <code>hub-1</code>, translates app ingress to <code>core-local</code>, verifies <code>/healthz</code> and <code>/</code> through the HA core Envoy with <code>curl --resolve</code>, and then cleans the workload up again.</li>
+<li><code>make lab-vm-ha-dashboard-workload-smoke</code> is the retained stage-1 ingress check: it deploys the retained HA web smoke app onto <code>hub-1</code>, translates app ingress to <code>core-local</code>, verifies <code>/healthz</code> and <code>/</code> through the HA core Envoy, and then cleans the workload up again before exiting.</li>
 <li><code>make lab-vm-ha-core-workload-smoke</code> is the stage-2 helper for a live <code>lab/variants/ha-control-plane-core.yaml</code> run; it deploys a worker-pinned smoke app onto <code>edge-sea-node</code> and verifies true <code>core-proxy</code> routing through the gateway-capable HA topology.</li>
 <li><code>make lab-vm-ha-dashboard-reset</code> runs that same purge logic and then brings the retained lane back up.</li>
 <li><code>make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code> is the full expensive path when guest/bootstrap contracts changed.</li>
@@ -909,21 +909,38 @@ curl -sk \
 DOCS_DASHBOARD_URL=https://dash.home.arpa:10443/dashboard \
 python docs/build_docs.py
 python -m http.server 9109 --directory docs/site</code></pre>
-<ul>
-<li>retained stage-1 workload deploy and core-local Envoy validation:</li>
-</ul>
-<pre><code>make lab-vm-ha-dashboard-workload-smoke
+<p>Retained stage-1 workload deploy and core-local Envoy validation (self-cleaning smoke):</p>
+<pre><code>make lab-vm-ha-dashboard-workload-smoke</code></pre>
+<p>This helper deploys <code>ha-web-smoke</code>, verifies direct pod reachability plus Envoy ingress, and then removes the workload during cleanup. A later host-side <code>curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...</code> is expected to return <code>404</code> unless you deploy the manifest manually and leave it running.</p>
+<p>For persistent manual deploys that stay up for host-side dev testing:</p>
+<pre><code>set -a
+source state/profiles/k1s-ha-core/controller.env
+set +a
 
-curl -sk \
+source &lt;(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
+
+PYTHONPATH=src ./.venv/bin/python -m ae.cli apply \
+  -f docs/site/examples/ha-web-smoke.yaml
+
+PYTHONPATH=src ./.venv/bin/python -m ae.cli status \
+  --watch 2 \
+  --timeout 180 \
+  ha-web-smoke
+
+PYTHONPATH=src ./.venv/bin/python -m ae.cli events \
+  --limit 20 \
+  ha-web-smoke
+
+curl --noproxy &quot;*&quot; -sk \
   --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 \
   https://ha-web-smoke.home.arpa:10443/healthz
 
-curl -sk \
+curl --noproxy &quot;*&quot; -sk \
   --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 \
   https://ha-web-smoke.home.arpa:10443/ | rg &#x27;Shell + Port-Forward Smoke&#x27;</code></pre>
-<ul>
-<li>stage-2 gateway/worker <code>core-proxy</code> validation against a live <code>ha-control-plane-core</code> run:</li>
-</ul>
+<p>Clean it up when you are done:</p>
+<pre><code>PYTHONPATH=src ./.venv/bin/python -m ae.cli delete --purge ha-web-smoke</code></pre>
+<p>Stage-2 gateway/worker <code>core-proxy</code> validation against a live <code>ha-control-plane-core</code> run:</p>
 <pre><code>RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke
 
 curl -sk \
@@ -943,7 +960,8 @@ curl -sk \
 <li>In this HA VM profile, <code>/system</code> is bearer-protected and the dashboard needs the same bearer token for its data panels.</li>
 <li>If <code>AE_API_READ_TOKEN</code> is unset, use <code>AE_API_ADMIN_TOKEN</code> in the header above and in the dashboard <code>Bearer</code> field.</li>
 <li>The retained workload smoke uses the shared HA state store because controller HTTP mutations stay disabled in this profile.</li>
-<li><code>ha-web-smoke.home.arpa</code> is intentionally not added to the managed workstation host mapping; use <code>make lab-vm-ha-dashboard-workload-smoke</code> or <code>curl --resolve ...</code> instead of extending <code>/etc/hosts</code>.</li>
+<li>For manual persistent deploys, load the generated shared-store env from <code>state/profiles/k1s-ha-core/controller.env</code> before running <code>ae apply/status/delete</code> so the CLI targets the HA etcd authority instead of the default local SQLite DB.</li>
+<li><code>ha-web-smoke.home.arpa</code> is intentionally not added to the managed workstation host mapping; use <code>curl --resolve ...</code> for both the self-cleaning smoke follow-up and the manual persistent deploy path instead of extending <code>/etc/hosts</code>.</li>
 <li>Use <code>lab/variants/ha-control-plane-core.yaml</code> instead when you want the checked-in stage-2 HA edge/gateway transport topology and true <code>core-proxy</code> validation.</li>
 <li>If you are reusing <code>k1s-br0</code> from a different variant CIDR, tear that lane down with <code>--destroy-network</code> before running the HA host prep command above.</li>
 <li>If the controller backing the local docs build changes, rebuild with another core URL.</li>
@@ -1053,7 +1071,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-30 19:37:44</span>
+        <span>Built 2026-03-31 19:05:29</span>
       </div>
     </footer>
     <script>

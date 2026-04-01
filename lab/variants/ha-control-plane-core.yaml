@@ -9,7 +9,7 @@ network:
     - 1.1.1.1
     - 8.8.8.8
 vm:
-  memory_mb: 6144
+  memory_mb: 5120
   vcpus: 4
   disk_gb: 50
 images:
@@ -37,6 +37,9 @@ hosts:
     gpu: false
     site_id: sea
     node_id: sea-gw
+    vm:
+      memory_mb: 3072
+      vcpus: 2
   - name: edge-sea-node
     ip: 192.168.155.21
     role: k1s-edge-node
@@ -45,6 +48,9 @@ hosts:
     node_id: sea-node-1
     node_labels: role=worker,site=sea
     pod_cidr: 10.42.1.0/24
+    vm:
+      memory_mb: 3072
+      vcpus: 2
 k1s:
   agent_token: devtoken
   controller_port: 9108
