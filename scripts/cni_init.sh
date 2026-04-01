@@ -43,6 +43,13 @@ write_file() {
 
 run_cmd mkdir -p "$conf_dir"
 
+if [[ "$force" == "1" ]] && command -v ip >/dev/null 2>&1; then
+  if run_cmd ip link show "$bridge_name" >/dev/null 2>&1; then
+    run_cmd ip addr flush dev "$bridge_name" >/dev/null 2>&1 || true
+    echo "Flushed existing bridge addresses on $bridge_name"
+  fi
+fi
+
 # Detect existing non-loopback CNI config
 has_non_loopback=0
 if [[ "$force" != "1" ]] && find "$conf_dir" -maxdepth 1 -type f \

@@ -50,7 +50,7 @@ if [[ -n "$controller_host_override" ]]; then
   controller_ip="$controller_host_override"
 fi
 controller_port="$(echo "$variant_json" | jq -r '.k1s.controller_port')"
-controller_agent_port="$(echo "$variant_json" | jq -r '.k1s.agent_api_port')"
+controller_agent_port="$(echo "$variant_json" | jq -r '.k1s.agent_api_port // 9110')"
 apishim_port="$(echo "$variant_json" | jq -r '.k1s.apishim_port')"
 token="$(echo "$variant_json" | jq -r '.k1s.agent_token')"
 leaf_uplink_mode="$(echo "$variant_json" | jq -r '.transport.leaf_uplink_mode')"
@@ -145,6 +145,13 @@ CMD
 cd /mnt/host
 bootstrap_pip_install
 bootstrap_seed_cri_cache core
+core_profile_owner_path="/mnt/host/state/profiles/k1s-core"
+core_profile_owner_ids="\$(stat -c '%u %g' "\$core_profile_owner_path" 2>/dev/null || true)"
+read -r strict_cri_target_uid strict_cri_target_gid <<<"\$core_profile_owner_ids"
+if [[ ! "\${strict_cri_target_uid:-}" =~ ^[0-9]+$ || ! "\${strict_cri_target_gid:-}" =~ ^[0-9]+$ ]]; then
+  echo "[core-bootstrap] failed to resolve strict-CRI target ownership for \$core_profile_owner_path" >&2
+  exit 1
+fi
 nohup sudo env \
   PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
@@ -154,6 +161,10 @@ nohup sudo env \
   AE_CRI_IMAGE_POLICY=\${AE_CRI_IMAGE_POLICY:-pull} \
   AE_CRI_REGISTRY_TRUST_SYSTEM=\${AE_CRI_REGISTRY_TRUST_SYSTEM:-1} \
   AE_CRI_REGISTRY_PRELOAD=\${AE_CRI_REGISTRY_PRELOAD:-1} \
+  AE_STRICT_CRI_TARGET_UID=\${strict_cri_target_uid} \
+  AE_STRICT_CRI_TARGET_GID=\${strict_cri_target_gid} \
+  AE_AGENT_API_PORT=${controller_agent_port} \
+  AE_AGENT_API_TOKEN=${token} \
   AE_APISHIM_MODE=\${AE_APISHIM_MODE:-host} \
   make k1s-core-cri > /home/ae/k1s-core.log 2>&1 &
 ${register_edge_sites_snippet}
