@@ -1190,6 +1190,7 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "sudo mkdir -p /var/lib/ae/gateway" in text
     assert 'edge_local_target_addr="${edge_site_runtime_ip:+${edge_site_runtime_ip}:18081}"' in text
     assert 'edge_local_target_addr="\\${edge_local_target_addr:-127.0.0.1:18081}"' in text
+    assert 'edge_rathole_server_addr="${edge_hub_leaf_host}:2333"' in text
     assert 'edge_profile_owner_path="/mnt/host/state/profiles/k1s-edge"' in text
     assert 'edge_profile_owner_ids="\\$(stat -c \'%u %g\' "\\$edge_profile_owner_path" 2>/dev/null || true)"' in text
     assert "failed to resolve strict-CRI target ownership for \\$edge_profile_owner_path" in text
@@ -1207,6 +1208,7 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert 'AE_STRICT_CRI_TARGET_UID=\\${strict_cri_target_uid}' in text
     assert 'AE_STRICT_CRI_TARGET_GID=\\${strict_cri_target_gid}' in text
     assert 'AE_EDGE_INGRESS_LOCAL_ADDR=\\${AE_EDGE_INGRESS_LOCAL_ADDR:-\\${edge_local_target_addr}}' in text
+    assert 'AE_RATHOLE_SERVER_ADDR=\\${AE_RATHOLE_SERVER_ADDR:-\\${edge_rathole_server_addr}}' in text
     assert "AE_CRI_CACHE_SEED_MODE" in text
     assert "AE_CRI_CACHE_SEED_BUNDLE" in text
     assert 'pod_cidr="$(echo "$host_json" | jq -r \'.pod_cidr // empty\')"' in text

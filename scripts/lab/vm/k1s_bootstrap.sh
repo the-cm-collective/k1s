@@ -277,6 +277,7 @@ bootstrap_seed_cri_cache edge
 sudo mkdir -p /var/lib/ae/gateway
 edge_local_target_addr="${edge_site_runtime_ip:+${edge_site_runtime_ip}:18081}"
 edge_local_target_addr="\${edge_local_target_addr:-127.0.0.1:18081}"
+edge_rathole_server_addr="${edge_hub_leaf_host}:2333"
 edge_profile_owner_path="/mnt/host/state/profiles/k1s-edge"
 edge_profile_owner_ids="\$(stat -c '%u %g' "\$edge_profile_owner_path" 2>/dev/null || true)"
 read -r strict_cri_target_uid strict_cri_target_gid <<<"\$edge_profile_owner_ids"
@@ -337,6 +338,7 @@ nohup sudo env \
   AE_SITE_ID=${site_id} \
   AE_NODE_ID=${node_id} \
   AE_EDGE_INGRESS_LOCAL_ADDR=\${AE_EDGE_INGRESS_LOCAL_ADDR:-\${edge_local_target_addr}} \
+  AE_RATHOLE_SERVER_ADDR=\${AE_RATHOLE_SERVER_ADDR:-\${edge_rathole_server_addr}} \
   AE_GATEWAY_SPOOL_PATH=/var/lib/ae/gateway/gateway-${site_id}-${node_id}.db \
   AE_GATEWAY_FENCE_DB=/var/lib/ae/gateway/fence-${site_id}-${node_id}.db \
   AE_NATS_HUB_LEAF_HOST=${edge_hub_leaf_host} \
