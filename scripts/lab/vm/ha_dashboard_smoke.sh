@@ -7,8 +7,8 @@ source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=scripts/lib/nixos_bridge.sh
 source "$ROOT_DIR/scripts/lib/nixos_bridge.sh"
 
-DEFAULT_VARIANT="$ROOT_DIR/lab/variants/ha-control-plane-hub-node.yaml"
-DEFAULT_RUN_ID="ha-dashboard-local"
+DEFAULT_VARIANT="$ROOT_DIR/lab/variants/ha-control-plane-attached-node.yaml"
+DEFAULT_RUN_ID="ha-attached-node-local"
 DEFAULT_APISHIM_IMAGE="localhost:5001/k1s-apishim:dev"
 DEFAULT_DEMO_SHELL_IMAGE="docker.io/library/demo-shell:latest"
 
@@ -38,7 +38,7 @@ Usage:
   $0 reseed-core [--variant <path>] [--run-id <id>] [--target <csv|all>]
   $0 restart-core [--variant <path>] [--run-id <id>] [--target <csv|all>]
   $0 restart-apishim [--variant <path>] [--run-id <id>] [--target <csv|all>]
-  $0 restart-hub-node [--variant <path>] [--run-id <id>]
+  $0 restart-node [--variant <path>] [--run-id <id>]
   $0 refresh-all [--variant <path>] [--run-id <id>]
   $0 reset [--variant <path>] [--run-id <id>] [--destroy-network] [--rebuild-images]
 
@@ -51,7 +51,7 @@ Targets:
   core-a      selected HA core VM
   core-b      selected HA core VM
   core-c      selected HA core VM
-  hub-1       retained workload-capable hub node (valid for reseed-core only)
+  attached-node-1  retained schedulable node attached to the HA core (valid for reseed-core only)
 EOF
 }
 
@@ -115,11 +115,12 @@ mapfile -t ha_host_rows < <(
     | jq -r '.hosts[] | select(.role=="k1s-ha-core") | [.name, .ip, (.node_id // .name)] | @tsv'
 )
 
-hub_node_name="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | .name' | head -n1)"
-hub_node_ip="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | .ip' | head -n1)"
-hub_node_id="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | (.node_id // .name)' | head -n1)"
-hub_node_labels="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | (.node_labels // "")' | head -n1)"
-hub_node_agent_port="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | (.agent_port // 9111)' | head -n1)"
+attached_node_name="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | .name' | head -n1)"
+attached_node_ip="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | .ip' | head -n1)"
+attached_node_id="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | (.node_id // .name)' | head -n1)"
+attached_node_labels="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | (.node_labels // "")' | head -n1)"
+attached_node_agent_port="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node") | (.agent_port // 9111)' | head -n1)"
+attached_node_expected_labels="${attached_node_labels:-role=worker,site=core}"
 first_core_ip="$(echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-ha-core") | .ip' | head -n1)"
 ingress_tls_port="${AE_EDGE_INGRESS_TLS_PORT:-10443}"
 dash_host="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"
@@ -169,13 +170,13 @@ require_remote_hosts() {
     err "state dir not found for run_id=${RUN_ID}: $state_dir"
     case "$SUBCOMMAND" in
       workload-smoke)
-        err "workload-smoke requires a live retained HA run; run 'make lab-vm-ha-dashboard-up' first"
+        err "workload-smoke requires a live retained HA run; run 'make lab-vm-ha-attached-node-up' first"
         ;;
       core-workload-smoke)
         err "core-workload-smoke requires a live HA VM run; bring the target variant up first"
         ;;
-      status|reseed-core|restart-core|restart-apishim|restart-hub-node|refresh-all)
-        err "${SUBCOMMAND} requires a live retained HA run; run 'make lab-vm-ha-dashboard-up' first"
+      status|reseed-core|restart-core|restart-apishim|restart-node|refresh-all)
+        err "${SUBCOMMAND} requires a live retained HA run; run 'make lab-vm-ha-attached-node-up' first"
         ;;
     esac
     exit 1
@@ -452,7 +453,7 @@ read_api_system_summary_with_retry() {
   return 1
 }
 
-wait_for_hub_node_registration() {
+wait_for_attached_node_registration() {
   local python_bin
   local deadline=$((SECONDS + 90))
   python_bin="$(lab_python)"
@@ -461,14 +462,14 @@ wait_for_hub_node_registration() {
       AE_STATE_BACKEND=etcd \
       AE_ETCD_ENDPOINTS="$ha_etcd_endpoints" \
       AE_ETCD_PREFIX="$ha_etcd_prefix" \
-      "$python_bin" -m ae.cli nodes 2>/dev/null | grep -Fqx "${hub_node_id}: status=Ready cordoned=no backend=cri endpoint=http://${hub_node_ip}:${hub_node_agent_port} labels=role=hub,site=hub"; then
+      "$python_bin" -m ae.cli nodes 2>/dev/null | grep -Fqx "${attached_node_id}: status=Ready cordoned=no backend=cri endpoint=http://${attached_node_ip}:${attached_node_agent_port} labels=${attached_node_expected_labels}"; then
       return 0
     fi
     if PYTHONPATH="$ROOT_DIR/src" \
       AE_STATE_BACKEND=etcd \
       AE_ETCD_ENDPOINTS="$ha_etcd_endpoints" \
       AE_ETCD_PREFIX="$ha_etcd_prefix" \
-      "$python_bin" -m ae.cli nodes 2>/dev/null | grep -Fq "${hub_node_id}:"; then
+      "$python_bin" -m ae.cli nodes 2>/dev/null | grep -Fq "${attached_node_id}:"; then
       return 0
     fi
     sleep 2
@@ -504,8 +505,8 @@ check_stack_ready() {
       return 1
     fi
   done
-  if [[ -n "$hub_node_id" ]] && ! wait_for_hub_node_registration; then
-    err "hub node registration was not observed for ${hub_node_id}"
+  if [[ -n "$attached_node_id" ]] && ! wait_for_attached_node_registration; then
+    err "attached node registration was not observed for ${attached_node_id}"
     return 1
   fi
   return 0
@@ -703,7 +704,7 @@ cleanup_repo_built_host_images() {
 cmd_up() {
   require_local_sudo
   require_http_tools
-  log "bringing up retained HA dashboard smoke stack run_id=${RUN_ID} variant=${variant_name}"
+  log "bringing up retained HA attached-node lane run_id=${RUN_ID} variant=${variant_name}"
   "$SCRIPT_DIR/image_verify.sh" --variant all
   "$SCRIPT_DIR/host_prepare.sh" --variant "$VARIANT" --apply
   "$SCRIPT_DIR/variant_up.sh" --variant "$VARIANT" --run-id "$RUN_ID"
@@ -731,7 +732,7 @@ cmd_status() {
     auth_loaded=1
   fi
 
-  printf 'Retained HA dashboard smoke\n'
+  printf 'Retained HA attached-node lane\n'
   printf 'run_id=%s variant=%s\n' "$RUN_ID" "$variant_name"
   printf '\n'
 
@@ -824,38 +825,38 @@ cmd_status() {
   fi
   printf '\n'
 
-  if [[ -n "$hub_node_id" ]]; then
-    printf 'Hub node\n'
+  if [[ -n "$attached_node_id" ]]; then
+    printf 'Attached node\n'
     printf '  %s: agent=http://%s:%s labels=%s\n' \
-      "$hub_node_id" "$hub_node_ip" "$hub_node_agent_port" "$hub_node_labels"
+      "$attached_node_id" "$attached_node_ip" "$attached_node_agent_port" "$attached_node_expected_labels"
   fi
 }
 
 cmd_workload_smoke() {
   require_remote_hosts
   require_http_tools
-  [[ -n "$hub_node_id" ]] || { err "variant does not include a retained hub node"; exit 2; }
+  [[ -n "$attached_node_id" ]] || { err "variant does not include an attached schedulable node"; exit 2; }
   [[ -f "$retained_workload_smoke_manifest" ]] || {
     err "retained workload smoke manifest not found: $retained_workload_smoke_manifest"
     exit 2
   }
-  if ! wait_for_hub_node_registration; then
-    err "retained hub node did not register as Ready"
+  if ! wait_for_attached_node_registration; then
+    err "attached node did not register as Ready"
     exit 1
   fi
   local -a label_args=()
-  append_label_args_from_csv label_args "${hub_node_labels:-role=hub,site=hub}"
+  append_label_args_from_csv label_args "$attached_node_expected_labels"
   if [[ "${#label_args[@]}" -eq 0 ]]; then
-    label_args=(--label "role=hub" --label "site=hub")
+    label_args=(--label "role=worker" --label "site=core")
   fi
-  log "deploying retained HA workload smoke app=${retained_workload_smoke_app} on ${hub_node_id}"
+  log "deploying retained HA attached-node workload smoke app=${retained_workload_smoke_app} on ${attached_node_id}"
   log "verifying core-local Envoy ingress host=${retained_workload_smoke_host}:${ingress_tls_port} via ${first_core_ip}"
   PYTHONPATH="$ROOT_DIR/src" \
     AE_STATE_BACKEND=etcd \
     AE_ETCD_ENDPOINTS="$ha_etcd_endpoints" \
     AE_ETCD_PREFIX="$ha_etcd_prefix" \
     "$(lab_python)" "$ROOT_DIR/scripts/dev/ha_core_node_smoke.py" ingress-smoke \
-      --node-id "$hub_node_id" \
+      --node-id "$attached_node_id" \
       "${label_args[@]}" \
       --manifest "$retained_workload_smoke_manifest" \
       --app-name "$retained_workload_smoke_app" \
@@ -916,7 +917,7 @@ cmd_down() {
     cmd_purge
     return 0
   fi
-  log "tearing down retained HA dashboard smoke stack run_id=${RUN_ID}"
+  log "tearing down retained HA attached-node lane run_id=${RUN_ID}"
   local down_args=(--variant "$VARIANT" --run-id "$RUN_ID")
   [[ "$DESTROY_NETWORK" -eq 1 ]] && down_args+=(--destroy-network)
   "$SCRIPT_DIR/variant_down.sh" "${down_args[@]}"
@@ -952,7 +953,7 @@ purge_retained_artifacts() {
 
 cmd_purge() {
   require_local_sudo
-  log "purging retained HA dashboard smoke artifacts run_id=${RUN_ID}"
+  log "purging retained HA attached-node artifacts run_id=${RUN_ID}"
   purge_retained_artifacts
 }
 
@@ -1180,11 +1181,11 @@ EOF
   done
 }
 
-cmd_restart_hub_node() {
+cmd_restart_node() {
   require_remote_hosts
-  [[ -n "$hub_node_name" ]] || { err "variant does not include a retained hub node"; exit 2; }
-  log "restarting hub node on ${hub_node_name} (${hub_node_ip})"
-  run_remote_inline "$hub_node_ip" "$(cat <<EOF
+  [[ -n "$attached_node_name" ]] || { err "variant does not include an attached schedulable node"; exit 2; }
+  log "restarting attached node on ${attached_node_name} (${attached_node_ip})"
+  run_remote_inline "$attached_node_ip" "$(cat <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 sudo mkdir -p /mnt/host
@@ -1198,27 +1199,27 @@ nohup sudo env \
   PYTHON_BIN=python3 \
   AE_RUNTIME_BACKEND=cri \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
-  AE_NODE_ID=${hub_node_id} \
-  AE_NODE_LABELS='${hub_node_labels}' \
+  AE_NODE_ID=${attached_node_id} \
+  AE_NODE_LABELS='${attached_node_expected_labels}' \
   AE_ROSENPASS_ENABLED=\${AE_ROSENPASS_ENABLED:-0} \
   AE_CONTROLLER_URL=http://${first_core_ip}:${controller_agent_port} \
-  AE_AGENT_ENDPOINT=http://${hub_node_ip}:${hub_node_agent_port} \
+  AE_AGENT_ENDPOINT=http://${attached_node_ip}:${attached_node_agent_port} \
   AE_AGENT_TOKEN=${agent_token} \
-  AE_NODE_PORT=${hub_node_agent_port} \
+  AE_NODE_PORT=${attached_node_agent_port} \
   make k1s-core-node > /home/ae/k1s-core-node.log 2>&1 </dev/null &
 deadline=\$((SECONDS + 45))
 while (( SECONDS < deadline )); do
-  if ss -ltn | awk '\$4 ~ /:${hub_node_agent_port}\$/ {found=1} END {exit(found?0:1)}'; then
-    echo hub-node-restart-complete
+  if ss -ltn | awk '\$4 ~ /:${attached_node_agent_port}\$/ {found=1} END {exit(found?0:1)}'; then
+    echo attached-node-restart-complete
     exit 0
   fi
   if pgrep -f 'k1s-core-node|ae\.node' >/dev/null 2>&1; then
-    echo hub-node-process-running
+    echo attached-node-process-running
     exit 0
   fi
   sleep 1
 done
-echo "hub node restart was not observed" >&2
+echo "attached node restart was not observed" >&2
 exit 1
 EOF
 )"
@@ -1231,7 +1232,7 @@ cmd_refresh_all() {
   cmd_restart_apishim
   cmd_restart_core
   TARGET="$previous_target"
-  cmd_restart_hub_node
+  cmd_restart_node
   check_stack_ready
   cmd_status
 }
@@ -1276,8 +1277,8 @@ case "$SUBCOMMAND" in
   restart-apishim)
     cmd_restart_apishim
     ;;
-  restart-hub-node)
-    cmd_restart_hub_node
+  restart-node)
+    cmd_restart_node
     ;;
   refresh-all)
     cmd_refresh_all

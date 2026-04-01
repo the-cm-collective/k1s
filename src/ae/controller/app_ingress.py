@@ -179,7 +179,7 @@ def _manifest_prefers_core_local(manifest: AppManifest) -> bool:
         node_selector = {}
     role = str(node_selector.get("role") or "").strip().lower()
     site = str(node_selector.get("site") or "").strip().lower()
-    return role == "hub" or site == "hub"
+    return role == "hub" or site in {"hub", "core"}
 
 
 def _translate_ingress_site(mode: str, manifest: AppManifest) -> str:

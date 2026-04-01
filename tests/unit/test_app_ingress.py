@@ -113,6 +113,29 @@ def test_sync_translated_app_ingress_defaults_hub_selector_to_core_local(tmp_pat
     assert "placement" not in route.spec["spec"]["exposure"]
 
 
+def test_sync_translated_app_ingress_defaults_core_site_selector_to_core_local(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AE_EDGE_INGRESS_MODE", "core-proxy")
+    monkeypatch.delenv("AE_EDGE_INGRESS_TRANSLATE_MODE", raising=False)
+    monkeypatch.delenv("AE_EDGE_INGRESS_APP_SITE", raising=False)
+    monkeypatch.delenv("AE_SITE_ID", raising=False)
+    store = SQLiteStateStore(tmp_path / "state.db")
+    store.register_app(
+        _manifest("echo", node_selector={"role": "worker", "site": "core"}),
+        source="test",
+        labels={},
+    )
+
+    sync_translated_app_ingress(store, enabled=True)
+
+    route = store.get_edge_ingress_route(name="echo-ingress", namespace="default")
+    assert route is not None
+    assert route.site_id == "core"
+    assert route.spec["spec"]["exposure"]["mode"] == "core-local"
+    assert "placement" not in route.spec["spec"]["exposure"]
+
+
 def test_sync_translated_app_ingress_explicit_translate_mode_overrides_hub_default(
     tmp_path, monkeypatch
 ) -> None:

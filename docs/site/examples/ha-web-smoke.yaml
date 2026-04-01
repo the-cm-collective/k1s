@@ -9,8 +9,8 @@ spec:
     - name: http
       containerPort: 8080
   nodeSelector:
-    role: hub
-    site: hub
+    role: worker
+    site: core
   health:
     readiness:
       httpGet:

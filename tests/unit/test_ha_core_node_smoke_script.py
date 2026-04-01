@@ -22,32 +22,40 @@ _SPEC.loader.exec_module(ha_core_node_smoke)
 
 def test_find_ready_node_accepts_expected_labels(tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "controller.db")
-    store.upsert_node("hub-1", name="hub-1", labels={"role": "hub", "site": "hub"})
-    store.record_heartbeat("hub-1", "ready")
+    store.upsert_node(
+        "attached-node-1",
+        name="attached-node-1",
+        labels={"role": "worker", "site": "core"},
+    )
+    store.record_heartbeat("attached-node-1", "ready")
 
     ok, detail = ha_core_node_smoke.find_ready_node(
         store,
-        "hub-1",
-        {"role": "hub", "site": "hub"},
+        "attached-node-1",
+        {"role": "worker", "site": "core"},
     )
 
     assert ok is True
-    assert detail == "node ready: hub-1"
+    assert detail == "node ready: attached-node-1"
 
 
 def test_find_ready_node_rejects_label_mismatch(tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "controller.db")
-    store.upsert_node("hub-1", name="hub-1", labels={"role": "hub", "site": "lab"})
-    store.record_heartbeat("hub-1", "ready")
+    store.upsert_node(
+        "attached-node-1",
+        name="attached-node-1",
+        labels={"role": "worker", "site": "lab"},
+    )
+    store.record_heartbeat("attached-node-1", "ready")
 
     ok, detail = ha_core_node_smoke.find_ready_node(
         store,
-        "hub-1",
-        {"role": "hub", "site": "hub"},
+        "attached-node-1",
+        {"role": "worker", "site": "core"},
     )
 
     assert ok is False
-    assert detail == "node labels mismatch: site=hub"
+    assert detail == "node labels mismatch: site=core"
 
 
 def test_load_smoke_manifest_overrides_name() -> None:
@@ -72,6 +80,15 @@ def test_load_edge_smoke_manifest_exposes_core_proxy_service_port() -> None:
     assert manifest.spec.service.target_port == 8080
 
 
+def test_load_retained_attached_node_smoke_manifest_targets_core_worker() -> None:
+    manifest = ha_core_node_smoke.load_smoke_manifest(
+        ROOT / "docs" / "site" / "examples" / "ha-web-smoke.yaml",
+        "ha-web-smoke",
+    )
+
+    assert manifest.spec.node_selector == {"role": "worker", "site": "core"}
+
+
 def test_run_workload_smoke_cleans_up_registered_state(monkeypatch, tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "controller.db")
     manifest = ha_core_node_smoke.load_smoke_manifest(
@@ -82,7 +99,11 @@ def test_run_workload_smoke_cleans_up_registered_state(monkeypatch, tmp_path: Pa
     cleanup_calls: list[tuple[str, bool]] = []
 
     monkeypatch.setattr(ha_core_node_smoke, "state_store_from_env", lambda: store)
-    monkeypatch.setattr(ha_core_node_smoke, "wait_for_node_ready", lambda *args, **kwargs: "node ready: hub-1")
+    monkeypatch.setattr(
+        ha_core_node_smoke,
+        "wait_for_node_ready",
+        lambda *args, **kwargs: "node ready: attached-node-1",
+    )
     monkeypatch.setattr(ha_core_node_smoke, "load_smoke_manifest", lambda path, name: manifest)
     monkeypatch.setattr(
         ha_core_node_smoke,
@@ -132,7 +153,11 @@ def test_run_ingress_smoke_verifies_ingress_and_cleans_up(monkeypatch, tmp_path:
     ingress_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(ha_core_node_smoke, "state_store_from_env", lambda: store)
-    monkeypatch.setattr(ha_core_node_smoke, "wait_for_node_ready", lambda *args, **kwargs: "node ready: hub-1")
+    monkeypatch.setattr(
+        ha_core_node_smoke,
+        "wait_for_node_ready",
+        lambda *args, **kwargs: "node ready: attached-node-1",
+    )
     monkeypatch.setattr(ha_core_node_smoke, "load_smoke_manifest", lambda path, name: manifest)
     monkeypatch.setattr(
         ha_core_node_smoke,
@@ -166,8 +191,8 @@ def test_run_ingress_smoke_verifies_ingress_and_cleans_up(monkeypatch, tmp_path:
     monkeypatch.setattr(ha_core_node_smoke, "cleanup_workload", _wrapped_cleanup)
 
     args = SimpleNamespace(
-        node_id="hub-1",
-        label=["role=hub", "site=hub"],
+        node_id="attached-node-1",
+        label=["role=worker", "site=core"],
         manifest=ROOT / "docs" / "site" / "examples" / "ha-web-smoke.yaml",
         app_name=app_name,
         timeout=5,
@@ -200,7 +225,11 @@ def test_run_ingress_smoke_direct_probe_precedes_ingress(monkeypatch, tmp_path: 
     call_order: list[str] = []
 
     monkeypatch.setattr(ha_core_node_smoke, "state_store_from_env", lambda: store)
-    monkeypatch.setattr(ha_core_node_smoke, "wait_for_node_ready", lambda *args, **kwargs: "node ready: hub-1")
+    monkeypatch.setattr(
+        ha_core_node_smoke,
+        "wait_for_node_ready",
+        lambda *args, **kwargs: "node ready: attached-node-1",
+    )
     monkeypatch.setattr(ha_core_node_smoke, "load_smoke_manifest", lambda path, name: manifest)
     monkeypatch.setattr(
         ha_core_node_smoke,
@@ -238,8 +267,8 @@ def test_run_ingress_smoke_direct_probe_precedes_ingress(monkeypatch, tmp_path: 
     monkeypatch.setattr(ha_core_node_smoke, "wait_for_ingress_response", _ingress)
 
     args = SimpleNamespace(
-        node_id="hub-1",
-        label=["role=hub", "site=hub"],
+        node_id="attached-node-1",
+        label=["role=worker", "site=core"],
         manifest=ROOT / "docs" / "site" / "examples" / "ha-web-smoke.yaml",
         app_name="ha-web-smoke",
         timeout=5,
@@ -288,7 +317,7 @@ def test_run_ingress_smoke_target_probe_precedes_ingress(monkeypatch, tmp_path: 
 
     def _target_probe(**kwargs):
         call_order.append("target")
-        return "target probe ok: host=192.168.155.20 url=http://127.0.0.1:18081/healthz status=200"
+        return "target probe ok: host=192.168.155.20 url=http://192.168.155.21:18081/healthz status=200"
 
     monkeypatch.setattr(ha_core_node_smoke, "wait_for_target_probe_response", _target_probe)
 
@@ -314,7 +343,7 @@ def test_run_ingress_smoke_target_probe_precedes_ingress(monkeypatch, tmp_path: 
         expected_text="Shell + Port-Forward Smoke",
         target_probe_host="192.168.155.20",
         target_probe_user="ae",
-        target_probe_url="http://127.0.0.1:18081/healthz",
+        target_probe_url="http://192.168.155.21:18081/healthz",
         target_probe_timeout=60,
     )
 
@@ -334,7 +363,11 @@ def test_run_ingress_smoke_cleans_up_on_ingress_failure(monkeypatch, tmp_path: P
     cleanup_calls: list[tuple[str, bool]] = []
 
     monkeypatch.setattr(ha_core_node_smoke, "state_store_from_env", lambda: store)
-    monkeypatch.setattr(ha_core_node_smoke, "wait_for_node_ready", lambda *args, **kwargs: "node ready: hub-1")
+    monkeypatch.setattr(
+        ha_core_node_smoke,
+        "wait_for_node_ready",
+        lambda *args, **kwargs: "node ready: attached-node-1",
+    )
     monkeypatch.setattr(ha_core_node_smoke, "load_smoke_manifest", lambda path, name: manifest)
     monkeypatch.setattr(
         ha_core_node_smoke,
@@ -369,8 +402,8 @@ def test_run_ingress_smoke_cleans_up_on_ingress_failure(monkeypatch, tmp_path: P
     monkeypatch.setattr(ha_core_node_smoke, "cleanup_workload", _wrapped_cleanup)
 
     args = SimpleNamespace(
-        node_id="hub-1",
-        label=["role=hub", "site=hub"],
+        node_id="attached-node-1",
+        label=["role=worker", "site=core"],
         manifest=ROOT / "docs" / "site" / "examples" / "ha-web-smoke.yaml",
         app_name=app_name,
         timeout=5,
@@ -420,7 +453,7 @@ def test_run_ingress_smoke_cleans_up_on_target_probe_failure(monkeypatch, tmp_pa
         "wait_for_target_probe_response",
         lambda **kwargs: (_ for _ in ()).throw(
             SystemExit(
-                "target probe failed: host=192.168.155.20 url=http://127.0.0.1:18081/healthz status=503"
+                "target probe failed: host=192.168.155.20 url=http://192.168.155.21:18081/healthz status=503"
             )
         ),
     )
@@ -455,7 +488,7 @@ def test_run_ingress_smoke_cleans_up_on_target_probe_failure(monkeypatch, tmp_pa
         expected_text="Shell + Port-Forward Smoke",
         target_probe_host="192.168.155.20",
         target_probe_user="ae",
-        target_probe_url="http://127.0.0.1:18081/healthz",
+        target_probe_url="http://192.168.155.21:18081/healthz",
         target_probe_timeout=60,
     )
 
@@ -470,7 +503,7 @@ def test_verify_workload_endpoint_cidr_accepts_ready_pod_within_node_cidr() -> N
     store = SimpleNamespace(
         list_nodes=lambda: [
             (
-                SimpleNamespace(node_id="hub-1", pod_cidr="10.42.0.0/24"),
+                SimpleNamespace(node_id="attached-node-1", pod_cidr="10.42.0.0/24"),
                 SimpleNamespace(status="ready"),
             )
         ],
@@ -483,7 +516,9 @@ def test_verify_workload_endpoint_cidr_accepts_ready_pod_within_node_cidr() -> N
         ],
     )
 
-    detail = ha_core_node_smoke.verify_workload_endpoint_cidr(store, "default/ha-web-smoke", "hub-1")
+    detail = ha_core_node_smoke.verify_workload_endpoint_cidr(
+        store, "default/ha-web-smoke", "attached-node-1"
+    )
 
     assert "endpoint=10.42.0.3:8080" in detail
 
@@ -492,7 +527,7 @@ def test_verify_workload_endpoint_cidr_rejects_pod_outside_node_cidr() -> None:
     store = SimpleNamespace(
         list_nodes=lambda: [
             (
-                SimpleNamespace(node_id="hub-1", pod_cidr="10.42.0.0/24"),
+                SimpleNamespace(node_id="attached-node-1", pod_cidr="10.42.0.0/24"),
                 SimpleNamespace(status="ready"),
             )
         ],
@@ -506,4 +541,6 @@ def test_verify_workload_endpoint_cidr_rejects_pod_outside_node_cidr() -> None:
     )
 
     with pytest.raises(SystemExit, match="pod endpoint outside node pod CIDR"):
-        ha_core_node_smoke.verify_workload_endpoint_cidr(store, "default/ha-web-smoke", "hub-1")
+        ha_core_node_smoke.verify_workload_endpoint_cidr(
+            store, "default/ha-web-smoke", "attached-node-1"
+        )

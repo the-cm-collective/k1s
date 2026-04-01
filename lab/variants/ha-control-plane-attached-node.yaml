@@ -1,6 +1,6 @@
-name: ha-control-plane-hub-node
+name: ha-control-plane-attached-node
 test_id: 6
-description: HA control-plane retained manual-smoke topology with three HA core nodes and one workload-capable hub node.
+description: HA control-plane retained manual-smoke topology with three HA core nodes and one attached schedulable node.
 network:
   bridge: k1s-br0
   cidr: 192.168.155.0/24
@@ -31,13 +31,13 @@ hosts:
     role: k1s-ha-core
     gpu: false
     node_id: core-c
-  - name: hub-1
+  - name: attached-node-1
     ip: 192.168.155.20
     role: k1s-core-node
     gpu: false
-    site_id: hub
-    node_id: hub-1
-    node_labels: role=hub,site=hub
+    site_id: core
+    node_id: attached-node-1
+    node_labels: role=worker,site=core
     pod_cidr: 10.42.0.0/24
     vm:
       memory_mb: 3072

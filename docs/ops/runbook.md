@@ -518,24 +518,24 @@ Dashboard reload vs. restart
   - Kills the controller; the supervisor restarts it and picks up code changes.
 - Env or port/token changes (anything in `state/env.sh`, `AE_API_*`, `AE_*` flags): `make dashboard-restart`
   - Stops the supervisor, clears any stale lock, then starts fresh so env is re‑sourced.
-- Retained HA VM dashboard smoke:
-  - Bring the retained stack up: `make lab-vm-ha-dashboard-up`
+- Retained HA VM attached-node lane:
+  - Bring the retained stack up: `make lab-vm-ha-attached-node-up`
   - On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`
-  - Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: `make lab-vm-ha-dashboard-status`
+  - Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: `make lab-vm-ha-attached-node-status`
   - After `up`, `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should resolve to the retained HA ingress IP instead of the local `127.0.0.1` dev mapping
-  - Normal retained rerun sequence: `make lab-vm-ha-dashboard-purge`, `make lab-vm-ha-dashboard-up`, `make lab-vm-ha-dashboard-status`, `make lab-vm-ha-dashboard-workload-smoke`
-  - retained-VM "rebuild and restart all" path: `make lab-vm-ha-dashboard-refresh-all`
-  - Stop the retained VMs but keep retained run metadata for a later restart: `make lab-vm-ha-dashboard-down`
-  - Full retained cleanup, including best-effort orphan teardown, `runs/<RUN_ID>`, repo-built host images, and retained host-mapping cleanup: `make lab-vm-ha-dashboard-purge`
-  - Stage 1 retained ingress check: deploy the retained HA web smoke app on `hub-1`, translate app ingress to `core-local`, verify `/healthz` and `/` through the HA core Envoy, and clean it up again before the helper exits: `make lab-vm-ha-dashboard-workload-smoke`
+  - Normal retained rerun sequence: `make lab-vm-ha-attached-node-purge`, `make lab-vm-ha-attached-node-up`, `make lab-vm-ha-attached-node-status`, `make lab-vm-ha-attached-node-workload-smoke`
+  - retained-VM "rebuild and restart all" path: `make lab-vm-ha-attached-node-refresh-all`
+  - Stop the retained VMs but keep retained run metadata for a later restart: `make lab-vm-ha-attached-node-down`
+  - Full retained cleanup, including best-effort orphan teardown, `runs/<RUN_ID>`, repo-built host images, and retained host-mapping cleanup: `make lab-vm-ha-attached-node-purge`
+  - Stage 1 retained ingress check: attach a schedulable node to the HA core, deploy the retained HA web smoke app on `attached-node-1`, translate app ingress to `core-local`, verify `/healthz` and `/` through the HA core Envoy, and clean it up again before the helper exits: `make lab-vm-ha-attached-node-workload-smoke`
   - For persistent host-side testing after the smoke, source `state/profiles/k1s-ha-core/controller.env`, apply `docs/site/examples/ha-web-smoke.yaml` with `PYTHONPATH=src ./.venv/bin/python -m ae.cli apply -f ...`, keep testing with `curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...`, and clean it up later with `PYTHONPATH=src ./.venv/bin/python -m ae.cli delete --purge ha-web-smoke`
   - Stage 2 gateway-capable check against a live `lab/variants/ha-control-plane-core.yaml` run: `RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke`
   - `ha-web-smoke.home.arpa` is intentionally not added to the managed workstation host mapping; use the helper or `curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...` instead of extending `/etc/hosts`
   - `ha-edge-web-smoke.home.arpa` is also helper-only / `curl --resolve` only for the stage-2 `core-proxy` lane
-  - Hard reset the retained stack (`purge` + `up`): `make lab-vm-ha-dashboard-reset`
+  - Hard reset the retained stack (`purge` + `up`): `make lab-vm-ha-attached-node-reset`
   - `purge` and `reset` restore the prior localhost-oriented mapping when one was already present, otherwise they remove the retained managed mapping
-  - Hard reset plus guest image rebuild: `make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"`
-  - These targets default to `VARIANT=lab/variants/ha-control-plane-hub-node.yaml` and `RUN_ID=ha-dashboard-local`.
+  - Hard reset plus guest image rebuild: `make lab-vm-ha-attached-node-reset LAB_VM_HA_ATTACHED_NODE_ARGS="--rebuild-images --destroy-network"`
+  - These targets default to `VARIANT=lab/variants/ha-control-plane-attached-node.yaml` and `RUN_ID=ha-attached-node-local`.
 - Scope of apps shown and reconciled
   - The controller respects `AE_SPECS_DIR` for the active specs root. To avoid reconciling every sample under `specs/`, set `AE_SPECS_DIR` to a curated folder (e.g., `state/profiles/demo/specs`).
   - Updated Make targets and bench scripts auto‑honor `AE_SPECS_DIR`. If unset, they fall back to `specs/`.

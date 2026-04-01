@@ -7,10 +7,10 @@
 .PHONY: lab-vm-image-build lab-vm-image-verify lab-vm-image-transfer
 .PHONY: lab-vm-host-prepare lab-vm-up lab-vm-validate lab-vm-bootstrap
 .PHONY: lab-vm-baseline lab-vm-throughput lab-vm-gate lab-vm-collect lab-vm-down lab-vm-smoke
-.PHONY: lab-vm-ha-dashboard-up lab-vm-ha-dashboard-status lab-vm-ha-dashboard-down lab-vm-ha-dashboard-purge
-.PHONY: lab-vm-ha-dashboard-reseed-core lab-vm-ha-dashboard-restart-core
-.PHONY: lab-vm-ha-dashboard-restart-apishim lab-vm-ha-dashboard-restart-hub-node
-.PHONY: lab-vm-ha-dashboard-refresh-all lab-vm-ha-dashboard-reset lab-vm-ha-dashboard-workload-smoke lab-vm-ha-core-workload-smoke
+.PHONY: lab-vm-ha-attached-node-up lab-vm-ha-attached-node-status lab-vm-ha-attached-node-down lab-vm-ha-attached-node-purge
+.PHONY: lab-vm-ha-attached-node-reseed-core lab-vm-ha-attached-node-restart-core
+.PHONY: lab-vm-ha-attached-node-restart-apishim lab-vm-ha-attached-node-restart-node
+.PHONY: lab-vm-ha-attached-node-refresh-all lab-vm-ha-attached-node-reset lab-vm-ha-attached-node-workload-smoke lab-vm-ha-core-workload-smoke
 
 install:
 	python -m pip install -e .[dev]
@@ -90,8 +90,8 @@ k1s-edge-core:
 	@EDGE_PROFILE=k1s-core ./scripts/dev/run_profile.sh k1s-edge
 
 k1s-core-node:
-	@AE_NODE_ID=$${AE_NODE_ID:-hub-1} \
-	  AE_NODE_LABELS="$${AE_NODE_LABELS:-role=hub,site=hub}$${AE_WG_ENDPOINT:+,wg_endpoint=$${AE_WG_ENDPOINT}}" \
+	@AE_NODE_ID=$${AE_NODE_ID:-attached-node-1} \
+	  AE_NODE_LABELS="$${AE_NODE_LABELS:-role=worker,site=core}$${AE_WG_ENDPOINT:+,wg_endpoint=$${AE_WG_ENDPOINT}}" \
 	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.0.0/24} \
 	  AE_CNI_SUBNET=$${AE_CNI_SUBNET:-$${AE_POD_CIDR:-10.42.0.0/24}} \
 	  AE_CNI_FORCE=$${AE_CNI_FORCE:-1} \
@@ -305,65 +305,65 @@ lab-vm-collect:
 lab-vm-down:
 	@./scripts/lab/vm/labctl.sh variant down --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID} $${LAB_VM_DOWN_ARGS:-}
 
-lab-vm-ha-dashboard-up:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh up $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-up:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh up $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
-lab-vm-ha-dashboard-status:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh status $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-status:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh status $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
-lab-vm-ha-dashboard-workload-smoke:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh workload-smoke $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-workload-smoke:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh workload-smoke $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
 lab-vm-ha-core-workload-smoke:
 	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-core.yaml} \
 	  RUN_ID=$${RUN_ID:-ha-control-plane-core} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh core-workload-smoke $${LAB_VM_HA_CORE_ARGS:-$${LAB_VM_HA_DASHBOARD_ARGS:-}}
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh core-workload-smoke $${LAB_VM_HA_CORE_ARGS:-$${LAB_VM_HA_ATTACHED_NODE_ARGS:-}}
 
-lab-vm-ha-dashboard-down:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh down $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-down:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh down $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
-lab-vm-ha-dashboard-purge:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh purge $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-purge:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh purge $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
-lab-vm-ha-dashboard-reseed-core:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh reseed-core $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-reseed-core:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh reseed-core $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
-lab-vm-ha-dashboard-restart-core:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh restart-core $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-restart-core:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh restart-core $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
-lab-vm-ha-dashboard-restart-apishim:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh restart-apishim $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-restart-apishim:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh restart-apishim $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
-lab-vm-ha-dashboard-restart-hub-node:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh restart-hub-node $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-restart-node:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh restart-node $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
-lab-vm-ha-dashboard-refresh-all:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh refresh-all $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-refresh-all:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh refresh-all $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
-lab-vm-ha-dashboard-reset:
-	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml} \
-	  RUN_ID=$${RUN_ID:-ha-dashboard-local} \
-	  ./scripts/lab/vm/ha_dashboard_smoke.sh reset $${LAB_VM_HA_DASHBOARD_ARGS:-}
+lab-vm-ha-attached-node-reset:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh reset $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
 
 .PHONY: demo demo-legacy demo-down integ-test labs
 demo:

@@ -950,6 +950,9 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
     runtime_nodes = list(config.get("runtime_nodes") or [])
     if runtime_nodes:
         runtime_node = runtime_nodes[0]
+        core_ingress_ip = str(config["core_nodes"][0].get("ip") or "").strip()
+        if not core_ingress_ip:
+            core_ingress_ip = _url_host(str(config["core_nodes"][0].get("controller_url") or ""))
         precheck_cmd = [
             sys.executable,
             str(scripts_dir / "ha_core_node_smoke.py"),
@@ -961,23 +964,37 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             precheck_cmd.extend(["--label", f"{key}={value}"])
         checks.append(
             _run_helper_check(
-                "ha_core_node_precheck",
+                "ha_attached_node_precheck",
                 precheck_cmd,
                 timeout_s=timeout_s,
                 env=env,
             )
         )
 
-        workload_cmd = [
+        ingress_cmd = [
             sys.executable,
             str(scripts_dir / "ha_core_node_smoke.py"),
-            "workload-smoke",
+            "ingress-smoke",
             "--node-id",
             str(runtime_node["node_id"]),
             "--manifest",
-            str(ROOT / "docs" / "site" / "examples" / "shell-demo-node-hub.yaml"),
+            str(ROOT / "docs" / "site" / "examples" / "ha-web-smoke.yaml"),
             "--app-name",
-            "ha-core-node-smoke",
+            "ha-web-smoke",
+            "--ingress-host",
+            "ha-web-smoke.home.arpa",
+            "--ingress-port",
+            "10443",
+            "--resolve-ip",
+            core_ingress_ip,
+            "--direct-probe-host",
+            core_ingress_ip,
+            "--health-path",
+            "/healthz",
+            "--root-path",
+            "/",
+            "--expected-text",
+            "Shell + Port-Forward Smoke",
             "--timeout",
             str(timeout_s),
             "--poll",
@@ -985,11 +1002,11 @@ def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[
             "--purge-history",
         ]
         for key, value in sorted((runtime_node.get("labels") or {}).items()):
-            workload_cmd.extend(["--label", f"{key}={value}"])
+            ingress_cmd.extend(["--label", f"{key}={value}"])
         checks.append(
             _run_helper_check(
-                "ha_core_node_workload_smoke",
-                workload_cmd,
+                "ha_attached_node_ingress_smoke",
+                ingress_cmd,
                 timeout_s=timeout_s,
                 env=env,
             )

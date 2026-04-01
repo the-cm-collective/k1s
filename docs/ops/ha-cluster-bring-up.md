@@ -206,8 +206,8 @@ There is no `k1s-ha-core-node` target. HA still uses `make k1s-core-node`, point
 sudo -E env PATH="$SUDO_PATH" \
   AE_RUNTIME_BACKEND=cri \
   AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
-  AE_NODE_ID=hub-1 \
-  AE_NODE_LABELS="role=hub,site=hub,wg_role=hub,wg_psk=rp,wg_endpoint=192.168.29.143:51820" \
+  AE_NODE_ID=attached-node-1 \
+  AE_NODE_LABELS="role=worker,site=core,wg_psk=rp,wg_endpoint=192.168.29.143:51820" \
   AE_POD_CIDR=10.42.0.0/24 \
   AE_ROSENPASS_ENABLED=1 \
   AE_ROSENPASS_CONFIG=controller \
@@ -519,7 +519,7 @@ If you are reusing an existing retained HA run id, tear that run down before hos
 
 ```bash
 scripts/lab/vm/labctl.sh variant down \
-  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --variant lab/variants/ha-control-plane-attached-node.yaml \
   --run-id "$RUN_ID" \
   --purge
 ```
@@ -528,9 +528,9 @@ Preferred retained operator path:
 
 ```bash
 sudo -v
-make lab-vm-ha-dashboard-up
-make lab-vm-ha-dashboard-status
-make lab-vm-ha-dashboard-workload-smoke
+make lab-vm-ha-attached-node-up
+make lab-vm-ha-attached-node-status
+make lab-vm-ha-attached-node-workload-smoke
 
 # stage 2, against the gateway-capable HA topology
 RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
@@ -541,38 +541,38 @@ On NixOS, this retained helper path now applies the local DNS/TLS bridge automat
 Normal retained rerun sequence:
 
 ```bash
-make lab-vm-ha-dashboard-purge
-make lab-vm-ha-dashboard-up
-make lab-vm-ha-dashboard-status
-make lab-vm-ha-dashboard-workload-smoke
+make lab-vm-ha-attached-node-purge
+make lab-vm-ha-attached-node-up
+make lab-vm-ha-attached-node-status
+make lab-vm-ha-attached-node-workload-smoke
 ```
 
 Override the retained run id or variant when needed:
 
 ```bash
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_manual" \
-VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
-make lab-vm-ha-dashboard-up
+VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
+make lab-vm-ha-attached-node-up
 ```
 
 Retained iteration commands:
 
 ```bash
-make lab-vm-ha-dashboard-refresh-all \
-  LAB_VM_HA_DASHBOARD_ARGS="--target all"
+make lab-vm-ha-attached-node-refresh-all \
+  LAB_VM_HA_ATTACHED_NODE_ARGS="--target all"
 
-make lab-vm-ha-dashboard-down
+make lab-vm-ha-attached-node-down
 
-make lab-vm-ha-dashboard-purge
+make lab-vm-ha-attached-node-purge
 
-make lab-vm-ha-dashboard-workload-smoke
+make lab-vm-ha-attached-node-workload-smoke
 
 RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
 
-make lab-vm-ha-dashboard-reset
+make lab-vm-ha-attached-node-reset
 ```
 
-`make lab-vm-ha-dashboard-refresh-all` is the retained-VM "rebuild and restart all" path on the current VMs. `make lab-vm-ha-dashboard-down` is the light stop path when you intend to restart the same retained lane. `make lab-vm-ha-dashboard-purge` is the authoritative retained cleanup path: it does best-effort teardown of partial or orphaned runs, removes `state/lab-vm/<RUN_ID>`, removes `runs/<RUN_ID>`, cleans retained host mappings, and removes the repo-built host images used by this lane. `make lab-vm-ha-dashboard-workload-smoke` is the stage-1 retained ingress check: it deploys the retained HA web smoke app on `hub-1`, translates app ingress to `core-local`, verifies `/healthz` and `/` through the HA core Envoy, and then cleans the workload up again before exiting. `make lab-vm-ha-core-workload-smoke` is the stage-2 gateway-capable helper for live `lab/variants/ha-control-plane-core.yaml` runs; it deploys a worker-pinned app on `edge-sea-node` and verifies true `core-proxy` routing through the edge gateway/worker path. `make lab-vm-ha-dashboard-reset` is `purge` plus `up`.
+`make lab-vm-ha-attached-node-refresh-all` is the retained-VM "rebuild and restart all" path on the current VMs. `make lab-vm-ha-attached-node-down` is the light stop path when you intend to restart the same retained lane. `make lab-vm-ha-attached-node-purge` is the authoritative retained cleanup path: it does best-effort teardown of partial or orphaned runs, removes `state/lab-vm/<RUN_ID>`, removes `runs/<RUN_ID>`, cleans retained host mappings, and removes the repo-built host images used by this lane. `make lab-vm-ha-attached-node-workload-smoke` is the stage-1 retained ingress check: it attaches a schedulable node to the HA core, deploys the retained HA web smoke app on `attached-node-1`, translates app ingress to `core-local`, verifies `/healthz` and `/` through the HA core Envoy, and then cleans the workload up again before exiting. `make lab-vm-ha-core-workload-smoke` is the stage-2 gateway-capable helper for live `lab/variants/ha-control-plane-core.yaml` runs; it deploys a worker-pinned app on `edge-sea-node` and verifies true `core-proxy` routing through the edge gateway/worker path. `make lab-vm-ha-attached-node-reset` is `purge` plus `up`.
 
 Lower-level equivalent commands remain available when you need the raw building blocks.
 
@@ -580,7 +580,7 @@ Prepare the host for the HA variant:
 
 ```bash
 scripts/lab/vm/labctl.sh host prepare \
-  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --variant lab/variants/ha-control-plane-attached-node.yaml \
   --apply
 ```
 
@@ -593,22 +593,22 @@ AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
 make lab-vm-smoke \
-  VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
+  VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
   RUN_ID="$RUN_ID" \
   LAB_VM_SMOKE_ARGS="--teardown never"
 ```
 
-This retained variant keeps the three HA controllers and replaces the previous `sea` edge pair with one workload-capable hub node:
-- `hub-1`: `192.168.155.20` (`role=hub,site=hub`)
-- the smoke helper automatically verifies that `hub-1` registers Ready and can run the pinned `shell-demo-node-hub` workload
+This retained variant keeps the three HA controllers and adds one schedulable node attached to the HA core:
+- `attached-node-1`: `192.168.155.20` (`role=worker,site=core`)
+- the smoke helper automatically verifies that `attached-node-1` registers Ready and can run the pinned `ha-web-smoke` workload
 
 Public Envoy access from the host:
 - dashboard: `https://dash.home.arpa:10443/dashboard`
 - docs: `https://docs.home.arpa:10443/`
 - API docs: `https://api.home.arpa:10443/swagger` and `https://api.home.arpa:10443/redoc`
-- `make lab-vm-ha-dashboard-up` rewrites the host-side managed mapping for `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa` to the retained HA ingress IP, so `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should stop returning the local `127.0.0.1` dev mapping and start returning the HA core IP instead
+- `make lab-vm-ha-attached-node-up` rewrites the host-side managed mapping for `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa` to the retained HA ingress IP, so `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should stop returning the local `127.0.0.1` dev mapping and start returning the HA core IP instead
 - successful retained `up` now verifies that host-side mapping before it reports success
-- `make lab-vm-ha-dashboard-purge` and `make lab-vm-ha-dashboard-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead
+- `make lab-vm-ha-attached-node-purge` and `make lab-vm-ha-attached-node-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead
 - `https://api.home.arpa:10443/dashboard` returns `404` by design; dashboard lives on `dash.home.arpa`
 - verify one specific core with `curl --resolve dash.home.arpa:10443:192.168.155.10 ...`, `curl --resolve docs.home.arpa:10443:192.168.155.10 ...`, and `curl --resolve api.home.arpa:10443:192.168.155.10 ...`
 
@@ -631,7 +631,7 @@ Use the same bearer token in the dashboard `Bearer` field when the data panels n
 Retained stage-1 workload deploy and core-local Envoy validation (self-cleaning smoke):
 
 ```bash
-make lab-vm-ha-dashboard-workload-smoke
+make lab-vm-ha-attached-node-workload-smoke
 ```
 
 This helper deploys `ha-web-smoke`, waits for the hub-pinned workload to become Ready, verifies direct pod reachability plus Envoy ingress, and then removes the workload during cleanup. A host-side `curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...` after the helper exits is therefore expected to return `404` unless you deploy the manifest manually and leave it running.
@@ -703,7 +703,7 @@ Notes:
 - Any healthy controller can serve `/dashboard`, `/system`, and `/metrics` during normal HA operation.
 - In this retained VM profile, `/system` is bearer-protected and only `AE_API_ADMIN_TOKEN` may be configured for controller HTTP reads.
 - `/dashboard` serves without auth, but its data panels fetch `/system`; paste the bearer token into the page when prompted.
-- `hub-1` reaches the HA controller agent API on `:9110` and runs with Rosenpass/WireGuard disabled in this retained lane; this lane now validates HA control-plane health, workload placement, and `core-local` ingress from the HA cores to the retained compute node, not edge gateway transport.
+- `attached-node-1` reaches the HA controller agent API on `:9110` and runs with Rosenpass/WireGuard disabled in this retained lane; this lane now validates HA control-plane health, attached-node registration, workload placement, and `core-local` ingress from the HA cores to the retained compute node, not edge gateway transport.
 - Followers still reject leader-only mutation with `not_leader`; use the current leader for apply/scale/delete or retry after reading the leader hint.
 - The retained workload smoke uses the shared HA state store, not controller HTTP mutations, because this lane keeps `AE_API_MUTATIONS=0`.
 - For manual persistent deploys, load the generated shared-store env from `state/profiles/k1s-ha-core/controller.env` before running `ae apply/status/delete` so the CLI targets the HA etcd authority instead of the default local SQLite DB.
@@ -712,20 +712,20 @@ Notes:
 - If you are switching from another VM lane that used a different `k1s-br0` subnet, tear it down with `--destroy-network` before rerunning host prep for this HA variant.
 - If the controller used by `DOCS_API_BASE` goes away, rebuild docs with another core URL or open the remaining controllers directly.
 - Clean up manually when you are done. Use `--destroy-network` only when you want full bridge cleanup or are switching to another subnet.
-- Full retained cleanup is `make lab-vm-ha-dashboard-purge`; it is safe to rerun after partial teardown or orphaned retained runs. Add `LAB_VM_HA_DASHBOARD_ARGS="--destroy-network"` if you also want bridge teardown.
-- The fast retained reset path is `make lab-vm-ha-dashboard-reset`, which reuses the same purge logic before starting the lane again.
+- Full retained cleanup is `make lab-vm-ha-attached-node-purge`; it is safe to rerun after partial teardown or orphaned retained runs. Add `LAB_VM_HA_ATTACHED_NODE_ARGS="--destroy-network"` if you also want bridge teardown.
+- The fast retained reset path is `make lab-vm-ha-attached-node-reset`, which reuses the same purge logic before starting the lane again.
 - If you also changed guest/bootstrap contracts, run:
 
 ```bash
-make lab-vm-ha-dashboard-reset \
-  LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"
+make lab-vm-ha-attached-node-reset \
+  LAB_VM_HA_ATTACHED_NODE_ARGS="--rebuild-images --destroy-network"
 ```
 
 Lower-level teardown remains:
 
 ```bash
 scripts/lab/vm/labctl.sh variant down \
-  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --variant lab/variants/ha-control-plane-attached-node.yaml \
   --run-id "$RUN_ID" \
   --purge
 ```

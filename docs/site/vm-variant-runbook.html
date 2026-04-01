@@ -741,7 +741,7 @@
 <li><code>lab/variants/test2-ab-passthrough.yaml</code></li>
 <li><code>lab/variants/test3-abc-no-gpu.yaml</code> (validated non-GPU baseline)</li>
 <li><code>lab/variants/test3-abc-pp2.yaml</code> (passthrough profile)</li>
-<li><code>lab/variants/ha-control-plane-hub-node.yaml</code> (retained/manual HA smoke: 3 <code>k1s-ha-core</code> + 1 <code>k1s-core-node</code>)</li>
+<li><code>lab/variants/ha-control-plane-attached-node.yaml</code> (retained/manual HA attached-node smoke: 3 <code>k1s-ha-core</code> + 1 <code>k1s-core-node</code>)</li>
 <li><code>lab/variants/ha-control-plane-core.yaml</code> (HA closeout topology: 3 <code>k1s-ha-core</code> + 1 <code>k1s-edge-core</code> site)</li>
 <li><code>lab/variants/ha-control-plane-core-drills.yaml</code> (same HA topology, with disruptive drill commands enabled)</li>
 </ul>
@@ -826,60 +826,60 @@ scripts/lab/vm/labctl.sh image verify --variant all</code></pre>
 <p>Normal reruns now auto-clean the matching per-variant Packer work directory. If you are troubleshooting a badly interrupted local build, you can still manually remove <code>artifacts/images/build-base</code> and <code>artifacts/images/build-gpu</code> first.</p>
 <p>If you are reusing an existing retained HA run id, tear that run down before host prep:</p>
 <pre><code>scripts/lab/vm/labctl.sh variant down \
-  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --variant lab/variants/ha-control-plane-attached-node.yaml \
   --run-id &quot;$RUN_ID&quot; \
   --purge</code></pre>
 <p>Preferred retained operator flow:</p>
 <pre><code>sudo -v
-make lab-vm-ha-dashboard-up
-make lab-vm-ha-dashboard-status
-make lab-vm-ha-dashboard-workload-smoke</code></pre>
+make lab-vm-ha-attached-node-up
+make lab-vm-ha-attached-node-status
+make lab-vm-ha-attached-node-workload-smoke</code></pre>
 <p>On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code>.</p>
 <p>Normal retained rerun sequence:</p>
-<pre><code>make lab-vm-ha-dashboard-purge
-make lab-vm-ha-dashboard-up
-make lab-vm-ha-dashboard-status
-make lab-vm-ha-dashboard-workload-smoke</code></pre>
+<pre><code>make lab-vm-ha-attached-node-purge
+make lab-vm-ha-attached-node-up
+make lab-vm-ha-attached-node-status
+make lab-vm-ha-attached-node-workload-smoke</code></pre>
 <p>Override the retained run id or variant when needed:</p>
 <pre><code>RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_smoke&quot; \
-VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
-make lab-vm-ha-dashboard-up</code></pre>
+VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
+make lab-vm-ha-attached-node-up</code></pre>
 <p>Retained rebuild/restart commands:</p>
-<pre><code>make lab-vm-ha-dashboard-refresh-all \
-  LAB_VM_HA_DASHBOARD_ARGS=&quot;--target all&quot;
+<pre><code>make lab-vm-ha-attached-node-refresh-all \
+  LAB_VM_HA_ATTACHED_NODE_ARGS=&quot;--target all&quot;
 
-make lab-vm-ha-dashboard-down
+make lab-vm-ha-attached-node-down
 
-make lab-vm-ha-dashboard-purge
+make lab-vm-ha-attached-node-purge
 
-make lab-vm-ha-dashboard-workload-smoke
+make lab-vm-ha-attached-node-workload-smoke
 
 RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke
 
-make lab-vm-ha-dashboard-reset
+make lab-vm-ha-attached-node-reset
 
-make lab-vm-ha-dashboard-reset \
-  LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></pre>
+make lab-vm-ha-attached-node-reset \
+  LAB_VM_HA_ATTACHED_NODE_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></pre>
 <ul>
-<li><code>make lab-vm-ha-dashboard-refresh-all</code> is the retained-VM rebuild and restart path on the current VMs.</li>
-<li><code>make lab-vm-ha-dashboard-down</code> stops the retained VMs but keeps retained run metadata for a later restart.</li>
-<li><code>make lab-vm-ha-dashboard-purge</code> is the authoritative retained cleanup path; it does best-effort teardown for partial or orphaned runs, removes retained VM state and <code>runs/&lt;RUN_ID&gt;</code>, cleans retained host mappings, and removes the repo-built host images used by this lane.</li>
-<li><code>make lab-vm-ha-dashboard-workload-smoke</code> is the retained stage-1 ingress check: it deploys the retained HA web smoke app onto <code>hub-1</code>, translates app ingress to <code>core-local</code>, verifies <code>/healthz</code> and <code>/</code> through the HA core Envoy, and then cleans the workload up again before exiting.</li>
+<li><code>make lab-vm-ha-attached-node-refresh-all</code> is the retained-VM rebuild and restart path on the current VMs.</li>
+<li><code>make lab-vm-ha-attached-node-down</code> stops the retained VMs but keeps retained run metadata for a later restart.</li>
+<li><code>make lab-vm-ha-attached-node-purge</code> is the authoritative retained cleanup path; it does best-effort teardown for partial or orphaned runs, removes retained VM state and <code>runs/&lt;RUN_ID&gt;</code>, cleans retained host mappings, and removes the repo-built host images used by this lane.</li>
+<li><code>make lab-vm-ha-attached-node-workload-smoke</code> is the retained stage-1 ingress check: it attaches a schedulable node to the HA core, deploys the retained HA web smoke app onto <code>attached-node-1</code>, translates app ingress to <code>core-local</code>, verifies <code>/healthz</code> and <code>/</code> through the HA core Envoy, and then cleans the workload up again before exiting.</li>
 <li><code>make lab-vm-ha-core-workload-smoke</code> is the stage-2 helper for a live <code>lab/variants/ha-control-plane-core.yaml</code> run; it deploys a worker-pinned smoke app onto <code>edge-sea-node</code> and verifies true <code>core-proxy</code> routing through the gateway-capable HA topology.</li>
-<li><code>make lab-vm-ha-dashboard-reset</code> runs that same purge logic and then brings the retained lane back up.</li>
-<li><code>make lab-vm-ha-dashboard-reset LAB_VM_HA_DASHBOARD_ARGS=&quot;--rebuild-images --destroy-network&quot;</code> is the full expensive path when guest/bootstrap contracts changed.</li>
+<li><code>make lab-vm-ha-attached-node-reset</code> runs that same purge logic and then brings the retained lane back up.</li>
+<li><code>make lab-vm-ha-attached-node-reset LAB_VM_HA_ATTACHED_NODE_ARGS=&quot;--rebuild-images --destroy-network&quot;</code> is the full expensive path when guest/bootstrap contracts changed.</li>
 </ul>
 <p>Lower-level commands remain available when you want the raw orchestration steps:</p>
 <pre><code>sudo -v
 export RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)_smoke
 scripts/lab/vm/labctl.sh host prepare \
-  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --variant lab/variants/ha-control-plane-attached-node.yaml \
   --apply
 AE_CRI_CACHE_SEED_ENGINE=docker \
 AE_CRI_CACHE_SEED_MODE=required \
 AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
 make lab-vm-smoke \
-  VARIANT=lab/variants/ha-control-plane-hub-node.yaml \
+  VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
   RUN_ID=&quot;$RUN_ID&quot; \
   LAB_VM_SMOKE_ARGS=&quot;--teardown never&quot;</code></pre>
 <p>Use that retained HA run as the Envoy-host manual-smoke lane on one workstation:</p>
@@ -887,14 +887,14 @@ make lab-vm-smoke \
 <li>open <code>https://dash.home.arpa:10443/dashboard</code></li>
 <li>open <code>https://docs.home.arpa:10443/</code></li>
 <li>open <code>https://api.home.arpa:10443/swagger</code> or <code>https://api.home.arpa:10443/redoc</code></li>
-<li>after <code>make lab-vm-ha-dashboard-up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the prior localhost dev mapping</li>
+<li>after <code>make lab-vm-ha-attached-node-up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the prior localhost dev mapping</li>
 <li>successful retained <code>up</code> now verifies that host-side mapping before it reports success</li>
-<li><code>make lab-vm-ha-dashboard-purge</code> and <code>make lab-vm-ha-dashboard-reset</code> restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead</li>
+<li><code>make lab-vm-ha-attached-node-purge</code> and <code>make lab-vm-ha-attached-node-reset</code> restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead</li>
 <li>treat <code>https://api.home.arpa:10443/dashboard</code> as an expected <code>404</code>; dashboard lives on <code>dash.home.arpa</code></li>
 <li>use <code>curl --resolve &lt;host&gt;:10443:&lt;core-ip&gt; ...</code> when you want to verify a specific core behind the shared hostnames</li>
 <li>keep direct controller <code>http://192.168.155.10:9108/dashboard</code> and direct API shim <code>https://192.168.155.10:8445</code> as secondary diagnostics</li>
-<li>the harness automatically validates that <code>hub-1</code> (<code>192.168.155.20</code>, <code>role=hub,site=hub</code>) registers and runs the pinned <code>shell-demo-node-hub</code> workload</li>
-<li><code>hub-1</code> reaches the controller agent API on <code>:9110</code> and runs without Rosenpass/WireGuard in this retained lane; this stage-1 lane validates HA control-plane health plus <code>core-local</code> ingress to the retained compute node, while edge/gateway transport validation stays with the stage-2 HA closeout topology</li>
+<li>the harness automatically validates that <code>attached-node-1</code> (<code>192.168.155.20</code>, <code>role=worker,site=core</code>) registers and runs the pinned <code>ha-web-smoke</code> workload</li>
+<li><code>attached-node-1</code> reaches the controller agent API on <code>:9110</code> and runs without Rosenpass/WireGuard in this retained lane; this stage-1 lane validates HA control-plane health, attached-node registration, workload placement, and <code>core-local</code> ingress to the retained compute node, while edge/gateway transport validation stays with the stage-2 HA closeout topology</li>
 <li>export local auth, verify <code>/system</code>, and use the same bearer token for the dashboard data panels:</li>
 </ul>
 <pre><code>source &lt;(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
@@ -910,7 +910,7 @@ DOCS_DASHBOARD_URL=https://dash.home.arpa:10443/dashboard \
 python docs/build_docs.py
 python -m http.server 9109 --directory docs/site</code></pre>
 <p>Retained stage-1 workload deploy and core-local Envoy validation (self-cleaning smoke):</p>
-<pre><code>make lab-vm-ha-dashboard-workload-smoke</code></pre>
+<pre><code>make lab-vm-ha-attached-node-workload-smoke</code></pre>
 <p>This helper deploys <code>ha-web-smoke</code>, verifies direct pod reachability plus Envoy ingress, and then removes the workload during cleanup. A later host-side <code>curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...</code> is expected to return <code>404</code> unless you deploy the manifest manually and leave it running.</p>
 <p>For persistent manual deploys that stay up for host-side dev testing:</p>
 <pre><code>set -a
@@ -968,12 +968,12 @@ curl -sk \
 </ul>
 <p>Or explicit teardown after result inspection. Use <code>--destroy-network</code> only when you want full bridge cleanup or are switching to another subnet:</p>
 <pre><code>scripts/lab/vm/labctl.sh variant down \
-  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --variant lab/variants/ha-control-plane-attached-node.yaml \
   --run-id &quot;$RUN_ID&quot; \
   --purge</code></pre>
 <p>Direct helper usage remains available when you want to bypass Make and call the retained helper explicitly:</p>
 <pre><code>scripts/lab/vm/ha_dashboard_smoke.sh up \
-  --variant lab/variants/ha-control-plane-hub-node.yaml \
+  --variant lab/variants/ha-control-plane-attached-node.yaml \
   --run-id &quot;$RUN_ID&quot;</code></pre>
 <h2 id="1-host-prerequisite-check">1) Host prerequisite check</h2>
 <pre><code>scripts/lab/vm/labctl.sh host prepare</code></pre>
@@ -1071,7 +1071,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-31 19:05:29</span>
+        <span>Built 2026-04-01 02:19:30</span>
       </div>
     </footer>
     <script>

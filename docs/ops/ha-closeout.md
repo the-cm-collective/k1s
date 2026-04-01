@@ -93,15 +93,15 @@ Operator bootstrap entrypoint: [HA Cluster Bring-Up](ha-cluster-bring-up.html). 
 ### Companion: Retained Local HA VM Harness
 
 - Entry points:
-  - `make lab-vm-ha-dashboard-up`
-  - `make lab-vm-ha-dashboard-status`
-  - `make lab-vm-ha-dashboard-workload-smoke`
-  - `make lab-vm-ha-dashboard-purge`
+  - `make lab-vm-ha-attached-node-up`
+  - `make lab-vm-ha-attached-node-status`
+  - `make lab-vm-ha-attached-node-workload-smoke`
+  - `make lab-vm-ha-attached-node-purge`
 - What it proves:
   - the workstation-facing retained HA lane can be rerun as `purge -> up` without manual bridge cleanup
   - on NixOS, the retained helper applies and verifies the local DNS/TLS bridge before `up` reports success
   - the public Envoy docs/dashboard/API hosts are reachable from one workstation in the retained lane
-  - a hub-pinned sample workload can be deployed through shared HA state and verified through Envoy edge with `curl --resolve`
+  - a schedulable attached node can register with the HA core, receive a workload through shared HA state, and serve it through `core-local` Envoy ingress with `curl --resolve`
 - What it is not:
   - not the milestone-defining closeout evidence lane
   - not a replacement for the checked-in `ha_control_plane` and drill-enabled variants
@@ -162,6 +162,6 @@ The HA track can be marked complete only when all of the following are true:
 - The milestone-defining control-plane role is `k1s-ha-core`, not `k1s-core`.
 - The milestone-defining edge lane remains `k1s-edge-core` / `k1s-edge-core-cri`.
 - The helper scripts listed above are the real operator contract; the closeout lane is an integration wrapper around them, not a second HA API.
-- The retained HA VM harness is the preferred workstation companion lane for manual docs/dashboard smoke, NixOS bridge validation, and stage-1 `core-local` workload ingress checks on `hub-1`.
-- `make lab-vm-ha-dashboard-workload-smoke` deploys `ha-web-smoke` on `hub-1` and verifies stage-1 `core-local` routing through the HA core Envoy with `curl --resolve`.
+- The retained HA VM harness is the preferred workstation companion lane for manual docs/dashboard smoke, NixOS bridge validation, and stage-1 attached-node `core-local` workload ingress checks on `attached-node-1`.
+- `make lab-vm-ha-attached-node-workload-smoke` deploys `ha-web-smoke` on `attached-node-1` and verifies stage-1 `core-local` routing through the HA core Envoy with `curl --resolve`.
 - `make lab-vm-ha-core-workload-smoke` is the stage-2 helper for live `lab/variants/ha-control-plane-core.yaml` runs; it deploys `ha-edge-web-smoke` on `edge-sea-node` and verifies true `core-proxy` routing through the edge gateway/worker topology.

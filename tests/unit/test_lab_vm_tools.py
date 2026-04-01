@@ -39,7 +39,7 @@ MAKEFILE = ROOT / "Makefile"
 CRI_SEED_LOCK_FILE = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 VARIANT_FILE = ROOT / "lab" / "variants" / "test3-abc-pp2.yaml"
 HA_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core.yaml"
-HA_HUB_NODE_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-hub-node.yaml"
+HA_ATTACHED_NODE_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-attached-node.yaml"
 HA_DRILL_VARIANT_FILE = ROOT / "lab" / "variants" / "ha-control-plane-core-drills.yaml"
 HA_BRING_UP_DOC = ROOT / "docs" / "ops" / "ha-cluster-bring-up.md"
 VM_VARIANT_RUNBOOK_DOC = ROOT / "docs" / "ops" / "vm-variant-runbook.md"
@@ -184,13 +184,13 @@ def test_checked_in_ha_variant_normalizes_for_closeout_lane() -> None:
     assert payload["smoke"]["lanes"] == ["ha_control_plane"]
 
 
-def test_checked_in_ha_hub_node_variant_normalizes_for_manual_smoke_lane() -> None:
+def test_checked_in_ha_attached_node_variant_normalizes_for_manual_smoke_lane() -> None:
     res = subprocess.run(  # noqa: S603
         [
             sys.executable,
             str(VARIANT_SCRIPT),
             "--variant",
-            str(HA_HUB_NODE_VARIANT_FILE),
+            str(HA_ATTACHED_NODE_VARIANT_FILE),
             "--print-json",
         ],
         check=True,
@@ -198,7 +198,7 @@ def test_checked_in_ha_hub_node_variant_normalizes_for_manual_smoke_lane() -> No
         capture_output=True,
     )
     payload = json.loads(res.stdout)
-    assert payload["name"] == "ha-control-plane-hub-node"
+    assert payload["name"] == "ha-control-plane-attached-node"
     assert payload["vm"] == {"memory_mb": 5120, "vcpus": 4, "disk_gb": 50}
     assert [host["role"] for host in payload["hosts"][:3]] == [
         "k1s-ha-core",
@@ -206,8 +206,8 @@ def test_checked_in_ha_hub_node_variant_normalizes_for_manual_smoke_lane() -> No
         "k1s-ha-core",
     ]
     assert payload["hosts"][3]["role"] == "k1s-core-node"
-    assert payload["hosts"][3]["node_id"] == "hub-1"
-    assert payload["hosts"][3]["node_labels"] == "role=hub,site=hub"
+    assert payload["hosts"][3]["node_id"] == "attached-node-1"
+    assert payload["hosts"][3]["node_labels"] == "role=worker,site=core"
     assert payload["hosts"][3]["pod_cidr"] == "10.42.0.0/24"
     assert payload["hosts"][3]["vm"] == {"memory_mb": 3072, "vcpus": 2, "disk_gb": 50}
     assert payload["k1s"]["agent_api_port"] == 9110
@@ -1496,16 +1496,16 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     runbook = VM_VARIANT_RUNBOOK_DOC.read_text(encoding="utf-8")
     assert (
         "scripts/lab/vm/labctl.sh host prepare \\\n"
-        "  --variant lab/variants/ha-control-plane-hub-node.yaml \\\n"
+        "  --variant lab/variants/ha-control-plane-attached-node.yaml \\\n"
         "  --apply"
     ) in bring_up
     assert (
         "scripts/lab/vm/labctl.sh host prepare \\\n"
-        "  --variant lab/variants/ha-control-plane-hub-node.yaml \\\n"
+        "  --variant lab/variants/ha-control-plane-attached-node.yaml \\\n"
         "  --apply"
     ) in runbook
-    assert "lab/variants/ha-control-plane-hub-node.yaml" in bring_up
-    assert "lab/variants/ha-control-plane-hub-node.yaml" in runbook
+    assert "lab/variants/ha-control-plane-attached-node.yaml" in bring_up
+    assert "lab/variants/ha-control-plane-attached-node.yaml" in runbook
     assert "--purge" in bring_up
     assert "--purge" in runbook
     assert "`--destroy-network` only when you want full bridge cleanup" in bring_up
@@ -1547,23 +1547,23 @@ def test_ha_docs_use_variant_aware_host_prepare() -> None:
     assert "use the same bearer token for the dashboard data panels" in runbook
 
 
-def test_retained_ha_dashboard_docs_use_make_helper_targets() -> None:
+def test_retained_ha_attached_node_docs_use_make_helper_targets() -> None:
     bring_up = HA_BRING_UP_DOC.read_text(encoding="utf-8")
     runbook = VM_VARIANT_RUNBOOK_DOC.read_text(encoding="utf-8")
     ops = OPS_RUNBOOK_DOC.read_text(encoding="utf-8")
     for text in (bring_up, runbook, ops):
-        assert "make lab-vm-ha-dashboard-up" in text
-        assert "make lab-vm-ha-dashboard-status" in text
-        assert "make lab-vm-ha-dashboard-workload-smoke" in text
-        assert "make lab-vm-ha-dashboard-refresh-all" in text
-        assert "make lab-vm-ha-dashboard-down" in text
-        assert "make lab-vm-ha-dashboard-purge" in text
-        assert "make lab-vm-ha-dashboard-reset" in text
-    assert 'LAB_VM_HA_DASHBOARD_ARGS="--purge"' not in bring_up
-    assert 'LAB_VM_HA_DASHBOARD_ARGS="--purge"' not in runbook
-    assert 'LAB_VM_HA_DASHBOARD_ARGS="--purge"' not in ops
-    assert 'LAB_VM_HA_DASHBOARD_ARGS="--target all"' in bring_up
-    assert 'LAB_VM_HA_DASHBOARD_ARGS="--rebuild-images --destroy-network"' in runbook
+        assert "make lab-vm-ha-attached-node-up" in text
+        assert "make lab-vm-ha-attached-node-status" in text
+        assert "make lab-vm-ha-attached-node-workload-smoke" in text
+        assert "make lab-vm-ha-attached-node-refresh-all" in text
+        assert "make lab-vm-ha-attached-node-down" in text
+        assert "make lab-vm-ha-attached-node-purge" in text
+        assert "make lab-vm-ha-attached-node-reset" in text
+    assert 'LAB_VM_HA_ATTACHED_NODE_ARGS="--purge"' not in bring_up
+    assert 'LAB_VM_HA_ATTACHED_NODE_ARGS="--purge"' not in runbook
+    assert 'LAB_VM_HA_ATTACHED_NODE_ARGS="--purge"' not in ops
+    assert 'LAB_VM_HA_ATTACHED_NODE_ARGS="--target all"' in bring_up
+    assert 'LAB_VM_HA_ATTACHED_NODE_ARGS="--rebuild-images --destroy-network"' in runbook
     assert 'retained-VM "rebuild and restart all" path' in ops
     assert "ha-web-smoke.home.arpa" in bring_up
     assert "ha-web-smoke.home.arpa" in runbook
@@ -1597,21 +1597,21 @@ def test_make_lab_vm_smoke_uses_smoke_helper_wrapper() -> None:
     assert "$${LAB_VM_SMOKE_ARGS:-}" in text
 
 
-def test_make_lab_vm_ha_dashboard_targets_use_helper_wrapper() -> None:
+def test_make_lab_vm_ha_attached_node_targets_use_helper_wrapper() -> None:
     text = MAKEFILE.read_text(encoding="utf-8")
     for target in (
-        "lab-vm-ha-dashboard-up:",
-        "lab-vm-ha-dashboard-status:",
-        "lab-vm-ha-dashboard-down:",
-        "lab-vm-ha-dashboard-purge:",
-        "lab-vm-ha-dashboard-workload-smoke:",
+        "lab-vm-ha-attached-node-up:",
+        "lab-vm-ha-attached-node-status:",
+        "lab-vm-ha-attached-node-down:",
+        "lab-vm-ha-attached-node-purge:",
+        "lab-vm-ha-attached-node-workload-smoke:",
         "lab-vm-ha-core-workload-smoke:",
-        "lab-vm-ha-dashboard-reseed-core:",
-        "lab-vm-ha-dashboard-restart-core:",
-        "lab-vm-ha-dashboard-restart-apishim:",
-        "lab-vm-ha-dashboard-restart-hub-node:",
-        "lab-vm-ha-dashboard-refresh-all:",
-        "lab-vm-ha-dashboard-reset:",
+        "lab-vm-ha-attached-node-reseed-core:",
+        "lab-vm-ha-attached-node-restart-core:",
+        "lab-vm-ha-attached-node-restart-apishim:",
+        "lab-vm-ha-attached-node-restart-node:",
+        "lab-vm-ha-attached-node-refresh-all:",
+        "lab-vm-ha-attached-node-reset:",
     ):
         assert target in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh up" in text
@@ -1623,26 +1623,26 @@ def test_make_lab_vm_ha_dashboard_targets_use_helper_wrapper() -> None:
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh reseed-core" in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh restart-core" in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh restart-apishim" in text
-    assert "./scripts/lab/vm/ha_dashboard_smoke.sh restart-hub-node" in text
+    assert "./scripts/lab/vm/ha_dashboard_smoke.sh restart-node" in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh refresh-all" in text
     assert "./scripts/lab/vm/ha_dashboard_smoke.sh reset" in text
-    assert "RUN_ID=$${RUN_ID:-ha-dashboard-local}" in text
-    assert "VARIANT=$${VARIANT:-lab/variants/ha-control-plane-hub-node.yaml}" in text
+    assert "RUN_ID=$${RUN_ID:-ha-attached-node-local}" in text
+    assert "VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml}" in text
     assert "VARIANT=$${VARIANT:-lab/variants/ha-control-plane-core.yaml}" in text
-    assert "$${LAB_VM_HA_DASHBOARD_ARGS:-}" in text
+    assert "$${LAB_VM_HA_ATTACHED_NODE_ARGS:-}" in text
 
 
 def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> None:
     text = HA_DASHBOARD_SMOKE_SCRIPT.read_text(encoding="utf-8")
-    assert 'DEFAULT_VARIANT="$ROOT_DIR/lab/variants/ha-control-plane-hub-node.yaml"' in text
-    assert 'DEFAULT_RUN_ID="ha-dashboard-local"' in text
+    assert 'DEFAULT_VARIANT="$ROOT_DIR/lab/variants/ha-control-plane-attached-node.yaml"' in text
+    assert 'DEFAULT_RUN_ID="ha-attached-node-local"' in text
     assert 'source "$ROOT_DIR/scripts/lib/nixos_bridge.sh"' in text
     assert "workload-smoke" in text
     assert "core-workload-smoke" in text
     assert "reseed-core" in text
     assert "restart-core" in text
     assert "restart-apishim" in text
-    assert "restart-hub-node" in text
+    assert "restart-node" in text
     assert "refresh-all" in text
     assert "purge" in text
     assert "reset" in text
@@ -1675,6 +1675,8 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert 'retained_workload_smoke_manifest="${AE_RETAINED_WORKLOAD_SMOKE_MANIFEST:-$ROOT_DIR/docs/site/examples/ha-web-smoke.yaml}"' in text
     assert 'retained_workload_smoke_host="${AE_RETAINED_WORKLOAD_SMOKE_HOST:-ha-web-smoke.home.arpa}"' in text
     assert 'retained_workload_smoke_expected_text="${AE_RETAINED_WORKLOAD_SMOKE_EXPECTED_TEXT:-Shell + Port-Forward Smoke}"' in text
+    assert 'attached_node_expected_labels="${attached_node_labels:-role=worker,site=core}"' in text
+    assert "wait_for_attached_node_registration() {" in text
     assert 'ha_core_workload_smoke_manifest="${AE_HA_CORE_WORKLOAD_SMOKE_MANIFEST:-$ROOT_DIR/docs/site/examples/ha-web-smoke-edge.yaml}"' in text
     assert 'ha_core_workload_smoke_host="${AE_HA_CORE_WORKLOAD_SMOKE_HOST:-ha-edge-web-smoke.home.arpa}"' in text
     assert 'edge_runtime_site_id="$(echo "$variant_json" | jq -r \'.hosts[] | select(.role=="k1s-edge-node") | (.site_id // "")\' | head -n1)"' in text
@@ -1727,8 +1729,8 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert 'kill -0 "\\$new_pid"' in text
     assert "AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS=\\${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1}" in text
     assert "AE_EDGE_INGRESS_RELOAD_CMD=\"python3 /mnt/host/scripts/dev/cri_stack.py up-envoy --profile k1s-ha-core" in text
-    assert "workload-smoke requires a live retained HA run; run 'make lab-vm-ha-dashboard-up' first" in text
-    assert "requires a live retained HA run; run 'make lab-vm-ha-dashboard-up' first" in text
+    assert "workload-smoke requires a live retained HA run; run 'make lab-vm-ha-attached-node-up' first" in text
+    assert "requires a live retained HA run; run 'make lab-vm-ha-attached-node-up' first" in text
 
 
 def test_ha_dashboard_smoke_status_guidance_covers_auth_and_api_only_ingress() -> None:
@@ -2073,11 +2075,11 @@ def test_run_ha_acceptance_checks_includes_core_node_smoke_when_runtime_node_pre
             ],
             "runtime_nodes": [
                 {
-                    "name": "hub-1",
-                    "node_id": "hub-1",
+                    "name": "attached-node-1",
+                    "node_id": "attached-node-1",
                     "ip": "192.168.155.20",
                     "agent_url": "http://192.168.155.20:9111",
-                    "labels": {"role": "hub", "site": "hub"},
+                    "labels": {"role": "worker", "site": "core"},
                 }
             ],
             "controller_metrics_url": "http://192.168.155.10:9108/metrics",
@@ -2097,28 +2099,32 @@ def test_run_ha_acceptance_checks_includes_core_node_smoke_when_runtime_node_pre
     )
 
     assert result["status"] == "passed"
-    assert captured_commands["ha_core_node_precheck"][:4] == [
+    assert captured_commands["ha_attached_node_precheck"][:4] == [
         sys.executable,
         str(ROOT / "scripts" / "dev" / "ha_core_node_smoke.py"),
         "precheck",
         "--node-id",
     ]
-    assert captured_commands["ha_core_node_precheck"][4] == "hub-1"
-    assert "--label" in captured_commands["ha_core_node_precheck"]
-    assert "role=hub" in captured_commands["ha_core_node_precheck"]
-    assert "site=hub" in captured_commands["ha_core_node_precheck"]
-    assert captured_commands["ha_core_node_workload_smoke"][:3] == [
+    assert captured_commands["ha_attached_node_precheck"][4] == "attached-node-1"
+    assert "--label" in captured_commands["ha_attached_node_precheck"]
+    assert "role=worker" in captured_commands["ha_attached_node_precheck"]
+    assert "site=core" in captured_commands["ha_attached_node_precheck"]
+    assert captured_commands["ha_attached_node_ingress_smoke"][:3] == [
         sys.executable,
         str(ROOT / "scripts" / "dev" / "ha_core_node_smoke.py"),
-        "workload-smoke",
+        "ingress-smoke",
     ]
-    assert "--manifest" in captured_commands["ha_core_node_workload_smoke"]
+    assert "--manifest" in captured_commands["ha_attached_node_ingress_smoke"]
     assert (
-        "shell-demo-node-hub.yaml"
-        in captured_commands["ha_core_node_workload_smoke"][
-            captured_commands["ha_core_node_workload_smoke"].index("--manifest") + 1
+        "ha-web-smoke.yaml"
+        in captured_commands["ha_attached_node_ingress_smoke"][
+            captured_commands["ha_attached_node_ingress_smoke"].index("--manifest") + 1
         ]
     )
+    assert "--ingress-host" in captured_commands["ha_attached_node_ingress_smoke"]
+    assert "ha-web-smoke.home.arpa" in captured_commands["ha_attached_node_ingress_smoke"]
+    assert "--direct-probe-host" in captured_commands["ha_attached_node_ingress_smoke"]
+    assert "192.168.155.10" in captured_commands["ha_attached_node_ingress_smoke"]
 
 
 def test_run_ha_acceptance_checks_includes_edge_runtime_ingress_smoke_when_edge_worker_present(
