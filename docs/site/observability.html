@@ -820,12 +820,13 @@
 <li>Adds an <code>HA Control Plane</code> section sourced from <code>GET /system.ha</code>:
 <ul>
 <li>Authority: local role, visible leader, advertise address, controller epoch, and controller-member freshness from <code>ha.authority.members</code></li>
-<li>Etcd: configured endpoints, maintenance counters, and optional cached probe health when enabled</li>
+<li>Etcd: configured endpoints, maintenance counters, and optional cached probe rows when controller-side probing is enabled</li>
 <li>Transport: JetStream pressure, replay backlog, route acknowledgement age, HA fence activity, and optional hub/edge monitor summaries</li>
 <li>Edge sites: per-site freshness, replay backlog, route pending, ack age, and gateway build/last-seen rows</li>
 <li>Issue banner: normalized HA/operator warnings from <code>system.ha.issues</code></li>
 </ul>
 </li>
+<li>Treat the HA section as the built-in live operator snapshot for authority health, freshness, shared-etcd reachability summary, transport pressure, and site health; Prometheus/Grafana stay the historical view.</li>
 <li>The built-in dashboard stays on <code>GET /system</code>; it does not parse <code>/metrics</code> in the browser.</li>
 </ul>
 <ul>
@@ -890,7 +891,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 13:22:29</span>
+        <span>Built 2026-04-03 14:32:34</span>
       </div>
     </footer>
     <script>

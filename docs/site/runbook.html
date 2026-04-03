@@ -1505,14 +1505,17 @@
 <li>Canonical audit artifact: <a href="ha-closeout.html">HA Closeout</a></li>
 <li>Primary evidence lane:
 <ul>
+<li><code>make lab-vm-ha-validation</code> is now the preferred umbrella rerun for the checked-in HA validation flow; it wraps <code>scripts/lab/vm/run_ha_validation.sh</code>.</li>
+<li>The default stage set is <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code>.</li>
 <li>VM/lab variants can now declare explicit <code>k1s-ha-core</code> hosts plus a <code>ha_control_plane</code> smoke lane.</li>
 <li>The checked-in HA closeout topology is <code>lab/variants/ha-control-plane-core.yaml</code>.</li>
 <li>For deeper disruptive validation, use <code>lab/variants/ha-control-plane-core-drills.yaml</code>; it enables the optional leader-failover, etcd-restart, and transport-recovery drill hooks through <code>scripts/lab/vm/ha_drill_actions.sh</code>.</li>
-<li><code>scripts/lab/vm/smoke_helper.py</code> is the preferred operator entrypoint for that lane. <code>make lab-vm-smoke</code> is a thin wrapper around it, and the helper in turn wraps <code>smoke_v2.py</code>.</li>
+<li><code>scripts/lab/vm/smoke_helper.py</code> remains the lower-level one-shot operator entrypoint for <code>stage1</code>, <code>stage2</code>, and <code>drills</code>. <code>make lab-vm-smoke</code> is a thin wrapper around it, and the helper in turn wraps <code>smoke_v2.py</code>.</li>
 <li><code>smoke_helper.py</code> prints live phase/check status from the <code>runs/&lt;RUN_ID&gt;/...</code> artifacts and can auto-run <code>variant_down.sh</code> on success.</li>
 <li>Helper-owned wrapper flags are <code>--teardown on-success|always|never</code>, <code>--purge</code>, <code>--destroy-network</code>, and <code>--console</code>; pass any remaining <code>smoke_v2.py</code> flags after the helper flags.</li>
 <li>When the variant points HA endpoints at the three HA core VM IPs, <code>smoke_v2</code> runs a <code>ha_shared_infra</code> phase that boots shared <code>etcd</code> plus shared hub NATS/JetStream on those VMs before <code>k1s-ha-core</code> bootstrap.</li>
-<li>The lane writes <code>runs/&lt;RUN_ID&gt;/ha_summary.json</code> as the machine-readable HA evidence artifact.</li>
+<li>The one-shot and drill lanes write <code>runs/&lt;RUN_ID&gt;/ha_summary.json</code> as the machine-readable HA evidence artifacts; the supplemental drain stage writes <code>runs/&lt;RUN_ID&gt;/summary.json</code>.</li>
+<li>The <code>retained</code> stage and the helper portion of <code>stage2-live</code> are wrapper-level stage checks from <code>run_ha_validation.sh</code>; do not treat them as standalone <code>ha_summary.json</code> artifacts.</li>
 <li>The lane now assumes prereq-ready qcow2 images. Rebuild and re-verify the images after bootstrap/image changes before retrying first-pass VM failures:
 <ul>
 <li><code>scripts/lab/vm/labctl.sh image build --variant all</code></li>
@@ -1541,7 +1544,8 @@
 </li>
 <li>Closeout rule:
 <ul>
-<li>The 2026-03-19 HA closeout checkpoint satisfies the evidence rule: <a href="ha-closeout.html">HA Closeout</a> shows zero <code>must_fix_before_closeout</code> gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.</li>
+<li>The 2026-03-19 HA closeout checkpoint satisfies the original evidence rule: <a href="ha-closeout.html">HA Closeout</a> shows zero <code>must_fix_before_closeout</code> gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.</li>
+<li>The 2026-04-03 post-closeout rerun keeps that claim current: <code>make lab-vm-ha-validation</code> passed with green <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> results.</li>
 <li>Reopen <code>H5c-ha-closeout</code> if either evidence lane regresses or <a href="ha-closeout.html">HA Closeout</a> regains a must-fix gap.</li>
 <li>On passworded-sudo hosts, run <code>sudo -v</code> before invoking <code>smoke_helper.py</code>; the helper does not prompt for a password and fails fast if <code>sudo -n true</code> is not already warm.</li>
 </ul>
@@ -1600,10 +1604,11 @@
 <li>On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code></li>
 <li>Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: <code>make lab-vm-ha-attached-node-status</code></li>
 <li>After <code>up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the local <code>127.0.0.1</code> dev mapping</li>
-<li>For one-shot HA harness tests, prefer <code>make lab-vm-smoke</code>; unlike the retained targets, it goes through <code>smoke_helper.py</code> and auto-runs <code>variant_down.sh</code> on success by default (<code>--teardown on-success</code>)</li>
+<li>For the full checked-in HA validation flow, prefer <code>make lab-vm-ha-validation</code>; for narrower one-shot HA harness tests, prefer <code>make lab-vm-smoke</code></li>
 <li>Canonical HA rerun order is: stage 1 one-shot on <code>ha-control-plane-attached-node</code>, stage 2 one-shot on <code>ha-control-plane-core</code>, then optional drills on <code>ha-control-plane-core-drills</code>; retained attached-node restart/rejoin flows are supplemental scenarios, not replacements for those one-shot acceptance runs</li>
 <li>Stage 1 one-shot rerun sequence: <code>sudo -v &amp;&amp; RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1&quot; &amp;&amp; AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-attached-node.yaml RUN_ID=&quot;$RUN_ID&quot;</code></li>
 <li>Stage 2 one-shot rerun sequence: <code>sudo -v &amp;&amp; RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2&quot; &amp;&amp; AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-core.yaml RUN_ID=&quot;$RUN_ID&quot;</code></li>
+<li>Default stage meanings under <code>make lab-vm-ha-validation</code>: <code>stage1</code> one-shot attached-node acceptance, <code>retained</code> retained stage-1 workstation flow, <code>drain</code> supplemental two-worker drain/reschedule, <code>stage2</code> one-shot edge/core-proxy acceptance, <code>stage2-live</code> live helper check, <code>drills</code> disruptive drill validation</li>
 <li>Normal retained rerun sequence: <code>make lab-vm-ha-attached-node-purge</code>, <code>make lab-vm-ha-attached-node-up</code>, <code>make lab-vm-ha-attached-node-status</code>, <code>make lab-vm-ha-attached-node-workload-smoke</code></li>
 <li>retained-VM &quot;rebuild and restart all&quot; path: <code>make lab-vm-ha-attached-node-refresh-all</code></li>
 <li>Stop the retained VMs but keep retained run metadata for a later restart: <code>make lab-vm-ha-attached-node-down</code></li>
@@ -2032,7 +2037,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 13:22:29</span>
+        <span>Built 2026-04-03 14:32:34</span>
       </div>
     </footer>
     <script>

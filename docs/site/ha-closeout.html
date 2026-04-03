@@ -740,10 +740,33 @@
 <p>Operator bootstrap entrypoint: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>. This document is the audit and evidence surface, not the primary numbered day-0 bring-up guide.</p>
 <h2 id="current-decision">Current Decision</h2>
 <ul>
-<li>Result: the primary VM/lab HA lane is green on the checked-in topology, the drill-enabled HA variant is green, and the <code>H*</code> track is now marked complete in the roadmap table.</li>
-<li>Evidence: <code>runs/ha-cp-drills-20260319T213601Z/summary.json</code> and <code>runs/ha-cp-drills-20260319T213601Z/ha_summary.json</code> are green, including the optional <code>ha_drill_leader_failover</code>, <code>ha_drill_etcd_restart</code>, and <code>ha_drill_transport_recovery</code> checks.</li>
-<li>Secondary evidence: <code>make ha-closeout-e2e</code> passed locally on 2026-03-19. The wrapper-backed reduced harness now primes the Nix <code>libstdc++</code> runtime path, preflights <code>import grpc</code>, and then runs <code>tests/integration/test_ha_closeout_e2e.py</code>.</li>
-<li>Reason the track is closed: the primary and secondary evidence lanes are green, <code>must_fix_before_closeout</code> is empty, and the roadmap decision checkpoint has been recorded.</li>
+<li>Closure checkpoint: the original <code>H*</code> track closure remains the 2026-03-19 roadmap checkpoint, recorded after the primary VM/lab HA lane, the drill-enabled HA variant, and the reduced local harness all passed.</li>
+<li>Historical closeout evidence: <code>runs/ha-cp-drills-20260319T213601Z/summary.json</code> and <code>runs/ha-cp-drills-20260319T213601Z/ha_summary.json</code> are green, including the optional <code>ha_drill_leader_failover</code>, <code>ha_drill_etcd_restart</code>, and <code>ha_drill_transport_recovery</code> checks.</li>
+<li>Secondary closeout evidence: <code>make ha-closeout-e2e</code> passed locally on 2026-03-19. The wrapper-backed reduced harness now primes the Nix <code>libstdc++</code> runtime path, preflights <code>import grpc</code>, and then runs <code>tests/integration/test_ha_closeout_e2e.py</code>.</li>
+<li>Post-closeout validation: <code>make lab-vm-ha-validation</code> reran green on 2026-04-03 with <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> all passing.</li>
+<li>Strongest 2026-04-03 run artifacts:
+<ul>
+<li><code>runs/20260403T185210Z_ha_attached_node_stage1/ha_summary.json</code></li>
+<li><code>runs/20260403T191624Z_multi_non_gpu_drain/summary.json</code></li>
+<li><code>runs/20260403T193039Z_ha_core_stage2/ha_summary.json</code></li>
+<li><code>runs/20260403T194249Z_ha_core_live/ha_summary.json</code></li>
+<li><code>runs/20260403T195537Z_ha_core_drills/ha_summary.json</code></li>
+</ul>
+</li>
+<li>Artifact boundary: <code>retained</code> and the helper portion of <code>stage2-live</code> are wrapper-level stage results from <code>make lab-vm-ha-validation</code>; the one-shot and drill stages above are the stages that emit standalone <code>ha_summary.json</code> or <code>summary.json</code> artifacts.</li>
+<li>Reason the track stays closed: the historical closeout evidence still stands, the current post-closeout validation is green, <code>must_fix_before_closeout</code> is empty, and no reopened roadmap gap has appeared.</li>
+</ul>
+<h2 id="practical-ha-capabilities-today">Practical HA Capabilities Today</h2>
+<ul>
+<li>Shared authority: HA mode uses shared controller state in <code>etcd</code> as desired-state authority instead of per-node local truth.</li>
+<li>Single mutating leader with hot standbys: one controller owns leader-only mutation and transport publication, while healthy followers still serve read surfaces.</li>
+<li>Fenced correctness: controller epochs and fenced mutation envelopes reject stale or duplicate leader-era work instead of allowing split-brain side effects.</li>
+<li>Shared-authority convergence: workloads, passive objects, HPA, RBAC, CRDs, storage, CSI, and snapshot-facing resource flows now converge on shared authority.</li>
+<li>Strict-CRI HA bootstrap: the supported HA operator contract is <code>k1s-ha-core</code> plus shared <code>etcd</code> and shared NATS/JetStream on the strict-CRI path.</li>
+<li>Stage-1 ingress: the attached-node HA topology proves a schedulable worker can register with the HA core and serve traffic through <code>core-local</code> Envoy ingress.</li>
+<li>Stage-2 edge routing: the checked-in edge topology proves a worker-pinned edge app can serve traffic through true <code>core-proxy</code> routing from the HA core.</li>
+<li>Worker operations: the retained stage-1 lane covers node inventory plus <code>cordon</code> / <code>uncordon</code>, and the separate two-worker validation lane covers real drain-plus-reschedule behavior.</li>
+<li>Disruptive recovery drills: leader failover, external-etcd restart, and transport recovery drills now rerun green on the checked-in drill topology.</li>
 </ul>
 <h2 id="capability-matrix">Capability Matrix</h2>
 <table><thead><tr><th>Slice</th><th>Current capability</th><th>Primary evidence</th></tr></thead><tbody><tr><td>H0</td><td>HA mode uses shared controller state as desired-state authority and disables local <code>specs/</code> authority</td><td><code>tests/unit/test_controller_loop.py</code>, <code>tests/unit/test_registry_resource_version.py</code>, <code>tests/unit/test_apishim_ha_mode.py</code></td></tr><tr><td>H1</td><td>Lease-backed controller leadership and controller epochs gate mutating control-plane work</td><td><code>tests/unit/test_controller_authority.py</code>, <code>tests/unit/test_transport_authority.py</code></td></tr><tr><td>H2</td><td>Fenced mutation envelopes plus executor duplicate/stale rejection are in place</td><td><code>tests/unit/test_ha_fencing.py</code>, <code>tests/unit/test_gateway_service_fencing.py</code>, <code>tests/unit/test_node_server.py</code>, <code>tests/unit/test_remote_runtime_fencing.py</code></td></tr><tr><td>H3</td><td>Outbox replay, gateway replay, and JetStream HA validation are hardened without turning transport into truth</td><td><code>tests/unit/test_transport_config.py</code>, <code>tests/unit/test_work_outbox.py</code>, <code>tests/unit/test_gateway_spool.py</code>, <code>tests/unit/test_route_bundle_sites.py</code></td></tr><tr><td>H4a</td><td>Workload-core apishim mutation converges on shared controller authority</td><td><code>tests/unit/test_apishim_ha_workload_authority.py</code>, <code>tests/unit/test_controller_apishim_mirror.py</code></td></tr><tr><td>H4b1</td><td><code>CronJob</code>, <code>ConfigMap</code>, <code>Secret</code>, and <code>ServiceAccount</code> use shared authority; CronJob execution is leader-owned</td><td><code>tests/unit/test_apishim_ha_passive_authority.py</code>, <code>tests/unit/test_cronjob_authority_controller.py</code>, <code>tests/unit/test_cri_runtime_apishim_reads.py</code></td></tr><tr><td>H4b-hpa</td><td>HPA uses shared metrics plus shared authority and leader-owned scale writes</td><td><code>tests/unit/test_hpa_authority.py</code>, <code>tests/unit/test_cri_runtime_workload_metrics.py</code>, <code>tests/unit/test_node_server.py</code></td></tr><tr><td>H4b2a</td><td><code>Namespace</code>, RBAC, and PDB resources use shared authority</td><td><code>tests/unit/test_apishim_rbac.py</code>, <code>tests/unit/test_apishim_ha_passive_authority.py</code></td></tr><tr><td>H4b2b-crd</td><td>CRDs and dynamic custom resources use shared authority and shared discovery refresh</td><td><code>tests/unit/test_apishim_ha_crd_authority.py</code>, <code>tests/unit/test_apishim_ha_store.py</code></td></tr><tr><td>H4b2c-core</td><td><code>StorageClass</code>, PVC, and PV use shared authority and leader-owned storage reconcile</td><td><code>tests/unit/test_storage_authority.py</code>, <code>tests/unit/test_storage_authority_startup.py</code>, <code>tests/unit/test_storage_controller.py</code></td></tr><tr><td>H4b2c-csi</td><td>Snapshot and CSI resources converge on shared authority and controller-owned storage objects become API-edge read-only</td><td><code>tests/unit/test_storage_authority.py</code>, <code>tests/unit/test_storage_controller.py</code>, <code>tests/unit/test_cri_runtime_apishim_reads.py</code></td></tr><tr><td>H5a-core</td><td><code>k1s-ha-core</code> bootstrap, snapshot, and first-line drills exist</td><td><code>scripts/dev/ha_core_preflight.py</code>, <code>scripts/dev/etcd_snapshot.py</code>, <code>scripts/dev/ha_core_drills.py</code>, <code>tests/unit/test_ha_ops.py</code></td></tr><tr><td>H5b1</td><td>etcd recovery/member-replacement/quorum-restore helpers and authority metrics exist</td><td><code>scripts/dev/etcd_recovery.py</code>, <code>tests/unit/test_etcd_recovery_script.py</code>, <code>tests/unit/test_metrics_per_app.py</code></td></tr><tr><td>H5b2a</td><td>systemd-managed <code>k1s-ha-core</code> rolling-upgrade helpers and build identity surfaces exist</td><td><code>scripts/dev/ha_core_upgrade.py</code>, <code>tests/unit/test_ha_core_upgrade_script.py</code>, <code>tests/unit/test_http_api_version.py</code>, <code>tests/unit/test_apishim_version.py</code></td></tr><tr><td>H5b2b</td><td>shared hub NATS/JetStream upgrade and replacement helpers exist</td><td><code>scripts/dev/ha_transport_upgrade.py</code>, <code>tests/unit/test_ha_transport_upgrade_script.py</code>, <code>tests/unit/test_ha_ops.py</code></td></tr><tr><td>H5b2c</td><td>edge-site gateway-first / leader-last transport helpers plus per-gateway build visibility exist</td><td><code>scripts/dev/ha_edge_transport.py</code>, <code>tests/unit/test_ha_edge_transport_script.py</code>, <code>tests/unit/test_metrics_per_app.py</code></td></tr></tbody></table>
@@ -772,10 +795,13 @@
 </li>
 <li>Acceptance lane:
 <ul>
-<li><code>make lab-vm-smoke</code> is the preferred operator entrypoint for the VM lane.</li>
-<li>That target now wraps <code>scripts/lab/vm/smoke_helper.py</code>, which in turn wraps <code>smoke_v2.py</code>, prints live phase/check status from the run artifacts, and can auto-run <code>variant_down.sh</code> after a successful pass.</li>
+<li><code>make lab-vm-ha-validation</code> is the preferred umbrella rerun for the checked-in HA validation flow.</li>
+<li>That target wraps <code>scripts/lab/vm/run_ha_validation.sh</code>, which runs the documented HA stages in sequence and prints a final per-stage pass/fail summary.</li>
+<li><code>make lab-vm-smoke</code> remains the lower-level one-shot entrypoint for <code>stage1</code>, <code>stage2</code>, and <code>drills</code>.</li>
+<li>The one-shot path still wraps <code>scripts/lab/vm/smoke_helper.py</code>, which in turn wraps <code>smoke_v2.py</code>, prints live phase/check status from the run artifacts, and can auto-run <code>variant_down.sh</code> after a successful pass.</li>
 <li><code>scripts/lab/vm/smoke_v2.py</code> now supports <code>ha_control_plane</code>.</li>
-<li>The lane writes <code>runs/&lt;RUN_ID&gt;/ha_summary.json</code>.</li>
+<li>One-shot and drill runs write <code>runs/&lt;RUN_ID&gt;/ha_summary.json</code>; the supplemental drain lane writes <code>runs/&lt;RUN_ID&gt;/summary.json</code>.</li>
+<li><code>retained</code> and the helper portion of <code>stage2-live</code> are wrapper-level stage checks from <code>run_ha_validation.sh</code>; they do not currently emit separate standalone <code>ha_summary.json</code> artifacts.</li>
 </ul>
 </li>
 <li>Acceptance engine:
@@ -791,6 +817,15 @@
 </li>
 </ul>
 </li>
+</ul>
+<h4 id="umbrella-validation-stages">Umbrella Validation Stages</h4>
+<ul>
+<li><code>stage1</code>: stage-1 one-shot acceptance on <code>lab/variants/ha-control-plane-attached-node.yaml</code></li>
+<li><code>retained</code>: retained stage-1 workstation flow covering <code>purge -&gt; up -&gt; status -&gt; workload-smoke</code> plus node inventory and <code>cordon</code> / <code>uncordon</code></li>
+<li><code>drain</code>: supplemental two-worker non-HA drain/reschedule validation</li>
+<li><code>stage2</code>: stage-2 one-shot acceptance on <code>lab/variants/ha-control-plane-core.yaml</code></li>
+<li><code>stage2-live</code>: live <code>make lab-vm-ha-core-workload-smoke</code> helper check against a live <code>ha-control-plane-core</code> run</li>
+<li><code>drills</code>: deeper disruptive validation on <code>lab/variants/ha-control-plane-core-drills.yaml</code></li>
 </ul>
 <h3 id="secondary-reduced-local-ha-harness">Secondary: Reduced Local HA Harness</h3>
 <h4 id="relation-to-ha-bring-up">Relation to HA Bring-Up</h4>
@@ -827,6 +862,7 @@
 </ul>
 <h3 id="companion-retained-local-ha-vm-harness">Companion: Retained Local HA VM Harness</h3>
 <ul>
+<li>Umbrella runner stage: <code>make lab-vm-ha-validation</code> includes this lane as the <code>retained</code> stage.</li>
 <li>Entry points:
 <ul>
 <li><code>make lab-vm-ha-attached-node-up</code></li>
@@ -841,12 +877,14 @@
 <li>on NixOS, the retained helper applies and verifies the local DNS/TLS bridge before <code>up</code> reports success</li>
 <li>the public Envoy docs/dashboard/API hosts are reachable from one workstation in the retained lane</li>
 <li>a schedulable attached node can register with the HA core, receive a workload through shared HA state, and serve it through <code>core-local</code> Envoy ingress with <code>curl --resolve</code></li>
+<li>node inventory plus <code>cordon</code> / <code>uncordon</code> on <code>attached-node-1</code> remain green in the retained topology</li>
 </ul>
 </li>
 <li>What it is not:
 <ul>
 <li>not the milestone-defining closeout evidence lane</li>
 <li>not a replacement for the checked-in <code>ha_control_plane</code> and drill-enabled variants</li>
+<li>not the drain-plus-reschedule evidence lane; that coverage remains the separate <code>drain</code> stage because <code>attached-node-1</code> is the only schedulable <code>role=worker,site=core</code> node in this retained topology</li>
 <li>not a widened workstation host-mapping contract; <code>ha-web-smoke.home.arpa</code> stays helper-only / <code>curl --resolve</code> only</li>
 </ul>
 </li>
@@ -876,6 +914,7 @@
 <li>no deferred item needs to be pulled back into the <code>H*</code> track to make current HA roadmap/runbook claims honest</li>
 <li>no remaining closeout blocker invalidates the current HA roadmap/runbook claims</li>
 <li>the HA track is complete as of the 2026-03-19 roadmap closeout checkpoint</li>
+<li>the 2026-04-03 rerun confirms those same claims still hold on the checked-in HA validation flow</li>
 </ul>
 <h3 id="post-closeout-dashboard-amendment">Post-Closeout Dashboard Amendment</h3>
 <ul>
@@ -889,6 +928,7 @@
 <ul>
 <li>Current strongest evidence run: <code>runs/ha-cp-drills-20260319T213601Z/ha_summary.json</code></li>
 <li>This drill-enabled run includes the optional leader-failover, etcd-restart, and transport-recovery hooks.</li>
+<li>Current post-closeout rerun: <code>make lab-vm-ha-validation</code> passed on 2026-04-03 with green <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> results.</li>
 </ul>
 <p>2. The reduced local HA harness has been run successfully as a secondary/manual regression check.</p>
 <ul>
@@ -902,12 +942,14 @@
 <p>4. No <code>must_fix_before_closeout</code> gaps remain in this document. 5. A final roadmap decision checkpoint is recorded when the status table flips from <code>In progress</code> to complete.</p>
 <ul>
 <li>Current checkpoint: 2026-03-19 HA control-plane closeout checkpoint recorded in <a href="roadmap-status.html">Roadmap Status</a>.</li>
+<li>Current post-closeout validation checkpoint: 2026-04-03 HA validation rerun recorded in <a href="roadmap-status.html">Roadmap Status</a>.</li>
 </ul>
 <h2 id="operator-notes">Operator Notes</h2>
 <ul>
 <li>The milestone-defining control-plane role is <code>k1s-ha-core</code>, not <code>k1s-core</code>.</li>
 <li>The milestone-defining edge lane remains <code>k1s-edge-core</code> / <code>k1s-edge-core-cri</code>.</li>
 <li>The helper scripts listed above are the real operator contract; the closeout lane is an integration wrapper around them, not a second HA API.</li>
+<li><code>make lab-vm-ha-validation</code> is now the fastest umbrella rerun for the checked-in HA capability story; drop to the stage-specific <code>make lab-vm-smoke</code>, retained helpers, or drill helpers only when you need a narrower lane.</li>
 <li>The retained HA VM harness is the preferred workstation companion lane for manual docs/dashboard smoke, NixOS bridge validation, and stage-1 attached-node <code>core-local</code> workload ingress checks on <code>attached-node-1</code>.</li>
 <li><code>make lab-vm-ha-attached-node-workload-smoke</code> deploys <code>ha-web-smoke</code> on <code>attached-node-1</code> and verifies stage-1 <code>core-local</code> routing through the HA core Envoy with <code>curl --resolve</code>.</li>
 <li><code>make lab-vm-ha-core-workload-smoke</code> is the stage-2 helper for live <code>lab/variants/ha-control-plane-core.yaml</code> runs; it deploys <code>ha-edge-web-smoke</code> on <code>edge-sea-node</code> and verifies true <code>core-proxy</code> routing through the edge gateway/worker topology.</li>
@@ -919,7 +961,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 13:22:29</span>
+        <span>Built 2026-04-03 14:32:34</span>
       </div>
     </footer>
     <script>

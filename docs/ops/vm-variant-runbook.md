@@ -132,7 +132,25 @@ make lab-vm-ha-attached-node-workload-smoke
 
 On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`.
 
-For one-shot VM harness validation, do not use the retained targets. Use `make lab-vm-smoke`, which wraps `smoke_helper.py` and auto-runs teardown on success by default (`--teardown on-success`).
+For the full checked-in HA validation flow, prefer the umbrella runner:
+
+```bash
+sudo -v
+make lab-vm-ha-validation
+```
+
+That wrapper runs these stages by default:
+
+- `stage1`: one-shot acceptance on `ha-control-plane-attached-node`
+- `retained`: retained stage-1 `purge -> up -> status -> workload-smoke` plus node inventory and `cordon` / `uncordon`
+- `drain`: supplemental two-worker drain/reschedule validation
+- `stage2`: one-shot acceptance on `ha-control-plane-core`
+- `stage2-live`: live stage-2 helper against a live `ha-control-plane-core` run
+- `drills`: disruptive validation on `ha-control-plane-core-drills`
+
+The one-shot and drill stages emit standalone `ha_summary.json` artifacts. The `retained` stage and the helper portion of `stage2-live` are wrapper-level checks inside `make lab-vm-ha-validation`.
+
+For narrower one-shot VM harness validation, do not use the retained targets. Use `make lab-vm-smoke`, which wraps `smoke_helper.py` and auto-runs teardown on success by default (`--teardown on-success`).
 
 Canonical HA rerun order is: stage 1 one-shot on `ha-control-plane-attached-node`, stage 2 one-shot on `ha-control-plane-core`, then optional drills on `ha-control-plane-core-drills`; retained attached-node restart/rejoin flows are supplemental scenarios, not replacements for those one-shot acceptance runs.
 

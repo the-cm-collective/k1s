@@ -835,7 +835,20 @@ make lab-vm-ha-attached-node-up
 make lab-vm-ha-attached-node-status
 make lab-vm-ha-attached-node-workload-smoke</code></pre>
 <p>On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code>.</p>
-<p>For one-shot VM harness validation, do not use the retained targets. Use <code>make lab-vm-smoke</code>, which wraps <code>smoke_helper.py</code> and auto-runs teardown on success by default (<code>--teardown on-success</code>).</p>
+<p>For the full checked-in HA validation flow, prefer the umbrella runner:</p>
+<pre><code>sudo -v
+make lab-vm-ha-validation</code></pre>
+<p>That wrapper runs these stages by default:</p>
+<ul>
+<li><code>stage1</code>: one-shot acceptance on <code>ha-control-plane-attached-node</code></li>
+<li><code>retained</code>: retained stage-1 <code>purge -&gt; up -&gt; status -&gt; workload-smoke</code> plus node inventory and <code>cordon</code> / <code>uncordon</code></li>
+<li><code>drain</code>: supplemental two-worker drain/reschedule validation</li>
+<li><code>stage2</code>: one-shot acceptance on <code>ha-control-plane-core</code></li>
+<li><code>stage2-live</code>: live stage-2 helper against a live <code>ha-control-plane-core</code> run</li>
+<li><code>drills</code>: disruptive validation on <code>ha-control-plane-core-drills</code></li>
+</ul>
+<p>The one-shot and drill stages emit standalone <code>ha_summary.json</code> artifacts. The <code>retained</code> stage and the helper portion of <code>stage2-live</code> are wrapper-level checks inside <code>make lab-vm-ha-validation</code>.</p>
+<p>For narrower one-shot VM harness validation, do not use the retained targets. Use <code>make lab-vm-smoke</code>, which wraps <code>smoke_helper.py</code> and auto-runs teardown on success by default (<code>--teardown on-success</code>).</p>
 <p>Canonical HA rerun order is: stage 1 one-shot on <code>ha-control-plane-attached-node</code>, stage 2 one-shot on <code>ha-control-plane-core</code>, then optional drills on <code>ha-control-plane-core-drills</code>; retained attached-node restart/rejoin flows are supplemental scenarios, not replacements for those one-shot acceptance runs.</p>
 <p>Stage-1 one-shot rerun:</p>
 <pre><code>sudo -v
@@ -1116,7 +1129,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 13:22:29</span>
+        <span>Built 2026-04-03 14:32:34</span>
       </div>
     </footer>
     <script>

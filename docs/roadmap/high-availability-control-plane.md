@@ -387,11 +387,13 @@ Current implementation status:
 - `scripts/lab/vm/lib/variant.py`, `scripts/lab/vm/k1s_bootstrap.sh`, `scripts/lab/vm/smoke_v2.py`, and `scripts/lab/vm/smoke_helper.py` now support explicit `k1s-ha-core` hosts plus a `ha_control_plane` lane that emits a machine-readable `ha_summary.json`
 - `lab/variants/ha-control-plane-core.yaml` now provides a checked-in 3-core-plus-1-site HA closeout topology instead of requiring an ad hoc local variant
 - `scripts/lab/vm/ha_shared_infra.sh` plus the new `ha_shared_infra` smoke phase now bootstrap shared `etcd` and shared hub NATS/JetStream on the three HA core VMs before `k1s-ha-core` starts
-- `make lab-vm-smoke` is now the promoted VM operator entrypoint, wrapping the new helper-backed smoke flow instead of the older raw `smoke.sh` path
+- `scripts/lab/vm/run_ha_validation.sh` plus `make lab-vm-ha-validation` now provide the promoted umbrella VM operator rerun, covering `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills`
+- `make lab-vm-smoke` remains the lower-level one-shot operator entrypoint, wrapping the helper-backed smoke flow instead of the older raw `smoke.sh` path
 - the VM lane uses the existing HA helper surfaces for precheck, cluster verification, hub transport validation, edge transport validation, and optional drills instead of inventing a second HA operator contract
 - `tests/e2e/ha_closeout.py` and `tests/integration/test_ha_closeout_e2e.py` now provide a reduced local HA topology with two controllers, one apishim, one edge site, and a failover-plus-replay check; that reduced lane now forces `AE_JS_REPLICAS=1` so it stays lightweight without pretending to be the full transport-fidelity evidence lane
 - `scripts/dev/ha_closeout_e2e.sh` plus `make ha-closeout-e2e` now provide the supported reduced-harness entrypoint, priming the local `libstdc++` runtime path and preflighting `grpc` before the reduced HA lane starts
-- current audit result: the drill-enabled primary VM/lab lane is green on the checked-in topology, the wrapper-backed reduced local HA harness is green, no `must_fix_before_closeout` gaps remain, and the track is closed via the 2026-03-19 roadmap checkpoint
+- the original closeout result remains the 2026-03-19 roadmap checkpoint: the drill-enabled primary VM/lab lane was green on the checked-in topology, the wrapper-backed reduced local HA harness was green, no `must_fix_before_closeout` gaps remained, and the track closed
+- current post-closeout validation result: `make lab-vm-ha-validation` reran green on 2026-04-03 with `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` all passing on the documented checked-in flows
 
 ### H5c Amendment: Integrated HA Dashboard Observability
 

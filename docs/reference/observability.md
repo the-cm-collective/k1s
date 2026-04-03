@@ -82,10 +82,11 @@ You can also embed a single panel JSON (e.g., stat showing ready apps):
   - RBAC: shows whether mutations are enabled and tokens are configured (never reveals secrets)
 - Adds an `HA Control Plane` section sourced from `GET /system.ha`:
   - Authority: local role, visible leader, advertise address, controller epoch, and controller-member freshness from `ha.authority.members`
-  - Etcd: configured endpoints, maintenance counters, and optional cached probe health when enabled
+  - Etcd: configured endpoints, maintenance counters, and optional cached probe rows when controller-side probing is enabled
   - Transport: JetStream pressure, replay backlog, route acknowledgement age, HA fence activity, and optional hub/edge monitor summaries
   - Edge sites: per-site freshness, replay backlog, route pending, ack age, and gateway build/last-seen rows
   - Issue banner: normalized HA/operator warnings from `system.ha.issues`
+- Treat the HA section as the built-in live operator snapshot for authority health, freshness, shared-etcd reachability summary, transport pressure, and site health; Prometheus/Grafana stay the historical view.
 - The built-in dashboard stays on `GET /system`; it does not parse `/metrics` in the browser.
 
 - Per‑app details now include:

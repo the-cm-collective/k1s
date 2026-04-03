@@ -461,14 +461,17 @@ HA edge transport upgrades (`H5b2c-edge-transport-upgrades`)
 HA closeout (`H5c-ha-closeout`)
 - Canonical audit artifact: [HA Closeout](ha-closeout.html)
 - Primary evidence lane:
+  - `make lab-vm-ha-validation` is now the preferred umbrella rerun for the checked-in HA validation flow; it wraps `scripts/lab/vm/run_ha_validation.sh`.
+  - The default stage set is `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills`.
   - VM/lab variants can now declare explicit `k1s-ha-core` hosts plus a `ha_control_plane` smoke lane.
   - The checked-in HA closeout topology is `lab/variants/ha-control-plane-core.yaml`.
   - For deeper disruptive validation, use `lab/variants/ha-control-plane-core-drills.yaml`; it enables the optional leader-failover, etcd-restart, and transport-recovery drill hooks through `scripts/lab/vm/ha_drill_actions.sh`.
-  - `scripts/lab/vm/smoke_helper.py` is the preferred operator entrypoint for that lane. `make lab-vm-smoke` is a thin wrapper around it, and the helper in turn wraps `smoke_v2.py`.
+  - `scripts/lab/vm/smoke_helper.py` remains the lower-level one-shot operator entrypoint for `stage1`, `stage2`, and `drills`. `make lab-vm-smoke` is a thin wrapper around it, and the helper in turn wraps `smoke_v2.py`.
   - `smoke_helper.py` prints live phase/check status from the `runs/<RUN_ID>/...` artifacts and can auto-run `variant_down.sh` on success.
   - Helper-owned wrapper flags are `--teardown on-success|always|never`, `--purge`, `--destroy-network`, and `--console`; pass any remaining `smoke_v2.py` flags after the helper flags.
   - When the variant points HA endpoints at the three HA core VM IPs, `smoke_v2` runs a `ha_shared_infra` phase that boots shared `etcd` plus shared hub NATS/JetStream on those VMs before `k1s-ha-core` bootstrap.
-  - The lane writes `runs/<RUN_ID>/ha_summary.json` as the machine-readable HA evidence artifact.
+  - The one-shot and drill lanes write `runs/<RUN_ID>/ha_summary.json` as the machine-readable HA evidence artifacts; the supplemental drain stage writes `runs/<RUN_ID>/summary.json`.
+  - The `retained` stage and the helper portion of `stage2-live` are wrapper-level stage checks from `run_ha_validation.sh`; do not treat them as standalone `ha_summary.json` artifacts.
   - The lane now assumes prereq-ready qcow2 images. Rebuild and re-verify the images after bootstrap/image changes before retrying first-pass VM failures:
     - `scripts/lab/vm/labctl.sh image build --variant all`
     - `scripts/lab/vm/labctl.sh image verify --variant all`
@@ -485,7 +488,8 @@ HA closeout (`H5c-ha-closeout`)
   - This reduced harness is intended for nightly/manual regression, not as the milestone-defining HA lane.
   - It forces `AE_JS_REPLICAS=1`, so it is useful for failover and replay regression but not as transport-fidelity evidence for the shared hub cluster.
 - Closeout rule:
-  - The 2026-03-19 HA closeout checkpoint satisfies the evidence rule: [HA Closeout](ha-closeout.html) shows zero `must_fix_before_closeout` gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.
+  - The 2026-03-19 HA closeout checkpoint satisfies the original evidence rule: [HA Closeout](ha-closeout.html) shows zero `must_fix_before_closeout` gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.
+  - The 2026-04-03 post-closeout rerun keeps that claim current: `make lab-vm-ha-validation` passed with green `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` results.
   - Reopen `H5c-ha-closeout` if either evidence lane regresses or [HA Closeout](ha-closeout.html) regains a must-fix gap.
   - On passworded-sudo hosts, run `sudo -v` before invoking `smoke_helper.py`; the helper does not prompt for a password and fails fast if `sudo -n true` is not already warm.
 
@@ -523,10 +527,11 @@ Dashboard reload vs. restart
   - On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`
   - Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: `make lab-vm-ha-attached-node-status`
   - After `up`, `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should resolve to the retained HA ingress IP instead of the local `127.0.0.1` dev mapping
-  - For one-shot HA harness tests, prefer `make lab-vm-smoke`; unlike the retained targets, it goes through `smoke_helper.py` and auto-runs `variant_down.sh` on success by default (`--teardown on-success`)
+  - For the full checked-in HA validation flow, prefer `make lab-vm-ha-validation`; for narrower one-shot HA harness tests, prefer `make lab-vm-smoke`
   - Canonical HA rerun order is: stage 1 one-shot on `ha-control-plane-attached-node`, stage 2 one-shot on `ha-control-plane-core`, then optional drills on `ha-control-plane-core-drills`; retained attached-node restart/rejoin flows are supplemental scenarios, not replacements for those one-shot acceptance runs
   - Stage 1 one-shot rerun sequence: `sudo -v && RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1" && AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-attached-node.yaml RUN_ID="$RUN_ID"`
   - Stage 2 one-shot rerun sequence: `sudo -v && RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2" && AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-core.yaml RUN_ID="$RUN_ID"`
+  - Default stage meanings under `make lab-vm-ha-validation`: `stage1` one-shot attached-node acceptance, `retained` retained stage-1 workstation flow, `drain` supplemental two-worker drain/reschedule, `stage2` one-shot edge/core-proxy acceptance, `stage2-live` live helper check, `drills` disruptive drill validation
   - Normal retained rerun sequence: `make lab-vm-ha-attached-node-purge`, `make lab-vm-ha-attached-node-up`, `make lab-vm-ha-attached-node-status`, `make lab-vm-ha-attached-node-workload-smoke`
   - retained-VM "rebuild and restart all" path: `make lab-vm-ha-attached-node-refresh-all`
   - Stop the retained VMs but keep retained run metadata for a later restart: `make lab-vm-ha-attached-node-down`
