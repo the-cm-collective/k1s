@@ -10,7 +10,7 @@
 .PHONY: lab-vm-ha-attached-node-up lab-vm-ha-attached-node-status lab-vm-ha-attached-node-down lab-vm-ha-attached-node-purge
 .PHONY: lab-vm-ha-attached-node-reseed-core lab-vm-ha-attached-node-restart-core
 .PHONY: lab-vm-ha-attached-node-restart-apishim lab-vm-ha-attached-node-restart-node
-.PHONY: lab-vm-ha-attached-node-refresh-all lab-vm-ha-attached-node-reset lab-vm-ha-attached-node-workload-smoke lab-vm-ha-core-workload-smoke
+.PHONY: lab-vm-ha-attached-node-refresh-all lab-vm-ha-attached-node-reset lab-vm-ha-attached-node-workload-smoke lab-vm-ha-core-workload-smoke lab-vm-ha-validation
 
 install:
 	python -m pip install -e .[dev]
@@ -324,6 +324,9 @@ lab-vm-ha-core-workload-smoke:
 	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-core.yaml} \
 	  RUN_ID=$${RUN_ID:-ha-control-plane-core} \
 	  ./scripts/lab/vm/ha_dashboard_smoke.sh core-workload-smoke $${LAB_VM_HA_CORE_ARGS:-$${LAB_VM_HA_ATTACHED_NODE_ARGS:-}}
+
+lab-vm-ha-validation:
+	@./scripts/lab/vm/run_ha_validation.sh $${LAB_VM_HA_VALIDATION_ARGS:-}
 
 lab-vm-ha-attached-node-down:
 	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
