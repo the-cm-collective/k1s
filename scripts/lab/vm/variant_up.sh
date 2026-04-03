@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 VARIANT=""
 RUN_ID="$(resolve_run_id)"
+CLOUD_INIT_WAIT_TIMEOUT="${CLOUD_INIT_WAIT_TIMEOUT:-300}"
 
 usage() {
   cat <<USAGE
@@ -25,6 +26,10 @@ done
 
 [[ -n "$VARIANT" ]] || { err "--variant is required"; usage; exit 2; }
 [[ -f "$VARIANT" ]] || { err "variant not found: $VARIANT"; exit 2; }
+if ! [[ "$CLOUD_INIT_WAIT_TIMEOUT" =~ ^[0-9]+$ ]]; then
+  err "CLOUD_INIT_WAIT_TIMEOUT must be an integer number of seconds"
+  exit 2
+fi
 
 require_cmd qemu-system-x86_64
 require_cmd qemu-img
@@ -242,7 +247,11 @@ for row in "${hosts[@]}"; do
     exit 1
   fi
   log "waiting for cloud-init: ${name} (${ip})"
-  if ! wait_for_cloud_init "$ip" 180; then
+  if ! wait_for_cloud_init "$ip" "$CLOUD_INIT_WAIT_TIMEOUT"; then
+    cloud_init_detail="$(run_remote "$ip" "cloud-init status --long 2>/dev/null | sed -n '1,12p'" || true)"
+    if [[ -n "$cloud_init_detail" ]]; then
+      err "cloud-init detail for ${name} (${ip}):"$'\n'"${cloud_init_detail}"
+    fi
     err "cloud-init did not complete for ${name} (${ip})"
     exit 1
   fi
