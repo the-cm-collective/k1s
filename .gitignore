@@ -27,6 +27,8 @@ ops/dev/caddy/sites/green.caddy
 # Generated edge NATS configs (created by add_edge_site.sh)
 ops/dev/nats-edge-*.conf
 ops/dev/nats-hub.conf
+# Ephemeral CI SSH keys for local/QEMU multinode smoke
+ops/ci/keys/
 .pytest_cache/
 .mypy_cache/
 coverage.xml
