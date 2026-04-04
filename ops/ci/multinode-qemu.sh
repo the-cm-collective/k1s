@@ -10,6 +10,7 @@ STATE_DIR="${STATE_DIR:-state/qemu}"
 LOG_DIR="$STATE_DIR/logs"
 PID_DIR="$STATE_DIR/pids"
 SEED_DIR="$STATE_DIR/seeds"
+KEY_DIR="$STATE_DIR/keys"
 
 BASE_IMG="${BASE_IMG:-.cache/images/ubuntu-24.04-server-cloudimg-amd64.img}"
 VM_MEM="${VM_MEM:-2048}"
@@ -27,8 +28,9 @@ AE_TOKEN="${AE_TOKEN:-ci-token}"
 ENABLE_OVERLAY="${ENABLE_OVERLAY:-0}"
 
 SSH_PUB_KEY="${SSH_PUB_KEY:-}"
-SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_rsa}"
-HOST_KEY_PATH="${HOST_KEY_PATH:-ops/ci/keys/id_rsa}"
+SSH_KEY_PATH="${SSH_KEY_PATH:-}"
+HOST_KEY_PATH="${HOST_KEY_PATH:-}"
+GUEST_HOST_KEY_PATH="${GUEST_HOST_KEY_PATH:-/home/ae/.ssh/ci_host_key}"
 
 usage() {
   cat <<'EOF'
@@ -43,8 +45,11 @@ Env knobs:
   CTRL_IP/WK1_IP/WK2_IP  Static guest IPs.
   AE_TOKEN           Shared controller/agent token.
   ENABLE_OVERLAY     Set 1 to install wireguard-tools in guests.
-  SSH_PUB_KEY        Override authorized key (defaults to contents of SSH_KEY_PATH.pub).
-  SSH_KEY_PATH       Private key path for ssh into guests (default ~/.ssh/id_rsa).
+  SSH_PUB_KEY        Additional authorized key to inject into guests.
+  SSH_KEY_PATH       Private key path for ssh into guests.
+                     Defaults to an auto-generated ephemeral key under STATE_DIR/keys.
+  HOST_KEY_PATH      Optional private key used by the built-in failover smoke from the
+                     controller guest to worker1. Defaults to SSH_KEY_PATH.
 
 Prereqs on host: qemu-system-x86_64, cloud-localds (cloud-image-utils), iproute2, sudo,
 and KVM access (/dev/kvm).
@@ -55,6 +60,102 @@ ensure_deps() {
   command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 missing"; exit 1; }
   command -v cloud-localds >/dev/null || { echo "cloud-localds missing (cloud-image-utils)"; exit 1; }
   command -v ip >/dev/null || { echo "ip command missing"; exit 1; }
+  command -v ssh >/dev/null || { echo "ssh missing"; exit 1; }
+  command -v ssh-keygen >/dev/null || { echo "ssh-keygen missing"; exit 1; }
+}
+
+generate_keypair() {
+  local key_path=$1
+  mkdir -p "$(dirname "$key_path")"
+  rm -f "$key_path" "${key_path}.pub"
+  ssh-keygen -q -t ed25519 -N "" -C "multinode-qemu" -f "$key_path" >/dev/null
+}
+
+ensure_pubkey_file() {
+  local key_path=$1
+  local pub_path="${key_path}.pub"
+  if [[ -f "$pub_path" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$key_path" ]]; then
+    echo "SSH key ${key_path} missing" >&2
+    exit 1
+  fi
+  ssh-keygen -y -f "$key_path" >"$pub_path"
+}
+
+resolve_key_paths() {
+  local default_key="${KEY_DIR}/ci_ephemeral"
+  mkdir -p "$KEY_DIR"
+
+  if [[ -z "$SSH_KEY_PATH" ]]; then
+    SSH_KEY_PATH="$default_key"
+  fi
+  if [[ ! -f "$SSH_KEY_PATH" ]]; then
+    if [[ "$SSH_KEY_PATH" == "$default_key" ]]; then
+      generate_keypair "$SSH_KEY_PATH"
+    else
+      echo "SSH key ${SSH_KEY_PATH} missing" >&2
+      exit 1
+    fi
+  fi
+  ensure_pubkey_file "$SSH_KEY_PATH"
+
+  if [[ -z "$HOST_KEY_PATH" ]]; then
+    HOST_KEY_PATH="$SSH_KEY_PATH"
+  fi
+  if [[ -f "$HOST_KEY_PATH" ]]; then
+    ensure_pubkey_file "$HOST_KEY_PATH"
+    return 0
+  fi
+  if [[ "$HOST_KEY_PATH" == "$default_key" ]]; then
+    generate_keypair "$HOST_KEY_PATH"
+    ensure_pubkey_file "$HOST_KEY_PATH"
+    return 0
+  fi
+  if [[ "${RUN_SMOKE:-0}" == "1" ]]; then
+    echo "Host smoke key ${HOST_KEY_PATH} missing" >&2
+    exit 1
+  fi
+  echo "warning: HOST_KEY_PATH ${HOST_KEY_PATH} missing; built-in smoke kill step will be skipped" >&2
+}
+
+authorized_key_entries() {
+  declare -A seen=()
+  local pubkey=""
+  local key_path=""
+
+  for key_path in "$SSH_KEY_PATH" "$HOST_KEY_PATH"; do
+    [[ -n "$key_path" && -f "${key_path}.pub" ]] || continue
+    pubkey="$(cat "${key_path}.pub")"
+    [[ -n "$pubkey" ]] || continue
+    if [[ -z "${seen[$pubkey]:-}" ]]; then
+      seen["$pubkey"]=1
+      printf '%s\n' "$pubkey"
+    fi
+  done
+
+  if [[ -n "$SSH_PUB_KEY" && -z "${seen[$SSH_PUB_KEY]:-}" ]]; then
+    printf '%s\n' "$SSH_PUB_KEY"
+  fi
+}
+
+install_guest_host_key() {
+  local ip=$1
+  local guest_key_path=$2
+
+  [[ -f "$HOST_KEY_PATH" ]] || return 1
+
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$SSH_KEY_PATH" "ae@$ip" \
+    "HOST_KEY_DEST=${guest_key_path} bash -s" <<REMOTE
+set -euo pipefail
+mkdir -p "\$(dirname "\$HOST_KEY_DEST")"
+umask 077
+cat >"\$HOST_KEY_DEST" <<'KEY'
+$(cat "$HOST_KEY_PATH")
+KEY
+chmod 600 "\$HOST_KEY_DEST"
+REMOTE
 }
 
 ensure_base_image() {
@@ -110,16 +211,15 @@ make_seed() {
   local tmp
   tmp="$(mktemp -d)"
 
-  local pubkey_content
-  if [[ -n "$SSH_PUB_KEY" ]]; then
-    pubkey_content="$SSH_PUB_KEY"
-  else
-    if [[ -f "${SSH_KEY_PATH}.pub" ]]; then
-      pubkey_content="$(cat "${SSH_KEY_PATH}.pub")"
-    else
-      echo "No SSH key found; set SSH_PUB_KEY or SSH_KEY_PATH" >&2
-      exit 1
-    fi
+  local authorized_keys_yaml=""
+  local pubkey_content=""
+  while IFS= read -r pubkey_content; do
+    [[ -n "$pubkey_content" ]] || continue
+    authorized_keys_yaml+="      - ${pubkey_content}"$'\n'
+  done < <(authorized_key_entries)
+  if [[ -z "$authorized_keys_yaml" ]]; then
+    echo "No SSH key found; set SSH_KEY_PATH or SSH_PUB_KEY" >&2
+    exit 1
   fi
 
   cat >"$tmp/user-data" <<EOF
@@ -129,7 +229,7 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
     ssh-authorized-keys:
-      - $pubkey_content
+${authorized_keys_yaml%$'\n'}
 package_update: true
 packages:
   - docker.io
@@ -228,6 +328,7 @@ mount_host() {
 start_stack() {
   ensure_deps
   ensure_base_image
+  resolve_key_paths
   mkdir -p "$STATE_DIR"
   ensure_bridge
 
@@ -271,7 +372,10 @@ start_stack() {
 
   if [[ "${RUN_SMOKE:-0}" == "1" ]]; then
     echo "Running built-in smoke..."
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$SSH_KEY_PATH" "ae@$CTRL_IP" "WK1_IP=${WK1_IP} HOST_KEY_PATH=${HOST_KEY_PATH} bash -s" <<'REMOTE'
+    if ! install_guest_host_key "$CTRL_IP" "$GUEST_HOST_KEY_PATH"; then
+      echo "Skip failover kill: $HOST_KEY_PATH not present"
+    fi
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$SSH_KEY_PATH" "ae@$CTRL_IP" "WK1_IP=${WK1_IP} HOST_KEY_PATH=${GUEST_HOST_KEY_PATH} bash -s" <<'REMOTE'
 set -euo pipefail
 WK1="${WK1_IP}"
 HOST_KEY="${HOST_KEY_PATH}"
@@ -318,6 +422,7 @@ REMOTE
 }
 
 stop_stack() {
+  resolve_key_paths
   echo "Stopping controller/agents (best effort)..."
   for ip in "$CTRL_IP" "$WK1_IP" "$WK2_IP"; do
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$SSH_KEY_PATH" "ae@$ip" \
