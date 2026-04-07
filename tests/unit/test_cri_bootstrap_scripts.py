@@ -17,6 +17,7 @@ CRI_SMOKE_SCRIPT = ROOT / "scripts" / "cri_smoke.sh"
 CRI_CI_SETUP_SCRIPT = ROOT / "scripts" / "cri_ci_setup.sh"
 COMMON_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "common-bootstrap.sh"
 GPU_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "gpu-bootstrap.sh"
+PACKER_TEMPLATE = ROOT / "lab" / "packer" / "ubuntu-22.04-ga.pkr.hcl"
 GUEST_PREREQS_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "guest_prereqs.sh"
 IMAGE_BUILD_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_build.sh"
 IMAGE_VERIFY_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_verify.sh"
@@ -1368,7 +1369,21 @@ def test_cri_bootstrap_scripts_use_compatible_cni_default() -> None:
     )
     common_bootstrap = COMMON_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
     assert common_bootstrap.count('"cniVersion": "0.4.0"') == 2
-    assert "crictl pull registry.k8s.io/pause:3.9" in common_bootstrap
+    assert 'sandbox_image="${AE_CRI_SANDBOX_IMAGE:-registry.k8s.io/pause:3.9}"' in common_bootstrap
+    assert "write_containerd_bootstrap_config()" in common_bootstrap
+    assert "ctr -n k8s.io images import \"$seed_bundle\"" in common_bootstrap
+    assert 'AE_CRI_SANDBOX_IMAGE="$sandbox_image" AE_CRI_SMOKE_PULL=0 "$cri_smoke_script"' in common_bootstrap
+    assert "guest_root_uuid()" in common_bootstrap
+    assert "guest_root_label()" in common_bootstrap
+    assert "guest_fstab_root_source()" in common_bootstrap
+    assert "guest_grub_root_uuids()" in common_bootstrap
+    assert "assert_guest_boot_contract()" in common_bootstrap
+    assert "ensure_initramfs_module()" in common_bootstrap
+    assert "write_virtio_root_modules()" in common_bootstrap
+    assert "ensure_initramfs_module virtio_blk" in common_bootstrap
+    assert "ensure_initramfs_module virtio_pci" in common_bootstrap
+    assert "update-initramfs -u -k all" in common_bootstrap
+    assert "update-grub" in common_bootstrap
     assert "bootstrap_contract_version" in common_bootstrap
     assert '"cni_version": "${expected_cni_version}"' in common_bootstrap
     gpu_bootstrap = GPU_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
@@ -1381,6 +1396,14 @@ def test_cri_bootstrap_scripts_use_compatible_cni_default() -> None:
         in image_build
     )
     assert 'EXPECTED_CNI_VERSION="${EXPECTED_CNI_VERSION:-0.4.0}"' in image_build
+    assert 'SEED_BUNDLE_SCRIPT="${SEED_BUNDLE_SCRIPT:-$ROOT_DIR/scripts/lab/vm/image_seed_bundle.sh}"' in image_build
+    assert (
+        'ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT="${ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT:-$ROOT_DIR/scripts/lab/vm/assert_image_boot_contract.sh}"'
+        in image_build
+    )
+    assert 'SEED_BUNDLE="$ROOT_DIR/state/lab-vm/$SEED_RUN_ID/seeds/cri-seed-images.oci.tar"' in image_build
+    assert '-var "seed_bundle=${SEED_BUNDLE}" \\' in image_build
+    assert 'bash "$ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT" "$image"' in image_build
     assert "bootstrap_contract_version:$bootstrap_contract_version" in image_build
     assert "cni_version:$cni_version" in image_build
 
@@ -1390,8 +1413,22 @@ def test_cri_bootstrap_scripts_use_compatible_cni_default() -> None:
         in image_verify
     )
     assert 'EXPECTED_CNI_VERSION="${EXPECTED_CNI_VERSION:-0.4.0}"' in image_verify
+    assert "--metadata-only" in image_verify
+    assert "--purge-failed" in image_verify
+    assert "boot_verify_image() (" in image_verify
+    assert 'INSPECT_QCOW_BOOT_SCRIPT="${INSPECT_QCOW_BOOT_SCRIPT:-$ROOT_DIR/scripts/lab/vm/inspect_qcow_boot.sh}"' in image_verify
+    assert (
+        'ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT="${ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT:-$ROOT_DIR/scripts/lab/vm/assert_image_boot_contract.sh}"'
+        in image_verify
+    )
+    assert 'bash "$VARIANT_UP_SCRIPT" --variant "$variant_file" --run-id "$run_id"' in image_verify
+    assert 'bash "$ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT" "$image"' in image_verify
+    assert 'bash "$INSPECT_QCOW_BOOT_SCRIPT" "$state_dir/image-verify-${image_variant}.qcow2"' in image_verify
+    assert 'echo "[image-verify] ssh key path: $key_path"' in image_verify
     assert ".bootstrap_contract_version == $v" in image_verify
     assert ".cni_version == $v" in image_verify
+    packer_template = PACKER_TEMPLATE.read_text(encoding="utf-8")
+    assert 'disk_interface   = "virtio"' in packer_template
 
 
 def test_guest_prereqs_runs_cri_sandbox_smoke() -> None:

@@ -101,6 +101,7 @@ stop_host() {
   fi
   if ip link show "$tap" >/dev/null 2>&1; then
     sudo ip link set "$tap" down || true
+    sudo ip link set "$tap" nomaster || true
     sudo ip link delete "$tap" || true
   fi
   log "stopped ${name}"
@@ -135,6 +136,22 @@ stop_variant_hosts_best_effort() {
     pid_file="$state_dir/pids/${name}.pid"
     overlay="$state_dir/${name}.qcow2"
     stop_host "$name" "$tap" "$pid_file" "$overlay"
+  done
+}
+
+cleanup_expected_lane_taps() {
+  local tap=""
+  local -a hosts=()
+
+  mapfile -t hosts < <(echo "$variant_json" | jq -r '.hosts[] | @base64')
+
+  for i in "${!hosts[@]}"; do
+    tap="$(lane_tap_name "$i")"
+    if ip link show "$tap" >/dev/null 2>&1; then
+      sudo ip link set "$tap" down || true
+      sudo ip link set "$tap" nomaster || true
+      sudo ip link delete "$tap" || true
+    fi
   done
 }
 
@@ -209,6 +226,7 @@ main() {
       ;;
   esac
 
+  cleanup_expected_lane_taps
   destroy_network_if_requested
   purge_state_dir_if_requested
   log "variant down complete run_id=${RUN_ID}"

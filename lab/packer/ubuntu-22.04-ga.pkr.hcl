@@ -21,6 +21,10 @@ variable "output_dir" {
   default = "artifacts/images"
 }
 
+variable "seed_bundle" {
+  type = string
+}
+
 variable "vm_memory" {
   type    = number
   default = 4096
@@ -44,6 +48,7 @@ variable "ubuntu_image_checksum" {
 source "qemu" "ubuntu" {
   accelerator      = "kvm"
   communicator     = "ssh"
+  disk_interface   = "virtio"
   disk_image       = true
   format           = "qcow2"
   headless         = true
@@ -89,11 +94,21 @@ build {
     destination = "/tmp/cri_seed_images.lock.json"
   }
 
+  provisioner "file" {
+    source      = var.seed_bundle
+    destination = "/tmp/cri-seed-images.oci.tar"
+  }
+
+  provisioner "file" {
+    source      = "scripts/cri_smoke.sh"
+    destination = "/tmp/cri_smoke.sh"
+  }
+
   provisioner "shell" {
     execute_command = "echo 'packer' | {{.Vars}} sudo -S -E bash '{{.Path}}'"
     inline = [
-      "chmod +x /tmp/common-bootstrap.sh /tmp/gpu-bootstrap.sh",
-      "/tmp/common-bootstrap.sh ${var.variant} /tmp/cri_seed_images.lock.json",
+      "chmod +x /tmp/common-bootstrap.sh /tmp/gpu-bootstrap.sh /tmp/cri_smoke.sh",
+      "/tmp/common-bootstrap.sh ${var.variant} /tmp/cri_seed_images.lock.json /tmp/cri-seed-images.oci.tar /tmp/cri_smoke.sh",
       "if [ '${var.variant}' = 'gpu' ]; then /tmp/gpu-bootstrap.sh; fi",
       "cloud-init clean --logs",
       "truncate -s 0 /etc/machine-id",

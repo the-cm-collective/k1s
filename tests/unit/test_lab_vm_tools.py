@@ -2,6 +2,8 @@ from __future__ import annotations
 
 # ruff: noqa: S603
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,8 +19,11 @@ SMOKE_V2_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "smoke_v2.py"
 BOOTSTRAP_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "k1s_bootstrap.sh"
 HA_SHARED_INFRA_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "ha_shared_infra.sh"
 COMMON_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "common-bootstrap.sh"
+PACKER_TEMPLATE = ROOT / "lab" / "packer" / "ubuntu-22.04-ga.pkr.hcl"
 IMAGE_BUILD_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_build.sh"
 IMAGE_VERIFY_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_verify.sh"
+INSPECT_QCOW_BOOT_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "inspect_qcow_boot.sh"
+ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "assert_image_boot_contract.sh"
 RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
 CRI_NODE_CNI_HELPER_SCRIPT = ROOT / "scripts" / "dev" / "ensure_cri_node_cni.sh"
 HA_CLOSEOUT_E2E_SCRIPT = ROOT / "scripts" / "dev" / "ha_closeout_e2e.sh"
@@ -951,6 +956,7 @@ exit 0
 
 def test_variant_up_uses_variant_aware_host_prepare() -> None:
     text = VARIANT_UP_SCRIPT.read_text(encoding="utf-8")
+    assert 'CLOUD_INIT_WAIT_TIMEOUT="${CLOUD_INIT_WAIT_TIMEOUT:-300}"' in text
     assert '"$ROOT_DIR/scripts/lab/vm/host_prepare.sh" --variant "$VARIANT" --apply' in text
     assert 'pod_route_rows="$(' in text
     assert 'select(.role=="k1s-core-node" and (.pod_cidr // "") != "")' in text
@@ -958,12 +964,19 @@ def test_variant_up_uses_variant_aware_host_prepare() -> None:
     assert "printf '      routes:" in text
     assert 'route_yaml="$(render_guest_route_yaml "$role")"' in text
     assert 'tap="$(lane_tap_name "$index")"' in text
+    assert 'log "resetting stale tap=${tap}"' in text
+    assert 'sudo ip link set "$tap" nomaster || true' in text
+    assert 'err "tap ${tap} still exists after reset"' in text
     assert 'host_disk_gb="$(echo "$row" | jq -r \'.vm.disk_gb\')"' in text
+    assert 'validate_overlay_disk_size() {' in text
+    assert 'backing image ${backing_image} has virtual size ${backing_size_gib}GiB' in text
+    assert 'existing overlay ${overlay} has virtual size ${overlay_size_gib}GiB' in text
+    assert 'validate_overlay_disk_size "$name" "$host_disk_gb" "$img" "$overlay"' in text
     assert 'host_mem="$(echo "$row" | jq -r \'.vm.memory_mb\')"' in text
     assert 'host_cpus="$(echo "$row" | jq -r \'.vm.vcpus\')"' in text
     assert 'qemu-img create -f qcow2 -F qcow2 -b "$img" "$overlay" "${host_disk_gb}G" >/dev/null' in text
     assert '-m "$host_mem" -smp "$host_cpus"' in text
-    assert 'wait_for_cloud_init "$ip" 180' in text
+    assert 'wait_for_cloud_init "$ip" "$CLOUD_INIT_WAIT_TIMEOUT"' in text
     assert 'err "cloud-init did not complete for ${name} (${ip})"' in text
 
 
@@ -977,6 +990,7 @@ def test_variant_down_uses_run_inventory_fallback() -> None:
     assert 'log "continuing with best-effort cleanup derived from variant topology"' in text
     assert 'FORWARD_CHAIN="${FORWARD_CHAIN:-K1S_VM_FORWARD}"' in text
     assert 'BRIDGE_FORWARD_CHAIN="${BRIDGE_FORWARD_CHAIN:-K1S_VM_BRIDGE_FORWARD}"' in text
+    assert "cleanup_expected_lane_taps() {" in text
     assert 'tap="$(lane_tap_name "$i")"' in text
     assert 'pid_file="$state_dir/pids/${name}.pid"' in text
     assert "while sudo iptables -t nat -D POSTROUTING -s \"$cidr\" -d \"$pod_cidr\" -j RETURN 2>/dev/null; do" in text
@@ -988,6 +1002,7 @@ def test_variant_down_uses_run_inventory_fallback() -> None:
     assert 'sudo ebtables -t filter -F "$BRIDGE_FORWARD_CHAIN" 2>/dev/null || true' in text
     assert 'sudo ebtables -t filter -X "$BRIDGE_FORWARD_CHAIN" 2>/dev/null || true' in text
     assert 'sudo ip route del "$route_cidr" via "$route_ip" dev "$bridge" 2>/dev/null || true' in text
+    assert 'sudo ip link set "$tap" nomaster || true' in text
     assert (
         'elif pids="$(pgrep -f -- "$overlay" 2>/dev/null || true)" && [[ -n "$pids" ]]; then'
         in text
@@ -1380,11 +1395,29 @@ def test_common_bootstrap_bakes_vm_prereqs_into_images() -> None:
     assert 'echo "[image-bootstrap] installing crictl ${crictl_version} binary"' in text
     assert "install_crictl_binary()" in text
     assert "containerd --config /etc/containerd/config.toml config dump" in text
+    assert "write_containerd_bootstrap_config()" in text
+    assert "/etc/containerd/conf.d/10-k1s-bootstrap.toml" in text
+    assert "sandbox = '${sandbox_image}'" in text
+    assert "sandbox_image = '${sandbox_image}'" in text
     assert "/etc/crictl.yaml" in text
     assert "/opt/cni/bin" in text
     assert "10-k1s-bridge.conflist" in text
     assert "systemctl enable containerd" in text
     assert "systemctl restart containerd" in text
+    assert 'ctr -n k8s.io images import "$seed_bundle"' in text
+    assert 'AE_CRI_SANDBOX_IMAGE="$sandbox_image" AE_CRI_SMOKE_PULL=0 "$cri_smoke_script"' in text
+    assert "guest_root_uuid()" in text
+    assert "guest_root_label()" in text
+    assert "guest_fstab_root_source()" in text
+    assert "guest_grub_root_uuids()" in text
+    assert "assert_guest_boot_contract()" in text
+    assert "ensure_initramfs_module()" in text
+    assert "write_virtio_root_modules()" in text
+    assert "ensure_initramfs_module virtio_blk" in text
+    assert "ensure_initramfs_module virtio_pci" in text
+    assert "update-initramfs -u -k all" in text
+    assert "update-grub" in text
+    assert "assert_guest_boot_contract" in text
     assert "systemctl enable containerd qemu-guest-agent" not in text
     assert "systemctl restart containerd qemu-guest-agent" not in text
     assert '"vm_bootstrap_ready": true' in text
@@ -1395,12 +1428,28 @@ def test_common_bootstrap_bakes_vm_prereqs_into_images() -> None:
 
 def test_image_build_writes_vm_bootstrap_metadata_flags() -> None:
     text = IMAGE_BUILD_SCRIPT.read_text(encoding="utf-8")
+    assert 'SEED_BUNDLE_SCRIPT="${SEED_BUNDLE_SCRIPT:-$ROOT_DIR/scripts/lab/vm/image_seed_bundle.sh}"' in text
+    assert (
+        'ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT="${ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT:-$ROOT_DIR/scripts/lab/vm/assert_image_boot_contract.sh}"'
+        in text
+    )
+    assert "prepare_seed_bundle() {" in text
+    assert 'SEED_BUNDLE="$ROOT_DIR/state/lab-vm/$SEED_RUN_ID/seeds/cri-seed-images.oci.tar"' in text
+    assert 'bash "$SEED_BUNDLE_SCRIPT" \\' in text
+    assert '-var "seed_bundle=${SEED_BUNDLE}" \\' in text
     assert 'build_dir="$OUTPUT_DIR/build-${variant}"' in text
     assert 'rm -rf "$build_dir"' in text
+    assert 'rm -f "$sha_file" "$meta_file"' in text
+    assert 'bash "$ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT" "$image"' in text
     assert "vm_bootstrap_ready:true" in text
     assert "python_alias:true" in text
     assert "crictl_ready:true" in text
     assert "cni_ready:true" in text
+
+
+def test_packer_template_pins_virtio_disk_interface() -> None:
+    text = PACKER_TEMPLATE.read_text(encoding="utf-8")
+    assert 'disk_interface   = "virtio"' in text
 
 
 @pytest.mark.skipif(
@@ -1472,11 +1521,754 @@ def test_image_verify_requires_vm_bootstrap_metadata_flags(tmp_path: Path) -> No
     )
 
     res = subprocess.run(  # noqa: S603
-        [str(IMAGE_VERIFY_SCRIPT), "--image-dir", str(image_dir), "--variant", "base"],
+        [str(IMAGE_VERIFY_SCRIPT), "--image-dir", str(image_dir), "--variant", "base", "--metadata-only"],
         text=True,
         capture_output=True,
     )
     assert res.returncode == 0, res.stderr
+
+
+@pytest.mark.skipif(
+    not shutil.which("qemu-img") or not shutil.which("sha256sum") or not shutil.which("jq"),
+    reason="image verify dependencies not available",
+)
+def test_image_verify_boots_ephemeral_vm_by_default(tmp_path: Path) -> None:
+    qemu_img = shutil.which("qemu-img")
+    sha256sum = shutil.which("sha256sum")
+    assert qemu_img is not None
+    assert sha256sum is not None
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    image = image_dir / "ubuntu-22.04-k1s-base.qcow2"
+    subprocess.run(  # noqa: S603
+        [qemu_img, "create", "-f", "qcow2", str(image), "16M"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    sha_file = Path(f"{image}.sha256")
+    meta_file = Path(f"{image}.meta.json")
+    sha_file.write_text(
+        subprocess.run(  # noqa: S603
+            [sha256sum, str(image)],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout,
+        encoding="utf-8",
+    )
+    meta_file.write_text(
+        json.dumps(
+            {
+                "image": image.name,
+                "variant": "base",
+                "kernel_track": "ga-5.15",
+                "checksum": sha_file.read_text(encoding="utf-8").split()[0],
+                "created_at": "2026-04-06T19:00:00Z",
+                "bootstrap_contract_version": "20260324-cni-0.4.0-smoke-v1",
+                "cni_version": "0.4.0",
+                "vm_bootstrap_ready": True,
+                "python_alias": True,
+                "crictl_ready": True,
+                "cni_ready": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    verify_log = tmp_path / "verify.log"
+    up_log = tmp_path / "up.log"
+    down_log = tmp_path / "down.log"
+    contract_log = tmp_path / "contract.log"
+    variant_log = tmp_path / "variant.log"
+    fake_up = tmp_path / "variant_up.sh"
+    fake_down = tmp_path / "variant_down.sh"
+    fake_assert = tmp_path / "assert_image_boot_contract.sh"
+
+    _write_executable(
+        fake_up,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+variant_file=""
+printf '%s\\n' "$*" >> "{up_log}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --variant) variant_file="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat "$variant_file" > "{variant_log}"
+""",
+    )
+    _write_executable(
+        fake_down,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{down_log}"
+""",
+    )
+    _write_executable(
+        fake_assert,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{contract_log}"
+""",
+    )
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{verify_log}"
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["VARIANT_UP_SCRIPT"] = str(fake_up)
+    env["VARIANT_DOWN_SCRIPT"] = str(fake_down)
+    env["ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT"] = str(fake_assert)
+
+    res = subprocess.run(  # noqa: S603
+        [str(IMAGE_VERIFY_SCRIPT), "--image-dir", str(image_dir), "--variant", "base"],
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert res.returncode == 0, res.stderr
+    assert str(image) in contract_log.read_text(encoding="utf-8")
+    assert "--run-id image-verify-base-" in up_log.read_text(encoding="utf-8")
+    assert "disk_gb: 1" in variant_log.read_text(encoding="utf-8")
+    assert "ae@192.168.251.10" in verify_log.read_text(encoding="utf-8")
+    assert "ensure_vm_bootstrap_prereqs" in verify_log.read_text(encoding="utf-8")
+    down_text = down_log.read_text(encoding="utf-8")
+    assert "--destroy-network" in down_text
+    assert "--best-effort" in down_text
+    assert "--purge" in down_text
+
+
+@pytest.mark.skipif(not Path("/dev/kvm").exists(), reason="/dev/kvm missing")
+def test_variant_up_rejects_overlay_smaller_than_backing_image(tmp_path: Path) -> None:
+    variant = tmp_path / "variant.yaml"
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    base = image_dir / "base.qcow2"
+    gpu = image_dir / "gpu.qcow2"
+    base.write_bytes(b"base")
+    gpu.write_bytes(b"gpu")
+
+    for image in (base, gpu):
+        Path(f"{image}.meta.json").write_text(
+            json.dumps(
+                {
+                    "vm_bootstrap_ready": True,
+                    "python_alias": True,
+                    "crictl_ready": True,
+                    "cni_ready": True,
+                    "bootstrap_contract_version": "20260324-cni-0.4.0-smoke-v1",
+                    "cni_version": "0.4.0",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    variant.write_text(
+        f"""
+name: overlay-too-small
+test_id: 9001
+network:
+  bridge: k1s-br-test
+  cidr: 192.168.255.0/24
+  gateway: 192.168.255.1
+vm:
+  memory_mb: 4096
+  vcpus: 2
+  disk_gb: 30
+images:
+  base: {base}
+  gpu: {gpu}
+hosts:
+  - name: core-a
+    ip: 192.168.255.10
+    role: k1s-core
+    gpu: false
+""".strip(),
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    qemu_img_log = tmp_path / "qemu-img.log"
+    ssh_key = tmp_path / "id_rsa"
+    ssh_key.write_text("private", encoding="utf-8")
+    ssh_key.with_suffix(".pub").write_text("ssh-ed25519 AAAATEST test@example\n", encoding="utf-8")
+    run_id = "unit-overlay-too-small"
+    state_dir = ROOT / "state" / "lab-vm" / run_id
+    run_dir = ROOT / "runs" / run_id
+
+    _write_executable(
+        fake_bin / "qemu-img",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{qemu_img_log}"
+case "${{1:-}}" in
+  info)
+    printf '%s\\n' '{{"virtual-size":42949672960,"format":"qcow2"}}'
+    ;;
+  create)
+    echo "unexpected qemu-img create" >&2
+    exit 99
+    ;;
+  *)
+    echo "unexpected qemu-img args: $*" >&2
+    exit 2
+    ;;
+esac
+""",
+    )
+    _write_executable(fake_bin / "qemu-system-x86_64", "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n")
+    _write_executable(fake_bin / "cloud-localds", "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n")
+    _write_executable(fake_bin / "ssh", "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n")
+    _write_executable(fake_bin / "crictl", "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n")
+    _write_executable(
+        fake_bin / "ip",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "link" && "${2:-}" == "show" ]]; then
+  exit 1
+fi
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "iptables",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" -C "* ]] || [[ " $* " == *" -D "* ]]; then
+  exit 1
+fi
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "ebtables",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" -D "* ]]; then
+  exit 1
+fi
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "sudo",
+        """#!/usr/bin/env bash
+set -euo pipefail
+exec "$@"
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_KEY_PATH"] = str(ssh_key)
+
+    try:
+        shutil.rmtree(state_dir, ignore_errors=True)
+        shutil.rmtree(run_dir, ignore_errors=True)
+        res = subprocess.run(
+            [str(VARIANT_UP_SCRIPT), "--variant", str(variant), "--run-id", run_id],
+            check=False,
+            text=True,
+            capture_output=True,
+            env=env,
+        )
+        assert res.returncode == 1
+        assert "host core-a requested vm.disk_gb=30GiB" in res.stderr
+        assert f"backing image {base}" in res.stderr
+        assert "requires at least 40GiB" in res.stderr
+        qemu_img_calls = qemu_img_log.read_text(encoding="utf-8")
+        assert "info --output=json" in qemu_img_calls
+        assert "create" not in qemu_img_calls
+    finally:
+        shutil.rmtree(state_dir, ignore_errors=True)
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+@pytest.mark.skipif(
+    not shutil.which("qemu-img") or not shutil.which("sha256sum") or not shutil.which("jq"),
+    reason="image verify dependencies not available",
+)
+def test_image_verify_tears_down_ephemeral_vm_after_boot_failure(tmp_path: Path) -> None:
+    qemu_img = shutil.which("qemu-img")
+    sha256sum = shutil.which("sha256sum")
+    assert qemu_img is not None
+    assert sha256sum is not None
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    image = image_dir / "ubuntu-22.04-k1s-base.qcow2"
+    subprocess.run(  # noqa: S603
+        [qemu_img, "create", "-f", "qcow2", str(image), "16M"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    sha_file = Path(f"{image}.sha256")
+    meta_file = Path(f"{image}.meta.json")
+    sha_file.write_text(
+        subprocess.run(  # noqa: S603
+            [sha256sum, str(image)],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout,
+        encoding="utf-8",
+    )
+    meta_file.write_text(
+        json.dumps(
+            {
+                "image": image.name,
+                "variant": "base",
+                "kernel_track": "ga-5.15",
+                "checksum": sha_file.read_text(encoding="utf-8").split()[0],
+                "created_at": "2026-04-06T19:00:00Z",
+                "bootstrap_contract_version": "20260324-cni-0.4.0-smoke-v1",
+                "cni_version": "0.4.0",
+                "vm_bootstrap_ready": True,
+                "python_alias": True,
+                "crictl_ready": True,
+                "cni_ready": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    down_log = tmp_path / "down.log"
+    inspect_log = tmp_path / "inspect.log"
+    fake_up = tmp_path / "variant_up.sh"
+    fake_down = tmp_path / "variant_down.sh"
+    fake_assert = tmp_path / "assert_image_boot_contract.sh"
+    fake_inspect = tmp_path / "inspect_qcow_boot.sh"
+    run_dirs_before = {
+        path.name
+        for path in (ROOT / "state" / "lab-vm").glob("image-verify-base-*")
+        if path.is_dir()
+    }
+
+    _write_executable(
+        fake_up,
+        """#!/usr/bin/env bash
+set -euo pipefail
+""",
+    )
+    _write_executable(
+        fake_down,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{down_log}"
+""",
+    )
+    _write_executable(
+        fake_assert,
+        """#!/usr/bin/env bash
+set -euo pipefail
+""",
+    )
+    _write_executable(
+        fake_inspect,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf 'inspect %s\\n' "$1" >> "{inspect_log}"
+printf 'root_uuid=test-root\\n'
+""",
+    )
+    _write_executable(
+        fake_bin / "ssh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "boot smoke failed" >&2
+exit 1
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["VARIANT_UP_SCRIPT"] = str(fake_up)
+    env["VARIANT_DOWN_SCRIPT"] = str(fake_down)
+    env["ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT"] = str(fake_assert)
+    env["INSPECT_QCOW_BOOT_SCRIPT"] = str(fake_inspect)
+
+    res = subprocess.run(  # noqa: S603
+        [str(IMAGE_VERIFY_SCRIPT), "--image-dir", str(image_dir), "--variant", "base"],
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert res.returncode == 1
+    assert "boot smoke failed" in res.stderr
+    assert "--destroy-network --best-effort" in down_log.read_text(encoding="utf-8")
+    assert "--purge" not in down_log.read_text(encoding="utf-8")
+    assert not inspect_log.exists()
+
+    run_dirs_after = {
+        path.name
+        for path in (ROOT / "state" / "lab-vm").glob("image-verify-base-*")
+        if path.is_dir()
+    }
+    new_run_dirs = sorted(run_dirs_after - run_dirs_before)
+    try:
+        assert "preserved failed verifier state unavailable" in res.stderr
+        assert not new_run_dirs
+    finally:
+        for run_dir in new_run_dirs:
+            shutil.rmtree(ROOT / "state" / "lab-vm" / run_dir, ignore_errors=True)
+
+
+def test_image_verify_preserves_failed_vm_logs_and_classifies_root_mount_failures(tmp_path: Path) -> None:
+    qemu_img = shutil.which("qemu-img")
+    sha256sum = shutil.which("sha256sum")
+    assert qemu_img is not None
+    assert sha256sum is not None
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    image = image_dir / "ubuntu-22.04-k1s-base.qcow2"
+    subprocess.run(
+        [qemu_img, "create", "-f", "qcow2", str(image), "16M"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    sha_file = Path(f"{image}.sha256")
+    meta_file = Path(f"{image}.meta.json")
+    sha_file.write_text(
+        subprocess.run(
+            [sha256sum, str(image)],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout,
+        encoding="utf-8",
+    )
+    meta_file.write_text(
+        json.dumps(
+            {
+                "image": image.name,
+                "variant": "base",
+                "kernel_track": "ga-5.15",
+                "checksum": sha_file.read_text(encoding="utf-8").split()[0],
+                "created_at": "2026-04-06T19:00:00Z",
+                "bootstrap_contract_version": "20260324-cni-0.4.0-smoke-v1",
+                "cni_version": "0.4.0",
+                "vm_bootstrap_ready": True,
+                "python_alias": True,
+                "crictl_ready": True,
+                "cni_ready": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    down_log = tmp_path / "down.log"
+    inspect_log = tmp_path / "inspect.log"
+    fake_up = tmp_path / "variant_up.sh"
+    fake_down = tmp_path / "variant_down.sh"
+    fake_assert = tmp_path / "assert_image_boot_contract.sh"
+    fake_inspect = tmp_path / "inspect_qcow_boot.sh"
+    run_dirs_before = {
+        path.name
+        for path in (ROOT / "state" / "lab-vm").glob("image-verify-base-*")
+        if path.is_dir()
+    }
+
+    _write_executable(
+        fake_up,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+run_id=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --run-id) run_id="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+state_dir="{ROOT}/state/lab-vm/$run_id"
+mkdir -p "$state_dir/logs" "$state_dir/pids"
+printf 'Gave up waiting for root file system device.\\nALERT! UUID=test-root does not exist.  Dropping to a shell!\\n' > "$state_dir/logs/image-verify-base.console.log"
+printf '' > "$state_dir/logs/image-verify-base.qemu.log"
+: > "$state_dir/image-verify-base.qcow2"
+echo "1234" > "$state_dir/pids/image-verify-base.pid"
+exit 1
+""",
+    )
+    _write_executable(
+        fake_down,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{down_log}"
+""",
+    )
+    _write_executable(
+        fake_assert,
+        """#!/usr/bin/env bash
+set -euo pipefail
+""",
+    )
+    _write_executable(
+        fake_inspect,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$1" >> "{inspect_log}"
+printf 'root_uuid=test-root\\n'
+""",
+    )
+
+    env = os.environ.copy()
+    env["VARIANT_UP_SCRIPT"] = str(fake_up)
+    env["VARIANT_DOWN_SCRIPT"] = str(fake_down)
+    env["ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT"] = str(fake_assert)
+    env["INSPECT_QCOW_BOOT_SCRIPT"] = str(fake_inspect)
+
+    res = subprocess.run(
+        [str(IMAGE_VERIFY_SCRIPT), "--image-dir", str(image_dir), "--variant", "base"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    run_dirs_after = {
+        path.name
+        for path in (ROOT / "state" / "lab-vm").glob("image-verify-base-*")
+        if path.is_dir()
+    }
+    new_run_dirs = sorted(run_dirs_after - run_dirs_before)
+    try:
+        assert res.returncode == 1
+        assert new_run_dirs, res.stderr
+        state_dir = ROOT / "state" / "lab-vm" / new_run_dirs[0]
+        assert (state_dir / "boot-contract.txt").exists()
+        assert "boot failed before ssh; root filesystem did not mount" in res.stderr
+        assert str(state_dir) in res.stderr
+        assert str(state_dir / "image-verify-base.qcow2") in inspect_log.read_text(encoding="utf-8")
+        assert "--purge" not in down_log.read_text(encoding="utf-8")
+    finally:
+        for run_dir in new_run_dirs:
+            shutil.rmtree(ROOT / "state" / "lab-vm" / run_dir, ignore_errors=True)
+
+
+def test_image_verify_can_purge_failed_runs_on_request(tmp_path: Path) -> None:
+    qemu_img = shutil.which("qemu-img")
+    sha256sum = shutil.which("sha256sum")
+    assert qemu_img is not None
+    assert sha256sum is not None
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    image = image_dir / "ubuntu-22.04-k1s-base.qcow2"
+    subprocess.run(
+        [qemu_img, "create", "-f", "qcow2", str(image), "16M"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    sha_file = Path(f"{image}.sha256")
+    meta_file = Path(f"{image}.meta.json")
+    sha_file.write_text(
+        subprocess.run(
+            [sha256sum, str(image)],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout,
+        encoding="utf-8",
+    )
+    meta_file.write_text(
+        json.dumps(
+            {
+                "image": image.name,
+                "variant": "base",
+                "kernel_track": "ga-5.15",
+                "checksum": sha_file.read_text(encoding="utf-8").split()[0],
+                "created_at": "2026-04-06T19:00:00Z",
+                "bootstrap_contract_version": "20260324-cni-0.4.0-smoke-v1",
+                "cni_version": "0.4.0",
+                "vm_bootstrap_ready": True,
+                "python_alias": True,
+                "crictl_ready": True,
+                "cni_ready": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    down_log = tmp_path / "down.log"
+    fake_up = tmp_path / "variant_up.sh"
+    fake_down = tmp_path / "variant_down.sh"
+    fake_assert = tmp_path / "assert_image_boot_contract.sh"
+
+    _write_executable(
+        fake_up,
+        """#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+""",
+    )
+    _write_executable(
+        fake_down,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{down_log}"
+""",
+    )
+    _write_executable(
+        fake_assert,
+        """#!/usr/bin/env bash
+set -euo pipefail
+""",
+    )
+
+    env = os.environ.copy()
+    env["VARIANT_UP_SCRIPT"] = str(fake_up)
+    env["VARIANT_DOWN_SCRIPT"] = str(fake_down)
+    env["ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT"] = str(fake_assert)
+    env["INSPECT_QCOW_BOOT_SCRIPT"] = str(fake_assert)
+
+    res = subprocess.run(
+        [str(IMAGE_VERIFY_SCRIPT), "--image-dir", str(image_dir), "--variant", "base", "--purge-failed"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert res.returncode == 1
+    assert "--destroy-network --best-effort --purge" in down_log.read_text(encoding="utf-8")
+
+
+def test_inspect_qcow_boot_reports_expected_root_uuid(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    rootfs = fixture / "rootfs"
+    (rootfs / "etc").mkdir(parents=True)
+    (rootfs / "boot" / "grub").mkdir(parents=True)
+    (rootfs / "boot").mkdir(exist_ok=True)
+    (fixture / "lsblk.txt").write_text(
+        "NAME         SIZE FSTYPE UUID       PARTUUID MOUNTPOINT\n"
+        "nbd0          40G                         \n"
+        "├─nbd0p1    39.9G ext4   test-root  part-1  \n"
+        "└─nbd0p15    106M vfat   EFI-0001   part-15 \n",
+        encoding="utf-8",
+    )
+    (fixture / "blkid.txt").write_text(
+        '/dev/nbd0p1: LABEL="cloudimg-rootfs" UUID="test-root" TYPE="ext4" PARTUUID="part-1"\n'
+        '/dev/nbd0p15: UUID="EFI-0001" TYPE="vfat" PARTUUID="part-15"\n',
+        encoding="utf-8",
+    )
+    (rootfs / "etc" / "fstab").write_text("UUID=test-root / ext4 defaults 0 1\n", encoding="utf-8")
+    (rootfs / "boot" / "grub" / "grub.cfg").write_text(
+        "menuentry 'Ubuntu' {\n linux /boot/vmlinuz root=UUID=test-root ro quiet splash\n}\n",
+        encoding="utf-8",
+    )
+    (rootfs / "boot" / "vmlinuz-5.15.0").write_text("", encoding="utf-8")
+    (rootfs / "boot" / "initrd.img-5.15.0").write_text("", encoding="utf-8")
+    (rootfs / "boot" / "vmlinuz").symlink_to("vmlinuz-5.15.0")
+    (rootfs / "boot" / "initrd.img").symlink_to("initrd.img-5.15.0")
+
+    env = os.environ.copy()
+    env["IMAGE_BOOT_CONTRACT_FIXTURE_DIR"] = str(fixture)
+
+    res = subprocess.run(
+        [str(INSPECT_QCOW_BOOT_SCRIPT), "dummy.qcow2"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert "root_uuid=test-root" in res.stdout
+    assert "root_label=cloudimg-rootfs" in res.stdout
+    assert "fstab_root_uuid=test-root" in res.stdout
+    assert "grub_root_uuids=test-root" in res.stdout
+
+
+def test_assert_image_boot_contract_accepts_matching_root_label(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    rootfs = fixture / "rootfs"
+    (rootfs / "etc").mkdir(parents=True)
+    (rootfs / "boot" / "grub").mkdir(parents=True)
+    (fixture / "lsblk.txt").write_text(
+        "NAME         SIZE FSTYPE UUID       PARTUUID MOUNTPOINT\n"
+        "nbd0          40G                         \n"
+        "└─nbd0p1    39.9G ext4   test-root  part-1  \n",
+        encoding="utf-8",
+    )
+    (fixture / "blkid.txt").write_text(
+        '/dev/nbd0p1: LABEL="cloudimg-rootfs" UUID="test-root" TYPE="ext4" PARTUUID="part-1"\n',
+        encoding="utf-8",
+    )
+    (rootfs / "etc" / "fstab").write_text(
+        "LABEL=cloudimg-rootfs / ext4 discard,errors=remount-ro 0 1\n",
+        encoding="utf-8",
+    )
+    (rootfs / "boot" / "grub" / "grub.cfg").write_text(
+        "menuentry 'Ubuntu' {\n linux /boot/vmlinuz root=UUID=test-root ro quiet splash\n}\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["IMAGE_BOOT_CONTRACT_FIXTURE_DIR"] = str(fixture)
+
+    res = subprocess.run(
+        [str(ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT), "dummy.qcow2"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert "[image-boot-contract] ok: dummy.qcow2" in res.stdout
+
+
+def test_assert_image_boot_contract_rejects_uuid_mismatch(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    rootfs = fixture / "rootfs"
+    (rootfs / "etc").mkdir(parents=True)
+    (rootfs / "boot" / "grub").mkdir(parents=True)
+    (fixture / "lsblk.txt").write_text(
+        "NAME         SIZE FSTYPE UUID       PARTUUID MOUNTPOINT\n"
+        "nbd0          40G                         \n"
+        "└─nbd0p1    39.9G ext4   test-root  part-1  \n",
+        encoding="utf-8",
+    )
+    (fixture / "blkid.txt").write_text(
+        '/dev/nbd0p1: UUID="test-root" TYPE="ext4" PARTUUID="part-1"\n',
+        encoding="utf-8",
+    )
+    (rootfs / "etc" / "fstab").write_text("UUID=wrong-root / ext4 defaults 0 1\n", encoding="utf-8")
+    (rootfs / "boot" / "grub" / "grub.cfg").write_text(
+        "menuentry 'Ubuntu' {\n linux /boot/vmlinuz root=UUID=wrong-root ro quiet splash\n}\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["IMAGE_BOOT_CONTRACT_FIXTURE_DIR"] = str(fixture)
+
+    res = subprocess.run(
+        [str(ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT), "dummy.qcow2"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert res.returncode == 1
+    assert "fstab root UUID mismatch" in res.stderr or "grub root UUID mismatch" in res.stderr
 
 
 def test_run_profile_host_apishim_uses_src_pythonpath() -> None:
@@ -1851,11 +2643,35 @@ def test_cri_seed_lock_contains_core_and_edge_images() -> None:
     assert "edge" in payload["images"]
     assert "docker.io/library/registry:2" in payload["images"]["core"]
     assert "docker.io/library/registry:2" in payload["images"]["edge"]
+    assert "registry.k8s.io/pause:3.9" in payload["images"]["core"]
+    assert "registry.k8s.io/pause:3.9" in payload["images"]["edge"]
     assert "quay.io/coreos/etcd:v3.5.13" in payload["images"]["core"]
     assert "docker.io/library/nats:2.10" in payload["images"]["edge"]
     assert "docker.io/library/demo-shell:latest" in payload["images"]["core"]
     assert "docker.io/library/demo-shell:latest" in payload["images"]["edge"]
     assert "localhost:5001/k1s-apishim:dev" in payload["images"]["core"]
+    assert "docker.io/library/caddy:2.8" in payload["images"]["core"]
+
+
+def test_cri_seed_lock_covers_default_ha_core_preload_images() -> None:
+    payload = json.loads(CRI_SEED_LOCK_FILE.read_text(encoding="utf-8"))
+    core_images = set(payload["images"]["core"])
+    text = RUN_PROFILE_SCRIPT.read_text(encoding="utf-8")
+    marker = 'elif [[ "${PROFILE:-}" == "k1s-ha-core" ]]; then'
+    assert marker in text
+    block = text.split(marker, 1)[1].split("else", 1)[0]
+    raw_images = re.findall(r'"([^"]+)"', block)
+
+    preload_images = []
+    for raw in raw_images:
+        match = re.fullmatch(r"\$\{[^:}]+:-(.+)\}", raw)
+        preload_images.append(match.group(1) if match else raw)
+
+    missing = sorted(set(preload_images) - core_images)
+    assert not missing, (
+        "core seed manifest is missing default HA preload images: "
+        + ", ".join(missing)
+    )
 
 
 def test_smoke_v2_includes_seed_cache_phase_timeout() -> None:

@@ -67,7 +67,14 @@ cp "$VARIANT" "$(run_dir "$RUN_ID")/variant.yaml"
 tap_up() {
   local tap="$1"
   if ip link show "$tap" >/dev/null 2>&1; then
-    return 0
+    log "resetting stale tap=${tap}"
+    sudo ip link set "$tap" down || true
+    sudo ip link set "$tap" nomaster || true
+    sudo ip link delete "$tap" || true
+  fi
+  if ip link show "$tap" >/dev/null 2>&1; then
+    err "tap ${tap} still exists after reset"
+    return 1
   fi
   sudo ip tuntap add dev "$tap" mode tap user "$(whoami)"
   sudo ip link set "$tap" master "$bridge"
@@ -148,6 +155,50 @@ render_guest_route_yaml() {
   done <<<"$pod_route_rows"
 }
 
+image_virtual_size_bytes() {
+  local image="$1"
+  qemu-img info --output=json "$image" | jq -er '."virtual-size"'
+}
+
+image_virtual_size_gib() {
+  local image="$1"
+  local size_bytes=""
+  size_bytes="$(image_virtual_size_bytes "$image")"
+  [[ "$size_bytes" =~ ^[0-9]+$ ]] || {
+    err "invalid virtual size reported for image: ${image}"
+    return 1
+  }
+  printf '%s\n' "$(((size_bytes + 1073741824 - 1) / 1073741824))"
+}
+
+validate_overlay_disk_size() {
+  local name="$1"
+  local requested_disk_gb="$2"
+  local backing_image="$3"
+  local overlay="$4"
+  local backing_size_bytes="" backing_size_gib="" overlay_size_gib=""
+
+  backing_size_bytes="$(image_virtual_size_bytes "$backing_image")" || return 1
+  [[ "$backing_size_bytes" =~ ^[0-9]+$ ]] || {
+    err "invalid virtual size reported for backing image: ${backing_image}"
+    return 1
+  }
+  backing_size_gib="$(((backing_size_bytes + 1073741824 - 1) / 1073741824))"
+
+  if (( requested_disk_gb < backing_size_gib )); then
+    err "host ${name} requested vm.disk_gb=${requested_disk_gb}GiB, but backing image ${backing_image} has virtual size ${backing_size_gib}GiB (${backing_size_bytes} bytes); requires at least ${backing_size_gib}GiB"
+    return 1
+  fi
+
+  if [[ -f "$overlay" ]]; then
+    overlay_size_gib="$(image_virtual_size_gib "$overlay")" || return 1
+    if (( overlay_size_gib < backing_size_gib )); then
+      err "host ${name} existing overlay ${overlay} has virtual size ${overlay_size_gib}GiB, but backing image ${backing_image} requires at least ${backing_size_gib}GiB; remove the stale overlay before retrying"
+      return 1
+    fi
+  fi
+}
+
 start_one() {
   local index="$1"
   local row_b64="$2"
@@ -174,8 +225,10 @@ start_one() {
     img="$gpu_img"
   fi
 
+  validate_overlay_disk_size "$name" "$host_disk_gb" "$img" "$overlay" || return 1
+
   if [[ ! -f "$overlay" ]]; then
-    qemu-img create -f qcow2 -F qcow2 -b "$img" "$overlay" "${host_disk_gb}G" >/dev/null
+    qemu-img create -f qcow2 -F qcow2 -b "$img" "$overlay" "${host_disk_gb}G" >/dev/null || return 1
   fi
 
   route_yaml="$(render_guest_route_yaml "$role")"
