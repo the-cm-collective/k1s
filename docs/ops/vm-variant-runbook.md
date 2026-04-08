@@ -49,6 +49,7 @@ Notes:
 - Helper-owned wrapper flags are `--teardown on-success|always|never`, `--purge`, `--destroy-network`, and `--console`; pass any remaining `smoke_v2.py` flags after those helper flags.
 - `LAB_VM_SMOKE_ARGS` is forwarded to the helper; helper flags and smoke_v2 passthrough flags can both be passed there.
 - The smoke/drill lanes now assume prereq-ready qcow2 images. Re-run `scripts/lab/vm/labctl.sh image build --variant all` and `scripts/lab/vm/labctl.sh image verify --variant all` after image/bootstrap changes before treating a fresh-VM bootstrap failure as product regressions.
+- `image verify` now sizes its ephemeral verifier overlay from the backing qcow2 virtual size and rejects undersized overlays before boot, so pre-SSH or initramfs verifier failures usually point back to the image contract rather than guest bootstrap logic.
 - `AE_VM_BOOTSTRAP_AUTOFIX=1` can re-enable guest-side repair for manual debugging, but it is intentionally not the default lane contract.
 
 Key artifacts:

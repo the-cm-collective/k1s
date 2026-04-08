@@ -743,18 +743,18 @@
 <li>Closure checkpoint: the original <code>H*</code> track closure remains the 2026-03-19 roadmap checkpoint, recorded after the primary VM/lab HA lane, the drill-enabled HA variant, and the reduced local harness all passed.</li>
 <li>Historical closeout evidence: <code>runs/ha-cp-drills-20260319T213601Z/summary.json</code> and <code>runs/ha-cp-drills-20260319T213601Z/ha_summary.json</code> are green, including the optional <code>ha_drill_leader_failover</code>, <code>ha_drill_etcd_restart</code>, and <code>ha_drill_transport_recovery</code> checks.</li>
 <li>Secondary closeout evidence: <code>make ha-closeout-e2e</code> passed locally on 2026-03-19. The wrapper-backed reduced harness now primes the Nix <code>libstdc++</code> runtime path, preflights <code>import grpc</code>, and then runs <code>tests/integration/test_ha_closeout_e2e.py</code>.</li>
-<li>Post-closeout validation: <code>make lab-vm-ha-validation</code> reran green on 2026-04-03 with <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> all passing.</li>
-<li>Strongest 2026-04-03 run artifacts:
+<li>Latest post-closeout validation: image verification hardening closed the verifier overlay/backing-image mismatch on 2026-04-07, <code>make lab-vm-ha-validation</code> reran green with <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> all passing, and <code>make ha-closeout-e2e</code> also passed.</li>
+<li>Strongest 2026-04-07 run artifacts:
 <ul>
-<li><code>runs/20260403T185210Z_ha_attached_node_stage1/ha_summary.json</code></li>
-<li><code>runs/20260403T191624Z_multi_non_gpu_drain/summary.json</code></li>
-<li><code>runs/20260403T193039Z_ha_core_stage2/ha_summary.json</code></li>
-<li><code>runs/20260403T194249Z_ha_core_live/ha_summary.json</code></li>
-<li><code>runs/20260403T195537Z_ha_core_drills/ha_summary.json</code></li>
+<li><code>runs/20260407T172320Z_ha_attached_node_stage1/ha_summary.json</code></li>
+<li><code>runs/20260407T174926Z_multi_non_gpu_drain/summary.json</code></li>
+<li><code>runs/20260407T175928Z_ha_core_stage2/ha_summary.json</code></li>
+<li><code>runs/20260407T181153Z_ha_core_live/ha_summary.json</code></li>
+<li><code>runs/20260407T182343Z_ha_core_drills/ha_summary.json</code></li>
 </ul>
 </li>
 <li>Artifact boundary: <code>retained</code> and the helper portion of <code>stage2-live</code> are wrapper-level stage results from <code>make lab-vm-ha-validation</code>; the one-shot and drill stages above are the stages that emit standalone <code>ha_summary.json</code> or <code>summary.json</code> artifacts.</li>
-<li>Reason the track stays closed: the historical closeout evidence still stands, the current post-closeout validation is green, <code>must_fix_before_closeout</code> is empty, and no reopened roadmap gap has appeared.</li>
+<li>Reason the track stays closed: the historical closeout evidence still stands, the latest post-closeout validation is green, the reduced harness remains green, <code>must_fix_before_closeout</code> is empty, and no reopened roadmap gap has appeared.</li>
 </ul>
 <h2 id="practical-ha-capabilities-today">Practical HA Capabilities Today</h2>
 <ul>
@@ -914,7 +914,7 @@
 <li>no deferred item needs to be pulled back into the <code>H*</code> track to make current HA roadmap/runbook claims honest</li>
 <li>no remaining closeout blocker invalidates the current HA roadmap/runbook claims</li>
 <li>the HA track is complete as of the 2026-03-19 roadmap closeout checkpoint</li>
-<li>the 2026-04-03 rerun confirms those same claims still hold on the checked-in HA validation flow</li>
+<li>the 2026-04-07 maintenance rerun confirms those same claims still hold on the checked-in HA validation flow</li>
 </ul>
 <h3 id="post-closeout-dashboard-amendment">Post-Closeout Dashboard Amendment</h3>
 <ul>
@@ -928,12 +928,12 @@
 <ul>
 <li>Current strongest evidence run: <code>runs/ha-cp-drills-20260319T213601Z/ha_summary.json</code></li>
 <li>This drill-enabled run includes the optional leader-failover, etcd-restart, and transport-recovery hooks.</li>
-<li>Current post-closeout rerun: <code>make lab-vm-ha-validation</code> passed on 2026-04-03 with green <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> results.</li>
+<li>Current post-closeout rerun: <code>make lab-vm-ha-validation</code> passed on 2026-04-07 with green <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> results.</li>
 </ul>
 <p>2. The reduced local HA harness has been run successfully as a secondary/manual regression check.</p>
 <ul>
 <li>Current strongest evidence command: <code>make ha-closeout-e2e</code></li>
-<li>Current result: passed locally on 2026-03-19 through the wrapper-backed reduced harness entrypoint.</li>
+<li>Current result: passed locally again on 2026-04-07 through the wrapper-backed reduced harness entrypoint.</li>
 </ul>
 <p>3. <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>, <a href="roadmap-status.html">Roadmap Status</a>, <a href="runbook.html">Operations Runbook</a>, and generated <code>docs/site</code> output match the implemented HA surface.</p>
 <ul>
@@ -942,7 +942,7 @@
 <p>4. No <code>must_fix_before_closeout</code> gaps remain in this document. 5. A final roadmap decision checkpoint is recorded when the status table flips from <code>In progress</code> to complete.</p>
 <ul>
 <li>Current checkpoint: 2026-03-19 HA control-plane closeout checkpoint recorded in <a href="roadmap-status.html">Roadmap Status</a>.</li>
-<li>Current post-closeout validation checkpoint: 2026-04-03 HA validation rerun recorded in <a href="roadmap-status.html">Roadmap Status</a>.</li>
+<li>Current post-closeout validation checkpoint: 2026-04-07 HA validation maintenance checkpoint recorded in <a href="roadmap-status.html">Roadmap Status</a>.</li>
 </ul>
 <h2 id="operator-notes">Operator Notes</h2>
 <ul>
@@ -961,7 +961,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-03 14:32:34</span>
+        <span>Built 2026-04-08 10:23:24</span>
       </div>
     </footer>
     <script>

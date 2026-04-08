@@ -49,6 +49,11 @@ scripts/lab/vm/labctl.sh image build --variant all
 scripts/lab/vm/labctl.sh image verify --variant all
 ```
 
+`image verify` now boots a temporary overlay sized from the backing qcow2
+virtual size. Undersized requested or stale overlays are rejected before boot,
+which avoids truncated verifier runs that can otherwise surface as initramfs or
+root-device failures even when the backing image itself is healthy.
+
 If you need to troubleshoot a badly interrupted local build, you can still
 manually remove `artifacts/images/build-base` and `artifacts/images/build-gpu`
 before rerunning the build.

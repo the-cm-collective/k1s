@@ -393,7 +393,7 @@ Current implementation status:
 - `tests/e2e/ha_closeout.py` and `tests/integration/test_ha_closeout_e2e.py` now provide a reduced local HA topology with two controllers, one apishim, one edge site, and a failover-plus-replay check; that reduced lane now forces `AE_JS_REPLICAS=1` so it stays lightweight without pretending to be the full transport-fidelity evidence lane
 - `scripts/dev/ha_closeout_e2e.sh` plus `make ha-closeout-e2e` now provide the supported reduced-harness entrypoint, priming the local `libstdc++` runtime path and preflighting `grpc` before the reduced HA lane starts
 - the original closeout result remains the 2026-03-19 roadmap checkpoint: the drill-enabled primary VM/lab lane was green on the checked-in topology, the wrapper-backed reduced local HA harness was green, no `must_fix_before_closeout` gaps remained, and the track closed
-- current post-closeout validation result: `make lab-vm-ha-validation` reran green on 2026-04-03 with `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` all passing on the documented checked-in flows
+- current post-closeout validation result: image verification hardening closed the verifier overlay/backing-image mismatch on 2026-04-07, `make lab-vm-ha-validation` reran green with `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` all passing on the documented checked-in flows, and `make ha-closeout-e2e` also remained green
 
 ### H5c Amendment: Integrated HA Dashboard Observability
 

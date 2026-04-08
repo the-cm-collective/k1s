@@ -1115,7 +1115,7 @@
 <li><code>tests/e2e/ha_closeout.py</code> and <code>tests/integration/test_ha_closeout_e2e.py</code> now provide a reduced local HA topology with two controllers, one apishim, one edge site, and a failover-plus-replay check; that reduced lane now forces <code>AE_JS_REPLICAS=1</code> so it stays lightweight without pretending to be the full transport-fidelity evidence lane</li>
 <li><code>scripts/dev/ha_closeout_e2e.sh</code> plus <code>make ha-closeout-e2e</code> now provide the supported reduced-harness entrypoint, priming the local <code>libstdc++</code> runtime path and preflighting <code>grpc</code> before the reduced HA lane starts</li>
 <li>the original closeout result remains the 2026-03-19 roadmap checkpoint: the drill-enabled primary VM/lab lane was green on the checked-in topology, the wrapper-backed reduced local HA harness was green, no <code>must_fix_before_closeout</code> gaps remained, and the track closed</li>
-<li>current post-closeout validation result: <code>make lab-vm-ha-validation</code> reran green on 2026-04-03 with <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> all passing on the documented checked-in flows</li>
+<li>current post-closeout validation result: image verification hardening closed the verifier overlay/backing-image mismatch on 2026-04-07, <code>make lab-vm-ha-validation</code> reran green with <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> all passing on the documented checked-in flows, and <code>make ha-closeout-e2e</code> also remained green</li>
 </ul>
 <h3 id="h5c-amendment-integrated-ha-dashboard-observability">H5c Amendment: Integrated HA Dashboard Observability</h3>
 <p>Goal:</p>
@@ -1201,7 +1201,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-03 14:32:34</span>
+        <span>Built 2026-04-08 10:23:24</span>
       </div>
     </footer>
     <script>

@@ -475,6 +475,10 @@ HA closeout (`H5c-ha-closeout`)
   - The lane now assumes prereq-ready qcow2 images. Rebuild and re-verify the images after bootstrap/image changes before retrying first-pass VM failures:
     - `scripts/lab/vm/labctl.sh image build --variant all`
     - `scripts/lab/vm/labctl.sh image verify --variant all`
+  - `image verify` now sizes its ephemeral verifier overlay from the backing qcow2 virtual size and rejects undersized requested or stale overlays before boot, instead of letting a truncated first-boot verifier fall through to initramfs/root-device failures.
+  - Troubleshooting split:
+    - if a fresh VM dies before SSH or in initramfs/root-device discovery, treat it as an image contract problem first and rerun `image build` plus `image verify`
+    - if `variant up` fails in guest `cloud-init` with `Could not get APT lock`, tear the run down and rerun once before treating it as a product regression
   - `AE_VM_BOOTSTRAP_AUTOFIX=1` can temporarily re-enable guest-side repair for manual debugging, but it is not the default HA evidence path.
   - The lane reuses the existing HA helper family instead of inventing a second operator contract:
     - `ha_core_preflight.py`
@@ -489,7 +493,7 @@ HA closeout (`H5c-ha-closeout`)
   - It forces `AE_JS_REPLICAS=1`, so it is useful for failover and replay regression but not as transport-fidelity evidence for the shared hub cluster.
 - Closeout rule:
   - The 2026-03-19 HA closeout checkpoint satisfies the original evidence rule: [HA Closeout](ha-closeout.html) shows zero `must_fix_before_closeout` gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.
-  - The 2026-04-03 post-closeout rerun keeps that claim current: `make lab-vm-ha-validation` passed with green `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` results.
+  - The 2026-04-07 maintenance rerun keeps that claim current: image verification hardening closed the verifier overlay/backing-image mismatch, `make lab-vm-ha-validation` passed with green `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` results, and `make ha-closeout-e2e` also passed.
   - Reopen `H5c-ha-closeout` if either evidence lane regresses or [HA Closeout](ha-closeout.html) regains a must-fix gap.
   - On passworded-sudo hosts, run `sudo -v` before invoking `smoke_helper.py`; the helper does not prompt for a password and fails fast if `sudo -n true` is not already warm.
 

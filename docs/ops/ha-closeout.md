@@ -15,15 +15,15 @@ Operator bootstrap entrypoint: [HA Cluster Bring-Up](ha-cluster-bring-up.html). 
 - Closure checkpoint: the original `H*` track closure remains the 2026-03-19 roadmap checkpoint, recorded after the primary VM/lab HA lane, the drill-enabled HA variant, and the reduced local harness all passed.
 - Historical closeout evidence: `runs/ha-cp-drills-20260319T213601Z/summary.json` and `runs/ha-cp-drills-20260319T213601Z/ha_summary.json` are green, including the optional `ha_drill_leader_failover`, `ha_drill_etcd_restart`, and `ha_drill_transport_recovery` checks.
 - Secondary closeout evidence: `make ha-closeout-e2e` passed locally on 2026-03-19. The wrapper-backed reduced harness now primes the Nix `libstdc++` runtime path, preflights `import grpc`, and then runs `tests/integration/test_ha_closeout_e2e.py`.
-- Post-closeout validation: `make lab-vm-ha-validation` reran green on 2026-04-03 with `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` all passing.
-- Strongest 2026-04-03 run artifacts:
-  - `runs/20260403T185210Z_ha_attached_node_stage1/ha_summary.json`
-  - `runs/20260403T191624Z_multi_non_gpu_drain/summary.json`
-  - `runs/20260403T193039Z_ha_core_stage2/ha_summary.json`
-  - `runs/20260403T194249Z_ha_core_live/ha_summary.json`
-  - `runs/20260403T195537Z_ha_core_drills/ha_summary.json`
+- Latest post-closeout validation: image verification hardening closed the verifier overlay/backing-image mismatch on 2026-04-07, `make lab-vm-ha-validation` reran green with `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` all passing, and `make ha-closeout-e2e` also passed.
+- Strongest 2026-04-07 run artifacts:
+  - `runs/20260407T172320Z_ha_attached_node_stage1/ha_summary.json`
+  - `runs/20260407T174926Z_multi_non_gpu_drain/summary.json`
+  - `runs/20260407T175928Z_ha_core_stage2/ha_summary.json`
+  - `runs/20260407T181153Z_ha_core_live/ha_summary.json`
+  - `runs/20260407T182343Z_ha_core_drills/ha_summary.json`
 - Artifact boundary: `retained` and the helper portion of `stage2-live` are wrapper-level stage results from `make lab-vm-ha-validation`; the one-shot and drill stages above are the stages that emit standalone `ha_summary.json` or `summary.json` artifacts.
-- Reason the track stays closed: the historical closeout evidence still stands, the current post-closeout validation is green, `must_fix_before_closeout` is empty, and no reopened roadmap gap has appeared.
+- Reason the track stays closed: the historical closeout evidence still stands, the latest post-closeout validation is green, the reduced harness remains green, `must_fix_before_closeout` is empty, and no reopened roadmap gap has appeared.
 
 ## Practical HA Capabilities Today
 
@@ -169,7 +169,7 @@ Current conclusion:
 - no deferred item needs to be pulled back into the `H*` track to make current HA roadmap/runbook claims honest
 - no remaining closeout blocker invalidates the current HA roadmap/runbook claims
 - the HA track is complete as of the 2026-03-19 roadmap closeout checkpoint
-- the 2026-04-03 rerun confirms those same claims still hold on the checked-in HA validation flow
+- the 2026-04-07 maintenance rerun confirms those same claims still hold on the checked-in HA validation flow
 
 ### Post-Closeout Dashboard Amendment
 
@@ -184,16 +184,16 @@ The HA track can be marked complete only when all of the following are true:
 1. The VM/lab `ha_control_plane` lane has been executed on the intended HA topology and `runs/<RUN_ID>/ha_summary.json` is green.
    - Current strongest evidence run: `runs/ha-cp-drills-20260319T213601Z/ha_summary.json`
    - This drill-enabled run includes the optional leader-failover, etcd-restart, and transport-recovery hooks.
-   - Current post-closeout rerun: `make lab-vm-ha-validation` passed on 2026-04-03 with green `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` results.
+   - Current post-closeout rerun: `make lab-vm-ha-validation` passed on 2026-04-07 with green `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` results.
 2. The reduced local HA harness has been run successfully as a secondary/manual regression check.
    - Current strongest evidence command: `make ha-closeout-e2e`
-   - Current result: passed locally on 2026-03-19 through the wrapper-backed reduced harness entrypoint.
+   - Current result: passed locally again on 2026-04-07 through the wrapper-backed reduced harness entrypoint.
 3. [HA Control Plane Roadmap](high-availability-control-plane.html), [Roadmap Status](roadmap-status.html), [Operations Runbook](runbook.html), and generated `docs/site` output match the implemented HA surface.
    - The canonical day-0 operator bootstrap page is [HA Cluster Bring-Up](ha-cluster-bring-up.html), including the retained VM companion harness and its workload-through-Envoy smoke path.
 4. No `must_fix_before_closeout` gaps remain in this document.
 5. A final roadmap decision checkpoint is recorded when the status table flips from `In progress` to complete.
    - Current checkpoint: 2026-03-19 HA control-plane closeout checkpoint recorded in [Roadmap Status](roadmap-status.html).
-   - Current post-closeout validation checkpoint: 2026-04-03 HA validation rerun recorded in [Roadmap Status](roadmap-status.html).
+   - Current post-closeout validation checkpoint: 2026-04-07 HA validation maintenance checkpoint recorded in [Roadmap Status](roadmap-status.html).
 
 ## Operator Notes
 

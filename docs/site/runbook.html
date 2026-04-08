@@ -1522,6 +1522,13 @@
 <li><code>scripts/lab/vm/labctl.sh image verify --variant all</code></li>
 </ul>
 </li>
+<li><code>image verify</code> now sizes its ephemeral verifier overlay from the backing qcow2 virtual size and rejects undersized requested or stale overlays before boot, instead of letting a truncated first-boot verifier fall through to initramfs/root-device failures.</li>
+<li>Troubleshooting split:
+<ul>
+<li>if a fresh VM dies before SSH or in initramfs/root-device discovery, treat it as an image contract problem first and rerun <code>image build</code> plus <code>image verify</code></li>
+<li>if <code>variant up</code> fails in guest <code>cloud-init</code> with <code>Could not get APT lock</code>, tear the run down and rerun once before treating it as a product regression</li>
+</ul>
+</li>
 <li><code>AE_VM_BOOTSTRAP_AUTOFIX=1</code> can temporarily re-enable guest-side repair for manual debugging, but it is not the default HA evidence path.</li>
 <li>The lane reuses the existing HA helper family instead of inventing a second operator contract:
 <ul>
@@ -1545,7 +1552,7 @@
 <li>Closeout rule:
 <ul>
 <li>The 2026-03-19 HA closeout checkpoint satisfies the original evidence rule: <a href="ha-closeout.html">HA Closeout</a> shows zero <code>must_fix_before_closeout</code> gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.</li>
-<li>The 2026-04-03 post-closeout rerun keeps that claim current: <code>make lab-vm-ha-validation</code> passed with green <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> results.</li>
+<li>The 2026-04-07 maintenance rerun keeps that claim current: image verification hardening closed the verifier overlay/backing-image mismatch, <code>make lab-vm-ha-validation</code> passed with green <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> results, and <code>make ha-closeout-e2e</code> also passed.</li>
 <li>Reopen <code>H5c-ha-closeout</code> if either evidence lane regresses or <a href="ha-closeout.html">HA Closeout</a> regains a must-fix gap.</li>
 <li>On passworded-sudo hosts, run <code>sudo -v</code> before invoking <code>smoke_helper.py</code>; the helper does not prompt for a password and fails fast if <code>sudo -n true</code> is not already warm.</li>
 </ul>
@@ -2037,7 +2044,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-03 14:32:34</span>
+        <span>Built 2026-04-08 10:23:24</span>
       </div>
     </footer>
     <script>

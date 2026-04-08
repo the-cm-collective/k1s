@@ -780,6 +780,7 @@ make lab-vm-smoke \
 <li>Helper-owned wrapper flags are <code>--teardown on-success|always|never</code>, <code>--purge</code>, <code>--destroy-network</code>, and <code>--console</code>; pass any remaining <code>smoke_v2.py</code> flags after those helper flags.</li>
 <li><code>LAB_VM_SMOKE_ARGS</code> is forwarded to the helper; helper flags and smoke_v2 passthrough flags can both be passed there.</li>
 <li>The smoke/drill lanes now assume prereq-ready qcow2 images. Re-run <code>scripts/lab/vm/labctl.sh image build --variant all</code> and <code>scripts/lab/vm/labctl.sh image verify --variant all</code> after image/bootstrap changes before treating a fresh-VM bootstrap failure as product regressions.</li>
+<li><code>image verify</code> now sizes its ephemeral verifier overlay from the backing qcow2 virtual size and rejects undersized overlays before boot, so pre-SSH or initramfs verifier failures usually point back to the image contract rather than guest bootstrap logic.</li>
 <li><code>AE_VM_BOOTSTRAP_AUTOFIX=1</code> can re-enable guest-side repair for manual debugging, but it is intentionally not the default lane contract.</li>
 </ul>
 <p>Key artifacts:</p>
@@ -1129,7 +1130,7 @@ scripts/lab/vm/ha_shared_infra.sh \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-03 14:32:34</span>
+        <span>Built 2026-04-08 10:23:24</span>
       </div>
     </footer>
     <script>
