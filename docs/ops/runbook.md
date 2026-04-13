@@ -19,7 +19,7 @@ Setup
   - Registry cache: `./scripts/init_demo.sh --reset-registry-cache` (clears `state/registry` to force re-pull into the local cache).
 - Etcd-backed demo/labs:
   - `AE_STATE_BACKEND=etcd make demo` (auto-starts etcd for the demo controller)
-  - `AE_STATE_BACKEND=etcd make labs-aio-up` (labs stack uses an embedded etcd service)
+  - `AE_STATE_BACKEND=etcd make labs-aio-up` (labs host-controller wrapper reuses the `dev-etcd` profile with Caddy/TLS defaults)
 - SOPS/age (secrets):
   - Generate an age identity: `mkdir -p ~/.config/ae && age-keygen -o ~/.config/ae/keys.txt && chmod 600 ~/.config/ae/keys.txt`
   - Point SOPS to it: `export SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt`
@@ -740,12 +740,13 @@ Two easy ways to run it:
   - Optional token gate:
     - Export `AE_LABS_TOKEN=…` for the controller; paste it into “Labs Token” on the page.
 
-- All‑in‑one compose (controller + docs)
-  - Recommended: `make labs-aio-up` (generates shim tokens before compose)
-  - Or: `./scripts/ensure_apishim_env.sh && docker compose -f ops/dev/labs-aio.yaml up -d`
+- Host-controller labs wrapper (current default)
+  - Recommended: `make labs-aio-up` (runs the `dev-etcd` profile with Caddy/TLS defaults and writes shim tokens before startup)
+  - CLI/API-only variant: `make labs-up`
+  - Legacy compose-only path: `./scripts/ensure_apishim_env.sh && docker compose -f ops/dev/labs-aio.yaml up -d`
   - Open https://localhost:8443/playground.html
   - Dashboard (separate host): https://dash.home.arpa:8443/dashboard
-  - API shim starts by default on `127.0.0.1:8445` with per-run tokens stored in `state/profiles/labs/apishim.env`
+  - API shim starts by default on `127.0.0.1:8445` with per-run tokens stored in `state/profiles/dev-etcd/apishim.env` unless `PROFILE_DIR=` overrides the profile path
   - To override tokens, set `AE_APISHIM_TOKEN` / `AE_APISHIM_READ_TOKEN` in `.env` (long values; weak tokens are rejected)
   - To run with a local Postgres backend for controller + shim, set `AE_LABS_USE_POSTGRES=1` before bringing the stack up
   - To print the shim tokens: `make labs-apishim-env`

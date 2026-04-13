@@ -1,4 +1,4 @@
-.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-ha-core-systemd uninstall-ha-core-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track ha-closeout-e2e env-doctor dev-local-clean
+.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-ha-core-systemd uninstall-ha-core-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track ha-closeout-e2e env-doctor dev-local-clean profile-smoke strict-cri-smoke docs-verify premerge-dev _profile-smoke-root _strict-cri-smoke-root
 .PHONY: dev-min dev-etcd k1s-core k1s-ha-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
 .PHONY: k1s-core-cri k1s-edge-cri k1s-core-edge-cri k1s-edge-core-cri edge-site-cri
 .PHONY: edge-site
@@ -20,6 +20,64 @@ watch:
 
 test:
 	pytest -q
+
+profile-smoke:
+	@if [ "$$(id -u)" -eq 0 ] && [ "$${AE_PROFILE_SMOKE_ALLOW_ROOT:-0}" != "1" ]; then \
+	  echo "[profile-smoke] run this target as your normal user."; \
+	  echo "[profile-smoke] dev-min exercises the rootless Podman profile and is not representative under sudo."; \
+	  echo "[profile-smoke] set AE_PROFILE_SMOKE_ALLOW_ROOT=1 only when you explicitly want root execution."; \
+	  exit 1; \
+	fi
+	@$(MAKE) _profile-smoke-root
+
+_profile-smoke-root:
+	@AE_PROFILE_SMOKE=1 python -m pytest --maxfail=1 --disable-warnings -q tests/integration/test_profile_entrypoints.py
+
+strict-cri-smoke:
+	@if [ "$$(id -u)" -ne 0 ]; then \
+	  if ! sudo -v >/dev/null; then \
+	    echo "[strict-cri-smoke] strict CRI smoke requires a prepared host with runtime-ready containerd access."; \
+	    echo "[strict-cri-smoke] rerun with: sudo -E make strict-cri-smoke"; \
+	    echo "[strict-cri-smoke] or grant temporary access via: ./scripts/containerd_socket_access.sh --grant"; \
+	    exit 1; \
+	  fi; \
+	  exec sudo -E env "PATH=$$PATH" $(MAKE) _strict-cri-smoke-root; \
+	else \
+	  exec $(MAKE) _strict-cri-smoke-root; \
+	fi
+
+_strict-cri-smoke-root:
+	@AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh
+	@AE_STRICT_CRI_PROFILE_SMOKE=1 AE_CRI_IT=1 AE_CRI_SMOKE_PULL=1 ./scripts/dev/strict_cri_smoke.sh
+
+docs-verify:
+	@DOCS_API_BASE=$${DOCS_API_BASE:-https://api.home.arpa:8443} \
+	  DOCS_DASHBOARD_URL=$${DOCS_DASHBOARD_URL:-https://dash.home.arpa:8443/dashboard} \
+	  python -m pytest --maxfail=1 --disable-warnings -q \
+	    tests/unit/test_docs_command_alignment.py \
+	    tests/integration/test_docs_export_and_links.py
+
+premerge-dev:
+	@if [ "$$(id -u)" -eq 0 ]; then \
+	  echo "[premerge-dev] run this target as your normal user after 'sudo -v'."; \
+	  echo "[premerge-dev] do not run the full gate under sudo."; \
+	  exit 1; \
+	fi
+	@if [ "$$(id -u)" -ne 0 ] && ! sudo -n true >/dev/null 2>&1; then \
+	  echo "[premerge-dev] make e2e requires root or cached sudo on this host."; \
+	  echo "[premerge-dev] run 'sudo -v' first, then rerun as your normal user: make premerge-dev"; \
+	  exit 1; \
+	fi
+	@python -m pytest --maxfail=1 --disable-warnings -q
+	@$(MAKE) e2e
+	@$(MAKE) profile-smoke
+	@$(MAKE) docs-verify
+	@$(MAKE) ha-closeout-e2e
+	@if [ "$${AE_PREMERGE_STRICT_CRI:-0}" = "1" ]; then \
+	  $(MAKE) strict-cri-smoke; \
+	else \
+	  echo "[premerge-dev] strict-cri-smoke skipped (set AE_PREMERGE_STRICT_CRI=1 to enable)."; \
+	fi
 
 ha-closeout-e2e:
 	@./scripts/dev/ha_closeout_e2e.sh $${HA_CLOSEOUT_E2E_ARGS:-}
@@ -247,7 +305,7 @@ apishim-smoke:
 	  exit $$rc
 
 labs-aio-up:
-	@CORE_CADDY=1 AE_DEV_LOCAL=1 ./scripts/dev/run_profile.sh dev-etcd
+	@CORE_CADDY=1 AE_DEV_LOCAL=$${AE_DEV_LOCAL:-1} ./scripts/dev/run_profile.sh dev-etcd
 
 labs-aio-down:
 	@$(MAKE) down

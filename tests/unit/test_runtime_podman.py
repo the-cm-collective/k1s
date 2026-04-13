@@ -1,4 +1,11 @@
-from ae.controller.spec import AppManifest, AppSpec, Metadata, ServiceSpec
+from ae.controller.spec import (
+    AppManifest,
+    AppSpec,
+    Metadata,
+    ResourceQuantities,
+    ResourcesSpec,
+    ServiceSpec,
+)
 from ae.runtime.podman_runtime import PodmanRuntime
 
 
@@ -168,6 +175,52 @@ def test_oci_runtime_flag_in_init_containers(monkeypatch):
     assert any(
         c[:2] == [rt._bin, "run"] and "--runtime" in c and "crun" in c for c in captured
     ), f"--runtime crun missing in: {captured}"
+
+
+def test_create_container_normalizes_k8s_memory_quantities(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr("ae.runtime.podman_runtime.choose_host_port", lambda *_, **__: (8080, True))
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        if argv[:3] == [rt._bin, "images", "--format"]:
+            return DummyResult(0, "[]")
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    manifest = AppManifest(
+        api_version="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="memtest"),
+        spec=AppSpec(
+            image="docker.io/library/demo-shell:latest",
+            replicas=1,
+            service=ServiceSpec(port=8080, target_port=8080),
+            resources=ResourcesSpec(
+                limits=ResourceQuantities(memory="256Mi"),
+                requests=ResourceQuantities(memory="128Mi"),
+            ),
+        ),
+    )
+
+    rt._create_container(manifest, "memtest-rev1-0", 1, service=(8080, 8080, None))
+
+    run_calls = [
+        c for c in calls if len(c) >= 3 and c[0] == rt._bin and c[1] == "run" and "-d" in c
+    ]
+    assert run_calls, f"expected a podman run -d call, got: {calls}"
+    run_argv = run_calls[0]
+    assert "--memory" in run_argv
+    assert run_argv[run_argv.index("--memory") + 1] == str(256 * 1024 * 1024)
+    assert "--memory-reservation" in run_argv
+    assert run_argv[run_argv.index("--memory-reservation") + 1] == str(128 * 1024 * 1024)
 
 
 # ruff: noqa: E501

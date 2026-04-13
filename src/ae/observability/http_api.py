@@ -1664,11 +1664,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _call_apply(self, payload: dict, source: str | None = None, labels: dict | None = None):
         if self.apply_fn is None:
             raise RuntimeError("apply not available")
+        app = ""
         try:
             from ae.controller.spec import app_key
 
             meta = payload.get("metadata") if isinstance(payload, dict) else {}
-            app = ""
             if isinstance(meta, dict):
                 app = app_key(str(meta.get("name") or ""), meta.get("namespace"))
             if not app:
@@ -1703,7 +1703,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         try:
             return self.apply_fn(payload, source=source, labels=labels)  # type: ignore[misc]
         except TypeError:
-            return self.apply_fn(payload)  # type: ignore[misc]
+            try:
+                return self.apply_fn(payload)  # type: ignore[misc]
+            except Exception:
+                logger.exception(
+                    "apply handler failed source=%s app=%s via legacy fallback",
+                    source or "unknown",
+                    app or "<unknown>",
+                )
+                raise
+        except Exception:
+            logger.exception(
+                "apply handler failed source=%s app=%s",
+                source or "unknown",
+                app or "<unknown>",
+            )
+            raise
 
     def _maybe_cors(self) -> None:
         if not self._labs_enabled():

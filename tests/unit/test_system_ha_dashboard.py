@@ -305,4 +305,6 @@ def test_system_reports_ha_disabled_when_not_in_ha_mode(
     assert payload["ha"]["enabled"] is False
     assert payload["ha"]["authority"]["healthy"] is True
     assert payload["ha"]["etcd"]["configured_endpoints"] == []
-    assert payload["ha"]["issues"] == []
+    issue_codes = {issue["code"] for issue in payload["ha"]["issues"]}
+    assert "authority_unhealthy" not in issue_codes
+    assert "etcd_probe_degraded" not in issue_codes

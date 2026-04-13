@@ -31,6 +31,37 @@ detect_python() {
   fi
 }
 
+ensure_runtime_libs() {
+  if ! command -v nix >/dev/null 2>&1; then
+    return 0
+  fi
+  local cc_lib
+  cc_lib="$(nix eval --raw nixpkgs#stdenv.cc.cc.lib.outPath 2>/dev/null || true)"
+  if [[ -z "$cc_lib" ]]; then
+    return 0
+  fi
+  export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+}
+
+grpc_preflight() {
+  if ! is_strict_cri; then
+    return 0
+  fi
+  local output
+  local rc=0
+  output="$(PYTHONPATH=src "$PYTHON_BIN" - 2>&1 <<'PY'
+import grpc
+print(grpc.__version__)
+PY
+)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "[cri] grpc preflight failed" >&2
+    echo "$output" >&2
+    echo "[cri] ensure the repo venv is installed and libstdc++ is available via LD_LIBRARY_PATH" >&2
+    return "$rc"
+  fi
+}
+
 detect_engine() {
   if [[ -n "${AE_CONTAINER_CLI:-}" ]]; then
     printf '%s' "${AE_CONTAINER_CLI}"
@@ -955,6 +986,7 @@ ensure_cri_registry_preload_images() {
         "quay.io/coreos/etcd:v3.5.13"
         "docker.io/library/nats:2.10"
         "docker.io/library/postgres:16"
+        "docker.io/library/python:3.11-alpine"
         "${AE_ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}"
         "${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
       )
@@ -2460,6 +2492,7 @@ start_rathole_client_container() {
 }
 
 PYTHON_BIN="$(detect_python)"
+ensure_runtime_libs
 INFRA_BACKEND="$(resolve_infra_backend)"
 export AE_INFRA_BACKEND="$INFRA_BACKEND"
 if is_strict_cri; then
@@ -2468,6 +2501,7 @@ if is_strict_cri; then
   fi
   export AE_CRI_RUNTIME_HANDLER="${AE_CRI_RUNTIME_HANDLER:-runc}"
   export AE_CRI_SET_HOSTNAME="${AE_CRI_SET_HOSTNAME:-0}"
+  grpc_preflight
 fi
 ENGINE_BIN="$(detect_engine)"
 

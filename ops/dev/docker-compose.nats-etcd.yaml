@@ -14,7 +14,7 @@ services:
     ports:
       - "2379:2379"
     volumes:
-      - ../../state/etcd:/etcd-data
+      - "${AE_DEV_ETCD_DATA_DIR:-../../state/etcd}:/etcd-data"
 
   nats-hub:
     image: docker.io/library/nats:2.10
@@ -25,7 +25,7 @@ services:
       - "7422:7422"
     volumes:
       - ./nats-hub.conf:/etc/nats/nats-hub.conf:ro
-      - ../../state/nats-hub:/data
+      - "${AE_DEV_NATS_HUB_DATA_DIR:-../../state/nats-hub}:/data"
     depends_on:
       - etcd
 
@@ -49,4 +49,4 @@ services:
     ports:
       - "${POSTGRES_BIND_IP:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - ../../state/postgres:/var/lib/postgresql/data
+      - "${AE_DEV_POSTGRES_DATA_DIR:-../../state/postgres}:/var/lib/postgresql/data"

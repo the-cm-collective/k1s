@@ -194,6 +194,36 @@ def test_start_postgres_reset_data_removes_only_profile_dir(monkeypatch, tmp_pat
     } in mounts
 
 
+def test_start_postgres_honors_configured_bind_ip_and_port(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_start_component(**kwargs):
+        captured.update(kwargs)
+
+    data_root = (tmp_path / "cri-data").resolve()
+    monkeypatch.setenv("AE_CRI_DATA_ROOT", str(data_root))
+    monkeypatch.setenv("POSTGRES_PORT", "35432")
+    monkeypatch.setenv("POSTGRES_BIND_IP", "10.55.0.2")
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+
+    cri_stack._start_postgres("k1s-core", runtime_handler="runc", recreate=True)
+
+    assert captured["component"] == "k1s-core-postgres"
+    assert captured["runtime_handler"] == "runc"
+    assert captured["recreate"] is True
+    assert captured["args"] == [
+        "-c",
+        "port=35432",
+        "-c",
+        "listen_addresses=10.55.0.2,127.0.0.1",
+    ]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["POSTGRES_USER"] == "shim"
+    assert env["POSTGRES_PASSWORD"] == "shim"
+    assert env["POSTGRES_DB"] == "shim"
+
+
 def test_start_envoy_mounts_state_paths_for_tls_resolution(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 

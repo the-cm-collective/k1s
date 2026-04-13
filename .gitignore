@@ -10,6 +10,8 @@ dist/
 state/
 .venv-demo/
 .local/
+.codex/
+tmp/
 # Benchmark/test artifacts
 snapshots/
 combined/

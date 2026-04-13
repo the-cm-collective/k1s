@@ -1008,6 +1008,16 @@ def _start_postgres(
 ) -> None:
     component = "k1s-core-postgres"
     pg_data = _cri_data_root(profile) / "postgres"
+    pg_port = int(str(os.getenv("POSTGRES_PORT", "5432") or "5432"))
+    bind_ip = str(os.getenv("POSTGRES_BIND_IP", "127.0.0.1") or "127.0.0.1").strip()
+    if bind_ip in {"", "0.0.0.0", "*"}:
+        listen_addresses = "*"
+    else:
+        listen_address_parts: list[str] = []
+        for candidate in (bind_ip, "127.0.0.1"):
+            if candidate and candidate not in listen_address_parts:
+                listen_address_parts.append(candidate)
+        listen_addresses = ",".join(listen_address_parts)
     if reset_data:
         existing = _find_pod(profile, component)
         if existing is not None:
@@ -1025,6 +1035,12 @@ def _start_postgres(
             "POSTGRES_PASSWORD": "shim",
             "POSTGRES_DB": "shim",
         },
+        args=[
+            "-c",
+            f"port={pg_port}",
+            "-c",
+            f"listen_addresses={listen_addresses}",
+        ],
         mounts=[_mount(pg_data, "/var/lib/postgresql/data")],
         recreate=recreate,
     )

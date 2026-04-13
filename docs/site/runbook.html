@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -716,7 +716,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -764,7 +764,7 @@
 <li>Etcd-backed demo/labs:
 <ul>
 <li><code>AE_STATE_BACKEND=etcd make demo</code> (auto-starts etcd for the demo controller)</li>
-<li><code>AE_STATE_BACKEND=etcd make labs-aio-up</code> (labs stack uses an embedded etcd service)</li>
+<li><code>AE_STATE_BACKEND=etcd make labs-aio-up</code> (labs host-controller wrapper reuses the <code>dev-etcd</code> profile with Caddy/TLS defaults)</li>
 </ul>
 </li>
 <li>SOPS/age (secrets):
@@ -1900,13 +1900,14 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
 </li>
 </ul>
 <ul>
-<li>All‑in‑one compose (controller + docs)
+<li>Host-controller labs wrapper (current default)
 <ul>
-<li>Recommended: <code>make labs-aio-up</code> (generates shim tokens before compose)</li>
-<li>Or: <code>./scripts/ensure_apishim_env.sh &amp;&amp; docker compose -f ops/dev/labs-aio.yaml up -d</code></li>
+<li>Recommended: <code>make labs-aio-up</code> (runs the <code>dev-etcd</code> profile with Caddy/TLS defaults and writes shim tokens before startup)</li>
+<li>CLI/API-only variant: <code>make labs-up</code></li>
+<li>Legacy compose-only path: <code>./scripts/ensure_apishim_env.sh &amp;&amp; docker compose -f ops/dev/labs-aio.yaml up -d</code></li>
 <li>Open https://localhost:8443/playground.html</li>
 <li>Dashboard (separate host): https://dash.home.arpa:8443/dashboard</li>
-<li>API shim starts by default on <code>127.0.0.1:8445</code> with per-run tokens stored in <code>state/profiles/labs/apishim.env</code></li>
+<li>API shim starts by default on <code>127.0.0.1:8445</code> with per-run tokens stored in <code>state/profiles/dev-etcd/apishim.env</code> unless <code>PROFILE_DIR=</code> overrides the profile path</li>
 <li>To override tokens, set <code>AE_APISHIM_TOKEN</code> / <code>AE_APISHIM_READ_TOKEN</code> in <code>.env</code> (long values; weak tokens are rejected)</li>
 <li>To run with a local Postgres backend for controller + shim, set <code>AE_LABS_USE_POSTGRES=1</code> before bringing the stack up</li>
 <li>To print the shim tokens: <code>make labs-apishim-env</code></li>
@@ -2044,7 +2045,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-08 10:23:24</span>
+        <span>Built 2026-04-13 07:38:35</span>
       </div>
     </footer>
     <script>

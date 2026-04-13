@@ -1318,7 +1318,8 @@ class PodmanRuntime(RuntimeAdapter):
             lims = getattr(getattr(manifest.spec, "resources", None), "limits", None)  # noqa: B009
             if lims is not None and getattr(lims, "memory", None) is not None:  # noqa: B009
                 try:
-                    mem = str(getattr(lims, "memory"))  # noqa: B009
+                    raw_mem = str(getattr(lims, "memory"))  # noqa: B009
+                    mem = str(self._parse_memory_bytes(raw_mem) or raw_mem)
                     cmd += ["--memory", mem]
                 except Exception:
                     pass
@@ -1331,7 +1332,8 @@ class PodmanRuntime(RuntimeAdapter):
                     except Exception:
                         pass
                 if getattr(reqs, "memory", None) is not None:  # noqa: B009
-                    mem = str(getattr(reqs, "memory"))  # noqa: B009
+                    raw_mem = str(getattr(reqs, "memory"))  # noqa: B009
+                    mem = str(self._parse_memory_bytes(raw_mem) or raw_mem)
                     cmd += ["--memory-reservation", mem]
         except Exception:
             pass

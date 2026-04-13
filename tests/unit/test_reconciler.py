@@ -53,6 +53,31 @@ class StubRuntime(RuntimeAdapter):
             ],
         )
 
+    def list_containers_info(self) -> list[dict]:
+        return []
+
+
+class StubDockerIngressRuntime(StubRuntime):
+    def __init__(self) -> None:
+        super().__init__()
+        self._network_name = "dev_default"
+
+    def list_containers_info(self) -> list[dict]:
+        return [
+            {
+                "name": "ae-demo-rev1-0",
+                "labels": {
+                    "ae.app": "demo",
+                    "ae.pod_name": "demo-rev1-0",
+                    "ae.revision": "1",
+                },
+                "host_ports": [32000],
+                "port_map": {8080: 32000},
+                "pod_ip": None,
+                "running": True,
+            }
+        ]
+
 
 class FailingLivenessRuntime(RuntimeAdapter):
     """Runtime that creates a replica without a reachable endpoint.
@@ -242,6 +267,29 @@ def test_reconciler_with_ingress(tmp_path: Path) -> None:
     assert status.revision >= 1
     events = state.list_events("demo", limit=5)
     assert any(event.event_type == "IngressConfigured" for event in events)
+
+
+def test_reconciler_with_docker_network_ingress_prefers_container_dns(tmp_path: Path) -> None:
+    runtime = StubDockerIngressRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+    ingress_service = StubIngressService()
+    reconciler = Reconciler(runtime=runtime, state_store=state, ingress_service=ingress_service)
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            ports=[{"name": "http", "containerPort": 8080}],  # type: ignore[list-item]
+            ingress=IngressSpec(host="demo.local", path="/"),
+        ),
+    )
+
+    reconciler.reconcile(manifest)
+
+    assert ingress_service.applied == [("demo", "ae-demo-rev1-0:8080")]
+    assert ingress_service.reload_count == 1
 
 
 def test_reconciler_registers_portforward_callback(tmp_path: Path) -> None:

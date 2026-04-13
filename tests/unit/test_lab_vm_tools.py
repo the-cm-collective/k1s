@@ -27,6 +27,7 @@ ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "assert_im
 RUN_PROFILE_SCRIPT = ROOT / "scripts" / "dev" / "run_profile.sh"
 CRI_NODE_CNI_HELPER_SCRIPT = ROOT / "scripts" / "dev" / "ensure_cri_node_cni.sh"
 HA_CLOSEOUT_E2E_SCRIPT = ROOT / "scripts" / "dev" / "ha_closeout_e2e.sh"
+STRICT_CRI_SMOKE_SCRIPT = ROOT / "scripts" / "dev" / "strict_cri_smoke.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
 HA_DASHBOARD_SMOKE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "ha_dashboard_smoke.sh"
@@ -2619,6 +2620,28 @@ def test_ha_closeout_e2e_wrapper_prepares_runtime_and_runs_pytest() -> None:
     assert "import grpc" in text
     assert "AE_E2E_HA_CLOSEOUT=1" in text
     assert "-m pytest -q tests/integration/test_ha_closeout_e2e.py" in text
+
+
+def test_make_strict_cri_smoke_uses_wrapper_script() -> None:
+    text = MAKEFILE.read_text(encoding="utf-8")
+    assert "strict-cri-smoke:" in text
+    assert "./scripts/dev/strict_cri_smoke.sh" in text
+    assert "AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh" in text
+
+
+def test_strict_cri_smoke_wrapper_prepares_runtime_and_runs_pytest() -> None:
+    text = STRICT_CRI_SMOKE_SCRIPT.read_text(encoding="utf-8")
+    assert "$ROOT_DIR/.venv/bin/python" in text
+    assert "nix eval --raw nixpkgs#stdenv.cc.cc.lib.outPath" in text
+    assert 'export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' in text
+    assert "import grpc" in text
+    assert 'AE_STRICT_CRI_PROFILE_SMOKE="${AE_STRICT_CRI_PROFILE_SMOKE:-1}"' in text
+    assert 'AE_CRI_IT="${AE_CRI_IT:-1}"' in text
+    assert 'AE_CRI_SMOKE_PULL="${AE_CRI_SMOKE_PULL:-1}"' in text
+    assert "-m pytest --maxfail=1 --disable-warnings -q" in text
+    assert "tests/integration/test_strict_cri_profile_smoke.py" in text
+    assert "tests/integration/test_cri_smoke.py" in text
+    assert "tests/integration/test_cri_runtime_integration.py" in text
 
 
 def test_cri_preflight_resolves_python3_fallback() -> None:

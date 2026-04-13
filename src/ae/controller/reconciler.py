@@ -969,6 +969,8 @@ class Reconciler:
                     return [f"{svc.cluster_ip}:{svc_port}"]
 
         states_by_id = {state.pod_name: state for state in result.pod_states}
+        preferred_port = self._preferred_container_port(manifest)
+        container_infos_by_pod = self._container_infos_by_pod()
 
         # Prefer only ready endpoints; defer ingress changes until at least one
         # replica is ready to avoid transient 502s during warm-up.
@@ -976,6 +978,13 @@ class Reconciler:
         for pod in health_report.pods:
             if not pod.ready:
                 continue
+            info = container_infos_by_pod.get(pod.pod_name)
+            if info:
+                target = self._endpoint_from_container_info(info, preferred_port)
+                if target:
+                    host, port = target
+                    ready_eps.append(f"{host}:{int(port)}")
+                    continue
             state = states_by_id.get(pod.pod_name)
             if state and state.endpoint:
                 host, port = self._split_host_port(state.endpoint)
@@ -993,7 +1002,6 @@ class Reconciler:
                 items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
             except Exception:
                 items = []
-            preferred_port = self._preferred_container_port(manifest)
             prev_eps: list[str] = []
             cur_rev = str(result.revision)
             for it in items or []:
@@ -1068,9 +1076,37 @@ class Reconciler:
             pass
         return None
 
+    def _docker_container_dns_enabled(self) -> bool:
+        runtime = self._base_runtime
+        runtime_name = runtime.__class__.__name__.lower()
+        return (
+            "docker" in runtime_name
+            and "podman" not in runtime_name
+            and bool(getattr(runtime, "_network_name", None))
+        )
+
+    def _container_infos_by_pod(self) -> dict[str, dict]:
+        if not self._docker_container_dns_enabled():
+            return {}
+        try:
+            items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
+        except Exception:
+            return {}
+        out: dict[str, dict] = {}
+        for item in items or []:
+            labels = (item or {}).get("labels") or {}
+            pod_name = str(labels.get("ae.pod_name") or labels.get("ae.replica_id") or "").strip()
+            if pod_name:
+                out[pod_name] = item
+        return out
+
     def _endpoint_from_container_info(
         self, info: dict, port_hint: int | None
     ) -> tuple[str, int] | None:
+        if self._docker_container_dns_enabled() and port_hint is not None:
+            name = str((info or {}).get("name") or "").strip()
+            if name:
+                return name, int(port_hint)
         pod_ip = (info or {}).get("pod_ip")
         host_ip = (info or {}).get("host_ip") or "127.0.0.1"
         port_map = (info or {}).get("port_map") or {}

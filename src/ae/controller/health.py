@@ -92,7 +92,8 @@ class HealthManager:
 
     def evaluate(self, manifest: AppManifest, result: RuntimeResult) -> HealthReport:
         pods: list[PodHealth] = []
-        namespace = getattr(manifest.metadata, "namespace", None)
+        metadata = getattr(manifest, "metadata", None)
+        namespace = getattr(metadata, "namespace", None)
 
         readiness_spec = manifest.spec.health.readiness if manifest.spec.health else None
         liveness_spec = manifest.spec.health.liveness if manifest.spec.health else None
@@ -428,6 +429,39 @@ class HealthManager:
             return self._loopback_fallback
         return host
 
+    def _preserve_endpoint_port(self, host: str) -> bool:
+        norm = host.strip("[] ").lower()
+        if not norm:
+            return False
+        if norm.startswith("127."):
+            return True
+        return norm in {
+            "localhost",
+            "0.0.0.0",
+            "::",
+            "::1",
+            "host.docker.internal",
+            "host.containers.internal",
+        }
+
+    def _select_direct_probe_port(
+        self, host: str, endpoint_port: str | None, probe_port: int | None
+    ) -> int | None:
+        if endpoint_port:
+            if self._preserve_endpoint_port(host):
+                try:
+                    return int(endpoint_port)
+                except Exception:
+                    return probe_port
+        if probe_port is not None:
+            return probe_port
+        if endpoint_port:
+            try:
+                return int(endpoint_port)
+            except Exception:
+                return None
+        return None
+
     def _close_socket(self, sock) -> None:  # type: ignore[no-untyped-def]
         try:
             sock.close()
@@ -553,7 +587,7 @@ class HealthManager:
         if pod.endpoint:
             host, endpoint_port = self._split_endpoint(str(pod.endpoint))
             host = self._rewrite_probe_host(host)
-            target_port = probe_port or (int(endpoint_port) if endpoint_port else None)
+            target_port = self._select_direct_probe_port(host, endpoint_port, probe_port)
             if host and target_port is not None:
                 endpoint = self._format_endpoint(host, str(target_port))
                 url = f"http://{endpoint}{request_path}"
@@ -621,14 +655,17 @@ class HealthManager:
         timeout = max(probe.timeout_seconds, 1)
         direct_error = None
         if pod.endpoint:
-            host, _ep_port = self._split_endpoint(str(pod.endpoint))
+            host, endpoint_port = self._split_endpoint(str(pod.endpoint))
             host = self._rewrite_probe_host(host)
-            target_port = int(port)
-            try:
-                with _sock.create_connection((host, target_port), timeout=timeout):
-                    return ProbeOutcome(True, f"{probe_type} tcp ok ({host}:{target_port})")
-            except OSError as exc:
-                direct_error = f"{probe_type} tcp error: {exc} ({host}:{target_port})"
+            target_port = self._select_direct_probe_port(host, endpoint_port, int(port))
+            if target_port is None:
+                direct_error = f"{probe_type} endpoint missing"
+            else:
+                try:
+                    with _sock.create_connection((host, target_port), timeout=timeout):
+                        return ProbeOutcome(True, f"{probe_type} tcp ok ({host}:{target_port})")
+                except OSError as exc:
+                    direct_error = f"{probe_type} tcp error: {exc} ({host}:{target_port})"
         else:
             direct_error = f"{probe_type} endpoint missing"
 

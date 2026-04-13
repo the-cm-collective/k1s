@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -716,7 +716,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -729,7 +729,7 @@
       </svg>
     </button>
     <div class="container">
-    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Labs</h2>       <p>Provision docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable, start the controller, then apply echo.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
+    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Demo</h2>       <p>Provision the seeded demo profile, docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable, start the controller, then apply echo.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
 <p>This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.</p>
 <p>Note: k1s is pre-1.0 and still evolving. v0.1.3 expands operational validation (deep+perf ingress lanes, repeatability and fault-injection gates, security baseline and active auth probes, and release-time live OpenAPI gates), but production promotion still requires environment-specific security review and rollout validation.</p>
 <p>Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.</p>
@@ -771,15 +771,14 @@ python -m pip install -e .[dev]</code></pre>
 </ul>
 </li>
 </ul>
-<h2 id="option-a-zero-to-labs-automated">Option A — Zero‑to‑Labs (automated)</h2>
-<p>This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Deployments).</p>
-<p>1) Run the demo initializer (adds hosts; Ctrl‑C safe):</p>
-<pre><code>./scripts/init_demo.sh --demo-standard -y -d
-# or
-make demo ARGS=&quot;--demo-standard -y -d&quot;</code></pre>
+<h2 id="option-a-zero-to-demo-automated">Option A — Zero‑to‑Demo (automated)</h2>
+<p>This path runs the current seeded <code>dev-min</code> profile, serves docs, starts the controller API/dashboard, registers a local node, and stages the blue/green sample workloads.</p>
+<p>1) Start the seeded demo target:</p>
+<pre><code>make demo</code></pre>
 <ul>
-<li>Script reference: <code>scripts/init_demo.sh:1</code></li>
-<li>Flags map: <code>docs/guides/demos-examples.md:1</code></li>
+<li>Current wrapper: <code>Makefile:1</code></li>
+<li>Profile implementation: <code>scripts/dev/run_profile.sh:1</code></li>
+<li>Legacy flag-driven demo modes still live in <code>scripts/init_demo.sh:1</code></li>
 </ul>
 <p>2) Open endpoints:</p>
 <ul>
@@ -797,8 +796,8 @@ python -m ae.cli logs blue --tail 50</code></pre>
 make demo-down</code></pre>
 <p>Tips</p>
 <ul>
-<li>Need only docs + API? Use <code>./scripts/init_demo.sh --docs-only -y -d</code> or <code>make demo ARGS=&quot;--docs-only -y -d&quot;</code>.</li>
-<li>Prefer Make: <code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code> and <code>make demo-down</code> (see <code>Makefile:1</code>).</li>
+<li>Need a specific legacy <code>init_demo.sh</code> mode? Use <code>./scripts/init_demo.sh ...</code> directly or <code>make demo-legacy ARGS=&quot;--docs-only -y -d&quot;</code>.</li>
+<li>Prefer the current default demo wrapper when you just want the seeded blue/green path: <code>make demo</code> and <code>make demo-down</code>.</li>
 <li>Want to try multi-node? Follow Option C, then apply <code>specs/examples/echo-multinode.yaml</code>.</li>
 <li>Podman registry cache: configure an insecure local registry to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.</li>
 </ul>
@@ -894,17 +893,18 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make docs-export</code>: build non-interactive HTML into <code>docs/export</code> (override with <code>DOCS_OUT_DIR=</code>).</li>
 <li><code>make docs-wiki-export</code>: export wiki-friendly HTML into <code>docs/wiki</code> (override with <code>WIKI_OUT=</code>).</li>
 <li><code>make docs-watch</code>: rebuild docs when <code>combined/combined.csv</code> changes.</li>
-<li><code>make labs-up</code> / <code>make labs-down</code>: docs + playground via compose (controller runs on host).</li>
-<li><code>make labs-aio-up</code> / <code>make labs-aio-down</code>: all-in-one labs stack (controller + apishim + docs).</li>
+<li><code>make labs-up</code> / <code>make labs-down</code>: host-controller <code>dev-etcd</code> wrapper (CLI/API only; no docs/Caddy).</li>
+<li><code>make labs-aio-up</code> / <code>make labs-aio-down</code>: host-controller <code>dev-etcd</code> wrapper with Caddy/TLS and the dev-local helper defaults.</li>
 <li><code>make labs-k3d-up</code> / <code>make labs-k3d-down</code>: bring up/down local k3d cluster for labs.</li>
-<li><code>make labs-apishim-env</code>: print apishim tokens from <code>state/profiles/labs/apishim.env</code>.</li>
+<li><code>make labs-apishim-env</code>: print apishim tokens from the active <code>dev-etcd</code> profile (<code>state/profiles/dev-etcd/apishim.env</code> unless <code>PROFILE_DIR=</code> overrides it).</li>
 <li><code>make apishim-smoke</code>: quick API shim health check on port 8445.</li>
 <li><code>make shim-helm-demo</code>: run the helm shim demo helper.</li>
 </ul>
 <p>Demo workflows</p>
 <ul>
-<li><code>make demo</code>: run the playground labs demo (<code>--labs --labs-token</code>; podman backend, plaintext secrets allowed).</li>
+<li><code>make demo</code>: run the current seeded demo profile (blue/green sample apps + docs/api/dashboard).</li>
 <li>Demo note: <code>AE_REGISTER_LOCAL_NODE=1</code> is set by default in demos/labs so the controller registers a local node for scheduling; unset to require explicit node registration.</li>
+<li><code>make demo-legacy</code>: flag-driven <code>init_demo.sh</code> wrapper for legacy demo modes via <code>ARGS=&quot;...&quot;</code>.</li>
 <li><code>make demo-help</code>: show demo script help.</li>
 <li><code>make demo-down</code>: tear down demo stacks.</li>
 <li><code>make reg-cache-reset</code>: clear local registry cache used by demos.</li>
@@ -1079,7 +1079,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-01 13:22:29</span>
+        <span>Built 2026-04-13 07:38:34</span>
       </div>
     </footer>
     <script>

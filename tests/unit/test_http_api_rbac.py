@@ -1,3 +1,4 @@
+import logging
 import json
 from io import BytesIO
 from types import SimpleNamespace
@@ -211,6 +212,34 @@ def test_apply_returns_not_leader_payload(monkeypatch):
     assert 409 in req.responses
     assert '"error": "not_leader"' in body
     assert '"controller_id": "ctrl-b"' in body
+
+
+def test_apply_logs_server_exception(monkeypatch, caplog):
+    monkeypatch.setenv("AE_API_RBAC", "1")
+    monkeypatch.setenv("AE_API_ADMIN_TOKEN", "a")
+    req = make_handler(
+        "/apply", headers={"Authorization": "Bearer a"}, body={"metadata": {"name": "app"}}
+    )
+    handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
+    handler.headers = {
+        "Authorization": "Bearer a",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+        "User-Agent": "pytest",
+    }
+    handler.rfile = BytesIO(req._payload)
+
+    def _apply(_payload):
+        raise RuntimeError("boom")
+
+    handler.apply_fn = _apply
+    with caplog.at_level(logging.ERROR, logger="ae.observability.http_api"):
+        handler.do_POST()
+
+    body = bytes(req._wbuf).decode("utf-8", errors="ignore")
+    assert 500 in req.responses
+    assert '"error": "boom"' in body
+    assert "apply handler failed source=api app=app" in caplog.text
 
 
 def test_scale_returns_resource_version_conflict(monkeypatch):

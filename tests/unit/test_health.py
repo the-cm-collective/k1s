@@ -153,6 +153,138 @@ def test_health_manager_loopback_fallback(monkeypatch):
     assert report.ready_replicas == 1
 
 
+def test_health_manager_http_probe_preserves_loopback_host_port(monkeypatch):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "httpGet": {"path": "/healthz", "port": 8080},
+                        "timeoutSeconds": 1,
+                        "failureThreshold": 1,
+                    }
+                )
+            ),
+        ),
+    )
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[
+            PodState(pod_name="demo-0", ready=False, endpoint="127.0.0.1:8085"),
+        ],
+    )
+    response = Response()
+    response.status_code = 200
+
+    def fake_get(url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
+        assert url == "http://127.0.0.1:8085/healthz"
+        return response
+
+    monkeypatch.setattr("ae.controller.health.get", fake_get)
+
+    report = HealthManager().evaluate(manifest, result)
+
+    assert report.ready_replicas == 1
+    assert "readiness http 200" in report.pods[0].readiness_message
+
+
+def test_health_manager_http_probe_preserves_host_alias_port(monkeypatch):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "httpGet": {"path": "/healthz", "port": 8080},
+                        "timeoutSeconds": 1,
+                        "failureThreshold": 1,
+                    }
+                )
+            ),
+        ),
+    )
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[
+            PodState(pod_name="demo-0", ready=False, endpoint="host.docker.internal:8085"),
+        ],
+    )
+    response = Response()
+    response.status_code = 200
+
+    def fake_get(url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
+        assert url == "http://host.docker.internal:8085/healthz"
+        return response
+
+    monkeypatch.setattr("ae.controller.health.get", fake_get)
+
+    report = HealthManager().evaluate(manifest, result)
+
+    assert report.ready_replicas == 1
+    assert "readiness http 200" in report.pods[0].readiness_message
+
+
+def test_health_manager_http_probe_uses_container_port_for_pod_ip(monkeypatch):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "httpGet": {"path": "/healthz", "port": 8080},
+                        "timeoutSeconds": 1,
+                        "failureThreshold": 1,
+                    }
+                )
+            ),
+        ),
+    )
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[
+            PodState(pod_name="demo-0", ready=False, endpoint="10.88.0.3:8085"),
+        ],
+    )
+    response = Response()
+    response.status_code = 200
+
+    def fake_get(url: str, timeout: int):  # noqa: ANN001
+        _ = timeout
+        assert url == "http://10.88.0.3:8080/healthz"
+        return response
+
+    monkeypatch.setattr("ae.controller.health.get", fake_get)
+
+    report = HealthManager().evaluate(manifest, result)
+
+    assert report.ready_replicas == 1
+    assert "readiness http 200" in report.pods[0].readiness_message
+
+
 def test_health_manager_initial_delay(monkeypatch):
     from datetime import datetime, timedelta
 
@@ -387,3 +519,99 @@ def test_health_manager_tcp_probe_falls_back_to_portforward(monkeypatch):
     assert report.ready_replicas == 1
     assert "remote tcp ok" in report.pods[0].readiness_message
     assert socket_stub.closed is True
+
+
+def test_health_manager_tcp_probe_preserves_loopback_host_port(monkeypatch):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "tcpSocket": {"port": 8080},
+                        "timeoutSeconds": 1,
+                    }
+                )
+            ),
+        ),
+    )
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[PodState(pod_name="demo-0", ready=False, endpoint="127.0.0.1:8085")],
+    )
+    captured: list[tuple[str, int]] = []
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_connect(addr, timeout):  # noqa: ANN001
+        captured.append((addr[0], addr[1]))
+        _ = timeout
+        return _Conn()
+
+    monkeypatch.setattr("socket.create_connection", fake_connect)
+
+    report = HealthManager().evaluate(manifest, result)
+
+    assert report.ready_replicas == 1
+    assert captured == [("127.0.0.1", 8085)]
+    assert "readiness tcp ok" in report.pods[0].readiness_message
+
+
+def test_health_manager_tcp_probe_uses_container_port_for_pod_ip(monkeypatch):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            replicas=1,
+            health=HealthSpec(
+                readiness=ProbeSpec.model_validate(
+                    {
+                        "tcpSocket": {"port": 8080},
+                        "timeoutSeconds": 1,
+                    }
+                )
+            ),
+        ),
+    )
+    result = RuntimeResult(
+        revision=1,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[PodState(pod_name="demo-0", ready=False, endpoint="10.88.0.3:8085")],
+    )
+    captured: list[tuple[str, int]] = []
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_connect(addr, timeout):  # noqa: ANN001
+        captured.append((addr[0], addr[1]))
+        _ = timeout
+        return _Conn()
+
+    monkeypatch.setattr("socket.create_connection", fake_connect)
+
+    report = HealthManager().evaluate(manifest, result)
+
+    assert report.ready_replicas == 1
+    assert captured == [("10.88.0.3", 8080)]
+    assert "readiness tcp ok" in report.pods[0].readiness_message

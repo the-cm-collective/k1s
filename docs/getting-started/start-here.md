@@ -15,8 +15,8 @@
   </div>
   <div class="hero-actions">
     <div class="hero-card">
-      <h2>Zero-to-Labs</h2>
-      <p>Provision docs, API, dashboard, and sample apps in one shot.</p>
+      <h2>Zero-to-Demo</h2>
+      <p>Provision the seeded demo profile, docs, API, dashboard, and sample apps in one shot.</p>
       <pre><code>make demo</code></pre>
     </div>
     <div class="hero-card">
@@ -89,17 +89,16 @@ Notes
   - add `./nixos/modules/k1s-local-dev-bridge.nix` to your host imports
   - `sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)`
 
-## Option A — Zero‑to‑Labs (automated)
-This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Deployments).
+## Option A — Zero‑to‑Demo (automated)
+This path runs the current seeded `dev-min` profile, serves docs, starts the controller API/dashboard, registers a local node, and stages the blue/green sample workloads.
 
-1) Run the demo initializer (adds hosts; Ctrl‑C safe):
+1) Start the seeded demo target:
 ```
-./scripts/init_demo.sh --demo-standard -y -d
-# or
-make demo ARGS="--demo-standard -y -d"
+make demo
 ```
-   - Script reference: `scripts/init_demo.sh:1`
-   - Flags map: `docs/guides/demos-examples.md:1`
+   - Current wrapper: `Makefile:1`
+   - Profile implementation: `scripts/dev/run_profile.sh:1`
+   - Legacy flag-driven demo modes still live in `scripts/init_demo.sh:1`
 
 2) Open endpoints:
 - Docs: https://docs.home.arpa:8443/ and http://127.0.0.1:9109/
@@ -121,8 +120,8 @@ make demo-down
 ```
 
 Tips
-- Need only docs + API? Use `./scripts/init_demo.sh --docs-only -y -d` or `make demo ARGS="--docs-only -y -d"`.
-- Prefer Make: `make demo ARGS="--demo-standard -y -d"` and `make demo-down` (see `Makefile:1`).
+- Need a specific legacy `init_demo.sh` mode? Use `./scripts/init_demo.sh ...` directly or `make demo-legacy ARGS="--docs-only -y -d"`.
+- Prefer the current default demo wrapper when you just want the seeded blue/green path: `make demo` and `make demo-down`.
 - Want to try multi-node? Follow Option C, then apply `specs/examples/echo-multinode.yaml`.
 - Podman registry cache: configure an insecure local registry to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.
   ```
@@ -234,16 +233,17 @@ Docs, labs, and playground
 - `make docs-export`: build non-interactive HTML into `docs/export` (override with `DOCS_OUT_DIR=`).
 - `make docs-wiki-export`: export wiki-friendly HTML into `docs/wiki` (override with `WIKI_OUT=`).
 - `make docs-watch`: rebuild docs when `combined/combined.csv` changes.
-- `make labs-up` / `make labs-down`: docs + playground via compose (controller runs on host).
-- `make labs-aio-up` / `make labs-aio-down`: all-in-one labs stack (controller + apishim + docs).
+- `make labs-up` / `make labs-down`: host-controller `dev-etcd` wrapper (CLI/API only; no docs/Caddy).
+- `make labs-aio-up` / `make labs-aio-down`: host-controller `dev-etcd` wrapper with Caddy/TLS and the dev-local helper defaults.
 - `make labs-k3d-up` / `make labs-k3d-down`: bring up/down local k3d cluster for labs.
-- `make labs-apishim-env`: print apishim tokens from `state/profiles/labs/apishim.env`.
+- `make labs-apishim-env`: print apishim tokens from the active `dev-etcd` profile (`state/profiles/dev-etcd/apishim.env` unless `PROFILE_DIR=` overrides it).
 - `make apishim-smoke`: quick API shim health check on port 8445.
 - `make shim-helm-demo`: run the helm shim demo helper.
 
 Demo workflows
-- `make demo`: run the playground labs demo (`--labs --labs-token`; podman backend, plaintext secrets allowed).
+- `make demo`: run the current seeded demo profile (blue/green sample apps + docs/api/dashboard).
 - Demo note: `AE_REGISTER_LOCAL_NODE=1` is set by default in demos/labs so the controller registers a local node for scheduling; unset to require explicit node registration.
+- `make demo-legacy`: flag-driven `init_demo.sh` wrapper for legacy demo modes via `ARGS="..."`.
 - `make demo-help`: show demo script help.
 - `make demo-down`: tear down demo stacks.
 - `make reg-cache-reset`: clear local registry cache used by demos.

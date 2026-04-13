@@ -97,6 +97,15 @@ def test_run_profile_guards_compose_provider_and_host_fallback() -> None:
     assert "strict CRI infra selected but CNI plugin bootstrap failed" in text
     assert "containerd_socket_access.sh --grant" in text
     assert "run_controller_loop --loop" in text
+    assert "ensure_runtime_libs() {" in text
+    assert "grpc_preflight() {" in text
+    assert 'export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' in text
+    assert "[cri] grpc preflight failed" in text
+    assert (
+        'echo "[cri] ensure the repo venv is installed and libstdc++ is available via LD_LIBRARY_PATH" >&2'
+        in text
+    )
+    assert "PYTHONPATH=src \"$PYTHON_BIN\" - 2>&1 <<'PY'" in text
 
 
 def test_compose_and_dev_env_use_explicit_podman_safe_apishim_values() -> None:
@@ -178,10 +187,33 @@ def test_nixos_cri_module_declares_containerd_and_repo_cni_contract() -> None:
 
 def test_init_demo_delegates_local_dns_tls_helper() -> None:
     text = INIT_DEMO.read_text(encoding="utf-8")
+    assert 'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert "caddy_https_status() {" in text
+    assert "reload_caddy_config() {" in text
+    assert "prepare_local_apishim_compose_env() {" in text
+    assert 'export APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"' in text
+    assert 'export APISHIM_PROFILE_DIR="${profile_rel}"' in text
+    assert 'APISHIM_ENV_FILE="$APISHIM_ENV_FILE" \\' in text
+    assert '--resolve "${host}:${https_port}:127.0.0.1"' in text
+    assert 'code_api="$(caddy_https_status "api.home.arpa" "/openapi.json" "${CADDY_HTTPS_PORT}")"' in text
     assert "Apply local DNS/TLS helper state" in text
     assert "Remove local DNS/TLS helper state" in text
     assert "./scripts/dev/ensure_dev_local.sh" in text
+    assert 'AE_CONTAINER_CLI="${DEV_LOCAL_CONTAINER_CLI}"' in text
+    assert 'DEV_LOCAL_CONTAINER_CLI="${STACK_BIN_DOWN:-${STACK_BIN:-docker}}"' in text
+    assert 'CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT:-8443}"' in text
     assert "AE_APISHIM_TLS_CA_CERT" in text
+    assert "apt-get not available; verifying required host tools from existing environment" in text
+    assert "Install them via your Nix profile or repo dev shell and re-run." in text
+    assert "sops not found and apt-get is unavailable" in text
+    assert '"docker.io/library/python:3.11-alpine"' in RUN_PROFILE.read_text(encoding="utf-8")
+
+
+def test_e2e_multiport_uses_resolve_and_caddy_retry() -> None:
+    text = (ROOT / "scripts" / "e2e" / "multiport.sh").read_text(encoding="utf-8")
+    assert "--resolve \"echo-multi.home.arpa:${CADDY_HTTPS_PORT}:127.0.0.1\"" in text
+    assert "reloading Caddy and retrying" in text
+    assert "caddy reload --config /etc/caddy/Caddyfile" in text
 
 
 def test_env_doctor_runs_and_reports_core_sections() -> None:

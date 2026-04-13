@@ -1,8 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 log() {
   printf '\033[1;32m[init-demo]\033[0m %s\n' "$1"
+}
+
+caddy_https_status() {
+  local host="$1"
+  local path="${2:-/}"
+  local https_port="${3:-${CADDY_HTTPS_PORT:-8443}}"
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "000"
+    return 0
+  fi
+  curl -ksS \
+    --resolve "${host}:${https_port}:127.0.0.1" \
+    -o /dev/null \
+    -w '%{http_code}' \
+    "https://${host}:${https_port}${path}" 2>/dev/null || true
+}
+
+reload_caddy_config() {
+  local cli="${1:-${AE_CONTAINER_CLI:-${STACK_BIN:-}}}"
+  local container="${2:-${AE_CADDY_CONTAINER:-dev-caddy-1}}"
+  if [[ -z "${cli}" || -z "${container}" ]]; then
+    return 1
+  fi
+  if ! command -v "${cli}" >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! "${cli}" ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${container}"; then
+    return 1
+  fi
+  "${cli}" exec "${container}" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1
 }
 
 require_root_or_sudo() {
@@ -14,6 +46,16 @@ require_root_or_sudo() {
 }
 
 SUDO=$(require_root_or_sudo)
+
+os_id() {
+  if [[ -r /etc/os-release ]]; then
+    sed -n 's/^ID=//p' /etc/os-release | head -n1 | tr -d '"' | tr -d "'"
+  fi
+}
+
+is_nixos() {
+  [[ "$(os_id)" == "nixos" ]]
+}
 
 # Static demo hosts we can safely add to /etc/hosts when requested.
 # Note: echo-storage and echo-stateful do not expose ingress by default.
@@ -148,6 +190,43 @@ start_apishim() {
   nohup "$PY_BIN" -m ae.apishim serve --host "${APISHIM_HOST}" --port "${APISHIM_PORT}" --tls \
     > state/apishim.log 2>&1 &
   echo $! > state/apishim.pid
+}
+
+prepare_local_apishim_compose_env() {
+  local profile_dir="${APISHIM_PROFILE_DIR:-}"
+  local profile_rel=""
+  if [[ -z "${profile_dir}" ]]; then
+    if [[ -n "${APISHIM_ENV_FILE:-}" ]]; then
+      profile_dir="$(dirname -- "${APISHIM_ENV_FILE}")"
+    elif [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
+      profile_dir="${LABS_PROFILE_DIR:-state/profiles/labs}"
+    else
+      profile_dir="${DEMO_PROFILE_DIR:-state/profiles/demo}"
+    fi
+  fi
+
+  if [[ "${profile_dir}" != /* ]]; then
+    profile_dir="${ROOT_DIR}/${profile_dir}"
+  fi
+  profile_rel="${profile_dir}"
+  if [[ "${profile_dir}" == "${ROOT_DIR}/"* ]]; then
+    profile_rel="${profile_dir#"${ROOT_DIR}/"}"
+  fi
+
+  mkdir -p "${profile_dir}"
+  export APISHIM_PROFILE_DIR="${profile_rel}"
+  export APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
+  export APISHIM_CERT_FILE="${APISHIM_CERT_FILE:-$profile_dir/apishim.crt}"
+  export APISHIM_KEY_FILE="${APISHIM_KEY_FILE:-$profile_dir/apishim.key}"
+  export APISHIM_CA_FILE="${APISHIM_CA_FILE:-$profile_dir/apishim.ca.crt}"
+  export APISHIM_CA_KEY_FILE="${APISHIM_CA_KEY_FILE:-$profile_dir/apishim.ca.key}"
+
+  APISHIM_ENV_FILE="$APISHIM_ENV_FILE" \
+    APISHIM_CERT_FILE="$APISHIM_CERT_FILE" \
+    APISHIM_KEY_FILE="$APISHIM_KEY_FILE" \
+    APISHIM_CA_FILE="$APISHIM_CA_FILE" \
+    APISHIM_CA_KEY_FILE="$APISHIM_CA_KEY_FILE" \
+    ./scripts/ensure_apishim_env.sh
 }
 
 stop_apishim() {
@@ -687,14 +766,16 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     rm -rf state/registry 2>/dev/null || true
   fi
   if prompt_yes_no_hosts "Remove local DNS/TLS helper state for ${HOSTS[*]}?" N; then
+    DEV_LOCAL_PROFILE_DIR="${LABS_PROFILE_DIR:-$DEMO_PROFILE_DIR}"
+    DEV_LOCAL_CONTAINER_CLI="${STACK_BIN_DOWN:-${STACK_BIN:-docker}}"
     DEV_LOCAL_HOSTS="${HOSTS[*]}" \
       DEV_LOCAL_HOSTS_IP="${HOSTS_IP}" \
-      DEV_PROFILE_DIR="${LABS_PROFILE_DIR:-$DEMO_PROFILE_DIR}" \
-      AE_CONTAINER_CLI="${STACK_BIN}" \
+      DEV_PROFILE_DIR="${DEV_LOCAL_PROFILE_DIR}" \
+      AE_CONTAINER_CLI="${DEV_LOCAL_CONTAINER_CLI}" \
       AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}" \
-      AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-${LABS_PROFILE_DIR}/apishim.crt}" \
-      AE_APISHIM_TLS_CA_CERT="${AE_APISHIM_TLS_CA_CERT:-${LABS_PROFILE_DIR}/apishim.ca.crt}" \
-      CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT}" \
+      AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-${DEV_LOCAL_PROFILE_DIR}/apishim.crt}" \
+      AE_APISHIM_TLS_CA_CERT="${AE_APISHIM_TLS_CA_CERT:-${DEV_LOCAL_PROFILE_DIR}/apishim.ca.crt}" \
+      CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT:-8443}" \
       AE_DEV_LOCAL_ACTION=clean \
       ./scripts/dev/ensure_dev_local.sh || true
   else
@@ -749,13 +830,54 @@ APT_PACKAGES=(
   python3-pip
   sqlite3
   age
+  curl
 )
 
-log "Installing system packages"
-$SUDO apt-get update -y
-$SUDO apt-get install -y "${APT_PACKAGES[@]}"
+require_existing_host_tools() {
+  local missing=()
+  if ! command -v python3 >/dev/null 2>&1; then
+    missing+=(python3)
+  fi
+  if ! python3 -m venv --help >/dev/null 2>&1; then
+    missing+=(python3-venv)
+  fi
+  for tool in sqlite3 age curl sops; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      missing+=("$tool")
+    fi
+  done
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return 0
+  fi
+  log "Missing required host tools: ${missing[*]}"
+  if is_nixos; then
+    log "Install them via your Nix profile or repo dev shell and re-run."
+  else
+    log "Install the missing tools manually or re-run on a host with apt-get available."
+  fi
+  exit 1
+}
+
+install_system_packages() {
+  if command -v apt-get >/dev/null 2>&1; then
+    log "Installing system packages"
+    $SUDO apt-get update -y
+    $SUDO apt-get install -y "${APT_PACKAGES[@]}"
+    return 0
+  fi
+
+  log "apt-get not available; verifying required host tools from existing environment"
+  require_existing_host_tools
+}
 
 install_sops() {
+  if command -v sops >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    log "sops not found and apt-get is unavailable; install sops via your Nix profile/dev shell and re-run."
+    return 1
+  fi
   if $SUDO apt-get install -y sops; then
     return 0
   fi
@@ -774,6 +896,7 @@ install_sops() {
   rm -rf "$tmp_dir"
 }
 
+install_system_packages
 install_sops || {
   log "Failed to install sops automatically; please install it and re-run."
   exit 1
@@ -1012,6 +1135,7 @@ if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.overr
     log "Registry cache not reachable at ${registry_host}:${registry_port} (image pulls may fail)"
   fi
 fi
+prepare_local_apishim_compose_env
   if ! ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" up -d; then
     if [[ "$STACK_BIN" == "podman" ]]; then
       log "Compose up failed; retrying after Podman/systemd remedial steps"
@@ -1658,7 +1782,12 @@ if [[ $DEMO_ECHO_MULTI -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying multi-port echo demo (echo-multi)"
   apply_with_heartbeat "echo-multi" "specs/examples/echo-multiport.yaml" || true
   # Quick endpoint verification
-  code=$(curl -ksS -o /dev/null -w '%{http_code}' "https://echo-multi.home.arpa:${CADDY_HTTPS_PORT}/" || true)
+  code="$(caddy_https_status "echo-multi.home.arpa" "/" "${CADDY_HTTPS_PORT}")"
+  if [[ "$code" == "502" ]]; then
+    reload_caddy_config || true
+    sleep 1
+    code="$(caddy_https_status "echo-multi.home.arpa" "/" "${CADDY_HTTPS_PORT}")"
+  fi
   printf '[verify] %-20s -> %s\n' "echo-multi.home.arpa/" "${code:-fail}"
 fi
 
@@ -1780,13 +1909,17 @@ check_api_reachability() {
   fi
 
   # Caddy (ingress) reachability — use --resolve to avoid requiring /etc/hosts
-  code_api=$(curl -ksS --resolve "api.home.arpa:${CADDY_HTTPS_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' \
-             "https://api.home.arpa:${CADDY_HTTPS_PORT}/openapi.json" || true)
+  code_api="$(caddy_https_status "api.home.arpa" "/openapi.json" "${CADDY_HTTPS_PORT}")"
+  if [[ "$code_api" != "200" ]] && curl -fsS "http://127.0.0.1:${API_PORT}/openapi.json" >/dev/null 2>&1; then
+    if reload_caddy_config; then
+      sleep 1
+      code_api="$(caddy_https_status "api.home.arpa" "/openapi.json" "${CADDY_HTTPS_PORT}")"
+    fi
+  fi
   if [[ "$code_api" == "200" ]]; then
     log "Caddy API OK: https://api.home.arpa:${CADDY_HTTPS_PORT}/openapi.json"
     for path in /swagger /redoc /dashboard; do
-      code=$(curl -ksS --resolve "api.home.arpa:${CADDY_HTTPS_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' \
-             "https://api.home.arpa:${CADDY_HTTPS_PORT}${path}" || true)
+      code="$(caddy_https_status "api.home.arpa" "${path}" "${CADDY_HTTPS_PORT}")"
       if [[ "$code" == "200" ]]; then
         log "Caddy ${path} OK: https://api.home.arpa:${CADDY_HTTPS_PORT}${path}"
       else
