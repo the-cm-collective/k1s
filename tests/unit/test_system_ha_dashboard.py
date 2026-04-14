@@ -75,6 +75,36 @@ def _read_system_payload(handler: _ApiHandler) -> dict:
     return json.loads(handler.wfile.getvalue().decode("utf-8"))
 
 
+def _read_dashboard_html(handler: _ApiHandler) -> str:
+    handler.wfile = io.BytesIO()  # type: ignore[attr-defined]
+    _ApiHandler._handle_dashboard(handler)  # type: ignore[arg-type]
+    return handler.wfile.getvalue().decode("utf-8")
+
+
+def _node(
+    node_id: str,
+    *,
+    labels: dict[str, str] | None = None,
+    role: str | None = None,
+    profile: str | None = None,
+    site_id: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": node_id,
+        "name": node_id,
+        "labels": dict(labels or {}),
+        "status": "ready",
+        "stale": False,
+    }
+    if role is not None:
+        payload["role"] = role
+    if profile is not None:
+        payload["profile"] = profile
+    if site_id is not None:
+        payload["site_id"] = site_id
+    return payload
+
+
 def _restore_observability_state(original: dict[str, object]) -> None:
     _SITE_LAST_SEEN.clear()
     _SITE_LAST_SEEN.update(original["site_last_seen"])  # type: ignore[arg-type]
@@ -233,6 +263,7 @@ def test_system_exposes_ha_snapshot_and_merges_probe_cache(
 
     ha = payload["ha"]
     assert ha["enabled"] is True
+    assert payload["dashboard"]["layout_mode"] == "site"
     assert ha["authority"]["healthy"] is True
     assert ha["authority"]["leader_id"] == "ctrl-b"
     assert ha["authority"]["controller_epoch"] == 19
@@ -288,6 +319,7 @@ def test_system_marks_authority_unhealthy_when_no_leader_visible(
     payload = _read_system_payload(handler)
 
     assert payload["ha"]["enabled"] is True
+    assert payload["dashboard"]["layout_mode"] == "site"
     assert payload["ha"]["authority"]["healthy"] is False
     assert payload["ha"]["issues"][0]["code"] == "authority_unhealthy"
 
@@ -303,8 +335,135 @@ def test_system_reports_ha_disabled_when_not_in_ha_mode(
     payload = _read_system_payload(handler)
 
     assert payload["ha"]["enabled"] is False
+    assert payload["dashboard"]["layout_mode"] == "simple"
     assert payload["ha"]["authority"]["healthy"] is True
     assert payload["ha"]["etcd"]["configured_endpoints"] == []
     issue_codes = {issue["code"] for issue in payload["ha"]["issues"]}
     assert "authority_unhealthy" not in issue_codes
     assert "etcd_probe_degraded" not in issue_codes
+
+
+def test_system_keeps_demo_layout_simple_even_with_transport_site_telemetry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AE_HA_MODE", raising=False)
+    monkeypatch.setattr("ae.observability.http_api.time.time", lambda: 200.0)
+    original = _snapshot_observability_state()
+    try:
+        _SITE_LAST_SEEN.clear()
+        _SITE_LAST_SEEN["sea"] = 150.0
+
+        handler = _make_handler(
+            tmp_path,
+            system_info_fn=lambda: {
+                "nodes": [_node("hyp3rion", labels={"role": "controller"}, role="controller")]
+            },
+        )
+        payload = _read_system_payload(handler)
+    finally:
+        _restore_observability_state(original)
+
+    assert payload["transport"]["sites"]["seen"] == 1
+    assert "sea" in payload["transport"]["sites_detail"]
+    assert payload["dashboard"]["layout_mode"] == "simple"
+
+
+def test_system_uses_site_layout_for_core_profile_nodes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AE_HA_MODE", raising=False)
+    handler = _make_handler(
+        tmp_path,
+        system_info_fn=lambda: {
+            "nodes": [
+                _node(
+                    "core-a",
+                    labels={"role": "controller", "profile": "k1s-core"},
+                    role="controller",
+                    profile="k1s-core",
+                )
+            ]
+        },
+    )
+
+    payload = _read_system_payload(handler)
+
+    assert payload["ha"]["enabled"] is False
+    assert payload["dashboard"]["layout_mode"] == "site"
+
+
+def test_system_uses_site_layout_for_attached_site_nodes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AE_HA_MODE", raising=False)
+    handler = _make_handler(
+        tmp_path,
+        system_info_fn=lambda: {
+            "nodes": [
+                _node("hyp3rion", labels={"role": "controller"}, role="controller"),
+                _node(
+                    "core--worker-1",
+                    labels={"role": "worker", "site": "core"},
+                    role="worker",
+                    site_id="core",
+                ),
+            ]
+        },
+    )
+
+    payload = _read_system_payload(handler)
+
+    assert payload["ha"]["enabled"] is False
+    assert payload["dashboard"]["layout_mode"] == "site"
+
+
+def test_dashboard_bootstraps_read_token_for_simple_demo(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AE_DEMO_MODE", "1")
+    monkeypatch.setenv("AE_TRANSPORT_BACKEND", "http")
+    monkeypatch.setenv("AE_API_READ_TOKEN", "demo-read-token")  # noqa: S105
+    monkeypatch.setenv("AE_API_ADMIN_TOKEN", "demo-admin-token")  # noqa: S105
+
+    handler = _make_handler(tmp_path)
+
+    html = _read_dashboard_html(handler)
+
+    assert 'var dashboardToken = "demo-read-token";' in html
+
+
+def test_dashboard_bootstraps_admin_token_when_read_token_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AE_DEMO_MODE", "1")
+    monkeypatch.setenv("AE_TRANSPORT_BACKEND", "http")
+    monkeypatch.delenv("AE_API_READ_TOKEN", raising=False)
+    monkeypatch.delenv("AE_API_SCALER_TOKEN", raising=False)
+    monkeypatch.setenv("AE_API_ADMIN_TOKEN", "demo-admin-token")  # noqa: S105
+
+    handler = _make_handler(tmp_path)
+
+    html = _read_dashboard_html(handler)
+
+    assert 'var dashboardToken = "demo-admin-token";' in html
+
+
+def test_dashboard_does_not_bootstrap_token_for_ha_site_profiles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    monkeypatch.setenv("AE_TRANSPORT_BACKEND", "nats-js")
+    monkeypatch.setenv("AE_NODE_PROFILE", "k1s-ha-core")
+    monkeypatch.setenv("AE_API_ADMIN_TOKEN", "ha-admin-token")  # noqa: S105
+
+    handler = _make_handler(tmp_path)
+
+    html = _read_dashboard_html(handler)
+
+    assert 'var dashboardToken = "";' in html

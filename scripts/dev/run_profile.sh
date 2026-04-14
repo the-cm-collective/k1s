@@ -1349,10 +1349,31 @@ resolve_docs_labs_token() {
   fi
 }
 
+prepare_caddy_runtime_config() {
+  local runtime_dir="$ROOT_DIR/state/caddy-config"
+  local runtime_sites="$runtime_dir/sites"
+  local source_dir="$ROOT_DIR/ops/dev/caddy"
+  local keep_sites=("api.caddy" "docs.caddy")
+  local site_name=""
+
+  mkdir -p "$runtime_sites"
+  cp "$source_dir/Caddyfile" "$runtime_dir/Caddyfile"
+  rm -f "$runtime_sites"/*.caddy 2>/dev/null || true
+
+  for site_name in "${keep_sites[@]}"; do
+    if [[ -f "$source_dir/sites/$site_name" ]]; then
+      cp "$source_dir/sites/$site_name" "$runtime_sites/$site_name"
+    fi
+  done
+
+  printf '%s\n' "$runtime_dir"
+}
+
 start_docs_server() {
   local docs_port="${AE_DOCS_PORT:-9109}"
   local docs_bind="${DOCS_BIND:-127.0.0.1}"
   local pid_file="$ROOT_DIR/state/docs_server.pid"
+  local log_file="$ROOT_DIR/state/docs_server.log"
   local docs_dir="$ROOT_DIR/docs/site"
   local default_api_base="http://127.0.0.1:${METRICS_PORT:-9108}"
   local default_dash_url="${default_api_base}/dashboard"
@@ -1369,19 +1390,32 @@ start_docs_server() {
   local dash_url="${DOCS_DASHBOARD_URL:-$default_dash_url}"
 
   mkdir -p "$ROOT_DIR/state"
+  if port_open "$docs_bind" "$docs_port"; then
+    return 0
+  fi
   if [[ -f "$pid_file" ]]; then
-    local pid
+    local pid=""
     pid=$(cat "$pid_file" 2>/dev/null || true)
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      return 0
-    fi
     rm -f "$pid_file" || true
   fi
 
   resolve_docs_labs_token
   DOCS_API_BASE="$api_base" DOCS_DASHBOARD_URL="$dash_url" "$PYTHON_BIN" docs/build_docs.py >/dev/null 2>&1 || true
-  nohup "$PYTHON_BIN" -m http.server "$docs_port" --bind "$docs_bind" --directory "$docs_dir" >/dev/null 2>&1 &
-  echo $! > "$pid_file"
+  nohup "$PYTHON_BIN" -m http.server "$docs_port" --bind "$docs_bind" --directory "$docs_dir" >"$log_file" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$pid_file"
+  local _attempt=""
+  for _attempt in 1 2 3 4 5; do
+    if port_open "$docs_bind" "$docs_port"; then
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.2
+  done
+  rm -f "$pid_file" || true
+  echo "warning: docs server failed to start on ${docs_bind}:${docs_port}; see ${log_file}" >&2
 }
 
 start_caddy() {
@@ -1392,7 +1426,7 @@ start_caddy() {
   local docs_env="$ROOT_DIR/state/dev.env"
   local caddy_sites="$ROOT_DIR/state/caddy"
   local caddy_data="$ROOT_DIR/state/caddy-data"
-  local caddy_config="$ROOT_DIR/ops/dev/caddy"
+  local caddy_config=""
   local docs_dir="$ROOT_DIR/docs/site"
   local caddy_container="${AE_CADDY_CONTAINER:-dev-caddy-1}"
   local apishim_upstream=""
@@ -1400,6 +1434,7 @@ start_caddy() {
   local apishim_container_port="${APISHIM_CONTAINER_PORT:-8445}"
   local caddy_network=""
 
+  caddy_config="$(prepare_caddy_runtime_config)"
   mkdir -p "$caddy_sites"
   resolve_docs_labs_token
   DOCS_API_BASE="$api_base" DOCS_DASHBOARD_URL="$dash_url" "$PYTHON_BIN" docs/build_docs.py >/dev/null 2>&1 || true
@@ -1493,6 +1528,10 @@ EOF
         docker.io/library/caddy:2.8 >/dev/null 2>&1 || true
     fi
     "$ENGINE_BIN" exec -T "$caddy_container" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+    if ! "$ENGINE_BIN" inspect -f '{{.State.Running}}' "$caddy_container" 2>/dev/null | grep -qx 'true'; then
+      echo "warning: Caddy container '${caddy_container}' is not running; recent logs follow" >&2
+      "$ENGINE_BIN" logs "$caddy_container" 2>&1 | tail -n 20 >&2 || true
+    fi
   else
     compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d caddy >/dev/null 2>&1 || true
     compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" exec -T caddy \

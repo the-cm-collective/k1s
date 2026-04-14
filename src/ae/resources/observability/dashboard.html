@@ -69,7 +69,7 @@
       body.apps-collapsed #apps { border-right:0; padding-right:0; }
       .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
       .scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
-      .hidden { display:none; }
+      .hidden { display:none !important; }
       #apps-list { display:block; overflow-y:auto; height: calc(100vh - (var(--header-h, 60px)) - 12px); padding:6px 6px 12px; }
       body.apps-collapsed #apps-list { display:none; }
       .ns-header { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#94a3b8; display:flex; align-items:center; gap:6px; margin:8px 6px 4px; }
@@ -386,15 +386,15 @@
           <strong>System</strong>
           <div class="row" id="sys-counters" style="gap:10px; margin-top:6px; flex-wrap:wrap; justify-content:center;"></div>
         </div>
-        <div id="ha-section" class="card" style="margin-top:12px;">
+        <div id="ha-section" class="card hidden" style="margin-top:12px;">
           <div class="row" style="align-items:center; justify-content:space-between;">
             <strong>HA Control Plane</strong>
             <span id="ha-status-pill" class="pill"></span>
           </div>
           <div id="ha-issues-banner" class="banner hidden" role="status" aria-live="polite"></div>
-          <div id="ha-summary" class="row" style="gap:10px; margin-top:8px; flex-wrap:wrap; justify-content:center;"></div>
+          <div id="ha-summary" class="row hidden" style="gap:10px; margin-top:8px; flex-wrap:wrap; justify-content:center;"></div>
           <div id="ha-disabled-note" class="ha-meta hidden" style="margin-top:12px;"></div>
-          <div id="ha-grid" class="ha-grid" style="margin-top:12px;">
+          <div id="ha-grid" class="ha-grid hidden" style="margin-top:12px;">
             <div class="ha-subcard">
               <strong>Authority</strong>
               <div id="ha-authority" class="ha-stack"></div>
@@ -577,7 +577,7 @@
                 <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0b1220" stroke="#60a5fa" stroke-width="1.6"/></svg> Site</span>
                 <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0b1220" stroke="#fbbf24" stroke-width="1.6"/></svg> Node (gateway)</span>
                 <span id="legend-namespace" title="Namespace: default" style="--ns-color:#3b82f6;"><svg width="16" height="16" viewBox="0 0 24 24"><path id="legend-namespace-hex" d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0f172a" stroke="var(--ns-color)" stroke-width="1.6"/></svg> Namespace (current)</span>
-                <span title="HA control-plane members"><svg width="30" height="14" viewBox="0 0 30 14"><circle cx="7" cy="7" r="4.5" fill="#22c55e" stroke="#dcfce7" stroke-width="1.2"/><circle cx="15" cy="7" r="4.5" fill="#38bdf8" stroke="#dbeafe" stroke-width="1.2"/><circle cx="23" cy="7" r="4.5" fill="#38bdf8" stroke="#dbeafe" stroke-width="1.2"/><circle cx="23" cy="7" r="6.1" fill="none" stroke="#f8fafc" stroke-width="1.2"/></svg> HA members</span>
+                <span id="legend-ha-members" class="hidden" title="HA control-plane members"><svg width="30" height="14" viewBox="0 0 30 14"><circle cx="7" cy="7" r="4.5" fill="#22c55e" stroke="#dcfce7" stroke-width="1.2"/><circle cx="15" cy="7" r="4.5" fill="#38bdf8" stroke="#dbeafe" stroke-width="1.2"/><circle cx="23" cy="7" r="4.5" fill="#38bdf8" stroke="#dbeafe" stroke-width="1.2"/><circle cx="23" cy="7" r="6.1" fill="none" stroke="#f8fafc" stroke-width="1.2"/></svg> HA members</span>
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#dcfce7" stroke="#16a34a"/></svg> Pod ready</span>
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#fef3c7" stroke="#f59e0b"/></svg> Pod pending</span>
                 <span><svg width="30" height="8"><path d="M1 4 L22 4" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 6"/><polygon points="22,1 29,4 22,7" fill="#9ca3af"/></svg> Flow</span>
@@ -723,6 +723,7 @@ Connection: close
     </script>
     <script>
       var labsToken = __LABS_TOKEN__;
+      var dashboardToken = __DASHBOARD_TOKEN__;
       var apishimBase = __APISHIM_BASE__;
       var elApps = document.getElementById('apps');
       var elAppsList = document.getElementById('apps-list');
@@ -793,9 +794,36 @@ Connection: close
       var clearBtn = document.getElementById('clear-token');
       var authBanner = document.getElementById('auth-banner');
       var dashboardInteractiveToolsEnabled = true;
-      try { tokInput.value = localStorage.getItem('ae_token') || ''; } catch(e) {}
-      saveBtn.addEventListener('click', function(){ try { localStorage.setItem('ae_token', tokInput.value||''); } catch(e){}; window.location.reload(); });
-      clearBtn.addEventListener('click', function(){ try { localStorage.removeItem('ae_token'); } catch(e){}; window.location.reload(); });
+      function bootstrapTokenDisabled(){
+        try { return (localStorage.getItem('ae_token_disable_bootstrap') || '') === '1'; } catch(e) { return false; }
+      }
+      function storedAuthToken(){
+        try { return localStorage.getItem('ae_token') || ''; } catch(e) { return ''; }
+      }
+      function bootstrapDashboardToken(){
+        if (bootstrapTokenDisabled()) return '';
+        return dashboardToken || labsToken || '';
+      }
+      try { tokInput.value = storedAuthToken() || bootstrapDashboardToken() || ''; } catch(e) {}
+      saveBtn.addEventListener('click', function(){
+        try {
+          if (tokInput.value) {
+            localStorage.setItem('ae_token', tokInput.value || '');
+            localStorage.removeItem('ae_token_disable_bootstrap');
+          } else {
+            localStorage.removeItem('ae_token');
+            localStorage.setItem('ae_token_disable_bootstrap', '1');
+          }
+        } catch(e){}
+        window.location.reload();
+      });
+      clearBtn.addEventListener('click', function(){
+        try {
+          localStorage.removeItem('ae_token');
+          localStorage.setItem('ae_token_disable_bootstrap', '1');
+        } catch(e){}
+        window.location.reload();
+      });
 
       function setDashboardInteractiveToolsEnabled(enabled){
         dashboardInteractiveToolsEnabled = enabled !== false;
@@ -1047,9 +1075,8 @@ Connection: close
       }
 
       function activeToken(){
-        var tok = '';
-        try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
-        if (!tok && labsToken) tok = labsToken;
+        var tok = storedAuthToken();
+        if (!tok) tok = bootstrapDashboardToken();
         return tok;
       }
 
@@ -1069,11 +1096,7 @@ Connection: close
       }
 
       function sseToken(){
-        var tok = labsToken || '';
-        if (!tok) {
-          try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
-        }
-        return tok;
+        return activeToken();
       }
 
       if (window.htmx) {
@@ -1118,11 +1141,7 @@ Connection: close
       }
 
       function shimAuthToken(){
-        var tok = labsToken || '';
-        if (!tok) {
-          try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
-        }
-        return tok;
+        return activeToken();
       }
 
       function mintShimToken(role, scope){
@@ -1554,6 +1573,7 @@ Connection: close
       }
 
       function renderHaDashboard(sys){
+        var sectionEl = document.getElementById('ha-section');
         var statusEl = document.getElementById('ha-status-pill');
         var bannerEl = document.getElementById('ha-issues-banner');
         var summaryEl = document.getElementById('ha-summary');
@@ -1563,10 +1583,11 @@ Connection: close
         var etcdEl = document.getElementById('ha-etcd');
         var transportEl = document.getElementById('ha-transport');
         var sitesEl = document.getElementById('ha-edge-sites');
-        if (!statusEl || !bannerEl || !summaryEl || !noteEl || !gridEl || !authorityEl || !etcdEl || !transportEl || !sitesEl) return;
+        if (!sectionEl || !statusEl || !bannerEl || !summaryEl || !noteEl || !gridEl || !authorityEl || !etcdEl || !transportEl || !sitesEl) return;
 
-        var ha = (sys && sys.ha) ? sys.ha : null;
-        if (!ha) {
+        var dashboardLayoutMode = String((((sys && sys.dashboard) ? sys.dashboard.layout_mode : '') || '')).toLowerCase();
+        if (dashboardLayoutMode !== 'site') {
+          sectionEl.classList.add('hidden');
           statusEl.textContent = '-';
           statusEl.className = 'pill';
           bannerEl.className = 'banner hidden';
@@ -1582,6 +1603,26 @@ Connection: close
           sitesEl.innerHTML = '';
           return;
         }
+
+        var ha = (sys && sys.ha) ? sys.ha : null;
+        if (!ha) {
+          sectionEl.classList.add('hidden');
+          statusEl.textContent = '-';
+          statusEl.className = 'pill';
+          bannerEl.className = 'banner hidden';
+          bannerEl.textContent = '';
+          summaryEl.innerHTML = '';
+          summaryEl.classList.add('hidden');
+          noteEl.textContent = '';
+          noteEl.classList.add('hidden');
+          gridEl.classList.add('hidden');
+          authorityEl.innerHTML = '';
+          etcdEl.innerHTML = '';
+          transportEl.innerHTML = '';
+          sitesEl.innerHTML = '';
+          return;
+        }
+        sectionEl.classList.remove('hidden');
 
         var authority = ha.authority || {};
         var authorityMembers = authorityMembersFromSnapshot(authority);
@@ -3339,7 +3380,9 @@ Connection: close
         }
 
         var appNodes = [];
-        var useSiteLayout = false;
+        var dashboardLayoutMode = String((((sys && sys.dashboard) ? sys.dashboard.layout_mode : '') || '')).toLowerCase();
+        var useSiteLayout = dashboardLayoutMode === 'site';
+        var haLegendEl = document.getElementById('legend-ha-members');
         var siteMap = {};
         var coreNodes = [];
         var podsByNode = {};
@@ -3347,45 +3390,24 @@ Connection: close
         var appStatusByName = {};
         var appNodesByName = {};
 
-        if (sys && sys.nodes && sys.nodes.length) {
-          var hasSiteNodes = false;
-          var hasNonController = false;
-          var hasCoreProfile = false;
+        if (haLegendEl) haLegendEl.classList.toggle('hidden', !useSiteLayout);
+
+        if (useSiteLayout && sys && sys.nodes && sys.nodes.length) {
           sys.nodes.forEach(function(n){
             var labels = n.labels || {};
             var role = n.role || labels.role || '';
             var profile = n.profile || labels.profile || '';
             var siteId = siteIdFromNode(n);
             var isController = String(role || '').toLowerCase() === 'controller';
-            if (siteId) hasSiteNodes = true;
-            if (!isController) hasNonController = true;
-            if (String(profile || '').toLowerCase() === 'k1s-core') hasCoreProfile = true;
-          });
-          useSiteLayout = hasSiteNodes || hasNonController || hasCoreProfile;
-          if (useSiteLayout) {
-            sys.nodes.forEach(function(n){
-              var labels = n.labels || {};
-              var role = n.role || labels.role || '';
-              var profile = n.profile || labels.profile || '';
-              var siteId = siteIdFromNode(n);
-              var isController = String(role || '').toLowerCase() === 'controller';
-              var isCoreProfile = String(profile || '').toLowerCase() === 'k1s-core';
-              if (isController || (isCoreProfile && !siteId)) {
-                coreNodes.push(n);
-                return;
-              }
-              if (!siteId) return;
-              if (!siteMap[siteId]) siteMap[siteId] = [];
-              siteMap[siteId].push(n);
-            });
-          }
-        }
-        if (!useSiteLayout) {
-          try {
-            if (siteDetails && Object.keys(siteDetails).length) {
-              useSiteLayout = true;
+            var isCoreProfile = String(profile || '').toLowerCase() === 'k1s-core';
+            if (isController || (isCoreProfile && !siteId)) {
+              coreNodes.push(n);
+              return;
             }
-          } catch(e){}
+            if (!siteId) return;
+            if (!siteMap[siteId]) siteMap[siteId] = [];
+            siteMap[siteId].push(n);
+          });
         }
         if (useSiteLayout) {
           try {

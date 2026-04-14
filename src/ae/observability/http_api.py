@@ -1554,6 +1554,121 @@ def _build_ha_snapshot(
     }
 
 
+_SITE_LAYOUT_PROFILES = {
+    "core",
+    "edge",
+    "k1s-core",
+    "k1s-edge",
+    "k1s-ha-core",
+}
+
+
+def _dashboard_node_site_id(node: object) -> str:
+    if not isinstance(node, dict):
+        return ""
+    site_id = str(node.get("site_id") or "").strip()
+    if site_id:
+        return site_id
+    labels = node.get("labels")
+    if isinstance(labels, dict):
+        site_id = str(labels.get("site") or "").strip()
+        if site_id:
+            return site_id
+    node_id = str(node.get("id") or "").strip()
+    if "--" in node_id:
+        return str(node_id.split("--", 1)[0] or "").strip()
+    return ""
+
+
+def _dashboard_node_value(node: object, key: str) -> str:
+    if not isinstance(node, dict):
+        return ""
+    value = str(node.get(key) or "").strip()
+    if value:
+        return value
+    labels = node.get("labels")
+    if isinstance(labels, dict):
+        return str(labels.get(key) or "").strip()
+    return ""
+
+
+def _dashboard_layout_mode(payload: dict[str, object], ha: dict[str, object]) -> str:
+    if bool(ha.get("enabled")) or _truthy_flag(os.getenv("AE_HA_MODE")):
+        return "site"
+
+    nodes = payload.get("nodes")
+    if isinstance(nodes, list) and nodes:
+        for node in nodes:
+            role = _dashboard_node_value(node, "role").lower()
+            profile = _dashboard_node_value(node, "profile").lower()
+            if _dashboard_node_site_id(node):
+                return "site"
+            if role and role != "controller":
+                return "site"
+            if profile in _SITE_LAYOUT_PROFILES:
+                return "site"
+        return "simple"
+
+    labels: dict[str, str] = {}
+    for item in _split_csv(os.getenv("AE_NODE_LABELS")):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            labels[key] = value
+
+    role = str(labels.get("role") or "").strip().lower()
+    profile = str(os.getenv("AE_NODE_PROFILE") or labels.get("profile") or "").strip().lower()
+    if str(labels.get("site") or "").strip():
+        return "site"
+    if role and role != "controller":
+        return "site"
+    if profile in _SITE_LAYOUT_PROFILES:
+        return "site"
+    return "simple"
+
+
+def _dashboard_bootstrap_token() -> str:
+    """Return a read-capable token for simple local demo/dev dashboards.
+
+    The dashboard page itself is public in local demo/dev flows, but its data
+    fetches still hit bearer-protected read endpoints. Seed a token only for
+    simple local profiles so the page renders out of the box without exposing
+    tokens in HA/core/site-aware lanes.
+    """
+
+    if _truthy_flag(os.getenv("AE_HA_MODE")):
+        return ""
+
+    if str(os.getenv("AE_SITE_ID") or "").strip():
+        return ""
+
+    profile = str(
+        os.getenv("AE_NODE_PROFILE") or os.getenv("AE_PROFILE") or ""
+    ).strip().lower()
+    if profile in _SITE_LAYOUT_PROFILES:
+        return ""
+
+    transport = str(os.getenv("AE_TRANSPORT_BACKEND") or "").strip().lower()
+    simple_local = False
+    if _truthy_flag(os.getenv("AE_DEMO_MODE")):
+        simple_local = True
+    elif _truthy_flag(os.getenv("AE_LABS")) and transport in {"", "http"}:
+        simple_local = True
+
+    if not simple_local:
+        return ""
+
+    return str(
+        os.getenv("AE_API_READ_TOKEN")
+        or os.getenv("AE_API_SCALER_TOKEN")
+        or os.getenv("AE_API_ADMIN_TOKEN")
+        or ""
+    ).strip()
+
+
 class _ApiHandler(http.server.BaseHTTPRequestHandler):
     store: SQLiteStateStore  # injected
     metrics: MetricsService  # injected
@@ -4521,6 +4636,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             authority_members=authority_members,
             transport=transport,
         )
+        payload["dashboard"] = {
+            "layout_mode": _dashboard_layout_mode(payload, payload["ha"]),
+        }
         payload.pop("ha_probes", None)
         self._json_ok(payload)
 
@@ -5223,10 +5341,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             ).strip()
         except Exception:
             apishim_base = ""
+        dashboard_token = ""
+        try:
+            dashboard_token = _dashboard_bootstrap_token()
+        except Exception:
+            dashboard_token = ""
         html = resource_loader.render_text(
             "observability",
             "dashboard.html",
             LABS_TOKEN=json.dumps(labs_token),
+            DASHBOARD_TOKEN=json.dumps(dashboard_token),
             APISHIM_BASE=json.dumps(apishim_base),
         )
         payload = html.encode("utf-8")

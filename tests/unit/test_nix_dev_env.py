@@ -54,6 +54,8 @@ def test_run_profile_guards_compose_provider_and_host_fallback() -> None:
     assert "compose_provider_available()" in text
     assert "compose_provider_hint()" in text
     assert "default_apishim_mode()" in text
+    assert "prepare_caddy_runtime_config()" in text
+    assert 'local keep_sites=("api.caddy" "docs.caddy")' in text
     assert "prepare_apishim_compose_env()" in text
     assert "apishim_compose_render()" in text
     assert "up_apishim_compose()" in text
@@ -87,6 +89,10 @@ def test_run_profile_guards_compose_provider_and_host_fallback() -> None:
     assert "strict CRI profile state under state/profiles/" in text
     assert "prior sudo -E strict CRI run" in text
     assert "run_cri_stack up-postgres --profile \"$PROFILE\" --reset-data --recreate" in text
+    assert 'local log_file="$ROOT_DIR/state/docs_server.log"' in text
+    assert 'if port_open "$docs_bind" "$docs_port"; then' in text
+    assert 'warning: docs server failed to start on ${docs_bind}:${docs_port}; see ${log_file}' in text
+    assert 'warning: Caddy container' in text
     assert "strict CRI on NixOS requires the k1s CRI host module" in text
     assert 'k1s_nixos_cri_bootstrap_instructions "$ROOT_DIR" "$cri_module_dest"' in text
     assert 'resolved_cni_env="$(k1s_containerd_cni_env || true)"' in text
