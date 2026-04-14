@@ -170,19 +170,21 @@ def to_mib(val, kib=False):
     return v/1024.0 if kib else v/1048576.0
 
 print('\nSummary (latest per scenario/stage)')
-print('Scenario  Stage    CtrlPSS  Runtime  Ingress  AppCG  HostCG  MemAvailΔ')
+print('Scenario  Stage    Ctrl/CP  Runtime  Ingress  AppCG  HostCG  MemAvailΔ')
 print('(MiB)     (MiB)    (MiB)    (MiB)    (MiB)    (MiB)')
 for sc in scenarios:
     for st in stages:
         r = latest.get((sc,st))
         if not r: continue
-        ctrl = to_mib(r.get('controller_pss_kb','0'), kib=True)
+        ctrl_key = 'k3s_control_plane_pss_kb' if sc == 'k3d' else 'controller_pss_kb'
+        ctrl = to_mib(r.get(ctrl_key,'0'), kib=True)
         run  = to_mib(r.get('runtime_pss_kb','0'), kib=True)
         ingr = to_mib(r.get('ingress_pss_kb','0'), kib=True)
         app  = to_mib(r.get('app_mem_bytes','0'))
         host = to_mib(r.get('host_system_cgroups_bytes','0'))
         dmem = to_mib(r.get('mem_available_delta_bytes','0'))
         print(f"{sc:<8} {st:<7} {ctrl:7.1f} {run:8.1f} {ingr:8.1f} {app:7.1f} {host:7.1f} {dmem:9.1f}")
+print('Ctrl/CP = AE controller PSS for k1s/k1nd, k3s control-plane PSS for k3d')
 print()
 PY
 }

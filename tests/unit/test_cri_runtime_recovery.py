@@ -115,6 +115,45 @@ def test_run_pod_recovers_once_from_stale_sandbox(monkeypatch) -> None:
     assert created_for == ["pod-1", "pod-2"]
 
 
+def test_run_pod_recovers_once_from_reserved_sandbox_name(monkeypatch) -> None:
+    if grpc is None:
+        pytest.skip("grpc unavailable")
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    pod_ids = iter(["pod-2"])
+    removed: list[str] = []
+    created_for: list[str] = []
+    first_run = True
+
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(runtime, "_port_mappings", lambda _manifest: ([], {}))
+    monkeypatch.setattr(runtime, "_ensure_sidecars", lambda *_args, **_kwargs: None)
+
+    def _runtime_call(method, _req):
+        nonlocal first_run
+        if method == "RunPodSandbox" and first_run:
+            first_run = False
+            raise _FakeGrpcError(
+                grpc.StatusCode.UNKNOWN,
+                'failed to reserve sandbox name "default/demo-rev1-0_default_abc_0": '
+                'name "default/demo-rev1-0_default_abc_0" is reserved for "pod-1"',
+            )
+        if method == "RunPodSandbox":
+            return SimpleNamespace(pod_sandbox_id=next(pod_ids))
+        return None
+
+    monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
+    monkeypatch.setattr(runtime, "_remove_pod_sandbox", lambda pod_id: removed.append(str(pod_id)))
+    monkeypatch.setattr(
+        runtime, "_create_main_container", lambda *_args, **_kwargs: created_for.append(str(_args[1]))
+    )
+
+    runtime._run_pod(manifest, "default/demo-rev1-0", 1)
+
+    assert removed == ["pod-1"]
+    assert created_for == ["pod-2"]
+
+
 def test_ensure_main_container_recovers_from_stale_sandbox(monkeypatch) -> None:
     runtime = CRIRuntime(node_id="hub-1")
     manifest = _manifest()

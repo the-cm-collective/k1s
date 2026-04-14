@@ -12,6 +12,7 @@ RUN_ROLLOUT_K1S = ROOT / "scripts" / "bench" / "run_rollout_k1s.sh"
 RUN_MATRIX_K3S = ROOT / "scripts" / "bench" / "run_matrix_k3s.sh"
 RUN_ROLLOUT_K3S = ROOT / "scripts" / "bench" / "run_rollout_k3s.sh"
 BENCH_ENV_PREP = ROOT / "scripts" / "bench" / "bench_env_prep.sh"
+RUN_CRI_REFRESH = ROOT / "scripts" / "bench" / "run_cri_refresh.sh"
 K1ND_COMPOSE = ROOT / "ops" / "bench" / "k1nd-compose.yaml"
 K1ND_ENTRYPOINT = ROOT / "ops" / "bench" / "k1nd-entrypoint.sh"
 
@@ -36,6 +37,8 @@ def test_run_all_baselines_keeps_rootless_and_rootful_podman_collection_split() 
     assert 'APP_NAME="$BENCH_PRIMARY_APP"' in text
     assert 'BENCH_WAIT_RUNTIME="$BENCH_WAIT_RUNTIME"' in text
     assert 'DISABLE_DEV_MIN=${DISABLE_DEV_MIN:-0}' in text
+    assert "ctrl_key = 'k3s_control_plane_pss_kb' if sc == 'k3d' else 'controller_pss_kb'" in text
+    assert 'Ctrl/CP = AE controller PSS for k1s/k1nd, k3s control-plane PSS for k3d' in text
 
 
 def test_k1nd_single_auto_shifts_busy_host_ports() -> None:
@@ -142,3 +145,12 @@ def test_bench_env_prep_prefers_direct_podman_endpoints_for_sudo_controller() ->
     assert 'NIX_LD="${NIX_LD:-}" \\' in text
     assert 'AE_PODMAN_ENDPOINT_PREFER_DIRECT="$bench_podman_endpoint_prefer_direct" \\' in text
     assert 'export AE_PODMAN_ENDPOINT_PREFER_DIRECT="${bench_podman_endpoint_prefer_direct}"' in text
+
+
+def test_run_cri_refresh_waits_for_sandbox_cleanup_between_rollouts() -> None:
+    text = RUN_CRI_REFRESH.read_text(encoding="utf-8")
+
+    assert "cri_wait_pod_ids_gone()" in text
+    assert 'cri_wait_pod_ids_gone "${pod_ids_arr[@]}"' in text
+    assert 'CRI_POD_CLEANUP_TIMEOUT' in text
+    assert 'CRI_POD_CLEANUP_SETTLE' in text
