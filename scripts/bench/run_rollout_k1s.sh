@@ -117,6 +117,20 @@ else
   ae() { "$python_bin" -m ae.cli "$@"; }
 fi
 
+host_manifest="$manifest"
+container_apply_dir="/apply"
+host_apply_dir="${K1ND_APPLY_DIR:-state/bench-k1nd-apply}"
+if [[ "$IN_CONTAINER" == "1" ]]; then
+  if [[ ! -f "$host_manifest" && -n "${K1ND_MANIFEST:-}" && -f "${K1ND_MANIFEST:-}" ]]; then
+    host_manifest="$K1ND_MANIFEST"
+  fi
+  mkdir -p "$host_apply_dir"
+fi
+if [[ ! -f "$host_manifest" ]]; then
+  echo "[rollout] manifest not found on host: $host_manifest" >&2
+  exit 2
+fi
+
 info() { echo "[rollout] $*" >&2; }
 
 # Resolve demo images for rollout based on backend (podman prefers localhost/* to avoid short-name lookups)
@@ -317,18 +331,48 @@ fi
 wait_ready() {
   local name="$1"; local want="$2"; local tries=${WAIT_READY_TRIES:-120}
   local delay=${WAIT_READY_DELAY:-2}
+  local use_runtime_wait="${BENCH_WAIT_RUNTIME:-0}"
+  local backend="${AE_RUNTIME_BACKEND:-podman}"
   info "[rollout] wait_ready name=$name target=$want tries=$tries delay=${delay}s"
   while (( tries-- > 0 )); do
-    local js
-    if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
-    local ready desired
-    ready=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("ready_replicas",0))') || ready=0
-    desired=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("desired_replicas",0))') || desired=0
+    local js status_ok=0 ready desired
+    if js=$(ae status "$name" --json 2>/dev/null); then
+      ready=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("ready_replicas",0))') || ready=0
+      desired=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("desired_replicas",0))') || desired=0
+      status_ok=1
+    else
+      ready=0
+      desired=0
+    fi
     if [[ "$ready" == "$want" && "$desired" == "$want" ]]; then return 0; fi
+    if [[ "$use_runtime_wait" == "1" && "$status_ok" == "0" ]]; then
+      local count=0
+      if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+        if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+          count=$(sudo env "${sudo_env_base[@]}" "${AE_PODMAN_BIN:-podman}" ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        else
+          count=$("${AE_PODMAN_BIN:-podman}" ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        fi
+      elif [[ "$backend" == "docker" ]]; then
+        if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+          count=$(sudo env "${sudo_env_base[@]}" docker ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        else
+          count=$(docker ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        fi
+      fi
+      if [[ "$count" -ge "$want" ]]; then return 0; fi
+    fi
     sleep "$delay"
   done
   echo "timeout waiting for $name ready=$want" >&2
   return 1
+}
+
+settle_current_revision() {
+  local name="$1"; local want="$2"
+  info "[rollout] settle current revision name=$name target=$want"
+  ae scale "$name" --replicas "$want" >/dev/null
+  wait_ready "$name" "$want"
 }
 
 current_image() {
@@ -414,12 +458,15 @@ run_rollout_once() {
   echo "[rollout] scale ${app_name} to ${replicas} and wait ready" >&2
   # Apply a manifest with replicas set to avoid single-replica host port publishing collisions
   local startman
+  local host_startman
   if [[ "$IN_CONTAINER" == "1" ]]; then
-    startman="state/rollout-start-${app_name}-${replicas}.yaml"
+    host_startman="${host_apply_dir}/rollout-start-${app_name}-${replicas}.yaml"
+    startman="${container_apply_dir}/rollout-start-${app_name}-${replicas}.yaml"
   else
-    startman=$(mktemp)
+    host_startman=$(mktemp)
+    startman="$host_startman"
   fi
-  python - "$manifest" "$startman" "$replicas" <<-'PY'
+  python - "$host_manifest" "$host_startman" "$replicas" <<-'PY'
 import sys, re
 src, dst, replicas = sys.argv[1:4]
 try:
@@ -452,9 +499,10 @@ if replicas is not None and not did_rep:
     out=out2
 open(dst,'w',encoding='utf-8').write("\n".join(out)+"\n")
 PY
-  ae apply -f "$startman" || true
-  ae scale "$app_name" --replicas "$replicas" || true
-  wait_ready "$app_name" "$replicas" || true
+  ae apply -f "$startman"
+  ae scale "$app_name" --replicas "$replicas"
+  wait_ready "$app_name" "$replicas"
+  settle_current_revision "$app_name" "$replicas"
 
   local base_img
   local target_img
@@ -464,15 +512,18 @@ PY
   if [[ "$base_img" == *demo-green* || -z "$base_img" ]]; then target_img="$rollout_blue_image"; fi
 
   local tmpman
+  local host_tmpman
   if [[ "$IN_CONTAINER" == "1" ]]; then
-    tmpman="state/rollout-${app_name}-${replicas}.yaml"
+    host_tmpman="${host_apply_dir}/rollout-${app_name}-${replicas}.yaml"
+    tmpman="${container_apply_dir}/rollout-${app_name}-${replicas}.yaml"
   else
-    tmpman=$(mktemp)
+    host_tmpman=$(mktemp)
+    tmpman="$host_tmpman"
   fi
-  switch_image "$manifest" "$tmpman" "$target_img" "$replicas"
+  switch_image "$host_manifest" "$host_tmpman" "$target_img" "$replicas"
 
   echo "[rollout] apply new image: ${target_img}" >&2
-  ae apply -f "$tmpman" || true
+  ae apply -f "$tmpman"
 
   echo "[rollout] snapshot DURING rollout" >&2
   # Skip if existing and SKIP_EXISTING=1
@@ -495,7 +546,8 @@ PY
   fi
 
   echo "[rollout] wait ready post-rollout" >&2
-  wait_ready "$app_name" "$replicas" || true
+  wait_ready "$app_name" "$replicas"
+  settle_current_revision "$app_name" "$replicas"
 
   echo "[rollout] snapshot POST rollout" >&2
   # Skip if existing and SKIP_EXISTING=1

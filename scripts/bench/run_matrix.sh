@@ -357,6 +357,13 @@ wait_ready() {
   return 1
 }
 
+settle_current_revision() {
+  local name="$1"; local want="$2"
+  info "settle current revision name=$name target=$want"
+  ae scale "$name" --replicas "$want" >/dev/null
+  wait_ready "$name" "$want"
+}
+
 # Idle snapshot (skippable)
 if [[ "${SKIP_IDLE:-0}" != "1" ]]; then
   info "idle snapshot"
@@ -377,15 +384,16 @@ fi
 
 # Ensure app applied
 info "apply manifest: $manifest"
-ae apply -f "$manifest" || true
+ae apply -f "$manifest"
 
 IFS=',' read -r -a reps <<< "$replicas_csv"
 for n in "${reps[@]}"; do
   n=${n// /}
   [[ -z "$n" ]] && continue
   info "scale $app_name to $n"
-  ae scale "$app_name" --replicas "$n" || true
-  wait_ready "$app_name" "$n" || true
+  ae scale "$app_name" --replicas "$n"
+  wait_ready "$app_name" "$n"
+  settle_current_revision "$app_name" "$n"
   # Optional: prune older revisions to avoid multi-revision accumulation in snapshots
   if [[ "${PRUNE_OLD:-0}" == "1" ]]; then
     if command -v ./scripts/bench/prune_old_revisions.sh >/dev/null 2>&1; then
