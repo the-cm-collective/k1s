@@ -206,6 +206,18 @@ API tokens
      - `AE_API_ADMIN_SCOPE="payments-*"` (admin token can only mutate apps prefixed payments-)
      - `AE_API_SCALER_SCOPE="echo,web-*"` (scaler token can scale only echo and web-* apps)
 
+Registry credentials
+- Registry credentials are stored separately from API tokens at `~/.config/ae/registries.yaml`.
+- List configured entries with `ae registry list`.
+- Common login flows:
+  - Docker Hub: `ae registry login custom --registry docker.io --username <you> --password <token>`
+  - GHCR: `ae registry login ghcr --username <you> --token <PAT>` or rely on `gh auth token`
+  - GCR / Artifact Registry: `ae registry login gcr --use-gcloud --gcr-host us.gcr.io`
+  - ECR: `ae registry login ecr --use-aws --region us-east-1 --account-id 123456789012`
+  - Custom: `ae registry login custom --registry registry.example.com --username user --password secret`
+- Refresh short-lived provider credentials with `ae registry refresh`, or scope it with `--provider gcr` / `--provider ecr`.
+- `ae plan` warns when a private image host appears to need registry credentials but no matching `registries.yaml` entry is configured.
+
 API shim (kubectl/helm)
 - Start shim locally: `AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445` (add `--allow-anonymous` only for dev). Postgres backend: set `AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname`; default is SQLite at `AE_APISHIM_DB` (`state/apishim.db`) unless a DSN is provided.
 - Non-root CLI auth (recommended):

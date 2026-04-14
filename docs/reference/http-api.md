@@ -33,7 +33,7 @@ The controller exposes a controller-native HTTP API when started with `--metrics
 - Operational reads are open by default, but become bearer-protected once any of `AE_API_READ_TOKEN`, `AE_API_SCALER_TOKEN`, or `AE_API_ADMIN_TOKEN` is configured.
 - Optional scope filters: `AE_API_READ_SCOPE`, `AE_API_SCALER_SCOPE`, and `AE_API_ADMIN_SCOPE`.
 - Optional expiry controls: `AE_API_*_TOKEN_EXPIRES`.
-- See [API Auth and Mutations](api-auth.html) for token generation, TTL handling, and remote CLI examples.
+- See [API Auth](api-auth.html) for token generation, TTL handling, controller mutation gating, and shim auth modes.
 
 ## Related surfaces
 - Controller-native schema: [Swagger](/swagger), [ReDoc](/redoc), and [OpenAPI JSON](/openapi.json)

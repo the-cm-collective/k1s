@@ -1,71 +1,83 @@
-# API Auth and Mutations
+# API Auth
 
-## Overview
-- Public docs and schema surfaces (`/metrics`, `/openapi.json`, `/docs`, `/swagger`, `/redoc`, and the dashboard shell when enabled) remain reachable without a bearer token.
-- Protected read endpoints (`/status`, `/events`, `/nodes`, `/logs`, `/health`, `/system`, `/manifest`, `/history`, `/tls/verify`) are available by default.
-- If any token is configured, the protected read endpoints require at least the READ token.
-- Mutating endpoints (/scale/<app>, /delete/<app>, /rollout/*, /apply) are disabled unless AE_API_MUTATIONS=1.
-- Optional Bearer tokens gate access per role:
-  - AE_API_READ_TOKEN   (read)
-  - AE_API_SCALER_TOKEN (scale)
-  - AE_API_ADMIN_TOKEN  (admin)
-- Optional scoping/expiry: AE_API_ADMIN_SCOPE / AE_API_SCALER_SCOPE / AE_API_READ_SCOPE (glob patterns) and AE_API_*_TOKEN_EXPIRES (UTC ISO8601).
+This page is the auth reference for the controller-native HTTP API and the optional Kubernetes API shim. Use [HTTP API](http-api.html) for the controller endpoint catalog, [API Shim](api-shim.html) for the Kubernetes-compatible surface, and [Operations Runbook](runbook.html) for longer operator workflows.
 
-## Enabling mutations (dev)
-1) Generate tokens and enable mutations for the controller process:
-```
+## Controller HTTP API
+
+- Public surfaces stay reachable without a bearer token:
+  - `/metrics`
+  - `/openapi.json`, `/docs`, `/swagger`, `/redoc`
+  - the simple dashboard shell and assets when enabled
+- Once any of `AE_API_READ_TOKEN`, `AE_API_SCALER_TOKEN`, or `AE_API_ADMIN_TOKEN` is configured, protected reads require bearer auth.
+- Protected reads include controller health/system routes plus app-targeted status, manifest, events, history, and logs.
+- Mutations remain disabled unless `AE_API_MUTATIONS=1`.
+- The planner endpoints (`POST /plan`, `POST /dashboard/plan`) are read-only, but they still require READ access when controller tokens are configured.
+
+## Token Roles, Scope, and Expiry
+
+- `AE_API_READ_TOKEN`: read-only operational access.
+- `AE_API_SCALER_TOKEN`: READ plus `/scale/<app>`.
+- `AE_API_ADMIN_TOKEN`: READ plus admin and mutation routes such as `/apply`, `/delete/<app>`, `/rollout/*`, and `/exec/<app>`.
+- Optional expiry controls: `AE_API_ADMIN_TOKEN_EXPIRES`, `AE_API_SCALER_TOKEN_EXPIRES`, `AE_API_READ_TOKEN_EXPIRES`.
+- Optional scopes: `AE_API_ADMIN_SCOPE`, `AE_API_SCALER_SCOPE`, `AE_API_READ_SCOPE`.
+- Scope note: admin and scaler scopes gate app-targeted mutations. Read scope is only enforced on app-targeted read routes today, such as `/status/<app>`, `/events/<app>`, `/manifest/<app>`, `/history/<app>`, and `/logs/<app>`. Controller-wide list and system surfaces remain controller-wide.
+
+## Common Controller Workflows
+
+Generate controller tokens and expiries:
+
+```bash
 ae api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 export AE_API_MUTATIONS=1
 ```
-2) Start controller with --metrics-port and (optional) Caddy fronting the API.
 
-Tip: `ae auth remote -o .env.api` also emits apishim tokens and `AE_API_MUTATIONS=1`.
+Remote bootstrap helper:
 
-## Remote CLI usage
-- Scale:
-  - `ae --server https://api.home.arpa:8443 --token $AE_API_SCALER_TOKEN scale echo --replicas 2`
-- Delete:
-  - `ae --server https://api.home.arpa:8443 --token $AE_API_ADMIN_TOKEN delete echo --purge`
-- Logs (requires READ token when any token is configured):
-  - `ae --server https://api.home.arpa:8443 --token $AE_API_READ_TOKEN logs echo --tail 100`
+```bash
+ae auth remote -o .env.api
+source .env.api
+ae --server https://api.home.arpa:8443 --token "$AE_API_READ_TOKEN" status
+ae --server https://api.home.arpa:8443 --token "$AE_API_SCALER_TOKEN" scale echo --replicas 2
+ae --server https://api.home.arpa:8443 --token "$AE_API_ADMIN_TOKEN" delete echo --purge
+```
 
-## Security notes
-- For production, place the API behind TLS (Caddy) and use client auth or network ACLs.
-- Prefer short-lived tokens and minimal roles for automation.
-- Kubernetes API shim: set `AE_APISHIM_ENABLE=1` and `AE_APISHIM_TOKEN` for `python -m ae.apishim serve`; use `AE_APISHIM_ALLOW_ANON=1` only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a SubjectAccessReview-compatible endpoint.
+## API Shim Auth
 
-## Registry Auth (private images)
-- Credentials are stored at `~/.config/ae/registries.yaml` and used by the runtime before pulls.
-- List configured hosts:
-  - `ae registry list`
-- Docker Hub:
-  - Short image names (e.g., `caddy:2.8`, `python:3.12-slim`) are treated as `docker.io`.
-  - Add Docker Hub creds by host key `docker.io` (also accepts `index.docker.io`):
-    - `ae registry login custom --registry docker.io --username <you> --password <token>`
-    - Or run `docker login` once; the runtime will reuse your local Docker credentials.
-- GHCR (GitHub Container Registry):
-  - `ae registry login ghcr --username <you> --token <PAT>`
-  - Or rely on `gh` CLI: `ae registry login ghcr --username <you>` (uses `gh auth token`)
-- GCR (Google Container Registry/Artifact Registry):
-  - `ae registry login gcr --use-gcloud --gcr-host us.gcr.io`
-  - Or provide a token: `ae registry login gcr --gcr-host us.gcr.io --token $(gcloud auth print-access-token)`
-  - Username defaults to `oauth2accesstoken`.
-- ECR (AWS Elastic Container Registry):
-  - `ae registry login ecr --use-aws --region us-east-1 --account-id 123456789012`
-  - Or specify: `ae registry login ecr --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com --password $(aws ecr get-login-password)`
-- Custom registry:
-  - `ae registry login custom --registry registry.example.com --username user --password secret`
+- `AE_APISHIM_ENABLE=1` is required to run the shim.
+- `AE_APISHIM_TOKEN` is the full-access admin token and the default kubeconfig token.
+- `AE_APISHIM_READ_TOKEN` is the read/list/watch credential for clients that should not mutate shim-backed resources.
+- `AE_APISHIM_EXEC_TOKEN` and `AE_APISHIM_PORTFORWARD_TOKEN` gate the interactive exec and port-forward flows.
+- `AE_APISHIM_MINT_TOKEN` and `AE_APISHIM_SESSION_SECRET` support short-lived scoped session tokens for non-root CLI usage.
+- `AE_APISHIM_ALLOW_ANON=1` or `--allow-anonymous` is dev-only and should not be used on shared hosts.
+- For TLS, enable `--tls`, set `AE_APISHIM_TLS_CERT` and `AE_APISHIM_TLS_KEY`, and distribute the CA bundle via `AE_APISHIM_CA_BUNDLE` or a trusted local CA.
 
-## Refreshing short‑lived tokens
-- Some providers issue short‑lived credentials (GCR/ECR). Refresh any saved hosts with:
-  - `ae registry refresh` (all supported providers)
-  - `ae registry refresh --provider gcr`
-  - `ae registry refresh --provider ecr`
-- Refresh logic uses local CLIs when available:
-  - ghcr: `gh auth token` or `GHCR_TOKEN`.
-  - gcr: `gcloud auth print-access-token`.
-  - ecr: `aws ecr get-login-password` (region derived from the registry hostname).
+Preferred operator flow:
 
-## Planner hint
-- If the image host looks private (e.g., `ghcr.io`, `gcr.io`, `*.ecr.*.amazonaws.com`) and no entry exists in `registries.yaml`, `ae plan` emits a warning with the matching `ae registry login` command suggestion.
+```bash
+AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme \
+python -m ae.apishim serve --host 127.0.0.1 --port 8445
+
+python -m ae.apishim kubeconfig \
+  --server http://127.0.0.1:8445 \
+  --token "$AE_APISHIM_TOKEN" \
+  --insecure-skip-tls-verify > ~/.kube/k1s-apishim.yaml
+
+source <(ae auth local --strict)
+ae auth mint --role exec --scope default/echo
+```
+
+Use `ae auth local --strict` for shared profile shells and keep `AE_APISHIM_TOKEN` service-only. Prefer mint or role-specific shim tokens for routine operator access.
+
+## Security Notes
+
+- Put the controller API behind TLS or a trusted front-end such as Caddy for shared environments.
+- Prefer short-lived controller tokens and the smallest role that satisfies the workflow.
+- Keep shim admin credentials service-only; use `AE_APISHIM_MINT_TOKEN`, `AE_APISHIM_READ_TOKEN`, `AE_APISHIM_EXEC_TOKEN`, and `AE_APISHIM_PORTFORWARD_TOKEN` for user-facing flows.
+- Registry credentials are separate from API auth. Use the [Operations Runbook](runbook.html) for `ae registry login` and refresh procedures.
+
+## Related Pages
+
+- [HTTP API](http-api.html)
+- [API Shim](api-shim.html)
+- [Operations Runbook](runbook.html)

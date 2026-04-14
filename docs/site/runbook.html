@@ -1070,6 +1070,22 @@
 </ul>
 </li>
 </ul>
+<p>Registry credentials</p>
+<ul>
+<li>Registry credentials are stored separately from API tokens at <code>~/.config/ae/registries.yaml</code>.</li>
+<li>List configured entries with <code>ae registry list</code>.</li>
+<li>Common login flows:
+<ul>
+<li>Docker Hub: <code>ae registry login custom --registry docker.io --username &lt;you&gt; --password &lt;token&gt;</code></li>
+<li>GHCR: <code>ae registry login ghcr --username &lt;you&gt; --token &lt;PAT&gt;</code> or rely on <code>gh auth token</code></li>
+<li>GCR / Artifact Registry: <code>ae registry login gcr --use-gcloud --gcr-host us.gcr.io</code></li>
+<li>ECR: <code>ae registry login ecr --use-aws --region us-east-1 --account-id 123456789012</code></li>
+<li>Custom: <code>ae registry login custom --registry registry.example.com --username user --password secret</code></li>
+</ul>
+</li>
+<li>Refresh short-lived provider credentials with <code>ae registry refresh</code>, or scope it with <code>--provider gcr</code> / <code>--provider ecr</code>.</li>
+<li><code>ae plan</code> warns when a private image host appears to need registry credentials but no matching <code>registries.yaml</code> entry is configured.</li>
+</ul>
 <p>API shim (kubectl/helm)</p>
 <ul>
 <li>Start shim locally: <code>AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445</code> (add <code>--allow-anonymous</code> only for dev). Postgres backend: set <code>AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname</code>; default is SQLite at <code>AE_APISHIM_DB</code> (<code>state/apishim.db</code>) unless a DSN is provided.</li>
@@ -2033,7 +2049,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-14 12:55:46</span>
+        <span>Built 2026-04-14 14:15:52</span>
       </div>
     </footer>
     <script>
