@@ -101,12 +101,7 @@ class DockerRuntime(RuntimeAdapter):
             except Exception:
                 job_backoff_limit = 6
 
-        try:
-            existing_containers = self._client.containers.list(
-                all=True, filters={"label": f"{self.APP_LABEL}={app_name}"}
-            )
-        except APIError as exc:  # pragma: no cover - network failure path hard to trigger in tests
-            raise RuntimeError(f"Failed to list containers for {app_name}: {exc}") from exc
+        existing_containers = self._list_containers_for_app(app_name)
 
         containers_by_replica: dict[str, Container] = {}
         old_revision_containers: list[Container] = []
@@ -221,15 +216,19 @@ class DockerRuntime(RuntimeAdapter):
                 self._stop_and_remove(container)
                 removed += 1
 
-        final_containers = self._client.containers.list(
-            all=True, filters={"label": f"{self.APP_LABEL}={app_name}"}
-        )
-        pod_states = [
-            self._build_state(manifest, container)
-            for container in final_containers
-            if self._pod_label(container.labels)
-            and container.labels.get(self.REVISION_LABEL) == str(revision)
-        ]
+        final_containers = self._list_containers_for_app(app_name)
+        pod_states: list[PodState] = []
+        for container in final_containers:
+            try:
+                labels = container.labels or {}
+            except NotFound:
+                continue
+            if not self._pod_label(labels) or labels.get(self.REVISION_LABEL) != str(revision):
+                continue
+            try:
+                pod_states.append(self._build_state(manifest, container))
+            except NotFound:
+                continue
 
         return RuntimeResult(
             revision=revision,
@@ -1095,6 +1094,21 @@ class DockerRuntime(RuntimeAdapter):
         except (APIError, NotFound) as exc:  # pragma: no cover - container already gone
             LOGGER.warning("Failed to remove container %s: %s", container.name, exc)
 
+    def _list_containers_for_app(self, app_name: str) -> list[Container]:
+        filters = {"label": f"{self.APP_LABEL}={app_name}"}
+        last_exc: NotFound | None = None
+        for _attempt in range(2):
+            try:
+                return self._client.containers.list(all=True, filters=filters)
+            except NotFound as exc:
+                last_exc = exc
+                continue
+            except APIError as exc:  # pragma: no cover - daemon/api failures are environment-specific
+                raise RuntimeError(f"Failed to list containers for {app_name}: {exc}") from exc
+        if last_exc is not None:
+            LOGGER.debug("Transient docker list race for app %s: %s", app_name, last_exc)
+        return []
+
     def _ensure_sidecars(
         self,
         manifest: AppManifest,
@@ -1510,6 +1524,16 @@ class DockerRuntime(RuntimeAdapter):
         # mapping; finally, if on a shared network, container IP/DNS.
 
         network_ports = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
+        shared_endpoint = self._shared_network_endpoint(
+            ports, container, preferred=preferred
+        )
+        if os.getenv("AE_DOCKER_ENDPOINT_PREFER_NETWORK", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            if shared_endpoint:
+                return shared_endpoint
 
         def _binding_to_endpoint(binding: dict) -> str | None:
             host_ip = binding.get("HostIp", "127.0.0.1")
@@ -1559,11 +1583,28 @@ class DockerRuntime(RuntimeAdapter):
                 return ep
 
         # 3) Shared-network fallback using manifest-declared ports (same-host overlay only)
-        if self._network_name:
+        if shared_endpoint:
+            return shared_endpoint
+        return None
+
+    def _shared_network_endpoint(
+        self, ports: Iterable[PortSpec], container: Container, *, preferred: int | None = None
+    ) -> str | None:
+        if not self._network_name:
+            return None
+        networks = container.attrs.get("NetworkSettings", {}).get("Networks", {}) or {}
+        if self._network_name not in networks:
+            return None
+        target_port = None
+        if preferred is not None:
+            target_port = int(preferred)
+        else:
             first = next(iter(ports or []), None)
             if first is not None:
-                return f"{container.name}:{first.container_port}"
-        return None
+                target_port = int(first.container_port)
+        if target_port is None:
+            return None
+        return f"{container.name}:{target_port}"
 
     # Init containers ----------------------------------------------------
     def run_init_containers(self, manifest):  # type: ignore[override]
@@ -1766,6 +1807,8 @@ class DockerRuntime(RuntimeAdapter):
     def _reload(self, container: Container) -> None:
         try:
             container.reload()
+        except NotFound:
+            raise
         except APIError as exc:
             raise RuntimeError(f"Failed to reload container {container.name}: {exc}") from exc
 
