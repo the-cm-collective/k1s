@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -703,12 +703,10 @@
       <a href="runbook.html">Ops Runbook</a>
       <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
-      <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
@@ -716,7 +714,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -1115,8 +1113,8 @@
 <ul>
 <li><code>make k1s-ha-core</code> is the strict-CRI HA core-node profile. It is intended to be operationally interchangeable with <code>k1s-core</code> at the node role level, but it switches the node onto shared-authority HA mode instead of the single-host/dev bootstrap path.</li>
 <li><code>k1s-core</code> remains the single-host and dev-oriented profile. <code>k1s-ha-core</code> does not replace it.</li>
-<li>Canonical bootstrap sequence: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a></li>
-<li>Exact command readout: <a href="ha-cluster-bring-up.html#ha-command-readout">HA Cluster Bring-Up</a></li>
+<li>Canonical bootstrap sequence: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up: bootstrap sequence</a></li>
+<li>Exact command readout: <a href="ha-cluster-bring-up.html#ha-command-readout">HA Cluster Bring-Up: exact command readout</a></li>
 <li>Required env before startup:
 <ul>
 <li><code>AE_CONTROLLER_ID</code></li>
@@ -1148,12 +1146,12 @@
 <li>allows <code>AE_DEV_LOCAL=1</code> for lab convenience, but defaults to operator-safe values with local singleton services and docs extras off</li>
 </ul>
 </li>
-<li>The new <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a> page owns the numbered 3-controller bootstrap sequence, first validation, and first snapshot checkpoint. This runbook keeps the profile contract, installed-service surface, recovery, and upgrade procedures.</li>
+<li>The new <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up page</a> owns the numbered 3-controller bootstrap sequence, first validation, and first snapshot checkpoint. This runbook keeps the profile contract, installed-service surface, recovery, and upgrade procedures.</li>
 </ul>
 <h3 id="ha-exact-commands">Exact HA Commands</h3>
 <ul>
-<li>Full strict-CRI HA command readout: <a href="ha-cluster-bring-up.html#ha-command-readout">HA Cluster Bring-Up</a></li>
-<li>Reduced one-box regression lane: <a href="ha-cluster-bring-up.html#ha-command-readout-one-box">HA Cluster Bring-Up</a> and <a href="ha-closeout.html">HA Closeout</a></li>
+<li>Full strict-CRI HA command readout: <a href="ha-cluster-bring-up.html#ha-command-readout">HA Cluster Bring-Up: full command readout</a></li>
+<li>Reduced one-box regression lane: <a href="ha-cluster-bring-up.html#ha-command-readout-one-box">HA Cluster Bring-Up: one-box readout</a> and <a href="ha-closeout.html">HA Closeout: reduced-harness evidence</a></li>
 <li>Role mapping for the HA lane:
 <ul>
 <li>controllers use <code>make k1s-ha-core</code></li>
@@ -1502,7 +1500,7 @@
 </ul>
 <p>HA closeout (<code>H5c-ha-closeout</code>)</p>
 <ul>
-<li>Canonical audit artifact: <a href="ha-closeout.html">HA Closeout</a></li>
+<li>Canonical audit artifact: <a href="ha-closeout.html">HA Closeout: audit artifact</a></li>
 <li>Primary evidence lane:
 <ul>
 <li><code>make lab-vm-ha-validation</code> is now the preferred umbrella rerun for the checked-in HA validation flow; it wraps <code>scripts/lab/vm/run_ha_validation.sh</code>.</li>
@@ -1551,9 +1549,9 @@
 </li>
 <li>Closeout rule:
 <ul>
-<li>The 2026-03-19 HA closeout checkpoint satisfies the original evidence rule: <a href="ha-closeout.html">HA Closeout</a> shows zero <code>must_fix_before_closeout</code> gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.</li>
+<li>The 2026-03-19 HA closeout checkpoint satisfies the original evidence rule: <a href="ha-closeout.html">HA Closeout: current audit status</a> shows zero <code>must_fix_before_closeout</code> gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.</li>
 <li>The 2026-04-07 maintenance rerun keeps that claim current: image verification hardening closed the verifier overlay/backing-image mismatch, <code>make lab-vm-ha-validation</code> passed with green <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> results, and <code>make ha-closeout-e2e</code> also passed.</li>
-<li>Reopen <code>H5c-ha-closeout</code> if either evidence lane regresses or <a href="ha-closeout.html">HA Closeout</a> regains a must-fix gap.</li>
+<li>Reopen <code>H5c-ha-closeout</code> if either evidence lane regresses or <a href="ha-closeout.html">HA Closeout: must-fix status</a> regains a must-fix gap.</li>
 <li>On passworded-sudo hosts, run <code>sudo -v</code> before invoking <code>smoke_helper.py</code>; the helper does not prompt for a password and fails fast if <code>sudo -n true</code> is not already warm.</li>
 </ul>
 </li>
@@ -1608,29 +1606,19 @@
 <li>Retained HA VM attached-node lane:
 <ul>
 <li>Bring the retained stack up: <code>make lab-vm-ha-attached-node-up</code></li>
-<li>On NixOS, this helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code></li>
+<li>On NixOS, this helper path applies the local DNS/TLS bridge automatically.</li>
 <li>Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: <code>make lab-vm-ha-attached-node-status</code></li>
-<li>After <code>up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the local <code>127.0.0.1</code> dev mapping</li>
-<li>For the full checked-in HA validation flow, prefer <code>make lab-vm-ha-validation</code>; for narrower one-shot HA harness tests, prefer <code>make lab-vm-smoke</code></li>
-<li>Canonical HA rerun order is: stage 1 one-shot on <code>ha-control-plane-attached-node</code>, stage 2 one-shot on <code>ha-control-plane-core</code>, then optional drills on <code>ha-control-plane-core-drills</code>; retained attached-node restart/rejoin flows are supplemental scenarios, not replacements for those one-shot acceptance runs</li>
-<li>Stage 1 one-shot rerun sequence: <code>sudo -v &amp;&amp; RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1&quot; &amp;&amp; AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-attached-node.yaml RUN_ID=&quot;$RUN_ID&quot;</code></li>
-<li>Stage 2 one-shot rerun sequence: <code>sudo -v &amp;&amp; RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2&quot; &amp;&amp; AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/ha-control-plane-core.yaml RUN_ID=&quot;$RUN_ID&quot;</code></li>
-<li>Default stage meanings under <code>make lab-vm-ha-validation</code>: <code>stage1</code> one-shot attached-node acceptance, <code>retained</code> retained stage-1 workstation flow, <code>drain</code> supplemental two-worker drain/reschedule, <code>stage2</code> one-shot edge/core-proxy acceptance, <code>stage2-live</code> live helper check, <code>drills</code> disruptive drill validation</li>
-<li>Normal retained rerun sequence: <code>make lab-vm-ha-attached-node-purge</code>, <code>make lab-vm-ha-attached-node-up</code>, <code>make lab-vm-ha-attached-node-status</code>, <code>make lab-vm-ha-attached-node-workload-smoke</code></li>
-<li>retained-VM &quot;rebuild and restart all&quot; path: <code>make lab-vm-ha-attached-node-refresh-all</code></li>
-<li>Stop the retained VMs but keep retained run metadata for a later restart: <code>make lab-vm-ha-attached-node-down</code></li>
-<li>Full retained cleanup, including best-effort orphan teardown, <code>runs/&lt;RUN_ID&gt;</code>, repo-built host images, and retained host-mapping cleanup: <code>make lab-vm-ha-attached-node-purge</code></li>
-<li>Stage 1 retained ingress check: attach a schedulable node to the HA core, deploy the retained HA web smoke app on <code>attached-node-1</code>, translate app ingress to <code>core-local</code>, verify <code>/healthz</code> and <code>/</code> through the HA core Envoy, and clean it up again before the helper exits: <code>make lab-vm-ha-attached-node-workload-smoke</code></li>
-<li>For persistent host-side testing after the smoke, export the HA controller env first (<code>set -a; source state/profiles/k1s-ha-core/controller.env; set +a</code>), then source <code>ae-env.sh local</code>, apply <code>docs/site/examples/ha-web-smoke.yaml</code> with <code>PYTHONPATH=src ./.venv/bin/python -m ae.cli apply -f ...</code>, keep testing with <code>curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...</code>, and clean it up later with <code>PYTHONPATH=src ./.venv/bin/python -m ae.cli delete --purge ha-web-smoke</code></li>
-<li>Retained stage-1 node-mutation check: after exporting that same HA env, run <code>PYTHONPATH=src ./.venv/bin/python -m ae.cli nodes</code>, <code>... nodes attached-node-1 --cordon</code>, verify <code>cordoned: yes</code>, then <code>... --uncordon</code> and verify <code>cordoned: no</code></li>
-<li>Current <code>ha-control-plane-attached-node</code> topology validates <code>cordon</code> / <code>uncordon</code> semantics only; <code>ae.cli nodes --drain</code> exists, but true drain-plus-reschedule needs a second schedulable <code>role=worker,site=core</code> node because <code>attached-node-1</code> is the only current match</li>
-<li>Stage 2 gateway-capable check against a live <code>lab/variants/ha-control-plane-core.yaml</code> run: <code>RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke</code></li>
-<li><code>ha-web-smoke.home.arpa</code> is intentionally not added to the managed workstation host mapping; use the helper or <code>curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...</code> instead of extending <code>/etc/hosts</code></li>
-<li><code>ha-edge-web-smoke.home.arpa</code> is also helper-only / <code>curl --resolve</code> only for the stage-2 <code>core-proxy</code> lane</li>
-<li>Hard reset the retained stack (<code>purge</code> + <code>up</code>): <code>make lab-vm-ha-attached-node-reset</code></li>
-<li><code>purge</code> and <code>reset</code> restore the prior localhost-oriented mapping when one was already present, otherwise they remove the retained managed mapping</li>
-<li>Hard reset plus guest image rebuild: <code>make lab-vm-ha-attached-node-reset LAB_VM_HA_ATTACHED_NODE_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></li>
-<li>These targets default to <code>VARIANT=lab/variants/ha-control-plane-attached-node.yaml</code> and <code>RUN_ID=ha-attached-node-local</code>.</li>
+<li>After <code>up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the local <code>127.0.0.1</code> dev mapping.</li>
+<li>For the exact retained operator flow, live stage-2 helper, auth bootstrap, and cleanup semantics, use <a href="validated-procedures.html#advanced-dashboard-user-test-retained-ha-vm">Validated Procedures: retained operator readout</a> and <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up: retained operator context</a>.</li>
+<li>Quick references:
+<ul>
+<li>full checked-in HA validation: <code>make lab-vm-ha-validation</code></li>
+<li>retained stage-1 smoke: <code>make lab-vm-ha-attached-node-workload-smoke</code></li>
+<li>live stage-2 helper: <code>RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke</code></li>
+<li>retained cleanup: <code>make lab-vm-ha-attached-node-purge</code></li>
+<li>retained reset: <code>make lab-vm-ha-attached-node-reset</code></li>
+</ul>
+</li>
 </ul>
 </li>
 <li>Scope of apps shown and reconciled
@@ -2045,7 +2033,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-13 07:38:35</span>
+        <span>Built 2026-04-14 12:55:46</span>
       </div>
     </footer>
     <script>

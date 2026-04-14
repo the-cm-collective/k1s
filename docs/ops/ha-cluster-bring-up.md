@@ -538,6 +538,12 @@ RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke
 
 On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate `nixos-rebuild` should be required after a successful `up`.
 
+Validated operator and user-test flow
+
+Use [Validated Procedures: retained advanced dashboard](validated-procedures.html#advanced-dashboard-user-test-retained-ha-vm) for the exact retained advanced-dashboard user-test readout, and [Validated Procedures: HA stage 1/2 validation](validated-procedures.html#ha-stage-12-validation) for the umbrella and one-shot stage-1/stage-2 validation commands.
+
+This page keeps the topology contract, detailed operator notes, and lower-level helper procedures. The validated procedures page is the copy/paste source of truth for the current stage-1 retained flow, live stage-2 helper, auth bootstrap, and cleanup sequence.
+
 For the full checked-in HA validation flow, prefer the umbrella runner:
 
 ```bash
@@ -773,7 +779,7 @@ In HA, the docs Playground is disabled by default, including this retained VM la
 Host docs remain a static convenience layer. Point them at the Envoy hosts and serve them locally:
 
 ```bash
-DOCS_API_BASE=https://docs.home.arpa:10443 \
+DOCS_API_BASE=https://api.home.arpa:10443 \
 DOCS_DASHBOARD_URL=https://dash.home.arpa:10443/dashboard \
 python docs/build_docs.py
 python -m http.server 9109 --directory docs/site
@@ -783,7 +789,7 @@ Notes:
 - Treat `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa` on `:10443` as the primary public control-plane surface in this retained VM lane.
 - Quick host check from this workstation: `getent hosts dash.home.arpa docs.home.arpa api.home.arpa`
 - Any healthy controller can serve `/dashboard`, `/system`, and `/metrics` during normal HA operation.
-- In this retained VM profile, `/system` is bearer-protected and only `AE_API_ADMIN_TOKEN` may be configured for controller HTTP reads.
+- In this retained VM profile, `/system` is bearer-protected and accepts `AE_API_READ_TOKEN` or, if unset, `AE_API_ADMIN_TOKEN` for controller HTTP reads.
 - `/dashboard` serves without auth, but its data panels fetch `/system`; paste the bearer token into the page when prompted.
 - `attached-node-1` reaches the HA controller agent API on `:9110` and runs with Rosenpass/WireGuard disabled in this retained lane; this lane now validates HA control-plane health, attached-node registration, workload placement, and `core-local` ingress from the HA cores to the retained compute node, not edge gateway transport.
 - Followers still reject leader-only mutation with `not_leader`; use the current leader for apply/scale/delete or retry after reading the leader hint.

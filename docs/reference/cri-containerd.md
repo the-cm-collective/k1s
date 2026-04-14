@@ -29,8 +29,8 @@ Notes:
 - Strict startup now bootstraps `/opt/cni/bin` automatically when required CNI
   plugins are already available in standard locations or NixOS PATH-managed
   plugin paths.
-- Detailed profile behavior: `docs/guides/runtime-profiles.md`.
-- End-to-end core/edge CRI runbook: `docs/guides/multinode-lab.md`.
+- Detailed profile behavior: [Runtime Profiles](runtime-profiles.html).
+- End-to-end core/edge CRI runbook: [Multi-Node Lab](multinode-lab.html).
 
 ## Strict CRI control-plane defaults
 
@@ -53,8 +53,14 @@ scripts/dev/etcd_maintenance.sh watchdog
 Optional guided wrapper with restart checkpoints:
 
 ```bash
+scripts/dev/run_ingress_lanes.sh --lanes all
+# Compatibility alias:
 scripts/dev/run_ingress_mode_lanes.sh --lanes all
 ```
+
+The fully validated startup and lane sequence lives on
+[Ingress Capability Test Sequence](ingress-capability-test-sequence.html). This
+page keeps the CRI-specific ingress framing and helper surfaces.
 
 Core-proxy mini sanity:
 
@@ -77,14 +83,14 @@ Strict LB proof lane (`edge-local`, separate stack start):
 scripts/dev/test_ingress_matrix_single_host.sh \
   --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep \
   --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 \
-  --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/
+  --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/
 ```
 
 Interpretation:
 - `core-proxy` LB rows are `assertion_level=policy_switch_only` when strict distribution is not required.
 - `edge-local` LB rows are `assertion_level=strict_distribution` and are the strict proof source.
 - Recommended security gates after lane runs: `scripts/dev/security_baseline_check.sh --fail-on high` then `scripts/dev/security_active_tests.sh --fail-on high`.
-- Full sequence and failure triage: `docs/guides/ingress-capability-test-sequence.md`.
+- Full sequence and failure triage: [Ingress Capability Test Sequence](ingress-capability-test-sequence.html).
 
 ## Runtime selection and advanced overrides
 

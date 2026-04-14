@@ -122,12 +122,10 @@ NAV_LINKS = [
     ("Ops Runbook", "runbook.html", False, False),
     ("HA Bring-Up", "ha-cluster-bring-up.html", False, False),
     ("VM Variants", "vm-variant-runbook.html", False, False),
-    ("HA Closeout", "ha-closeout.html", False, False),
     ("CRI containerd", "cri-containerd.html", False, False),
     ("Multi-Node", "multinode-lab.html", False, False),
     ("HTTP API", "http-api.html", False, False),
-    ("API Shim", "apishim-compatibility-matrix.html", False, False),
-    ("OpenAPI v3", "/openapi/v3", True, True),
+    ("API Shim", "api-shim.html", False, False),
     ("Ingress", "ingress.html", False, False),
     ("Ingress Validation", "ingress-capability-test-sequence.html", False, False),
     ("API Auth", "api-auth.html", False, False),
@@ -1675,7 +1673,7 @@ def build_one(
     api_mode_widget: str,
     api_mode_script: str,
 ) -> None:
-    allow_raw = md_path.name in {"playground.md", "start-here.md", "memory.md"} or (
+    allow_raw = md_path.name in {"playground.md", "start-here.md", "memory.md", "project-philosophy.md"} or (
         md_path.name == "index.md" and md_path.parent.name == "concepts-in-practice"
     )
     html_body = md_to_html(
@@ -2539,7 +2537,7 @@ def main() -> None:
         ("Start Here", "start-here.html", False, False),
         ("Overview", "overview.html", False, False),
         ("Live Hive Dashboard", "/dashboard", True, True),
-        ("Interactive Lab Playground", "playground.html", True, False),
+        ("Validated Procedures", "validated-procedures.html", False, False),
     ]
     if include_static_swagger:
         index_quick_links.append((STATIC_SWAGGER_LABEL, STATIC_SWAGGER_HREF, False, False))
@@ -2548,6 +2546,7 @@ def main() -> None:
 
     networking_links = [
         ("HTTP API", "http-api.html", False, False),
+        ("API Shim", "api-shim.html", False, False),
         ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
         ("Ingress", "ingress.html", False, False),
         ("API Auth", "api-auth.html", False, False),
@@ -2600,6 +2599,7 @@ def main() -> None:
             "links": [
                 ("Observability", "observability.html", False, False),
                 ("Benchmarks", "benchmarks.html", False, False),
+                ("Validated Procedures", "validated-procedures.html", False, False),
                 ("End-to-End Guide", "e2e.html", False, False),
                 ("K8s Compliance Status", "k8s-compliance.html", False, False),
             ],

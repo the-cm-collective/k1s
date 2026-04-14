@@ -1,8 +1,9 @@
 # API Auth and Mutations
 
 ## Overview
-- Read-only endpoints (/status, /events, /metrics, /logs, /health, /openapi.json) are available by default.
-- If any token is configured, all GETs require at least the READ token.
+- Public docs and schema surfaces (`/metrics`, `/openapi.json`, `/docs`, `/swagger`, `/redoc`, and the dashboard shell when enabled) remain reachable without a bearer token.
+- Protected read endpoints (`/status`, `/events`, `/nodes`, `/logs`, `/health`, `/system`, `/manifest`, `/history`, `/tls/verify`) are available by default.
+- If any token is configured, the protected read endpoints require at least the READ token.
 - Mutating endpoints (/scale/<app>, /delete/<app>, /rollout/*, /apply) are disabled unless AE_API_MUTATIONS=1.
 - Optional Bearer tokens gate access per role:
   - AE_API_READ_TOKEN   (read)

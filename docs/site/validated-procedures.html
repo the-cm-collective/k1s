@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Concepts</title>
+    <title>Validated Procedures</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -727,92 +727,219 @@
       </svg>
     </button>
     <div class="container">
-    <h1 id="k1s-concepts">k1s Concepts</h1>
-<p>This guide explains core concepts used throughout k1s.</p>
-<h2 id="terminology-map-k1s-kubernetes">Terminology map (k1s -&gt; Kubernetes)</h2>
-<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>Deployment</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: Deployment</code>).</td></tr><tr><td>Pod</td><td>Pod</td><td>One container instance for a Deployment revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
-<h2 id="deployment-k1s-workload">Deployment (k1s workload)</h2>
-<p>The primary unit of deployment. Defined by a <code>Deployment</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
-<h2 id="pod">Pod</h2>
-<p>An individual container instance belonging to an app revision. Pod names follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
-<h2 id="node">Node</h2>
-<p>A registered worker (or the controller host) that can run pods. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via <code>ae nodes</code>.</p>
-<h2 id="service-vip-service-clusterip">Service VIP (Service/ClusterIP)</h2>
-<p>A stable virtual IP allocated from the Service CIDR and fronted by the overlay provider. Ingress prefers VIPs when ready endpoints exist; hostPorts remain for single-node edge cases.</p>
-<h2 id="revision-deployment-revision">Revision (Deployment revision)</h2>
-<p>An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.</p>
+    <h1 id="validated-procedures">Validated Procedures</h1>
+<p>Purpose</p>
 <ul>
-<li>Stored in the controller state backend (SQLite by default; Postgres/etcd durable lanes supported) with normalized JSON and status.</li>
-<li>Used for rollbacks: <code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code>.</li>
+<li>Keep the currently validated command readouts in one published docs page for copy/paste use.</li>
+<li>Treat this page as the exact procedure reference.</li>
+<li>Use the surrounding docs for context, rationale, topology details, and troubleshooting.</li>
 </ul>
-<h2 id="reconcile">Reconcile</h2>
-<p>The controller compares the desired state from specs to the observed state (state backend + node inventory + runtimes) and performs the operations needed to converge.</p>
+<p>Latest validation snapshot</p>
+<table><thead><tr><th>Procedure</th><th>Primary entrypoint</th><th>Success signal</th><th>Last validated</th></tr></thead><tbody><tr><td>Simple dashboard user test</td><td><code>make demo</code></td><td>docs + dashboard load on <code>:8443</code>, simple layout visible</td><td>2026-04-14</td></tr><tr><td>Advanced dashboard user test</td><td><code>make lab-vm-ha-attached-node-up</code></td><td>docs + dashboard load on <code>:10443</code>, HA section visible</td><td>2026-04-14</td></tr><tr><td>HA stage 1/2 validation</td><td><code>make lab-vm-ha-validation</code></td><td><code>stage1</code>, <code>retained</code>, <code>stage2</code>, <code>stage2-live</code> green</td><td>2026-04-14</td></tr><tr><td>Full benchmark rerun</td><td>split baseline + CRI flow</td><td><code>combined/combined.csv</code> has 40 rows for the run stamp</td><td>2026-04-14</td></tr></tbody></table>
+<h2 id="simple-dashboard-user-test">Simple Dashboard User Test</h2>
+<p>Preconditions</p>
 <ul>
-<li>Schedules replicas onto Ready nodes that match <code>nodeSelector</code>/tolerations/topology spread. Storage pinning keeps retained volumes on a single node.</li>
-<li>Creates or updates containers via the node agent runtime (pulling images as needed); falls back to the local runtime when no nodes are eligible.</li>
-<li>Removes containers from older revisions after the new revision is live.</li>
-<li>Allocates Service VIPs and updates ingress to healthy upstreams once readiness passes.</li>
+<li>Run from the repo root with the repo venv on <code>PATH</code>.</li>
+<li>This procedure is for local single-controller demo/dev flows.</li>
 </ul>
-<h2 id="health">Health</h2>
+<p>Commands</p>
+<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+
+sudo -v
+make demo
+getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code></pre>
+<p>User-test URLs</p>
 <ul>
-<li>Readiness: Determines whether a pod should receive traffic (2xx HTTP implies success).</li>
-<li>Liveness: Indicates the pod is still alive (defaults to true if not specified).</li>
-<li>Initial delay: Allows the app to boot before probes start.</li>
-<li>Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around pod start/stop.</li>
+<li><code>https://docs.home.arpa:8443/</code></li>
+<li><code>https://dash.home.arpa:8443/dashboard</code></li>
+<li><code>https://api.home.arpa:8443/swagger</code></li>
 </ul>
-<h2 id="status">Status</h2>
-<p>Per‑app aggregate status is one of:</p>
+<p>Acceptance checks</p>
 <ul>
-<li>ready: all desired replicas are ready</li>
-<li>progressing: desired count is live but not yet all ready</li>
-<li>degraded: otherwise (e.g., live replicas below desired or readiness fails)</li>
+<li>Docs and dashboard load from the host on <code>:8443</code>.</li>
+<li>The dashboard shows the shared <code>System Graph</code>.</li>
+<li>The <code>HA Control Plane</code> section is hidden.</li>
+<li>The <code>HA Members</code> legend key is hidden.</li>
 </ul>
-<p>CLI examples:</p>
-<pre><code>ae status myapp --wide --events</code></pre>
-<h2 id="events">Events</h2>
-<p>Lightweight audit trail for changes and noteworthy events:</p>
+<p>Cleanup</p>
+<pre><code>make demo-down</code></pre>
+<h2 id="advanced-dashboard-user-test-retained-ha-vm">Advanced Dashboard User Test (Retained HA VM)</h2>
+<p>Preconditions</p>
 <ul>
-<li>ApplyStarted, ApplyCompleted</li>
-<li>IngressConfigured, IngressRemoved</li>
-<li>NodeRegistered, NodeCordon, NodeUncordon</li>
-<li>ServiceVIPAllocated, ServiceVIPRemoved</li>
-<li>Readiness/rollout failures when health gates trip</li>
+<li>Use this for the retained HA attached-node lane.</li>
+<li>If image/bootstrap contracts changed, rebuild/verify images first.</li>
 </ul>
-<p>Inspect with:</p>
-<pre><code>ae events myapp --limit 20</code></pre>
-<h2 id="rollouts">Rollouts</h2>
-<p>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics across one or more nodes:</p>
-<p>1. Start a new pod for the next revision. 2. Wait for readiness. 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled). 4. Stop and remove old revision containers.</p>
-<p>Pause/resume and canary:</p>
+<p>Commands</p>
+<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+
+sudo -v
+scripts/lab/vm/labctl.sh image verify --variant all
+make lab-vm-ha-attached-node-up
+make lab-vm-ha-attached-node-status
+getent hosts dash.home.arpa docs.home.arpa api.home.arpa
+
+source &lt;(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
+curl -sk \
+  --resolve api.home.arpa:10443:192.168.155.10 \
+  -H &quot;Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}&quot; \
+  https://api.home.arpa:10443/system | python -m json.tool</code></pre>
+<p>User-test URLs</p>
 <ul>
-<li>Pause/resume: <code>ae rollout pause|resume &lt;app&gt;</code> halts or resumes rollout progression.</li>
-<li>Canary: set <code>spec.rollout.strategy: canary</code> and <code>spec.rollout.weight</code> (optional <code>auto</code> ramp) to bias routing.</li>
+<li><code>https://docs.home.arpa:10443/</code></li>
+<li><code>https://dash.home.arpa:10443/dashboard</code></li>
+<li><code>https://api.home.arpa:10443/swagger</code></li>
 </ul>
-<p>Rollback uses the recorded manifest for the target revision:</p>
-<pre><code>ae rollback myapp --to 3</code></pre>
-<h2 id="resources-volumes">Resources &amp; Volumes</h2>
+<p>Acceptance checks</p>
 <ul>
-<li>CPU/memory limits map to engine flags (Docker nano_cpus; Podman/Docker <code>--cpus</code>, memory quantities → bytes).</li>
-<li>Volumes map to hostPath → bind mount (ro/rw). <code>spec.storage</code> creates named engine volumes per app.</li>
-<li>Storage volumes are bound to the node that first creates them; scheduler pins retained volumes to that node.</li>
+<li>Docs and dashboard load from the host on <code>:10443</code>.</li>
+<li>The dashboard shows the shared <code>System Graph</code>.</li>
+<li>The <code>HA Control Plane</code> section is visible.</li>
+<li><code>/system</code> returns the HA payload when queried with the read/admin bearer token.</li>
 </ul>
-<h2 id="ingress">Ingress</h2>
-<p>For apps with <code>spec.ingress</code>, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, loopback upstreams are rewritten to the host alias: <code>host.docker.internal</code> (Docker) or <code>host.containers.internal</code> (Podman).</p>
-<p>In multi-node runs, ingress prefers Service VIPs supplied by the overlay provider so upstream selection is node-agnostic.</p>
-<h2 id="http-api">HTTP API</h2>
-<p>Read‑only status/metrics/events published at:</p>
+<p>Cleanup</p>
+<pre><code>make lab-vm-ha-attached-node-down
+# or, for authoritative cleanup:
+make lab-vm-ha-attached-node-purge</code></pre>
+<h2 id="ha-stage-1-2-validation">HA Stage 1/2 Validation</h2>
+<p>Preferred umbrella runner</p>
+<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+
+sudo -v
+make lab-vm-ha-validation</code></pre>
+<p>Expected green stages</p>
 <ul>
-<li><code>/metrics</code>, <code>/health</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code></li>
-<li><code>/history/&lt;app&gt;</code> for probe history, <code>/manifest/&lt;app&gt;</code> for latest stored manifest</li>
-<li><code>/nodes</code> for node inventory + heartbeat staleness</li>
-<li><code>/system</code> + <code>/dashboard</code> for a quick UI snapshot</li>
-<li><code>/openapi.json</code> and a tiny docs page at <code>/docs</code></li>
+<li><code>stage1</code></li>
+<li><code>retained</code></li>
+<li><code>drain</code></li>
+<li><code>stage2</code></li>
+<li><code>stage2-live</code></li>
+<li><code>drills</code></li>
 </ul>
-<p>Note: when any token is configured, reads require the READ token.</p>
-<p>Kubernetes API shim (optional):</p>
+<p>Narrow retained/live helper flow</p>
+<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+
+sudo -v
+make lab-vm-ha-attached-node-up
+make lab-vm-ha-attached-node-status
+make lab-vm-ha-attached-node-workload-smoke
+
+RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke</code></pre>
+<p>One-shot reruns</p>
+<pre><code>sudo -v
+RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_attached_node_stage1&quot; \
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-attached-node.yaml \
+  RUN_ID=&quot;$RUN_ID&quot;
+
+sudo -v
+RUN_ID=&quot;$(date -u +%Y%m%dT%H%M%SZ)_ha_core_stage2&quot; \
+AE_CRI_CACHE_SEED_ENGINE=docker \
+AE_CRI_CACHE_SEED_MODE=required \
+AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 \
+make lab-vm-smoke \
+  VARIANT=lab/variants/ha-control-plane-core.yaml \
+  RUN_ID=&quot;$RUN_ID&quot;</code></pre>
+<p>Cleanup</p>
+<pre><code>make lab-vm-ha-attached-node-purge
+# or retained reset:
+make lab-vm-ha-attached-node-reset</code></pre>
+<h2 id="full-benchmark-rerun">Full Benchmark Rerun</h2>
+<p>Preconditions</p>
 <ul>
-<li><code>AE_APISHIM_ENABLE=1 python -m ae.apishim serve --token &lt;bearer&gt;</code> exposes <code>/api</code>, <code>/apis</code>, <code>/openapi/v2|v3</code> with SSA/patch and port-forward (HTTP by default; add <code>--tls</code> for HTTPS).</li>
-<li>Works with kubectl/helm for Deployments/Services/Ingress/HPA/RBAC; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
+<li>Run from the repo root with the repo venv on <code>PATH</code>.</li>
+<li>If <code>k3d</code> and <code>kubectl</code> are not installed on the host, use the Nix shell wrapper below.</li>
+<li>The benchmark helpers must be able to build or reuse <code>localhost/demo-blue:latest</code> and <code>localhost/demo-green:latest</code>.</li>
+</ul>
+<p>Canonical command sequence</p>
+<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+
+nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -lc &#x27;
+set -euo pipefail
+cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+STAMP=&quot;r$(date +%Y%m%d)-fullretest&quot;
+
+sudo -v
+
+scripts/bench/k1nd_single.sh down || true
+make bench-k3s-down K3S_NAME=bench || true
+./scripts/bench/bench_env_teardown.sh --env state/bench-env/env.sh || true
+./scripts/bench/bench_env_teardown.sh --env state/bench-cri/env.sh || true
+sudo pkill -f &quot;python .*ae\\.controller.*state/bench-env/specs&quot; || true
+sudo pkill -f &quot;python .*ae\\.controller.*state/bench-baselines/rootful/specs&quot; || true
+sudo pkill -f &quot;python .*ae\\.controller.*state/bench-cri/specs&quot; || true
+
+sudo make bench-fix-perms
+
+rm -rf \
+  &quot;snapshots/${STAMP}+podman+rootless+cg2&quot;* \
+  &quot;snapshots/${STAMP}+podman+priv+cg2&quot;* \
+  &quot;snapshots/${STAMP}+docker+k1nd&quot;* \
+  &quot;snapshots/${STAMP}+k3d&quot;* \
+  &quot;snapshots/${STAMP}+cri+containerd&quot;* \
+  combined charts
+
+make bench-state-clean
+sudo make bench-engines-clear CONFIRM=1
+
+DISABLE_DEV_MIN=0 \
+ALLOW_SUDO=1 \
+LBL_K1S_ROOTLESS=&quot;${STAMP}+podman+rootless+cg2&quot; \
+LBL_K1S_ROOTFUL=&quot;${STAMP}+podman+priv+cg2&quot; \
+LBL_K1ND=&quot;${STAMP}+docker+k1nd&quot; \
+LBL_K3D=&quot;${STAMP}+k3d&quot; \
+APP=&quot;specs/examples/echo.yaml&quot; \
+APP_NAME=&quot;echo&quot; \
+K3S_MANIFEST=&quot;specs/examples/k3s-echo.yaml&quot; \
+DURATION=30 \
+REPLICAS=&quot;1,5,10&quot; \
+make bench-mem-e2e-baselines-sudo
+
+LABEL_CRI=&quot;${STAMP}+cri+containerd&quot; \
+APP=&quot;specs/examples/echo.yaml&quot; \
+APP_NAME=&quot;echo&quot; \
+DURATION=30 \
+REPLICAS=&quot;1,5,10&quot; \
+ROLL_REPLICAS=&quot;2,5&quot; \
+make bench-mem-cri
+
+scripts/bench/k1nd_single.sh down || true
+make bench-k3s-down K3S_NAME=bench || true
+sudo make bench-mem-finalize-sudo
+&#x27;</code></pre>
+<p>Acceptance checks</p>
+<ul>
+<li>All five scenarios complete: <code>k1s rootless</code>, <code>k1s rootful</code>, <code>k1nd</code>, <code>k3d</code>, and <code>cri+containerd</code>.</li>
+<li><code>combined/combined.csv</code> contains <code>40</code> rows for the fresh stamp (<code>5 scenarios x 8 stages</code>):</li>
+</ul>
+<pre><code>STAMP=&quot;r$(date +%Y%m%d)-fullretest&quot; python - &lt;&lt;&#x27;PY&#x27;
+import pathlib, os
+stamp = os.environ[&quot;STAMP&quot;]
+rows = 0
+for line in pathlib.Path(&quot;combined/combined.csv&quot;).read_text().splitlines():
+    if stamp + &quot;+&quot; in line:
+        rows += 1
+print(rows)
+PY</code></pre>
+<ul>
+<li>The live summary is expected to show:
+<ul>
+<li><code>Ctrl/CP</code> for k1s/k1nd as AE controller PSS</li>
+<li><code>Ctrl/CP</code> for k3d as k3s control-plane PSS</li>
+<li><code>AppCG</code> for k3d scaling with replicas</li>
+</ul>
+</li>
+<li>CRI must include <code>idle</code>, <code>pods-1</code>, <code>pods-5</code>, <code>pods-10</code>, <code>rollout-2-during</code>, <code>rollout-2-post</code>, <code>rollout-5-during</code>, and <code>rollout-5-post</code>.</li>
+<li><code>combined/combined.csv</code> and <code>combined/combined.json</code> are the authoritative artifacts.</li>
+<li><code>matplotlib not available</code> only means chart generation was skipped; it does not invalidate the run.</li>
 </ul>
     </div>
     <footer class="site-footer">

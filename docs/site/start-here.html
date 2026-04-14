@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -703,12 +703,10 @@
       <a href="runbook.html">Ops Runbook</a>
       <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
-      <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
@@ -716,7 +714,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -729,8 +727,9 @@
       </svg>
     </button>
     <div class="container">
-    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Demo</h2>       <p>Provision the seeded demo profile, docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable, start the controller, then apply echo.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
+    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Demo</h2>       <p>Provision the seeded demo profile, docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable mode and start the controller, then continue with the sample apply/status/log checks below.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
 <p>This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.</p>
+<p><strong>Command note:</strong> use <a href="validated-procedures.html">Validated Procedures</a> for the current copy/paste command readouts. This page keeps the onboarding flow and stable context.</p>
 <p>Note: k1s is pre-1.0 and still evolving. v0.1.3 expands operational validation (deep+perf ingress lanes, repeatability and fault-injection gates, security baseline and active auth probes, and release-time live OpenAPI gates), but production promotion still requires environment-specific security review and rollout validation.</p>
 <p>Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.</p>
 <p>Project philosophy: <code>TENETS.md</code> captures the core project stance, and <code>docs/design/project-philosophy.md</code> plus <code>docs/design/cognitive-welfare-and-continuity.md</code> define the precautionary position for later cognitive-substrate work.</p>
@@ -776,9 +775,9 @@ python -m pip install -e .[dev]</code></pre>
 <p>1) Start the seeded demo target:</p>
 <pre><code>make demo</code></pre>
 <ul>
-<li>Current wrapper: <code>Makefile:1</code></li>
-<li>Profile implementation: <code>scripts/dev/run_profile.sh:1</code></li>
-<li>Legacy flag-driven demo modes still live in <code>scripts/init_demo.sh:1</code></li>
+<li>Current wrapper: <code>Makefile</code></li>
+<li>Profile implementation: <code>scripts/dev/run_profile.sh</code></li>
+<li>Legacy flag-driven demo modes still live in <code>scripts/init_demo.sh</code></li>
 </ul>
 <p>2) Open endpoints:</p>
 <ul>
@@ -786,6 +785,7 @@ python -m pip install -e .[dev]</code></pre>
 <li>Dashboard: https://dash.home.arpa:8443/dashboard or http://127.0.0.1:9108/dashboard</li>
 <li>API (Swagger/ReDoc): https://api.home.arpa:8443/swagger and https://api.home.arpa:8443/redoc</li>
 <li>Sample apps: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/</li>
+<li>Dashboard note: <code>make demo</code> uses the simple dashboard layout. The shared <code>System Graph</code> remains visible, but the <code>HA Control Plane</code> card and <code>HA Members</code> legend key stay hidden.</li>
 </ul>
 <p>3) Inspect via CLI while the demo runs:</p>
 <pre><code>python -m ae.cli status --wide
@@ -821,7 +821,7 @@ python -m pip install -e .[watch]</code></pre>
 <p>2) Start ingress/docs fixtures (optional but recommended):</p>
 <pre><code>docker compose -f ops/dev/docker-compose.yaml up -d</code></pre>
 <ul>
-<li>Compose file: <code>ops/dev/docker-compose.yaml:1</code></li>
+<li>Compose file: <code>ops/dev/docker-compose.yaml</code></li>
 </ul>
 <p>3) Run the controller with API + file watch:</p>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch</code></pre>
@@ -1038,12 +1038,15 @@ ae tls kubesecret --name mycert --namespace demo -o mycert-secret.yaml</code></p
 <pre><code>python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status</code></pre>
-<p>Tip: <code>ae auth remote -o .env.api</code> also emits shim tokens + <code>AE_API_MUTATIONS=1</code>, and <code>ae auth local -o .env.local</code> reuses tokens from <code>state/*.env</code> when running demos/labs. Details: <code>README.md:67</code> and token management in <a href="runbook.html">Operations Runbook</a>.</p>
+<p>Tip: <code>ae auth remote -o .env.api</code> also emits shim tokens + <code>AE_API_MUTATIONS=1</code>, and <code>ae auth local -o .env.local</code> reuses tokens from <code>state/*.env</code> when running demos/labs. Details: <code>README.md</code> and token management in <a href="runbook.html">Operations Runbook</a>.</p>
 <h2 id="documentation-map-most-useful-first">Documentation Map (most useful first)</h2>
 <ul>
 <li>High‑level overview: <a href="overview.html">Overview</a></li>
 <li>Operations runbook: <a href="runbook.html">Operations Runbook</a></li>
 <li>HA cluster bootstrap and evidence lanes: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>, <a href="ha-closeout.html">HA Closeout</a>, <a href="vm-variant-runbook.html">VM Variant Runbook</a></li>
+<li>Copy/paste validated command readouts: <a href="validated-procedures.html">Validated Procedures</a></li>
+<li>Benchmark rerun procedure and acceptance checks: <a href="benchmarks.html">Memory Overhead Benchmarks</a></li>
+<li>Demo/dashboard mode expectations: <a href="examples.html">Demos & Examples</a></li>
 <li>HTTP API reference: <a href="http-api.html">HTTP API</a></li>
 <li>Kubernetes API shim compatibility: <a href="apishim-compatibility-matrix.html">API Shim Compatibility Matrix</a></li>
 <li>Ingress & TLS: <a href="ingress.html">Ingress</a></li>
@@ -1052,19 +1055,19 @@ ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status<
 </ul>
 <h2 id="where-things-live-in-the-repo">Where things live in the repo</h2>
 <ul>
-<li>Controller daemon entry: <code>src/ae/controller/__main__.py:1</code></li>
-<li>CLIs: <code>src/ae/cli/__main__.py:1</code>, <code>src/ae/kctl/__main__.py:1</code></li>
+<li>Controller daemon entry: <code>src/ae/controller/__main__.py</code></li>
+<li>CLIs: <code>src/ae/cli/__main__.py</code>, <code>src/ae/kctl/__main__.py</code></li>
 <li>Ingress (Caddy): <code>src/ae/ingress/</code>, site fragments under <code>ops/dev/caddy/sites/</code></li>
 <li>Runtimes: <code>src/ae/runtime/</code> (Podman default, Docker optional)</li>
 <li>Observability/API: <code>src/ae/observability/</code></li>
 <li>Specs & samples: <code>specs/</code>, <code>specs/examples/</code></li>
-<li>Dev stack compose: <code>ops/dev/docker-compose.yaml:1</code></li>
+<li>Dev stack compose: <code>ops/dev/docker-compose.yaml</code></li>
 </ul>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
 <li>If Caddy HTTPS ports 8443/8888 are busy, the demo auto‑picks free ports and prints them.</li>
 <li>Dashboard via Caddy is <code>https://dash.home.arpa:8443/dashboard</code>; use <code>http://127.0.0.1:9108/dashboard</code> if you’re skipping Caddy.</li>
-<li>To rebuild docs locally: <code>make docs</code> (builder at <code>docs/build_docs.py:1</code>).</li>
+<li>To rebuild docs locally: <code>make docs</code> (builder at <code>docs/build_docs.py</code>).</li>
 <li>Teardown demo: <code>./scripts/init_demo.sh --down -y</code> or <code>make demo-down</code>.</li>
 <li>Reset demo state: <code>./scripts/init_demo.sh --reset</code> or <code>make demo-reset</code>.</li>
 </ul>
@@ -1079,7 +1082,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-13 07:38:34</span>
+        <span>Built 2026-04-14 12:55:46</span>
       </div>
     </footer>
     <script>

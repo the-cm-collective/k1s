@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -703,12 +703,10 @@
       <a href="runbook.html">Ops Runbook</a>
       <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
-      <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
@@ -716,7 +714,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -729,58 +727,71 @@
       </svg>
     </button>
     <div class="container">
-    <h1 id="ingress-guide-caddy">Ingress Guide (Caddy)</h1>
+    <h1 id="ingress">Ingress</h1>
 <h2 id="overview">Overview</h2>
 <ul>
-<li>The controller writes one Caddy site per Deployment manifest with <code>spec.ingress</code>.</li>
-<li>Multi-path routing is supported; Caddy uses <code>handle_path</code> for subpaths.</li>
-<li>TLS defaults to Caddy&#x27;s internal CA in dev; you can supply real certs.</li>
-<li>In multi-node lanes, ingress is mode-aware (<code>core-proxy</code>, <code>core-to-edge-public</code>, <code>edge-local</code>) and is validated with mode-isolated test lanes.</li>
+<li>k1s uses different ingress surfaces depending on topology and profile.</li>
+<li>Local app ingress and gateway-local <code>edge-local</code> output are Caddy-rendered surfaces.</li>
+<li>Multi-site <code>core-proxy</code> and <code>core-to-edge-public</code> flows put core Envoy in front of edge workloads.</li>
+<li>This page is the durable reference for ingress mode ownership, env knobs, and TLS material resolution. For exact test and lane commands, use <a href="ingress-capability-test-sequence.html">Ingress Validation</a>.</li>
 </ul>
-<h2 id="canonical-ingress-modes">Canonical ingress modes</h2>
-<p>Set mode with <code>EDGE_INGRESS_MODE</code>:</p>
+<h2 id="ingress-modes">Ingress modes</h2>
+<p>Set the multi-site ingress mode with <code>EDGE_INGRESS_MODE</code>:</p>
 <ul>
-<li><code>core-proxy</code> (default): core ingress serves traffic and proxies to edge through rathole.</li>
-<li><code>core-to-edge-public</code>: core ingress forwards to edge public endpoints declared via <code>SiteIngressEndpoint</code>.</li>
-<li><code>edge-local</code>: edge gateway renders local ingress config; core ingress is not in the request path.</li>
+<li><code>core-proxy</code> (default): core Envoy serves traffic and proxies to the edge through Rathole.</li>
+<li><code>core-to-edge-public</code>: core Envoy routes directly to edge public endpoints declared through site ingress state.</li>
+<li><code>edge-local</code>: the controller publishes route bundles and the gateway renders a local Caddyfile; core ingress is not in the request path.</li>
 </ul>
-<p>Strict edge-local bundle-endpoints lane requirements:</p>
+<p>For the current startup shapes and profile defaults, see <a href="runtime-profiles.html">Runtime Profiles</a> and <a href="multinode-lab.html">Multi-Node Lab</a>.</p>
+<h2 id="renderer-ownership">Renderer ownership</h2>
 <ul>
-<li><code>AE_ROUTE_BUNDLE_ENABLED=1</code></li>
-<li><code>AE_ENABLE_SERVICE_PROXY=1</code></li>
-<li><code>AE_SERVICE_PROVIDER=iptables</code></li>
-<li><code>AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints</code></li>
-</ul>
-<p>See:</p>
-<ul>
-<li><code>docs/guides/runtime-profiles.md</code></li>
-<li><code>docs/guides/multinode-lab.md</code></li>
+<li>Controller-managed app ingress: local and single-host app ingress still render Caddy site files from <code>spec.ingress</code>. Multi-path routing remains supported, and Caddy uses <code>handle_path</code> for subpaths.</li>
+<li>Core multi-site ingress: <code>core-proxy</code> and <code>core-to-edge-public</code> use core Envoy as the request-facing ingress surface. The exact long-form validation and restart sequences live on <a href="ingress-capability-test-sequence.html">Ingress Validation</a>.</li>
+<li>Edge-local ingress: the gateway renders a local Caddyfile from route bundles. The strict <code>bundle-endpoints</code> lane is about route-bundle endpoint fanout plus avoiding DNS fallback, not about turning on the optional Service VIP proxy.</li>
+<li>Control-plane/dev hostnames: docs, API, and dashboard hostnames on local profiles are adjacent dev surfaces and are documented on <a href="runtime-profiles.html">Runtime Profiles</a> and <a href="runbook.html">Operations Runbook</a>; they are not the same thing as app ingress mode selection.</li>
 </ul>
 <h2 id="environment-knobs">Environment knobs</h2>
+<p>General ingress controls:</p>
+<ul>
+<li><code>AE_DISABLE_INGRESS=1</code>: disable ingress rendering and reload handling.</li>
+<li><code>AE_TLS_DIR</code>: TLS material root for <code>tlsSecretName</code> lookup (default: <code>state/tls</code>).</li>
+</ul>
+<p>Caddy-rendered app ingress:</p>
 <ul>
 <li><code>AE_CADDY_SITES</code>: directory for rendered site files (default: <code>ops/dev/caddy/sites</code>).</li>
 <li><code>AE_CADDY_BIN</code>: Caddy binary (default: <code>caddy</code>).</li>
-<li><code>AE_CADDY_FILE</code>: optional path to a Caddyfile (container/host reload target).</li>
-<li><code>AE_CADDY_CONTAINER</code>: name of the Caddy container (enables docker/podman exec reload).</li>
-<li><code>AE_CONTAINER_CLI</code>: podman or docker (default: docker).</li>
-<li><code>AE_CADDY_RELOAD_TIMEOUT</code>: seconds to wait on reload (default: 10).</li>
-<li><code>AE_DISABLE_INGRESS=1</code>: disable ingress rendering/reload entirely.</li>
-<li><code>AE_TLS_DIR</code>: TLS material root (default: <code>state/tls</code>).</li>
-<li><code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR</code>: directory where edge-local rendered config is written.</li>
-<li><code>AE_EDGE_LOCAL_INGRESS_CONFIG_FILE</code>: edge-local rendered Caddyfile path.</li>
-<li><code>AE_EDGE_LOCAL_INGRESS_RELOAD_CMD</code>: command invoked by gateway after edge-local config updates.</li>
+<li><code>AE_CADDY_FILE</code>: optional path to a Caddyfile reload target.</li>
+<li><code>AE_CADDY_CONTAINER</code>: Caddy container name for docker/podman exec reload.</li>
+<li><code>AE_CONTAINER_CLI</code>: <code>podman</code> or <code>docker</code>.</li>
+<li><code>AE_CADDY_RELOAD_TIMEOUT</code>: seconds to wait on reload (default: <code>10</code>).</li>
+<li><code>AE_CADDY_ACTIVE_HEALTH=1</code>: enable active Caddy health checks when the manifest exposes a readiness probe.</li>
 </ul>
-<h2 id="byo-tls-options">BYO TLS options</h2>
-<p>1) Direct file paths in your manifest</p>
+<p>Edge-local gateway rendering:</p>
+<ul>
+<li><code>AE_ROUTE_BUNDLE_ENABLED=1</code>: enable controller route-bundle publication for <code>edge-local</code>.</li>
+<li><code>AE_EDGE_LOCAL_UPSTREAM_MODE</code>: upstream selection mode; <code>bundle-endpoints</code> is the strict route-bundle lane and <code>auto</code> may fall back to DNS.</li>
+<li><code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR</code>: directory for rendered edge-local config output.</li>
+<li><code>AE_EDGE_LOCAL_INGRESS_CONFIG_FILE</code>: rendered edge-local Caddyfile path.</li>
+<li><code>AE_EDGE_LOCAL_INGRESS_RELOAD_CMD</code>: gateway-side reload command run after edge-local config updates.</li>
+</ul>
+<p>Optional Service VIP plumbing:</p>
+<ul>
+<li><code>AE_ENABLE_SERVICE_PROXY=1</code> enables the controller-managed Service VIP path.</li>
+<li>On CRI/containerd, <code>AE_SERVICE_PROVIDER=iptables</code> is the normal provider choice.</li>
+<li>With <code>AE_SERVICE_PROVIDER=overlay</code>, Caddy upstreams point to Service VIPs; attach the Caddy host/container to <code>AE_OVERLAY_NET</code> or add routes to the Service CIDR.</li>
+<li>This Service VIP path is optional and separate from the strict <code>edge-local</code> route-bundle validation gate.</li>
+</ul>
+<h2 id="tls-material">TLS material</h2>
+<p>Direct file paths:</p>
 <ul>
 <li>Set <code>spec.ingress.tlsCertPath</code> and <code>spec.ingress.tlsKeyPath</code> to PEM files on the controller host.</li>
-<li>The Caddy site will render: <code>tls &lt;cert&gt; &lt;key&gt;</code>.</li>
+<li>Caddy-rendered surfaces emit <code>tls &lt;cert&gt; &lt;key&gt;</code> from those resolved paths.</li>
 </ul>
-<p>2) Kubernetes-style Secret material (auto-resolved)</p>
+<p>Kubernetes-style Secret material:</p>
 <ul>
-<li>Set only <code>spec.ingress.tlsSecretName: &lt;name&gt;</code> in your manifest.</li>
-<li>Place TLS material in <code>AE_TLS_DIR</code> (default: <code>state/tls</code>) as either <code>&lt;name&gt;.crt</code>/<code>&lt;name&gt;.key</code> files or a Secret YAML/JSON <code>&lt;name&gt;.yaml|yml|json</code> with base64 fields <code>data.tls.crt</code> and <code>data.tls.key</code>.</li>
-<li>The controller resolves PEM files and fills <code>tlsCertPath</code>/<code>tlsKeyPath</code> on the fly.</li>
+<li>Set only <code>spec.ingress.tlsSecretName: &lt;name&gt;</code> in the manifest.</li>
+<li>Place TLS material in <code>AE_TLS_DIR</code> as either <code>&lt;name&gt;.crt</code> / <code>&lt;name&gt;.key</code> files or a Secret YAML / JSON document with base64 <code>data.tls.crt</code> and <code>data.tls.key</code>.</li>
+<li>The controller resolves PEM files and fills <code>tlsCertPath</code> / <code>tlsKeyPath</code> on the fly. If material is missing, Caddy-rendered surfaces fall back to <code>tls internal</code> in dev.</li>
 </ul>
 <p><code>tls</code> helpers:</p>
 <ul>
@@ -788,32 +799,26 @@
 <li><code>python -m ae.cli tls verify --name mycert --root state/tls --json</code></li>
 <li><code>python -m ae.cli tls kubesecret --name mycert --namespace demo --root state/tls -o mycert-secret.yaml</code></li>
 </ul>
-<h2 id="validation-and-security-gates">Validation and security gates</h2>
-<p>Use mode-isolated ingress lane runs for release confidence:</p>
-<pre><code>scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog
-CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/run_ingress_lanes.sh --lanes core-proxy --yes
-
-scripts/dev/validate_ingress_env.sh --lane core-to-edge-public --watchdog
-scripts/dev/run_ingress_lanes.sh --lanes core-to-edge-public --yes
-
-scripts/dev/validate_ingress_env.sh --lane edge-local --watchdog
-EDGE_LOCAL_LISTENER_URL=&quot;https://lb-distribution-edge-local.home.arpa/&quot; \
-  scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes
-
-scripts/dev/security_baseline_check.sh --fail-on high
-scripts/dev/security_active_tests.sh --fail-on high</code></pre>
-<p>Primary references:</p>
+<h2 id="validation-surfaces">Validation Surfaces</h2>
+<p>Use <a href="ingress-capability-test-sequence.html">Ingress Validation</a> as the canonical command-heavy ingress runbook. It owns:</p>
 <ul>
-<li><code>docs/guides/ingress-capability-test-sequence.md</code></li>
-<li><code>docs/guides/multinode-lab.md</code></li>
-<li><code>docs/reference/cri-containerd.md</code></li>
+<li>ingress preflight checks with <code>scripts/dev/validate_ingress_env.sh</code></li>
+<li>guided lane execution through <code>scripts/dev/run_ingress_lanes.sh</code></li>
+<li>single-host and multi-host ingress matrix coverage</li>
+<li>security baseline and active auth probes</li>
+</ul>
+<p>Companion references:</p>
+<ul>
+<li><a href="runtime-profiles.html">Runtime Profiles</a> for profile defaults and local TLS/docs surfaces</li>
+<li><a href="multinode-lab.html">Multi-Node Lab</a> for long-form topology walkthroughs</li>
+<li><a href="cri-containerd.html">CRI containerd</a> for CRI-specific ingress framing</li>
+<li><a href="runbook.html">Operations Runbook</a> for ops-side ingress/TLS helpers</li>
 </ul>
 <h2 id="notes">Notes</h2>
 <ul>
-<li>In containers, ingress rewrites loopback upstreams to the host alias (<code>host.docker.internal</code> on Docker, <code>host.containers.internal</code> on Podman).</li>
-<li>To enable active health checks in Caddy, set <code>AE_CADDY_ACTIVE_HEALTH=1</code> and configure a readiness probe in the manifest.</li>
-<li>AppArmor &amp; Seccomp: when exporting to K8s, <code>spec.security.seccompProfile*</code> maps to container <code>securityContext.seccompProfile</code>, and AppArmor is emitted on the Pod template. Ensure your cluster has AppArmor enabled.</li>
-<li>With <code>AE_SERVICE_PROVIDER=overlay</code>, Caddy upstreams point to Service VIPs; attach the Caddy host/container to <code>AE_OVERLAY_NET</code> or add routes to the Service CIDR.</li>
+<li>In containers, Caddy-rendered ingress rewrites loopback upstreams to the host alias (<code>host.docker.internal</code> on Docker, <code>host.containers.internal</code> on Podman).</li>
+<li>The strict <code>edge-local</code> lane is green when gateway-local Caddy renders bundle endpoint fanout instead of DNS fallback upstreams.</li>
+<li>Core Envoy listener and trust bootstrapping for local and CRI validation lanes is documented on <a href="runtime-profiles.html">Runtime Profiles</a> and <a href="ingress-capability-test-sequence.html">Ingress Validation</a>.</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -822,7 +827,7 @@ scripts/dev/security_active_tests.sh --fail-on high</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-13 07:38:34</span>
+        <span>Built 2026-04-14 13:18:21</span>
       </div>
     </footer>
     <script>

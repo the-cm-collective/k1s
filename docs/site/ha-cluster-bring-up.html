@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -703,12 +703,10 @@
       <a href="runbook.html">Ops Runbook</a>
       <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
-      <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
@@ -716,7 +714,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -1103,6 +1101,9 @@ make lab-vm-ha-attached-node-workload-smoke
 # stage 2, against the gateway-capable HA topology
 RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke</code></pre>
 <p>On NixOS, this retained helper path now applies the local DNS/TLS bridge automatically; no separate <code>nixos-rebuild</code> should be required after a successful <code>up</code>.</p>
+<p>Validated operator and user-test flow</p>
+<p>Use <a href="validated-procedures.html#advanced-dashboard-user-test-retained-ha-vm">Validated Procedures: retained advanced dashboard</a> for the exact retained advanced-dashboard user-test readout, and <a href="validated-procedures.html#ha-stage-12-validation">Validated Procedures: HA stage 1/2 validation</a> for the umbrella and one-shot stage-1/stage-2 validation commands.</p>
+<p>This page keeps the topology contract, detailed operator notes, and lower-level helper procedures. The validated procedures page is the copy/paste source of truth for the current stage-1 retained flow, live stage-2 helper, auth bootstrap, and cleanup sequence.</p>
 <p>For the full checked-in HA validation flow, prefer the umbrella runner:</p>
 <pre><code>sudo -v
 make lab-vm-ha-validation</code></pre>
@@ -1270,7 +1271,7 @@ curl -sk \
   https://ha-edge-web-smoke.home.arpa:10443/ | rg &#x27;Shell + Port-Forward Smoke&#x27;</code></pre>
 <p>In HA, the docs Playground is disabled by default, including this retained VM lane. Use <code>AE_PLAYGROUND=1</code> only for exceptional local testing on a non-public control plane.</p>
 <p>Host docs remain a static convenience layer. Point them at the Envoy hosts and serve them locally:</p>
-<pre><code>DOCS_API_BASE=https://docs.home.arpa:10443 \
+<pre><code>DOCS_API_BASE=https://api.home.arpa:10443 \
 DOCS_DASHBOARD_URL=https://dash.home.arpa:10443/dashboard \
 python docs/build_docs.py
 python -m http.server 9109 --directory docs/site</code></pre>
@@ -1279,7 +1280,7 @@ python -m http.server 9109 --directory docs/site</code></pre>
 <li>Treat <code>dash.home.arpa</code>, <code>docs.home.arpa</code>, and <code>api.home.arpa</code> on <code>:10443</code> as the primary public control-plane surface in this retained VM lane.</li>
 <li>Quick host check from this workstation: <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code></li>
 <li>Any healthy controller can serve <code>/dashboard</code>, <code>/system</code>, and <code>/metrics</code> during normal HA operation.</li>
-<li>In this retained VM profile, <code>/system</code> is bearer-protected and only <code>AE_API_ADMIN_TOKEN</code> may be configured for controller HTTP reads.</li>
+<li>In this retained VM profile, <code>/system</code> is bearer-protected and accepts <code>AE_API_READ_TOKEN</code> or, if unset, <code>AE_API_ADMIN_TOKEN</code> for controller HTTP reads.</li>
 <li><code>/dashboard</code> serves without auth, but its data panels fetch <code>/system</code>; paste the bearer token into the page when prompted.</li>
 <li><code>attached-node-1</code> reaches the HA controller agent API on <code>:9110</code> and runs with Rosenpass/WireGuard disabled in this retained lane; this lane now validates HA control-plane health, attached-node registration, workload placement, and <code>core-local</code> ingress from the HA cores to the retained compute node, not edge gateway transport.</li>
 <li>Followers still reject leader-only mutation with <code>not_leader</code>; use the current leader for apply/scale/delete or retry after reading the leader hint.</li>
@@ -1316,7 +1317,7 @@ python -m http.server 9109 --directory docs/site</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-13 07:38:35</span>
+        <span>Built 2026-04-14 12:55:46</span>
       </div>
     </footer>
     <script>

@@ -16,6 +16,50 @@ Note
 - `make demo` is the current seeded default: it runs `dev-min` with blue/green sample apps plus docs/api/dashboard.
 - When you need a flag-driven `init_demo.sh` mode, use the script directly or `make demo-legacy ARGS="..."`.
 
+## Dashboard Modes
+
+The built-in dashboard has two intended operator presentations. The layout is chosen by profile/topology, not by browser URL alone.
+
+Simple dashboard
+- Use this for single-controller local/dev/demo flows:
+  - `make demo`
+  - `make dev-min`
+  - `make dev-min-caddy`
+  - `make dev-etcd`
+  - `make dev-etcd-caddy`
+  - `make labs`
+  - local `make loop` / `make run` flows when there is no HA/site-aware topology
+- User-test URLs:
+  - `https://dash.home.arpa:8443/dashboard`
+  - `https://docs.home.arpa:8443/`
+- Expected UI:
+  - shared `System Graph` remains visible
+  - `HA Control Plane` section is hidden
+  - `HA Members` legend key is hidden
+
+Advanced dashboard
+- Use this for HA, core, edge, and site-aware flows:
+  - `make k1s-core`
+  - `make k1s-core-caddy`
+  - `make k1s-ha-core`
+  - `make k1s-edge`
+  - `make k1s-core-node`
+  - `make k1s-edge-node`
+  - `make edge-site`
+  - strict-CRI variants inherit the same advanced layout as their base profile
+- Access surfaces depend on how the profile was started:
+  - local docs-enabled profiles: `http://127.0.0.1:9109/` and `http://127.0.0.1:9108/dashboard`
+  - local profiles with Caddy enabled: `https://docs.home.arpa:8443/` and `https://dash.home.arpa:8443/dashboard`
+  - retained HA VM harness: `https://docs.home.arpa:10443/` and `https://dash.home.arpa:10443/dashboard`
+- Expected UI:
+  - shared `System Graph` remains visible
+  - `HA Control Plane` section is visible
+  - HA/site-aware topology indicators remain visible
+
+Practical note
+- Do not use the presence of `System Graph` by itself to classify the page as advanced. It is shared between both layouts.
+- For the exact dashboard user-test command readouts, use [Validated Procedures: simple dashboard](validated-procedures.html#simple-dashboard-user-test) and [Validated Procedures: advanced dashboard](validated-procedures.html#advanced-dashboard-user-test-retained-ha-vm).
+
 ## Demo modes
 
 ### Standard Demo (blue/green)
@@ -28,6 +72,10 @@ Note
 - Endpoints:
   - `https://blue.home.arpa:8443/`
   - `https://green.home.arpa:8443/`
+  - `https://docs.home.arpa:8443/`
+  - `https://dash.home.arpa:8443/dashboard`
+- Dashboard expectation:
+  - this is the simple layout, not the HA/site layout
 
 ### Configs & Secrets Demo (echo)
 
@@ -91,6 +139,8 @@ Note
   - Docs: `https://docs.home.arpa:8443/` and `http://127.0.0.1:9109/`
   - API:  `https://api.home.arpa:8443/swagger` and `http://127.0.0.1:9108/swagger`
   - Dashboard: `https://dash.home.arpa:8443/dashboard` and `http://127.0.0.1:9108/dashboard`
+- Dashboard expectation:
+  - this stays on the simple layout because it is still a local single-controller flow
 
 ### Helpful Flags & Targets
 
@@ -107,8 +157,9 @@ Note
 - Demo apps are copied into `state/profiles/demo/specs` and reconciled from that directory. Changes made via CLI/API (like scaling) are temporary unless you edit those files or rerun the demo after updating `specs/examples/`.
 - Caddy HTTP: `:8888`, HTTPS: `:8443` (the demo auto-picks free ports if these are busy).
 - Hosts entries (added with `-y`) include: `docs.home.arpa`, `api.home.arpa`, `dash.home.arpa`, `blue.home.arpa`, `green.home.arpa`, plus the selected `echo-*` demo hosts (e.g., `echo-mr`, `echo-multi`, `echo-hardened`, `echo-sec`, `echo-exec`, `echo-tcp`, `echo-storage`).
-  - Dashboard: `https://dash.home.arpa:8443/dashboard` (or `http://127.0.0.1:9108/dashboard` directly).
+- Dashboard access: `https://dash.home.arpa:8443/dashboard` (or `http://127.0.0.1:9108/dashboard` directly).
 - Health checks are disabled by default for compatibility; enable with `AE_CADDY_ACTIVE_HEALTH=1` if your Caddy supports the directive.
+- For the advanced dashboard user-test procedure on the HA VM harness, use [HA Cluster Bring-Up](ha-cluster-bring-up.html).
 
 ## Example manifests (standalone)
 

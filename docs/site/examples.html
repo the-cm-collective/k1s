@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -703,12 +703,10 @@
       <a href="runbook.html">Ops Runbook</a>
       <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
-      <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
@@ -716,7 +714,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -743,6 +741,69 @@
 <li><code>make demo</code> is the current seeded default: it runs <code>dev-min</code> with blue/green sample apps plus docs/api/dashboard.</li>
 <li>When you need a flag-driven <code>init_demo.sh</code> mode, use the script directly or <code>make demo-legacy ARGS=&quot;...&quot;</code>.</li>
 </ul>
+<h2 id="dashboard-modes">Dashboard Modes</h2>
+<p>The built-in dashboard has two intended operator presentations. The layout is chosen by profile/topology, not by browser URL alone.</p>
+<p>Simple dashboard</p>
+<ul>
+<li>Use this for single-controller local/dev/demo flows:
+<ul>
+<li><code>make demo</code></li>
+<li><code>make dev-min</code></li>
+<li><code>make dev-min-caddy</code></li>
+<li><code>make dev-etcd</code></li>
+<li><code>make dev-etcd-caddy</code></li>
+<li><code>make labs</code></li>
+<li>local <code>make loop</code> / <code>make run</code> flows when there is no HA/site-aware topology</li>
+</ul>
+</li>
+<li>User-test URLs:
+<ul>
+<li><code>https://dash.home.arpa:8443/dashboard</code></li>
+<li><code>https://docs.home.arpa:8443/</code></li>
+</ul>
+</li>
+<li>Expected UI:
+<ul>
+<li>shared <code>System Graph</code> remains visible</li>
+<li><code>HA Control Plane</code> section is hidden</li>
+<li><code>HA Members</code> legend key is hidden</li>
+</ul>
+</li>
+</ul>
+<p>Advanced dashboard</p>
+<ul>
+<li>Use this for HA, core, edge, and site-aware flows:
+<ul>
+<li><code>make k1s-core</code></li>
+<li><code>make k1s-core-caddy</code></li>
+<li><code>make k1s-ha-core</code></li>
+<li><code>make k1s-edge</code></li>
+<li><code>make k1s-core-node</code></li>
+<li><code>make k1s-edge-node</code></li>
+<li><code>make edge-site</code></li>
+<li>strict-CRI variants inherit the same advanced layout as their base profile</li>
+</ul>
+</li>
+<li>Access surfaces depend on how the profile was started:
+<ul>
+<li>local docs-enabled profiles: <code>http://127.0.0.1:9109/</code> and <code>http://127.0.0.1:9108/dashboard</code></li>
+<li>local profiles with Caddy enabled: <code>https://docs.home.arpa:8443/</code> and <code>https://dash.home.arpa:8443/dashboard</code></li>
+<li>retained HA VM harness: <code>https://docs.home.arpa:10443/</code> and <code>https://dash.home.arpa:10443/dashboard</code></li>
+</ul>
+</li>
+<li>Expected UI:
+<ul>
+<li>shared <code>System Graph</code> remains visible</li>
+<li><code>HA Control Plane</code> section is visible</li>
+<li>HA/site-aware topology indicators remain visible</li>
+</ul>
+</li>
+</ul>
+<p>Practical note</p>
+<ul>
+<li>Do not use the presence of <code>System Graph</code> by itself to classify the page as advanced. It is shared between both layouts.</li>
+<li>For the exact dashboard user-test command readouts, use <a href="validated-procedures.html#simple-dashboard-user-test">Validated Procedures: simple dashboard</a> and <a href="validated-procedures.html#advanced-dashboard-user-test-retained-ha-vm">Validated Procedures: advanced dashboard</a>.</li>
+</ul>
 <h2 id="demo-modes">Demo modes</h2>
 <h3 id="standard-demo-blue-green">Standard Demo (blue/green)</h3>
 <ul>
@@ -758,6 +819,13 @@
 <ul>
 <li><code>https://blue.home.arpa:8443/</code></li>
 <li><code>https://green.home.arpa:8443/</code></li>
+<li><code>https://docs.home.arpa:8443/</code></li>
+<li><code>https://dash.home.arpa:8443/dashboard</code></li>
+</ul>
+</li>
+<li>Dashboard expectation:
+<ul>
+<li>this is the simple layout, not the HA/site layout</li>
 </ul>
 </li>
 </ul>
@@ -853,6 +921,11 @@
 <li>Dashboard: <code>https://dash.home.arpa:8443/dashboard</code> and <code>http://127.0.0.1:9108/dashboard</code></li>
 </ul>
 </li>
+<li>Dashboard expectation:
+<ul>
+<li>this stays on the simple layout because it is still a local single-controller flow</li>
+</ul>
+</li>
 </ul>
 <h3 id="helpful-flags-targets">Helpful Flags &amp; Targets</h3>
 <ul>
@@ -868,12 +941,10 @@
 <ul>
 <li>Demo apps are copied into <code>state/profiles/demo/specs</code> and reconciled from that directory. Changes made via CLI/API (like scaling) are temporary unless you edit those files or rerun the demo after updating <code>specs/examples/</code>.</li>
 <li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code> (the demo auto-picks free ports if these are busy).</li>
-<li>Hosts entries (added with <code>-y</code>) include: <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>blue.home.arpa</code>, <code>green.home.arpa</code>, plus the selected <code>echo-*</code> demo hosts (e.g., <code>echo-mr</code>, <code>echo-multi</code>, <code>echo-hardened</code>, <code>echo-sec</code>, <code>echo-exec</code>, <code>echo-tcp</code>, <code>echo-storage</code>).
-<ul>
-<li>Dashboard: <code>https://dash.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
-</ul>
-</li>
+<li>Hosts entries (added with <code>-y</code>) include: <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>blue.home.arpa</code>, <code>green.home.arpa</code>, plus the selected <code>echo-*</code> demo hosts (e.g., <code>echo-mr</code>, <code>echo-multi</code>, <code>echo-hardened</code>, <code>echo-sec</code>, <code>echo-exec</code>, <code>echo-tcp</code>, <code>echo-storage</code>).</li>
+<li>Dashboard access: <code>https://dash.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
 <li>Health checks are disabled by default for compatibility; enable with <code>AE_CADDY_ACTIVE_HEALTH=1</code> if your Caddy supports the directive.</li>
+<li>For the advanced dashboard user-test procedure on the HA VM harness, use <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>.</li>
 </ul>
 <h2 id="example-manifests-standalone">Example manifests (standalone)</h2>
 <h3 id="multi-port-service-http-metrics">Multi-Port Service (HTTP + Metrics)</h3>
@@ -905,7 +976,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-13 07:38:35</span>
+        <span>Built 2026-04-14 12:55:46</span>
       </div>
     </footer>
     <script>

@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -703,12 +703,10 @@
       <a href="runbook.html">Ops Runbook</a>
       <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
-      <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
@@ -716,7 +714,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -739,7 +737,7 @@
 <li>Deliverables: this roadmap; smoke target that starts <code>ae.apishim serve</code> and answers <code>/health</code>.</li>
 </ul>
 <h2 id="phase-1-kubectl-get-apply-happy-path">Phase 1 — Kubectl “get/apply” happy path</h2>
-<p>(status: functionally complete; VIP/loadBalancer status polish remains)</p>
+<p>(status: functionally complete)</p>
 <ul>
 <li>Harden discovery: <code>/api</code>, <code>/apis</code>, preferred versions, correct <code>resourceVersion</code> on list/watch, bookmarks, list‑continue stubs.</li>
 <li>Auth baseline: bearer token required by default; optional mTLS for kubeconfig; minimal RBAC scaffold (cluster‑admin only).</li>
@@ -780,6 +778,7 @@
 <li>Deliverables: basic helm charts that expect these kinds render and run; HPA status visible; events stream consumable by <code>kubectl get events</code>. *(Covered by helm-shim-smoke CI workflow exercising Deployment+HPA+StatefulSet+DaemonSet+Job+CronJob on stub runtime.)*</li>
 </ul>
 <h2 id="phase-5-authz-ssa-patch-semantics">Phase 5 — AuthZ, SSA, patch semantics</h2>
+<p>(status: functionally complete for the documented RBAC / SSA / patch subset)</p>
 <ul>
 <li>Implement Role/RoleBinding enforcement; optional ServiceAccounts + projected tokens.</li>
 <li>Support JSONPatch/mergePatch; scoped server‑side apply (SSA) for supported kinds; manage <code>managedFields</code>.</li>
@@ -793,13 +792,13 @@
 <li>Patch semantics: add JSONPatch and mergePatch handlers for supported kinds with correct content-type negotiation and status errors. *(json/merge/apply supported; json-patch added with unit coverage.)*</li>
 <li>SSA + managedFields: honor <code>fieldManager</code>/<code>force</code>, track managedFields per object in shim storage, and surface conflicts on overlapping fields. *(implemented; conflict 409s covered in unit tests.)*</li>
 <li>App CRD admission: validating hook to keep native App schema authoritative; reject by default and allow warn/off via <code>AE_APISHIM_APP_ADMISSION</code>. *(implemented; warn/off emit Warning headers instead of rejection.)*</li>
-<li>CLI parity: implement <code>kubectl auth can-i</code> via a SubjectAccessReview-equivalent endpoint bound to RBAC evaluation. *(endpoint present; no e2e CI yet.)*</li>
+<li>CLI parity: implement <code>kubectl auth can-i</code> via a SubjectAccessReview-equivalent endpoint bound to RBAC evaluation. *(endpoint present; the <code>kubectl auth can-i</code> flow is exercised by the <code>apishim-ssa-rbac</code> CI workflow.)*</li>
 <li>Tests/CI: unit matrix for RBAC decisions and patch/SSA behavior; add integration smoke that exercises can-i, JSONPatch/mergePatch, and SSA apply flows against the stub runtime. *(covered by <code>apishim-ssa-rbac</code> CI workflow.)*</li>
 </ul>
 <h2 id="current-gaps-and-next-steps">Current Gaps and Next Steps</h2>
 <ul>
 <li>**Phase 6 rollout in progress:** Shim and controller can target Postgres via <code>AE_APISHIM_DSN</code>/<code>AE_STATE_DSN</code>; migrations preserve resourceVersions; HA shim with shared Postgres is validated in CI as a transitional path. The long-term HA authority target now follows the <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>: <code>H4a</code> routes workload-core HA mutation onto shared controller authority, <code>H4b1</code> converges <code>CronJob</code>, <code>ConfigMap</code>, <code>Secret</code>, and <code>ServiceAccount</code>, <code>H4b-hpa</code> adds shared-metrics HPA control, <code>H4b2a</code> extends shared authority to <code>Namespace</code>, RBAC resources, and <code>PodDisruptionBudget</code>, <code>H4b2b-crd</code> converges CRDs plus dynamic custom resources, <code>H4b2c-core</code> converges <code>StorageClass</code>, PVC, and PV with leader-owned core storage reconcile, and <code>H4b2c-csi</code> now brings snapshot and CSI resources onto the same HA authority path while CRI and node-agent storage reads stop depending on local shim DB state. The HA ops surface now includes <code>H5a-core</code> bootstrap/snapshot/drill helpers, <code>H5b1-etcd-recovery</code> procedures, <code>H5b2a-core-upgrades</code> for systemd-managed <code>k1s-ha-core</code> rolling upgrades, <code>H5b2b-hub-transport-upgrades</code> for shared hub NATS/JetStream sequencing, <code>H5b2c-edge-transport-upgrades</code> for edge-site transport choreography with per-gateway build visibility, and <code>H5c-ha-closeout</code> for the final audit plus integrated HA evidence lanes.</li>
-<li>**Phase 7 polish in flight:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2/ v3 and schemas are richer with fixture validation and live gate coverage. Remaining polish: promote the live gate to release-blocking, wire compat/OpenAPI links into docs + release notes, and round out sample coverage.</li>
+<li>**Phase 7 polish in flight:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2/v3 and schemas are richer with fixture validation and live gate coverage. Remaining polish is broader sample coverage, clearer conformance-lite reporting, and continued watch/streaming hardening under churn rather than basic site wiring.</li>
 </ul>
 <h3 id="auth-defaults-dev-toggle">Auth defaults (dev toggle)</h3>
 <ul>
@@ -820,12 +819,12 @@
 <li>Backwards compatibility policy and versioning of the shim.</li>
 <li>Deliverables: published compatibility matrix; release note gate that runs kubectl/helm smoke; docs for kubeconfig and auth modes.</li>
 </ul>
-<h3 id="phase-7-current-status-2026-01-14">Phase 7 current status (2026-01-14)</h3>
+<h3 id="phase-7-status">Phase 7 status</h3>
 <ul>
 <li>Discovery/OpenAPI: <code>/openapi/v2</code> now includes richer shapes (Service ports + external/loadBalancer/ipFamily fields, Deployment/DaemonSet/StatefulSet conditions, Job/CronJob/HPA status); <code>/openapi/v3</code> now mirrors <code>/openapi/v2</code> and is treated as authoritative. CI guards drift via <code>scripts/validate-openapi.sh</code> (helm-dryrun-openapi workflow), Helm/kubectl dry-run is exercised in CI, and OpenAPI artifacts are published. A lightweight fixture check (<code>scripts/validate-openapi-fixtures.py</code>) validates the schemas against the shipped sample manifests.</li>
 <li>Compatibility matrix: published at <code>docs/reference/apishim-compatibility-matrix.md</code>; release gate runs helm shim smoke and uploads the matrix + OpenAPI artifacts and emits a release-note snippet.</li>
-<li>Live gate: <code>.github/workflows/apishim-live-openapi.yml</code> now runs a Postgres-backed shim and exercises kubectl/helm server-side validation plus short get/watch churn, collecting <code>/openapi/v2</code> + <code>/openapi/v3</code>, fixture validation logs, and object snapshots as artifacts. The script accepts a provided kubeconfig (including kind/dev lab) via <code>APISHIM_LIVE_KUBECONFIG</code>/<code>APISHIM_LIVE_KUBECONFIG_B64</code> or a kind cluster name via <code>APISHIM_KIND_CLUSTER</code>.</li>
-<li>Pending: fold the live gate into the release-blocking checks, wire compatibility matrix/OpenAPI links into website docs and the release-note template, and expand sample coverage used by the live gate.</li>
+<li>Live gate: <code>.github/workflows/apishim-live-openapi.yml</code> runs local stub and docker runtime lanes plus an optional external kubeconfig target, collecting <code>/openapi/v2</code> + <code>/openapi/v3</code>, fixture validation logs, and object snapshots as artifacts. The script accepts a provided kubeconfig (including kind/dev lab) via <code>APISHIM_LIVE_KUBECONFIG</code>/<code>APISHIM_LIVE_KUBECONFIG_B64</code> or a kind cluster name via <code>APISHIM_KIND_CLUSTER</code>.</li>
+<li>Current focus: expand sample coverage and conformance-lite reporting, not the basic docs/release-note wiring.</li>
 </ul>
 <h4 id="phase-7-1-openapi-validation-hardening-complete">Phase 7.1 — OpenAPI validation hardening (complete)</h4>
 <ul>
@@ -836,16 +835,16 @@
 </ul>
 <h4 id="phase-7-2-live-cluster-gate-doc-linkage-complete">Phase 7.2 — Live cluster gate + doc linkage (complete)</h4>
 <ul>
-<li>Live gate landed: <code>scripts/ci/apishim-live-openapi.sh</code> drives kubectl/helm dry-run plus short watch churn against a Postgres-backed shim, capturing live <code>/openapi/v2</code> + <code>/openapi/v3</code>, fixture validation logs, and object snapshots. <code>.github/workflows/apishim-live-openapi.yml</code> publishes these artifacts on push/PR. The gate can point at a supplied kubeconfig (kind/dev lab) via <code>APISHIM_LIVE_KUBECONFIG(_B64)</code> or pull a kind kubeconfig by name with <code>APISHIM_KIND_CLUSTER</code>.</li>
+<li>Live gate landed: <code>scripts/ci/apishim-live-openapi.sh</code> drives kubectl/helm dry-run plus short watch churn against local shim lanes and optional external kubeconfig targets, capturing live <code>/openapi/v2</code> + <code>/openapi/v3</code>, fixture validation logs, and object snapshots. <code>.github/workflows/apishim-live-openapi.yml</code> publishes these artifacts on push/PR. The gate can point at a supplied kubeconfig (kind/dev lab) via <code>APISHIM_LIVE_KUBECONFIG(_B64)</code> or pull a kind kubeconfig by name with <code>APISHIM_KIND_CLUSTER</code>.</li>
 <li>Follow-ups promoted to Phase 7.3: release-blocking promotion, docs/release-note wiring, and expanded sample set validated by the gate.</li>
 </ul>
-<h4 id="phase-7-3-release-gate-site-wiring-in-progress">Phase 7.3 — Release gate + site wiring (in progress)</h4>
+<h4 id="phase-7-3-release-gate-site-wiring-complete">Phase 7.3 — Release gate + site wiring (complete)</h4>
 <ul>
 <li>Promotion: <code>apishim-live-openapi</code> now runs on <code>main</code>/PRs and release tags; release workflow fails if the live gate fails. Skips are a manual exception reserved for sealed-secret fixtures with explicit justification.</li>
-<li>Coverage: nightly live gate runs both local (Postgres-backed shim) and external kubeconfig targets when configured; artifacts are uploaded per run.</li>
+<li>Coverage: nightly live gate runs local stub/docker lanes plus an optional external kubeconfig target when configured; artifacts are uploaded per run.</li>
 <li>Samples: live gate now validates the multi-replica/PDB+HPA manifest set; fixtures already include the Deployment/HPA exporter output and PDB-emitting Deployment manifests in <code>specs/examples/</code>.</li>
-<li>Docs/release notes: docs nav now links <code>/openapi/v3</code>, and release notes call out v3 as primary with v2 as the compatibility mirror.</li>
-<li>Fidelity: live gate includes a non-stub runtime lane (docker) and exercises logs/exec; service status is captured in live artifacts. Postgres storage remains enabled for resourceVersion stability.</li>
+<li>Docs/release notes: the API docs now point readers at the shim docs surfaces, and release notes call out v3 as primary with v2 as the compatibility mirror.</li>
+<li>Fidelity: live gate includes a non-stub runtime lane (docker) and exercises logs/exec; service status is captured in live artifacts. Optional externalized Postgres remains supported for transitional deployments, but it is not the default local live-gate lane.</li>
 </ul>
 <h2 id="non-goals-for-now">Non‑goals (for now)</h2>
 <ul>
@@ -893,7 +892,7 @@
 <li>ServiceAccount tokens rehydrate from stored annotations at startup and fall back to store lookup when a token is unknown, enabling HA replicas to accept each other’s minted tokens. Remaining: move to durable JWT or DB-backed tokens with rotation.</li>
 <li>CronJob scheduling now includes <code>croniter</code> in project dependencies, so cron expressions resolve instead of falling back to 60s/annotation intervals.</li>
 <li>Docs drift fixed: the compatibility matrix now reflects best-effort CronJob scheduling and Job completion.</li>
-<li>Live OpenAPI gate is promoted: it runs on main/PRs plus nightly local/external targets, and release tags now run the live gate alongside OpenAPI exports. Docs/nav and release notes now treat <code>/openapi/v3</code> as primary with <code>/openapi/v2</code> as the compatibility mirror; the live gate validates the multi-replica/PDB+HPA sample set.</li>
+<li>Live OpenAPI gate is promoted: it runs on main/PRs plus nightly local/external targets, and release tags now run the live gate alongside OpenAPI exports. API docs and release notes now treat <code>/openapi/v3</code> as primary with <code>/openapi/v2</code> as the compatibility mirror; the live gate validates the multi-replica/PDB+HPA sample set.</li>
 <li>Live OpenAPI gate now exercises a docker runtime lane with logs/exec smoke checks for non-stub fidelity.</li>
 <li>Focused <code>kubectl exec</code> SPDY tests now succeed against both docker and podman runtimes (error/stdout/stderr streams open cleanly); the JSON exec fallback in the live gate can be retired after a full lane rerun.</li>
 </ul>
@@ -912,7 +911,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-13 07:38:34</span>
+        <span>Built 2026-04-14 13:18:21</span>
       </div>
     </footer>
     <script>

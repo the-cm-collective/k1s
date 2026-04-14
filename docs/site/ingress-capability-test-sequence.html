@@ -630,8 +630,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://docs.home.arpa:10443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:10443/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -703,12 +703,10 @@
       <a href="runbook.html">Ops Runbook</a>
       <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
       <a href="vm-variant-runbook.html">VM Variants</a>
-      <a href="ha-closeout.html">HA Closeout</a>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
       <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <a href="api-auth.html">API Auth</a>
@@ -716,7 +714,7 @@
       <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="https://dash.home.arpa:10443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
       <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
@@ -738,6 +736,7 @@
 </ul>
 <p>It covers:</p>
 <p>1. Single-host matrix validation 2. Multi-host matrix validation 3. Fault injection and recovery drills 4. Repeatability/stability gate</p>
+<p>For durable ingress architecture, mode ownership, and TLS/reference context, see <a href="ingress.html">Ingress</a>.</p>
 <h2 id="scope-and-outcomes">Scope and Outcomes</h2>
 <p>This sequence validates that ingress mode behavior, route propagation, and workload serving are correct for the supported workload archetypes in CRI-based multi-site setups.</p>
 <p>This runbook does **not** claim throughput/latency benchmarking beyond basic stability checks.</p>
@@ -748,10 +747,11 @@
 <ul>
 <li>core started with <code>EDGE_INGRESS_MODE=edge-local</code></li>
 <li>core started with <code>AE_ROUTE_BUNDLE_ENABLED=1</code></li>
-<li>core started with <code>AE_ENABLE_SERVICE_PROXY=1</code> and <code>AE_SERVICE_PROVIDER=iptables</code> (strict <code>bundle-endpoints</code> lane)</li>
 <li>gateway started with <code>AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints</code></li>
+<li>gateway started with <code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR</code>, <code>AE_EDGE_LOCAL_INGRESS_CONFIG_FILE</code>, and <code>AE_EDGE_LOCAL_INGRESS_RELOAD_CMD</code> when you want live rendered listener checks</li>
 </ul>
 </li>
+<li>Optional CRI Service VIP plumbing remains valid with <code>AE_ENABLE_SERVICE_PROXY=1</code> and <code>AE_SERVICE_PROVIDER=iptables</code>, but the strict <code>bundle-endpoints</code> gate itself is about route-bundle endpoint fanout and avoiding DNS fallback.</li>
 <li>Required commands available:
 <ul>
 <li><code>python</code>, <code>curl</code>, <code>rg</code>, <code>sudo</code></li>
@@ -825,6 +825,7 @@ APISHIM_TAG=&quot;localhost:5001/k1s-apishim:dev-$(date +%s)&quot;</code></pre>
   AE_STORAGE_NFS_SERVER=10.255.0.1 AE_STORAGE_NFS_PATH=/exports/k1s \
   AE_STORAGE_NFS_CLASS=k1s-nfs AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
   make k1s-core</code></pre>
+<p>The tested edge-local core startup above includes the optional CRI Service VIP proxy flags. They remain a valid strict-CRI combination, but the lane&#x27;s hard gate is route-bundle endpoint fanout plus gateway-local Caddy rendering.</p>
 <h3 id="1a-2-core-node-k1s-core-node">1a.2 Core node (<code>k1s-core-node</code>)</h3>
 <pre><code>sudo -E env PATH=&quot;$SUDO_PATH&quot; \
   AE_RUNTIME_BACKEND=cri \
@@ -956,7 +957,7 @@ scripts/dev/test_ingress_matrix_single_host.sh \
   --tier tier1 \
   --validation-profile standard</code></pre>
 <h3 id="2-5-edge-local-strict-lb-proof-lane-separate-stack-start">2.5 Edge-Local Strict LB Proof Lane (Separate Stack Start)</h3>
-<p>Start core/gateway in edge-local mode (<code>EDGE_INGRESS_MODE=edge-local</code>, <code>AE_ROUTE_BUNDLE_ENABLED=1</code>, <code>AE_ENABLE_SERVICE_PROXY=1</code>, <code>AE_SERVICE_PROVIDER=iptables</code>, <code>AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints</code>, and <code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=...</code>), then run:</p>
+<p>Start core/gateway in edge-local mode (<code>EDGE_INGRESS_MODE=edge-local</code>, <code>AE_ROUTE_BUNDLE_ENABLED=1</code>, gateway <code>AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints</code>, and <code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=...</code>). The tested startup sequence above also includes a valid CRI Service VIP proxy combination, but the strict proof lane is checking route-bundle endpoint fanout rather than the optional iptables Service VIP path. Then run:</p>
 <pre><code>EDGE_LOCAL_LISTENER_URL=&quot;https://lb-distribution-edge-local.home.arpa/&quot; \
 scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes</code></pre>
 <p>Equivalent direct matrix command:</p>
@@ -1117,7 +1118,7 @@ test -w &quot;$CORE_SPECS&quot; &amp;&amp; echo &quot;writable&quot; || echo &qu
 <pre><code>cpid=$(pgrep -f &quot;python -m ae.controller&quot; | head -n1)
 gpid=$(pgrep -f &quot;python -m ae.gateway&quot; | head -n1)
 sudo cat &quot;/proc/$cpid/environ&quot; | tr &#x27;\0&#x27; &#x27;\n&#x27; | rg &#x27;EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED|AE_TRANSPORT_BACKEND|AE_NATS_URL&#x27;
-sudo cat &quot;/proc/$gpid/environ&quot; | tr &#x27;\0&#x27; &#x27;\n&#x27; | rg &#x27;EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL&#x27;</code></pre>
+sudo cat &quot;/proc/$gpid/environ&quot; | tr &#x27;\0&#x27; &#x27;\n&#x27; | rg &#x27;EDGE_INGRESS_MODE|AE_EDGE_LOCAL_UPSTREAM_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL&#x27;</code></pre>
 <p>3. Verify route-bundle permission in hub NATS config:</p>
 <pre><code>rg -n &#x27;user: &quot;hub-controller&quot;|k1s.v1.site.\*.routes.bundle&#x27; ops/dev/nats-hub.conf</code></pre>
 <p>4. Verify rendered config presence:</p>
@@ -1135,7 +1136,7 @@ curl -sS -o /dev/null -w &#x27;%{http_code}\n&#x27; &quot;http://${EDGE_LOCAL_AD
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-13 07:38:35</span>
+        <span>Built 2026-04-14 13:18:21</span>
       </div>
     </footer>
     <script>

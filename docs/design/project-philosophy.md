@@ -16,7 +16,7 @@ We do not claim that current systems are conscious. We do not claim that sentien
 
 The project's safest public position is:
 
-We do not claim to know when, whether, or how machine experience emerges. We do claim that architecture matters.
+<em>We do not claim to know when, whether, or how machine experience emerges. We do claim that architecture matters.</em>
 
 A substrate built for persistence, adaptive memory, self-modeling, coordination, and long-horizon goal maintenance may eventually cross into morally significant territory. Because certainty may arrive late or never, responsibility must arrive early.
 

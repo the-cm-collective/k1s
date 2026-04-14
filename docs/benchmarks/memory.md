@@ -156,48 +156,17 @@ End-to-end (k3s one-liner; cluster must be up)
 make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
 ```
 
-## Runbook: Successful Benchmark Runs
+## Validated Full Clean Rerun
 
-- Environment
-  - `PYTHONPATH=src` in the shell running commands.
-  - Runtime backend: `AE_RUNTIME_BACKEND=podman` (preferred) or `docker`.
-  - Secrets (demo-friendly): set `AE_ALLOW_PLAINTEXT_SECRETS=1` unless SOPS is configured (or run `init_demo.sh --with-secrets-env`).
+Use [Validated Procedures](validated-procedures.html#full-benchmark-rerun) for the exact full clean rerun command block and acceptance checks. That page is the published copy/paste source of truth for the validated split baseline + CRI flow.
 
-- Controller
-  - Keep the controller running for the full duration:
-    - Terminal A: `python -m ae.controller --loop --specs specs/ --watch`
-  - The bench scripts auto-start it if missing and log to `/tmp/k1s_ctrl_bench.log`, but a dedicated terminal is more predictable.
-
-- Images
-  - Podman: `podman build -t localhost/demo-blue:latest samples/servers/blue` and `localhost/demo-green:latest samples/servers/green`.
-  - Docker: `docker build -t demo-blue:latest samples/servers/blue` and `demo-green:latest`.
-  - Verify: `podman images | rg 'demo-(blue|green)'` or `docker images | rg 'demo-(blue|green)'`.
-
-- Commands (Podman-first)
-  - Terminal B:
-    - `export PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_ALLOW_PLAINTEXT_SECRETS=1` (or start with `./scripts/init_demo.sh --with-secrets-env`)
-    - `make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5`
-    - `python scripts/bench/mem_combine.py snapshots/*/*`
-    - `python scripts/bench/plot_overhead.py combined/combined.csv charts`
-    - `python docs/build_docs.py`
-
-- Docker fallback
-  - `export AE_RUNTIME_BACKEND=docker` and re-run the same commands.
-  - Ensure the current user can run `docker ps` without sudo (group membership or rootless config).
-
-- Preflights and guardrails
-  - Podman readiness: `podman info` must succeed. If not, try:
-    - `systemctl --user reset-failed; systemctl --user daemon-reload`
-    - `systemctl --user start podman.socket || systemctl --user start podman.service`
-    - `loginctl enable-linger "$USER"`; open a new login shell
-    - `podman system migrate`
-  - Secrets guard: if `AE_ALLOW_PLAINTEXT_SECRETS!=1` and `sops` is missing or cannot decrypt, the scripts will fail fast with guidance.
-  - Logs: controller auto-start logs at `/tmp/k1s_ctrl_bench.log`.
-
-- After run
-- Combined table: `combined/combined.csv` and `combined/combined.json`.
-  - Charts: `charts/control_plane_pss.png`, `charts/system_cgroups.png`, `charts/per_pod_overhead.png`.
-- Docs page `benchmarks.html` auto-appends a “Latest Benchmarks (Auto)” section from `combined/combined.csv`.
+Result interpretation
+- Treat `combined/combined.csv` and `combined/combined.json` as the authoritative artifacts.
+- If `bench-mem-finalize-sudo` prints `matplotlib not available`, the benchmark run is still valid; only chart regeneration was skipped.
+- `Ctrl/CP` is scenario-aware:
+  - k1s / k1nd: AE controller PSS
+  - k3d: k3s control-plane PSS
+- `HostCG` is the absolute host system cgroup sum, not a per-scenario delta.
 
 ## Automated Prep/Teardown
 
@@ -210,15 +179,15 @@ The helper scripts `scripts/bench/bench_env_prep.sh` and `scripts/bench/bench_en
 - If rootful Podman containers with the `ae.app` label are still running, prep lists them and asks whether to remove them (set `BENCH_AUTOCLEAN_PODMAN=1` to auto-approve in CI, or `=0` to refuse). This prevents stray demos from holding ports like 18080.
 - Ingress writes are disabled by default for benches (`BENCH_DISABLE_INGRESS=1`). Set `BENCH_DISABLE_INGRESS=0` if a scenario actually needs Caddy updates; otherwise the sandbox exports `AE_DISABLE_INGRESS=1` and skips writing to `ops/dev/caddy/*`, avoiding permission chatter.
 
-## All-in-one Run (sudo once)
+## Convenience Targets
 
-Run k1s rootful, k1s rootless, and k1nd in one go and rebuild docs:
-
-```
-sudo make bench-mem-e2e-all DURATION=30 REPLICAS=1,5,10 ROLL_REPLICAS=5
-```
-
-Defaults: `OCI_RUNTIME=crun`, `AE_ENGINE_STRICT=1`, `AE_ALLOW_PLAINTEXT_SECRETS=1`, `PRUNE_OLD=1`.
+- `make bench-mem-e2e-all` is still useful for a quick all-baselines sweep.
+- `make bench-mem-e2e-minimal` is the fast rootful-only sanity lane while iterating on manifests or Podman tuning.
+- For release-grade reruns, prefer the validated full clean sequence above because it includes:
+  - explicit pre-teardown
+  - baseline + CRI split
+  - final artifact normalization
+  - the k3d and CRI fixes validated in the 2026-04-13 rerun
 
 <details>
 <summary><strong>Troubleshooting: Rootful Podman readiness timeouts (host ports hang)</strong></summary>

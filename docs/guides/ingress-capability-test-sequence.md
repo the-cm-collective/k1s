@@ -13,6 +13,8 @@ It covers:
 3. Fault injection and recovery drills
 4. Repeatability/stability gate
 
+For durable ingress architecture, mode ownership, and TLS/reference context, see [Ingress](ingress.html).
+
 ## Scope and Outcomes
 
 This sequence validates that ingress mode behavior, route propagation, and workload serving are correct for the supported workload archetypes in CRI-based multi-site setups.
@@ -25,8 +27,9 @@ This runbook does **not** claim throughput/latency benchmarking beyond basic sta
 - For `edge-local` tests:
   - core started with `EDGE_INGRESS_MODE=edge-local`
   - core started with `AE_ROUTE_BUNDLE_ENABLED=1`
-  - core started with `AE_ENABLE_SERVICE_PROXY=1` and `AE_SERVICE_PROVIDER=iptables` (strict `bundle-endpoints` lane)
   - gateway started with `AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints`
+  - gateway started with `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR`, `AE_EDGE_LOCAL_INGRESS_CONFIG_FILE`, and `AE_EDGE_LOCAL_INGRESS_RELOAD_CMD` when you want live rendered listener checks
+- Optional CRI Service VIP plumbing remains valid with `AE_ENABLE_SERVICE_PROXY=1` and `AE_SERVICE_PROVIDER=iptables`, but the strict `bundle-endpoints` gate itself is about route-bundle endpoint fanout and avoiding DNS fallback.
 - Required commands available:
   - `python`, `curl`, `rg`, `sudo`
   - `crictl` (recommended for diagnostics/restart counters)
@@ -120,6 +123,8 @@ sudo -E \
   AE_STORAGE_NFS_CLASS=k1s-nfs AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
   make k1s-core
 ```
+
+The tested edge-local core startup above includes the optional CRI Service VIP proxy flags. They remain a valid strict-CRI combination, but the lane's hard gate is route-bundle endpoint fanout plus gateway-local Caddy rendering.
 
 ### 1a.2 Core node (`k1s-core-node`)
 
@@ -304,7 +309,7 @@ scripts/dev/test_ingress_matrix_single_host.sh \
 
 ### 2.5 Edge-Local Strict LB Proof Lane (Separate Stack Start)
 
-Start core/gateway in edge-local mode (`EDGE_INGRESS_MODE=edge-local`, `AE_ROUTE_BUNDLE_ENABLED=1`, `AE_ENABLE_SERVICE_PROXY=1`, `AE_SERVICE_PROVIDER=iptables`, `AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints`, and `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=...`), then run:
+Start core/gateway in edge-local mode (`EDGE_INGRESS_MODE=edge-local`, `AE_ROUTE_BUNDLE_ENABLED=1`, gateway `AE_EDGE_LOCAL_UPSTREAM_MODE=bundle-endpoints`, and `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR=...`). The tested startup sequence above also includes a valid CRI Service VIP proxy combination, but the strict proof lane is checking route-bundle endpoint fanout rather than the optional iptables Service VIP path. Then run:
 
 ```bash
 EDGE_LOCAL_LISTENER_URL="https://lb-distribution-edge-local.home.arpa/" \
@@ -510,7 +515,7 @@ test -w "$CORE_SPECS" && echo "writable" || echo "not writable"
 cpid=$(pgrep -f "python -m ae.controller" | head -n1)
 gpid=$(pgrep -f "python -m ae.gateway" | head -n1)
 sudo cat "/proc/$cpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_ROUTE_BUNDLE_ENABLED|AE_TRANSPORT_BACKEND|AE_NATS_URL'
-sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL'
+sudo cat "/proc/$gpid/environ" | tr '\0' '\n' | rg 'EDGE_INGRESS_MODE|AE_EDGE_LOCAL_UPSTREAM_MODE|AE_EDGE_LOCAL_INGRESS_CONFIG_DIR|AE_SITE_ID|AE_NODE_ID|AE_TRANSPORT_BACKEND|AE_NATS_URL'
 ```
 
 3. Verify route-bundle permission in hub NATS config:

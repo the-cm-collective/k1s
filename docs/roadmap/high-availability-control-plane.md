@@ -382,18 +382,11 @@ Primary outcomes:
 
 Current implementation status:
 
-- [HA Closeout](ha-closeout.html) now records the H0-H5 capability matrix, evidence map, gap register, and close criteria
-- [HA Cluster Bring-Up](ha-cluster-bring-up.html) now serves as the canonical day-0 operator sequence, so the HA track no longer relies on bootstrap ordering being inferred across the runbook, VM lane, and closeout docs
-- `scripts/lab/vm/lib/variant.py`, `scripts/lab/vm/k1s_bootstrap.sh`, `scripts/lab/vm/smoke_v2.py`, and `scripts/lab/vm/smoke_helper.py` now support explicit `k1s-ha-core` hosts plus a `ha_control_plane` lane that emits a machine-readable `ha_summary.json`
-- `lab/variants/ha-control-plane-core.yaml` now provides a checked-in 3-core-plus-1-site HA closeout topology instead of requiring an ad hoc local variant
-- `scripts/lab/vm/ha_shared_infra.sh` plus the new `ha_shared_infra` smoke phase now bootstrap shared `etcd` and shared hub NATS/JetStream on the three HA core VMs before `k1s-ha-core` starts
-- `scripts/lab/vm/run_ha_validation.sh` plus `make lab-vm-ha-validation` now provide the promoted umbrella VM operator rerun, covering `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills`
-- `make lab-vm-smoke` remains the lower-level one-shot operator entrypoint, wrapping the helper-backed smoke flow instead of the older raw `smoke.sh` path
-- the VM lane uses the existing HA helper surfaces for precheck, cluster verification, hub transport validation, edge transport validation, and optional drills instead of inventing a second HA operator contract
-- `tests/e2e/ha_closeout.py` and `tests/integration/test_ha_closeout_e2e.py` now provide a reduced local HA topology with two controllers, one apishim, one edge site, and a failover-plus-replay check; that reduced lane now forces `AE_JS_REPLICAS=1` so it stays lightweight without pretending to be the full transport-fidelity evidence lane
-- `scripts/dev/ha_closeout_e2e.sh` plus `make ha-closeout-e2e` now provide the supported reduced-harness entrypoint, priming the local `libstdc++` runtime path and preflighting `grpc` before the reduced HA lane starts
-- the original closeout result remains the 2026-03-19 roadmap checkpoint: the drill-enabled primary VM/lab lane was green on the checked-in topology, the wrapper-backed reduced local HA harness was green, no `must_fix_before_closeout` gaps remained, and the track closed
-- current post-closeout validation result: image verification hardening closed the verifier overlay/backing-image mismatch on 2026-04-07, `make lab-vm-ha-validation` reran green with `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` all passing on the documented checked-in flows, and `make ha-closeout-e2e` also remained green
+- [HA Closeout](ha-closeout.html) now serves as the compact audit artifact for the H0-H5 capability matrix, evidence lanes, gap register, and close criteria
+- [HA Cluster Bring-Up](ha-cluster-bring-up.html) owns the canonical day-0 operator sequence, and [Roadmap Status](roadmap-status.html) owns the dated closeout and maintenance checkpoints
+- the checked-in `ha_control_plane` variants plus `make lab-vm-ha-validation` now provide the promoted primary VM operator rerun, while the helper-backed `make lab-vm-smoke` flow remains the narrower one-shot/drill entrypoint with machine-readable `ha_summary.json` artifacts
+- `make ha-closeout-e2e` remains the supported reduced local regression lane for failover-plus-replay validation outside the primary VM/lab evidence path
+- the original closeout result remains the 2026-03-19 roadmap checkpoint, and the 2026-04-07 maintenance rerun kept both the primary VM lane and the reduced harness green
 
 ### H5c Amendment: Integrated HA Dashboard Observability
 

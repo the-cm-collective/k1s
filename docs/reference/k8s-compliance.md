@@ -1,6 +1,6 @@
 # Kubernetes Compliance
 
-This page summarizes our current Kubernetes spec compliance for exported manifests.
+This page summarizes our current Kubernetes portability and compliance status for exported manifests and the shim-backed validation lanes we run against them. It is not an upstream Kubernetes conformance claim.
 
 How it works
 - We export K8s YAML from representative Deployment manifests using `ae export-k8s` (preset: web-hardened).
@@ -20,7 +20,7 @@ Online (cluster-backed) checks
 
 The compliance status and per-sample details render below when a report is present.
 
-## Current Coverage Summary (2026-02-14)
+## Current Coverage Summary
 
 - Workloads: Deployment full support; StatefulSet/DaemonSet/Job/CronJob are stored with best-effort status but emulated as Deployment-like apps (no real completion, scheduling, or per-node placement).
 - Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.
@@ -81,8 +81,8 @@ The compliance status and per-sample details render below when a report is prese
 - [x] Support `envFrom` for ConfigMap/Secret; exporter maps to envFrom.
 - [x] Support `imagePullSecrets` and `imagePullPolicy` in spec/exporter.
 - [x] Allow PDB percentage values and validate exclusivity with integers.
-- [ ] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).
-- [ ] Model Config/Secret volume mounts and mountPaths; exporter emits volumes/volumeMounts.
+- [x] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).
+- [x] Model Config/Secret volume mounts and mountPaths; exporter emits volumes/volumeMounts.
 - [ ] PVC `storageClassName` and `accessModes` selection flags; document defaults.
 - [ ] Service healthCheckNodePort and advanced Ingress annotations (behind explicit flag).
 - [ ] RBAC: broaden exporter coverage for ClusterRole/ClusterRoleBinding presets.

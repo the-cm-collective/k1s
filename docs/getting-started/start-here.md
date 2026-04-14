@@ -21,7 +21,7 @@
     </div>
     <div class="hero-card">
       <h2>Manual Quickstart</h2>
-      <p>Install editable, start the controller, then apply echo.</p>
+      <p>Install editable mode and start the controller, then continue with the sample apply/status/log checks below.</p>
       <pre><code>make install</code></pre>
       <pre><code>make loop</code></pre>
     </div>
@@ -37,6 +37,8 @@
 </div>
 
 This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.
+
+<p><strong>Command note:</strong> use <a href="validated-procedures.html">Validated Procedures</a> for the current copy/paste command readouts. This page keeps the onboarding flow and stable context.</p>
 
 Note: k1s is pre-1.0 and still evolving. v0.1.3 expands operational validation (deep+perf ingress lanes, repeatability and fault-injection gates, security baseline and active auth probes, and release-time live OpenAPI gates), but production promotion still requires environment-specific security review and rollout validation.
 
@@ -96,15 +98,16 @@ This path runs the current seeded `dev-min` profile, serves docs, starts the con
 ```
 make demo
 ```
-   - Current wrapper: `Makefile:1`
-   - Profile implementation: `scripts/dev/run_profile.sh:1`
-   - Legacy flag-driven demo modes still live in `scripts/init_demo.sh:1`
+   - Current wrapper: `Makefile`
+   - Profile implementation: `scripts/dev/run_profile.sh`
+   - Legacy flag-driven demo modes still live in `scripts/init_demo.sh`
 
 2) Open endpoints:
 - Docs: https://docs.home.arpa:8443/ and http://127.0.0.1:9109/
 - Dashboard: https://dash.home.arpa:8443/dashboard or http://127.0.0.1:9108/dashboard
 - API (Swagger/ReDoc): https://api.home.arpa:8443/swagger and https://api.home.arpa:8443/redoc
 - Sample apps: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/
+- Dashboard note: `make demo` uses the simple dashboard layout. The shared `System Graph` remains visible, but the `HA Control Plane` card and `HA Members` legend key stay hidden.
 
 3) Inspect via CLI while the demo runs:
 ```
@@ -152,7 +155,7 @@ python -m pip install -e .[watch]
 ```
 docker compose -f ops/dev/docker-compose.yaml up -d
 ```
-   - Compose file: `ops/dev/docker-compose.yaml:1`
+   - Compose file: `ops/dev/docker-compose.yaml`
 
 3) Run the controller with API + file watch:
 ```
@@ -387,12 +390,15 @@ source .env.api
 ae --server http://<controller-ip>:9108 --token $AE_API_READ_TOKEN status
 ```
 Tip: `ae auth remote -o .env.api` also emits shim tokens + `AE_API_MUTATIONS=1`, and `ae auth local -o .env.local` reuses tokens from `state/*.env` when running demos/labs.
-Details: `README.md:67` and token management in [Operations Runbook](runbook.html).
+Details: `README.md` and token management in [Operations Runbook](runbook.html).
 
 ## Documentation Map (most useful first)
 - High‑level overview: [Overview](overview.html)
 - Operations runbook: [Operations Runbook](runbook.html)
 - HA cluster bootstrap and evidence lanes: [HA Cluster Bring-Up](ha-cluster-bring-up.html), [HA Closeout](ha-closeout.html), [VM Variant Runbook](vm-variant-runbook.html)
+- Copy/paste validated command readouts: [Validated Procedures](validated-procedures.html)
+- Benchmark rerun procedure and acceptance checks: [Memory Overhead Benchmarks](benchmarks.html)
+- Demo/dashboard mode expectations: [Demos & Examples](examples.html)
 - HTTP API reference: [HTTP API](http-api.html)
 - Kubernetes API shim compatibility: [API Shim Compatibility Matrix](apishim-compatibility-matrix.html)
 - Ingress & TLS: [Ingress](ingress.html)
@@ -400,18 +406,18 @@ Details: `README.md:67` and token management in [Operations Runbook](runbook.htm
 - Architecture deep dive: [Architecture](architecture.html)
 
 ## Where things live in the repo
-- Controller daemon entry: `src/ae/controller/__main__.py:1`
-- CLIs: `src/ae/cli/__main__.py:1`, `src/ae/kctl/__main__.py:1`
+- Controller daemon entry: `src/ae/controller/__main__.py`
+- CLIs: `src/ae/cli/__main__.py`, `src/ae/kctl/__main__.py`
 - Ingress (Caddy): `src/ae/ingress/`, site fragments under `ops/dev/caddy/sites/`
 - Runtimes: `src/ae/runtime/` (Podman default, Docker optional)
 - Observability/API: `src/ae/observability/`
 - Specs & samples: `specs/`, `specs/examples/`
-- Dev stack compose: `ops/dev/docker-compose.yaml:1`
+- Dev stack compose: `ops/dev/docker-compose.yaml`
 
 ## Troubleshooting
 - If Caddy HTTPS ports 8443/8888 are busy, the demo auto‑picks free ports and prints them.
 - Dashboard via Caddy is `https://dash.home.arpa:8443/dashboard`; use `http://127.0.0.1:9108/dashboard` if you’re skipping Caddy.
-- To rebuild docs locally: `make docs` (builder at `docs/build_docs.py:1`).
+- To rebuild docs locally: `make docs` (builder at `docs/build_docs.py`).
 - Teardown demo: `./scripts/init_demo.sh --down -y` or `make demo-down`.
 - Reset demo state: `./scripts/init_demo.sh --reset` or `make demo-reset`.
 
