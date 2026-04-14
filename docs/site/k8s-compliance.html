@@ -739,7 +739,8 @@
 <ul>
 <li>Generate a fresh report and write it where the docs server picks it up:
 <ul>
-<li><code>python -m ae.cli k8s-report --run-dry-run -o docs/site/k8s_status.json</code></li>
+<li><code>python -m ae.cli k8s-report --run-dry-run --kubeconfig ~/.kube/config -o docs/site/k8s_status.json</code></li>
+<li>Prefer <code>--kubeconfig</code> over an ambient context. <code>k8s-report</code> now fails fast if <code>kubectl</code> cannot reach the selected API target for server-side checks.</li>
 </ul>
 </li>
 <li>Rebuild docs to embed the status in this page:
@@ -752,7 +753,7 @@
 <ul>
 <li>If you have kubectl and a cluster (Kind or k3s via k3d):
 <ul>
-<li><code>python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup -o docs/site/k8s_status.json</code></li>
+<li><code>python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup --kubeconfig ~/.kube/config -o docs/site/k8s_status.json</code></li>
 </ul>
 </li>
 <li>This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.</li>
@@ -842,9 +843,9 @@
 </ul>
 <hr/>
 <h2>K8s Compliance Status</h2>
-<p><strong>Score:</strong> 57.1/100 &nbsp; <strong>Grade:</strong> failing &nbsp; <strong>Samples:</strong> 3</p>
+<p><strong>Score:</strong> 100.0/100 &nbsp; <strong>Grade:</strong> excellent &nbsp; <strong>Samples:</strong> 3</p>
 <details><summary>Per-sample details</summary>
-<ul><li>echo.yaml: score=57.1 validate=ok kubeconform=skip dry-run=fail policyErrors=0</li><li>multi-replica-echo.yaml: score=57.1 validate=ok kubeconform=skip dry-run=fail policyErrors=0</li><li>echo-hpa.yaml: score=57.1 validate=ok kubeconform=skip dry-run=fail policyErrors=0</li></ul></details>
+<ul><li>echo.yaml: score=100.0 validate=ok kubeconform=ok dry-run=ok policyErrors=0</li><li>multi-replica-echo.yaml: score=100.0 validate=ok kubeconform=ok dry-run=ok policyErrors=0</li><li>echo-hpa.yaml: score=100.0 validate=ok kubeconform=ok dry-run=ok policyErrors=0</li></ul></details>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -852,7 +853,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-14 13:04:30</span>
+        <span>Built 2026-04-14 14:05:21</span>
       </div>
     </footer>
     <script>

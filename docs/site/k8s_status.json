@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-04-14T20:46:04.143026+00:00",
+  "generated_at": "2026-04-14T21:05:21.644361+00:00",
   "samples_count": 3,
-  "overall_score": 57.1,
-  "grade": "failing",
+  "overall_score": 100.0,
+  "grade": "excellent",
   "results": [
     {
       "sample": "specs/examples/echo.yaml",
@@ -19,14 +19,14 @@
         "warnings": 1
       },
       "kubeconform": {
-        "ran": false,
-        "ok": null,
-        "summary": null
+        "ran": true,
+        "ok": true,
+        "summary": "Summary: 0 resource found in 0 file - Valid: 0, Invalid: 0, Errors: 0, Skipped: 0"
       },
       "server_dry_run": {
         "ran": true,
-        "ok": false,
-        "output": "error: error validating \"/tmp/tmp3fnwj7q9\": error validating data: failed to download openapi: Get \"http://localhost:8080/openapi/v2?timeout=32s\": dial tcp [::1]:8080: connect: connection refused; if you choose to ignore these errors, turn validation off with --validate=false"
+        "ok": true,
+        "output": "configmap/app-config created (server dry run)\ndeployment.apps/echo created (server dry run)\nservice/echo created (server dry run)\ningress.networking.k8s.io/echo created (server dry run)\nserviceaccount/app-sa created (server dry run)\nrole.rbac.authorization.k8s.io/echo-role created (server dry run)\nrolebinding.rbac.authorization.k8s.io/echo-rb created (server dry run)\nhorizontalpodautoscaler.autoscaling/echo created (server dry run)"
       },
       "kinds": [
         "ConfigMap",
@@ -43,8 +43,8 @@
         "ok": null,
         "details": null
       },
-      "score": 57.1,
-      "confidence": 0.7
+      "score": 100.0,
+      "confidence": 0.9
     },
     {
       "sample": "specs/examples/multi-replica-echo.yaml",
@@ -61,14 +61,14 @@
         "warnings": 0
       },
       "kubeconform": {
-        "ran": false,
-        "ok": null,
-        "summary": null
+        "ran": true,
+        "ok": true,
+        "summary": "Summary: 0 resource found in 0 file - Valid: 0, Invalid: 0, Errors: 0, Skipped: 0"
       },
       "server_dry_run": {
         "ran": true,
-        "ok": false,
-        "output": "error: error validating \"/tmp/tmpqdwflhcf\": error validating data: failed to download openapi: Get \"http://localhost:8080/openapi/v2?timeout=32s\": dial tcp [::1]:8080: connect: connection refused; if you choose to ignore these errors, turn validation off with --validate=false"
+        "ok": true,
+        "output": "deployment.apps/echo-mr created (server dry run)\nservice/echo-mr created (server dry run)\ningress.networking.k8s.io/echo-mr created (server dry run)\nserviceaccount/app-sa created (server dry run)\nrole.rbac.authorization.k8s.io/echo-mr-role created (server dry run)\nrolebinding.rbac.authorization.k8s.io/echo-mr-rb created (server dry run)\npoddisruptionbudget.policy/echo-mr-pdb created (server dry run)\nhorizontalpodautoscaler.autoscaling/echo-mr created (server dry run)\nnetworkpolicy.networking.k8s.io/echo-mr created (server dry run)"
       },
       "kinds": [
         "Deployment",
@@ -86,8 +86,8 @@
         "ok": null,
         "details": null
       },
-      "score": 57.1,
-      "confidence": 0.7
+      "score": 100.0,
+      "confidence": 0.9
     },
     {
       "sample": "specs/examples/echo-hpa.yaml",
@@ -104,14 +104,14 @@
         "warnings": 0
       },
       "kubeconform": {
-        "ran": false,
-        "ok": null,
-        "summary": null
+        "ran": true,
+        "ok": true,
+        "summary": "Summary: 0 resource found in 0 file - Valid: 0, Invalid: 0, Errors: 0, Skipped: 0"
       },
       "server_dry_run": {
         "ran": true,
-        "ok": false,
-        "output": "error: error validating \"/tmp/tmpi7jign9h\": error validating data: failed to download openapi: Get \"http://localhost:8080/openapi/v2?timeout=32s\": dial tcp [::1]:8080: connect: connection refused; if you choose to ignore these errors, turn validation off with --validate=false"
+        "ok": true,
+        "output": "deployment.apps/echo-hpa created (server dry run)\nservice/echo-hpa created (server dry run)\nserviceaccount/app-sa created (server dry run)\nrole.rbac.authorization.k8s.io/echo-hpa-role created (server dry run)\nrolebinding.rbac.authorization.k8s.io/echo-hpa-rb created (server dry run)\npoddisruptionbudget.policy/echo-hpa-pdb created (server dry run)\nhorizontalpodautoscaler.autoscaling/echo-hpa created (server dry run)\nnetworkpolicy.networking.k8s.io/echo-hpa created (server dry run)"
       },
       "kinds": [
         "Deployment",
@@ -128,8 +128,8 @@
         "ok": null,
         "details": null
       },
-      "score": 57.1,
-      "confidence": 0.7
+      "score": 100.0,
+      "confidence": 0.9
     }
   ]
 }

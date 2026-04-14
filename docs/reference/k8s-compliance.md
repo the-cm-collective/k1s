@@ -9,13 +9,14 @@ How it works
 
 Update the status
 - Generate a fresh report and write it where the docs server picks it up:
-  - `python -m ae.cli k8s-report --run-dry-run -o docs/site/k8s_status.json`
+  - `python -m ae.cli k8s-report --run-dry-run --kubeconfig ~/.kube/config -o docs/site/k8s_status.json`
+  - Prefer `--kubeconfig` over an ambient context. `k8s-report` now fails fast if `kubectl` cannot reach the selected API target for server-side checks.
 - Rebuild docs to embed the status in this page:
   - `python docs/build_docs.py`
 
 Online (cluster-backed) checks
 - If you have kubectl and a cluster (Kind or k3s via k3d):
-  - `python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup -o docs/site/k8s_status.json`
+  - `python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup --kubeconfig ~/.kube/config -o docs/site/k8s_status.json`
 - This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.
 
 The compliance status and per-sample details render below when a report is present.

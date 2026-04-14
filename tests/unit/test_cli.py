@@ -1,6 +1,8 @@
 """CLI integration smoke tests."""
 
 import argparse
+import json
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -249,3 +251,109 @@ def test_handle_scale_reports_registry_conflict(capsys):
     result = handle_scale(args, _Store(), SimpleNamespace())
     assert result == 1
     assert "scale conflict" in capsys.readouterr().out
+
+
+def _write_fake_kubectl(path: Path, *, fail_probe: bool = False) -> Path:
+    path.write_text(
+        f"""#!/usr/bin/env python3
+import json
+import os
+import sys
+
+argv = sys.argv[1:]
+log_path = os.environ.get("AE_TEST_KUBECTL_LOG")
+if log_path:
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps({{"argv": argv, "kubeconfig": os.environ.get("KUBECONFIG")}}) + "\\n")
+
+if "get" in argv and "--raw" in argv and "/openapi/v2" in argv:
+    if {str(fail_probe)}:
+        print("dial tcp 127.0.0.1:8080: connect: connection refused", file=sys.stderr)
+        sys.exit(1)
+    print('{{}}')
+    sys.exit(0)
+
+if "apply" in argv:
+    print("server dry run ok")
+    sys.exit(0)
+
+if "create" in argv and "namespace" in argv:
+    print("namespace/demo created")
+    sys.exit(0)
+
+if "rollout" in argv and "status" in argv:
+    print("deployment successfully rolled out")
+    sys.exit(0)
+
+if "delete" in argv:
+    sys.exit(0)
+
+sys.exit(0)
+"""
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def test_k8s_report_fails_fast_when_kube_api_is_unreachable(tmp_path, capsys):
+    manifest_path = tmp_path / "echo.yaml"
+    write_manifest(manifest_path)
+    kubectl_path = _write_fake_kubectl(tmp_path / "kubectl", fail_probe=True)
+    output_path = tmp_path / "k8s_status.json"
+
+    exit_code = main(
+        [
+            "k8s-report",
+            "--samples",
+            str(manifest_path),
+            "--run-dry-run",
+            "--kubectl-bin",
+            str(kubectl_path),
+            "--kubeconform-bin",
+            "/nonexistent",
+            "-o",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "unable to reach a Kubernetes API" in output
+    assert "--kubeconfig <path>" in output
+    assert not output_path.exists()
+
+
+def test_k8s_report_uses_explicit_kubeconfig_for_kubectl(tmp_path, monkeypatch):
+    log_path = tmp_path / "kubectl.log"
+    monkeypatch.setenv("AE_TEST_KUBECTL_LOG", str(log_path))
+    kubectl_path = _write_fake_kubectl(tmp_path / "kubectl")
+    kubeconfig_path = tmp_path / "kind.kubeconfig"
+    kubeconfig_path.write_text("apiVersion: v1\nkind: Config\n")
+    output_path = tmp_path / "k8s_status.json"
+
+    exit_code = main(
+        [
+            "k8s-report",
+            "--samples",
+            "specs/examples/echo.yaml",
+            "--run-dry-run",
+            "--kubectl-bin",
+            str(kubectl_path),
+            "--kubeconfig",
+            str(kubeconfig_path),
+            "--kubeconform-bin",
+            "/nonexistent",
+            "-o",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(output_path.read_text())
+    assert report["overall_score"] > 0
+    assert report["results"][0]["server_dry_run"]["ok"] is True
+
+    calls = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert calls
+    assert all(call["kubeconfig"] == str(kubeconfig_path) for call in calls)
+    assert any("apply" in call["argv"] for call in calls)

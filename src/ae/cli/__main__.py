@@ -798,6 +798,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Attempt kubectl server-side dry-run if available",
     )
     kr.add_argument("--kubectl-bin", default=os.getenv("KUBECTL_BIN", "kubectl"))
+    kr.add_argument(
+        "--kubeconfig",
+        type=Path,
+        default=None,
+        help="Use this kubeconfig for kubectl dry-run/apply checks instead of the ambient context",
+    )
     kr.add_argument("--kubeconform-bin", default=os.getenv("KUBECONFORM_BIN", "kubeconform"))
     kr.add_argument(
         "--apply-online",
@@ -2279,6 +2285,7 @@ def handle_backup(args: argparse.Namespace) -> int:
 def handle_k8s_report(args: argparse.Namespace) -> int:
     import json
     import shutil
+    import subprocess as sp
     import tempfile
     from datetime import datetime
 
@@ -2309,6 +2316,48 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
     kubectl_bin = (
         shutil.which(args.kubectl_bin) if (args.run_dry_run or args.apply_online) else None
     )
+    kubectl_env = os.environ.copy()
+    kube_target = "the current kubectl context"
+    if getattr(args, "kubeconfig", None):
+        kubeconfig_path = Path(args.kubeconfig)
+        if not kubeconfig_path.exists():
+            print(f"k8s-report: kubeconfig not found: {kubeconfig_path}")
+            return 1
+        kubectl_env["KUBECONFIG"] = str(kubeconfig_path)
+        kube_target = f"kubeconfig {kubeconfig_path}"
+    elif os.getenv("KUBECONFIG"):
+        kube_target = f"KUBECONFIG={os.getenv('KUBECONFIG')}"
+
+    if args.run_dry_run or args.apply_online:
+        if not kubectl_bin:
+            print(
+                "k8s-report: kubectl is required for --run-dry-run/--apply-online but was not found on PATH."
+            )
+            print(
+                "k8s-report: install kubectl or omit --run-dry-run/--apply-online for offline-only scoring."
+            )
+            return 1
+        try:
+            probe = sp.run(
+                [kubectl_bin, "--request-timeout=15s", "get", "--raw", "/openapi/v2"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=kubectl_env,
+            )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
+        except Exception as exc:  # noqa: BLE001
+            print(f"k8s-report: unable to probe a Kubernetes API via {kube_target}: {exc}")
+            print(
+                "k8s-report: pass --kubeconfig <path> or set KUBECONFIG to a reachable cluster, or omit --run-dry-run/--apply-online for offline-only scoring."
+            )
+            return 1
+        if probe.returncode != 0:
+            detail = (probe.stderr or probe.stdout).strip() or "unknown error"
+            print(f"k8s-report: unable to reach a Kubernetes API via {kube_target}: {detail}")
+            print(
+                "k8s-report: pass --kubeconfig <path> or set KUBECONFIG to a reachable cluster, or omit --run-dry-run/--apply-online for offline-only scoring."
+            )
+            return 1
 
     results: list[dict] = []
     checks_total = 0
@@ -2355,7 +2404,6 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
             with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
                 tmp.write(yaml_text)
                 tmp.flush()
-                import subprocess as sp
 
                 try:
                     proc = sp.run(
@@ -2378,7 +2426,6 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
             with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
                 tmp.write(yaml_text)
                 tmp.flush()
-                import subprocess as sp
 
                 try:
                     proc = sp.run(
@@ -2394,6 +2441,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
+                        env=kubectl_env,
                     )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     dr_res["ok"] = proc.returncode == 0
                     dr_res["output"] = (proc.stdout or proc.stderr).strip()
@@ -2419,13 +2467,12 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
         if kubectl_bin and args.apply_online:
             online["ran"] = True
             # Ensure namespace exists
-            import subprocess as sp
-
             try:
                 sp.run(
                     [kubectl_bin, "create", "namespace", str(args.namespace)],
                     capture_output=True,
                     text=True,
+                    env=kubectl_env,
                 )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
             except Exception:
                 pass
@@ -2438,6 +2485,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
+                        env=kubectl_env,
                     )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     # Try to find the Deployment name(s) from parsed docs
                     dep_name = manifest.metadata.name
@@ -2455,6 +2503,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
+                        env=kubectl_env,
                     )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     online["ok"] = ap.returncode == 0 and rs.returncode == 0
                     online["details"] = {
@@ -2481,6 +2530,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                                 ],
                                 capture_output=True,
                                 text=True,
+                                env=kubectl_env,
                             )
                         except Exception:
                             pass
