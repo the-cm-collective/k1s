@@ -35,6 +35,7 @@ def test_run_all_baselines_keeps_rootless_and_rootful_podman_collection_split() 
     assert 'APP="$BENCH_PRIMARY_MANIFEST"' in text
     assert 'APP_NAME="$BENCH_PRIMARY_APP"' in text
     assert 'BENCH_WAIT_RUNTIME="$BENCH_WAIT_RUNTIME"' in text
+    assert 'DISABLE_DEV_MIN=${DISABLE_DEV_MIN:-0}' in text
 
 
 def test_k1nd_single_auto_shifts_busy_host_ports() -> None:

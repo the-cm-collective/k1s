@@ -39,6 +39,7 @@ BENCH_SPECS_EMPTY=${BENCH_SPECS_EMPTY:-1}
 # Optional: disable specific suites
 # - Set DISABLE_K1ND=1 (or SKIP_K1ND=1) to skip the k1nd baseline stage.
 DISABLE_K1ND=${DISABLE_K1ND:-${SKIP_K1ND:-0}}
+DISABLE_DEV_MIN=${DISABLE_DEV_MIN:-0}
 
 # -------- Helpers --------
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*" >&2; }
