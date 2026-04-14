@@ -375,7 +375,12 @@ class RemoteRuntime(RuntimeAdapter):
         port: int,
     ):
         if self._use_local():
-            raise NotImplementedError("local port-forward socket not implemented")
+            return self._local.port_forward_socket(
+                pod_id=pod_id,
+                pod_name=pod_name,
+                namespace=namespace,
+                port=int(port),
+            )
         payload = {
             "pod_id": pod_id,
             "pod_name": pod_name,

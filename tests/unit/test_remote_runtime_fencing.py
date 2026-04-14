@@ -174,3 +174,45 @@ def test_remote_runtime_port_forward_uses_upgrade_endpoint() -> None:
         "namespace": "default",
         "port": 8080,
     }
+
+
+def test_remote_runtime_port_forward_delegates_to_local_runtime() -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    class _LocalRuntime(StubRuntime):
+        def port_forward_socket(
+            self,
+            *,
+            pod_id: str | None,
+            pod_name: str | None,
+            namespace: str | None,
+            port: int,
+        ):
+            captured["pod_id"] = pod_id
+            captured["pod_name"] = pod_name
+            captured["namespace"] = namespace
+            captured["port"] = port
+            return sentinel
+
+    runtime = RemoteRuntime(
+        None,
+        _LocalRuntime(),
+        authority=_Authority("ctrl-a", 11),
+        node_id="node-a",
+    )
+
+    sock = runtime.port_forward_socket(
+        pod_id="pod-123",
+        pod_name="demo-rev1-0",
+        namespace="default",
+        port=8080,
+    )
+
+    assert sock is sentinel
+    assert captured == {
+        "pod_id": "pod-123",
+        "pod_name": "demo-rev1-0",
+        "namespace": "default",
+        "port": 8080,
+    }

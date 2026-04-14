@@ -30,6 +30,53 @@ def _manifest_single(image: str = "localhost/demo-blue:latest") -> AppManifest:
     )
 
 
+def _container_with_ports(
+    *,
+    host_port: str = "32001",
+    pod_ip: str = "10.88.0.42",
+    network_name: str = "podman",
+) -> dict:
+    return {
+        "Id": "container-1",
+        "Name": "/ae-blue-rev1-0",
+        "Config": {
+            "Labels": {
+                PodmanRuntime.APP_LABEL: "blue",
+                PodmanRuntime.REPLICA_LABEL: "blue-rev1-0",
+                PodmanRuntime.REVISION_LABEL: "1",
+            }
+        },
+        "State": {
+            "Status": "running",
+            "StartedAt": "2025-10-23T00:00:00+00:00",
+        },
+        "NetworkSettings": {
+            "IPAddress": pod_ip,
+            "Ports": {
+                "8080/tcp": [
+                    {
+                        "HostIp": "127.0.0.1",
+                        "HostPort": host_port,
+                    }
+                ]
+            },
+            "Networks": {
+                network_name: {
+                    "IPAddress": pod_ip,
+                }
+            },
+        },
+    }
+
+
+class _SocketMarker:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_create_container_removes_existing(monkeypatch):
     rt = PodmanRuntime()
     calls: list[list[str]] = []
@@ -221,6 +268,100 @@ def test_create_container_normalizes_k8s_memory_quantities(monkeypatch):
     assert run_argv[run_argv.index("--memory") + 1] == str(256 * 1024 * 1024)
     assert "--memory-reservation" in run_argv
     assert run_argv[run_argv.index("--memory-reservation") + 1] == str(128 * 1024 * 1024)
+
+
+def test_endpoint_from_container_uses_published_host_port_by_default() -> None:
+    rt = PodmanRuntime()
+
+    endpoint = rt._endpoint_from_container(_manifest_single(), _container_with_ports())
+
+    assert endpoint == "127.0.0.1:32001"
+
+
+def test_endpoint_from_container_prefers_direct_ip_when_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("AE_PODMAN_ENDPOINT_PREFER_DIRECT", "1")
+    rt = PodmanRuntime()
+
+    endpoint = rt._endpoint_from_container(_manifest_single(), _container_with_ports())
+
+    assert endpoint == "10.88.0.42:8080"
+
+
+def test_endpoint_from_container_falls_back_to_direct_ip_without_published_ports() -> None:
+    rt = PodmanRuntime()
+    container = _container_with_ports()
+    container["NetworkSettings"]["Ports"] = {}
+
+    endpoint = rt._endpoint_from_container(_manifest_single(), container)
+
+    assert endpoint == "10.88.0.42:8080"
+
+
+def test_port_forward_socket_falls_back_to_container_ip(monkeypatch) -> None:
+    rt = PodmanRuntime()
+    container = _container_with_ports(pod_ip="10.88.0.42")
+    container["State"]["Pid"] = 4242
+    calls: list[tuple[int, str, int, int]] = []
+    marker = _SocketMarker()
+
+    monkeypatch.setattr(rt, "_inspect_container_record", lambda _cid: container)
+
+    def fake_connect(pid: int, host: str, port: int, *, timeout: int):  # noqa: ANN001
+        calls.append((pid, host, port, timeout))
+        if host == "127.0.0.1":
+            raise OSError("loopback blocked")
+        return marker
+
+    monkeypatch.setattr(rt, "_connect_in_network_namespace", fake_connect)
+
+    sock = rt.port_forward_socket(
+        pod_id="container-1",
+        pod_name=None,
+        namespace=None,
+        port=8080,
+    )
+
+    assert sock is marker
+    assert calls == [
+        (4242, "127.0.0.1", 8080, 2),
+        (4242, "10.88.0.42", 8080, 2),
+    ]
+
+
+def test_connect_in_network_namespace_restores_namespace(monkeypatch) -> None:
+    rt = PodmanRuntime()
+    calls: list[tuple[str, object]] = []
+    marker = _SocketMarker()
+    opened = {
+        "/proc/self/ns/net": 10,
+        "/proc/4242/ns/net": 11,
+    }
+
+    monkeypatch.setattr("ae.runtime.podman_runtime.os.open", lambda path, flags: opened[path])
+    monkeypatch.setattr(
+        "ae.runtime.podman_runtime.os.close",
+        lambda fd: calls.append(("close", fd)),
+    )
+    monkeypatch.setattr(
+        rt,
+        "_setns",
+        lambda fd, nstype=0: calls.append(("setns", (fd, nstype))),
+    )
+    monkeypatch.setattr(
+        "socket.create_connection",
+        lambda addr, timeout=0: calls.append(("connect", (addr, timeout))) or marker,
+    )
+
+    sock = rt._connect_in_network_namespace(4242, "127.0.0.1", 8080, timeout=3)
+
+    assert sock is marker
+    assert calls == [
+        ("setns", (11, 0)),
+        ("connect", (("127.0.0.1", 8080), 3)),
+        ("setns", (10, 0)),
+        ("close", 11),
+        ("close", 10),
+    ]
 
 
 # ruff: noqa: E501
