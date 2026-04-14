@@ -339,6 +339,9 @@ if [[ "$controller_mode" == "sudo" ]]; then
   fi
   sudo env -i \
     PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" \
+    LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+    NIX_LD_LIBRARY_PATH="${NIX_LD_LIBRARY_PATH:-}" \
+    NIX_LD="${NIX_LD:-}" \
     PYTHON_BIN="$python_bin" \
     AE_PODMAN_BIN="$podman_bin" \
     PYTHONPATH="${PYTHONPATH:-$repo_root/src}" \

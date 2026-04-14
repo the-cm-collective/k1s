@@ -17,8 +17,10 @@ from typing import Any
 
 try:
     import grpc
-except Exception:  # pragma: no cover - optional dependency
+    _grpc_import_error: Exception | None = None
+except Exception as exc:  # pragma: no cover - optional dependency
     grpc = None
+    _grpc_import_error = exc
 
 from ae._utc import UTC
 from ae.controller.spec import (
@@ -702,7 +704,10 @@ class CRIRuntime(RuntimeAdapter):
         if self._runtime and self._images:
             return
         if grpc is None:  # pragma: no cover - optional dependency
-            raise RuntimeError("grpc is required for CRI runtime (install grpcio)")
+            detail = ""
+            if _grpc_import_error is not None:
+                detail = f": {type(_grpc_import_error).__name__}: {_grpc_import_error}"
+            raise RuntimeError(f"grpc is required for CRI runtime (install grpcio){detail}")
         try:
             from ae.runtime.cri.api.runtime.v1 import api_pb2_grpc
         except Exception as exc:  # pragma: no cover - depends on generated stubs

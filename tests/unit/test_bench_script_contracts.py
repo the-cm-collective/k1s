@@ -116,6 +116,16 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
 
     assert 'wait_ready "$app_name" "$n" || true' not in run_matrix_k3s_text
     assert 'wait_ready "$deploy" "$replicas" || true' not in run_rollout_k3s_text
+    assert "current_pod_uids()" in run_matrix_k3s_text
+    assert 'AE_K3S_POD_UIDS="$(current_pod_uids)"' in run_matrix_k3s_text
+    assert 'LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}' in run_matrix_text
+    assert 'NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}' in run_matrix_text
+    assert 'NIX_LD=${NIX_LD:-}' in run_matrix_text
+    assert 'LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}' in run_rollout_text
+    assert 'NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}' in run_rollout_text
+    assert 'NIX_LD=${NIX_LD:-}' in run_rollout_text
+    assert "current_pod_uids()" in run_rollout_k3s_text
+    assert 'AE_K3S_POD_UIDS="$(current_pod_uids)"' in run_rollout_k3s_text
 
 
 def test_bench_env_prep_prefers_direct_podman_endpoints_for_sudo_controller() -> None:
@@ -127,5 +137,8 @@ def test_bench_env_prep_prefers_direct_podman_endpoints_for_sudo_controller() ->
         'bench_podman_endpoint_prefer_direct="${BENCH_PODMAN_ENDPOINT_PREFER_DIRECT:-${AE_PODMAN_ENDPOINT_PREFER_DIRECT:-$bench_podman_endpoint_prefer_direct_default}}"'
         in text
     )
+    assert 'LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \\' in text
+    assert 'NIX_LD_LIBRARY_PATH="${NIX_LD_LIBRARY_PATH:-}" \\' in text
+    assert 'NIX_LD="${NIX_LD:-}" \\' in text
     assert 'AE_PODMAN_ENDPOINT_PREFER_DIRECT="$bench_podman_endpoint_prefer_direct" \\' in text
     assert 'export AE_PODMAN_ENDPOINT_PREFER_DIRECT="${bench_podman_endpoint_prefer_direct}"' in text

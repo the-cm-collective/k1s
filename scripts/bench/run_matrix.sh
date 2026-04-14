@@ -54,6 +54,9 @@ sudo_env_base=(
 sudo_env_clean=(
   "-i"
   "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+  "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+  "NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}"
+  "NIX_LD=${NIX_LD:-}"
 )
 sudo_env_snapshot=(
   "${sudo_env_base[@]}"

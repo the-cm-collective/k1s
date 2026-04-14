@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import ae.runtime.cri_runtime as cri_runtime_module
 from ae.controller.spec import AppManifest
 from ae.runtime.cri_runtime import CRIRuntime, _StalePodSandboxError, grpc
 
@@ -63,6 +64,20 @@ def test_cri_runtime_detects_stale_pod_sandbox_error() -> None:
 
     assert runtime._is_stale_pod_sandbox_error(stale) is True
     assert runtime._is_stale_pod_sandbox_error(other) is False
+
+
+def test_cri_runtime_reports_original_grpc_import_error(monkeypatch) -> None:
+    runtime = CRIRuntime()
+    monkeypatch.setattr(cri_runtime_module, "grpc", None)
+    monkeypatch.setattr(
+        cri_runtime_module,
+        "_grpc_import_error",
+        ModuleNotFoundError("no module named grpc"),
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="ModuleNotFoundError: no module named grpc"):
+        runtime._ensure_clients()
 
 
 def test_run_pod_recovers_once_from_stale_sandbox(monkeypatch) -> None:

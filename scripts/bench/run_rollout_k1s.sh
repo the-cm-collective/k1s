@@ -41,6 +41,13 @@ sudo_env_base=(
   "CONTAINER_HOST="
   "PODMAN_HOST="
 )
+sudo_env_clean=(
+  "-i"
+  "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+  "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+  "NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}"
+  "NIX_LD=${NIX_LD:-}"
+)
 sudo_env_snapshot=(
   "${sudo_env_base[@]}"
   "AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}"
@@ -111,7 +118,7 @@ PY
   ae() { docker exec "$AE_CLI_CONTAINER" python -m ae.cli "$@"; }
 elif [[ "${BENCH_CONTROLLER_SUDO:-0}" == "1" ]] && command -v sudo >/dev/null 2>&1; then
   ae() {
-    sudo env "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@";
+    sudo env "${sudo_env_clean[@]}" "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@";
   }
 else
   ae() { "$python_bin" -m ae.cli "$@"; }
@@ -530,12 +537,12 @@ PY
   if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-during"/* >/dev/null 2>&1; then
     echo "[rollout] skip existing DURING snapshot ${label_suite}-rollout-${replicas}-during" >&2
   else
-    if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
-      else
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
-      fi
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+    else
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+    fi
     else
       if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
       AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
@@ -554,12 +561,12 @@ PY
   if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-post"/* >/dev/null 2>&1; then
     echo "[rollout] skip existing POST snapshot ${label_suite}-rollout-${replicas}-post" >&2
   else
-    if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
-      else
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
-      fi
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+    else
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+    fi
     else
       if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
       AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
