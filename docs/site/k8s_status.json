@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-01-16T17:08:42.584338+00:00",
+  "generated_at": "2026-04-14T20:46:04.143026+00:00",
   "samples_count": 3,
   "overall_score": 57.1,
   "grade": "failing",
@@ -7,7 +7,7 @@
     {
       "sample": "specs/examples/echo.yaml",
       "exists": true,
-      "export_length": 4358,
+      "export_length": 5643,
       "validate": {
         "ran": true,
         "ok": true,
@@ -26,7 +26,7 @@
       "server_dry_run": {
         "ran": true,
         "ok": false,
-        "output": "Could not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\nerror: error validating \"/tmp/tmpojcsrx_c\": error validating data: failed to download openapi: Get \"https://030F8F56D9F551BCE62746B5FF5BAAB1.yl4.us-east-2.eks.amazonaws.com/openapi/v2?timeout=32s\": getting credentials: exec: executable aws failed with exit code 255; if you choose to ignore these errors, turn validation off with --validate=false"
+        "output": "error: error validating \"/tmp/tmp3fnwj7q9\": error validating data: failed to download openapi: Get \"http://localhost:8080/openapi/v2?timeout=32s\": dial tcp [::1]:8080: connect: connection refused; if you choose to ignore these errors, turn validation off with --validate=false"
       },
       "kinds": [
         "ConfigMap",
@@ -49,7 +49,7 @@
     {
       "sample": "specs/examples/multi-replica-echo.yaml",
       "exists": true,
-      "export_length": 3555,
+      "export_length": 5266,
       "validate": {
         "ran": true,
         "ok": true,
@@ -68,7 +68,7 @@
       "server_dry_run": {
         "ran": true,
         "ok": false,
-        "output": "Could not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\nerror: error validating \"/tmp/tmprch9ey9i\": error validating data: failed to download openapi: Get \"https://030F8F56D9F551BCE62746B5FF5BAAB1.yl4.us-east-2.eks.amazonaws.com/openapi/v2?timeout=32s\": getting credentials: exec: executable aws failed with exit code 255; if you choose to ignore these errors, turn validation off with --validate=false"
+        "output": "error: error validating \"/tmp/tmpqdwflhcf\": error validating data: failed to download openapi: Get \"http://localhost:8080/openapi/v2?timeout=32s\": dial tcp [::1]:8080: connect: connection refused; if you choose to ignore these errors, turn validation off with --validate=false"
       },
       "kinds": [
         "Deployment",
@@ -92,7 +92,7 @@
     {
       "sample": "specs/examples/echo-hpa.yaml",
       "exists": true,
-      "export_length": 3282,
+      "export_length": 4886,
       "validate": {
         "ran": true,
         "ok": true,
@@ -111,7 +111,7 @@
       "server_dry_run": {
         "ran": true,
         "ok": false,
-        "output": "Could not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\n\nCould not connect to the endpoint URL: \"https://sts.us-east-2.amazonaws.com/\"\nerror: error validating \"/tmp/tmpqwsptio7\": error validating data: failed to download openapi: Get \"https://030F8F56D9F551BCE62746B5FF5BAAB1.yl4.us-east-2.eks.amazonaws.com/openapi/v2?timeout=32s\": getting credentials: exec: executable aws failed with exit code 255; if you choose to ignore these errors, turn validation off with --validate=false"
+        "output": "error: error validating \"/tmp/tmpi7jign9h\": error validating data: failed to download openapi: Get \"http://localhost:8080/openapi/v2?timeout=32s\": dial tcp [::1]:8080: connect: connection refused; if you choose to ignore these errors, turn validation off with --validate=false"
       },
       "kinds": [
         "Deployment",
