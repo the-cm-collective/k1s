@@ -107,7 +107,7 @@ for n in "${reps[@]}"; do
   [[ -z "$n" ]] && continue
   info "scale ${app_name} to $n"
   kubectl -n "$ns" scale deploy "$app_name" --replicas "$n"
-  wait_ready "$app_name" "$n" || true
+  wait_ready "$app_name" "$n"
   info "snapshot label=${label_suite}-pods-${n}"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then

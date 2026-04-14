@@ -100,7 +100,7 @@ run_rollout_once() {
 
   info "scale ${deploy} to ${replicas}"
   kubectl -n "$namespace" scale deploy "$deploy" --replicas "$replicas"
-  wait_ready "$deploy" "$replicas" || true
+  wait_ready "$deploy" "$replicas"
 
   local cur
   local target
@@ -125,7 +125,7 @@ run_rollout_once() {
   fi
 
   info "wait ready and snapshot POST"
-  wait_ready "$deploy" "$replicas" || true
+  wait_ready "$deploy" "$replicas"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
       sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"

@@ -657,8 +657,9 @@ bench-mem-cri-quick:
 # - Uses Docker on the host for preflights and container cgroup metrics
 # - Skips guard auto-start to avoid spawning a host controller
 bench-mem-e2e-k1nd:
-	@scripts/bench/k1nd_sanitize.sh pre
-	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	@set -e; \
+	 scripts/bench/k1nd_sanitize.sh pre; \
+	 APP_PATH=$${APP:-specs/examples/echo.yaml}; \
 	 APP_BASE=$$(basename "$$APP_PATH"); \
 	 export K1ND_MANIFEST="$$APP_PATH"; \
 	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
@@ -668,6 +669,7 @@ bench-mem-e2e-k1nd:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_matrix.sh \
@@ -680,6 +682,7 @@ bench-mem-e2e-k1nd:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_rollout_k1s.sh \
@@ -695,8 +698,9 @@ bench-mem-e2e-k1nd:
 .PHONY: bench-mem-e2e-k1nd-sudo
 # Same as bench-mem-e2e-k1nd but runs snapshots with sudo to capture full PSS
 bench-mem-e2e-k1nd-sudo:
-	@scripts/bench/k1nd_sanitize.sh pre
-	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	@set -e; \
+	 scripts/bench/k1nd_sanitize.sh pre; \
+	 APP_PATH=$${APP:-specs/examples/echo.yaml}; \
 	 APP_BASE=$$(basename "$$APP_PATH"); \
 	 export K1ND_MANIFEST="$$APP_PATH"; \
 	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
@@ -706,6 +710,7 @@ bench-mem-e2e-k1nd-sudo:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_matrix.sh \
@@ -719,6 +724,7 @@ bench-mem-e2e-k1nd-sudo:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_rollout_k1s.sh \
@@ -735,8 +741,9 @@ bench-mem-e2e-k1nd-sudo:
 .PHONY: bench-mem-e2e-k1nd-quick
 # Fast profile: in-container CLI, no warm, shorter snapshots, fewer waits
 bench-mem-e2e-k1nd-quick:
-	@scripts/bench/k1nd_sanitize.sh pre
-	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	@set -e; \
+	 scripts/bench/k1nd_sanitize.sh pre; \
+	 APP_PATH=$${APP:-specs/examples/echo.yaml}; \
 	 APP_BASE=$$(basename "$$APP_PATH"); \
 	 export K1ND_MANIFEST="$$APP_PATH"; \
 	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
@@ -747,6 +754,7 @@ bench-mem-e2e-k1nd-quick:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_matrix.sh \
@@ -760,6 +768,7 @@ bench-mem-e2e-k1nd-quick:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
 	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
@@ -774,8 +783,9 @@ bench-mem-e2e-k1nd-quick:
 .PHONY: bench-mem-e2e-k1nd-resume-rollout
 # Resume only the rollout stage (use the same LABEL_SUITE as the previous matrix stage)
 bench-mem-e2e-k1nd-resume-rollout:
-	@scripts/bench/k1nd_sanitize.sh pre
-	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	@set -e; \
+	 scripts/bench/k1nd_sanitize.sh pre; \
+	 APP_PATH=$${APP:-specs/examples/echo.yaml}; \
 	 APP_BASE=$$(basename "$$APP_PATH"); \
 	 export K1ND_MANIFEST="$$APP_PATH"; \
 	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
@@ -785,6 +795,7 @@ bench-mem-e2e-k1nd-resume-rollout:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
 	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
