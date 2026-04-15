@@ -9,6 +9,7 @@
 
 ### Changed
 - Runbooks, validated procedures, and generated site pages now treat the retained attached-node flow and stage-1/stage-2 HA validation sequence as the canonical operator path.
+- This tag's release verification now records pooled Debian/NixOS host validation: both hosts run the shared baseline with `AE_USE_REGISTRY_CACHE=0`, Debian owns `make e2e` plus `make strict-cri-smoke`, and NixOS owns `make lab-vm-ha-validation` plus the full benchmark rerun; per-host full-matrix verification starts next release.
 - Benchmark runners and docs were hardened for rootless, rootful, k1nd, k3d, and CRI reruns, including isolated bench environments, refreshed comparison outputs, and stronger rerun guidance.
 - Local dev/operator tooling now includes stronger environment/bootstrap helpers such as `env-doctor`, controller env export helpers, and Nix-based dev shell support.
 

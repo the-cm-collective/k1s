@@ -503,6 +503,13 @@ HA closeout (`H5c-ha-closeout`)
   - `scripts/dev/ha_closeout_e2e.sh` is the supported wrapper for the reduced harness. It prefers the repo venv, exports the Nix `libstdc++` runtime path when available, preflights `import grpc`, and then runs `tests/integration/test_ha_closeout_e2e.py`.
   - This reduced harness is intended for nightly/manual regression, not as the milestone-defining HA lane.
   - It forces `AE_JS_REPLICAS=1`, so it is useful for failover and replay regression but not as transport-fidelity evidence for the shared hub cluster.
+- Current release policy (2026-04-15 tag):
+  - Treat Debian and NixOS as pooled cross-host verification inputs rather than requiring both hosts to pass the full release matrix independently.
+  - Standardize both hosts on `AE_USE_REGISTRY_CACHE=0` for release verification.
+  - Require the shared baseline on both hosts: `make env-doctor`, `AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh`, `python -m pytest --maxfail=1 --disable-warnings -q`, `make docs-verify`, `make profile-smoke`, and `make ha-closeout-e2e`.
+  - Debian owns the authoritative `make e2e` and `make strict-cri-smoke` lanes for this tag.
+  - NixOS owns the authoritative `make lab-vm-ha-validation` and full benchmark rerun lanes for this tag.
+  - Per-host full-matrix verification becomes the default starting with the next release.
 - Closeout rule:
   - The 2026-03-19 HA closeout checkpoint satisfies the original evidence rule: [HA Closeout: current audit status](ha-closeout.html) shows zero `must_fix_before_closeout` gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.
   - The 2026-04-07 maintenance rerun keeps that claim current: image verification hardening closed the verifier overlay/backing-image mismatch, `make lab-vm-ha-validation` passed with green `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills` results, and `make ha-closeout-e2e` also passed.

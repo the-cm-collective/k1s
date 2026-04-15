@@ -15,6 +15,9 @@ Operator bootstrap entrypoint: [HA Cluster Bring-Up: day-0 guide](ha-cluster-bri
 - The original `H*` track closure remains the 2026-03-19 roadmap checkpoint after the primary VM/lab HA lane and the reduced local harness both passed.
 - Historical closeout evidence remains `runs/ha-cp-drills-20260319T213601Z/summary.json` and `runs/ha-cp-drills-20260319T213601Z/ha_summary.json`, including the optional `ha_drill_leader_failover`, `ha_drill_etcd_restart`, and `ha_drill_transport_recovery` checks.
 - The strongest post-closeout maintenance rerun remains 2026-04-07: `make lab-vm-ha-validation` stayed green across `stage1`, `retained`, `drain`, `stage2`, `stage2-live`, and `drills`, and `make ha-closeout-e2e` also passed.
+- For the 2026-04-15 release tag, verification is pooled across Debian and NixOS rather than requiring both hosts to pass the full release matrix independently.
+- Pooled-release details for this tag: both hosts must pass `make env-doctor`, `AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh`, `python -m pytest --maxfail=1 --disable-warnings -q`, `make docs-verify`, `make profile-smoke`, and `make ha-closeout-e2e`, all with `AE_USE_REGISTRY_CACHE=0`; Debian owns `make e2e` and `make strict-cri-smoke`; NixOS owns `make lab-vm-ha-validation` and the full benchmark rerun.
+- Full split-host verification becomes the default starting with the next release.
 - Strongest 2026-04-07 run artifacts:
   - `runs/20260407T172320Z_ha_attached_node_stage1/ha_summary.json`
   - `runs/20260407T174926Z_multi_non_gpu_drain/summary.json`

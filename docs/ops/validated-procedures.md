@@ -14,6 +14,31 @@ Latest validation snapshot
 | HA stage 1/2 validation | `make lab-vm-ha-validation` | `stage1`, `retained`, `stage2`, `stage2-live` green | 2026-04-14 |
 | Full benchmark rerun | split baseline + CRI flow | `combined/combined.csv` has 40 rows for the run stamp | 2026-04-14 |
 
+Release policy for the 2026-04-15 tag
+- Treat Debian and NixOS as pooled cross-host verification inputs for this tag; do not claim that each host independently passed the full release matrix.
+- Standardize release verification on `AE_USE_REGISTRY_CACHE=0` on both hosts.
+- Require the common baseline on both hosts:
+
+```bash
+cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH="$PWD/.venv/bin:$PATH"
+export AE_USE_REGISTRY_CACHE=0
+
+make env-doctor
+AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh
+python -m pytest --maxfail=1 --disable-warnings -q
+make docs-verify
+make profile-smoke
+make ha-closeout-e2e
+```
+
+- Authoritative host-owned lanes for this tag:
+  - Debian: `make e2e`
+  - Debian: `make strict-cri-smoke`
+  - NixOS: `make lab-vm-ha-validation`
+  - NixOS: full benchmark rerun from this page
+- Starting with the next release, require both hosts to pass the full release matrix independently.
+
 ## Simple Dashboard User Test
 
 Preconditions
@@ -168,11 +193,13 @@ Canonical command sequence
 ```bash
 cd /home/m4xx3d0ut/git/k1s-wt/k1s
 export PATH="$PWD/.venv/bin:$PATH"
+export AE_USE_REGISTRY_CACHE=0
 
 nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -lc '
 set -euo pipefail
 cd /home/m4xx3d0ut/git/k1s-wt/k1s
 export PATH="$PWD/.venv/bin:$PATH"
+export AE_USE_REGISTRY_CACHE=0
 STAMP="r$(date +%Y%m%d)-fullretest"
 
 sudo -v
