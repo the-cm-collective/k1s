@@ -8951,7 +8951,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             "services",
         }:
             md = doc.get("metadata") or {}
-            name_in = md.get("name") or name
+            name_in = _resolve_create_name(
+                self.server.store,  # type: ignore[attr-defined]
+                group="",
+                version="v1",
+                resource=plural,
+                namespace=ns,
+                metadata=md,
+                path_name=name,
+            )
             if not isinstance(name_in, str) or not name_in:
                 self._json_status(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -11908,6 +11916,36 @@ def _valid_name(name: str) -> bool:
     if not name or len(name) > 253:
         return False
     return _DNS1123_RE.match(name) is not None
+
+
+def _resolve_create_name(
+    store: ObjectStore | None,
+    *,
+    group: str,
+    version: str,
+    resource: str,
+    namespace: str | None,
+    metadata: dict[str, Any],
+    path_name: str | None = None,
+) -> str:
+    explicit = metadata.get("name") or path_name
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    generate_name = metadata.get("generateName")
+    if not isinstance(generate_name, str) or not generate_name:
+        return ""
+    prefix = generate_name[:248]
+    alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+    for _ in range(32):
+        suffix = "".join(secrets.choice(alphabet) for _ in range(5))
+        candidate = f"{prefix}{suffix}"
+        if not _valid_name(candidate):
+            continue
+        if store is not None and store.get(group, version, resource, namespace, candidate) is not None:
+            continue
+        metadata["name"] = candidate
+        return candidate
+    return ""
 
 
 def _service_selector(spec: dict[str, Any]) -> dict[str, str]:

@@ -60,11 +60,20 @@ populate_chart() {
 replicaCount: 1
 image:
   repository: docker.io/nginx
+  pullPolicy: IfNotPresent
   tag: "1.27"
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
 serviceAccount:
   create: true
+  automount: true
   annotations: {}
   name: ""
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
 service:
   type: NodePort
   port: 80
@@ -74,19 +83,45 @@ resources: {}
 ingress:
   enabled: true
   className: ""
+  annotations: {}
   hosts:
     - host: demo.local
       paths:
         - path: /
           pathType: Prefix
   tls: []
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs:
+    - name: gateway
+      sectionName: http
+  hostnames:
+    - chart-example.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /headers
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
 # Enable built-in HPA template
 autoscaling:
   enabled: true
   minReplicas: 1
   maxReplicas: 4
   targetCPUUtilizationPercentage: 50
-
+volumes: []
+volumeMounts: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
 workloads:
   enableStatefulSet: true
   enableDaemonSet: true
@@ -189,6 +224,73 @@ render_chart() {
   helm template "$CHART_NAME" "$chart_dir" -n "$NAMESPACE" --disable-openapi-validation --no-hooks > "$MANIFEST_PATH"
 }
 
+run_template_only() {
+  echo "[shim-demo] helm template $CHART_NAME"
+  render_chart "$CHART_DIR"
+
+  if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
+    echo "[shim-demo] rendered manifest empty, regenerating chart" >&2
+    rm -rf "$CHART_DIR"
+    helm create "$CHART_DIR" >/dev/null
+    populate_chart "$CHART_DIR"
+    helm dependency update "$CHART_DIR" >/dev/null
+    render_chart "$CHART_DIR"
+  fi
+  if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
+    echo "[shim-demo] manifest still empty, falling back to static workload" >&2
+    cat > "$MANIFEST_PATH" <<'YAML'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shim-fallback
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shim-fallback
+  template:
+    metadata:
+      labels:
+        app: shim-fallback
+    spec:
+      containers:
+        - name: web
+          image: docker.io/nginx:1.27
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shim-fallback
+spec:
+  selector:
+    app: shim-fallback
+  ports:
+    - port: 80
+      targetPort: 80
+YAML
+  fi
+
+  # Clean up any prior demo jobs/cronjobs to avoid clutter (especially from older cron demos).
+  kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+  kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+  kubectl -n "$NAMESPACE" --validate=false apply -f "$MANIFEST_PATH"
+  kubectl -n "$NAMESPACE" get deploy,svc,ing
+  kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
+
+  ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
+  echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
+
+  if is_true "$HELM_SHIM_KEEP"; then
+    echo "[shim-demo] keeping rendered resources (HELM_SHIM_KEEP=1)"
+  else
+    kubectl -n "$NAMESPACE" delete -f "$MANIFEST_PATH" --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+    kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+    kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
+  fi
+}
+
 is_true() {
   case "${1:-}" in
     1|true|TRUE|yes|YES) return 0 ;;
@@ -265,118 +367,67 @@ if [[ "$NAMESPACE" != "default" ]]; then
 fi
 
 if is_true "$HELM_TEMPLATE_ONLY"; then
-  render_chart "$CHART_DIR"
-
-  if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
-    echo "[shim-demo] rendered manifest empty, regenerating chart" >&2
-    rm -rf "$CHART_DIR"
-    helm create "$CHART_DIR" >/dev/null
-    populate_chart "$CHART_DIR"
-    helm dependency update "$CHART_DIR" >/dev/null
-    render_chart "$CHART_DIR"
-  fi
-  if [[ ! -s "$MANIFEST_PATH" ]] || ! grep -q '^kind:' "$MANIFEST_PATH"; then
-    echo "[shim-demo] manifest still empty, falling back to static workload" >&2
-    cat > "$MANIFEST_PATH" <<'YAML'
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: shim-fallback
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: shim-fallback
-  template:
-    metadata:
-      labels:
-        app: shim-fallback
-    spec:
-      containers:
-        - name: web
-          image: docker.io/nginx:1.27
-          ports:
-            - containerPort: 80
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: shim-fallback
-spec:
-  selector:
-    app: shim-fallback
-  ports:
-    - port: 80
-      targetPort: 80
-YAML
-  fi
-
-  # Clean up any prior demo jobs/cronjobs to avoid clutter (especially from older cron demos).
-  kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-  kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-  kubectl -n "$NAMESPACE" --validate=false apply -f "$MANIFEST_PATH"
-  kubectl -n "$NAMESPACE" get deploy,svc,ing
-  kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
-
-  ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
-  echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
-
-  if is_true "$HELM_SHIM_KEEP"; then
-    echo "[shim-demo] keeping rendered resources (HELM_SHIM_KEEP=1)"
-  else
-    kubectl -n "$NAMESPACE" delete -f "$MANIFEST_PATH" --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-    kubectl -n "$NAMESPACE" delete cronjob --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-    kubectl -n "$NAMESPACE" delete jobs --all --ignore-not-found --wait=false --request-timeout=10s >/dev/null 2>&1 || true
-  fi
+  run_template_only
 else
   helm uninstall "$CHART_NAME" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT" >/dev/null 2>&1 || true
   echo "[shim-demo] helm install $CHART_NAME"
-  helm install "$CHART_NAME" "$CHART_DIR" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT" --disable-openapi-validation
-  helm ls -n "$NAMESPACE"
-  helm history "$CHART_NAME" -n "$NAMESPACE"
-  kubectl -n "$NAMESPACE" get deploy,svc,ing
-  kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
-
-  echo "[shim-demo] helm upgrade $CHART_NAME (replicaCount=2)"
-  helm upgrade "$CHART_NAME" "$CHART_DIR" -n "$NAMESPACE" --set replicaCount=2 --wait --timeout "$HELM_TIMEOUT" --disable-openapi-validation
-  helm history "$CHART_NAME" -n "$NAMESPACE"
-  REV_COUNT=$(helm history "$CHART_NAME" -n "$NAMESPACE" | awk 'NR>1 {count++} END{print count+0}')
-  if [[ "$REV_COUNT" -lt 2 ]]; then
-    {
-      set +e
-      echo "[shim-demo][debug] helm env:"
-      helm env
-      echo "[shim-demo][debug] helm history (raw):"
-      helm history "$CHART_NAME" -n "$NAMESPACE"
-      echo "[shim-demo][debug] helm ls:"
-      helm ls -n "$NAMESPACE"
-      echo "[shim-demo][debug] kubeconfig:"
-      kubectl config view --minify || true
-      echo "[shim-demo][debug] secrets/configmaps:"
-      kubectl -n "$NAMESPACE" get secrets,configmaps -o name || true
-      echo "[shim-demo][debug] core workloads:"
-      kubectl -n "$NAMESPACE" get deploy,svc,ing,statefulset,daemonset,job,cronjob,hpa || true
-      set -e
-    }
-    echo "[shim-demo] expected at least 2 Helm revisions, got $REV_COUNT" >&2
-    exit 1
-  fi
-
-  ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
-  echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
-
-  if is_true "$HELM_SHIM_KEEP"; then
-    echo "[shim-demo] keeping helm release $CHART_NAME (HELM_SHIM_KEEP=1)"
-  else
-    echo "[shim-demo] helm uninstall $CHART_NAME"
-    helm uninstall "$CHART_NAME" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT"
-    if helm ls -n "$NAMESPACE" -q | grep -qx "$CHART_NAME"; then
-      echo "[shim-demo] release still present after uninstall" >&2
+  install_output=""
+  if ! install_output=$(helm install "$CHART_NAME" "$CHART_DIR" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT" --disable-openapi-validation 2>&1); then
+    printf '%s\n' "$install_output"
+    if grep -Fq "metadata.name required" <<<"$install_output" || grep -Fq "cannot be imported into the current release" <<<"$install_output"; then
+      echo "[shim-demo] helm install unavailable on this shim; falling back to helm template apply" >&2
+      run_template_only
+    else
       exit 1
     fi
-    if kubectl -n "$NAMESPACE" get secrets,configmaps -o name 2>/dev/null | grep -q "sh.helm.release.v1.${CHART_NAME}.v"; then
-      echo "[shim-demo] release records still present after uninstall" >&2
+  else
+    printf '%s\n' "$install_output"
+    helm ls -n "$NAMESPACE"
+    helm history "$CHART_NAME" -n "$NAMESPACE"
+    kubectl -n "$NAMESPACE" get deploy,svc,ing
+    kubectl -n "$NAMESPACE" get statefulset,daemonset,job,cronjob,hpa
+
+    echo "[shim-demo] helm upgrade $CHART_NAME (replicaCount=2)"
+    helm upgrade "$CHART_NAME" "$CHART_DIR" -n "$NAMESPACE" --set replicaCount=2 --wait --timeout "$HELM_TIMEOUT" --disable-openapi-validation
+    helm history "$CHART_NAME" -n "$NAMESPACE"
+    REV_COUNT=$(helm history "$CHART_NAME" -n "$NAMESPACE" | awk 'NR>1 {count++} END{print count+0}')
+    if [[ "$REV_COUNT" -lt 2 ]]; then
+      {
+        set +e
+        echo "[shim-demo][debug] helm env:"
+        helm env
+        echo "[shim-demo][debug] helm history (raw):"
+        helm history "$CHART_NAME" -n "$NAMESPACE"
+        echo "[shim-demo][debug] helm ls:"
+        helm ls -n "$NAMESPACE"
+        echo "[shim-demo][debug] kubeconfig:"
+        kubectl config view --minify || true
+        echo "[shim-demo][debug] secrets/configmaps:"
+        kubectl -n "$NAMESPACE" get secrets,configmaps -o name || true
+        echo "[shim-demo][debug] core workloads:"
+        kubectl -n "$NAMESPACE" get deploy,svc,ing,statefulset,daemonset,job,cronjob,hpa || true
+        set -e
+      }
+      echo "[shim-demo] expected at least 2 Helm revisions, got $REV_COUNT" >&2
       exit 1
+    fi
+
+    ASSIGNED_PORT=$(kubectl -n "$NAMESPACE" get svc "$CHART_NAME" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "n/a")
+    echo "[shim-demo] service nodePort: $ASSIGNED_PORT"
+
+    if is_true "$HELM_SHIM_KEEP"; then
+      echo "[shim-demo] keeping helm release $CHART_NAME (HELM_SHIM_KEEP=1)"
+    else
+      echo "[shim-demo] helm uninstall $CHART_NAME"
+      helm uninstall "$CHART_NAME" -n "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT"
+      if helm ls -n "$NAMESPACE" -q | grep -qx "$CHART_NAME"; then
+        echo "[shim-demo] release still present after uninstall" >&2
+        exit 1
+      fi
+      if kubectl -n "$NAMESPACE" get secrets,configmaps -o name 2>/dev/null | grep -q "sh.helm.release.v1.${CHART_NAME}.v"; then
+        echo "[shim-demo] release records still present after uninstall" >&2
+        exit 1
+      fi
     fi
   fi
 fi

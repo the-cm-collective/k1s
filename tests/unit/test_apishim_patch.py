@@ -508,4 +508,46 @@ def test_secret_type_roundtrip(tmp_path, monkeypatch):
     assert out.get("type") == "helm.sh/release.v1"
 
 
+def test_secret_create_supports_generate_name(tmp_path, monkeypatch):
+    store = ObjectStore(tmp_path / "apishim.db")
+    monkeypatch.setenv("AE_APISHIM_TOKEN", "a")
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    shim_server.ShimHandler.rbac_enabled = False
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
+    body = json.dumps(
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"generateName": "sh.helm.release.v1.demochart.v1."},
+            "type": "helm.sh/release.v1",
+            "data": {"release": "ZXhhbXBsZQ=="},
+        }
+    ).encode()
+    req = make_handler(
+        "/api/v1/namespaces/demo/secrets",
+        method="POST",
+        headers={"Authorization": "Bearer a", "Content-Type": "application/json"},
+        body=body,
+    )
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    handler.do_POST()
+
+    objects = store.list("", "v1", "secrets", "demo")
+    assert len(objects) == 1
+    created = objects[0]
+    assert created.name.startswith("sh.helm.release.v1.demochart.v1.")
+    assert created.metadata["name"] == created.name
+
+
 # ruff: noqa: S105,E501
