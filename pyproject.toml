@@ -21,6 +21,7 @@ dev = [
     "pytest-cov>=5.0",
     "mypy>=1.11",
     "ruff>=0.6",
+    "matplotlib>=3.9",
     "Pillow>=10.4",
     "pre-commit>=3.8",
     "jsonschema>=4.22",

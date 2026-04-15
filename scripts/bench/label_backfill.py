@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -77,41 +78,59 @@ def detect_oci(backend: str) -> str:
     return ""
 
 
-def _insert_oci_into_label(label: str, *, backend: str, oci: str) -> str:
-    """Insert '+<oci>+' into human label strings.
+_STAGE_RE = re.compile(r"-(idle|pods-\d+|rollout-\d+-(?:during|post))$")
 
-    Primary path: if '+<backend>+' is present, insert right after it.
-    Fallback path: for labels without backend tokens (e.g., 'baseline-...'),
-    insert '+<oci>+' before the stage suffix ('-idle', '-pods-N',
-    '-rollout-N-(during|post)'). If no suffix detected, append at the end.
-    """
-    if not label or not oci:
+
+def _split_label_stage(label: str) -> tuple[str, str]:
+    m = _STAGE_RE.search(label or "")
+    if not m:
+        return label, ""
+    return label[: m.start()], m.group(1)
+
+
+def _stamp_prefix(head: str, *markers: str) -> str:
+    for marker in markers:
+        idx = head.find(marker)
+        if idx != -1:
+            return head[:idx]
+    return head
+
+
+def _normalize_label(
+    label: str,
+    *,
+    backend: str,
+    oci: str,
+    mode: str,
+    rootless: bool,
+    cgroups: str,
+) -> str:
+    """Rebuild a canonical label from structured metadata and stage suffix."""
+    if not label:
         return label
-    token_b = f"+{backend}+" if backend else None
-    token_o = f"+{oci}+"
-    if token_b and token_b in label and token_o not in label:
-        return label.replace(token_b, f"{token_b}{oci}+")
+    head, stage = _split_label_stage(label)
+    if not stage:
+        return label
 
-    # Fallback: inject before stage suffix
-    import re
-
-    # Known stage patterns in our labels
-    m = (
-        re.search(r"(-idle)$", label)
-        or re.search(r"(-pods-\d+)$", label)
-        or re.search(r"(-rollout-\d+-(during|post))$", label)
-    )
-    if m and token_o not in label:
-        start, end = m.span(1)
-        return f"{label[:start]}{token_o}{label[start:]}"
-
-    # As a last resort, append once
-    if token_o not in label:
-        return label + token_o.rstrip("+")
+    oci_part = f"+{oci}" if oci else ""
+    if mode == "k3s":
+        stamp = _stamp_prefix(head, "+k3d", "+docker")
+        return f"{stamp}+k3d{oci_part}-{stage}"
+    if backend == "docker":
+        stamp = _stamp_prefix(head, "+docker")
+        return f"{stamp}+docker{oci_part}+k1nd-{stage}"
+    if backend == "cri":
+        stamp = _stamp_prefix(head, "+cri")
+        return f"{stamp}+cri{oci_part}+containerd-{stage}"
+    if backend == "podman":
+        stamp = _stamp_prefix(head, "+podman")
+        root_tag = "rootless" if rootless else "priv"
+        cgroups_tag = cgroups or "cg2"
+        return f"{stamp}+podman{oci_part}+{root_tag}+{cgroups_tag}-{stage}"
     return label
 
 
-def patch_snapshot(snap: Path, oci: str, insert_into_label: bool) -> bool:
+def patch_snapshot(snap: Path, fallback_oci: str, *, force_oci: bool, insert_into_label: bool) -> bool:
     meta_path = snap / "meta.json"
     if not meta_path.exists():
         return False
@@ -120,16 +139,26 @@ def patch_snapshot(snap: Path, oci: str, insert_into_label: bool) -> bool:
     except Exception:
         return False
     changed = False
-    # If no explicit/host-detected value, try to infer from the snapshot itself
-    if not oci:
-        oci = _detect_oci_from_snapshot(snap)
-    if not meta.get("oci_runtime") and oci:
-        meta["oci_runtime"] = oci
+    meta_oci = str(meta.get("oci_runtime") or "").strip()
+    snap_oci = _detect_oci_from_snapshot(snap)
+    effective_oci = fallback_oci if force_oci else (meta_oci or snap_oci or fallback_oci)
+    if effective_oci and meta_oci != effective_oci:
+        meta["oci_runtime"] = effective_oci
         changed = True
     label = meta.get("label") or ""
     backend = (meta.get("backend") or "").lower()
-    if insert_into_label and oci:
-        new_label = _insert_oci_into_label(label, backend=backend, oci=oci.lower())
+    mode = str(meta.get("mode") or "").lower()
+    cgroups = str(meta.get("cgroups") or "").strip()
+    rootless = bool(meta.get("rootless"))
+    if insert_into_label and effective_oci:
+        new_label = _normalize_label(
+            label,
+            backend=backend,
+            oci=effective_oci.lower(),
+            mode=mode,
+            rootless=rootless,
+            cgroups=cgroups,
+        )
         if new_label != label:
             meta["label"] = new_label
             changed = True
@@ -169,7 +198,12 @@ def main() -> int:
     oci = args.oci or detect_oci(backend)
     updated = 0
     for s in snaps:
-        if patch_snapshot(s, oci, args.insert_into_label):
+        if patch_snapshot(
+            s,
+            oci,
+            force_oci=bool(args.oci),
+            insert_into_label=args.insert_into_label,
+        ):
             updated += 1
     print(f"patched {updated} snapshots (backend={backend}, oci={oci or 'unknown'})")
     return 0
