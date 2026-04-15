@@ -26,7 +26,7 @@ from tests.integration._profile_smoke import (
 
 ROOT = Path(__file__).resolve().parents[2]
 
-_STRICT_CRI_ENV_PRESERVE = ("AE_CRI_ENDPOINT", "CRICTL_BIN")
+_STRICT_CRI_ENV_PRESERVE = ("AE_APISHIM_IMAGE", "AE_CRI_ENDPOINT", "CRICTL_BIN")
 
 
 def _strict_cri_enabled() -> bool:

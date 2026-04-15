@@ -148,6 +148,20 @@ engine_push() {
   "$engine" push "$image"
 }
 
+engine_build() {
+  local image="$1"
+  local dockerfile="${root_dir}/ops/images/apishim.Dockerfile"
+  case "$engine" in
+    podman|docker)
+      echo "[build-cri-apishim] using host networking for ${engine} build"
+      "$engine" build --network host -f "$dockerfile" -t "$image" "$root_dir"
+      ;;
+    *)
+      "$engine" build -f "$dockerfile" -t "$image" "$root_dir"
+      ;;
+  esac
+}
+
 if [[ -z "$image" ]]; then
   image="$tag"
 fi
@@ -179,7 +193,7 @@ if [[ ! -f "${root_dir}/ops/images/apishim.Dockerfile" ]]; then
   exit 1
 fi
 
-"$engine" build -f "${root_dir}/ops/images/apishim.Dockerfile" -t "$image" "$root_dir"
+engine_build "$image"
 
 if (( push == 1 )); then
   echo "[build-cri-apishim] pushing ${image}"

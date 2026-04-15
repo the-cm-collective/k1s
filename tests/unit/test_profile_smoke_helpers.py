@@ -4,6 +4,7 @@ import subprocess
 
 from tests.integration import _profile_smoke
 from tests.integration._profile_smoke import resolve_http_smoke_image
+from tests.integration.test_strict_cri_profile_smoke import _STRICT_CRI_ENV_PRESERVE
 
 
 def test_resolve_http_smoke_image_defaults_to_upstream() -> None:
@@ -38,6 +39,26 @@ def test_resolve_http_smoke_image_respects_registry_mode_off(monkeypatch) -> Non
     monkeypatch.setenv("AE_CRI_REGISTRY", "127.0.0.1:32000")
 
     assert resolve_http_smoke_image(strict_cri=True) == "docker.io/library/python:3.11-alpine"
+
+
+def test_strict_cri_smoke_preserves_custom_apishim_image() -> None:
+    assert "AE_APISHIM_IMAGE" in _STRICT_CRI_ENV_PRESERVE
+
+
+def test_isolated_test_env_drops_apishim_image_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("AE_APISHIM_IMAGE", "localhost:5001/k1s-apishim:test")
+
+    env = _profile_smoke.isolated_test_env()
+
+    assert "AE_APISHIM_IMAGE" not in env
+
+
+def test_isolated_test_env_keeps_explicitly_preserved_apishim_image(monkeypatch) -> None:
+    monkeypatch.setenv("AE_APISHIM_IMAGE", "localhost:5001/k1s-apishim:test")
+
+    env = _profile_smoke.isolated_test_env(preserve=("AE_APISHIM_IMAGE",))
+
+    assert env["AE_APISHIM_IMAGE"] == "localhost:5001/k1s-apishim:test"
 
 
 def test_apply_manifest_uses_attached_token_arg_for_hyphen_prefixed_tokens(

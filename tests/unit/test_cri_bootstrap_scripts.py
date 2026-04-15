@@ -1132,13 +1132,125 @@ exit 0
     build_lines = build_log.read_text(encoding="utf-8").splitlines()
     crictl_lines = crictl_log.read_text(encoding="utf-8").splitlines()
     assert build_lines == [
-        f"build -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t localhost:5001/k1s-apishim:dev {ROOT}",
+        f"build --network host -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t localhost:5001/k1s-apishim:dev {ROOT}",
         "push localhost:5001/k1s-apishim:dev",
     ]
     assert crictl_lines == [
         "--runtime-endpoint unix:///tmp/fake-containerd.sock pull localhost:5001/k1s-apishim:dev"
     ]
     assert "[build-cri-apishim] backend=podman" in proc.stdout
+    assert "[build-cri-apishim] using host networking for podman build" in proc.stdout
+
+
+def test_build_cri_apishim_image_uses_host_network_for_docker(tmp_path: Path) -> None:
+    build_log = tmp_path / "build.log"
+
+    fake_docker = tmp_path / "docker"
+    _write_executable(
+        fake_docker,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_BUILD_LOG"
+exit 0
+""",
+    )
+    fake_podman = tmp_path / "podman"
+    _write_executable(
+        fake_podman,
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "podman should not be used" >&2
+exit 1
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_BUILD_LOG"] = str(build_log)
+    env["AE_CRI_IMAGE_BUILD_BACKEND"] = "docker"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(BUILD_CRI_APISHIM_IMAGE_SCRIPT),
+            "--image",
+            "localhost:5001/k1s-apishim:dev",
+            "--no-pull-cri",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    build_lines = build_log.read_text(encoding="utf-8").splitlines()
+    assert build_lines == [
+        f"build --network host -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t localhost:5001/k1s-apishim:dev {ROOT}",
+        "push localhost:5001/k1s-apishim:dev",
+    ]
+    assert "[build-cri-apishim] backend=docker" in proc.stdout
+    assert "[build-cri-apishim] using host networking for docker build" in proc.stdout
+
+
+def test_build_cri_apishim_image_leaves_nerdctl_build_network_unchanged(tmp_path: Path) -> None:
+    build_log = tmp_path / "build.log"
+
+    fake_nerdctl = tmp_path / "nerdctl"
+    _write_executable(
+        fake_nerdctl,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_BUILD_LOG"
+exit 0
+""",
+    )
+    fake_buildctl = tmp_path / "buildctl"
+    _write_executable(fake_buildctl, "#!/usr/bin/env bash\nexit 0\n")
+    fake_podman = tmp_path / "podman"
+    _write_executable(
+        fake_podman,
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "podman should not be used" >&2
+exit 1
+""",
+    )
+    fake_docker = tmp_path / "docker"
+    _write_executable(
+        fake_docker,
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "docker should not be used" >&2
+exit 1
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_BUILD_LOG"] = str(build_log)
+    env["AE_CRI_IMAGE_BUILD_BACKEND"] = "nerdctl"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(BUILD_CRI_APISHIM_IMAGE_SCRIPT),
+            "--image",
+            "localhost:5001/k1s-apishim:dev",
+            "--no-pull-cri",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    build_lines = build_log.read_text(encoding="utf-8").splitlines()
+    assert build_lines == [
+        f"build -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t localhost:5001/k1s-apishim:dev {ROOT}",
+        "push localhost:5001/k1s-apishim:dev",
+    ]
+    assert "[build-cri-apishim] backend=nerdctl" in proc.stdout
+    assert "using host networking" not in proc.stdout
 
 
 def test_build_cri_apishim_image_rejects_ctr_backend(tmp_path: Path) -> None:
