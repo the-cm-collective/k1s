@@ -394,6 +394,31 @@ class Reconciler:
         until = float(self._create_cooldown_until.get(app_name, 0.0) or 0.0)
         if until > now_ts:
             limit_create = 0
+        keep_old = True
+        try:
+            import os as _os
+
+            serial_service_rollout = str(
+                _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") or "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            svc = getattr(manifest_for_runtime.spec, "service", None)
+            svc_ports = list(getattr(svc, "ports", None) or []) if svc is not None else []
+            fixed_service_port = bool(
+                svc is not None
+                and (
+                    getattr(svc, "port", None) is not None
+                    or any(getattr(p, "node_port", None) is not None for p in svc_ports)
+                )
+            )
+            if (
+                serial_service_rollout
+                and strategy != "canary"
+                and getattr(manifest_for_runtime.spec, "replicas", 1) == 1
+                and fixed_service_port
+            ):
+                keep_old = False
+        except Exception:
+            keep_old = True
 
         placements, schedule_warnings = self._scheduler.plan(manifest_for_runtime, revision)
         for w in schedule_warnings:
@@ -451,7 +476,7 @@ class Reconciler:
                 runtime,
                 manifest_for_runtime,
                 revision,
-                keep_old=True,
+                keep_old=keep_old,
                 limit_create=per_limit,
                 pod_names=pod_names,
                 node_id=getattr(getattr(placement, "node", None), "node_id", None),
