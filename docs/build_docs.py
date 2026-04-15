@@ -111,31 +111,61 @@ INTERACTIVE_HREF_TOKENS = (
     "/playground",
 )
 
-NAV_LINKS = [
-    ("Start Here", "start-here.html", False, False),
-    ("Overview", "overview.html", False, False),
-    ("Demos", "examples.html", False, False),
-    ("Architecture", "architecture.html", False, False),
-    ("Philosophy", "project-philosophy.html", False, False),
-    ("Inference Fabric", "inference-fabric.html", False, False),
-    ("Roadmap", "distributed-compute-fabric.html", False, False),
-    ("Ops Runbook", "runbook.html", False, False),
-    ("HA Bring-Up", "ha-cluster-bring-up.html", False, False),
-    ("VM Variants", "vm-variant-runbook.html", False, False),
-    ("CRI containerd", "cri-containerd.html", False, False),
-    ("Multi-Node", "multinode-lab.html", False, False),
-    ("HTTP API", "http-api.html", False, False),
-    ("API Shim", "api-shim.html", False, False),
-    ("Ingress", "ingress.html", False, False),
-    ("Ingress Validation", "ingress-capability-test-sequence.html", False, False),
-    ("API Auth", "api-auth.html", False, False),
-    ("Concepts", "concepts.html", False, False),
-    ("Benchmarks", "benchmarks.html", False, False),
-    ("Swagger", "/swagger", True, True),
-    ("ReDoc", "/redoc", True, True),
-    ("Dashboard", DASHBOARD_URL, True, True),
-    ("Playground", "playground.html", True, False),
-    ("Concepts in Practice", "concepts-in-practice.html", False, False),
+NAV_GROUPS = [
+    (
+        "Learn",
+        [
+            ("Start Here", "start-here.html", False, False),
+            ("Overview", "overview.html", False, False),
+            ("Demos", "examples.html", False, False),
+            ("Concepts", "concepts.html", False, False),
+            ("Concepts in Practice", "concepts-in-practice.html", False, False),
+        ],
+    ),
+    (
+        "Design",
+        [
+            ("Architecture", "architecture.html", False, False),
+            ("Philosophy", "project-philosophy.html", False, False),
+            ("Inference Fabric", "inference-fabric.html", False, False),
+            ("Roadmap", "distributed-compute-fabric.html", False, False),
+        ],
+    ),
+    (
+        "Operate",
+        [
+            ("Ops Runbook", "runbook.html", False, False),
+            ("HA Bring-Up", "ha-cluster-bring-up.html", False, False),
+            ("VM Variants", "vm-variant-runbook.html", False, False),
+            ("Benchmarks", "benchmarks.html", False, False),
+        ],
+    ),
+    (
+        "Guides",
+        [
+            ("CRI containerd", "cri-containerd.html", False, False),
+            ("Multi-Node", "multinode-lab.html", False, False),
+            ("Ingress", "ingress.html", False, False),
+            ("Ingress Validation", "ingress-capability-test-sequence.html", False, False),
+        ],
+    ),
+    (
+        "API",
+        [
+            ("HTTP API", "http-api.html", False, False),
+            ("API Shim", "api-shim.html", False, False),
+            ("API Auth", "api-auth.html", False, False),
+            ("Swagger", "/swagger", True, True),
+            ("ReDoc", "/redoc", True, True),
+        ],
+    ),
+    (
+        "Live",
+        [
+            ("Dashboard", DASHBOARD_URL, True, True),
+            ("Playground", "playground.html", True, False),
+        ],
+    ),
 ]
 
 STATIC_SWAGGER_LABEL = "Swagger (Static)"
@@ -167,6 +197,15 @@ def render_nav(
             return href
         return f"{href_prefix}{href}"
 
+    def render_nav_link(label: str, href: str, external: bool) -> str:
+        attrs = []
+        if external:
+            attrs.append('target="_blank"')
+            attrs.append('rel="noopener"')
+        attr_str = " " + " ".join(attrs) if attrs else ""
+        href = normalize_href(href)
+        return f'      <a href="{href}"{attr_str}>{label}</a>'
+
     parts = []
     brand_href = normalize_href("index.html")
     brand_logo_src = normalize_href("static/k1s-logo-circle.svg")
@@ -176,26 +215,22 @@ def render_nav(
         "<span>k1s docs</span>"
         "</a>"
     )
-    injected_static = False
-    for label, href, interactive, external in NAV_LINKS:
-        if interactive and not include_interactive:
+    for group_label, group_links in NAV_GROUPS:
+        rendered_links: list[str] = []
+        for label, href, interactive, external in group_links:
+            if interactive and not include_interactive:
+                continue
+            rendered_links.append(render_nav_link(label, href, external))
+            if include_static_swagger and group_label == "API" and label == "HTTP API":
+                rendered_links.append(
+                    render_nav_link(STATIC_SWAGGER_LABEL, STATIC_SWAGGER_HREF, False)
+                )
+        if not rendered_links:
             continue
-        attrs = []
-        if external:
-            attrs.append('target="_blank"')
-            attrs.append('rel="noopener"')
-        attr_str = " " + " ".join(attrs) if attrs else ""
-        href = normalize_href(href)
-        parts.append(f'      <a href="{href}"{attr_str}>{label}</a>')
-        if include_static_swagger and label == "HTTP API":
-            parts.append(
-                f'      <a href="{normalize_href(STATIC_SWAGGER_HREF)}">{STATIC_SWAGGER_LABEL}</a>'
-            )
-            injected_static = True
-    if include_static_swagger and not injected_static:
         parts.append(
-            f'      <a href="{normalize_href(STATIC_SWAGGER_HREF)}">{STATIC_SWAGGER_LABEL}</a>'
+            f'      <span class="nav-group-label" aria-hidden="true">{group_label}</span>'
         )
+        parts.extend(rendered_links)
     return "\n".join(parts)
 
 
@@ -700,6 +735,25 @@ TEMPLATE = """<!doctype html>
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -1105,6 +1159,11 @@ TEMPLATE = """<!doctype html>
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -1129,7 +1188,7 @@ TEMPLATE = """<!doctype html>
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
