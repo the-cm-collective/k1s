@@ -267,4 +267,24 @@ def test_scale_returns_resource_version_conflict(monkeypatch):
     assert '"actual": 4' in body
 
 
+def test_require_role_accepts_query_token_for_get(monkeypatch):
+    monkeypatch.setenv("AE_API_READ_TOKEN", "reader")
+    handler = object.__new__(http_api._ApiHandler)
+    handler.path = "/dashboard/sse/events?app=blue&limit=50&token=reader"
+    handler.command = "GET"
+    handler.headers = {}
+
+    assert handler._require_role("read") is True
+
+
+def test_require_role_rejects_query_token_for_post(monkeypatch):
+    monkeypatch.setenv("AE_API_READ_TOKEN", "reader")
+    handler = object.__new__(http_api._ApiHandler)
+    handler.path = "/api/apishim/session?token=reader"
+    handler.command = "POST"
+    handler.headers = {}
+
+    assert handler._require_role("read") is False
+
+
 # ruff: noqa: E501

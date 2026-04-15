@@ -1141,7 +1141,7 @@ Connection: close
       }
 
       function shimAuthToken(){
-        return activeToken();
+        return labsToken || activeToken() || '';
       }
 
       function mintShimToken(role, scope){

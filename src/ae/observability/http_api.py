@@ -125,6 +125,7 @@ def _resolve_apishim_verify() -> bool | str:
         os.getenv("AE_APISHIM_CA_BUNDLE")
         or os.getenv("AE_APISHIM_CA")
         or os.getenv("AE_APISHIM_TLS_CA")
+        or os.getenv("AE_APISHIM_TLS_CA_CERT")
         or ""
     ).strip()
     if override:
@@ -134,29 +135,73 @@ def _resolve_apishim_verify() -> bool | str:
                 return str(path)
         except Exception:
             pass
-    cert_hint = (os.getenv("AE_APISHIM_TLS_CERT") or "").strip()
-    if cert_hint:
-        try:
-            path = Path(cert_hint)
-            if path.exists():
-                return str(path)
-        except Exception:
-            pass
     try:
         env_file = _resolve_apishim_env_file()
         if env_file:
-            candidate = Path(env_file).parent / "apishim.crt"
+            candidate = Path(env_file).parent / "apishim.ca.crt"
             if candidate.exists():
                 return str(candidate)
     except Exception:
         pass
-    for path in ("state/profiles/labs/apishim.crt", "state/certs/combined-dev-ca.pem"):
+    for path in ("state/profiles/labs/apishim.ca.crt", "state/certs/combined-dev-ca.pem"):
         try:
             if Path(path).exists():
                 return path
         except Exception:
             continue
     return False
+
+
+def _resolve_apishim_server(*, env_file: str = "", default_port: int | None = None) -> str:
+    for key in ("AE_APISHIM_SERVER", "AE_LABS_HELM_SERVER"):
+        value = str(os.getenv(key, "") or "").strip()
+        if value:
+            return value.rstrip("/")
+    if env_file:
+        for key in ("AE_APISHIM_SERVER", "AE_LABS_HELM_SERVER"):
+            value = _read_env_file_var(env_file, key)
+            if value:
+                return value.rstrip("/")
+    try:
+        port = int(default_port or 8455)
+    except Exception:
+        port = 8455
+    return f"https://127.0.0.1:{port}"
+
+
+def _resolve_apishim_admin_token(*, env_file: str = "") -> str:
+    for key in ("AE_APISHIM_TOKEN", "AE_LABS_HELM_TOKEN"):
+        value = str(os.getenv(key, "") or "").strip()
+        if value:
+            return value
+    if env_file:
+        for key in ("AE_APISHIM_TOKEN", "AE_LABS_HELM_TOKEN"):
+            value = _read_env_file_var(env_file, key)
+            if value:
+                return value
+    return str(_HELM_DEMO_STATE.get("token") or "").strip()
+
+
+def _resolve_apishim_store_config(*, env_file: str = "") -> tuple[str, str]:
+    dsn = str(os.getenv("AE_APISHIM_DSN", "") or "").strip()
+    if not dsn and env_file:
+        dsn = _read_env_file_var(env_file, "AE_APISHIM_DSN")
+    db_path = str(os.getenv("AE_APISHIM_DB", "") or "").strip()
+    if not db_path and env_file:
+        db_path = _read_env_file_var(env_file, "AE_APISHIM_DB")
+    if not db_path and env_file:
+        try:
+            db_path = str(Path(env_file).with_suffix(".db"))
+        except Exception:
+            db_path = ""
+    if not db_path:
+        db_path = "state/apishim.db"
+    return dsn, db_path
+
+
+def _describe_apishim_target(group: str, version: str, resource: str) -> str:
+    prefix = f"{group}/{version}" if group else version
+    return f"{prefix}/{resource}"
 
 
 def record_outbox_publish(success: bool) -> None:
@@ -1879,10 +1924,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         by default and mutations remain gated by AE_API_MUTATIONS.
         """
         import os
+        import urllib.parse as _up
 
         # Extract presented token
         auth = self.headers.get("Authorization", "")
         token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else ""
+        if not token and getattr(self, "command", "").upper() == "GET":
+            _p, _, q = self.path.partition("?")
+            if q:
+                params = _up.parse_qs(q)
+                token = str((params.get("token") or [""])[0] or "").strip()
 
         # Configured tokens
         admin = os.getenv("AE_API_ADMIN_TOKEN")
@@ -3150,6 +3201,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 removed_apps: list[dict[str, object]] = []
+                helm_prefixes: set[str] = set()
                 for app in candidates:
                     try:
                         res = self.delete_fn(app, True)  # type: ignore[misc]
@@ -3170,6 +3222,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     ns = str(_HELM_DEMO_STATE.get("namespace") or "demo-helm")
                     if ns:
                         prefixes.add(f"{ns}--")
+                    helm_prefixes = set(prefixes)
                     if prefixes:
                         names: set[str] = set()
                         try:
@@ -3210,9 +3263,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 # Also remove shim objects in the helm demo namespace so the adapter
-                # doesn't reapply them after reset. Prefer the running shim API so
-                # deletes publish watch events; fall back to direct DB cleanup only
-                # if the shim server is unreachable.
+                # doesn't reapply them after reset. Prefer the shim API so deletes
+                # publish watch events, but verify the namespace is actually empty
+                # and fall back to direct store cleanup for any survivors.
                 try:
                     ns = str(_HELM_DEMO_STATE.get("namespace") or "demo-helm")
                     if ns:
@@ -3229,40 +3282,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             ("networking.k8s.io", "v1", "ingresses"),
                             ("autoscaling", "v2", "horizontalpodautoscalers"),
                         ]
-                        removed_shim = 0
-                        shim_reachable = False
-                        shim_base = ""
                         env_file = _resolve_apishim_env_file()
+                        shim_base = _resolve_apishim_server(
+                            env_file=env_file,
+                            default_port=int(_HELM_DEMO_STATE.get("port") or 8455),
+                        )
+                        token = _resolve_apishim_admin_token(env_file=env_file)
+                        dsn, db_path = _resolve_apishim_store_config(env_file=env_file)
+                        removed_via_api = 0
+                        removed_via_store = 0
+                        shim_reachable = False
+                        survivor_names: list[str] = []
                         try:
-                            import os as _os
-
                             import requests as _req
 
-                            base = str(_os.getenv("AE_LABS_HELM_SERVER", "") or "").strip()
-                            if not base and env_file:
-                                base = _read_env_file_var(env_file, "AE_LABS_HELM_SERVER")
-                            if not base:
-                                port = int(_HELM_DEMO_STATE.get("port") or 8455)
-                                base = f"https://127.0.0.1:{port}"
-                            base = base.rstrip("/")
-                            shim_base = base
-                            token = (
-                                str(_os.getenv("AE_LABS_HELM_TOKEN") or "").strip()
-                                or str(_os.getenv("AE_APISHIM_TOKEN") or "").strip()
-                                or str(_HELM_DEMO_STATE.get("token") or "").strip()
-                            )
-                            if not token and env_file:
-                                token = _read_env_file_var(
-                                    env_file, "AE_LABS_HELM_TOKEN"
-                                ) or _read_env_file_var(env_file, "AE_APISHIM_TOKEN")
                             headers = {"Authorization": f"Bearer {token}"} if token else {}
                             verify = _resolve_apishim_verify()
-                            if token:
+                            if token and shim_base:
                                 try:
                                     probe = _req.get(
-                                        f"{base}/version", headers=headers, timeout=2, verify=verify
+                                        f"{shim_base}/version",
+                                        headers=headers,
+                                        timeout=2,
+                                        verify=verify,
                                     )
-                                    shim_reachable = probe.status_code < 500
+                                    shim_reachable = probe.status_code < 400
                                 except Exception:
                                     shim_reachable = False
                             else:
@@ -3275,9 +3319,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 )
                                 for grp, ver, res in targets:
                                     if grp:
-                                        list_url = f"{base}/apis/{grp}/{ver}/namespaces/{ns}/{res}"
+                                        list_url = (
+                                            f"{shim_base}/apis/{grp}/{ver}/namespaces/{ns}/{res}"
+                                        )
                                     else:
-                                        list_url = f"{base}/api/{ver}/namespaces/{ns}/{res}"
+                                        list_url = f"{shim_base}/api/{ver}/namespaces/{ns}/{res}"
                                     try:
                                         resp = _req.get(
                                             list_url, headers=headers, timeout=3, verify=verify
@@ -3306,20 +3352,20 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                                     verify=verify,
                                                 )
                                                 if dresp.status_code < 300:
-                                                    removed_shim += 1
+                                                    removed_via_api += 1
                                             except Exception:
                                                 continue
                                     except Exception:
                                         continue
                         except Exception:
                             shim_reachable = False
-                        if shim_reachable and removed_shim:
+                        if shim_reachable and removed_via_api:
                             logger.info(
                                 "labs reset removed %s shim objects via shim API in namespace %s",
-                                removed_shim,
+                                removed_via_api,
                                 ns,
                             )
-                        if shim_reachable and not removed_shim:
+                        if shim_reachable and not removed_via_api:
                             logger.info(
                                 "labs reset shim API reachable at %s; no shim objects removed for namespace %s",
                                 shim_base or "<unknown>",
@@ -3327,52 +3373,120 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             )
                         if not shim_reachable:
                             logger.info(
-                                "labs reset shim API unavailable; falling back to direct DB cleanup for namespace %s",
+                                "labs reset shim API unavailable at %s; falling back to direct store cleanup for namespace %s",
+                                shim_base or "<unknown>",
                                 ns,
                             )
-                            import os as _os
-                            from pathlib import Path as _Path
+                        from ae.apishim.store import ObjectStore as _ObjectStore
 
-                            from ae.apishim.store import ObjectStore as _ObjectStore
-
-                            dsn = _os.getenv("AE_APISHIM_DSN")
-                            db_path = _os.getenv("AE_APISHIM_DB", "").strip()
-                            if not db_path and env_file:
-                                db_path = _read_env_file_var(env_file, "AE_APISHIM_DB")
-                            if not db_path and env_file:
+                        store = (
+                            _ObjectStore(dsn=dsn)
+                            if dsn
+                            else _ObjectStore(db_path=Path(db_path))
+                        )
+                        try:
+                            survivors: list[tuple[str, str, str, str]] = []
+                            for grp, ver, res in targets:
                                 try:
-                                    db_path = str(_Path(env_file).with_suffix(".db"))
+                                    items = store.list(grp, ver, res, ns)
                                 except Exception:
-                                    db_path = ""
-                            if not db_path:
-                                db_path = "state/apishim.db"
-                            store = (
-                                _ObjectStore(dsn=dsn)
-                                if dsn
-                                else _ObjectStore(db_path=_Path(db_path))
-                            )
-                            try:
+                                    continue
+                                for obj in items:
+                                    survivors.append((grp, ver, res, obj.name))
+                            survivor_names = [
+                                f"{_describe_apishim_target(grp, ver, res)}:{name}"
+                                for grp, ver, res, name in survivors
+                            ]
+                            if survivor_names:
+                                logger.info(
+                                    "labs reset found surviving shim objects in namespace %s after API cleanup: %s",
+                                    ns,
+                                    ", ".join(sorted(survivor_names)),
+                                )
+                                for grp, ver, res, name in survivors:
+                                    try:
+                                        if store.delete(grp, ver, res, ns, name):
+                                            removed_via_store += 1
+                                    except Exception:
+                                        continue
+                                survivors = []
                                 for grp, ver, res in targets:
                                     try:
                                         items = store.list(grp, ver, res, ns)
                                     except Exception:
                                         continue
                                     for obj in items:
-                                        if store.delete(grp, ver, res, ns, obj.name):
-                                            removed_shim += 1
-                            finally:
-                                close = getattr(store, "close", None)
-                                if callable(close):
+                                        survivors.append((grp, ver, res, obj.name))
+                                survivor_names = [
+                                    f"{_describe_apishim_target(grp, ver, res)}:{name}"
+                                    for grp, ver, res, name in survivors
+                                ]
+                        finally:
+                            close = getattr(store, "close", None)
+                            if callable(close):
+                                try:
+                                    close()
+                                except Exception:
+                                    pass
+                        if removed_via_store:
+                            logger.info(
+                                "labs reset removed %s shim objects via direct store cleanup for namespace %s",
+                                removed_via_store,
+                                ns,
+                            )
+                        if survivor_names:
+                            logger.warning(
+                                "labs reset left shim survivors in namespace %s after fallback cleanup: %s",
+                                ns,
+                                ", ".join(sorted(survivor_names)),
+                            )
+                except Exception:
+                    pass
+                # Reset can race with the shim adapter queue: delete controller apps
+                # again until no helm-demo mirrors remain after shim cleanup.
+                try:
+                    if helm_prefixes:
+                        deadline = time.time() + 5.0
+                        empty_polls = 0
+                        while time.time() < deadline:
+                            names: set[str] = set()
+                            try:
+                                names.update([s.app_name for s in self.store.list_status()])
+                            except Exception:
+                                pass
+                            try:
+                                names.update(self.store.list_registered_app_names())
+                            except Exception:
+                                pass
+                            lingering = sorted(
+                                {n for n in names if any(n.startswith(p) for p in helm_prefixes)}
+                            )
+                            if not lingering:
+                                empty_polls += 1
+                                if empty_polls >= 2:
+                                    break
+                                time.sleep(0.25)
+                                continue
+                            empty_polls = 0
+                            logger.info(
+                                "labs reset purging lingering helm demo apps after shim cleanup: %s",
+                                ", ".join(lingering),
+                            )
+                            for app in lingering:
+                                try:
+                                    _labs_block_app(app)
+                                except Exception:
+                                    pass
+                                try:
+                                    res = self.delete_fn(app, True)  # type: ignore[misc]
+                                    removed_apps.append(res)
                                     try:
-                                        close()
+                                        _LABS_APPS.discard(app)
                                     except Exception:
                                         pass
-                            if removed_shim:
-                                logger.info(
-                                    "labs reset removed %s shim objects in namespace %s",
-                                    removed_shim,
-                                    ns,
-                                )
+                                except Exception:
+                                    continue
+                            time.sleep(0.25)
                 except Exception:
                     pass
                 self._json_ok({"removed": removed_apps})
