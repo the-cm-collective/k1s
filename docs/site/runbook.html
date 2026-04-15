@@ -654,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:44395';</script>
+    <script>window.DOCS_DASHBOARD_URL='http://127.0.0.1:44395/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -745,7 +745,7 @@
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="http://127.0.0.1:44395/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
@@ -1655,16 +1655,21 @@
 <li>On NixOS, this helper path applies the local DNS/TLS bridge automatically.</li>
 <li>Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: <code>make lab-vm-ha-attached-node-status</code></li>
 <li>After <code>up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the local <code>127.0.0.1</code> dev mapping.</li>
+<li><code>make lab-vm-ha-attached-node-purge</code> and <code>make lab-vm-ha-attached-node-reset</code> restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead.</li>
 <li>For the exact retained operator flow, live stage-2 helper, auth bootstrap, and cleanup semantics, use <a href="validated-procedures.html#advanced-dashboard-user-test-retained-ha-vm">Validated Procedures: retained operator readout</a> and <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up: retained operator context</a>.</li>
 <li>Quick references:
 <ul>
 <li>full checked-in HA validation: <code>make lab-vm-ha-validation</code></li>
 <li>retained stage-1 smoke: <code>make lab-vm-ha-attached-node-workload-smoke</code></li>
+<li>retained-VM &quot;rebuild and restart all&quot; path: <code>make lab-vm-ha-attached-node-refresh-all</code></li>
+<li>retained stop for later restart: <code>make lab-vm-ha-attached-node-down</code></li>
 <li>live stage-2 helper: <code>RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke</code></li>
 <li>retained cleanup: <code>make lab-vm-ha-attached-node-purge</code></li>
 <li>retained reset: <code>make lab-vm-ha-attached-node-reset</code></li>
+<li>retained hard reset with bridge teardown: <code>make lab-vm-ha-attached-node-reset LAB_VM_HA_ATTACHED_NODE_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></li>
 </ul>
 </li>
+<li>Persistent retained ingress checks use <code>ha-web-smoke.home.arpa</code>, including host-side probes such as <code>curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...</code>.</li>
 </ul>
 </li>
 <li>Scope of apps shown and reconciled
@@ -2079,7 +2084,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-14 17:31:27</span>
+        <span>Built 2026-04-14 18:22:48</span>
       </div>
     </footer>
     <script>

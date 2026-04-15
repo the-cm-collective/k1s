@@ -3,13 +3,20 @@
 ## Unreleased
 
 ### Added
-- No user-facing additions yet.
+- High-availability control-plane support across controller authority, mutation fencing/CAS, HA-safe API-shim reads, and shared authority handling for workload-core, CRD, HPA, CronJob, and storage resources.
+- HA operator tooling and observability for retained and stage-2 lanes, including public control-plane Envoy exposure, HA dashboard/system surfaces, etcd snapshot/recovery helpers, and new HA drill/upgrade/bootstrap scripts.
+- HA VM validation automation via `make lab-vm-ha-validation`, with attached-node, stage-2, live-helper, and drill coverage backed by the checked-in HA lab variants and closeout helpers.
 
 ### Changed
-- No user-facing changes yet.
+- Runbooks, validated procedures, and generated site pages now treat the retained attached-node flow and stage-1/stage-2 HA validation sequence as the canonical operator path.
+- Benchmark runners and docs were hardened for rootless, rootful, k1nd, k3d, and CRI reruns, including isolated bench environments, refreshed comparison outputs, and stronger rerun guidance.
+- Local dev/operator tooling now includes stronger environment/bootstrap helpers such as `env-doctor`, controller env export helpers, and Nix-based dev shell support.
 
 ### Fixed
 - VM golden-image verification and lab overlay guards now size verifier overlays from the backing qcow2 virtual size and reject undersized stale overlays, preventing truncated initramfs/root-device failures in HA validation reruns.
+- Demo and premerge smoke workflows were stabilized across playground auth/reset cleanup, helm shim demo behavior, fixed-port rollouts, and simple dashboard recovery.
+- Runtime and benchmark reliability improved across Podman netns socket probing, Docker list races in k1nd, CRI env/bootstrap checks, and k3d comparison/chart capture.
+- HA VM retained-lane issues were tightened across cloud-init wait behavior, drain/reseed flows, ingress routing/trust setup, and host mapping restoration during purge/reset.
 
 ## 0.1.3 - 2026-02-19
 

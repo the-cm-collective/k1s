@@ -255,6 +255,25 @@ Notes:
 - In HA, the docs Playground is disabled by default, including this retained VM lane. Use `AE_PLAYGROUND=1` only for exceptional local testing on a non-public control plane.
 - Use `lab/variants/ha-control-plane-core.yaml` when you want the checked-in stage-2 HA edge/gateway transport topology and true `core-proxy` validation.
 - If you are reusing `k1s-br0` from a different variant CIDR, tear that lane down with `--destroy-network` before running the HA host prep command above.
+- Use `--destroy-network` only when you want full bridge cleanup or are switching to another subnet.
+
+Retained auth bootstrap for local system/dashboard reads:
+
+```bash
+source <(APISHIM_ENV_FILE=state/profiles/k1s-ha-core/apishim.env CONTROLLER_ENV_FILE=state/profiles/k1s-ha-core/controller.env bash scripts/ae-env.sh local)
+curl -sk \
+  -H "Authorization: Bearer ${AE_API_READ_TOKEN:-$AE_API_ADMIN_TOKEN}" \
+  https://api.home.arpa:10443/system | python -m json.tool
+```
+
+Public retained HA surfaces:
+- dashboard: `https://dash.home.arpa:10443/dashboard`
+- docs: `https://docs.home.arpa:10443/`
+- API docs: `https://api.home.arpa:10443/swagger`
+- retained workload ingress probe: `curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 https://ha-web-smoke.home.arpa:10443/`
+- `make lab-vm-ha-attached-node-up` rewrites the host-side managed mapping for `dash.home.arpa`, `docs.home.arpa`, and `api.home.arpa`, so `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should return the retained HA core IP instead of the local dev mapping.
+- `make lab-vm-ha-attached-node-purge` and `make lab-vm-ha-attached-node-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead.
+- For dashboard-backed reads, use the same bearer token for the dashboard data panels.
 
 ## 1) Host prerequisite check
 

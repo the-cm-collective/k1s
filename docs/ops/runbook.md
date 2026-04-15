@@ -543,13 +543,18 @@ Dashboard reload vs. restart
   - On NixOS, this helper path applies the local DNS/TLS bridge automatically.
   - Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: `make lab-vm-ha-attached-node-status`
   - After `up`, `getent hosts dash.home.arpa docs.home.arpa api.home.arpa` should resolve to the retained HA ingress IP instead of the local `127.0.0.1` dev mapping.
+  - `make lab-vm-ha-attached-node-purge` and `make lab-vm-ha-attached-node-reset` restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead.
   - For the exact retained operator flow, live stage-2 helper, auth bootstrap, and cleanup semantics, use [Validated Procedures: retained operator readout](validated-procedures.html#advanced-dashboard-user-test-retained-ha-vm) and [HA Cluster Bring-Up: retained operator context](ha-cluster-bring-up.html).
   - Quick references:
     - full checked-in HA validation: `make lab-vm-ha-validation`
     - retained stage-1 smoke: `make lab-vm-ha-attached-node-workload-smoke`
+    - retained-VM "rebuild and restart all" path: `make lab-vm-ha-attached-node-refresh-all`
+    - retained stop for later restart: `make lab-vm-ha-attached-node-down`
     - live stage-2 helper: `RUN_ID=<live-ha-core-run> make lab-vm-ha-core-workload-smoke`
     - retained cleanup: `make lab-vm-ha-attached-node-purge`
     - retained reset: `make lab-vm-ha-attached-node-reset`
+    - retained hard reset with bridge teardown: `make lab-vm-ha-attached-node-reset LAB_VM_HA_ATTACHED_NODE_ARGS="--rebuild-images --destroy-network"`
+  - Persistent retained ingress checks use `ha-web-smoke.home.arpa`, including host-side probes such as `curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...`.
 - Scope of apps shown and reconciled
   - The controller respects `AE_SPECS_DIR` for the active specs root. To avoid reconciling every sample under `specs/`, set `AE_SPECS_DIR` to a curated folder (e.g., `state/profiles/demo/specs`).
   - Updated Make targets and bench scripts auto‑honor `AE_SPECS_DIR`. If unset, they fall back to `specs/`.
