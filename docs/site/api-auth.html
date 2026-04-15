@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -630,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -693,28 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
       <a href="project-philosophy.html">Philosophy</a>
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -725,116 +757,76 @@
       </svg>
     </button>
     <div class="container">
-    <h1 id="api-auth-and-mutations">API Auth and Mutations</h1>
-<h2 id="overview">Overview</h2>
+    <h1 id="api-auth">API Auth</h1>
+<p>This page is the auth reference for the controller-native HTTP API and the optional Kubernetes API shim. Use <a href="http-api.html">HTTP API</a> for the controller endpoint catalog, <a href="api-shim.html">API Shim</a> for the Kubernetes-compatible surface, and <a href="runbook.html">Operations Runbook</a> for longer operator workflows.</p>
+<h2 id="controller-http-api">Controller HTTP API</h2>
 <ul>
-<li>Read-only endpoints (/status, /events, /metrics, /logs, /health, /openapi.json) are available by default.</li>
-<li>If any token is configured, all GETs require at least the READ token.</li>
-<li>Mutating endpoints (/scale/&lt;app&gt;, /delete/&lt;app&gt;, /rollout/*, /apply) are disabled unless AE_API_MUTATIONS=1.</li>
-<li>Optional Bearer tokens gate access per role:
+<li>Public surfaces stay reachable without a bearer token:
 <ul>
-<li>AE_API_READ_TOKEN   (read)</li>
-<li>AE_API_SCALER_TOKEN (scale)</li>
-<li>AE_API_ADMIN_TOKEN  (admin)</li>
+<li><code>/metrics</code></li>
+<li><code>/openapi.json</code>, <code>/docs</code>, <code>/swagger</code>, <code>/redoc</code></li>
+<li>the simple dashboard shell and assets when enabled</li>
 </ul>
 </li>
-<li>Optional scoping/expiry: AE_API_ADMIN_SCOPE / AE_API_SCALER_SCOPE / AE_API_READ_SCOPE (glob patterns) and AE_API_*_TOKEN_EXPIRES (UTC ISO8601).</li>
+<li>Once any of <code>AE_API_READ_TOKEN</code>, <code>AE_API_SCALER_TOKEN</code>, or <code>AE_API_ADMIN_TOKEN</code> is configured, protected reads require bearer auth.</li>
+<li>Protected reads include controller health/system routes plus app-targeted status, manifest, events, history, and logs.</li>
+<li>Mutations remain disabled unless <code>AE_API_MUTATIONS=1</code>.</li>
+<li>The planner endpoints (<code>POST /plan</code>, <code>POST /dashboard/plan</code>) are read-only, but they still require READ access when controller tokens are configured.</li>
 </ul>
-<h2 id="enabling-mutations-dev">Enabling mutations (dev)</h2>
-<p>1) Generate tokens and enable mutations for the controller process:</p>
+<h2 id="token-roles-scope-and-expiry">Token Roles, Scope, and Expiry</h2>
+<ul>
+<li><code>AE_API_READ_TOKEN</code>: read-only operational access.</li>
+<li><code>AE_API_SCALER_TOKEN</code>: READ plus <code>/scale/&lt;app&gt;</code>.</li>
+<li><code>AE_API_ADMIN_TOKEN</code>: READ plus admin and mutation routes such as <code>/apply</code>, <code>/delete/&lt;app&gt;</code>, <code>/rollout/*</code>, and <code>/exec/&lt;app&gt;</code>.</li>
+<li>Optional expiry controls: <code>AE_API_ADMIN_TOKEN_EXPIRES</code>, <code>AE_API_SCALER_TOKEN_EXPIRES</code>, <code>AE_API_READ_TOKEN_EXPIRES</code>.</li>
+<li>Optional scopes: <code>AE_API_ADMIN_SCOPE</code>, <code>AE_API_SCALER_SCOPE</code>, <code>AE_API_READ_SCOPE</code>.</li>
+<li>Scope note: admin and scaler scopes gate app-targeted mutations. Read scope is only enforced on app-targeted read routes today, such as <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code>, <code>/manifest/&lt;app&gt;</code>, <code>/history/&lt;app&gt;</code>, and <code>/logs/&lt;app&gt;</code>. Controller-wide list and system surfaces remain controller-wide.</li>
+</ul>
+<h2 id="common-controller-workflows">Common Controller Workflows</h2>
+<p>Generate controller tokens and expiries:</p>
 <pre><code>ae api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 export AE_API_MUTATIONS=1</code></pre>
-<p>2) Start controller with --metrics-port and (optional) Caddy fronting the API.</p>
-<p>Tip: <code>ae auth remote -o .env.api</code> also emits apishim tokens and <code>AE_API_MUTATIONS=1</code>.</p>
-<h2 id="remote-cli-usage">Remote CLI usage</h2>
+<p>Remote bootstrap helper:</p>
+<pre><code>ae auth remote -o .env.api
+source .env.api
+ae --server https://api.home.arpa:8443 --token &quot;$AE_API_READ_TOKEN&quot; status
+ae --server https://api.home.arpa:8443 --token &quot;$AE_API_SCALER_TOKEN&quot; scale echo --replicas 2
+ae --server https://api.home.arpa:8443 --token &quot;$AE_API_ADMIN_TOKEN&quot; delete echo --purge</code></pre>
+<h2 id="api-shim-auth">API Shim Auth</h2>
 <ul>
-<li>Scale:
-<ul>
-<li><code>ae --server https://api.home.arpa:8443 --token $AE_API_SCALER_TOKEN scale echo --replicas 2</code></li>
+<li><code>AE_APISHIM_ENABLE=1</code> is required to run the shim.</li>
+<li><code>AE_APISHIM_TOKEN</code> is the full-access admin token and the default kubeconfig token.</li>
+<li><code>AE_APISHIM_READ_TOKEN</code> is the read/list/watch credential for clients that should not mutate shim-backed resources.</li>
+<li><code>AE_APISHIM_EXEC_TOKEN</code> and <code>AE_APISHIM_PORTFORWARD_TOKEN</code> gate the interactive exec and port-forward flows.</li>
+<li><code>AE_APISHIM_MINT_TOKEN</code> and <code>AE_APISHIM_SESSION_SECRET</code> support short-lived scoped session tokens for non-root CLI usage.</li>
+<li><code>AE_APISHIM_ALLOW_ANON=1</code> or <code>--allow-anonymous</code> is dev-only and should not be used on shared hosts.</li>
+<li>For TLS, enable <code>--tls</code>, set <code>AE_APISHIM_TLS_CERT</code> and <code>AE_APISHIM_TLS_KEY</code>, and distribute the CA bundle via <code>AE_APISHIM_CA_BUNDLE</code> or a trusted local CA.</li>
 </ul>
-</li>
-<li>Delete:
+<p>Preferred operator flow:</p>
+<pre><code>AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme \
+python -m ae.apishim serve --host 127.0.0.1 --port 8445
+
+python -m ae.apishim kubeconfig \
+  --server http://127.0.0.1:8445 \
+  --token &quot;$AE_APISHIM_TOKEN&quot; \
+  --insecure-skip-tls-verify &gt; ~/.kube/k1s-apishim.yaml
+
+source &lt;(ae auth local --strict)
+ae auth mint --role exec --scope default/echo</code></pre>
+<p>Use <code>ae auth local --strict</code> for shared profile shells and keep <code>AE_APISHIM_TOKEN</code> service-only. Prefer mint or role-specific shim tokens for routine operator access.</p>
+<h2 id="security-notes">Security Notes</h2>
 <ul>
-<li><code>ae --server https://api.home.arpa:8443 --token $AE_API_ADMIN_TOKEN delete echo --purge</code></li>
+<li>Put the controller API behind TLS or a trusted front-end such as Caddy for shared environments.</li>
+<li>Prefer short-lived controller tokens and the smallest role that satisfies the workflow.</li>
+<li>Keep shim admin credentials service-only; use <code>AE_APISHIM_MINT_TOKEN</code>, <code>AE_APISHIM_READ_TOKEN</code>, <code>AE_APISHIM_EXEC_TOKEN</code>, and <code>AE_APISHIM_PORTFORWARD_TOKEN</code> for user-facing flows.</li>
+<li>Registry credentials are separate from API auth. Use the <a href="runbook.html">Operations Runbook</a> for <code>ae registry login</code> and refresh procedures.</li>
 </ul>
-</li>
-<li>Logs (requires READ token when any token is configured):
+<h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><code>ae --server https://api.home.arpa:8443 --token $AE_API_READ_TOKEN logs echo --tail 100</code></li>
-</ul>
-</li>
-</ul>
-<h2 id="security-notes">Security notes</h2>
-<ul>
-<li>For production, place the API behind TLS (Caddy) and use client auth or network ACLs.</li>
-<li>Prefer short-lived tokens and minimal roles for automation.</li>
-<li>Kubernetes API shim: set <code>AE_APISHIM_ENABLE=1</code> and <code>AE_APISHIM_TOKEN</code> for <code>python -m ae.apishim serve</code>; use <code>AE_APISHIM_ALLOW_ANON=1</code> only for local labs. Shim RBAC evaluates Role/ClusterRole bindings and exposes a SubjectAccessReview-compatible endpoint.</li>
-</ul>
-<h2 id="registry-auth-private-images">Registry Auth (private images)</h2>
-<ul>
-<li>Credentials are stored at <code>~/.config/ae/registries.yaml</code> and used by the runtime before pulls.</li>
-<li>List configured hosts:
-<ul>
-<li><code>ae registry list</code></li>
-</ul>
-</li>
-<li>Docker Hub:
-<ul>
-<li>Short image names (e.g., <code>caddy:2.8</code>, <code>python:3.12-slim</code>) are treated as <code>docker.io</code>.</li>
-<li>Add Docker Hub creds by host key <code>docker.io</code> (also accepts <code>index.docker.io</code>):
-<ul>
-<li><code>ae registry login custom --registry docker.io --username &lt;you&gt; --password &lt;token&gt;</code></li>
-<li>Or run <code>docker login</code> once; the runtime will reuse your local Docker credentials.</li>
-</ul>
-</li>
-</ul>
-</li>
-<li>GHCR (GitHub Container Registry):
-<ul>
-<li><code>ae registry login ghcr --username &lt;you&gt; --token &lt;PAT&gt;</code></li>
-<li>Or rely on <code>gh</code> CLI: <code>ae registry login ghcr --username &lt;you&gt;</code> (uses <code>gh auth token</code>)</li>
-</ul>
-</li>
-<li>GCR (Google Container Registry/Artifact Registry):
-<ul>
-<li><code>ae registry login gcr --use-gcloud --gcr-host us.gcr.io</code></li>
-<li>Or provide a token: <code>ae registry login gcr --gcr-host us.gcr.io --token $(gcloud auth print-access-token)</code></li>
-<li>Username defaults to <code>oauth2accesstoken</code>.</li>
-</ul>
-</li>
-<li>ECR (AWS Elastic Container Registry):
-<ul>
-<li><code>ae registry login ecr --use-aws --region us-east-1 --account-id 123456789012</code></li>
-<li>Or specify: <code>ae registry login ecr --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com --password $(aws ecr get-login-password)</code></li>
-</ul>
-</li>
-<li>Custom registry:
-<ul>
-<li><code>ae registry login custom --registry registry.example.com --username user --password secret</code></li>
-</ul>
-</li>
-</ul>
-<h2 id="refreshing-short-lived-tokens">Refreshing short‑lived tokens</h2>
-<ul>
-<li>Some providers issue short‑lived credentials (GCR/ECR). Refresh any saved hosts with:
-<ul>
-<li><code>ae registry refresh</code> (all supported providers)</li>
-<li><code>ae registry refresh --provider gcr</code></li>
-<li><code>ae registry refresh --provider ecr</code></li>
-</ul>
-</li>
-<li>Refresh logic uses local CLIs when available:
-<ul>
-<li>ghcr: <code>gh auth token</code> or <code>GHCR_TOKEN</code>.</li>
-<li>gcr: <code>gcloud auth print-access-token</code>.</li>
-<li>ecr: <code>aws ecr get-login-password</code> (region derived from the registry hostname).</li>
-</ul>
-</li>
-</ul>
-<h2 id="planner-hint">Planner hint</h2>
-<ul>
-<li>If the image host looks private (e.g., <code>ghcr.io</code>, <code>gcr.io</code>, <code>*.ecr.*.amazonaws.com</code>) and no entry exists in <code>registries.yaml</code>, <code>ae plan</code> emits a warning with the matching <code>ae registry login</code> command suggestion.</li>
+<li><a href="http-api.html">HTTP API</a></li>
+<li><a href="api-shim.html">API Shim</a></li>
+<li><a href="runbook.html">Operations Runbook</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -843,7 +835,7 @@ export AE_API_MUTATIONS=1</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 12:10:03</span>
+        <span>Built 2026-04-14 17:31:27</span>
       </div>
     </footer>
     <script>

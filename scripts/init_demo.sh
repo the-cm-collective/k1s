@@ -1,8 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 log() {
   printf '\033[1;32m[init-demo]\033[0m %s\n' "$1"
+}
+
+caddy_https_status() {
+  local host="$1"
+  local path="${2:-/}"
+  local https_port="${3:-${CADDY_HTTPS_PORT:-8443}}"
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "000"
+    return 0
+  fi
+  curl -ksS \
+    --resolve "${host}:${https_port}:127.0.0.1" \
+    -o /dev/null \
+    -w '%{http_code}' \
+    "https://${host}:${https_port}${path}" 2>/dev/null || true
+}
+
+reload_caddy_config() {
+  local cli="${1:-${AE_CONTAINER_CLI:-${STACK_BIN:-}}}"
+  local container="${2:-${AE_CADDY_CONTAINER:-dev-caddy-1}}"
+  if [[ -z "${cli}" || -z "${container}" ]]; then
+    return 1
+  fi
+  if ! command -v "${cli}" >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! "${cli}" ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${container}"; then
+    return 1
+  fi
+  "${cli}" exec "${container}" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1
 }
 
 require_root_or_sudo() {
@@ -14,6 +46,16 @@ require_root_or_sudo() {
 }
 
 SUDO=$(require_root_or_sudo)
+
+os_id() {
+  if [[ -r /etc/os-release ]]; then
+    sed -n 's/^ID=//p' /etc/os-release | head -n1 | tr -d '"' | tr -d "'"
+  fi
+}
+
+is_nixos() {
+  [[ "$(os_id)" == "nixos" ]]
+}
 
 # Static demo hosts we can safely add to /etc/hosts when requested.
 # Note: echo-storage and echo-stateful do not expose ingress by default.
@@ -150,6 +192,43 @@ start_apishim() {
   echo $! > state/apishim.pid
 }
 
+prepare_local_apishim_compose_env() {
+  local profile_dir="${APISHIM_PROFILE_DIR:-}"
+  local profile_rel=""
+  if [[ -z "${profile_dir}" ]]; then
+    if [[ -n "${APISHIM_ENV_FILE:-}" ]]; then
+      profile_dir="$(dirname -- "${APISHIM_ENV_FILE}")"
+    elif [[ ${LABS_ENABLE:-0} -eq 1 ]]; then
+      profile_dir="${LABS_PROFILE_DIR:-state/profiles/labs}"
+    else
+      profile_dir="${DEMO_PROFILE_DIR:-state/profiles/demo}"
+    fi
+  fi
+
+  if [[ "${profile_dir}" != /* ]]; then
+    profile_dir="${ROOT_DIR}/${profile_dir}"
+  fi
+  profile_rel="${profile_dir}"
+  if [[ "${profile_dir}" == "${ROOT_DIR}/"* ]]; then
+    profile_rel="${profile_dir#"${ROOT_DIR}/"}"
+  fi
+
+  mkdir -p "${profile_dir}"
+  export APISHIM_PROFILE_DIR="${profile_rel}"
+  export APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
+  export APISHIM_CERT_FILE="${APISHIM_CERT_FILE:-$profile_dir/apishim.crt}"
+  export APISHIM_KEY_FILE="${APISHIM_KEY_FILE:-$profile_dir/apishim.key}"
+  export APISHIM_CA_FILE="${APISHIM_CA_FILE:-$profile_dir/apishim.ca.crt}"
+  export APISHIM_CA_KEY_FILE="${APISHIM_CA_KEY_FILE:-$profile_dir/apishim.ca.key}"
+
+  APISHIM_ENV_FILE="$APISHIM_ENV_FILE" \
+    APISHIM_CERT_FILE="$APISHIM_CERT_FILE" \
+    APISHIM_KEY_FILE="$APISHIM_KEY_FILE" \
+    APISHIM_CA_FILE="$APISHIM_CA_FILE" \
+    APISHIM_CA_KEY_FILE="$APISHIM_CA_KEY_FILE" \
+    ./scripts/ensure_apishim_env.sh
+}
+
 stop_apishim() {
   if [[ -f state/apishim.pid ]]; then
     local pid
@@ -282,7 +361,7 @@ What this does (down):
   - Optionally removes hosts entries for: ${HOSTS[*]}
 
 Prerequisites:
-  - Ubuntu/Debian with sudo access
+  - Linux host with sudo access
   - Docker Engine installed and enabled (for dev stack), or Podman for OCI runtime
 
 Environment variables you can override:
@@ -686,24 +765,21 @@ if [[ $DOWN_FLAG -eq 1 ]]; then
     log "Removing local registry cache under state/registry"
     rm -rf state/registry 2>/dev/null || true
   fi
-  # Optionally remove hosts entries
-  if prompt_yes_no_hosts "Remove hosts entries for ${HOSTS[*]} from /etc/hosts?" N; then
-    for host in "${HOSTS[@]}"; do
-      $SUDO sed -i.bak "/[[:space:]]$host\$/d" /etc/hosts || true
-    done
-    log "Hosts entries removed (backup at /etc/hosts.bak)"
+  if prompt_yes_no_hosts "Remove local DNS/TLS helper state for ${HOSTS[*]}?" N; then
+    DEV_LOCAL_PROFILE_DIR="${LABS_PROFILE_DIR:-$DEMO_PROFILE_DIR}"
+    DEV_LOCAL_CONTAINER_CLI="${STACK_BIN_DOWN:-${STACK_BIN:-docker}}"
+    DEV_LOCAL_HOSTS="${HOSTS[*]}" \
+      DEV_LOCAL_HOSTS_IP="${HOSTS_IP}" \
+      DEV_PROFILE_DIR="${DEV_LOCAL_PROFILE_DIR}" \
+      AE_CONTAINER_CLI="${DEV_LOCAL_CONTAINER_CLI}" \
+      AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}" \
+      AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-${DEV_LOCAL_PROFILE_DIR}/apishim.crt}" \
+      AE_APISHIM_TLS_CA_CERT="${AE_APISHIM_TLS_CA_CERT:-${DEV_LOCAL_PROFILE_DIR}/apishim.ca.crt}" \
+      CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT:-8443}" \
+      AE_DEV_LOCAL_ACTION=clean \
+      ./scripts/dev/ensure_dev_local.sh || true
   else
-    log "Keeping hosts entries"
-  fi
-  # Optionally remove trusted local CA
-  if command -v update-ca-certificates >/dev/null 2>&1; then
-    if [[ -f /usr/local/share/ca-certificates/caddy-local-root.crt ]]; then
-      if prompt_yes_no_hosts "Remove trusted Caddy local root CA from host trust store?" Y; then
-        $SUDO rm -f /usr/local/share/ca-certificates/caddy-local-root.crt || true
-        $SUDO update-ca-certificates >/dev/null 2>&1 || true
-        log "Removed Caddy local root CA from host trust"
-      fi
-    fi
+    log "Keeping local DNS/TLS helper state"
   fi
   log "Demo teardown complete."
   exit 0
@@ -754,13 +830,54 @@ APT_PACKAGES=(
   python3-pip
   sqlite3
   age
+  curl
 )
 
-log "Installing system packages"
-$SUDO apt-get update -y
-$SUDO apt-get install -y "${APT_PACKAGES[@]}"
+require_existing_host_tools() {
+  local missing=()
+  if ! command -v python3 >/dev/null 2>&1; then
+    missing+=(python3)
+  fi
+  if ! python3 -m venv --help >/dev/null 2>&1; then
+    missing+=(python3-venv)
+  fi
+  for tool in sqlite3 age curl sops; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      missing+=("$tool")
+    fi
+  done
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return 0
+  fi
+  log "Missing required host tools: ${missing[*]}"
+  if is_nixos; then
+    log "Install them via your Nix profile or repo dev shell and re-run."
+  else
+    log "Install the missing tools manually or re-run on a host with apt-get available."
+  fi
+  exit 1
+}
+
+install_system_packages() {
+  if command -v apt-get >/dev/null 2>&1; then
+    log "Installing system packages"
+    $SUDO apt-get update -y
+    $SUDO apt-get install -y "${APT_PACKAGES[@]}"
+    return 0
+  fi
+
+  log "apt-get not available; verifying required host tools from existing environment"
+  require_existing_host_tools
+}
 
 install_sops() {
+  if command -v sops >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    log "sops not found and apt-get is unavailable; install sops via your Nix profile/dev shell and re-run."
+    return 1
+  fi
   if $SUDO apt-get install -y sops; then
     return 0
   fi
@@ -779,6 +896,7 @@ install_sops() {
   rm -rf "$tmp_dir"
 }
 
+install_system_packages
 install_sops || {
   log "Failed to install sops automatically; please install it and re-run."
   exit 1
@@ -1017,6 +1135,7 @@ if [[ "${AE_USE_REGISTRY_CACHE}" == "1" && -f ops/dev/docker-compose.cache.overr
     log "Registry cache not reachable at ${registry_host}:${registry_port} (image pulls may fail)"
   fi
 fi
+prepare_local_apishim_compose_env
   if ! ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" up -d; then
     if [[ "$STACK_BIN" == "podman" ]]; then
       log "Compose up failed; retrying after Podman/systemd remedial steps"
@@ -1035,96 +1154,18 @@ fi
     fi
   fi
 
-  # Trust Caddy's local CA on the host so browsers don't warn on every run.
-  # This only applies to Debian/Ubuntu hosts (update-ca-certificates). If -y was
-  # passed, do it non-interactively; otherwise still proceed best‑effort.
-  if command -v update-ca-certificates >/dev/null 2>&1; then
-    # Trigger local CA creation by touching one TLS site once (ignore TLS verify)
-    curl -ksS "https://docs.home.arpa:${CADDY_HTTPS_PORT}/" >/dev/null 2>&1 || true
-    # Give Caddy a moment to mint the local CA and leaf certs
-    sleep 1
-    mkdir -p state/certs
-    ROOT_CA_HOST="state/caddy-data/pki/authorities/local/root.crt"
-    if [[ ! -s "${ROOT_CA_HOST}" ]]; then
-      # Fallback: try to copy from the running container (name may vary; prefer AE_CADDY_CONTAINER when set)
-      CADDY_CONTAINER=${AE_CADDY_CONTAINER:-}
-      if [[ -z "${CADDY_CONTAINER}" ]]; then
-        # Best-effort: pick first container with image caddy and port 443 mapped
-        CADDY_CONTAINER=$($STACK_BIN ps --format '{{.Names}}\t{{.Image}}' | awk '/caddy/ {print $1; exit}' || true)
-      fi
-      if [[ -n "${CADDY_CONTAINER}" ]]; then
-        if "$STACK_BIN" exec "${CADDY_CONTAINER}" test -f /data/caddy/pki/authorities/local/root.crt; then
-          "$STACK_BIN" cp "${CADDY_CONTAINER}":/data/caddy/pki/authorities/local/root.crt state/certs/caddy-local-root.crt >/dev/null 2>&1 || true
-        fi
-      fi
-    else
-      cp -f "${ROOT_CA_HOST}" state/certs/caddy-local-root.crt || true
-    fi
-    if [[ -s state/certs/caddy-local-root.crt ]]; then
-      log "Installing Caddy local root CA into host trust store"
-      $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
-      $SUDO update-ca-certificates >/dev/null 2>&1 || true
-      # Build a canonical dev CA bundle (system + local CA) for CLI tools/SDKs
-      mkdir -p state/certs
-      COMBINED_OUT="state/certs/combined-dev-ca.pem"
-      "$PY_BIN" - <<'PY' || true
-import os, sys
-try:
-    import certifi
-    src = certifi.where()
-    dev = os.path.join('state','certs','caddy-local-root.crt')
-    out = os.path.join('state','certs','combined-dev-ca.pem')
-    with open(src,'rb') as fsrc, open(out,'wb') as fout:
-        data = fsrc.read()
-        fout.write(data)
-        with open(dev,'rb') as fd:
-            d = fd.read()
-            if d not in data:
-                if not d.endswith(b"\n"): d += b"\n"
-                fout.write(d)
-    print(out)
-except Exception as e:
-    print('skip-combined:', e)
-PY
-      # Best-effort user trust for Chrome/Chromium (NSS) and Firefox profiles
-      if command -v certutil >/dev/null 2>&1; then
-        mkdir -p "$HOME/.pki/nssdb"
-        certutil -d sql:"$HOME/.pki/nssdb" -A -t "C,," -n "Caddy Local Root" -i state/certs/caddy-local-root.crt 2>/dev/null || true
-        for prof in "$HOME"/.mozilla/firefox/*.default* "$HOME"/.mozilla/firefox/*.dev*; do
-          [ -d "$prof" ] || continue
-          certutil -d sql:"$prof" -A -t "C,," -n "Caddy Local Root" -i state/certs/caddy-local-root.crt 2>/dev/null || true
-        done
-      fi
-    else
-      # If CA not present yet, fix perms and try once more (Podman rootless often needs this)
-      chmod -R 0777 state/caddy-data || true
-      sleep 1
-      ${STACK_COMPOSE[@]} "${DEV_COMPOSE_FILES[@]}" restart caddy || true
-      sleep 1
-      if [[ -s "${ROOT_CA_HOST}" ]]; then
-        cp -f "${ROOT_CA_HOST}" state/certs/caddy-local-root.crt || true
-      fi
-      if [[ -s state/certs/caddy-local-root.crt ]]; then
-        log "Installing Caddy local root CA into host trust store (retry)"
-        $SUDO cp state/certs/caddy-local-root.crt /usr/local/share/ca-certificates/caddy-local-root.crt
-        $SUDO update-ca-certificates >/dev/null 2>&1 || true
-      else
-        log "Local CA not found; skipping trust install (you can import state/certs/caddy-local-root.crt manually later)"
-      fi
-    fi
+if prompt_yes_no_hosts "Apply local DNS/TLS helper state for ${HOSTS[*]}?" N; then
+  DEV_LOCAL_HOSTS="${HOSTS[*]}" \
+    DEV_LOCAL_HOSTS_IP="${HOSTS_IP}" \
+    DEV_PROFILE_DIR="${LABS_PROFILE_DIR:-$DEMO_PROFILE_DIR}" \
+    AE_CONTAINER_CLI="${STACK_BIN}" \
+    AE_CADDY_CONTAINER="${AE_CADDY_CONTAINER:-dev-caddy-1}" \
+    AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-${LABS_PROFILE_DIR}/apishim.crt}" \
+    AE_APISHIM_TLS_CA_CERT="${AE_APISHIM_TLS_CA_CERT:-${LABS_PROFILE_DIR}/apishim.ca.crt}" \
+    CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT}" \
+    ./scripts/dev/ensure_dev_local.sh || true
 else
-  log "update-ca-certificates not found; skipping local CA trust (manually import state/certs/caddy-local-root.crt)"
-fi
-
-if prompt_yes_no_hosts "Add hosts entries for ${HOSTS[*]} to /etc/hosts?" N; then
-  log "Configuring hosts entries"
-  for host in "${HOSTS[@]}"; do
-    if ! grep -q "[[:space:]]$host$" /etc/hosts; then
-      $SUDO sh -c "echo '${HOSTS_IP} ${host}' >> /etc/hosts"
-    fi
-  done
-else
-  log "Skipping hosts entries; use direct addresses instead"
+  log "Skipping local DNS/TLS helper state; use direct addresses instead"
 fi
 
 export AE_CADDY_SITES=${AE_CADDY_SITES:-state/caddy}
@@ -1741,7 +1782,12 @@ if [[ $DEMO_ECHO_MULTI -eq 1 && $DOCS_ONLY -ne 1 ]]; then
   log "Applying multi-port echo demo (echo-multi)"
   apply_with_heartbeat "echo-multi" "specs/examples/echo-multiport.yaml" || true
   # Quick endpoint verification
-  code=$(curl -ksS -o /dev/null -w '%{http_code}' "https://echo-multi.home.arpa:${CADDY_HTTPS_PORT}/" || true)
+  code="$(caddy_https_status "echo-multi.home.arpa" "/" "${CADDY_HTTPS_PORT}")"
+  if [[ "$code" == "502" ]]; then
+    reload_caddy_config || true
+    sleep 1
+    code="$(caddy_https_status "echo-multi.home.arpa" "/" "${CADDY_HTTPS_PORT}")"
+  fi
   printf '[verify] %-20s -> %s\n' "echo-multi.home.arpa/" "${code:-fail}"
 fi
 
@@ -1863,13 +1909,17 @@ check_api_reachability() {
   fi
 
   # Caddy (ingress) reachability — use --resolve to avoid requiring /etc/hosts
-  code_api=$(curl -ksS --resolve "api.home.arpa:${CADDY_HTTPS_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' \
-             "https://api.home.arpa:${CADDY_HTTPS_PORT}/openapi.json" || true)
+  code_api="$(caddy_https_status "api.home.arpa" "/openapi.json" "${CADDY_HTTPS_PORT}")"
+  if [[ "$code_api" != "200" ]] && curl -fsS "http://127.0.0.1:${API_PORT}/openapi.json" >/dev/null 2>&1; then
+    if reload_caddy_config; then
+      sleep 1
+      code_api="$(caddy_https_status "api.home.arpa" "/openapi.json" "${CADDY_HTTPS_PORT}")"
+    fi
+  fi
   if [[ "$code_api" == "200" ]]; then
     log "Caddy API OK: https://api.home.arpa:${CADDY_HTTPS_PORT}/openapi.json"
     for path in /swagger /redoc /dashboard; do
-      code=$(curl -ksS --resolve "api.home.arpa:${CADDY_HTTPS_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' \
-             "https://api.home.arpa:${CADDY_HTTPS_PORT}${path}" || true)
+      code="$(caddy_https_status "api.home.arpa" "${path}" "${CADDY_HTTPS_PORT}")"
       if [[ "$code" == "200" ]]; then
         log "Caddy ${path} OK: https://api.home.arpa:${CADDY_HTTPS_PORT}${path}"
       else

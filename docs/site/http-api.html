@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -630,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -693,28 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
       <a href="project-philosophy.html">Philosophy</a>
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -725,162 +757,51 @@
       </svg>
     </button>
     <div class="container">
-    <h1 id="http-api-reference">HTTP API Reference</h1>
-<p>The controller exposes an HTTP API when started with <code>--metrics-port PORT</code>. By default, endpoints are read-only. Mutating endpoints can be enabled for dev/testing.</p>
-<p>Base URL: <code>http://&lt;host&gt;:&lt;port&gt;</code></p>
+    <h1 id="http-api">HTTP API</h1>
+<p>The controller exposes a controller-native HTTP API when started with <code>--metrics-port PORT</code>. Use this surface for controller status, operational reads, and opt-in mutations. For Kubernetes-compatible discovery and <code>kubectl</code> / Helm flows, see <a href="api-shim.html">API Shim</a>.</p>
+<h2 id="base-url">Base URL</h2>
 <ul>
-<li>GET <code>/metrics</code>
-<ul>
-<li>Content-Type: <code>text/plain; version=0.0.4</code></li>
-<li>Prometheus text format gauges:
-<ul>
-<li>Apps/replicas: <code>ae_apps_total</code>, <code>ae_apps_ready</code>, <code>ae_apps_progressing</code>, <code>ae_apps_degraded</code>, <code>ae_replicas_total</code>, <code>ae_replicas_ready</code>, <code>ae_replicas_live</code></li>
-<li>Nodes: <code>ae_nodes_total</code>, <code>ae_nodes_ready</code>, <code>ae_nodes_stale</code></li>
-<li>Services: <code>ae_services_total</code> plus per-service labels (ClusterIP, provider)</li>
-<li>Shim/backends: <code>apishim_*</code> metrics (watchers, queue depth, backend) when the API shim is enabled</li>
+<li>Local demo and docs flows usually expose <code>http://127.0.0.1:9108</code>.</li>
+<li>Caddy and published control-plane surfaces usually expose <code>https://api.home.arpa:&lt;port&gt;</code>.</li>
+<li>Browser-friendly controller schema surfaces are published at <a href="/swagger">Swagger</a>, <a href="/redoc">ReDoc</a>, and <a href="/openapi.json">OpenAPI JSON</a>.</li>
 </ul>
-</li>
-</ul>
-</li>
-</ul>
+<h2 id="public-surfaces">Public surfaces</h2>
 <ul>
-<li>GET <code>/status</code>
-<ul>
-<li>Content-Type: <code>application/json</code></li>
-<li>200 OK: <code>{ &quot;items&quot;: [ ... ], &quot;next&quot;: &quot;cursor&quot; | null }</code></li>
-<li>Query params: <code>limit</code>, <code>cursor</code>, <code>app</code>, <code>wildcard</code></li>
-<li>Example item:</li>
+<li><code>GET /metrics</code> exposes Prometheus metrics.</li>
+<li><code>GET /openapi.json</code>, <code>GET /docs</code>, <code>GET /swagger</code>, and <code>GET /redoc</code> stay public so the controller schema and browser UIs remain reachable even when bearer tokens are configured.</li>
+<li><code>GET /dashboard</code> and <code>GET /dashboard.js</code> are public when the simple dashboard is enabled. The dashboard shell is public, but the JSON and log endpoints it calls still follow the token rules below.</li>
+<li>Auxiliary public JSON surfaces include <code>GET /ui/features</code> and <code>GET /__ae/version</code>.</li>
 </ul>
-</li>
-</ul>
-<pre><code>    {
-      &quot;app_name&quot;: &quot;echo&quot;,
-      &quot;desired_replicas&quot;: 1,
-      &quot;ready_replicas&quot;: 1,
-      &quot;live_replicas&quot;: 1,
-      &quot;revision&quot;: 3,
-      &quot;revision_status&quot;: &quot;ready&quot;,
-      &quot;image&quot;: &quot;alpine:3.20&quot;,
-      &quot;ingress_host&quot;: &quot;echo.localtest.me&quot;,
-      &quot;ingress_path&quot;: &quot;/&quot;
-    }</code></pre>
+<h2 id="protected-read-surfaces">Protected read surfaces</h2>
 <ul>
-<li>GET <code>/status/&lt;app&gt;</code>
-<ul>
-<li>200 OK: JSON object (same shape as items in <code>/status</code>)</li>
-<li>404 Not Found: when no status exists</li>
+<li><code>GET /health</code></li>
+<li><code>GET /status</code> and <code>GET /status/&lt;app&gt;</code></li>
+<li><code>GET /manifest/&lt;app&gt;</code>, <code>GET /events/&lt;app&gt;</code>, and <code>GET /history/&lt;app&gt;</code></li>
+<li><code>GET /nodes</code> and <code>GET /system</code></li>
+<li><code>GET /logs/&lt;app&gt;</code> and <code>GET /logs/&lt;app&gt;/stream</code></li>
+<li><code>GET /tls/verify</code></li>
+<li>When any controller token is configured, these read surfaces require at least <code>AE_API_READ_TOKEN</code> and may also honor per-app scope filters such as <code>AE_API_READ_SCOPE</code>.</li>
 </ul>
-</li>
-</ul>
+<h2 id="dev-and-mutation-surfaces">Dev and mutation surfaces</h2>
 <ul>
-<li>GET <code>/nodes</code>
-<ul>
-<li>200 OK: <code>{ &quot;nodes&quot;: [ { node_id, name, backend, endpoint, labels, taints, pod_cidr, cordoned, status, seen_at, stale }, ... ], &quot;count&quot;: N, &quot;stale_after_seconds&quot;: 40 }</code></li>
-<li>Requires READ token when auth is configured.</li>
+<li><code>POST /plan</code> and <code>POST /dashboard/plan</code> are read-only planner endpoints used by the dashboard and labs UI. They require READ access when tokens are configured.</li>
+<li><code>POST /k8s/preview</code> is a dev-only exporter preview and stays disabled unless <code>AE_API_DEV_EXPORT=1</code>.</li>
+<li><code>POST /scale/&lt;app&gt;</code> requires scale or admin access plus <code>AE_API_MUTATIONS=1</code>.</li>
+<li><code>POST /delete/&lt;app&gt;</code>, <code>POST /rollout/pause/&lt;app&gt;</code>, <code>POST /rollout/resume/&lt;app&gt;</code>, <code>POST /apply</code>, and <code>POST /exec/&lt;app&gt;</code> require admin access plus <code>AE_API_MUTATIONS=1</code>.</li>
 </ul>
-</li>
-</ul>
+<h2 id="auth-model">Auth model</h2>
 <ul>
-<li>GET <code>/events/&lt;app&gt;?limit=N</code>
-<ul>
-<li>200 OK: JSON array of recent events for <code>&lt;app&gt;</code> (limit only; cursor is not implemented)</li>
-<li>Example item:</li>
+<li>Public docs and schema surfaces remain reachable without a bearer token.</li>
+<li>Operational reads are open by default, but become bearer-protected once any of <code>AE_API_READ_TOKEN</code>, <code>AE_API_SCALER_TOKEN</code>, or <code>AE_API_ADMIN_TOKEN</code> is configured.</li>
+<li>Optional scope filters: <code>AE_API_READ_SCOPE</code>, <code>AE_API_SCALER_SCOPE</code>, and <code>AE_API_ADMIN_SCOPE</code>.</li>
+<li>Optional expiry controls: <code>AE_API_*_TOKEN_EXPIRES</code>.</li>
+<li>See <a href="api-auth.html">API Auth</a> for token generation, TTL handling, controller mutation gating, and shim auth modes.</li>
 </ul>
-</li>
-</ul>
-<pre><code>    {
-      &quot;app_name&quot;: &quot;echo&quot;,
-      &quot;revision&quot;: 3,
-      &quot;event_type&quot;: &quot;ApplyCompleted&quot;,
-      &quot;message&quot;: &quot;Revision 3 status ready&quot;,
-      &quot;created_at&quot;: &quot;2025-10-23T12:34:56+00:00&quot;
-    }</code></pre>
+<h2 id="related-surfaces">Related surfaces</h2>
 <ul>
-<li>GET <code>/system</code> and <code>/dashboard</code>
-<ul>
-<li>Aggregate snapshot for the dashboard UI including nodes, services, storage volumes, and token/mutation flags.</li>
-</ul>
-</li>
-</ul>
-<p>Notes</p>
-<ul>
-<li>Read-only by default; mutations require <code>AE_API_MUTATIONS=1</code> plus tokens.</li>
-<li><code>/plan</code> is a read-only POST endpoint used by the dashboard/labs UI; <code>/k8s/preview</code> requires <code>AE_API_DEV_EXPORT=1</code>.</li>
-<li>The API shares the controller’s SQLite/Postgres store; results are eventually consistent with reconcile intervals.</li>
-<li>When any token is set, all GETs require at least the READ token.</li>
-</ul>
-<p>Extras</p>
-<ul>
-<li>GET <code>/openapi.json</code> — OpenAPI 3 document for controller endpoints.</li>
-<li>GET <code>/docs</code> — Lightweight HTML that lists available paths by fetching <code>/openapi.json</code>.</li>
-<li>When apishim is enabled, <code>/openapi/v3</code> and <code>/openapi/v2</code> expose the Kubernetes shim spec.</li>
-</ul>
-<p>Mutations (opt-in; dev only)</p>
-<ul>
-<li>Enable by setting <code>AE_API_MUTATIONS=1</code> on the controller process.</li>
-<li>Mutations require bearer tokens when auth is configured: <code>AE_API_SCALER_TOKEN</code> (scale) and <code>AE_API_ADMIN_TOKEN</code> (admin). Send <code>Authorization: Bearer &lt;token&gt;</code>.</li>
-</ul>
-<ul>
-<li>POST <code>/scale/&lt;app&gt;</code>
-<ul>
-<li>Body: <code>{ &quot;replicas&quot;: &lt;int&gt; }</code></li>
-<li>200 OK: <code>{ app, replicas, revision, status, created, updated, removed }</code></li>
-</ul>
-</li>
-</ul>
-<ul>
-<li>POST <code>/delete/&lt;app&gt;?purge=1</code>
-<ul>
-<li>200 OK: <code>{ app, removed, purged }</code></li>
-<li>Deletes runtime containers and ingress; <code>purge=1</code> also deletes events and revisions for the app.</li>
-</ul>
-</li>
-</ul>
-<ul>
-<li>POST <code>/rollout/pause/&lt;app&gt;</code> and <code>/rollout/resume/&lt;app&gt;</code> (admin)</li>
-<li>POST <code>/apply</code> (admin; JSON Deployment manifest)</li>
-<li>POST <code>/exec/&lt;app&gt;</code> (admin; remote exec payload)</li>
-</ul>
-<p>AuthN/AuthZ (optional)</p>
-<ul>
-<li>Set tokens in the controller environment to enable role-based access:
-<ul>
-<li><code>AE_API_READ_TOKEN</code> — read-only access</li>
-<li><code>AE_API_SCALER_TOKEN</code> — can scale</li>
-<li><code>AE_API_ADMIN_TOKEN</code> — can delete</li>
-</ul>
-</li>
-<li>When any token is configured, GETs require at least the READ token.</li>
-<li>Mutations require tokens and <code>AE_API_MUTATIONS=1</code>.</li>
-<li>Optional scoping: <code>AE_API_ADMIN_SCOPE</code> / <code>AE_API_SCALER_SCOPE</code> / <code>AE_API_READ_SCOPE</code> (comma‑separated glob patterns).</li>
-<li>Optional expiry: <code>AE_API_*_TOKEN_EXPIRES</code> (UTC ISO8601).</li>
-</ul>
-<p>Endpoints</p>
-<ul>
-<li>GET <code>/health</code> — Controller health summary (uptime, last reconcile, app/replica counts)</li>
-<li>GET <code>/metrics</code> — Prometheus metrics</li>
-<li>GET <code>/status</code> — Paginated list of app statuses
-<ul>
-<li>Query: <code>limit</code>, <code>cursor</code>, <code>app</code>, <code>wildcard</code> (glob)</li>
-<li>Response: <code>{ items: [...], next: &quot;cursor&quot; | null }</code></li>
-</ul>
-</li>
-<li>GET <code>/status/&lt;app&gt;</code> — JSON status object</li>
-<li>GET <code>/manifest/&lt;app&gt;</code> — Latest stored manifest for an app</li>
-<li>GET <code>/events/&lt;app&gt;?limit=N</code> — Recent events array</li>
-<li>GET <code>/history/&lt;app&gt;?limit=N</code> — Probe history (readiness/liveness)</li>
-<li>GET <code>/nodes</code> — Node inventory and staleness info</li>
-<li>GET <code>/system</code> and <code>/dashboard</code> — Dashboard snapshot</li>
-<li>POST <code>/plan</code> — Read-only planner (requires READ token when configured)</li>
-<li>POST <code>/scale/&lt;app&gt;</code> — Body: <code>{ &quot;replicas&quot;: &lt;int&gt; }</code> (requires scaler/admin)</li>
-<li>POST <code>/delete/&lt;app&gt;?purge=1</code> — Delete app (requires admin)</li>
-<li>POST <code>/rollout/pause/&lt;app&gt;</code> and <code>/rollout/resume/&lt;app&gt;</code> — Pause/resume rollouts (admin)</li>
-<li>Logs: GET <code>/logs/&lt;app&gt;?container=&amp;tail=&amp;since=&amp;follow=</code> (requires READ when tokens are configured)
-<ul>
-<li>When <code>follow=1</code>, streams plain text lines; otherwise JSON: <code>{ lines: [...] }</code></li>
-<li>SSE stream: GET <code>/logs/&lt;app&gt;/stream</code></li>
-</ul>
-</li>
+<li>Controller-native schema: <a href="/swagger">Swagger</a>, <a href="/redoc">ReDoc</a>, and <a href="/openapi.json">OpenAPI JSON</a></li>
+<li>Kubernetes-compatible schema: <a href="api-shim.html">API Shim</a>, <a href="/swagger/apishim">API Shim Swagger</a>, <a href="/redoc/apishim">API Shim ReDoc</a>, and <a href="/openapi/v3">OpenAPI v3</a></li>
+<li><code>/openapi/v3</code> intentionally returns raw JSON. Use Swagger or ReDoc when you want a browser-oriented shim view.</li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -889,7 +810,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 12:10:03</span>
+        <span>Built 2026-04-14 17:31:27</span>
       </div>
     </footer>
     <script>

@@ -9,7 +9,7 @@
 - No user-facing changes yet.
 
 ### Fixed
-- No user-facing fixes yet.
+- VM golden-image verification and lab overlay guards now size verifier overlays from the backing qcow2 virtual size and reject undersized stale overlays, preventing truncated initramfs/root-device failures in HA validation reruns.
 
 ## 0.1.3 - 2026-02-19
 

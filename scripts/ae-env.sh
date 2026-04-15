@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APISHIM_ENV_FILE="${APISHIM_ENV_FILE:-$ROOT_DIR/state/profiles/labs/apishim.env}"
 DEV_ENV_FILE="${DEV_ENV_FILE:-$ROOT_DIR/state/dev.env}"
-CONTROLLER_ENV_FILE="${CONTROLLER_ENV_FILE:-$ROOT_DIR/state/env.sh}"
+CONTROLLER_ENV_FILE="${CONTROLLER_ENV_FILE:-}"
 
 usage() {
   cat <<'EOF'
@@ -137,6 +137,41 @@ normalize_upstream_server_for_host() {
   fi
   printf '%s' "$out"
 }
+
+infer_profile_controller_env() {
+  local env_file="$1"
+  if [[ -z "$env_file" ]]; then
+    return 1
+  fi
+  local env_dir
+  env_dir="$(dirname "$env_file")"
+  if [[ "$(basename "$(dirname "$env_dir")")" != "profiles" ]]; then
+    return 1
+  fi
+  local candidate="${env_dir}/controller.env"
+  if [[ ! -f "$candidate" ]]; then
+    return 1
+  fi
+  printf '%s' "$candidate"
+}
+
+resolve_controller_env_file() {
+  if [[ -n "$CONTROLLER_ENV_FILE" ]]; then
+    printf '%s' "$CONTROLLER_ENV_FILE"
+    return 0
+  fi
+
+  local inferred=""
+  inferred="$(infer_profile_controller_env "$APISHIM_ENV_FILE" || true)"
+  if [[ -n "$inferred" ]]; then
+    printf '%s' "$inferred"
+    return 0
+  fi
+
+  printf '%s' "$ROOT_DIR/state/env.sh"
+}
+
+CONTROLLER_ENV_FILE="$(resolve_controller_env_file)"
 
 mode="${1:-}"
 shift || true

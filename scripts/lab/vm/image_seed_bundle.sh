@@ -109,6 +109,29 @@ resolve_engine() {
   exit 2
 }
 
+is_local_build_image() {
+  local image="$1"
+  [[ -n "$(local_build_context "$image")" ]]
+}
+
+local_build_context() {
+  local image="$1"
+  local normalized="$image"
+  if [[ "$normalized" == */* ]]; then
+    local first="${normalized%%/*}"
+    if [[ "$first" == *.* || "$first" == *:* || "$first" == "localhost" ]]; then
+      normalized="${normalized#*/}"
+    fi
+  fi
+  case "$normalized" in
+    k1s-apishim:*|*/k1s-apishim:*) echo "__apishim__" ;;
+    demo-shell:latest|*/demo-shell:latest) echo "$ROOT_DIR/samples/servers/shell-demo" ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
 is_truthy() {
   case "${1:-}" in
     1|true|TRUE|yes|YES|on|ON|y|Y) return 0 ;;
@@ -162,6 +185,59 @@ engine_pull() {
       exit 2
       ;;
   esac
+}
+
+prepare_image() {
+  local image="$1"
+  local build_context=""
+  build_context="$(local_build_context "$image")"
+  if [[ -n "$build_context" ]]; then
+    if [[ "$ENGINE" == "ctr" ]]; then
+      echo "[cri-seed] engine=ctr cannot build local seed image: $image" >&2
+      echo "[cri-seed] use docker, podman, or nerdctl for bundles that include repo-built images" >&2
+      exit 2
+    fi
+    if ! is_truthy "$ALWAYS_PULL" && engine_has_image "$image"; then
+      echo "[cri-seed] local seed image already cached: $image"
+      return
+    fi
+    if [[ "$build_context" == "__apishim__" ]]; then
+      local build_script="$ROOT_DIR/scripts/build_cri_apishim_image.sh"
+      [[ -x "$build_script" ]] || {
+        echo "[cri-seed] missing local image builder: $build_script" >&2
+        exit 2
+      }
+      echo "[cri-seed] build local image: $image"
+      bash "$build_script" \
+        --engine "$ENGINE" \
+        --image "$image" \
+        --no-push \
+        --no-pull-cri
+      return
+    fi
+    [[ -d "$build_context" ]] || {
+      echo "[cri-seed] missing local build context: $build_context" >&2
+      exit 2
+    }
+    echo "[cri-seed] build local image: $image"
+    case "$ENGINE" in
+      docker)
+        docker build --platform "$PLATFORM" -t "$image" "$build_context"
+        ;;
+      nerdctl)
+        nerdctl --namespace "$NERDCTL_NAMESPACE" build --platform "$PLATFORM" -t "$image" "$build_context"
+        ;;
+      podman)
+        podman build --platform "$PLATFORM" -t "$image" "$build_context"
+        ;;
+      *)
+        echo "[cri-seed] unsupported engine for local build: $ENGINE" >&2
+        exit 2
+        ;;
+    esac
+    return
+  fi
+  engine_pull "$image"
 }
 
 engine_export() {
@@ -233,7 +309,7 @@ echo "[cri-seed] manifest=$MANIFEST seed_version=$seed_version"
 
 for image in "${images[@]}"; do
   echo "[cri-seed] ensure image: $image"
-  engine_pull "$image"
+  prepare_image "$image"
 done
 
 tmp_output="${OUTPUT}.tmp"

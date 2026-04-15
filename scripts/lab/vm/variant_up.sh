@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 VARIANT=""
 RUN_ID="$(resolve_run_id)"
+CLOUD_INIT_WAIT_TIMEOUT="${CLOUD_INIT_WAIT_TIMEOUT:-300}"
 
 usage() {
   cat <<USAGE
@@ -25,6 +26,10 @@ done
 
 [[ -n "$VARIANT" ]] || { err "--variant is required"; usage; exit 2; }
 [[ -f "$VARIANT" ]] || { err "variant not found: $VARIANT"; exit 2; }
+if ! [[ "$CLOUD_INIT_WAIT_TIMEOUT" =~ ^[0-9]+$ ]]; then
+  err "CLOUD_INIT_WAIT_TIMEOUT must be an integer number of seconds"
+  exit 2
+fi
 
 require_cmd qemu-system-x86_64
 require_cmd qemu-img
@@ -38,16 +43,16 @@ variant_json="$(variant_to_json "$VARIANT" --validate-images)"
 bridge="$(echo "$variant_json" | jq -r '.network.bridge')"
 cidr="$(echo "$variant_json" | jq -r '.network.cidr')"
 gateway="$(echo "$variant_json" | jq -r '.network.gateway')"
-disk_gb="$(echo "$variant_json" | jq -r '.vm.disk_gb')"
-vm_mem="$(echo "$variant_json" | jq -r '.vm.memory_mb')"
-vm_cpus="$(echo "$variant_json" | jq -r '.vm.vcpus')"
 base_img="$(echo "$variant_json" | jq -r '.images.base')"
 gpu_img="$(echo "$variant_json" | jq -r '.images.gpu')"
+pod_route_rows="$(
+  echo "$variant_json" | jq -r '.hosts[] | select(.role=="k1s-core-node" and (.pod_cidr // "") != "") | [.pod_cidr, .ip] | @tsv'
+)"
 
 [[ -f "$base_img" ]] || { err "base image missing: $base_img"; exit 2; }
 [[ -f "$gpu_img" ]] || { err "gpu image missing: $gpu_img"; exit 2; }
 
-"$ROOT_DIR/scripts/lab/vm/host_prepare.sh" --bridge "$bridge" --cidr "$cidr" --gateway "$gateway" --apply
+"$ROOT_DIR/scripts/lab/vm/host_prepare.sh" --variant "$VARIANT" --apply
 
 state_dir="$ROOT_DIR/state/lab-vm/$RUN_ID"
 log_dir="$state_dir/logs"
@@ -62,7 +67,14 @@ cp "$VARIANT" "$(run_dir "$RUN_ID")/variant.yaml"
 tap_up() {
   local tap="$1"
   if ip link show "$tap" >/dev/null 2>&1; then
-    return 0
+    log "resetting stale tap=${tap}"
+    sudo ip link set "$tap" down || true
+    sudo ip link set "$tap" nomaster || true
+    sudo ip link delete "$tap" || true
+  fi
+  if ip link show "$tap" >/dev/null 2>&1; then
+    err "tap ${tap} still exists after reset"
+    return 1
   fi
   sudo ip tuntap add dev "$tap" mode tap user "$(whoami)"
   sudo ip link set "$tap" master "$bridge"
@@ -74,6 +86,7 @@ make_seed() {
   local ip="$2"
   local seed_path="$3"
   local dns_csv="$4"
+  local route_yaml="${5:-}"
   local tmp
   tmp="$(mktemp -d)"
 
@@ -113,6 +126,7 @@ network:
       gateway4: ${gateway}
       nameservers:
         addresses: [${dns_csv}]
+${route_yaml}
 CFG
 
   cat >"$tmp/meta-data" <<CFG
@@ -124,17 +138,83 @@ CFG
   rm -rf "$tmp"
 }
 
+render_guest_route_yaml() {
+  local role="$1"
+  if [[ "$role" != "k1s-core" && "$role" != "k1s-ha-core" ]]; then
+    return 0
+  fi
+  if [[ -z "$pod_route_rows" ]]; then
+    return 0
+  fi
+
+  printf '      routes:\n'
+  while IFS=$'\t' read -r route_cidr route_ip; do
+    [[ -n "$route_cidr" && -n "$route_ip" ]] || continue
+    printf '        - to: %s\n' "$route_cidr"
+    printf '          via: %s\n' "$route_ip"
+  done <<<"$pod_route_rows"
+}
+
+image_virtual_size_bytes() {
+  local image="$1"
+  qemu-img info --output=json "$image" | jq -er '."virtual-size"'
+}
+
+image_virtual_size_gib() {
+  local image="$1"
+  local size_bytes=""
+  size_bytes="$(image_virtual_size_bytes "$image")"
+  [[ "$size_bytes" =~ ^[0-9]+$ ]] || {
+    err "invalid virtual size reported for image: ${image}"
+    return 1
+  }
+  printf '%s\n' "$(((size_bytes + 1073741824 - 1) / 1073741824))"
+}
+
+validate_overlay_disk_size() {
+  local name="$1"
+  local requested_disk_gb="$2"
+  local backing_image="$3"
+  local overlay="$4"
+  local backing_size_bytes="" backing_size_gib="" overlay_size_gib=""
+
+  backing_size_bytes="$(image_virtual_size_bytes "$backing_image")" || return 1
+  [[ "$backing_size_bytes" =~ ^[0-9]+$ ]] || {
+    err "invalid virtual size reported for backing image: ${backing_image}"
+    return 1
+  }
+  backing_size_gib="$(((backing_size_bytes + 1073741824 - 1) / 1073741824))"
+
+  if (( requested_disk_gb < backing_size_gib )); then
+    err "host ${name} requested vm.disk_gb=${requested_disk_gb}GiB, but backing image ${backing_image} has virtual size ${backing_size_gib}GiB (${backing_size_bytes} bytes); requires at least ${backing_size_gib}GiB"
+    return 1
+  fi
+
+  if [[ -f "$overlay" ]]; then
+    overlay_size_gib="$(image_virtual_size_gib "$overlay")" || return 1
+    if (( overlay_size_gib < backing_size_gib )); then
+      err "host ${name} existing overlay ${overlay} has virtual size ${overlay_size_gib}GiB, but backing image ${backing_image} requires at least ${backing_size_gib}GiB; remove the stale overlay before retrying"
+      return 1
+    fi
+  fi
+}
+
 start_one() {
   local index="$1"
   local row_b64="$2"
   local row
   row="$(printf '%s' "$row_b64" | base64 -d)"
 
-  local name ip gpu tap seed img overlay pid log mac dns_csv
+  local name ip role gpu tap seed img overlay pid log mac dns_csv route_yaml
+  local host_disk_gb host_mem host_cpus
   name="$(echo "$row" | jq -r '.name')"
   ip="$(echo "$row" | jq -r '.ip')"
+  role="$(echo "$row" | jq -r '.role')"
   gpu="$(echo "$row" | jq -r '.gpu')"
-  tap="k1s${index}"
+  host_disk_gb="$(echo "$row" | jq -r '.vm.disk_gb')"
+  host_mem="$(echo "$row" | jq -r '.vm.memory_mb')"
+  host_cpus="$(echo "$row" | jq -r '.vm.vcpus')"
+  tap="$(lane_tap_name "$index")"
   seed="$seed_dir/${name}.seed.iso"
   overlay="$state_dir/${name}.qcow2"
   pid="$pid_dir/${name}.pid"
@@ -145,18 +225,21 @@ start_one() {
     img="$gpu_img"
   fi
 
+  validate_overlay_disk_size "$name" "$host_disk_gb" "$img" "$overlay" || return 1
+
   if [[ ! -f "$overlay" ]]; then
-    qemu-img create -f qcow2 -F qcow2 -b "$img" "$overlay" "${disk_gb}G" >/dev/null
+    qemu-img create -f qcow2 -F qcow2 -b "$img" "$overlay" "${host_disk_gb}G" >/dev/null || return 1
   fi
 
-  make_seed "$name" "$ip" "$seed" "$dns_csv"
+  route_yaml="$(render_guest_route_yaml "$role")"
+  make_seed "$name" "$ip" "$seed" "$dns_csv" "$route_yaml"
   tap_up "$tap"
 
   mac="$(printf '52:54:00:%02x:%02x:%02x' $((index & 0xff)) $(((index + 16) & 0xff)) $(((index + 32) & 0xff)))"
 
   qemu-system-x86_64 \
     -enable-kvm \
-    -m "$vm_mem" -smp "$vm_cpus" \
+    -m "$host_mem" -smp "$host_cpus" \
     -drive file="$overlay",if=virtio \
     -drive file="$seed",if=virtio,format=raw \
     -device virtio-net-pci,netdev=net0,mac="$mac" \
@@ -214,6 +297,15 @@ for row in "${hosts[@]}"; do
   log "waiting for ssh: ${name} (${ip})"
   if ! wait_for_ssh "$ip" 150; then
     err "ssh did not become ready for ${name} (${ip})"
+    exit 1
+  fi
+  log "waiting for cloud-init: ${name} (${ip})"
+  if ! wait_for_cloud_init "$ip" "$CLOUD_INIT_WAIT_TIMEOUT"; then
+    cloud_init_detail="$(run_remote "$ip" "cloud-init status --long 2>/dev/null | sed -n '1,12p'" || true)"
+    if [[ -n "$cloud_init_detail" ]]; then
+      err "cloud-init detail for ${name} (${ip}):"$'\n'"${cloud_init_detail}"
+    fi
+    err "cloud-init did not complete for ${name} (${ip})"
     exit 1
   fi
   with_repo_host_mount "$ip" >/dev/null 2>&1 || true

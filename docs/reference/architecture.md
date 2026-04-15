@@ -15,11 +15,11 @@ This document describes k1s in depth: components, data model, reconcile algorith
 - Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring `nodeSelector`, taints/tolerations, topology spread, and storage pinning.
 - Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.
 - Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.
-- Transport/gateway (src/ae/gateway + NATS): supports both NATS + JetStream (`nats-js`) and NATS Core (`nats-core`) control-plane lanes for core/edge operation. The true HA target keeps this as the transport plane behind `etcd` authority.
+- Transport/gateway (src/ae/gateway + NATS): controller-to-agent work can run through `direct`, NATS Core (`nats-core`), or NATS + JetStream (`nats-js`) transport lanes depending on profile and topology. HA keeps transport as a delivery plane behind `etcd` authority.
 - Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).
 - Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).
 - Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).
-- State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables), with Postgres and etcd-backed durable lanes available for multi-node/strict CRI setups. The HA control-plane target uses `etcd` as the authority store.
+- State store (src/ae/controller/state.py): SQLite backs the lightweight local controller snapshot, shared-authority HA and strict-CRI paths use `etcd`, and externalized Postgres/store wiring remains available where deployments need compatibility or integration plumbing.
 - Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.
 - API shim (src/ae/apishim): Kubernetes-compatible API for kubectl/helm with SSA/patch and port-forward.
 - Inference fabric (src/ae/controller/inference_cell + node fabric endpoints): experimental distributed-inference lane with stage placement, admission budgets, fabric-session orchestration, and cell lifecycle control. The formal roadmap targets AI Max+ 395 cells behind a provider-facing HA edge, with an exact public node baseline documented separately.
@@ -28,7 +28,7 @@ This document describes k1s in depth: components, data model, reconcile algorith
 
 ## State Store Notes
 
-- Relational schema changes (SQLite/Postgres lanes) should be documented here alongside the state store design.
+- State-model changes should document how they map across the local SQLite snapshot, shared-authority `etcd` keys, and any externalized compatibility stores.
 - For implementation details, see `src/ae/controller/state.py` and related ADRs.
 
 ## Reconcile Loop
@@ -82,27 +82,30 @@ sequenceDiagram
   participant CLI as ae CLI
   participant C as Controller
   participant SCH as Scheduler
+  participant T as Transport
   participant A as Node Agent
   participant R as Runtime (Podman/Docker/CRI)
   participant H as Health
   participant I as Ingress
-  participant S as State Store (SQLite/Postgres/etcd lanes)
+  participant S as State Store
 
   CLI->>C: apply(manifest)
   C->>SCH: plan placements(nodeSelector/tolerations/storage)
   SCH-->>C: placements (+warnings)
-  C->>A: ensure_app(manifest, rev, placements)
+  C->>T: dispatch ensure/logs/exec work
+  T->>A: deliver runtime work
   A->>R: ensure/exec/logs
   R-->>A: RuntimeResult(pod states)
-  A-->>C: Pod states
+  A-->>T: pod states + heartbeats
+  T-->>C: pod states + heartbeats
   C->>H: evaluate(manifest, result)
   H-->>C: HealthReport(ready/live)
+  C->>S: record snapshot, revisions, events
   alt ingress configured
     C->>I: apply(upstream), reload()
   else no ingress
     C->>I: remove(app), reload()
   end
-  C->>S: record_snapshot + events
   C-->>CLI: report(created/updated/removed, status)
 ```
 
@@ -174,9 +177,9 @@ spec:
   volumes: [{ hostPath: /tmp, mountPath: /host-tmp, readOnly: false }]
 ```
 
-## State Model (Relational Store: SQLite/Postgres)
+## Controller State Model
 
-The table model below describes the controller's relational state lanes (SQLite default, Postgres optional). etcd-backed strict-CRI lanes track equivalent logical entities for reconcile, service, and event continuity.
+The table model below describes the controller's local relational snapshot (SQLite default, Postgres-compatible where configured). Shared-authority HA and strict-CRI lanes persist the same logical controller entities in `etcd`, while externalized stores remain optional deployment plumbing rather than the HA authority path.
 
 Tables (created in src/ae/controller/state.py)
 - app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)
@@ -295,7 +298,7 @@ Revision status
 - RuntimeAdapter protocol: implement `ensure_app` and `read_logs` for alternate engines.
 - IngressManager: implement `apply/remove/reload` for nginx or other proxies.
 - SecretManager: swap SOPS shell calls with a native decryptor if desired.
-- Store backends are lane-aware: SQLite is the default local store, with Postgres and etcd-backed durable lanes for multi-node/strict-CRI operation.
+- Store backends are lane-aware: SQLite is the default local snapshot store, `etcd` backs shared authority in HA/strict-CRI lanes, and Postgres or other externalized stores remain available when deployments need compatibility plumbing.
 
 ## Environment Variables
 
@@ -326,17 +329,16 @@ Revision status
 
 ## Performance & Footprint
 
-- Controller + API + metrics: ~85-90 MiB PSS in recent Podman+crun rootless idle snapshots (Feb 2026).
-- Caddy: ~40–50 MiB PSS in k1nd (Docker + Caddy) idle runs; runtime daemon footprint varies by engine.
-- See `docs/benchmarks/memory.md` for updated measurements and charts.
-- Suitable for 1–3 small services with sane limits on a 2 GB VPS.
+- Current memory and footprint measurements live in [Benchmarks](benchmarks.html).
+- Runtime, ingress, transport, and HA topology materially change footprint, so keep exact numbers out of this reference page.
+- Use the relevant runtime profile and validated procedure when sizing a concrete deployment or demo flow.
 
 ## Future Work
 
 - Full Job/CronJob/DaemonSet/StatefulSet semantics in apishim (completion, one‑per‑node, PVC templates).
 - Resource requests/QoS enforcement beyond container limits (cgroup tuning, priorities).
 - Advanced ingress routing (header manipulation, rewrites/regex, richer traffic shaping).
-- Multi‑controller HA/leader election and broader K8s parity (metrics.k8s.io, admission/policy, CSI/CNI plugins).
+- Broader K8s parity beyond the current HA baseline (metrics.k8s.io, admission/policy, CSI/CNI plugins).
 
 
 ### Configs and Secrets → Environment

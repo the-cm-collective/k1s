@@ -1,0 +1,1252 @@
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import shutil
+import socket
+import ssl
+import subprocess
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse, urlunparse
+
+HA_CORE_REQUIRED_ENV: tuple[str, ...] = (
+    "AE_CONTROLLER_ID",
+    "AE_CONTROLLER_ADVERTISE_ADDR",
+    "AE_ETCD_ENDPOINTS",
+    "AE_ETCD_PREFIX",
+    "AE_NATS_URL",
+)
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+_PROM_LINE = re.compile(
+    r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>\S+)$"
+)
+_ETCD_ENV_LINE = re.compile(r'^(?P<key>ETCD_[A-Z0-9_]+)=(?:"(?P<quoted>.*)"|(?P<raw>.+))$')
+_ETCD_MEMBER_ADD = re.compile(
+    r"Member\s+(?P<member_id>[0-9a-fA-F]+)\s+added(?:\s+to\s+cluster\s+(?P<cluster_id>[0-9a-fA-F]+))?",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class EtcdLeaderRecord:
+    controller_id: str
+    controller_epoch: int
+    advertise_addr: str | None
+    lease_id: int
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class EtcdMemberAddResult:
+    member_id: str | None
+    cluster_id: str | None
+    member_name: str
+    initial_cluster: str
+    initial_cluster_state: str
+    initial_advertise_peer_urls: str | None
+    raw_env: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class EtcdRestoreMemberSpec:
+    name: str
+    peer_url: str
+    client_url: str
+    data_dir: str
+
+
+@dataclass(frozen=True, slots=True)
+class EtcdRestoreMemberPlan:
+    name: str
+    peer_url: str
+    client_url: str
+    data_dir: str
+    restore_command: list[str]
+    start_command: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class EtcdQuorumRestorePlan:
+    snapshot_path: str
+    initial_cluster: str
+    initial_cluster_token: str
+    members: list[EtcdRestoreMemberPlan]
+
+
+@dataclass(frozen=True, slots=True)
+class BuildInfoRecord:
+    component: str
+    version: str
+    sha: str
+    date: str
+
+
+@dataclass(frozen=True, slots=True)
+class HaCoreNodeTarget:
+    name: str
+    controller_url: str
+    apishim_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class NatsHubNodeTarget:
+    name: str
+    monitor_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class NatsEdgeSiteTarget:
+    site_id: str
+    monitor_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class NatsHubMonitorRecord:
+    name: str
+    monitor_url: str
+    server_name: str
+    server_id: str
+    version: str
+    git_commit: str
+    cluster_name: str | None
+    jetstream_domain: str | None
+    meta_leader: str | None
+    route_count: int
+    route_peers: tuple[str, ...]
+    leaf_count: int | None
+    stream_leaders: dict[str, str | None]
+    stream_replicas: dict[str, int]
+    stream_offline: dict[str, tuple[str, ...]]
+    consumer_leaders: dict[str, str | None]
+    consumer_replicas: dict[str, int]
+    consumer_offline: dict[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class NatsEdgeMonitorRecord:
+    site_id: str
+    monitor_url: str
+    server_name: str
+    server_id: str
+    version: str
+    git_commit: str
+    leaf_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeGatewayStatusRecord:
+    site_id: str
+    node_id: str
+    last_seen_seconds: float | None
+    version: str
+    sha: str
+    date: str
+
+
+def split_csv(raw: str | None) -> list[str]:
+    if raw is None:
+        return []
+    return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+def ha_core_missing_env(env: dict[str, str] | None = None) -> list[str]:
+    env_map = env or os.environ
+    return [key for key in HA_CORE_REQUIRED_ENV if not str(env_map.get(key) or "").strip()]
+
+
+def is_loopback_host(host: str | None) -> bool:
+    if not host:
+        return False
+    return str(host).strip().lower() in _LOOPBACK_HOSTS
+
+
+def parse_nats_url(url: str) -> tuple[str, int]:
+    raw = str(url or "").strip()
+    if not raw:
+        raise ValueError("missing nats url")
+    if "://" not in raw:
+        raw = f"nats://{raw}"
+    parsed = urlparse(raw)
+    if not parsed.hostname:
+        raise ValueError("missing host")
+    return parsed.hostname, int(parsed.port or 4222)
+
+
+def tcp_connectable(host: str, port: int, timeout_s: float = 3.0) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout_s):
+            return True, "ok"
+    except OSError as exc:
+        return False, str(exc)
+
+
+def _http_json(
+    url: str, *, timeout_s: float = 3.0, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    data: bytes | None = None
+    method = "GET"
+    headers: dict[str, str] = {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        method = "POST"
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    context = None
+    parsed = urlparse(url)
+    if str(parsed.scheme or "").strip().lower() == "https":
+        ca_bundle = (
+            os.getenv("AE_APISHIM_CA_BUNDLE")
+            or os.getenv("AE_APISHIM_CA")
+            or os.getenv("AE_APISHIM_TLS_CA")
+        )
+        if ca_bundle:
+            context = ssl.create_default_context(cafile=ca_bundle)
+    with urllib.request.urlopen(req, timeout=timeout_s, context=context) as resp:
+        raw = resp.read().decode("utf-8")
+    return json.loads(raw or "{}")
+
+
+def etcd_endpoint_healthy(endpoint: str, timeout_s: float = 3.0) -> tuple[bool, str]:
+    target = str(endpoint or "").strip().rstrip("/")
+    if not target:
+        return False, "missing endpoint"
+    try:
+        payload = _http_json(f"{target}/health", timeout_s=timeout_s)
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        return False, str(exc)
+    health = str(payload.get("health") or "").strip().lower()
+    if health in {"true", "1", "ok"}:
+        return True, "ok"
+    return False, f"unexpected health payload: {payload}"
+
+
+def healthy_etcd_endpoints(endpoints: list[str], timeout_s: float = 3.0) -> list[str]:
+    healthy: list[str] = []
+    for endpoint in endpoints:
+        ok, _ = etcd_endpoint_healthy(endpoint, timeout_s=timeout_s)
+        if ok:
+            healthy.append(endpoint)
+    return healthy
+
+
+def leader_key(etcd_prefix: str) -> str:
+    prefix = str(etcd_prefix or "").strip("/")
+    return "/".join(part for part in (prefix, "controlplane", "leader") if part)
+
+
+def parse_etcd_leader_response(payload: dict[str, Any]) -> EtcdLeaderRecord | None:
+    kvs = payload.get("kvs") or []
+    if not kvs:
+        return None
+    kv = kvs[0]
+    raw_value = base64.b64decode(str(kv.get("value") or "").encode("ascii")).decode("utf-8")
+    record = json.loads(raw_value or "{}")
+    return EtcdLeaderRecord(
+        controller_id=str(record.get("controller_id") or ""),
+        controller_epoch=int(kv.get("mod_revision") or 0),
+        advertise_addr=(str(record.get("advertise_addr") or "").strip() or None),
+        lease_id=int(record.get("lease_id") or 0),
+        raw=record,
+    )
+
+
+def read_etcd_leader(
+    endpoints: list[str],
+    etcd_prefix: str,
+    *,
+    timeout_s: float = 3.0,
+) -> EtcdLeaderRecord | None:
+    if not endpoints:
+        raise RuntimeError("etcd endpoints required")
+    key = leader_key(etcd_prefix)
+    payload = {"key": base64.b64encode(key.encode("utf-8")).decode("ascii"), "limit": 1}
+    last_exc: Exception | None = None
+    for endpoint in endpoints:
+        target = endpoint.rstrip("/")
+        try:
+            response = _http_json(f"{target}/v3/kv/range", timeout_s=timeout_s, payload=payload)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            continue
+        return parse_etcd_leader_response(response)
+    if last_exc is not None:
+        raise RuntimeError(f"failed to read leader key: {last_exc}") from last_exc
+    return None
+
+
+def parse_prometheus_metric_value(
+    text: str,
+    metric_name: str,
+    *,
+    labels: dict[str, str] | None = None,
+) -> float | None:
+    wanted = labels or {}
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _PROM_LINE.match(line)
+        if not match:
+            continue
+        if match.group("name") != metric_name:
+            continue
+        line_labels = _parse_prometheus_labels(match.group("labels") or "")
+        if any(line_labels.get(key) != value for key, value in wanted.items()):
+            continue
+        try:
+            return float(match.group("value"))
+        except ValueError:
+            continue
+    return None
+
+
+def collect_prometheus_metric_values(
+    text: str,
+    metric_name: str,
+) -> list[tuple[dict[str, str], float]]:
+    values: list[tuple[dict[str, str], float]] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _PROM_LINE.match(line)
+        if not match or match.group("name") != metric_name:
+            continue
+        try:
+            value = float(match.group("value"))
+        except ValueError:
+            continue
+        values.append((_parse_prometheus_labels(match.group("labels") or ""), value))
+    return values
+
+
+def _parse_prometheus_labels(raw: str) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    if not raw:
+        return labels
+    for chunk in raw.split(","):
+        if "=" not in chunk:
+            continue
+        key, value = chunk.split("=", 1)
+        labels[key.strip()] = value.strip().strip('"')
+    return labels
+
+
+def _build_local_etcdctl_prefix(
+    *,
+    endpoints: list[str] | None = None,
+    binary: str = "etcdctl",
+    ca_cert: str | None = None,
+    cert: str | None = None,
+    key: str | None = None,
+    user: str | None = None,
+    password: str | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    cmd = [binary]
+    if endpoints:
+        cmd.append(f"--endpoints={','.join(endpoints)}")
+    if ca_cert:
+        cmd.append(f"--cacert={ca_cert}")
+    if cert:
+        cmd.append(f"--cert={cert}")
+    if key:
+        cmd.append(f"--key={key}")
+    if user and password:
+        cmd.append(f"--user={user}:{password}")
+    return cmd, {"ETCDCTL_API": "3"}
+
+
+def build_local_etcdctl_command(
+    action: str,
+    *,
+    endpoints: list[str] | None = None,
+    snapshot_path: Path | None = None,
+    data_dir: Path | None = None,
+    name: str | None = None,
+    initial_cluster: str | None = None,
+    initial_advertise_peer_urls: str | None = None,
+    initial_cluster_token: str | None = None,
+    binary: str = "etcdctl",
+    ca_cert: str | None = None,
+    cert: str | None = None,
+    key: str | None = None,
+    user: str | None = None,
+    password: str | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    cmd, env = _build_local_etcdctl_prefix(
+        endpoints=endpoints,
+        binary=binary,
+        ca_cert=ca_cert,
+        cert=cert,
+        key=key,
+        user=user,
+        password=password,
+    )
+    if action == "save":
+        if snapshot_path is None:
+            raise ValueError("snapshot_path required for save")
+        cmd += ["snapshot", "save", str(snapshot_path)]
+    elif action == "status":
+        if snapshot_path is None:
+            raise ValueError("snapshot_path required for status")
+        cmd += ["snapshot", "status", str(snapshot_path), "-w", "table"]
+    elif action == "restore":
+        if snapshot_path is None:
+            raise ValueError("snapshot_path required for restore")
+        if data_dir is None:
+            raise ValueError("data_dir required for restore")
+        cmd += ["snapshot", "restore", str(snapshot_path), f"--data-dir={data_dir}"]
+        if name:
+            cmd.append(f"--name={name}")
+        if initial_cluster:
+            cmd.append(f"--initial-cluster={initial_cluster}")
+        if initial_advertise_peer_urls:
+            cmd.append(f"--initial-advertise-peer-urls={initial_advertise_peer_urls}")
+        if initial_cluster_token:
+            cmd.append(f"--initial-cluster-token={initial_cluster_token}")
+    else:
+        raise ValueError(f"unsupported etcdctl action: {action}")
+    return cmd, env
+
+
+def build_local_etcdctl_recovery_command(
+    action: str,
+    *,
+    endpoints: list[str] | None = None,
+    member_id: str | None = None,
+    member_name: str | None = None,
+    peer_urls: str | None = None,
+    output: str = "table",
+    cluster: bool = False,
+    binary: str = "etcdctl",
+    ca_cert: str | None = None,
+    cert: str | None = None,
+    key: str | None = None,
+    user: str | None = None,
+    password: str | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    cmd, env = _build_local_etcdctl_prefix(
+        endpoints=endpoints,
+        binary=binary,
+        ca_cert=ca_cert,
+        cert=cert,
+        key=key,
+        user=user,
+        password=password,
+    )
+    normalized_output = str(output or "table").strip().lower() or "table"
+    if action == "endpoint-status":
+        cmd += ["endpoint", "status"]
+        if cluster:
+            cmd.append("--cluster")
+        cmd.append(f"-w={normalized_output}")
+    elif action == "member-list":
+        cmd += ["member", "list", f"-w={normalized_output}"]
+    elif action == "member-remove":
+        if not member_id:
+            raise ValueError("member_id required for member-remove")
+        cmd += ["member", "remove", str(member_id)]
+    elif action == "member-add":
+        if not member_name:
+            raise ValueError("member_name required for member-add")
+        if not peer_urls:
+            raise ValueError("peer_urls required for member-add")
+        cmd += ["member", "add", str(member_name), f"--peer-urls={peer_urls}", "--learner"]
+    elif action == "member-promote":
+        if not member_id:
+            raise ValueError("member_id required for member-promote")
+        cmd += ["member", "promote", str(member_id)]
+    else:
+        raise ValueError(f"unsupported etcdctl recovery action: {action}")
+    return cmd, env
+
+
+def detect_container_cli() -> str | None:
+    explicit = str(os.getenv("AE_CONTAINER_CLI") or "").strip()
+    if explicit:
+        return explicit
+    for candidate in ("podman", "docker"):
+        if shutil.which(candidate):
+            return candidate
+    return None
+
+
+def resolve_etcdctl_runner(mode: str, etcdctl_bin: str) -> str:
+    if mode == "local":
+        if shutil.which(etcdctl_bin) is None:
+            raise RuntimeError(f"local etcdctl not found: {etcdctl_bin}")
+        return "local"
+    if mode == "container":
+        detect_container_cli_or_die()
+        return "container"
+    if shutil.which(etcdctl_bin) is not None:
+        return "local"
+    detect_container_cli_or_die()
+    return "container"
+
+
+def detect_container_cli_or_die() -> str:
+    cli = detect_container_cli()
+    if not cli:
+        raise RuntimeError("no container CLI found; install etcdctl or set AE_CONTAINER_CLI")
+    return cli
+
+
+def build_container_etcdctl_command(
+    container_cli: str,
+    image: str,
+    inner_cmd: list[str],
+    *,
+    mounts: list[Path],
+    extra_env: dict[str, str] | None = None,
+) -> list[str]:
+    cmd = [container_cli, "run", "--rm"]
+    seen: set[Path] = set()
+    for mount in mounts:
+        path = mount.resolve()
+        if path in seen:
+            continue
+        seen.add(path)
+        cmd += ["-v", f"{path}:{path}"]
+    for key, value in sorted((extra_env or {}).items()):
+        cmd += ["-e", f"{key}={value}"]
+    cmd.append(image)
+    cmd.extend(inner_cmd)
+    return cmd
+
+
+def required_parent_mounts(paths: list[str | Path | None]) -> list[Path]:
+    mounts: list[Path] = []
+    seen: set[Path] = set()
+    for item in paths:
+        if item is None:
+            continue
+        raw = str(item).strip()
+        if not raw:
+            continue
+        parent = Path(raw).expanduser().resolve().parent
+        if parent in seen:
+            continue
+        seen.add(parent)
+        parent.mkdir(parents=True, exist_ok=True)
+        mounts.append(parent)
+    return mounts
+
+
+def parse_etcd_member_add_output(
+    text: str,
+    *,
+    expected_name: str | None = None,
+    expected_peer_urls: str | None = None,
+) -> EtcdMemberAddResult:
+    member_id: str | None = None
+    cluster_id: str | None = None
+    env_map: dict[str, str] = {}
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        member_match = _ETCD_MEMBER_ADD.search(line)
+        if member_match:
+            member_id = member_match.group("member_id")
+            cluster_id = member_match.group("cluster_id")
+            continue
+        env_match = _ETCD_ENV_LINE.match(line)
+        if env_match:
+            env_map[env_match.group("key")] = (
+                env_match.group("quoted") or env_match.group("raw") or ""
+            )
+    member_name = str(env_map.get("ETCD_NAME") or expected_name or "").strip()
+    initial_cluster = str(env_map.get("ETCD_INITIAL_CLUSTER") or "").strip()
+    initial_cluster_state = str(env_map.get("ETCD_INITIAL_CLUSTER_STATE") or "").strip()
+    initial_peer_urls = (
+        str(env_map.get("ETCD_INITIAL_ADVERTISE_PEER_URLS") or expected_peer_urls or "").strip()
+        or None
+    )
+    if not member_name or not initial_cluster or not initial_cluster_state:
+        raise ValueError(f"unable to parse etcd member add output: {text!r}")
+    return EtcdMemberAddResult(
+        member_id=member_id,
+        cluster_id=cluster_id,
+        member_name=member_name,
+        initial_cluster=initial_cluster,
+        initial_cluster_state=initial_cluster_state,
+        initial_advertise_peer_urls=initial_peer_urls,
+        raw_env=env_map,
+    )
+
+
+def derive_client_url(peer_url: str) -> str:
+    parsed = urlparse(str(peer_url or "").strip())
+    if not parsed.scheme or not parsed.hostname:
+        raise ValueError(f"invalid peer url: {peer_url!r}")
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
+    if parsed.username:
+        auth = parsed.username
+        if parsed.password:
+            auth = f"{auth}:{parsed.password}"
+        netloc = f"{auth}@{netloc}"
+    netloc = f"{netloc}:2379"
+    return urlunparse((parsed.scheme, netloc, "", "", "", ""))
+
+
+def build_quorum_restore_plan(
+    *,
+    snapshot_path: Path,
+    cluster_token: str,
+    members: list[EtcdRestoreMemberSpec],
+    binary: str = "etcdctl",
+) -> EtcdQuorumRestorePlan:
+    if len(members) != 3:
+        raise ValueError("exactly three members are required for quorum restore planning")
+    initial_cluster = ",".join(f"{member.name}={member.peer_url}" for member in members)
+    plans: list[EtcdRestoreMemberPlan] = []
+    for member in members:
+        restore_cmd, _env = build_local_etcdctl_command(
+            "restore",
+            snapshot_path=snapshot_path,
+            data_dir=Path(member.data_dir),
+            name=member.name,
+            initial_cluster=initial_cluster,
+            initial_advertise_peer_urls=member.peer_url,
+            initial_cluster_token=cluster_token,
+            binary=binary,
+        )
+        start_cmd = [
+            "etcd",
+            f"--name={member.name}",
+            f"--data-dir={member.data_dir}",
+            f"--listen-peer-urls={member.peer_url}",
+            f"--initial-advertise-peer-urls={member.peer_url}",
+            f"--listen-client-urls={member.client_url}",
+            f"--advertise-client-urls={member.client_url}",
+            f"--initial-cluster={initial_cluster}",
+            "--initial-cluster-state=new",
+            f"--initial-cluster-token={cluster_token}",
+        ]
+        plans.append(
+            EtcdRestoreMemberPlan(
+                name=member.name,
+                peer_url=member.peer_url,
+                client_url=member.client_url,
+                data_dir=member.data_dir,
+                restore_command=restore_cmd,
+                start_command=start_cmd,
+            )
+        )
+    return EtcdQuorumRestorePlan(
+        snapshot_path=str(snapshot_path),
+        initial_cluster=initial_cluster,
+        initial_cluster_token=cluster_token,
+        members=plans,
+    )
+
+
+def format_quorum_restore_plan(plan: EtcdQuorumRestorePlan) -> str:
+    lines = [
+        f"Quorum restore plan from snapshot: {plan.snapshot_path}",
+        f"Initial cluster: {plan.initial_cluster}",
+        f"Initial cluster token: {plan.initial_cluster_token}",
+        "",
+        "Assumption: each member listens and advertises on the same peer/client URLs shown below.",
+    ]
+    for member in plan.members:
+        lines.extend(
+            [
+                "",
+                f"[{member.name}]",
+                f"peer_url={member.peer_url}",
+                f"client_url={member.client_url}",
+                f"data_dir={member.data_dir}",
+                "restore:",
+                f"  {' '.join(member.restore_command)}",
+                "start:",
+                f"  {' '.join(member.start_command)}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def parse_ha_core_node_target(raw: str) -> HaCoreNodeTarget:
+    text = str(raw or "").strip()
+    if "=" not in text:
+        raise ValueError(f"invalid node value {raw!r}; expected NAME=CONTROLLER_URL,APISHIM_URL")
+    name, urls_raw = text.split("=", 1)
+    node_name = name.strip()
+    urls = [item.strip() for item in urls_raw.split(",") if item.strip()]
+    if len(urls) != 2:
+        raise ValueError(f"invalid node value {raw!r}; expected NAME=CONTROLLER_URL,APISHIM_URL")
+    if not node_name:
+        raise ValueError(f"invalid node value {raw!r}; missing node name")
+    return HaCoreNodeTarget(
+        name=node_name,
+        controller_url=urls[0].rstrip("/"),
+        apishim_url=urls[1].rstrip("/"),
+    )
+
+
+def parse_nats_hub_node_target(raw: str) -> NatsHubNodeTarget:
+    text = str(raw or "").strip()
+    if "=" not in text:
+        raise ValueError(f"invalid node value {raw!r}; expected NAME=MONITOR_URL")
+    name, monitor_url = text.split("=", 1)
+    node_name = name.strip()
+    base_url = monitor_url.strip().rstrip("/")
+    if not node_name or not base_url:
+        raise ValueError(f"invalid node value {raw!r}; expected NAME=MONITOR_URL")
+    return NatsHubNodeTarget(name=node_name, monitor_url=base_url)
+
+
+def parse_nats_edge_site_target(raw: str) -> NatsEdgeSiteTarget:
+    text = str(raw or "").strip()
+    if "=" not in text:
+        raise ValueError(f"invalid site value {raw!r}; expected SITE_ID=MONITOR_URL")
+    site_id, monitor_url = text.split("=", 1)
+    site_name = site_id.strip()
+    base_url = monitor_url.strip().rstrip("/")
+    if not site_name or not base_url:
+        raise ValueError(f"invalid site value {raw!r}; expected SITE_ID=MONITOR_URL")
+    return NatsEdgeSiteTarget(site_id=site_name, monitor_url=base_url)
+
+
+def fetch_nats_monitor_json(
+    base_url: str, endpoint: str, *, timeout_s: float = 3.0
+) -> dict[str, Any]:
+    path = str(endpoint or "").strip()
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return _http_json(f"{str(base_url or '').rstrip('/')}{path}", timeout_s=timeout_s)
+
+
+def build_nats_hub_monitor_record(
+    target: NatsHubNodeTarget,
+    *,
+    varz: dict[str, Any],
+    routez: dict[str, Any],
+    jsz: dict[str, Any],
+    leafz: dict[str, Any] | None = None,
+) -> NatsHubMonitorRecord:
+    route_entries = routez.get("routes") if isinstance(routez.get("routes"), list) else []
+    route_peers = tuple(
+        sorted(
+            {
+                peer
+                for peer in (
+                    _clean_str(
+                        route.get("name")
+                        or route.get("remote_name")
+                        or route.get("server_name")
+                        or route.get("remote_id")
+                        or route.get("rid")
+                    )
+                    for route in route_entries
+                    if isinstance(route, dict)
+                )
+                if peer
+            }
+        )
+    )
+    route_count = int(routez.get("num_routes") or len(route_entries) or 0)
+
+    stream_leaders: dict[str, str | None] = {}
+    stream_replicas: dict[str, int] = {}
+    stream_offline: dict[str, tuple[str, ...]] = {}
+    consumer_leaders: dict[str, str | None] = {}
+    consumer_replicas: dict[str, int] = {}
+    consumer_offline: dict[str, tuple[str, ...]] = {}
+    for stream in _iter_js_streams(jsz):
+        stream_name = _clean_str(_nested_get(stream, "config", "name")) or _clean_str(
+            stream.get("name")
+        )
+        if not stream_name:
+            continue
+        cluster = stream.get("cluster") if isinstance(stream.get("cluster"), dict) else {}
+        stream_leaders[stream_name] = _clean_str(cluster.get("leader")) or None
+        stream_replicas[stream_name] = _cluster_replica_total(cluster)
+        stream_offline[stream_name] = _cluster_offline_names(cluster)
+        for consumer in _iter_stream_consumers(stream):
+            consumer_name = (
+                _clean_str(_nested_get(consumer, "config", "durable_name"))
+                or _clean_str(_nested_get(consumer, "config", "name"))
+                or _clean_str(consumer.get("name"))
+            )
+            if not consumer_name:
+                continue
+            consumer_cluster = (
+                consumer.get("cluster") if isinstance(consumer.get("cluster"), dict) else {}
+            )
+            consumer_leaders[consumer_name] = _clean_str(consumer_cluster.get("leader")) or None
+            consumer_replicas[consumer_name] = _cluster_replica_total(consumer_cluster)
+            consumer_offline[consumer_name] = _cluster_offline_names(consumer_cluster)
+
+    cluster_meta = jsz.get("meta_cluster") if isinstance(jsz.get("meta_cluster"), dict) else {}
+    return NatsHubMonitorRecord(
+        name=target.name,
+        monitor_url=target.monitor_url,
+        server_name=_clean_str(varz.get("server_name")) or target.name,
+        server_id=_clean_str(varz.get("server_id")) or _clean_str(varz.get("id")),
+        version=_clean_str(varz.get("version")),
+        git_commit=_clean_str(
+            varz.get("git_commit")
+            or varz.get("git_commit_hash")
+            or varz.get("commit")
+            or varz.get("build")
+        ),
+        cluster_name=_cluster_name_from_varz(varz),
+        jetstream_domain=_jetstream_domain(varz, jsz),
+        meta_leader=_clean_str(cluster_meta.get("leader")) or None,
+        route_count=route_count,
+        route_peers=route_peers,
+        leaf_count=_leaf_count(leafz),
+        stream_leaders=stream_leaders,
+        stream_replicas=stream_replicas,
+        stream_offline=stream_offline,
+        consumer_leaders=consumer_leaders,
+        consumer_replicas=consumer_replicas,
+        consumer_offline=consumer_offline,
+    )
+
+
+def build_nats_edge_monitor_record(
+    target: NatsEdgeSiteTarget,
+    *,
+    varz: dict[str, Any],
+    leafz: dict[str, Any] | None = None,
+) -> NatsEdgeMonitorRecord:
+    return NatsEdgeMonitorRecord(
+        site_id=target.site_id,
+        monitor_url=target.monitor_url,
+        server_name=_clean_str(varz.get("server_name")) or target.site_id,
+        server_id=_clean_str(varz.get("server_id")) or _clean_str(varz.get("id")),
+        version=_clean_str(varz.get("version")),
+        git_commit=_clean_str(
+            varz.get("git_commit")
+            or varz.get("git_commit_hash")
+            or varz.get("commit")
+            or varz.get("build")
+        ),
+        leaf_count=_leaf_count(leafz),
+    )
+
+
+def fetch_nats_hub_monitor_record(
+    target: NatsHubNodeTarget,
+    *,
+    timeout_s: float = 3.0,
+    include_leafz: bool = False,
+) -> NatsHubMonitorRecord:
+    varz = fetch_nats_monitor_json(target.monitor_url, "/varz", timeout_s=timeout_s)
+    routez = fetch_nats_monitor_json(target.monitor_url, "/routez", timeout_s=timeout_s)
+    jsz = fetch_nats_monitor_json(
+        target.monitor_url,
+        "/jsz?streams=true&consumers=true&config=true",
+        timeout_s=timeout_s,
+    )
+    leafz = None
+    if include_leafz:
+        try:
+            leafz = fetch_nats_monitor_json(target.monitor_url, "/leafz", timeout_s=timeout_s)
+        except Exception:
+            leafz = None
+    return build_nats_hub_monitor_record(target, varz=varz, routez=routez, jsz=jsz, leafz=leafz)
+
+
+def fetch_nats_edge_monitor_record(
+    target: NatsEdgeSiteTarget,
+    *,
+    timeout_s: float = 3.0,
+    include_leafz: bool = True,
+) -> NatsEdgeMonitorRecord:
+    varz = fetch_nats_monitor_json(target.monitor_url, "/varz", timeout_s=timeout_s)
+    leafz = None
+    if include_leafz:
+        try:
+            leafz = fetch_nats_monitor_json(target.monitor_url, "/leafz", timeout_s=timeout_s)
+        except Exception:
+            leafz = None
+    return build_nats_edge_monitor_record(target, varz=varz, leafz=leafz)
+
+
+def evaluate_nats_hub_cluster(
+    records: list[NatsHubMonitorRecord],
+    *,
+    expected_domain: str,
+    expected_stream: str,
+    expected_replicas: int,
+    expected_consumers: list[str] | None = None,
+    expected_leaf_min: int | None = None,
+) -> list[str]:
+    issues: list[str] = []
+    if not records:
+        return ["no_records"]
+    cluster_names = sorted({name for name in (_clean_str(r.cluster_name) for r in records) if name})
+    if len(cluster_names) != 1:
+        issues.append("cluster_name_mismatch")
+    domains = sorted({name for name in (_clean_str(r.jetstream_domain) for r in records) if name})
+    if len(domains) != 1:
+        issues.append("jetstream_domain_mismatch")
+    elif domains[0] != str(expected_domain):
+        issues.append(f"jetstream_domain:{domains[0]}")
+
+    expected_routes = max(0, len(records) - 1)
+    for record in records:
+        if record.route_count < expected_routes:
+            issues.append(f"route_mesh:{record.name}:{record.route_count}/{expected_routes}")
+        if expected_leaf_min is not None and record.leaf_count is not None:
+            if int(record.leaf_count) < int(expected_leaf_min):
+                issues.append(
+                    f"leaf_count:{record.name}:{int(record.leaf_count)}/{int(expected_leaf_min)}"
+                )
+    stream_leader_record = _leader_record_for_stream(records, expected_stream)
+    if stream_leader_record is None:
+        issues.append(f"stream_leader_unknown:{expected_stream}")
+    else:
+        stream_replica_total = int(
+            stream_leader_record.stream_replicas.get(expected_stream, 0) or 0
+        )
+        if stream_replica_total != int(expected_replicas):
+            issues.append(
+                f"stream_replicas:{stream_leader_record.name}:{expected_stream}:{stream_replica_total}/{int(expected_replicas)}"
+            )
+        offline_stream = stream_leader_record.stream_offline.get(expected_stream) or ()
+        if offline_stream:
+            issues.append(
+                f"stream_offline:{stream_leader_record.name}:{expected_stream}:{','.join(offline_stream)}"
+            )
+    for consumer in expected_consumers or []:
+        consumer_leader_record = _leader_record_for_consumer(records, consumer)
+        if consumer_leader_record is None:
+            issues.append(f"consumer_leader_unknown:{consumer}")
+            continue
+        consumer_replica_total = int(
+            consumer_leader_record.consumer_replicas.get(consumer, 0) or 0
+        )
+        if consumer_replica_total != int(expected_replicas):
+            issues.append(
+                f"consumer_replicas:{consumer_leader_record.name}:{consumer}:{consumer_replica_total}/{int(expected_replicas)}"
+            )
+        offline_consumer = consumer_leader_record.consumer_offline.get(consumer) or ()
+        if offline_consumer:
+            issues.append(
+                f"consumer_offline:{consumer_leader_record.name}:{consumer}:{','.join(offline_consumer)}"
+            )
+    meta_leaders = sorted({name for name in (_clean_str(r.meta_leader) for r in records) if name})
+    if len(meta_leaders) != 1:
+        issues.append("meta_leader_mismatch")
+    return issues
+
+
+def _leader_record_for_stream(
+    records: list[NatsHubMonitorRecord], stream_name: str
+) -> NatsHubMonitorRecord | None:
+    leader_name = _unique_leader_name(record.stream_leaders.get(stream_name) for record in records)
+    if not leader_name:
+        return None
+    return _hub_record_by_identity(records, leader_name)
+
+
+def _leader_record_for_consumer(
+    records: list[NatsHubMonitorRecord], consumer_name: str
+) -> NatsHubMonitorRecord | None:
+    leader_name = _unique_leader_name(
+        record.consumer_leaders.get(consumer_name) for record in records
+    )
+    if not leader_name:
+        return None
+    return _hub_record_by_identity(records, leader_name)
+
+
+def _unique_leader_name(values) -> str | None:
+    leaders = sorted({_clean_str(value) for value in values if _clean_str(value)})
+    if len(leaders) != 1:
+        return None
+    return leaders[0]
+
+
+def _hub_record_by_identity(
+    records: list[NatsHubMonitorRecord], leader_name: str
+) -> NatsHubMonitorRecord | None:
+    wanted = _clean_str(leader_name)
+    if not wanted:
+        return None
+    for record in records:
+        if wanted in {
+            _clean_str(record.name),
+            _clean_str(record.server_name),
+            _clean_str(record.server_id),
+        }:
+            return record
+    return None
+
+
+def evaluate_nats_edge_site(
+    record: NatsEdgeMonitorRecord,
+    *,
+    expected_leaf_min: int | None = 1,
+) -> list[str]:
+    issues: list[str] = []
+    if expected_leaf_min is not None:
+        if record.leaf_count is None:
+            issues.append(f"leaf_count_unavailable:{record.site_id}")
+        elif int(record.leaf_count) < int(expected_leaf_min):
+            issues.append(
+                f"leaf_count:{record.site_id}:{int(record.leaf_count)}/{int(expected_leaf_min)}"
+            )
+    return issues
+
+
+def nats_build_key(record: NatsHubMonitorRecord) -> tuple[str, str]:
+    return (record.version, record.git_commit)
+
+
+def collect_site_gateway_status(
+    metrics_text: str,
+    site_id: str,
+) -> dict[str, EdgeGatewayStatusRecord]:
+    site = str(site_id or "").strip()
+    if not site:
+        return {}
+    last_seen_by_node: dict[str, float] = {}
+    build_by_node: dict[str, tuple[str, str, str]] = {}
+    for labels, value in collect_prometheus_metric_values(
+        metrics_text, "ae_site_gateway_last_seen_seconds"
+    ):
+        if str(labels.get("site") or "").strip() != site:
+            continue
+        node_id = str(labels.get("node") or "").strip()
+        if not node_id:
+            continue
+        last_seen_by_node[node_id] = value
+    for labels, _value in collect_prometheus_metric_values(
+        metrics_text, "ae_site_gateway_build_info"
+    ):
+        if str(labels.get("site") or "").strip() != site:
+            continue
+        node_id = str(labels.get("node") or "").strip()
+        if not node_id:
+            continue
+        build_by_node[node_id] = (
+            str(labels.get("version") or "").strip(),
+            str(labels.get("sha") or "").strip(),
+            str(labels.get("date") or "").strip(),
+        )
+    nodes = sorted(set(last_seen_by_node) | set(build_by_node))
+    records: dict[str, EdgeGatewayStatusRecord] = {}
+    for node_id in nodes:
+        version, sha, date = build_by_node.get(node_id, ("", "", ""))
+        records[node_id] = EdgeGatewayStatusRecord(
+            site_id=site,
+            node_id=node_id,
+            last_seen_seconds=last_seen_by_node.get(node_id),
+            version=version,
+            sha=sha,
+            date=date,
+        )
+    return records
+
+
+def _clean_str(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _nested_get(obj: Any, *path: str) -> Any:
+    current = obj
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _cluster_name_from_varz(varz: dict[str, Any]) -> str | None:
+    cluster = varz.get("cluster")
+    if isinstance(cluster, dict):
+        name = _clean_str(cluster.get("name") or cluster.get("cluster"))
+        return name or None
+    if isinstance(cluster, str):
+        name = _clean_str(cluster)
+        return name or None
+    return None
+
+
+def _jetstream_domain(varz: dict[str, Any], jsz: dict[str, Any]) -> str | None:
+    domain = _clean_str(_nested_get(varz, "jetstream", "config", "domain"))
+    if not domain:
+        domain = _clean_str(_nested_get(varz, "jetstream", "domain"))
+    if not domain:
+        domain = _clean_str(_nested_get(jsz, "config", "domain"))
+    if not domain:
+        domain = _clean_str(jsz.get("domain"))
+    return domain or None
+
+
+def _cluster_replica_total(cluster: dict[str, Any]) -> int:
+    if not isinstance(cluster, dict):
+        return 0
+    names: set[str] = set()
+    leader = _clean_str(cluster.get("leader"))
+    if leader:
+        names.add(leader)
+    replicas = cluster.get("replicas")
+    if isinstance(replicas, list):
+        for replica in replicas:
+            if not isinstance(replica, dict):
+                continue
+            name = _clean_str(replica.get("name") or replica.get("peer"))
+            if name:
+                names.add(name)
+    if names:
+        return len(names)
+    if isinstance(replicas, list):
+        return len(replicas)
+    return 0
+
+
+def _cluster_offline_names(cluster: dict[str, Any]) -> tuple[str, ...]:
+    if not isinstance(cluster, dict):
+        return ()
+    replicas = cluster.get("replicas")
+    if not isinstance(replicas, list):
+        return ()
+    offline: list[str] = []
+    for replica in replicas:
+        if not isinstance(replica, dict):
+            continue
+        if bool(replica.get("offline")):
+            name = _clean_str(replica.get("name") or replica.get("peer"))
+            offline.append(name or "unknown")
+    return tuple(sorted(offline))
+
+
+def _leaf_count(leafz: dict[str, Any] | None) -> int | None:
+    if not isinstance(leafz, dict):
+        return None
+    if isinstance(leafz.get("num_leafs"), int):
+        return int(leafz["num_leafs"])
+    if isinstance(leafz.get("num_leafnodes"), int):
+        return int(leafz["num_leafnodes"])
+    leafs = leafz.get("leafs")
+    if isinstance(leafs, list):
+        return len(leafs)
+    return None
+
+
+def _iter_js_streams(jsz: dict[str, Any]) -> list[dict[str, Any]]:
+    streams: list[dict[str, Any]] = []
+    direct = jsz.get("streams")
+    if isinstance(direct, list):
+        streams.extend(item for item in direct if isinstance(item, dict))
+    accounts = jsz.get("account_details")
+    if isinstance(accounts, list):
+        for account in accounts:
+            if not isinstance(account, dict):
+                continue
+            for key in ("stream_detail", "streams"):
+                value = account.get(key)
+                if isinstance(value, list):
+                    streams.extend(item for item in value if isinstance(item, dict))
+    return streams
+
+
+def _iter_stream_consumers(stream: dict[str, Any]) -> list[dict[str, Any]]:
+    consumers: list[dict[str, Any]] = []
+    for key in ("consumer_detail", "consumers"):
+        value = stream.get(key)
+        if isinstance(value, list):
+            consumers.extend(item for item in value if isinstance(item, dict))
+    return consumers
+
+
+def fetch_http_text(url: str, *, timeout_s: float = 3.0) -> str:
+    with urllib.request.urlopen(url, timeout=timeout_s) as resp:
+        return resp.read().decode("utf-8")
+
+
+def fetch_build_info(base_url: str, *, timeout_s: float = 3.0) -> BuildInfoRecord:
+    payload = _http_json(f"{str(base_url or '').rstrip('/')}/__ae/version", timeout_s=timeout_s)
+    return BuildInfoRecord(
+        component=str(payload.get("component") or ""),
+        version=str(payload.get("version") or ""),
+        sha=str(payload.get("sha") or ""),
+        date=str(payload.get("date") or ""),
+    )
+
+
+def subprocess_run(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603
+        cmd,
+        check=True,
+        text=True,
+        capture_output=capture_output,
+        env={**os.environ, **(env or {})},
+    )
+
+
+__all__ = [
+    "BuildInfoRecord",
+    "EdgeGatewayStatusRecord",
+    "EtcdMemberAddResult",
+    "EtcdQuorumRestorePlan",
+    "EtcdLeaderRecord",
+    "EtcdRestoreMemberPlan",
+    "EtcdRestoreMemberSpec",
+    "HA_CORE_REQUIRED_ENV",
+    "HaCoreNodeTarget",
+    "NatsEdgeMonitorRecord",
+    "NatsEdgeSiteTarget",
+    "NatsHubMonitorRecord",
+    "NatsHubNodeTarget",
+    "build_container_etcdctl_command",
+    "build_nats_edge_monitor_record",
+    "build_nats_hub_monitor_record",
+    "build_local_etcdctl_command",
+    "build_local_etcdctl_recovery_command",
+    "build_quorum_restore_plan",
+    "collect_prometheus_metric_values",
+    "collect_site_gateway_status",
+    "detect_container_cli",
+    "detect_container_cli_or_die",
+    "evaluate_nats_edge_site",
+    "evaluate_nats_hub_cluster",
+    "derive_client_url",
+    "etcd_endpoint_healthy",
+    "fetch_build_info",
+    "fetch_http_text",
+    "fetch_nats_edge_monitor_record",
+    "fetch_nats_hub_monitor_record",
+    "fetch_nats_monitor_json",
+    "format_quorum_restore_plan",
+    "ha_core_missing_env",
+    "healthy_etcd_endpoints",
+    "is_loopback_host",
+    "leader_key",
+    "nats_build_key",
+    "parse_etcd_leader_response",
+    "parse_etcd_member_add_output",
+    "parse_ha_core_node_target",
+    "parse_nats_edge_site_target",
+    "parse_nats_hub_node_target",
+    "parse_nats_url",
+    "parse_prometheus_metric_value",
+    "read_etcd_leader",
+    "required_parent_mounts",
+    "resolve_etcdctl_runner",
+    "split_csv",
+    "subprocess_run",
+    "tcp_connectable",
+]

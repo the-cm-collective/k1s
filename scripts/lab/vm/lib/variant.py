@@ -10,18 +10,23 @@ from typing import Any
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+BOOTSTRAP_CONTRACT_VERSION = "20260324-cni-0.4.0-smoke-v1"
+EXPECTED_CNI_VERSION = "0.4.0"
 DEFAULT_SMOKE_LANES = [
     "single_non_gpu",
     "single_gpu",
     "multi_non_gpu",
     "multi_gpu",
 ]
+SUPPORTED_SMOKE_LANES = [*DEFAULT_SMOKE_LANES, "ha_control_plane"]
 DEFAULT_PHASE_TIMEOUTS = {
     "provision": 1800,
     "bootstrap": 1800,
+    "ha_shared_infra": 900,
     "service_ready": 900,
     "fabric_validate": 600,
     "functional_basic": 300,
+    "ha_acceptance": 900,
 }
 DEFAULT_RETRY_POLICY = {
     "initial_backoff_s": 2.0,
@@ -33,7 +38,16 @@ DEFAULT_SMOKE_CHECKS = {
     "fabric_validate": True,
     "functional_basic": True,
     "functional_advanced": False,
+    "ha_acceptance": True,
 }
+ALLOWED_HOST_ROLES = {
+    "k1s-core",
+    "k1s-core-node",
+    "k1s-ha-core",
+    "k1s-edge-core",
+    "k1s-edge-node",
+}
+ALLOWED_HA_SCHEMES = {"http", "https"}
 
 
 def _must(obj: dict[str, Any], key: str, t: type, path: str) -> Any:
@@ -52,13 +66,57 @@ def _resolve_repo_path(raw_path: str) -> str:
     return str(candidate.resolve())
 
 
-def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
+def _validate_image_metadata(image_name: str, image_path: str) -> None:
+    meta_path = Path(f"{image_path}.meta.json")
+    if not meta_path.is_file():
+        raise ValueError(f"images.{image_name} metadata not found: {meta_path}")
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"images.{image_name} metadata invalid JSON: {meta_path}") from exc
+
+    expected = {
+        "bootstrap_contract_version": BOOTSTRAP_CONTRACT_VERSION,
+        "cni_version": EXPECTED_CNI_VERSION,
+        "vm_bootstrap_ready": True,
+        "python_alias": True,
+        "crictl_ready": True,
+        "cni_ready": True,
+    }
+    for key, expected_value in expected.items():
+        actual = payload.get(key)
+        if actual != expected_value:
+            raise ValueError(
+                f"images.{image_name} metadata {key} expected {expected_value!r}, got {actual!r}: {meta_path}"
+            )
+
+
+def _normalize_host_vm(host: dict[str, Any], idx: int, default_vm: dict[str, int]) -> dict[str, int]:
+    raw_vm = host.get("vm")
+    if raw_vm is None:
+        return dict(default_vm)
+    if not isinstance(raw_vm, dict):
+        raise ValueError(f"hosts[{idx}].vm must be a mapping")
+
+    vm = {
+        "memory_mb": int(raw_vm.get("memory_mb", default_vm["memory_mb"])),
+        "vcpus": int(raw_vm.get("vcpus", default_vm["vcpus"])),
+        "disk_gb": int(raw_vm.get("disk_gb", default_vm["disk_gb"])),
+    }
+    for key, value in vm.items():
+        if value <= 0:
+            raise ValueError(f"hosts[{idx}].vm.{key} must be > 0")
+    return vm
+
+
+def _normalize_host(host: dict[str, Any], idx: int, default_vm: dict[str, int]) -> dict[str, Any]:
     name = _must(host, "name", str, f"hosts[{idx}]")
     ip = _must(host, "ip", str, f"hosts[{idx}]")
     role = _must(host, "role", str, f"hosts[{idx}]")
-    if role not in {"k1s-core", "k1s-edge-core", "k1s-edge-node"}:
+    if role not in ALLOWED_HOST_ROLES:
         raise ValueError(
-            f"hosts[{idx}].role must be one of k1s-core|k1s-edge-core|k1s-edge-node"
+            "hosts[{idx}].role must be one of "
+            "k1s-core|k1s-core-node|k1s-ha-core|k1s-edge-core|k1s-edge-node"
         )
     return {
         "name": name,
@@ -68,7 +126,126 @@ def _normalize_host(host: dict[str, Any], idx: int) -> dict[str, Any]:
         "site_id": str(host.get("site_id", "")).strip() or None,
         "node_id": str(host.get("node_id", "")).strip() or name,
         "node_labels": str(host.get("node_labels", "")).strip() or None,
-        "agent_port": int(host.get("agent_port", 9112 if role != "k1s-core" else 9111)),
+        "pod_cidr": str(host.get("pod_cidr", "")).strip() or None,
+        "vm": _normalize_host_vm(host, idx, default_vm),
+        "agent_port": int(
+            host.get(
+                "agent_port",
+                9112 if role not in {"k1s-core", "k1s-core-node", "k1s-ha-core"} else 9111,
+            )
+        ),
+    }
+
+
+def _csv_list(raw: Any, path: str) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(raw, list):
+        items: list[str] = []
+        for idx, value in enumerate(raw):
+            if not isinstance(value, str):
+                raise ValueError(f"{path}[{idx}] must be a string")
+            clean = value.strip()
+            if not clean:
+                raise ValueError(f"{path}[{idx}] must not be empty")
+            items.append(clean)
+        return items
+    raise ValueError(f"{path} must be a string or list")
+
+
+def _parse_ha(raw: dict[str, Any], hosts: list[dict[str, Any]]) -> dict[str, Any]:
+    if raw and not isinstance(raw, dict):
+        raise ValueError("ha must be a mapping")
+    use_raw = raw if isinstance(raw, dict) else {}
+    has_ha_hosts = any(host["role"] == "k1s-ha-core" for host in hosts)
+    if has_ha_hosts and not use_raw:
+        raise ValueError("ha mapping required when hosts include role=k1s-ha-core")
+
+    etcd_endpoints = _csv_list(use_raw.get("etcd_endpoints"), "ha.etcd_endpoints")
+    etcd_prefix = str(use_raw.get("etcd_prefix", "")).strip()
+    nats_url = str(use_raw.get("nats_url", "")).strip()
+    hub_nodes_raw = use_raw.get("hub_nodes") or []
+    edge_sites_raw = use_raw.get("edge_sites") or []
+    drills_raw = use_raw.get("drills") or {}
+    controller_scheme = str(use_raw.get("controller_scheme", "http")).strip().lower()
+    apishim_scheme = str(use_raw.get("apishim_scheme", "http")).strip().lower()
+    controller_metrics_url = str(use_raw.get("controller_metrics_url", "")).strip() or None
+
+    if controller_scheme not in ALLOWED_HA_SCHEMES:
+        raise ValueError("ha.controller_scheme must be http or https")
+    if apishim_scheme not in ALLOWED_HA_SCHEMES:
+        raise ValueError("ha.apishim_scheme must be http or https")
+
+    if has_ha_hosts:
+        if not etcd_endpoints:
+            raise ValueError("ha.etcd_endpoints required when hosts include role=k1s-ha-core")
+        if not etcd_prefix:
+            raise ValueError("ha.etcd_prefix required when hosts include role=k1s-ha-core")
+        if not nats_url:
+            raise ValueError("ha.nats_url required when hosts include role=k1s-ha-core")
+
+    hub_nodes: list[dict[str, str]] = []
+    if not isinstance(hub_nodes_raw, list):
+        raise ValueError("ha.hub_nodes must be a list")
+    for idx, entry in enumerate(hub_nodes_raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"ha.hub_nodes[{idx}] must be a mapping")
+        name = str(entry.get("name", "")).strip()
+        monitor_url = str(entry.get("monitor_url", "")).strip()
+        if not name or not monitor_url:
+            raise ValueError(f"ha.hub_nodes[{idx}] requires name and monitor_url")
+        hub_nodes.append({"name": name, "monitor_url": monitor_url})
+
+    edge_sites: list[dict[str, Any]] = []
+    if not isinstance(edge_sites_raw, list):
+        raise ValueError("ha.edge_sites must be a list")
+    for idx, entry in enumerate(edge_sites_raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"ha.edge_sites[{idx}] must be a mapping")
+        site_id = str(entry.get("site_id", "")).strip()
+        monitor_url = str(entry.get("monitor_url", "")).strip()
+        expected_gateways = _csv_list(
+            entry.get("expected_gateways"),
+            f"ha.edge_sites[{idx}].expected_gateways",
+        )
+        if not site_id or not monitor_url:
+            raise ValueError(f"ha.edge_sites[{idx}] requires site_id and monitor_url")
+        edge_sites.append(
+            {
+                "site_id": site_id,
+                "monitor_url": monitor_url,
+                "expected_gateways": expected_gateways,
+            }
+        )
+
+    if drills_raw and not isinstance(drills_raw, dict):
+        raise ValueError("ha.drills must be a mapping")
+    leader_failover_command = str(drills_raw.get("leader_failover_command", "")).strip() or None
+    etcd_restart_command = str(drills_raw.get("etcd_restart_command", "")).strip() or None
+    transport_recovery_command = (
+        str(drills_raw.get("transport_recovery_command", "")).strip() or None
+    )
+    drills = {
+        "leader_failover_command": leader_failover_command,
+        "etcd_restart_command": etcd_restart_command,
+        "transport_recovery_command": transport_recovery_command,
+    }
+
+    return {
+        "enabled": has_ha_hosts,
+        "etcd_endpoints": etcd_endpoints,
+        "etcd_prefix": etcd_prefix or None,
+        "nats_url": nats_url or None,
+        "hub_nodes": hub_nodes,
+        "edge_sites": edge_sites,
+        "drills": drills,
+        "controller_scheme": controller_scheme,
+        "apishim_scheme": apishim_scheme,
+        "controller_metrics_url": controller_metrics_url,
+        "expected_version": str(use_raw.get("expected_version", "")).strip() or None,
+        "expected_sha": str(use_raw.get("expected_sha", "")).strip() or None,
     }
 
 
@@ -100,7 +277,7 @@ def _parse_smoke(raw: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(entry, str):
                 raise ValueError("smoke.lanes entries must be strings")
             lane = entry.strip()
-            if lane not in DEFAULT_SMOKE_LANES:
+            if lane not in SUPPORTED_SMOKE_LANES:
                 raise ValueError(f"smoke.lanes contains unsupported lane: {lane}")
             lanes.append(lane)
         if not lanes:
@@ -120,9 +297,7 @@ def _parse_smoke(raw: dict[str, Any]) -> dict[str, Any]:
                     raise ValueError(f"unsupported smoke phase timeout key: {key}")
                 seconds = int(value)
                 if seconds <= 0:
-                    raise ValueError(
-                        f"smoke.defaults.phase_timeouts.{key} must be > 0"
-                    )
+                    raise ValueError(f"smoke.defaults.phase_timeouts.{key} must be > 0")
                 phase_timeouts[key] = seconds
 
         raw_retry = defaults.get("retry_policy")
@@ -133,9 +308,7 @@ def _parse_smoke(raw: dict[str, Any]) -> dict[str, Any]:
                 if key in raw_retry:
                     retry_policy[key] = float(raw_retry[key])
                     if retry_policy[key] < 0:
-                        raise ValueError(
-                            f"smoke.defaults.retry_policy.{key} must be >= 0"
-                        )
+                        raise ValueError(f"smoke.defaults.retry_policy.{key} must be >= 0")
 
     raw_checks = raw.get("checks")
     if raw_checks is not None:
@@ -181,11 +354,17 @@ def parse_variant(path: Path, *, validate_images: bool = False) -> dict[str, Any
         for image_name, image_path in (("base", base_img), ("gpu", gpu_img)):
             if not Path(image_path).is_file():
                 raise ValueError(f"images.{image_name} not found: {image_path}")
+            _validate_image_metadata(image_name, image_path)
 
     hosts_raw = _must(raw, "hosts", list, "variant")
     if not hosts_raw:
         raise ValueError("hosts must contain at least one item")
-    hosts = [_normalize_host(item, i) for i, item in enumerate(hosts_raw)]
+    default_vm = {
+        "memory_mb": memory_mb,
+        "vcpus": vcpus,
+        "disk_gb": disk_gb,
+    }
+    hosts = [_normalize_host(item, i, default_vm) for i, item in enumerate(hosts_raw)]
 
     k1s = raw.get("k1s") or {}
     if not isinstance(k1s, dict):
@@ -210,7 +389,11 @@ def parse_variant(path: Path, *, validate_images: bool = False) -> dict[str, Any
     if hub_leaf_port <= 0:
         raise ValueError("transport.hub_leaf_port must be > 0")
 
-    smoke = _parse_smoke(raw.get("smoke") or {})
+    raw_smoke = raw.get("smoke") or {}
+    smoke = _parse_smoke(raw_smoke)
+    ha = _parse_ha(raw.get("ha") or {}, hosts)
+    if ha["enabled"] and not (isinstance(raw_smoke, dict) and raw_smoke.get("lanes") is not None):
+        smoke["lanes"] = [*smoke["lanes"], "ha_control_plane"]
 
     environments = raw.get("environments") or {}
     if not isinstance(environments, dict):
@@ -263,6 +446,8 @@ def parse_variant(path: Path, *, validate_images: bool = False) -> dict[str, Any
         "k1s": {
             "agent_token": str(k1s.get("agent_token", "devtoken")),
             "controller_port": int(k1s.get("controller_port", 9108)),
+            "agent_api_port": int(k1s.get("agent_api_port", 9110)),
+            "apishim_port": int(k1s.get("apishim_port", 8445)),
             "controller_host": str(k1s.get("controller_host", "")) or None,
             "inference_experimental": bool(k1s.get("inference_experimental", True)),
         },
@@ -281,6 +466,7 @@ def parse_variant(path: Path, *, validate_images: bool = False) -> dict[str, Any
             "hub_host": hub_host,
             "hub_leaf_port": hub_leaf_port,
         },
+        "ha": ha,
         "smoke": smoke,
         "environments": {
             "local_vm": local_vm,

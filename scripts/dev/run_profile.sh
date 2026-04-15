@@ -2,10 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${ROOT_DIR}/scripts/lib/nixos_bridge.sh"
 PROFILE="${1:-}"
 
 if [[ -z "$PROFILE" ]]; then
-  echo "usage: $0 <dev-min|dev-etcd|k1s-core|k1s-edge>" >&2
+  echo "usage: $0 <dev-min|dev-etcd|k1s-core|k1s-ha-core|k1s-edge>" >&2
   exit 1
 fi
 
@@ -15,11 +16,49 @@ if [[ -z "${AE_RUNTIME_BACKEND:-}" ]]; then
   export AE_RUNTIME_BACKEND=podman
 fi
 
+if [[ "$PROFILE" == "k1s-ha-core" ]]; then
+  if [[ "$RUNTIME_BACKEND_EXPLICIT" -eq 0 ]]; then
+    export AE_RUNTIME_BACKEND=cri
+  fi
+  export AE_INFRA_BACKEND="${AE_INFRA_BACKEND:-cri}"
+fi
+
 detect_python() {
   if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
     printf '%s' "$ROOT_DIR/.venv/bin/python"
   else
     printf '%s' "python"
+  fi
+}
+
+ensure_runtime_libs() {
+  if ! command -v nix >/dev/null 2>&1; then
+    return 0
+  fi
+  local cc_lib
+  cc_lib="$(nix eval --raw nixpkgs#stdenv.cc.cc.lib.outPath 2>/dev/null || true)"
+  if [[ -z "$cc_lib" ]]; then
+    return 0
+  fi
+  export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+}
+
+grpc_preflight() {
+  if ! is_strict_cri; then
+    return 0
+  fi
+  local output
+  local rc=0
+  output="$(PYTHONPATH=src "$PYTHON_BIN" - 2>&1 <<'PY'
+import grpc
+print(grpc.__version__)
+PY
+)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "[cri] grpc preflight failed" >&2
+    echo "$output" >&2
+    echo "[cri] ensure the repo venv is installed and libstdc++ is available via LD_LIBRARY_PATH" >&2
+    return "$rc"
   fi
 }
 
@@ -87,7 +126,7 @@ for item in payload.get("items") or []:
         namespace = str(meta.get("namespace") or "")
         if name.startswith("k1s-core-") and namespace in {"", "k1s-dev"}:
             raise SystemExit(0)
-    if labels.get("ae.stack.profile") != "k1s-core":
+    if labels.get("ae.stack.profile") not in {"k1s-core", "k1s-ha-core"}:
         continue
     if labels.get("ae.stack.backend") == "cri":
         raise SystemExit(0)
@@ -155,6 +194,115 @@ guard_port_free() {
 
 run_cri_stack() {
   PYTHONPATH=src "$PYTHON_BIN" "$ROOT_DIR/scripts/dev/cri_stack.py" "$@"
+}
+
+STRICT_CRI_OWNERSHIP_REPAIR_PROFILE=""
+STRICT_CRI_OWNERSHIP_HELPER_ARGS=()
+
+run_controller_loop() {
+  PYTHONPATH=src "$PYTHON_BIN" -m ae.controller "$@"
+}
+
+refresh_strict_cri_ownership_helper_args() {
+  STRICT_CRI_OWNERSHIP_HELPER_ARGS=()
+
+  local target_uid="${AE_STRICT_CRI_TARGET_UID:-}"
+  local target_gid="${AE_STRICT_CRI_TARGET_GID:-}"
+
+  if [[ -z "$target_uid" && -z "$target_gid" ]]; then
+    return 0
+  fi
+  if [[ -z "$target_uid" || -z "$target_gid" ]]; then
+    echo "error: AE_STRICT_CRI_TARGET_UID and AE_STRICT_CRI_TARGET_GID must be set together." >&2
+    return 1
+  fi
+  if [[ ! "$target_uid" =~ ^[0-9]+$ ]]; then
+    echo "error: AE_STRICT_CRI_TARGET_UID must be numeric: ${target_uid}" >&2
+    return 1
+  fi
+  if [[ ! "$target_gid" =~ ^[0-9]+$ ]]; then
+    echo "error: AE_STRICT_CRI_TARGET_GID must be numeric: ${target_gid}" >&2
+    return 1
+  fi
+
+  STRICT_CRI_OWNERSHIP_HELPER_ARGS=(--target-uid "$target_uid" --target-gid "$target_gid")
+}
+
+strict_cri_explicit_target_configured() {
+  [[ -n "${AE_STRICT_CRI_TARGET_UID:-}" || -n "${AE_STRICT_CRI_TARGET_GID:-}" ]]
+}
+
+repair_strict_cri_profile_state_ownership() {
+  local helper="$ROOT_DIR/scripts/dev/profile_state_ownership.sh"
+  local profile="${STRICT_CRI_OWNERSHIP_REPAIR_PROFILE:-}"
+  if [[ -z "$profile" || ! -f "$helper" ]]; then
+    return 0
+  fi
+  if ! refresh_strict_cri_ownership_helper_args; then
+    echo "warning: failed to resolve strict CRI ownership target args for ${profile}" >&2
+    return 1
+  fi
+  if ! bash "$helper" --profile "$profile" --repair "${STRICT_CRI_OWNERSHIP_HELPER_ARGS[@]}"; then
+    echo "warning: failed to normalize strict CRI profile state ownership for ${profile}" >&2
+  fi
+}
+
+enable_strict_cri_profile_state_ownership_repair() {
+  local profile="$1"
+  if ! is_strict_cri; then
+    return 0
+  fi
+  if [[ "$(id -u)" -ne 0 ]]; then
+    return 0
+  fi
+  if strict_cri_explicit_target_configured; then
+    STRICT_CRI_OWNERSHIP_REPAIR_PROFILE="$profile"
+    trap repair_strict_cri_profile_state_ownership EXIT
+    return 0
+  fi
+  if [[ -z "${SUDO_USER:-}" || -z "${SUDO_UID:-}" || ! "${SUDO_UID}" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  STRICT_CRI_OWNERSHIP_REPAIR_PROFILE="$profile"
+  trap repair_strict_cri_profile_state_ownership EXIT
+}
+
+ensure_strict_cri_profile_state_ownership() {
+  local profile="$1"
+  local helper="$ROOT_DIR/scripts/dev/profile_state_ownership.sh"
+  if ! is_strict_cri; then
+    return 0
+  fi
+  if [[ ! -f "$helper" ]]; then
+    echo "error: missing strict CRI profile state helper: $helper" >&2
+    exit 1
+  fi
+  if ! refresh_strict_cri_ownership_helper_args; then
+    exit 1
+  fi
+  if [[ "$(id -u)" -eq 0 ]] && { strict_cri_explicit_target_configured || [[ -n "${SUDO_USER:-}" && -n "${SUDO_UID:-}" && "${SUDO_UID}" =~ ^[0-9]+$ ]]; }; then
+    bash "$helper" --profile "$profile" --repair "${STRICT_CRI_OWNERSHIP_HELPER_ARGS[@]}"
+    enable_strict_cri_profile_state_ownership_repair "$profile"
+    return 0
+  fi
+  if ! bash "$helper" --profile "$profile" --check "${STRICT_CRI_OWNERSHIP_HELPER_ARGS[@]}"; then
+    echo "error: strict CRI profile state under state/profiles/${profile} is not writable by $(id -un)." >&2
+    echo "hint: this commonly happens after a prior sudo -E strict CRI run." >&2
+    echo "hint: repair with sudo ./scripts/dev/profile_state_ownership.sh --profile ${profile} --repair" >&2
+    exit 1
+  fi
+}
+
+default_profile_cri_data_root() {
+  local profile_dir="$1"
+  if ! is_strict_cri; then
+    return 0
+  fi
+  if [[ -n "${AE_CRI_DATA_ROOT:-}" ]]; then
+    return 0
+  fi
+  export AE_CRI_DATA_ROOT="${profile_dir}/cri-data"
+  echo "[cri] defaulting AE_CRI_DATA_ROOT=${AE_CRI_DATA_ROOT} for profile-scoped strict-CRI state" >&2
 }
 
 ensure_managed_registry_tls_material() {
@@ -375,6 +523,36 @@ ensure_cri_registry_defaults() {
     fi
     if [[ -z "${AE_CRI_REGISTRY_TRUST_CA:-}" && -n "${AE_CRI_MANAGED_REGISTRY_TLS_CA:-}" ]]; then
       export AE_CRI_REGISTRY_TRUST_CA="${AE_CRI_MANAGED_REGISTRY_TLS_CA}"
+    fi
+    if k1s_is_nixos /etc/os-release; then
+      if [[ -z "${AE_CRI_IMAGE_MIRROR_BACKEND:-}" && -z "${AE_CRI_LOCAL_BUILD_BACKEND:-}" ]]; then
+        if command -v podman >/dev/null 2>&1; then
+          export AE_CRI_IMAGE_MIRROR_BACKEND=podman
+          echo "[cri] defaulting AE_CRI_IMAGE_MIRROR_BACKEND=podman on NixOS for managed registry TLS" >&2
+        elif command -v docker >/dev/null 2>&1; then
+          export AE_CRI_IMAGE_MIRROR_BACKEND=docker
+          echo "[cri] defaulting AE_CRI_IMAGE_MIRROR_BACKEND=docker on NixOS for managed registry TLS" >&2
+        elif command -v nerdctl >/dev/null 2>&1; then
+          export AE_CRI_IMAGE_MIRROR_BACKEND=nerdctl
+          echo "[cri] defaulting AE_CRI_IMAGE_MIRROR_BACKEND=nerdctl on NixOS for managed registry TLS" >&2
+        else
+          echo "error: NixOS strict-CRI mirror/preload requires podman, docker, or nerdctl when AE_CRI_IMAGE_MIRROR_BACKEND is unset." >&2
+          echo "hint: install one of those tools or set AE_CRI_IMAGE_MIRROR_BACKEND explicitly." >&2
+          exit 1
+        fi
+      fi
+      if [[ -z "${AE_CRI_IMAGE_BUILD_BACKEND:-}" && -z "${AE_CRI_LOCAL_BUILD_BACKEND:-}" ]]; then
+        if command -v podman >/dev/null 2>&1; then
+          export AE_CRI_IMAGE_BUILD_BACKEND=podman
+          echo "[cri] defaulting AE_CRI_IMAGE_BUILD_BACKEND=podman on NixOS for local image builds" >&2
+        elif command -v docker >/dev/null 2>&1; then
+          export AE_CRI_IMAGE_BUILD_BACKEND=docker
+          echo "[cri] defaulting AE_CRI_IMAGE_BUILD_BACKEND=docker on NixOS for local image builds" >&2
+        elif command -v nerdctl >/dev/null 2>&1 && command -v buildctl >/dev/null 2>&1; then
+          export AE_CRI_IMAGE_BUILD_BACKEND=nerdctl
+          echo "[cri] defaulting AE_CRI_IMAGE_BUILD_BACKEND=nerdctl on NixOS for local image builds" >&2
+        fi
+      fi
     fi
   fi
 
@@ -620,18 +798,94 @@ ensure_cri_registry_trust() {
   "$trust_script" "${trust_args[@]}"
 }
 
+ensure_cri_cni_ready() {
+  if ! is_strict_cri; then
+    return 0
+  fi
+
+  local bootstrap_script="$ROOT_DIR/scripts/cni_bin_bootstrap.sh"
+  local cni_init_script="$ROOT_DIR/scripts/cni_init.sh"
+  local cni_conf="${CNI_CONF_DIR:-/etc/cni/net.d}"
+  local init_needed=0
+
+  if [[ ! -f "$bootstrap_script" ]]; then
+    echo "error: missing CNI bootstrap helper: $bootstrap_script" >&2
+    exit 1
+  fi
+  if [[ ! -f "$cni_init_script" ]]; then
+    echo "error: missing CNI init helper: $cni_init_script" >&2
+    exit 1
+  fi
+
+  if k1s_is_nixos /etc/os-release; then
+    local nixos_root="${AE_NIXOS_SEARCH_ROOT:-$(k1s_nixos_search_root)}"
+    local cri_module_dest
+    cri_module_dest="$(k1s_nixos_cri_module_dest)"
+    if ! k1s_nixos_cri_module_imported "$nixos_root" "$cri_module_dest"; then
+      echo "error: strict CRI on NixOS requires the k1s CRI host module" >&2
+      k1s_nixos_cri_bootstrap_instructions "$ROOT_DIR" "$cri_module_dest" >&2
+      exit 1
+    fi
+    local resolved_cni_env=""
+    resolved_cni_env="$(k1s_containerd_cni_env || true)"
+    if [[ -n "$resolved_cni_env" ]]; then
+      eval "$resolved_cni_env"
+      cni_conf="${CNI_CONF_DIR:-$cni_conf}"
+    fi
+    echo "[cri] using NixOS containerd-managed CNI paths: bin=${CNI_BIN_DIR:-unset} conf=${CNI_CONF_DIR:-unset}" >&2
+    return 0
+  fi
+
+  if ! bash "$bootstrap_script"; then
+    echo "error: strict CRI infra selected but CNI plugin bootstrap failed" >&2
+    exit 1
+  fi
+
+  if [[ ! -d "$cni_conf" ]]; then
+    init_needed=1
+  elif ! find "$cni_conf" -maxdepth 1 -type f \
+    \( -name '*.conf' -o -name '*.conflist' \) -print -quit | grep -q .; then
+    init_needed=1
+  fi
+
+  if [[ "$init_needed" -eq 1 ]]; then
+    echo "[cri] initializing default CNI config in ${cni_conf}" >&2
+    if ! bash "$cni_init_script"; then
+      echo "error: strict CRI infra selected but CNI config bootstrap failed" >&2
+      exit 1
+    fi
+  fi
+}
+
 ensure_cri_preflight() {
   if ! is_strict_cri; then
     return 0
   fi
-  if ! "$ROOT_DIR/scripts/cri_preflight.sh"; then
+  ensure_cri_cni_ready
+
+  local preflight_output=""
+  preflight_output="$("$ROOT_DIR/scripts/cri_preflight.sh" 2>&1)" || {
+    printf '%s\n' "$preflight_output" >&2
+    if grep -qi "permission denied" <<<"$preflight_output"; then
+      echo "hint: run strict CRI profiles with sudo -E when containerd is root-only" >&2
+      echo "hint: or grant temporary access via ./scripts/containerd_socket_access.sh --grant" >&2
+    fi
     echo "error: strict CRI infra selected but preflight failed" >&2
     exit 1
-  fi
-  if ! run_cri_stack preflight --profile "$PROFILE"; then
+  }
+  printf '%s\n' "$preflight_output"
+
+  local stack_preflight_output=""
+  stack_preflight_output="$(run_cri_stack preflight --profile "$PROFILE" 2>&1)" || {
+    printf '%s\n' "$stack_preflight_output" >&2
+    if grep -qi "permission denied" <<<"$stack_preflight_output"; then
+      echo "hint: run strict CRI profiles with sudo -E when containerd is root-only" >&2
+      echo "hint: or grant temporary access via ./scripts/containerd_socket_access.sh --grant" >&2
+    fi
     echo "error: strict CRI infra selected but CRI stack preflight failed" >&2
     exit 1
-  fi
+  }
+  printf '%s\n' "$stack_preflight_output"
 }
 
 cri_ref_has_registry_prefix() {
@@ -678,7 +932,7 @@ ensure_cri_registry_preload_images() {
   if ! is_strict_cri; then
     return 0
   fi
-  if [[ "${PROFILE:-}" != "k1s-core" && "${PROFILE:-}" != "k1s-edge" ]]; then
+  if [[ "${PROFILE:-}" != "k1s-core" && "${PROFILE:-}" != "k1s-ha-core" && "${PROFILE:-}" != "k1s-edge" ]]; then
     return 0
   fi
   if [[ "${AE_CRI_REGISTRY_MODE:-managed}" == "off" ]]; then
@@ -721,11 +975,18 @@ ensure_cri_registry_preload_images() {
         "docker.io/library/nats:2.10"
         "${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
       )
+    elif [[ "${PROFILE:-}" == "k1s-ha-core" ]]; then
+      source_images=(
+        "${AE_ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}"
+        "${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
+        "docker.io/library/caddy:2.8"
+      )
     else
       source_images=(
         "quay.io/coreos/etcd:v3.5.13"
         "docker.io/library/nats:2.10"
         "docker.io/library/postgres:16"
+        "docker.io/library/python:3.11-alpine"
         "${AE_ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}"
         "${AE_RATHOLE_IMAGE:-docker.io/rapiz1/rathole:v0.5.0}"
       )
@@ -757,12 +1018,12 @@ ensure_backend_not_mixed_with_core_cri() {
     return 0
   fi
   case "$PROFILE" in
-    k1s-core|k1s-edge) ;;
+    k1s-core|k1s-ha-core|k1s-edge) ;;
     *) return 0 ;;
   esac
   if detect_running_core_cri; then
     echo "error: core CRI stack detected while compose infra is selected." >&2
-    echo "error: use 'make k1s-core-cri', 'make k1s-edge-cri', or 'make k1s-edge-core-cri'." >&2
+    echo "error: use 'make k1s-core-cri', 'make k1s-ha-core', 'make k1s-edge-cri', or 'make k1s-edge-core-cri'." >&2
     echo "error: alternatively set AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri." >&2
     exit 1
   fi
@@ -940,7 +1201,58 @@ normalize_ingress_mode() {
 
 compose() {
   local engine="$1"; shift
+  if ! compose_provider_available "$engine"; then
+    echo "error: ${engine} compose is unavailable on PATH." >&2
+    echo "hint: $(compose_provider_hint "$engine")." >&2
+    return 1
+  fi
   "$engine" compose "$@"
+}
+
+compose_provider_available() {
+  local engine="${1:-}"
+  if [[ -z "$engine" ]]; then
+    return 1
+  fi
+  if ! command -v "$engine" >/dev/null 2>&1; then
+    return 1
+  fi
+  "$engine" compose version >/dev/null 2>&1
+}
+
+compose_provider_hint() {
+  case "${1:-}" in
+    podman)
+      printf "%s" "install podman-compose or run inside 'nix develop' so 'podman compose' can resolve a provider"
+      ;;
+    docker)
+      printf "%s" "install Docker Compose v2 or the legacy 'docker-compose' binary"
+      ;;
+    *)
+      printf "%s" "install a working compose provider"
+      ;;
+  esac
+}
+
+default_apishim_mode() {
+  if is_strict_cri && [[ "$PROFILE" == "k1s-core" || "$PROFILE" == "k1s-ha-core" ]]; then
+    printf 'cri'
+    return 0
+  fi
+  if is_strict_cri; then
+    printf 'host'
+    return 0
+  fi
+  if [[ "$ENGINE_BIN" == "podman" ]]; then
+    if compose_provider_available "$ENGINE_BIN"; then
+      printf 'container'
+    else
+      echo "warning: podman compose provider not found; defaulting AE_APISHIM_MODE=host. $(compose_provider_hint "$ENGINE_BIN")." >&2
+      printf 'host'
+    fi
+    return 0
+  fi
+  printf 'host'
 }
 
 ensure_specs_dir() {
@@ -1037,14 +1349,39 @@ resolve_docs_labs_token() {
   fi
 }
 
+prepare_caddy_runtime_config() {
+  local runtime_dir="$ROOT_DIR/state/caddy-config"
+  local runtime_sites="$runtime_dir/sites"
+  local source_dir="$ROOT_DIR/ops/dev/caddy"
+  local keep_sites=("api.caddy" "docs.caddy")
+  local site_name=""
+
+  mkdir -p "$runtime_sites"
+  cp "$source_dir/Caddyfile" "$runtime_dir/Caddyfile"
+  rm -f "$runtime_sites"/*.caddy 2>/dev/null || true
+
+  for site_name in "${keep_sites[@]}"; do
+    if [[ -f "$source_dir/sites/$site_name" ]]; then
+      cp "$source_dir/sites/$site_name" "$runtime_sites/$site_name"
+    fi
+  done
+
+  printf '%s\n' "$runtime_dir"
+}
+
 start_docs_server() {
   local docs_port="${AE_DOCS_PORT:-9109}"
   local docs_bind="${DOCS_BIND:-127.0.0.1}"
   local pid_file="$ROOT_DIR/state/docs_server.pid"
+  local log_file="$ROOT_DIR/state/docs_server.log"
   local docs_dir="$ROOT_DIR/docs/site"
   local default_api_base="http://127.0.0.1:${METRICS_PORT:-9108}"
   local default_dash_url="${default_api_base}/dashboard"
-  if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+  if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"; then
+    local https_port="${AE_EDGE_INGRESS_TLS_PORT:-10443}"
+    default_api_base="https://${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa}:${https_port}"
+    default_dash_url="https://${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}:${https_port}/dashboard"
+  elif [[ "${CORE_CADDY:-0}" == "1" ]]; then
     local https_port="${CADDY_HTTPS_PORT:-8443}"
     default_api_base="https://api.home.arpa:${https_port}"
     default_dash_url="https://dash.home.arpa:${https_port}/dashboard"
@@ -1053,19 +1390,32 @@ start_docs_server() {
   local dash_url="${DOCS_DASHBOARD_URL:-$default_dash_url}"
 
   mkdir -p "$ROOT_DIR/state"
+  if port_open "$docs_bind" "$docs_port"; then
+    return 0
+  fi
   if [[ -f "$pid_file" ]]; then
-    local pid
+    local pid=""
     pid=$(cat "$pid_file" 2>/dev/null || true)
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      return 0
-    fi
     rm -f "$pid_file" || true
   fi
 
   resolve_docs_labs_token
   DOCS_API_BASE="$api_base" DOCS_DASHBOARD_URL="$dash_url" "$PYTHON_BIN" docs/build_docs.py >/dev/null 2>&1 || true
-  nohup "$PYTHON_BIN" -m http.server "$docs_port" --bind "$docs_bind" --directory "$docs_dir" >/dev/null 2>&1 &
-  echo $! > "$pid_file"
+  nohup "$PYTHON_BIN" -m http.server "$docs_port" --bind "$docs_bind" --directory "$docs_dir" >"$log_file" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$pid_file"
+  local _attempt=""
+  for _attempt in 1 2 3 4 5; do
+    if port_open "$docs_bind" "$docs_port"; then
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.2
+  done
+  rm -f "$pid_file" || true
+  echo "warning: docs server failed to start on ${docs_bind}:${docs_port}; see ${log_file}" >&2
 }
 
 start_caddy() {
@@ -1076,13 +1426,15 @@ start_caddy() {
   local docs_env="$ROOT_DIR/state/dev.env"
   local caddy_sites="$ROOT_DIR/state/caddy"
   local caddy_data="$ROOT_DIR/state/caddy-data"
-  local caddy_config="$ROOT_DIR/ops/dev/caddy"
+  local caddy_config=""
   local docs_dir="$ROOT_DIR/docs/site"
   local caddy_container="${AE_CADDY_CONTAINER:-dev-caddy-1}"
   local apishim_upstream=""
   local apishim_port="${APISHIM_PORT:-8445}"
+  local apishim_container_port="${APISHIM_CONTAINER_PORT:-8445}"
   local caddy_network=""
 
+  caddy_config="$(prepare_caddy_runtime_config)"
   mkdir -p "$caddy_sites"
   resolve_docs_labs_token
   DOCS_API_BASE="$api_base" DOCS_DASHBOARD_URL="$dash_url" "$PYTHON_BIN" docs/build_docs.py >/dev/null 2>&1 || true
@@ -1101,7 +1453,7 @@ start_caddy() {
   fi
   if [[ "${AE_APISHIM_MODE:-}" == "container" && "$ENGINE_BIN" == "podman" ]]; then
     if "$ENGINE_BIN" network inspect dev_default >/dev/null 2>&1; then
-      apishim_upstream="apishim:${apishim_port}"
+      apishim_upstream="apishim:${apishim_container_port}"
       caddy_network="dev_default"
     fi
   fi
@@ -1176,9 +1528,13 @@ EOF
         docker.io/library/caddy:2.8 >/dev/null 2>&1 || true
     fi
     "$ENGINE_BIN" exec -T "$caddy_container" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+    if ! "$ENGINE_BIN" inspect -f '{{.State.Running}}' "$caddy_container" 2>/dev/null | grep -qx 'true'; then
+      echo "warning: Caddy container '${caddy_container}' is not running; recent logs follow" >&2
+      "$ENGINE_BIN" logs "$caddy_container" 2>&1 | tail -n 20 >&2 || true
+    fi
   else
-    "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d caddy >/dev/null 2>&1 || true
-    "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" exec -T caddy \
+    compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d caddy >/dev/null 2>&1 || true
+    compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" exec -T caddy \
       caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
   fi
 }
@@ -1210,6 +1566,50 @@ finally:
     except Exception:
         pass
 PY
+}
+
+wait_for_port_open() {
+  local host="$1"
+  local port="$2"
+  local timeout_s="${3:-15}"
+  local label="${4:-${host}:${port}}"
+  local start now
+  if ! [[ "$timeout_s" =~ ^[0-9]+$ ]]; then
+    timeout_s=15
+  fi
+  start="$(date +%s)"
+  while true; do
+    if port_open "$host" "$port"; then
+      return 0
+    fi
+    now="$(date +%s)"
+    if (( now - start >= timeout_s )); then
+      echo "error: strict CRI ingress listener not ready for ${label} on ${host}:${port} within ${timeout_s}s." >&2
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
+ensure_strict_cri_ingress_ready() {
+  local timeout_s=15
+  if ! is_strict_cri; then
+    return 0
+  fi
+  if ! wait_for_port_open "127.0.0.1" "${AE_EDGE_INGRESS_HTTP_PORT:-10080}" "$timeout_s" "edge-http"; then
+    echo "error: public strict-CRI HTTP ingress is not healthy." >&2
+    return 1
+  fi
+  if ! wait_for_port_open "127.0.0.1" "${AE_EDGE_INGRESS_TLS_PORT:-10443}" "$timeout_s" "edge-tls"; then
+    echo "error: public strict-CRI TLS ingress is not healthy; expected dash/docs/api on ${AE_EDGE_INGRESS_TLS_PORT:-10443}." >&2
+    return 1
+  fi
+  if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"; then
+    if ! wait_for_port_open "127.0.0.1" "${AE_CONTROLPLANE_PROXY_PORT:-10081}" "$timeout_s" "controlplane-proxy"; then
+      echo "error: strict-CRI control-plane proxy is not healthy on ${AE_CONTROLPLANE_PROXY_PORT:-10081}." >&2
+      return 1
+    fi
+  fi
 }
 
 apishim_health_code() {
@@ -1326,6 +1726,45 @@ read_env_var_file() {
   ' "$file"
 }
 
+sync_controller_env() {
+  local profile_dir="$1"
+  local controller_env_file="${CONTROLLER_ENV_FILE:-$profile_dir/controller.env}"
+  local apishim_env_file="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
+  local env_api_admin_token=""
+  local env_api_scaler_token=""
+  local env_api_read_token=""
+  local env_labs_token=""
+  local env_state_db=""
+  local env_state_backend=""
+  local env_etcd_endpoints=""
+  local env_etcd_prefix=""
+  local env_apishim_server=""
+
+  export CONTROLLER_ENV_FILE="$controller_env_file"
+  APISHIM_ENV_FILE="$apishim_env_file" CONTROLLER_ENV_FILE="$controller_env_file" PROFILE_DIR="$profile_dir" \
+    "$ROOT_DIR/scripts/ensure_controller_env.sh" >/dev/null 2>&1
+
+  env_api_admin_token="$(read_env_var_file "AE_API_ADMIN_TOKEN" "$controller_env_file" || true)"
+  env_api_scaler_token="$(read_env_var_file "AE_API_SCALER_TOKEN" "$controller_env_file" || true)"
+  env_api_read_token="$(read_env_var_file "AE_API_READ_TOKEN" "$controller_env_file" || true)"
+  env_labs_token="$(read_env_var_file "AE_LABS_TOKEN" "$controller_env_file" || true)"
+  env_state_db="$(read_env_var_file "AE_STATE_DB" "$controller_env_file" || true)"
+  env_state_backend="$(read_env_var_file "AE_STATE_BACKEND" "$controller_env_file" || true)"
+  env_etcd_endpoints="$(read_env_var_file "AE_ETCD_ENDPOINTS" "$controller_env_file" || true)"
+  env_etcd_prefix="$(read_env_var_file "AE_ETCD_PREFIX" "$controller_env_file" || true)"
+  env_apishim_server="$(read_env_var_file "AE_APISHIM_SERVER" "$controller_env_file" || true)"
+
+  [[ -n "$env_api_admin_token" ]] && export AE_API_ADMIN_TOKEN="$env_api_admin_token"
+  [[ -n "$env_api_scaler_token" ]] && export AE_API_SCALER_TOKEN="$env_api_scaler_token"
+  [[ -n "$env_api_read_token" ]] && export AE_API_READ_TOKEN="$env_api_read_token"
+  [[ -n "$env_labs_token" ]] && export AE_LABS_TOKEN="$env_labs_token"
+  [[ -n "$env_state_db" ]] && export AE_STATE_DB="$env_state_db"
+  [[ -n "$env_state_backend" ]] && export AE_STATE_BACKEND="$env_state_backend"
+  [[ -n "$env_etcd_endpoints" ]] && export AE_ETCD_ENDPOINTS="$env_etcd_endpoints"
+  [[ -n "$env_etcd_prefix" ]] && export AE_ETCD_PREFIX="$env_etcd_prefix"
+  [[ -n "$env_apishim_server" ]] && export AE_APISHIM_SERVER="$env_apishim_server"
+}
+
 normalize_apishim_port() {
   local candidate="${1:-}"
   local postgres_port="${2:-5432}"
@@ -1337,6 +1776,51 @@ normalize_apishim_port() {
     return 0
   fi
   echo "$candidate"
+}
+
+prepare_apishim_compose_env() {
+  local profile_dir="$1"
+  local env_file="$2"
+  local port="$3"
+  local host_port="$4"
+  local profile_rel="$profile_dir"
+
+  if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
+    profile_rel="${profile_dir#"$ROOT_DIR/"}"
+  fi
+
+  export APISHIM_ENV_FILE="$env_file"
+  export APISHIM_PROFILE_DIR="$profile_rel"
+  export APISHIM_PORT="$port"
+  export APISHIM_HOST_PORT="$host_port"
+  export APISHIM_CONTAINER_PORT="${APISHIM_CONTAINER_PORT:-8445}"
+  export APISHIM_CONTAINER=1
+  export AE_APISHIM_ETCD_ENDPOINTS="${AE_APISHIM_ETCD_ENDPOINTS:-${AE_ETCD_ENDPOINTS:-}}"
+}
+
+sync_apishim_dev_env() {
+  AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 \
+    "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+}
+
+apishim_compose_render() {
+  local output_file=""
+  output_file="$(mktemp)"
+  if compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" config >"$output_file" 2>&1; then
+    rm -f "$output_file"
+    return 0
+  fi
+  echo "error: failed to render apishim compose config via ${ENGINE_BIN} compose." >&2
+  cat "$output_file" >&2 || true
+  rm -f "$output_file"
+  return 1
+}
+
+up_apishim_compose() {
+  if ! apishim_compose_render; then
+    return 1
+  fi
+  compose "$ENGINE_BIN" -f "$ROOT_DIR/ops/dev/docker-compose.yaml" up -d "$@" apishim
 }
 
 warn_apishim_dsn() {
@@ -1390,17 +1874,131 @@ PY
   fi
 }
 
+apishim_is_default_local_managed_dsn() {
+  local dsn="${1:-${AE_APISHIM_DSN:-}}"
+  local postgres_port="${2:-5432}"
+  if [[ -z "$dsn" ]]; then
+    return 1
+  fi
+  "$PYTHON_BIN" - <<'PY' "$dsn" "$postgres_port"
+import sys
+from urllib.parse import urlparse
+
+dsn = sys.argv[1]
+expected_port = int(sys.argv[2])
+try:
+    parsed = urlparse(dsn)
+except Exception:
+    raise SystemExit(1)
+
+scheme = (parsed.scheme or "").lower()
+host = (parsed.hostname or "").lower()
+username = parsed.username or ""
+password = parsed.password or ""
+database = parsed.path.lstrip("/") if parsed.path else ""
+port = parsed.port or 5432
+
+if scheme not in {"postgres", "postgresql"}:
+    raise SystemExit(1)
+if host not in {"127.0.0.1", "localhost"}:
+    raise SystemExit(1)
+if port != expected_port:
+    raise SystemExit(1)
+if username != "shim" or password != "shim" or database != "shim":
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+apishim_postgres_auth_ok() {
+  local dsn="${1:-${AE_APISHIM_DSN:-}}"
+  local quiet="${2:-0}"
+  if [[ -z "$dsn" ]]; then
+    return 1
+  fi
+  local output=""
+  if output="$(
+    "$PYTHON_BIN" - "$dsn" 2>&1 <<'PY'
+import sys
+
+import psycopg
+
+dsn = sys.argv[1]
+with psycopg.connect(dsn, connect_timeout=3) as conn:
+    with conn.cursor() as cur:
+        cur.execute("select 1")
+        cur.fetchone()
+PY
+  )"; then
+    return 0
+  fi
+  if [[ "$quiet" != "1" && -n "$output" ]]; then
+    echo "warning: apishim Postgres auth probe failed: $output" >&2
+  fi
+  return 1
+}
+
+apishim_wait_postgres_auth() {
+  local dsn="$1"
+  local timeout_s="${2:-15}"
+  local start_ts now_ts
+  start_ts="$(date +%s)"
+  while true; do
+    if apishim_postgres_auth_ok "$dsn" 1; then
+      return 0
+    fi
+    now_ts="$(date +%s)"
+    if (( now_ts - start_ts >= timeout_s )); then
+      apishim_postgres_auth_ok "$dsn" 0 || true
+      return 1
+    fi
+    sleep 0.5
+  done
+}
+
+ensure_default_local_apishim_postgres_auth() {
+  local postgres_port="${1:-5432}"
+  local dsn="${AE_APISHIM_DSN:-}"
+  local timeout_s="${AE_APISHIM_POSTGRES_STARTUP_TIMEOUT:-15}"
+  if ! is_strict_cri; then
+    return 0
+  fi
+  if [[ "${PROFILE:-}" != "k1s-core" ]]; then
+    return 0
+  fi
+  if ! apishim_is_default_local_managed_dsn "$dsn" "$postgres_port"; then
+    return 0
+  fi
+  if apishim_postgres_auth_ok "$dsn" 1; then
+    return 0
+  fi
+  echo "[apishim] default local managed Postgres auth failed; resetting profile-scoped CRI postgres data" >&2
+  if ! run_cri_stack up-postgres --profile "$PROFILE" --reset-data --recreate; then
+    echo "error: failed to reset managed Postgres for profile '$PROFILE'." >&2
+    return 1
+  fi
+  if ! apishim_wait_postgres_auth "$dsn" "$timeout_s"; then
+    echo "error: managed Postgres auth did not recover for AE_APISHIM_DSN after reset." >&2
+    return 1
+  fi
+  return 0
+}
+
 start_apishim() {
   local profile_dir="$1"
   local host="${APISHIM_HOST:-127.0.0.1}"
   local requested_port="${APISHIM_PORT:-8445}"
   local port="$requested_port"
+  local requested_host_port="${APISHIM_HOST_PORT:-$requested_port}"
+  local host_port="$requested_host_port"
   local postgres_port="${POSTGRES_PORT:-5432}"
   local pid_file="${APISHIM_PID_FILE:-$ROOT_DIR/state/apishim.pid}"
   local env_file="${APISHIM_ENV_FILE:-$profile_dir/apishim.env}"
   local cli_env_file="${APISHIM_CLI_ENV_FILE:-$profile_dir/apishim.cli.env}"
   local cert_file="${APISHIM_CERT_FILE:-$profile_dir/apishim.crt}"
   local key_file="${APISHIM_KEY_FILE:-$profile_dir/apishim.key}"
+  local ca_file="${APISHIM_CA_FILE:-$profile_dir/apishim.ca.crt}"
+  local ca_key_file="${APISHIM_CA_KEY_FILE:-$profile_dir/apishim.ca.key}"
   local mode="${AE_APISHIM_MODE:-container}"
   local startup_timeout="${AE_APISHIM_STARTUP_TIMEOUT:-12}"
   local health_token=""
@@ -1412,11 +2010,17 @@ start_apishim() {
   fi
   if [[ -f "$pid_file" ]] && ! apishim_pid_alive "$pid_file"; then
     rm -f "$pid_file" >/dev/null 2>&1 || true
-  fi
+	  fi
 
   mkdir -p "$profile_dir"
-  APISHIM_ENV_FILE="$env_file" APISHIM_CERT_FILE="$cert_file" APISHIM_KEY_FILE="$key_file" \
-    "$ROOT_DIR/scripts/ensure_apishim_env.sh" >/dev/null 2>&1 || true
+  if is_truthy "${AE_APISHIM_PRESEEDED:-0}" \
+    && [[ -f "$env_file" && -f "$cert_file" && -f "$key_file" && -f "$ca_file" && -f "$ca_key_file" ]]; then
+    :
+  else
+    APISHIM_ENV_FILE="$env_file" APISHIM_CERT_FILE="$cert_file" APISHIM_KEY_FILE="$key_file" \
+      APISHIM_CA_FILE="$ca_file" APISHIM_CA_KEY_FILE="$ca_key_file" \
+      "$ROOT_DIR/scripts/ensure_apishim_env.sh" >/dev/null 2>&1 || true
+  fi
   if [[ -f "$env_file" ]]; then
     local env_apishim_token=""
     local env_apishim_read_token=""
@@ -1442,6 +2046,12 @@ start_apishim() {
     echo "warning: APISHIM_PORT=${requested_port} conflicts with POSTGRES_PORT=${postgres_port}; forcing APISHIM_PORT=${port}." >&2
   fi
   export APISHIM_PORT="$port"
+  host_port="$(normalize_apishim_port "$requested_host_port" "$postgres_port")"
+  if [[ "$host_port" != "$requested_host_port" ]]; then
+    echo "warning: APISHIM_HOST_PORT=${requested_host_port} conflicts with POSTGRES_PORT=${postgres_port}; forcing APISHIM_HOST_PORT=${host_port}." >&2
+  fi
+  export APISHIM_HOST_PORT="$host_port"
+  export APISHIM_CONTAINER_PORT="${APISHIM_CONTAINER_PORT:-8445}"
 
   export AE_APISHIM_RUNTIME="${AE_APISHIM_RUNTIME:-${AE_RUNTIME_BACKEND:-docker}}"
   export AE_APISHIM_ENABLE=1
@@ -1453,6 +2063,7 @@ start_apishim() {
   export AE_APISHIM_TLS_KEY="${AE_APISHIM_TLS_KEY:-$key_file}"
   export AE_APISHIM_SERVER="https://127.0.0.1:${port}"
   APISHIM_ENV_FILE="$env_file" APISHIM_CLI_ENV_FILE="$cli_env_file" APISHIM_CERT_FILE="$cert_file" \
+    APISHIM_CA_FILE="$ca_file" \
     AE_APISHIM_SERVER="${AE_APISHIM_SERVER}" AE_CLI_SHARED_GROUP="${AE_CLI_SHARED_GROUP:-aecli}" \
     "$ROOT_DIR/scripts/ensure_apishim_cli_env.sh" >/dev/null 2>&1 || \
     echo "warning: failed to sync shared apishim CLI env" >&2
@@ -1464,6 +2075,9 @@ start_apishim() {
     fi
   fi
   warn_apishim_dsn
+  if ! ensure_default_local_apishim_postgres_auth "$postgres_port"; then
+    return 1
+  fi
   local renorm_port
   renorm_port="$(normalize_apishim_port "$port" "$postgres_port")"
   if [[ "$renorm_port" != "$port" ]]; then
@@ -1521,24 +2135,13 @@ start_apishim() {
           echo "warning: failed to recreate apishim CRI component" >&2
       fi
     elif [[ "$mode" == "container" ]]; then
-      local profile_rel="$profile_dir"
-      if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
-        profile_rel="${profile_dir#"$ROOT_DIR/"}"
-      fi
-      export APISHIM_ENV_FILE="$env_file"
-      export APISHIM_PROFILE_DIR="${APISHIM_PROFILE_DIR:-$profile_rel}"
-      export APISHIM_PORT="$port"
-      export APISHIM_CONTAINER=1
-      APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
-        AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 \
-        "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
+      prepare_apishim_compose_env "$profile_dir" "$env_file" "$port" "$host_port"
+      sync_apishim_dev_env
       # Keep apishim env in sync with the active profile. This is required for
       # storage seeding and state backend changes (for example AE_STORAGE_NFS_*
       # and AE_STATE_BACKEND=etcd) to take effect between profile restarts.
       if is_truthy "${AE_APISHIM_RECREATE_ON_START:-1}"; then
-        if ! APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
-          "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" \
-          up -d --force-recreate apishim; then
+        if ! up_apishim_compose --force-recreate; then
           echo "warning: failed to recreate apishim container" >&2
         fi
       fi
@@ -1625,21 +2228,13 @@ start_apishim() {
     "$engine" network connect "$net_name" "$container" >/dev/null 2>&1 || true
   }
 
-  local profile_rel="$profile_dir"
-  if [[ "$profile_dir" == "$ROOT_DIR/"* ]]; then
-    profile_rel="${profile_dir#"$ROOT_DIR/"}"
+  prepare_apishim_compose_env "$profile_dir" "$env_file" "$port" "$host_port"
+  sync_apishim_dev_env
+  if up_apishim_compose; then
+    connect_apishim_network
+  else
+    echo "warning: failed to start apishim container" >&2
   fi
-  export APISHIM_ENV_FILE="$env_file"
-  export APISHIM_PROFILE_DIR="${APISHIM_PROFILE_DIR:-$profile_rel}"
-  export APISHIM_PORT="$port"
-  export APISHIM_CONTAINER=1
-  APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
-    AE_CONTAINER_CLI="$ENGINE_BIN" APISHIM_CONTAINER=1 \
-    "$ROOT_DIR/scripts/ensure_dev_env.sh" >/dev/null 2>&1 || true
-  APISHIM_PORT="$port" APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$port}" \
-    "$ENGINE_BIN" compose -f "$ROOT_DIR/ops/dev/docker-compose.yaml" \
-    up -d apishim || echo "warning: failed to start apishim container" >&2
-  connect_apishim_network
   if ! apishim_wait_healthy "$port" "$health_token" "$startup_timeout"; then
     echo "error: apishim failed to become healthy in container mode on https://127.0.0.1:${port}." >&2
     local apishim_container
@@ -1653,12 +2248,22 @@ start_apishim() {
 
 ensure_dev_local() {
   if [[ "${AE_DEV_LOCAL:-0}" == "1" ]]; then
+    local dev_local_hosts="${DEV_LOCAL_HOSTS:-}"
+    if [[ -z "$dev_local_hosts" ]]; then
+      dev_local_hosts="docs.home.arpa api.home.arpa dash.home.arpa echo.home.arpa"
+      if [[ "${AE_DEMO_SEED:-0}" == "1" || "${AE_DEMO_MODE:-0}" == "1" ]]; then
+        dev_local_hosts="blue.home.arpa green.home.arpa ${dev_local_hosts}"
+      fi
+    fi
     DEV_PROFILE_DIR="${DEV_PROFILE_DIR:-${1:-}}" \
+      DEV_LOCAL_PROFILE="$PROFILE" \
+      DEV_LOCAL_HOSTS="$dev_local_hosts" \
       AE_RUNTIME_BACKEND="${AE_RUNTIME_BACKEND:-}" \
       AE_CONTAINER_CLI="${AE_CONTAINER_CLI:-}" \
       STACK_BIN="${STACK_BIN:-}" \
       CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT:-}" \
       AE_APISHIM_TLS_CERT="${AE_APISHIM_TLS_CERT:-}" \
+      AE_APISHIM_TLS_CA_CERT="${AE_APISHIM_TLS_CA_CERT:-}" \
       AE_TLS_DIR="${AE_TLS_DIR:-}" \
       "$ROOT_DIR/scripts/dev/ensure_dev_local.sh" || true
   fi
@@ -1679,6 +2284,10 @@ ensure_etcd_maintenance() {
   fi
   run_etcd_maintenance_cmd status >/dev/null || echo "warning: etcd maintenance status check failed" >&2
   run_etcd_maintenance_cmd watchdog >/dev/null || echo "warning: etcd maintenance watchdog failed" >&2
+}
+
+run_ha_core_preflight() {
+  PYTHONPATH=src "$PYTHON_BIN" "$ROOT_DIR/scripts/dev/ha_core_preflight.py"
 }
 
 
@@ -1731,11 +2340,33 @@ write_envoy_bootstrap() {
   local path="$1"
   PYTHONPATH=src "$PYTHON_BIN" - <<PY
 from pathlib import Path
+from ae.ingress.edge_core_proxy import render_core_proxy_bootstrap_from_env
 from ae.ingress.envoy_core_proxy import render_envoy_config, EnvoyRenderConfig
 
 cfg_path = Path("${path}")
 cfg_path.parent.mkdir(parents=True, exist_ok=True)
-cfg_path.write_text(render_envoy_config([], [], EnvoyRenderConfig()), encoding="utf-8")
+rendered = render_core_proxy_bootstrap_from_env(state_db_path=cfg_path.parent / "bootstrap-state.db")
+if not rendered:
+    cfg_path.write_text(render_envoy_config([], [], EnvoyRenderConfig()), encoding="utf-8")
+PY
+}
+
+write_controlplane_envoy_bundle() {
+  local config_path="$1"
+  local secrets_path="$2"
+  PYTHONPATH=src "$PYTHON_BIN" - <<PY
+from pathlib import Path
+from ae.ingress.envoy_control_plane import (
+    build_control_plane_envoy_config_from_env,
+    write_control_plane_envoy_bundle,
+)
+
+cfg = build_control_plane_envoy_config_from_env()
+write_control_plane_envoy_bundle(
+    Path("${config_path}").resolve(),
+    Path("${secrets_path}").resolve(),
+    cfg,
+)
 PY
 }
 
@@ -1769,6 +2400,44 @@ require_envoy_core_proxy_config() {
     echo "error: Envoy bootstrap missing HTTP port 10080: $cfg" >&2
     return 1
   }
+  if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"; then
+    local tls_port="${AE_EDGE_INGRESS_TLS_PORT:-10443}"
+    local dash_host="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"
+    local docs_host="${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa}"
+    local api_host="${AE_CONTROLPLANE_API_HOST:-api.home.arpa}"
+    rg -q 'edge_listener_tls' "$cfg" || {
+      echo "error: Envoy bootstrap missing TLS listener (edge_listener_tls): $cfg" >&2
+      return 1
+    }
+    rg -q "port_value:[[:space:]]*${tls_port}" "$cfg" || {
+      echo "error: Envoy bootstrap missing TLS port ${tls_port}: $cfg" >&2
+      return 1
+    }
+    rg -Fq -- "- ${dash_host}" "$cfg" || {
+      echo "error: Envoy bootstrap missing control-plane dash host (${dash_host}): $cfg" >&2
+      return 1
+    }
+    rg -Fq -- "- ${docs_host}" "$cfg" || {
+      echo "error: Envoy bootstrap missing control-plane docs host (${docs_host}): $cfg" >&2
+      return 1
+    }
+    rg -Fq -- "- ${api_host}" "$cfg" || {
+      echo "error: Envoy bootstrap missing control-plane api host (${api_host}): $cfg" >&2
+      return 1
+    }
+    rg -Fq 'name: controlplane_proxy' "$cfg" || {
+      echo "error: Envoy bootstrap missing controlplane_proxy cluster: $cfg" >&2
+      return 1
+    }
+    rg -Fq 'name: controlplane_api_controller' "$cfg" || {
+      echo "error: Envoy bootstrap missing controlplane_api_controller cluster: $cfg" >&2
+      return 1
+    }
+    rg -Fq 'name: controlplane_api_apishim' "$cfg" || {
+      echo "error: Envoy bootstrap missing controlplane_api_apishim cluster: $cfg" >&2
+      return 1
+    }
+  fi
 }
 
 wait_for_listener_port() {
@@ -1830,10 +2499,15 @@ start_envoy_container() {
   local name="$1"
   local config_path="$2"
   local image="${AE_ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}"
+  local base_id
+  base_id="$(
+    PYTHONPATH=src "$PYTHON_BIN" "$ROOT_DIR/scripts/dev/cri_stack.py" \
+      envoy-base-id --profile "$PROFILE" --component "$name"
+  )"
   "$ENGINE_BIN" rm -f "$name" >/dev/null 2>&1 || true
-  "$ENGINE_BIN" run -d --name "$name" --network host \
+  "$ENGINE_BIN" run -d --name "$name" --network host --user 0 \
     -v "${config_path}:/etc/envoy/envoy.yaml:ro" \
-    "$image" -c /etc/envoy/envoy.yaml --log-level info >/dev/null
+    "$image" -c /etc/envoy/envoy.yaml --log-level info --base-id "$base_id" >/dev/null
 }
 
 start_rathole_server_container() {
@@ -1857,6 +2531,7 @@ start_rathole_client_container() {
 }
 
 PYTHON_BIN="$(detect_python)"
+ensure_runtime_libs
 INFRA_BACKEND="$(resolve_infra_backend)"
 export AE_INFRA_BACKEND="$INFRA_BACKEND"
 if is_strict_cri; then
@@ -1865,6 +2540,7 @@ if is_strict_cri; then
   fi
   export AE_CRI_RUNTIME_HANDLER="${AE_CRI_RUNTIME_HANDLER:-runc}"
   export AE_CRI_SET_HOSTNAME="${AE_CRI_SET_HOSTNAME:-0}"
+  grpc_preflight
 fi
 ENGINE_BIN="$(detect_engine)"
 
@@ -1884,16 +2560,14 @@ if [[ "${BENCH_MODE:-0}" == "1" ]]; then
 fi
 
 if [[ -z "${AE_APISHIM_MODE:-}" ]]; then
-  if is_strict_cri && [[ "$PROFILE" == "k1s-core" ]]; then
-    AE_APISHIM_MODE="cri"
-  elif is_strict_cri; then
-    AE_APISHIM_MODE="host"
-  elif [[ "$ENGINE_BIN" == "podman" ]]; then
-    AE_APISHIM_MODE="container"
-  else
-    AE_APISHIM_MODE="host"
-  fi
+  AE_APISHIM_MODE="$(default_apishim_mode)"
   export AE_APISHIM_MODE
+fi
+
+if [[ "${AE_APISHIM_MODE:-host}" == "container" ]] && ! compose_provider_available "$ENGINE_BIN"; then
+  echo "error: AE_APISHIM_MODE=container requires a working ${ENGINE_BIN} compose provider." >&2
+  echo "hint: $(compose_provider_hint "$ENGINE_BIN")." >&2
+  exit 1
 fi
 
 if [[ "$ENGINE_BIN" == "podman" ]]; then
@@ -1912,8 +2586,8 @@ if is_strict_cri; then
     echo "error: strict CRI infra does not support AE_APISHIM_MODE=container; use AE_APISHIM_MODE=cri or host" >&2
     exit 1
   fi
-  if [[ "${AE_APISHIM_MODE:-host}" == "cri" && "$PROFILE" != "k1s-core" ]]; then
-    echo "error: AE_APISHIM_MODE=cri is currently supported only for k1s-core profile." >&2
+  if [[ "${AE_APISHIM_MODE:-host}" == "cri" && "$PROFILE" != "k1s-core" && "$PROFILE" != "k1s-ha-core" ]]; then
+    echo "error: AE_APISHIM_MODE=cri is currently supported only for k1s-core and k1s-ha-core profiles." >&2
     exit 1
   fi
 fi
@@ -1948,7 +2622,7 @@ case "$PROFILE" in
       start_caddy
     fi
     ensure_dev_local "$PROFILE_DIR"
-    PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
+    run_controller_loop --loop --metrics-port "$METRICS_PORT" --watch
     ;;
   dev-etcd)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
@@ -1980,11 +2654,13 @@ case "$PROFILE" in
       start_caddy
     fi
     ensure_dev_local "$PROFILE_DIR"
-    PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
+    run_controller_loop --loop --metrics-port "$METRICS_PORT" --watch
     ;;
   k1s-core)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
     PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/k1s-core}")"
+    default_profile_cri_data_root "$PROFILE_DIR"
+    ensure_strict_cri_profile_state_ownership "$PROFILE"
     POSTGRES_BIND_IP="${POSTGRES_BIND_IP:-127.0.0.1}"
     POSTGRES_PORT="${POSTGRES_PORT:-5432}"
     export POSTGRES_BIND_IP POSTGRES_PORT
@@ -2025,16 +2701,34 @@ case "$PROFILE" in
     export AE_NATS_URL="${AE_NATS_URL:-nats://hub-controller:dev@127.0.0.1:4222}"
     export AE_JS_DOMAIN="${AE_JS_DOMAIN:-K1S}"
     export AE_NODE_PROFILE="${AE_NODE_PROFILE:-k1s-core}"
+    METRICS_PORT="${METRICS_PORT:-9108}"
+    export APISHIM_PORT="${APISHIM_PORT:-8445}"
+    if [[ "${APISHIM_PORT}" == "${POSTGRES_PORT}" ]]; then
+      echo "warning: APISHIM_PORT (${APISHIM_PORT}) conflicts with POSTGRES_PORT; forcing APISHIM_PORT=8445." >&2
+      APISHIM_PORT="8445"
+      export APISHIM_PORT
+    fi
+    export APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$APISHIM_PORT}"
+    if [[ "${APISHIM_HOST_PORT}" == "${POSTGRES_PORT}" || "${APISHIM_HOST_PORT}" == "5432" ]]; then
+      APISHIM_HOST_PORT="8445"
+      export APISHIM_HOST_PORT
+    fi
     if [[ "${AE_DEV_LOCAL:-0}" == "1" ]]; then
       export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
       export AE_LABS="${AE_LABS:-1}"
-      export CORE_CADDY="${CORE_CADDY:-1}"
+      if is_strict_cri; then
+        export CORE_CADDY="${CORE_CADDY:-0}"
+      else
+        export CORE_CADDY="${CORE_CADDY:-1}"
+      fi
       export CORE_DOCS="${CORE_DOCS:-1}"
     fi
     INGRESS_MODE="$(normalize_ingress_mode "${EDGE_INGRESS_MODE:-${AE_EDGE_INGRESS_MODE:-core-proxy}}")"
     EDGE_INGRESS_START="${EDGE_INGRESS_START:-1}"
     EDGE_INGRESS_DIR="${EDGE_INGRESS_DIR:-$PROFILE_DIR/edge-ingress}"
     EDGE_ENVOY_CONFIG="${EDGE_ENVOY_CONFIG:-$EDGE_INGRESS_DIR/envoy.yaml}"
+    CONTROLPLANE_ENVOY_CONFIG="${CONTROLPLANE_ENVOY_CONFIG:-$EDGE_INGRESS_DIR/controlplane-envoy.yaml}"
+    CONTROLPLANE_ENVOY_SECRETS="${CONTROLPLANE_ENVOY_SECRETS:-$EDGE_INGRESS_DIR/controlplane-secrets.yaml}"
     EDGE_RATHOLE_SERVER="${EDGE_RATHOLE_SERVER:-$EDGE_INGRESS_DIR/rathole-server.toml}"
     export AE_EDGE_INGRESS_CONFIG_DIR="${AE_EDGE_INGRESS_CONFIG_DIR:-$EDGE_INGRESS_DIR}"
     export AE_EDGE_INGRESS_ENVOY_CONFIG="${AE_EDGE_INGRESS_ENVOY_CONFIG:-$EDGE_ENVOY_CONFIG}"
@@ -2045,6 +2739,34 @@ case "$PROFILE" in
     export AE_RATHOLE_BIND_ADDR="${AE_RATHOLE_BIND_ADDR:-0.0.0.0:2333}"
     export AE_RATHOLE_DEFAULT_TOKEN="${AE_RATHOLE_DEFAULT_TOKEN:-dev}"
     export AE_RATHOLE_SERVER_ADDR="${AE_RATHOLE_SERVER_ADDR:-127.0.0.1:2333}"
+    if is_strict_cri && [[ "$INGRESS_MODE" == "core-proxy" || "$INGRESS_MODE" == "core-to-edge-public" ]]; then
+      export AE_CONTROLPLANE_PUBLIC_ENABLE="${AE_CONTROLPLANE_PUBLIC_ENABLE:-1}"
+    else
+      export AE_CONTROLPLANE_PUBLIC_ENABLE="${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"
+    fi
+    if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"; then
+      # Public control-plane ingress expects the docs upstream to be live.
+      export CORE_DOCS="${CORE_DOCS:-1}"
+    fi
+    export AE_CONTROLPLANE_AUTH_ENABLE="${AE_CONTROLPLANE_AUTH_ENABLE:-0}"
+    export AE_CONTROLPLANE_DASH_HOST="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"
+    export AE_CONTROLPLANE_DOCS_HOST="${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa}"
+    export AE_CONTROLPLANE_API_HOST="${AE_CONTROLPLANE_API_HOST:-api.home.arpa}"
+    export AE_CONTROLPLANE_PROXY_ADDR="${AE_CONTROLPLANE_PROXY_ADDR:-127.0.0.1}"
+    export AE_CONTROLPLANE_PROXY_PORT="${AE_CONTROLPLANE_PROXY_PORT:-10081}"
+    export AE_CONTROLPLANE_PROXY_ADMIN_ADDR="${AE_CONTROLPLANE_PROXY_ADMIN_ADDR:-127.0.0.1}"
+    export AE_CONTROLPLANE_PROXY_ADMIN_PORT="${AE_CONTROLPLANE_PROXY_ADMIN_PORT:-9902}"
+    export AE_CONTROLPLANE_CONTROLLER_UPSTREAM="${AE_CONTROLPLANE_CONTROLLER_UPSTREAM:-127.0.0.1:${METRICS_PORT}}"
+    export AE_CONTROLPLANE_DOCS_UPSTREAM="${AE_CONTROLPLANE_DOCS_UPSTREAM:-127.0.0.1:${AE_DOCS_PORT:-9109}}"
+    export AE_CONTROLPLANE_APISHIM_UPSTREAM="${AE_CONTROLPLANE_APISHIM_UPSTREAM:-127.0.0.1:${APISHIM_PORT}}"
+    export AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM="${AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM:-$AE_CONTROLPLANE_CONTROLLER_UPSTREAM}"
+    export AE_CONTROLPLANE_API_APISHIM_UPSTREAM="${AE_CONTROLPLANE_API_APISHIM_UPSTREAM:-$AE_CONTROLPLANE_APISHIM_UPSTREAM}"
+    export AE_CONTROLPLANE_API_APISHIM_TLS="${AE_CONTROLPLANE_API_APISHIM_TLS:-${AE_CONTROLPLANE_APISHIM_TLS:-1}}"
+    if is_truthy "${AE_CONTROLPLANE_AUTH_ENABLE:-0}"; then
+      export AE_DASHBOARD_INTERACTIVE_TOOLS="${AE_DASHBOARD_INTERACTIVE_TOOLS:-0}"
+    else
+      export AE_DASHBOARD_INTERACTIVE_TOOLS="${AE_DASHBOARD_INTERACTIVE_TOOLS:-1}"
+    fi
     if [[ "$INGRESS_MODE" == "core-proxy" ]]; then
       export AE_EDGE_INGRESS_CORE_PROXY=1
       export AE_RATHOLE_CLIENT_DIR="${AE_RATHOLE_CLIENT_DIR:-$EDGE_INGRESS_DIR/clients}"
@@ -2056,8 +2778,17 @@ case "$PROFILE" in
       export AE_EDGE_INGRESS_CORE_PROXY=0
       unset AE_EDGE_INGRESS_RATHOLE_RELOAD
     fi
+    if [[ "$INGRESS_MODE" == "core-proxy" || "$INGRESS_MODE" == "core-to-edge-public" ]]; then
+      export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1}"
+    else
+      export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-0}"
+    fi
     if [[ "$EDGE_INGRESS_START" == "1" ]]; then
       write_envoy_bootstrap "$EDGE_ENVOY_CONFIG"
+      if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}" && is_strict_cri; then
+        write_controlplane_envoy_bundle "$CONTROLPLANE_ENVOY_CONFIG" "$CONTROLPLANE_ENVOY_SECRETS"
+        run_cri_stack up-envoy --profile k1s-core --config "$CONTROLPLANE_ENVOY_CONFIG" --component k1s-core-envoy-controlplane --secret "$CONTROLPLANE_ENVOY_SECRETS"
+      fi
       write_rathole_server_bootstrap "$EDGE_RATHOLE_SERVER" "$AE_RATHOLE_BIND_ADDR" "$AE_RATHOLE_DEFAULT_TOKEN"
       ENVOY_CONTAINER="${ENVOY_CONTAINER:-k1s-core-envoy}"
       RATHOLE_SERVER_CONTAINER="${RATHOLE_SERVER_CONTAINER:-k1s-core-rathole}"
@@ -2084,20 +2815,12 @@ case "$PROFILE" in
           start_envoy_container "$ENVOY_CONTAINER" "$EDGE_ENVOY_CONFIG"
         fi
       fi
-    fi
-    METRICS_PORT="${METRICS_PORT:-9108}"
-    export APISHIM_PORT="${APISHIM_PORT:-8445}"
-    if [[ "${APISHIM_PORT}" == "${POSTGRES_PORT}" ]]; then
-      echo "warning: APISHIM_PORT (${APISHIM_PORT}) conflicts with POSTGRES_PORT; forcing APISHIM_PORT=8445." >&2
-      APISHIM_PORT="8445"
-      export APISHIM_PORT
-    fi
-    export APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$APISHIM_PORT}"
-    if [[ "${APISHIM_HOST_PORT}" == "${POSTGRES_PORT}" || "${APISHIM_HOST_PORT}" == "5432" ]]; then
-      APISHIM_HOST_PORT="8445"
-      export APISHIM_HOST_PORT
+      if is_strict_cri && ! ensure_strict_cri_ingress_ready; then
+        exit 1
+      fi
     fi
     start_apishim "$PROFILE_DIR"
+    sync_controller_env "$PROFILE_DIR"
     if [[ "${AE_LABS:-0}" == "1" ]]; then
       build_docs_with_labs_token
     fi
@@ -2121,7 +2844,148 @@ case "$PROFILE" in
       start_docs_server
     fi
     ensure_dev_local "$PROFILE_DIR"
-    PYTHONPATH=src exec "$PYTHON_BIN" -m ae.controller --loop --metrics-port "$METRICS_PORT" --watch
+    run_controller_loop --loop --metrics-port "$METRICS_PORT" --watch
+    ;;
+  k1s-ha-core)
+    PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/k1s-ha-core}")"
+    mkdir -p "$PROFILE_DIR"
+    default_profile_cri_data_root "$PROFILE_DIR"
+    ensure_strict_cri_profile_state_ownership "$PROFILE"
+    if ! is_strict_cri; then
+      echo "error: k1s-ha-core requires strict CRI infra (AE_RUNTIME_BACKEND=cri AE_INFRA_BACKEND=cri)." >&2
+      exit 1
+    fi
+    export DEV_PROFILE_DIR="$PROFILE_DIR"
+    export AE_HA_MODE=1
+    export AE_STATE_BACKEND="${AE_STATE_BACKEND:-etcd}"
+    export AE_TRANSPORT_BACKEND="${AE_TRANSPORT_BACKEND:-nats-js}"
+    export AE_JS_DOMAIN="${AE_JS_DOMAIN:-K1S}"
+    export AE_NODE_PROFILE="${AE_NODE_PROFILE:-k1s-ha-core}"
+    export AE_APISHIM_MODE="${AE_APISHIM_MODE:-cri}"
+    export AE_ETCD_MAINTENANCE_ENABLE="${AE_ETCD_MAINTENANCE_ENABLE:-0}"
+    export AE_ETCD_MAINTENANCE_THRESHOLD_PCT="${AE_ETCD_MAINTENANCE_THRESHOLD_PCT:-80}"
+    export AE_APISHIM_ETCD_ENDPOINTS="${AE_APISHIM_ETCD_ENDPOINTS:-${AE_ETCD_ENDPOINTS:-}}"
+    export AE_PROJECTION_ROOT="${AE_PROJECTION_ROOT:-$PROFILE_DIR/projections}"
+    METRICS_PORT="${METRICS_PORT:-9108}"
+    export APISHIM_PORT="${APISHIM_PORT:-8445}"
+    export APISHIM_HOST_PORT="${APISHIM_HOST_PORT:-$APISHIM_PORT}"
+    if [[ "${AE_DEV_LOCAL:-0}" == "1" ]]; then
+      export AE_REGISTER_LOCAL_NODE="${AE_REGISTER_LOCAL_NODE:-1}"
+      export AE_LABS="${AE_LABS:-1}"
+      export CORE_CADDY="${CORE_CADDY:-0}"
+      export CORE_DOCS="${CORE_DOCS:-1}"
+    else
+      export AE_LABS="${AE_LABS:-0}"
+      export CORE_CADDY="${CORE_CADDY:-0}"
+    fi
+    ensure_cri_registry_preload_images
+    run_ha_core_preflight
+    INGRESS_MODE="$(normalize_ingress_mode "${EDGE_INGRESS_MODE:-${AE_EDGE_INGRESS_MODE:-core-proxy}}")"
+    EDGE_INGRESS_START="${EDGE_INGRESS_START:-1}"
+    EDGE_INGRESS_DIR="${EDGE_INGRESS_DIR:-$PROFILE_DIR/edge-ingress}"
+    EDGE_ENVOY_CONFIG="${EDGE_ENVOY_CONFIG:-$EDGE_INGRESS_DIR/envoy.yaml}"
+    CONTROLPLANE_ENVOY_CONFIG="${CONTROLPLANE_ENVOY_CONFIG:-$EDGE_INGRESS_DIR/controlplane-envoy.yaml}"
+    CONTROLPLANE_ENVOY_SECRETS="${CONTROLPLANE_ENVOY_SECRETS:-$EDGE_INGRESS_DIR/controlplane-secrets.yaml}"
+    EDGE_RATHOLE_SERVER="${EDGE_RATHOLE_SERVER:-$EDGE_INGRESS_DIR/rathole-server.toml}"
+    export AE_EDGE_INGRESS_CONFIG_DIR="${AE_EDGE_INGRESS_CONFIG_DIR:-$EDGE_INGRESS_DIR}"
+    export AE_EDGE_INGRESS_ENVOY_CONFIG="${AE_EDGE_INGRESS_ENVOY_CONFIG:-$EDGE_ENVOY_CONFIG}"
+    export AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX="${AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX:-edge.local}"
+    export AE_EDGE_INGRESS_LOCAL_ADDR="${AE_EDGE_INGRESS_LOCAL_ADDR:-127.0.0.1:18081}"
+    export AE_EDGE_INGRESS_HTTP_PORT="${AE_EDGE_INGRESS_HTTP_PORT:-10080}"
+    export AE_EDGE_INGRESS_TLS_PORT="${AE_EDGE_INGRESS_TLS_PORT:-10443}"
+    export AE_RATHOLE_BIND_ADDR="${AE_RATHOLE_BIND_ADDR:-0.0.0.0:2333}"
+    export AE_RATHOLE_DEFAULT_TOKEN="${AE_RATHOLE_DEFAULT_TOKEN:-dev}"
+    export AE_RATHOLE_SERVER_ADDR="${AE_RATHOLE_SERVER_ADDR:-127.0.0.1:2333}"
+    if [[ "$INGRESS_MODE" == "core-proxy" || "$INGRESS_MODE" == "core-to-edge-public" ]]; then
+      export AE_CONTROLPLANE_PUBLIC_ENABLE="${AE_CONTROLPLANE_PUBLIC_ENABLE:-1}"
+    else
+      export AE_CONTROLPLANE_PUBLIC_ENABLE="${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"
+    fi
+    if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"; then
+      # Public control-plane ingress expects the docs upstream to be live.
+      export CORE_DOCS="${CORE_DOCS:-1}"
+    fi
+    export AE_CONTROLPLANE_AUTH_ENABLE="${AE_CONTROLPLANE_AUTH_ENABLE:-0}"
+    export AE_CONTROLPLANE_DASH_HOST="${AE_CONTROLPLANE_DASH_HOST:-dash.home.arpa}"
+    export AE_CONTROLPLANE_DOCS_HOST="${AE_CONTROLPLANE_DOCS_HOST:-docs.home.arpa}"
+    export AE_CONTROLPLANE_API_HOST="${AE_CONTROLPLANE_API_HOST:-api.home.arpa}"
+    export AE_CONTROLPLANE_PROXY_ADDR="${AE_CONTROLPLANE_PROXY_ADDR:-127.0.0.1}"
+    export AE_CONTROLPLANE_PROXY_PORT="${AE_CONTROLPLANE_PROXY_PORT:-10081}"
+    export AE_CONTROLPLANE_PROXY_ADMIN_ADDR="${AE_CONTROLPLANE_PROXY_ADMIN_ADDR:-127.0.0.1}"
+    export AE_CONTROLPLANE_PROXY_ADMIN_PORT="${AE_CONTROLPLANE_PROXY_ADMIN_PORT:-9902}"
+    export AE_CONTROLPLANE_CONTROLLER_UPSTREAM="${AE_CONTROLPLANE_CONTROLLER_UPSTREAM:-127.0.0.1:${METRICS_PORT}}"
+    export AE_CONTROLPLANE_DOCS_UPSTREAM="${AE_CONTROLPLANE_DOCS_UPSTREAM:-127.0.0.1:${AE_DOCS_PORT:-9109}}"
+    export AE_CONTROLPLANE_APISHIM_UPSTREAM="${AE_CONTROLPLANE_APISHIM_UPSTREAM:-127.0.0.1:${APISHIM_PORT}}"
+    export AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM="${AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM:-$AE_CONTROLPLANE_CONTROLLER_UPSTREAM}"
+    export AE_CONTROLPLANE_API_APISHIM_UPSTREAM="${AE_CONTROLPLANE_API_APISHIM_UPSTREAM:-$AE_CONTROLPLANE_APISHIM_UPSTREAM}"
+    export AE_CONTROLPLANE_API_APISHIM_TLS="${AE_CONTROLPLANE_API_APISHIM_TLS:-${AE_CONTROLPLANE_APISHIM_TLS:-1}}"
+    if is_truthy "${AE_CONTROLPLANE_AUTH_ENABLE:-0}"; then
+      export AE_DASHBOARD_INTERACTIVE_TOOLS="${AE_DASHBOARD_INTERACTIVE_TOOLS:-0}"
+    else
+      export AE_DASHBOARD_INTERACTIVE_TOOLS="${AE_DASHBOARD_INTERACTIVE_TOOLS:-1}"
+    fi
+    if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}" && \
+       [[ "${AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM}" == "${AE_CONTROLPLANE_CONTROLLER_UPSTREAM}" ]] && \
+       [[ "${AE_CONTROLPLANE_API_APISHIM_UPSTREAM}" == "${AE_CONTROLPLANE_APISHIM_UPSTREAM}" ]]; then
+      echo "warning: api.home.arpa defaults to local controller/apishim in HA; set AE_CONTROLPLANE_API_CONTROLLER_UPSTREAM and AE_CONTROLPLANE_API_APISHIM_UPSTREAM to a leader-targeted endpoint for write-safe public API routing." >&2
+    fi
+    if [[ "$INGRESS_MODE" == "core-proxy" ]]; then
+      export AE_EDGE_INGRESS_CORE_PROXY=1
+      export AE_RATHOLE_CLIENT_DIR="${AE_RATHOLE_CLIENT_DIR:-$EDGE_INGRESS_DIR/clients}"
+      export AE_EDGE_INGRESS_RATHOLE_RELOAD="${AE_EDGE_INGRESS_RATHOLE_RELOAD:-1}"
+      export AE_RATHOLE_INOTIFY_AUTOTUNE="${AE_RATHOLE_INOTIFY_AUTOTUNE:-1}"
+      export AE_RATHOLE_INOTIFY_WARN_PCT="${AE_RATHOLE_INOTIFY_WARN_PCT:-95}"
+      export AE_RATHOLE_INOTIFY_MAX_WATCHES="${AE_RATHOLE_INOTIFY_MAX_WATCHES:-4194304}"
+    else
+      export AE_EDGE_INGRESS_CORE_PROXY=0
+      unset AE_EDGE_INGRESS_RATHOLE_RELOAD
+    fi
+    if [[ "$INGRESS_MODE" == "core-proxy" || "$INGRESS_MODE" == "core-to-edge-public" ]]; then
+      export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-1}"
+    else
+      export AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS="${AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS:-0}"
+    fi
+    if [[ "$EDGE_INGRESS_START" == "1" ]]; then
+      write_envoy_bootstrap "$EDGE_ENVOY_CONFIG"
+      if is_truthy "${AE_CONTROLPLANE_PUBLIC_ENABLE:-0}"; then
+        write_controlplane_envoy_bundle "$CONTROLPLANE_ENVOY_CONFIG" "$CONTROLPLANE_ENVOY_SECRETS"
+        run_cri_stack up-envoy --profile k1s-ha-core --config "$CONTROLPLANE_ENVOY_CONFIG" --component k1s-ha-core-envoy-controlplane --secret "$CONTROLPLANE_ENVOY_SECRETS"
+      fi
+      write_rathole_server_bootstrap "$EDGE_RATHOLE_SERVER" "$AE_RATHOLE_BIND_ADDR" "$AE_RATHOLE_DEFAULT_TOKEN"
+      ENVOY_CONTAINER="${ENVOY_CONTAINER:-k1s-ha-core-envoy}"
+      RATHOLE_SERVER_CONTAINER="${RATHOLE_SERVER_CONTAINER:-k1s-ha-core-rathole}"
+      if [[ "$INGRESS_MODE" == "core-proxy" ]]; then
+        export AE_EDGE_INGRESS_RELOAD_CMD="$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-ha-core --config $EDGE_ENVOY_CONFIG"
+        export AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD="$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-rathole-server --profile k1s-ha-core --config $EDGE_RATHOLE_SERVER"
+        run_cri_stack up-envoy --profile k1s-ha-core --config "$EDGE_ENVOY_CONFIG"
+        run_cri_stack up-rathole-server --profile k1s-ha-core --config "$EDGE_RATHOLE_SERVER"
+      elif [[ "$INGRESS_MODE" == "core-to-edge-public" ]]; then
+        export AE_EDGE_INGRESS_RELOAD_CMD="$PYTHON_BIN $ROOT_DIR/scripts/dev/cri_stack.py up-envoy --profile k1s-ha-core --config $EDGE_ENVOY_CONFIG"
+        unset AE_EDGE_INGRESS_RATHOLE_RELOAD_CMD
+        run_cri_stack up-envoy --profile k1s-ha-core --config "$EDGE_ENVOY_CONFIG"
+      fi
+      if ! ensure_strict_cri_ingress_ready; then
+        exit 1
+      fi
+    fi
+    start_apishim "$PROFILE_DIR"
+    sync_controller_env "$PROFILE_DIR"
+    if [[ "${AE_LABS:-0}" == "1" ]]; then
+      build_docs_with_labs_token
+    fi
+    if [[ "${CORE_CADDY:-0}" == "1" ]]; then
+      caddy_https_port="${CADDY_HTTPS_PORT:-8443}"
+      caddy_sites="$ROOT_DIR/state/caddy"
+      mkdir -p "$caddy_sites"
+      render_strict_caddy_sites "$caddy_https_port"
+      write_dash_caddy_site "127.0.0.1" "${caddy_sites}/dash.caddy" "$caddy_https_port"
+      run_cri_stack up-caddy --profile k1s-ha-core --metrics-port "$METRICS_PORT" --apishim-port "${APISHIM_PORT:-8445}" --recreate
+    fi
+    if [[ "${CORE_DOCS:-0}" == "1" ]]; then
+      start_docs_server
+    fi
+    ensure_dev_local "$PROFILE_DIR"
+    run_controller_loop --loop --metrics-port "$METRICS_PORT"
     ;;
   k1s-edge)
     COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/ops/dev/docker-compose.nats-etcd.yaml}"
@@ -2156,6 +3020,7 @@ case "$PROFILE" in
     EDGE_PROFILE="${EDGE_PROFILE:-k1s-edge}"
     PROFILE_DIR="$(abs_path "${PROFILE_DIR:-state/profiles/$EDGE_PROFILE}")"
     mkdir -p "$PROFILE_DIR"
+    ensure_strict_cri_profile_state_ownership "$PROFILE"
     INGRESS_MODE="$(normalize_ingress_mode "${EDGE_INGRESS_MODE:-${AE_EDGE_INGRESS_MODE:-core-proxy}}")"
     EDGE_INGRESS_START="${EDGE_INGRESS_START:-1}"
     EDGE_INGRESS_DIR="${EDGE_INGRESS_DIR:-$PROFILE_DIR/edge-ingress}"

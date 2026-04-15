@@ -7,7 +7,7 @@ if [[ "${ACT:-}" == "true" ]]; then
 fi
 
 endpoint="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
-cni_version="${AE_CNI_VERSION:-1.0.0}"
+cni_version="${AE_CNI_VERSION:-0.4.0}"
 cni_force="${AE_CNI_FORCE:-1}"
 crictl_version="${CRICTL_VERSION:-v1.30.0}"
 
@@ -67,7 +67,7 @@ if [[ ! -f /etc/containerd/config.toml ]]; then
   run_root sh -c 'containerd config default > /etc/containerd/config.toml'
 fi
 
-if ! run_root containerd config dump --config /etc/containerd/config.toml >/dev/null 2>&1; then
+if ! run_root containerd --config /etc/containerd/config.toml config dump >/dev/null 2>&1; then
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   echo "Detected invalid containerd config; regenerating default (backup suffix: ${ts})..."
   run_root cp /etc/containerd/config.toml "/etc/containerd/config.toml.bak.${ts}" || true

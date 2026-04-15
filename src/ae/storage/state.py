@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import threading
 import time
 import uuid
 from datetime import datetime
 from typing import Any, Protocol
+from urllib.parse import quote
+
+import requests
 
 from ae._utc import UTC
 
@@ -54,6 +58,8 @@ class StorageState(Protocol):
     def get_csi_driver(self, name: str) -> Any | None: ...
 
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None: ...
+
+    def get_service_account(self, namespace: str, name: str) -> dict[str, Any] | None: ...
 
 
 class InMemoryStorageState:
@@ -122,6 +128,10 @@ class InMemoryStorageState:
         return None
 
     def get_secret(self, namespace: str, name: str) -> dict[str, str] | None:
+        _ = (namespace, name)
+        return None
+
+    def get_service_account(self, namespace: str, name: str) -> dict[str, Any] | None:
         _ = (namespace, name)
         return None
 
@@ -214,6 +224,20 @@ class ApishimStorageState(InMemoryStorageState):
             decoded[str(key)] = self._decode_secret_value(value)
         return decoded
 
+    def get_service_account(self, namespace: str, name: str) -> dict[str, Any] | None:
+        if not namespace or not name:
+            return None
+        try:
+            service_account = self._store.get(
+                CORE_GROUP, CORE_VERSION, "serviceaccounts", namespace, name
+            )
+        except Exception:
+            return None
+        if service_account is None:
+            return None
+        spec = service_account.spec or {}
+        return dict(spec) if isinstance(spec, dict) else None
+
     @staticmethod
     def _decode_secret_value(value: Any) -> str:
         if value is None:
@@ -256,3 +280,161 @@ class ApishimStorageState(InMemoryStorageState):
         }
         metadata = {"name": name, "namespace": pvc.namespace}
         self._store.upsert("", "v1", "events", pvc.namespace, name, metadata, spec, status={})
+
+
+class ApishimHttpStorageState(InMemoryStorageState):
+    """Storage/passive-resource reads backed by the apishim HTTP API."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str | None = None,
+        verify: bool | str = True,
+        timeout_s: float = 5.0,
+    ) -> None:
+        super().__init__()
+        self._base_url = base_url.rstrip("/")
+        self._token = token or None
+        self._verify = verify
+        self._timeout_s = float(timeout_s)
+
+    @classmethod
+    def from_env(cls) -> "ApishimHttpStorageState" | None:
+        base = (os.getenv("AE_APISHIM_URL") or os.getenv("AE_APISHIM_SERVER") or "").strip()
+        if not base:
+            return None
+        token = os.getenv("AE_APISHIM_READ_TOKEN") or os.getenv("AE_APISHIM_TOKEN")
+        verify: bool | str = True
+        ca_bundle = (
+            os.getenv("AE_APISHIM_CA_BUNDLE")
+            or os.getenv("AE_APISHIM_CA")
+            or os.getenv("AE_APISHIM_TLS_CA")
+        )
+        if ca_bundle:
+            verify = ca_bundle
+        timeout_s = float(os.getenv("AE_APISHIM_HTTP_TIMEOUT_S", "5") or "5")
+        return cls(base, token=token, verify=verify, timeout_s=timeout_s)
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        return headers
+
+    def _get_json(self, path: str) -> dict[str, Any] | None:
+        resp = requests.get(
+            f"{self._base_url}{path}",
+            headers=self._headers(),
+            timeout=self._timeout_s,
+            verify=self._verify,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else None
+
+    def _list_items(self, path: str) -> list[dict[str, Any]]:
+        payload = self._get_json(path)
+        if payload is None:
+            return []
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return []
+        return [item for item in items if isinstance(item, dict)]
+
+    def get_pv_for_pvc(self, pvc: PvcRef) -> PvRef | None:
+        if not pvc.namespace or not pvc.name:
+            return None
+        payload = self._get_json(
+            f"/api/v1/namespaces/{quote(pvc.namespace, safe='')}/persistentvolumeclaims/{quote(pvc.name, safe='')}"
+        )
+        if payload is None:
+            return None
+        spec = payload.get("spec")
+        if not isinstance(spec, dict):
+            return None
+        volume_name = spec.get("volumeName")
+        if not volume_name:
+            return None
+        pv = self.get_pv(PvRef(name=str(volume_name)))
+        if pv is None:
+            return None
+        pv_spec = pv.get("spec") if isinstance(pv.get("spec"), dict) else {}
+        driver = None
+        try:
+            if isinstance(pv_spec.get("csi"), dict):
+                driver = pv_spec["csi"].get("driver")
+            elif isinstance(pv_spec.get("nfs"), dict):
+                driver = "k1s.io/nfs"
+        except Exception:
+            driver = None
+        metadata = pv.get("metadata") if isinstance(pv.get("metadata"), dict) else {}
+        uid = None
+        if isinstance(metadata, dict):
+            uid = metadata.get("uid")
+        return PvRef(name=str(volume_name), uid=uid, driver=driver)
+
+    def get_pv(self, pv: PvRef) -> Any | None:
+        if not pv.name:
+            return None
+        return self._get_json(f"/api/v1/persistentvolumes/{quote(pv.name, safe='')}")
+
+    def get_storage_class(self, name: str) -> Any | None:
+        if not name:
+            return None
+        return self._get_json(f"/apis/storage.k8s.io/v1/storageclasses/{quote(name, safe='')}")
+
+    def get_volume_attachment(self, pv: PvRef, node_id: str) -> Any | None:
+        if not pv.name or not node_id:
+            return None
+        attachments = self._list_items("/apis/storage.k8s.io/v1/volumeattachments")
+        for attachment in attachments:
+            spec = attachment.get("spec")
+            if not isinstance(spec, dict):
+                continue
+            if spec.get("nodeName") != node_id:
+                continue
+            source = spec.get("source")
+            if not isinstance(source, dict):
+                continue
+            if source.get("persistentVolumeName") == pv.name:
+                return attachment
+        return None
+
+    def get_csi_driver(self, name: str) -> Any | None:
+        if not name:
+            return None
+        return self._get_json(f"/apis/storage.k8s.io/v1/csidrivers/{quote(name, safe='')}")
+
+    def get_secret(self, namespace: str, name: str) -> dict[str, str] | None:
+        if not namespace or not name:
+            return None
+        payload = self._get_json(
+            f"/api/v1/namespaces/{quote(namespace, safe='')}/secrets/{quote(name, safe='')}"
+        )
+        if payload is None:
+            return None
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return None
+        decoded: dict[str, str] = {}
+        for key, value in data.items():
+            decoded[str(key)] = ApishimStorageState._decode_secret_value(value)
+        return decoded
+
+    def get_service_account(self, namespace: str, name: str) -> dict[str, Any] | None:
+        if not namespace or not name:
+            return None
+        payload = self._get_json(
+            f"/api/v1/namespaces/{quote(namespace, safe='')}/serviceaccounts/{quote(name, safe='')}"
+        )
+        if payload is None:
+            return None
+        out: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key in {"apiVersion", "kind", "metadata", "status"}:
+                continue
+            out[str(key)] = value
+        return out

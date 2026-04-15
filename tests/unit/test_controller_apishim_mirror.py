@@ -1,6 +1,13 @@
 from ae.controller import __main__ as controller_main
 
 
+def test_apishim_mirror_disabled_in_ha_mode(monkeypatch):
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    monkeypatch.setenv("AE_APISHIM_MIRROR", "1")
+
+    assert controller_main._apishim_mirror_enabled() is False
+
+
 def test_snapshot_apishim_manifests_closes_temp_store(monkeypatch):
     closed = {"count": 0}
 

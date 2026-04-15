@@ -17,7 +17,8 @@ Options:
   -h, --help                Show this help
 
 Environment:
-  AE_CRI_LOCAL_BUILD_BACKEND  Preferred backend (nerdctl|podman|docker|ctr)
+  AE_CRI_IMAGE_MIRROR_BACKEND Preferred mirror backend (nerdctl|podman|docker|ctr)
+  AE_CRI_LOCAL_BUILD_BACKEND  Legacy shared backend override (nerdctl|podman|docker|ctr)
   AE_CRI_IMAGE_MIRROR_ALWAYS_PULL  Set truthy to force remote pull even when source exists locally
   AE_CTR_NAMESPACE            ctr namespace (default: k8s.io)
   AE_CTR_HOSTS_DIR            ctr hosts dir (default: /etc/containerd/certs.d)
@@ -73,7 +74,7 @@ has_registry_prefix() {
 }
 
 resolve_engine() {
-  local prefer="${engine:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}"
+  local prefer="${engine:-${AE_CRI_IMAGE_MIRROR_BACKEND:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}}"
   if [[ -n "$prefer" ]]; then
     if ! command -v "$prefer" >/dev/null 2>&1; then
       echo "Requested backend '$prefer' not found" >&2
@@ -148,6 +149,7 @@ engine_has_image() {
 
 engine_push() {
   local image="$1"
+  local local_ref="${2:-}"
   if [[ "$engine" == "ctr" ]]; then
     local -a cmd=(ctr -n "$ctr_namespace" images push)
     if [[ -n "$ctr_platform" ]]; then
@@ -160,6 +162,9 @@ engine_push() {
       cmd+=(--hosts-dir "$ctr_hosts_dir")
     fi
     cmd+=("$image")
+    if [[ -n "$local_ref" ]]; then
+      cmd+=("$local_ref")
+    fi
     "${cmd[@]}"
     return
   fi
@@ -202,6 +207,36 @@ engine_tag() {
   "$engine" tag "$source" "$target"
 }
 
+ctr_supports_convert() {
+  ctr images convert --help >/dev/null 2>&1
+}
+
+ctr_delete_target_ref() {
+  local reason="${1:-refresh}"
+  echo "[cri-image-mirror] evicting ctr image ref (${reason}): ${target_image}"
+  ctr -n "$ctr_namespace" images delete "$target_image" >/dev/null 2>&1 || true
+}
+
+ctr_refresh_cri_target() {
+  local reason="${1:-refresh}"
+  if command -v crictl >/dev/null 2>&1; then
+    echo "[cri-image-mirror] evicting CRI image cache (${reason}): ${target_image}"
+    crictl --runtime-endpoint "$cri_endpoint" rmi "$target_image" >/dev/null 2>&1 || true
+  fi
+  ctr_delete_target_ref "$reason"
+}
+
+ctr_prepare_push_ref() {
+  local source="$1"
+  if ! ctr_supports_convert; then
+    echo "ctr backend requires 'ctr images convert' support; set AE_CRI_IMAGE_MIRROR_BACKEND=podman|nerdctl|docker (or AE_CRI_LOCAL_BUILD_BACKEND)" >&2
+    exit 1
+  fi
+  ctr_delete_target_ref "pre-convert"
+  echo "[cri-image-mirror] normalizing ctr source to ${ctr_platform}: ${target_image}"
+  ctr -n "$ctr_namespace" images convert --platform "$ctr_platform" "$source" "$target_image"
+}
+
 if ! has_registry_prefix "$target_image"; then
   echo "Target image '$target_image' is not registry-qualified." >&2
   exit 1
@@ -218,7 +253,9 @@ fi
 echo "[cri-image-mirror] backend=${engine} source=${source_image} target=${target_image}"
 
 engine_pull "$source_image"
-if [[ "$source_image" != "$target_image" ]]; then
+if [[ "$engine" == "ctr" ]]; then
+  ctr_prepare_push_ref "$source_image"
+elif [[ "$source_image" != "$target_image" ]]; then
   engine_tag "$source_image" "$target_image"
 fi
 echo "[cri-image-mirror] pushing ${target_image}"
@@ -228,6 +265,9 @@ if (( pull_cri == 1 )); then
   if ! command -v crictl >/dev/null 2>&1; then
     echo "crictl not found; cannot perform CRI pull verification" >&2
     exit 1
+  fi
+  if [[ "$engine" == "ctr" ]]; then
+    ctr_refresh_cri_target "pre-pull"
   fi
   echo "[cri-image-mirror] CRI pull verify ${target_image}"
   crictl --runtime-endpoint "$cri_endpoint" pull "$target_image" >/dev/null

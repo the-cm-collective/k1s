@@ -13,7 +13,15 @@ from typing import Any
 
 from ae.controller.state import SQLiteStateStore
 from ae.controller.spec import app_key
+from ae.ha.fencing import (
+    MutationEnvelope,
+    merge_envelope,
+    parse_envelope,
+    resolve_controller_identity,
+    route_operation,
+)
 from ae.ingress.edge_docs import normalize_policy_doc, normalize_route_doc
+from ae.observability.http_api import record_ha_fence_event, record_route_bundle_publish_state
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 from ae.transport.subjects import hub_route_ack_subject, hub_route_bundle_subject
 
@@ -32,6 +40,10 @@ class _BundleState:
     acked_rev: int = 0
     backoff_s: float = 1.0
     next_send_at: float = 0.0
+    last_publish_at: float = 0.0
+    operation_id: str | None = None
+    controller_id: str | None = None
+    controller_epoch: int = 0
 
 
 class RouteBundlePublisher:
@@ -42,10 +54,12 @@ class RouteBundlePublisher:
         nats_url: str,
         nats_creds=None,
         config: RouteBundlePublisherConfig | None = None,
+        authority=None,
     ) -> None:
         self._store = store
         self._client = NatsClient(url=nats_url, creds=nats_creds, name="k1s-route-bundle")
         self._config = config or RouteBundlePublisherConfig()
+        self._authority = authority
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._started = False
         self._stop = False
@@ -59,6 +73,11 @@ class RouteBundlePublisher:
         except NatsClientError as exc:
             LOGGER.warning("route bundle connect failed: %s", exc)
             return
+        if hasattr(self._client, "add_reconnect_listener"):
+            try:
+                self._client.add_reconnect_listener(self._on_transport_reconnect)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("route bundle reconnect listener failed: %s", exc)
         self._client.subscribe("k1s.v1.site.*.routes.ack", self._on_ack)
         self._started = True
         self._thread.start()
@@ -79,10 +98,14 @@ class RouteBundlePublisher:
             time.sleep(self._config.interval_s)
 
     def run_once(self) -> None:
+        if self._authority is not None and not self._authority.snapshot().is_leader:
+            return
         site_ids = self._store.list_route_bundle_site_ids()
         LOGGER.debug("route bundle discovered sites=%s", site_ids)
         now = time.monotonic()
         for site_id in site_ids:
+            if self._authority is not None and not self._authority.snapshot().is_leader:
+                return
             state = self._state.setdefault(site_id, _BundleState())
             routes, policies, service_endpoints = _collect_bundle_payload(
                 self._store, site_id
@@ -94,26 +117,64 @@ class RouteBundlePublisher:
                 state.backoff_s = 1.0
                 state.next_send_at = 0.0
             if state.acked_rev >= state.rev:
+                record_route_bundle_publish_state(
+                    site_id, pending=False, ack_age_seconds=0.0
+                )
                 continue
             if now < state.next_send_at:
+                ack_age_s = max(0.0, now - state.last_publish_at) if state.last_publish_at > 0 else 0.0
+                record_route_bundle_publish_state(
+                    site_id, pending=True, ack_age_seconds=ack_age_s
+                )
                 continue
+            identity = resolve_controller_identity(self._authority)
+            operation_id = route_operation(site_id, state.rev, identity.controller_epoch)
+            state.operation_id = operation_id
+            state.controller_id = identity.controller_id
+            state.controller_epoch = identity.controller_epoch
             bundle = _build_bundle(
-                site_id, state.rev, state.hash, routes, policies, service_endpoints
+                site_id,
+                state.rev,
+                state.hash,
+                routes,
+                policies,
+                service_endpoints,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=operation_id,
             )
-            self._publish(site_id, bundle)
+            published = self._publish(site_id, bundle)
+            if published:
+                state.last_publish_at = now
             state.backoff_s = _next_backoff(state.backoff_s)
             state.next_send_at = now + state.backoff_s
+            ack_age_s = max(0.0, now - state.last_publish_at) if state.last_publish_at > 0 else 0.0
+            record_route_bundle_publish_state(
+                site_id, pending=True, ack_age_seconds=ack_age_s
+            )
 
-    def _publish(self, site_id: str, bundle: dict) -> None:
+    def _publish(self, site_id: str, bundle: dict) -> bool:
         try:
             self._client.publish_json(hub_route_bundle_subject(site_id), bundle)
+            record_route_bundle_publish_state(site_id, publish_ok=True)
+            return True
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("route bundle publish failed site=%s: %s", site_id, exc)
+            record_route_bundle_publish_state(site_id, publish_fail=True)
+            return False
 
     def _on_ack(self, msg: NatsMessage) -> None:
         payload = _safe_json(msg.data)
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         if not site_id:
+            return
+        state = self._state.get(site_id)
+        if state is None or not state.operation_id or not state.controller_id:
+            return
+        envelope = parse_envelope(payload)
+        if envelope is None:
+            record_ha_fence_event("route_bundle_publisher.ack", stale=True)
+            LOGGER.warning("route ack missing fencing envelope site=%s", site_id)
             return
         try:
             bundle_rev = int(payload.get("bundle_rev") or 0)
@@ -122,11 +183,37 @@ class RouteBundlePublisher:
         ok = payload.get("ok", True)
         if not ok:
             return
-        state = self._state.setdefault(site_id, _BundleState())
+        if not _route_ack_matches_state(state, bundle_rev=bundle_rev, envelope=envelope):
+            duplicate = (
+                bundle_rev == state.acked_rev
+                and envelope.operation_id == state.operation_id
+                and envelope.controller_id == state.controller_id
+                and envelope.controller_epoch == state.controller_epoch
+            )
+            record_ha_fence_event(
+                "route_bundle_publisher.ack",
+                duplicate=duplicate,
+                stale=not duplicate,
+            )
+            return
         if bundle_rev > state.acked_rev:
             state.acked_rev = bundle_rev
             state.backoff_s = 1.0
             state.next_send_at = 0.0
+            record_route_bundle_publish_state(site_id, pending=False, ack_age_seconds=0.0)
+        elif bundle_rev == state.acked_rev:
+            record_ha_fence_event("route_bundle_publisher.ack", duplicate=True)
+
+    def _on_transport_reconnect(self) -> None:
+        pending = 0
+        for state in self._state.values():
+            if state.acked_rev >= state.rev:
+                continue
+            state.backoff_s = 1.0
+            state.next_send_at = 0.0
+            pending += 1
+        if pending:
+            LOGGER.info("route bundle reconnect reset pending_sites=%s", pending)
 
 
 def _build_bundle(
@@ -136,6 +223,10 @@ def _build_bundle(
     routes: list[dict],
     policies: list[dict],
     service_endpoints: dict[str, list[dict[str, Any]]],
+    *,
+    controller_id: str,
+    controller_epoch: int,
+    operation_id: str,
 ) -> dict:
     bundle = {
         "site_id": site_id,
@@ -146,7 +237,14 @@ def _build_bundle(
         "service_endpoints": service_endpoints,
     }
     bundle["hash"] = bundle_hash
-    return bundle
+    return merge_envelope(
+        bundle,
+        MutationEnvelope(
+            controller_id=controller_id,
+            controller_epoch=controller_epoch,
+            operation_id=operation_id,
+        ),
+    )
 
 
 def _collect_bundle_payload(
@@ -178,6 +276,23 @@ def _collect_bundle_payload(
     policies = _sorted_docs(policies)
     service_endpoints = _collect_service_endpoints(store, service_map)
     return routes, policies, service_endpoints
+
+
+def _route_ack_matches_state(
+    state: _BundleState,
+    *,
+    bundle_rev: int,
+    envelope: MutationEnvelope,
+) -> bool:
+    if int(bundle_rev) != int(state.rev):
+        return False
+    if envelope.operation_id != state.operation_id:
+        return False
+    if envelope.controller_id != state.controller_id:
+        return False
+    if int(envelope.controller_epoch) != int(state.controller_epoch):
+        return False
+    return True
 
 
 def _route_is_edge_local(doc: dict) -> bool:

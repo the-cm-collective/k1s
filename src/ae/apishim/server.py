@@ -30,7 +30,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from ae.controller.state import AppEvent, ServiceEndpoint, SQLiteStateStore, state_store_from_env
+from ae import build_info as AE_BUILD_INFO
+from ae.controller.state import (
+    AppEvent,
+    RegistryConflictError,
+    ServiceEndpoint,
+    SQLiteStateStore,
+    state_store_from_env,
+)
 from ae.runtime import (
     CRIRuntime,
     DockerRuntime,
@@ -41,6 +48,11 @@ from ae.runtime import (
 )
 
 from .adapter import build_adapter
+from .ha_store import (
+    AuthorityMutationError,
+    MultiplexApishimStore,
+    is_controller_owned_storage_authority_resource,
+)
 from .store import K8sObject, ObjectStore
 
 K8S_VERSION = {
@@ -2267,6 +2279,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     crd_registry: dict[tuple[str, str, str], dict[str, Any]] = {}
     crd_index: dict[str, list[tuple[str, str, str]]] = {}
     crd_lock = threading.RLock()
+    _crd_refresh_monotonic: float = 0.0
 
     def _app_admission_mode(self) -> str:
         mode = (self.app_admission_mode or "enforce").strip().lower()
@@ -3118,6 +3131,136 @@ class ShimHandler(BaseHTTPRequestHandler):
             headers={"WWW-Authenticate": "Bearer"},
         )
         return False
+
+    def _ha_mode_enabled(self) -> bool:
+        return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _ha_mutation_exempt(self, method: str, path: str) -> bool:
+        if path == "/api/v1/sessiontokens":
+            return True
+        if path.startswith("/apis/authorization.k8s.io/"):
+            return True
+        if method == "POST" and re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path):
+            return True
+        if method == "POST" and re.match(
+            r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path
+        ):
+            return True
+        return False
+
+    def _reject_ha_workload_mutation(self, method: str, path: str) -> bool:
+        if not self._ha_mode_enabled() or self._ha_mutation_exempt(method, path):
+            return False
+        supported = False
+        controller_owned = False
+        plural, _ns, _name = _ns_name(path)
+        if plural in {
+            "namespaces",
+            "configmaps",
+            "secrets",
+            "serviceaccounts",
+            "services",
+            "persistentvolumeclaims",
+            "persistentvolumes",
+        }:
+            supported = True
+        d_plural, _d_ns, _d_name = _apps_ns_name(path)
+        if d_plural in {"deployments", "deployments/scale", "statefulsets", "daemonsets"}:
+            supported = True
+        n_plural, _n_ns, _n_name = _net_ns_name(path)
+        if n_plural == "ingresses":
+            supported = True
+        b_plural, _b_ns, _b_name = _batch_ns_name(path)
+        if b_plural in {"jobs", "cronjobs"}:
+            supported = True
+        h_plural, _h_ns, _h_name = _gv_ns_name(
+            path, "autoscaling", "v2", "horizontalpodautoscalers"
+        )
+        if h_plural == "horizontalpodautoscalers":
+            supported = True
+        crd_plural, _crd_name = _gv_cluster_name(
+            path, "apiextensions.k8s.io", "v1", "customresourcedefinitions"
+        )
+        if crd_plural == "customresourcedefinitions":
+            supported = True
+        for resource in ("roles", "rolebindings"):
+            r_plural, _r_ns, _r_name = _gv_ns_name(
+                path, "rbac.authorization.k8s.io", "v1", resource
+            )
+            if r_plural == resource:
+                supported = True
+        for resource in ("clusterroles", "clusterrolebindings"):
+            r_plural, _r_name = _gv_cluster_name(
+                path, "rbac.authorization.k8s.io", "v1", resource
+            )
+            if r_plural == resource:
+                supported = True
+        p_plural, _p_ns, _p_name = _gv_ns_name(path, "policy", "v1", "poddisruptionbudgets")
+        if p_plural == "poddisruptionbudgets":
+            supported = True
+        s_plural, _s_name = _gv_cluster_name(path, "storage.k8s.io", "v1", "storageclasses")
+        if s_plural == "storageclasses":
+            supported = True
+        for resource in ("csidrivers", "csinodes"):
+            c_plural, _c_name = _gv_cluster_name(path, "storage.k8s.io", "v1", resource)
+            if c_plural == resource:
+                supported = True
+        for resource in ("volumeattachments",):
+            c_plural, _c_name = _gv_cluster_name(path, "storage.k8s.io", "v1", resource)
+            if c_plural == resource and is_controller_owned_storage_authority_resource(
+                "storage.k8s.io", "v1", resource
+            ):
+                controller_owned = True
+        for resource in ("csistoragecapacities",):
+            c_plural, _c_ns, _c_name = _gv_ns_name(path, "storage.k8s.io", "v1", resource)
+            if c_plural == resource and is_controller_owned_storage_authority_resource(
+                "storage.k8s.io", "v1", resource
+            ):
+                controller_owned = True
+        for resource in ("volumesnapshotclasses",):
+            snap_plural, _snap_name = _gv_cluster_name(
+                path, "snapshot.storage.k8s.io", "v1", resource
+            )
+            if snap_plural == resource:
+                supported = True
+        for resource in ("volumesnapshotcontents",):
+            snap_plural, _snap_name = _gv_cluster_name(
+                path, "snapshot.storage.k8s.io", "v1", resource
+            )
+            if snap_plural == resource and is_controller_owned_storage_authority_resource(
+                "snapshot.storage.k8s.io", "v1", resource
+            ):
+                controller_owned = True
+        for resource in ("volumesnapshots",):
+            snap_plural, _snap_ns, _snap_name = _gv_ns_name(
+                path, "snapshot.storage.k8s.io", "v1", resource
+            )
+            if snap_plural == resource:
+                supported = True
+        self._refresh_crd_registry_from_state()
+        custom = _parse_custom_resource_path(path)
+        if custom is not None:
+            group, version, _namespace, plural, _name = custom
+            if self._lookup_crd(group, version, plural):
+                supported = True
+        if controller_owned:
+            self._json_status(
+                HTTPStatus.CONFLICT,
+                reason="HAUnsupported",
+                message=(
+                    "HA mutation via apishim is read-only for controller-owned storage "
+                    "resources; this resource is managed by the elected storage controller"
+                ),
+            )
+            return True
+        if supported:
+            return False
+        self._json_status(
+            HTTPStatus.CONFLICT,
+            reason="HAUnsupported",
+            message="HA mutation via apishim is enabled only for converged H4 resources; this resource remains read-only until its later H4* slice",
+        )
+        return True
 
     def _audit(self, action: str, **fields: Any) -> None:
         try:
@@ -5195,6 +5338,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             pass
 
     def _serve_dynamic_group_discovery(self, path: str) -> bool:
+        self._refresh_crd_registry_from_state()
         m_group = re.match(r"^/apis/([^/]+)$", path)
         if m_group:
             group = m_group.group(1)
@@ -5533,6 +5677,51 @@ class ShimHandler(BaseHTTPRequestHandler):
         with cls.crd_lock:
             return cls.crd_registry.get((group, version, plural))
 
+    @classmethod
+    def _refresh_crd_registry_from_state(cls, *, force: bool = False) -> None:
+        ha_mode = str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        if not ha_mode:
+            return
+        refresh_interval = max(
+            0.1,
+            float(os.getenv("AE_APISHIM_HA_CRD_REFRESH_SEC", "0.5") or "0.5"),
+        )
+        now = time.monotonic()
+        with cls.crd_lock:
+            if not force and (now - cls._crd_refresh_monotonic) < refresh_interval:
+                return
+        state = getattr(cls, "state", None)
+        if state is None or not hasattr(state, "list_authority_objects"):
+            return
+        try:
+            objs = state.list_authority_objects(
+                "apiextensions.k8s.io",
+                "v1",
+                "customresourcedefinitions",
+                None,
+            )
+        except Exception:
+            return
+        with cls.crd_lock:
+            cls.crd_registry = {}
+            cls.crd_index = {}
+        for obj in objs:
+            cls._register_crd(
+                K8sObject(
+                    "apiextensions.k8s.io",
+                    "v1",
+                    "customresourcedefinitions",
+                    None,
+                    obj.name,
+                    dict(obj.metadata or {}),
+                    dict(obj.spec or {}),
+                    dict(obj.status or {}),
+                    int(obj.resource_version or 0),
+                )
+            )
+        with cls.crd_lock:
+            cls._crd_refresh_monotonic = now
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
@@ -5541,7 +5730,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         is_exec_path = re.match(r"^/api/v1/namespaces/[^/]+/pods/[^/]+/exec$", path)
         is_pf_path = re.match(r"^/api/v1/namespaces/[^/]+/(pods|services)/[^/]+/portforward$", path)
         # Allow unauthenticated discovery/OpenAPI for kubectl validation
-        if path not in {"/openapi/v2", "/openapi/v3", "/swagger.json", "/api", "/apis", "/version"}:
+        if path not in {"/openapi/v2", "/openapi/v3", "/swagger.json", "/api", "/apis", "/version", "/__ae/version"}:
             if is_exec_path and upgrade:
                 if not self._authz(role="exec"):
                     return
@@ -5569,10 +5758,16 @@ class ShimHandler(BaseHTTPRequestHandler):
         if path == "/version":
             self._ok(K8S_VERSION)
             return
+        if path == "/__ae/version":
+            payload = dict(AE_BUILD_INFO())
+            payload["component"] = "apishim"
+            self._ok(payload)
+            return
         if path == "/api":
             self._ok({"versions": ["v1"]})
             return
         if path == "/apis":
+            self._refresh_crd_registry_from_state()
             groups = [
                 {
                     "name": "batch",
@@ -8201,6 +8396,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             else:
                 if not self._authz(role="write"):
                     return
+        if self._reject_ha_workload_mutation("POST", path):
+            return
 
         # Pod exec (kubectl uses POST + SPDY upgrade)
         m_exec_spdy = re.match(r"^/api/v1/namespaces/([^/]+)/pods/([^/]+)/exec$", path)
@@ -8754,7 +8951,15 @@ class ShimHandler(BaseHTTPRequestHandler):
             "services",
         }:
             md = doc.get("metadata") or {}
-            name_in = md.get("name") or name
+            name_in = _resolve_create_name(
+                self.server.store,  # type: ignore[attr-defined]
+                group="",
+                version="v1",
+                resource=plural,
+                namespace=ns,
+                metadata=md,
+                path_name=name,
+            )
             if not isinstance(name_in, str) or not name_in:
                 self._json_status(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -8782,7 +8987,13 @@ class ShimHandler(BaseHTTPRequestHandler):
                 )
                 return
             spec_in = (
-                doc.get("data") if plural in {"configmaps", "secrets"} else (doc.get("spec") or {})
+                doc.get("data")
+                if plural in {"configmaps", "secrets"}
+                else (
+                    _service_account_spec_payload(doc)
+                    if plural == "serviceaccounts"
+                    else (doc.get("spec") or {})
+                )
             )
             status_in = doc.get("status") or {}
             # Service enrichments: allocate clusterIP/nodePort if missing and validate collisions
@@ -9432,6 +9643,8 @@ class ShimHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         self.path = path
+        if self._reject_ha_workload_mutation("PUT", path):
+            return
         body = self._read_body()
         doc = _read_json(body)
         plural, ns, name = _ns_name(self.path)
@@ -9476,9 +9689,15 @@ class ShimHandler(BaseHTTPRequestHandler):
                 ns_in,
                 name_in,
                 metadata=_normalize_metadata(md, name_in, ns_in, plural),
-                spec=doc.get("data")
-                if plural in {"configmaps", "secrets"}
-                else (doc.get("spec") or {}),
+                spec=(
+                    doc.get("data")
+                    if plural in {"configmaps", "secrets"}
+                    else (
+                        _service_account_spec_payload(doc)
+                        if plural == "serviceaccounts"
+                        else (doc.get("spec") or {})
+                    )
+                ),
                 status=doc.get("status") or {},
             )
             self._ok(_to_obj(updated))
@@ -9865,6 +10084,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         path = parsed.path
+        if self._reject_ha_workload_mutation("PATCH", path):
+            return
         q = parse_qs(parsed.query)
         field_manager = q.get("fieldManager", ["kubectl"])[0] or "kubectl"
         force_flag = (q.get("force", ["false"])[0] or "").lower() in {"1", "true", "yes"}
@@ -9934,7 +10155,13 @@ class ShimHandler(BaseHTTPRequestHandler):
             ):
                 md = _update_managed_fields(md, "v1", field_manager, "Update", fields=patch_paths)
             spec_or_data = (
-                merged.get("data") if plural in {"configmaps", "secrets"} else merged.get("spec")
+                merged.get("data")
+                if plural in {"configmaps", "secrets"}
+                else (
+                    _service_account_spec_payload(merged)
+                    if plural == "serviceaccounts"
+                    else merged.get("spec")
+                )
             )
             name_eff = md.get("name") or name
             ns_eff = (
@@ -10364,6 +10591,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return None
 
     def _handle_custom_resource_get(self, path: str, query: dict[str, list[str]]) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(path)
         if not parsed:
             return False
@@ -10447,6 +10675,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return False
 
     def _handle_custom_resource_post(self, doc: dict[str, Any]) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -10498,6 +10727,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return True
 
     def _handle_custom_resource_put(self, doc: dict[str, Any]) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -10543,6 +10773,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return True
 
     def _handle_custom_resource_patch(self, ctype: str, patch: dict[str, Any]) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -10587,6 +10818,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         return True
 
     def _handle_custom_resource_delete(self) -> bool:
+        self._refresh_crd_registry_from_state()
         parsed = _parse_custom_resource_path(self.path)
         if not parsed:
             return False
@@ -10614,6 +10846,8 @@ class ShimHandler(BaseHTTPRequestHandler):
         if not self._authz():
             return
         path = urlparse(self.path).path
+        if self._reject_ha_workload_mutation("DELETE", path):
+            return
         plural, ns, name = _ns_name(path)
         if (
             plural
@@ -10918,6 +11152,16 @@ def _secret_type_from_meta(md: dict[str, Any]) -> str | None:
     return st or None
 
 
+def _service_account_spec_payload(doc: dict[str, Any]) -> dict[str, Any]:
+    spec = doc.get("spec")
+    out = dict(spec) if isinstance(spec, dict) else {}
+    for key, value in doc.items():
+        if key in {"apiVersion", "kind", "metadata", "status", "spec"}:
+            continue
+        out[key] = value
+    return out
+
+
 def _to_obj(o: K8sObject) -> dict[str, Any]:
     meta = dict(o.metadata)
     meta.setdefault("name", o.name)
@@ -10933,7 +11177,11 @@ def _to_obj(o: K8sObject) -> dict[str, Any]:
         **(
             {"data": o.spec}
             if o.resource in {"configmaps", "secrets"}
-            else ({} if not o.spec else {"spec": o.spec})
+            else (
+                ({} if not o.spec else dict(o.spec))
+                if o.resource == "serviceaccounts"
+                else ({} if not o.spec else {"spec": o.spec})
+            )
         ),
         **({} if not o.status else {"status": o.status}),
     }
@@ -11212,7 +11460,8 @@ def _to_hpa(o: K8sObject, store: ObjectStore) -> dict[str, Any]:
     meta.setdefault("resourceVersion", str(o.resource_version))
     status = dict(o.status or {})
     # Best-effort scaleTargetRef resolution for status
-    spec = o.spec or {}
+    spec_data = o.spec or {}
+    spec = spec_data.get("spec", spec_data) if isinstance(spec_data, dict) else {}
     target = spec.get("scaleTargetRef", {}) if isinstance(spec, dict) else {}
     target_name = target.get("name")
     target_kind = (target.get("kind") or "").lower()
@@ -11226,6 +11475,11 @@ def _to_hpa(o: K8sObject, store: ObjectStore) -> dict[str, Any]:
                 desired = desired or int(obj.spec.get("replicas", 1))
         elif target_kind == "statefulset":
             obj = store.get("apps", "v1", "statefulsets", o.namespace, target_name)  # type: ignore[arg-type]
+            if obj:
+                current_replicas = current_replicas or int(obj.spec.get("replicas", 1))
+                desired = desired or int(obj.spec.get("replicas", 1))
+        elif target_kind == "daemonset":
+            obj = store.get("apps", "v1", "daemonsets", o.namespace, target_name)  # type: ignore[arg-type]
             if obj:
                 current_replicas = current_replicas or int(obj.spec.get("replicas", 1))
                 desired = desired or int(obj.spec.get("replicas", 1))
@@ -11550,7 +11804,7 @@ def _spec_payload(resource: str, merged: dict[str, Any]) -> dict[str, Any]:
     if resource == "poddisruptionbudgets":
         return {"spec": merged.get("spec", merged.get("body", {}))}
     if resource == "horizontalpodautoscalers":
-        return {"spec": merged.get("spec", merged.get("body", {}))}
+        return merged.get("spec") or {}
     return merged.get("spec") or {}
 
 
@@ -11662,6 +11916,36 @@ def _valid_name(name: str) -> bool:
     if not name or len(name) > 253:
         return False
     return _DNS1123_RE.match(name) is not None
+
+
+def _resolve_create_name(
+    store: ObjectStore | None,
+    *,
+    group: str,
+    version: str,
+    resource: str,
+    namespace: str | None,
+    metadata: dict[str, Any],
+    path_name: str | None = None,
+) -> str:
+    explicit = metadata.get("name") or path_name
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    generate_name = metadata.get("generateName")
+    if not isinstance(generate_name, str) or not generate_name:
+        return ""
+    prefix = generate_name[:248]
+    alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+    for _ in range(32):
+        suffix = "".join(secrets.choice(alphabet) for _ in range(5))
+        candidate = f"{prefix}{suffix}"
+        if not _valid_name(candidate):
+            continue
+        if store is not None and store.get(group, version, resource, namespace, candidate) is not None:
+            continue
+        metadata["name"] = candidate
+        return candidate
+    return ""
 
 
 def _service_selector(spec: dict[str, Any]) -> dict[str, str]:
@@ -12202,21 +12486,34 @@ class ShimServer(ThreadingHTTPServer):
         self, server_address: tuple[str, int], token: str | None, allow_anonymous: bool = False
     ) -> None:
         super().__init__(server_address, ShimHandler)
+        ha_mode = str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
         dsn = os.getenv("AE_APISHIM_DSN")
         db_path = Path(os.getenv("AE_APISHIM_DB", "state/apishim.db"))
-        self.store = ObjectStore(db_path=db_path, dsn=dsn)
+        self.state = state_store_from_env()
+        ShimHandler.state = self.state  # type: ignore[assignment]
+        legacy_store = ObjectStore(db_path=db_path, dsn=dsn)
+        self._legacy_store = legacy_store
+        if ha_mode:
+            self.store = MultiplexApishimStore.from_state_and_legacy(self.state, legacy_store)
+        else:
+            self.store = legacy_store
         self._storage_controller = None
-        try:
-            from ae.storage.controller import StorageController
+        if ha_mode:
+            LOGGER.info(
+                "HA mode keeps the apishim storage controller disabled; leader-owned storage reconcile runs from the main controller"
+            )
+        else:
+            try:
+                from ae.storage.controller import StorageController
 
-            self._storage_controller = StorageController(self.store)
-            seeded = self._storage_controller.sync()
-            self._storage_controller.start()
-            if seeded:
-                LOGGER.info("seeded %s StorageClass objects from config", seeded)
-        except Exception as exc:  # noqa: BLE001
-            self._storage_controller = None
-            LOGGER.warning("storage controller init failed: %s", exc)
+                self._storage_controller = StorageController(self.store)
+                seeded = self._storage_controller.sync()
+                self._storage_controller.start()
+                if seeded:
+                    LOGGER.info("seeded %s StorageClass objects from config", seeded)
+            except Exception as exc:  # noqa: BLE001
+                self._storage_controller = None
+                LOGGER.warning("storage controller init failed: %s", exc)
         ShimHandler.rehydrate_sa_tokens(self.store)
         ShimHandler.admin_token = token or os.getenv("AE_APISHIM_TOKEN")
         ShimHandler.read_token = os.getenv("AE_APISHIM_READ_TOKEN")
@@ -12234,8 +12531,6 @@ class ShimServer(ThreadingHTTPServer):
             ShimHandler.pod_watch_ttl = 30.0
         ShimHandler.pod_watch_cache = {}
         ShimHandler.allow_anonymous = allow_anonymous
-        self.state = state_store_from_env()
-        ShimHandler.state = self.state  # type: ignore[assignment]
         self.runtime = _runtime_from_env()
         self._runtime_base = getattr(self.runtime, "_local", self.runtime)
         self._runtime_cache: dict[str, RuntimeAdapter] = {}
@@ -12254,6 +12549,8 @@ class ShimServer(ThreadingHTTPServer):
             "yes",
             "on",
         }
+        if ha_mode:
+            adapter_enabled = False
         if sot_enabled:
             adapter_enabled = False
         if adapter_enabled:
@@ -12268,12 +12565,43 @@ class ShimServer(ThreadingHTTPServer):
             self._adapter = None
 
     def _bootstrap_crds(self) -> None:
+        if str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+            ShimHandler._refresh_crd_registry_from_state(force=True)
+            return
         try:
             objs = self.store.list_all("apiextensions.k8s.io", "v1", "customresourcedefinitions")
         except Exception:
             objs = []
         for obj in objs:
             ShimHandler._register_crd(obj)
+
+
+def _wrap_store_errors(method):
+    def _inner(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except RegistryConflictError as exc:
+            self._json_status(
+                HTTPStatus.CONFLICT,
+                reason="Conflict",
+                message=str(exc),
+            )
+            return None
+        except AuthorityMutationError as exc:
+            self._json_status(
+                HTTPStatus(exc.status_code),
+                reason=exc.reason,
+                message=exc.message,
+            )
+            return None
+
+    return _inner
+
+
+ShimHandler.do_POST = _wrap_store_errors(ShimHandler.do_POST)
+ShimHandler.do_PUT = _wrap_store_errors(ShimHandler.do_PUT)
+ShimHandler.do_PATCH = _wrap_store_errors(ShimHandler.do_PATCH)
+ShimHandler.do_DELETE = _wrap_store_errors(ShimHandler.do_DELETE)
 
 
 def run_server(

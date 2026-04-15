@@ -20,6 +20,12 @@ from typing import Protocol
 import requests
 
 from ae._utc import UTC
+from ae.ha.fencing import (
+    fabric_ensure_operation,
+    fabric_teardown_operation,
+    merge_envelope,
+    resolve_controller_identity,
+)
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
@@ -401,8 +407,9 @@ class NoopFabricAgentClient:
 class HttpFabricAgentClient:
     """Node-agent-backed fabric session client."""
 
-    def __init__(self, store: SQLiteStateStore) -> None:
+    def __init__(self, store: SQLiteStateStore, *, authority=None) -> None:
         self._store = store
+        self._authority = authority
         self._token = (
             os.getenv("AE_AGENT_TOKEN")
             or os.getenv("AE_AGENT_API_TOKEN")
@@ -431,10 +438,15 @@ class HttpFabricAgentClient:
         endpoint = self._endpoint_for_node(node_id)
         if not endpoint:
             return False
+        identity = resolve_controller_identity(self._authority)
+        payload = merge_envelope(
+            {"node_id": node_id, "session": session.to_dict()},
+            identity.envelope(fabric_ensure_operation(session.session_id, node_id)),
+        )
         try:
             resp = requests.post(
                 endpoint + "/v1/fabric/ensure_session",
-                json={"node_id": node_id, "session": session.to_dict()},
+                json=payload,
                 headers=self._headers(),
                 timeout=self._timeout,
             )
@@ -449,10 +461,15 @@ class HttpFabricAgentClient:
         endpoint = self._endpoint_for_node(node_id)
         if not endpoint:
             return
+        identity = resolve_controller_identity(self._authority)
+        payload = merge_envelope(
+            {"node_id": node_id, "session_id": session_id},
+            identity.envelope(fabric_teardown_operation(session_id, node_id)),
+        )
         try:
             requests.post(
                 endpoint + "/v1/fabric/teardown_session",
-                json={"node_id": node_id, "session_id": session_id},
+                json=payload,
                 headers=self._headers(),
                 timeout=self._timeout,
             )
@@ -649,13 +666,17 @@ class InferenceCellController:
         broker: FabricBroker | None = None,
         agent: FabricAgentClient | None = None,
         runtime: RuntimeAdapter | None = None,
+        authority=None,
     ) -> None:
         self._store = store
         self._broker = broker or LocalFabricBroker(store)
+        self._authority = authority
         self._execution_enabled = _truthy_env("AE_INFERENCE_EXPERIMENTAL", "0")
         if agent is None:
             self._agent = (
-                HttpFabricAgentClient(store) if self._execution_enabled else NoopFabricAgentClient()
+                HttpFabricAgentClient(store, authority=authority)
+                if self._execution_enabled
+                else NoopFabricAgentClient()
             )
         else:
             self._agent = agent
@@ -819,7 +840,12 @@ class InferenceCellController:
         cached = self._node_runtimes.get(endpoint)
         if cached is not None:
             return cached, endpoint
-        runtime = RemoteRuntime(endpoint, self._local_runtime)
+        runtime = RemoteRuntime(
+            endpoint,
+            self._local_runtime,
+            authority=self._authority,
+            node_id=node_id,
+        )
         self._node_runtimes[endpoint] = runtime
         return runtime, endpoint
 
@@ -1605,9 +1631,10 @@ class InferenceCellSetController:
         store: SQLiteStateStore,
         *,
         cell_controller: InferenceCellController | None = None,
+        authority=None,
     ) -> None:
         self._store = store
-        self._cells = cell_controller or InferenceCellController(store)
+        self._cells = cell_controller or InferenceCellController(store, authority=authority)
 
     def _cell_manifest_from_template(
         self, manifest: InferenceCellSetManifest, cell_name: str

@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -630,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -693,28 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
       <a href="project-philosophy.html">Philosophy</a>
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -732,17 +764,17 @@
 <li>Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.</li>
 <li>Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.</li>
 </ul>
-<h2 id="current-state-feb-2026">Current State (Feb 2026)</h2>
+<h2 id="current-state">Current State</h2>
 <ul>
 <li>Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.</li>
-<li>Control-plane transport: <code>nats-js</code> (NATS + JetStream) is the durable hub path for <code>k1s-core</code>/<code>k1s-edge-core</code>, while <code>nats-core</code> remains available for lightweight <code>work.pull</code> pairings (<code>k1s-core-edge</code>/<code>k1s-edge</code>).</li>
+<li>Control-plane transport: the controller can reach agents through <code>direct</code>, <code>nats-core</code>, or <code>nats-js</code> transport lanes depending on profile and topology. <code>nats-js</code> is the durable hub path for <code>k1s-core</code>/<code>k1s-edge-core</code>, while <code>nats-core</code> remains available for lightweight <code>work.pull</code> pairings (<code>k1s-core-edge</code>/<code>k1s-edge</code>).</li>
 <li>Networking/Ingress: Service CIDR + overlay provider (<code>AE_SERVICE_PROVIDER=overlay</code>) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.</li>
-<li>State: SQLite remains the lightweight local default; etcd durable state is supported and is the default backing lane in strict CRI core profiles; Postgres remains supported for shim HA and externalized persistence (<code>AE_STATE_DSN</code> / <code>AE_APISHIM_DSN</code>).</li>
+<li>State: SQLite remains the lightweight local default, etcd is the durable authority lane for strict CRI and HA paths, and external state-store wiring remains available where deployments need externalized persistence.</li>
 <li>Runtime backends: Podman (default), Docker fallback, and CRI/containerd for CRI-native nodes (recommended via <code>make k1s-core-cri</code> and related <code>k1s-*-cri</code> profile targets).</li>
 <li>API surface: native HTTP API plus the Kubernetes API shim (<code>AE_APISHIM_ENABLE=1 python -m ae.apishim serve</code>) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
 <li>Inference fabric: experimental <code>InferenceCell</code> and <code>InferenceCellSet</code> controllers provide a controller-owned lane for distributed inference placement, reservation, and session orchestration across named members and sites. The formal roadmap targets AI Max+ 395-first execution cells behind a provider-facing HA edge, with an exact public hardware baseline and cluster-prep guide documented separately.</li>
-<li>Tooling: <code>k1s</code> kubectl‑style wrapper, <code>ae nodes</code> for inventory/cordon, <code>ae plan</code> for placement hints, <code>export-k8s</code> and <code>k8s-report</code> for parity/compliance, dashboard at <code>/dashboard</code> (direct on <code>:9108</code>, or <code>https://dash.home.arpa:8443/dashboard</code> in demos), and <code>/nodes</code> + enriched <code>/metrics</code> for node/service visibility.</li>
-<li>Footprint: recent Feb 2026 idle benchmarks continue to show ~85-90 MiB PSS for controller+API on Podman+crun rootless, and ~170-180 MiB PSS for k1nd (Docker + Caddy). See <code>docs/benchmarks/memory.md</code> for the latest numbers.</li>
+<li>Tooling: <code>k1s</code> kubectl‑style wrapper, <code>ae nodes</code> for inventory/cordon, <code>ae plan</code> for placement hints, <code>export-k8s</code> and <code>k8s-report</code> for parity/compliance, the local simple dashboard for demo/dev flows, the retained HA advanced dashboard surface for HA validation, and <code>/nodes</code> + enriched <code>/metrics</code> for node/service visibility. Use <a href="examples.html">Demos &amp; Examples</a> and <a href="validated-procedures.html">Validated Procedures</a> for the current user-test flows and verified command readouts.</li>
+<li>Benchmarks and validated readouts: current footprint numbers live in <a href="benchmarks.html">Benchmarks</a>, and the exact verified operator/user-test command sequences live in <a href="validated-procedures.html">Validated Procedures</a>.</li>
 </ul>
 <h2 id="features-high-level">Features (High‑Level)</h2>
 <ul>
@@ -764,18 +796,18 @@
 <h3 id="architecture-at-a-glance-diagram">Architecture at a Glance (Diagram)</h3>
 <pre class="mermaid">flowchart LR
   A[Specs/*.yaml] --&gt;|load| C[Controller]
+  CLI[ae / k1s CLI] --&gt;|apply / inspect| C
   C --&gt;|schedule| SCH[Scheduler]
-  SCH --&gt;|place| N1[Node Agent]
-  SCH --&gt;|place| N2[Node Agent]
-  C --&gt;|write| S[(SQLite/Postgres/etcd lanes)]
-  C --&gt;|service VIPs| SV[Service Controller]
-  SV --&gt;|overlay endpoints| O[Overlay/HAProxy]
-  C --&gt;|render+reload| I[Caddy Ingress]
-  N1 --&gt;|ensure/exec/logs| R1[(Runtime)]
-  N2 --&gt;|ensure/exec/logs| R2[(Runtime)]
-  C --&gt;|expose| API[HTTP API + API Shim]
-  CLI[ae / k1s CLI] --&gt;|apply/rollback| C
-  CLI --&gt;|kubectl/helm| API</pre>
+  SCH --&gt; T[&quot;Transport&lt;br/&gt;direct, nats-core, nats-js&quot;]
+  T --&gt; N[Node Agents]
+  N --&gt; R[(Runtime)]
+  C --&gt; ST[&quot;State Store&lt;br/&gt;SQLite, etcd, external store&quot;]
+  C --&gt; SV[Service Controller]
+  SV --&gt; O[Overlay / Provider Path]
+  C --&gt; API[HTTP API]
+  C --&gt; SHIM[API Shim]
+  K[kubectl / helm] --&gt; SHIM
+  C --&gt; I[Optional Ingress]</pre>
 <h2 id="requirements">Requirements</h2>
 <ul>
 <li>Python 3.11+</li>
@@ -853,16 +885,16 @@
 </ul>
 <h2 id="further-reading">Further Reading</h2>
 <ul>
-<li>Project philosophy and cognitive safeguards: <code>docs/design/project-philosophy.md</code>, <code>docs/design/cognitive-welfare-and-continuity.md</code></li>
-<li>Runbook: <code>docs/ops/runbook.md</code></li>
-<li>End-to-End Guide: <code>docs/guides/e2e.md</code></li>
-<li>Runtime Profiles: <code>docs/guides/runtime-profiles.md</code></li>
-<li>Multi-node + ingress mode validation: <code>docs/guides/multinode-lab.md</code>, <code>docs/guides/ingress-capability-test-sequence.md</code></li>
-<li>HTTP API: <code>docs/reference/http-api.md</code></li>
-<li>Kubernetes API shim + compatibility matrix: <code>docs/reference/apishim-roadmap.md</code>, <code>docs/reference/apishim-compatibility-matrix.md</code></li>
-<li>Inference fabric current state: <code>docs/reference/inference-fabric.md</code></li>
-<li>Fabric design and phase path: <code>docs/roadmap/high-availability-control-plane.md</code>, <code>docs/design/fabric-deployment-topology.md</code>, <code>docs/design/fabric-control-plane.md</code>, <code>docs/roadmap/distributed-compute-fabric.md</code></li>
-<li>Architecture (detailed): <code>docs/reference/architecture.md</code></li>
+<li>Project philosophy and cognitive safeguards: <a href="project-philosophy.html">Project Philosophy</a>, <a href="cognitive-welfare-and-continuity.html">Cognitive Welfare and Continuity</a></li>
+<li>Runbook and HA ops: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>, <a href="runbook.html">Operations Runbook</a>, <a href="vm-variant-runbook.html">VM Variant Runbook</a>, <a href="ha-closeout.html">HA Closeout</a></li>
+<li>End-to-End Guide: <a href="e2e.html">E2E Guide</a></li>
+<li>Runtime Profiles: <a href="runtime-profiles.html">Runtime Profiles</a></li>
+<li>Multi-node + ingress mode validation: <a href="multinode-lab.html">Multi-Node Lab</a>, <a href="ingress-capability-test-sequence.html">Ingress Capability Test Sequence</a></li>
+<li>HTTP API: <a href="http-api.html">HTTP API</a></li>
+<li>Kubernetes API shim + compatibility matrix: <a href="apishim-roadmap.html">API Shim Roadmap</a>, <a href="apishim-compatibility-matrix.html">API Shim Compatibility Matrix</a></li>
+<li>Inference fabric current state: <a href="inference-fabric.html">Inference Fabric</a></li>
+<li>Fabric design and phase path: <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>, <a href="fabric-deployment-topology.html">Fabric Deployment Topology</a>, <a href="fabric-control-plane.html">Fabric Control Plane</a>, <a href="distributed-compute-fabric.html">Distributed Compute Fabric Roadmap</a></li>
+<li>Architecture (detailed): <a href="architecture.html">Architecture</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -871,7 +903,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 15:27:58</span>
+        <span>Built 2026-04-14 17:31:27</span>
       </div>
     </footer>
     <script>

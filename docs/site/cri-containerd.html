@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -630,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -693,28 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
       <a href="project-philosophy.html">Philosophy</a>
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -738,9 +770,11 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 <p>Notes:</p>
 <ul>
 <li>If your containerd setup requires elevated privileges, run strict CRI profile targets with <code>sudo -E</code>.</li>
+<li>If <code>crictl</code> reports <code>permission denied</code> on <code>/run/containerd/containerd.sock</code>, use <code>sudo -E</code> or grant temporary ACL access with <code>./scripts/containerd_socket_access.sh --grant</code>.</li>
 <li><code>k1s-core-cri</code> and related targets wire <code>AE_RUNTIME_BACKEND=cri</code> and <code>AE_INFRA_BACKEND=cri</code> for you.</li>
-<li>Detailed profile behavior: <code>docs/guides/runtime-profiles.md</code>.</li>
-<li>End-to-end core/edge CRI runbook: <code>docs/guides/multinode-lab.md</code>.</li>
+<li>Strict startup now bootstraps <code>/opt/cni/bin</code> automatically when required CNI plugins are already available in standard locations or NixOS PATH-managed plugin paths.</li>
+<li>Detailed profile behavior: <a href="runtime-profiles.html">Runtime Profiles</a>.</li>
+<li>End-to-end core/edge CRI runbook: <a href="multinode-lab.html">Multi-Node Lab</a>.</li>
 </ul>
 <h2 id="strict-cri-control-plane-defaults">Strict CRI control-plane defaults</h2>
 <ul>
@@ -755,7 +789,10 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 <pre><code>sudo -v
 scripts/dev/etcd_maintenance.sh watchdog</code></pre>
 <p>Optional guided wrapper with restart checkpoints:</p>
-<pre><code>scripts/dev/run_ingress_mode_lanes.sh --lanes all</code></pre>
+<pre><code>scripts/dev/run_ingress_lanes.sh --lanes all
+# Compatibility alias:
+scripts/dev/run_ingress_mode_lanes.sh --lanes all</code></pre>
+<p>The fully validated startup and lane sequence lives on <a href="ingress-capability-test-sequence.html">Ingress Capability Test Sequence</a>. This page keeps the CRI-specific ingress framing and helper surfaces.</p>
 <p>Core-proxy mini sanity:</p>
 <pre><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \
   --modes core-proxy --archetypes ws-echo --tier tier2 --validation-profile standard</code></pre>
@@ -767,13 +804,13 @@ scripts/dev/etcd_maintenance.sh watchdog</code></pre>
 <pre><code>scripts/dev/test_ingress_matrix_single_host.sh \
   --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep \
   --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 \
-  --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/</code></pre>
+  --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/</code></pre>
 <p>Interpretation:</p>
 <ul>
 <li><code>core-proxy</code> LB rows are <code>assertion_level=policy_switch_only</code> when strict distribution is not required.</li>
 <li><code>edge-local</code> LB rows are <code>assertion_level=strict_distribution</code> and are the strict proof source.</li>
 <li>Recommended security gates after lane runs: <code>scripts/dev/security_baseline_check.sh --fail-on high</code> then <code>scripts/dev/security_active_tests.sh --fail-on high</code>.</li>
-<li>Full sequence and failure triage: <code>docs/guides/ingress-capability-test-sequence.md</code>.</li>
+<li>Full sequence and failure triage: <a href="ingress-capability-test-sequence.html">Ingress Capability Test Sequence</a>.</li>
 </ul>
 <h2 id="runtime-selection-and-advanced-overrides">Runtime selection and advanced overrides</h2>
 <p>If you need manual runtime overrides outside profile helpers:</p>
@@ -827,7 +864,7 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <pre><code>scripts/containerd_registry_trust.sh --host localhost:32000 --scheme http --insecure --restart</code></pre>
 <h2 id="trust-and-auth-containerd">Trust and auth (containerd)</h2>
 <p>Containerd requires explicit trust config for insecure registries or custom CA. Use the helper to write <code>/etc/containerd/certs.d/&lt;host&gt;/hosts.toml</code>:</p>
-<p>The helper also ensures containerd CRI registry <code>config_path</code> points to <code>/etc/containerd/certs.d</code> and restarts containerd automatically when that setting changes. For strict-CRI managed TLS lanes, <code>run_profile.sh</code> now defaults <code>AE_CRI_REGISTRY_TRUST_SYSTEM=1</code> so the managed CA is also installed into system trust.</p>
+<p>The helper also ensures containerd CRI registry <code>config_path</code> points to <code>/etc/containerd/certs.d</code> and restarts containerd automatically when that setting changes. For strict-CRI managed TLS lanes, <code>run_profile.sh</code> now defaults <code>AE_CRI_REGISTRY_TRUST_SYSTEM=1</code> so the managed CA is also installed into system trust. On NixOS, that same flag writes into the existing <code>/var/lib/k1s-dev</code> bridge and prompts or logs for <code>nixos-rebuild</code> instead of writing into <code>/usr/local/share/ca-certificates</code>.</p>
 <pre><code>scripts/containerd_registry_trust.sh \
   --host registry.k1s.home.arpa:32000 \
   --ca /tmp/registry.crt \
@@ -895,8 +932,11 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 <li>Managed TLS material defaults under <code>state/profiles/&lt;profile&gt;/registry/tls</code> and is auto-generated when missing.</li>
 <li><code>AE_CRI_REGISTRY_INSECURE=1</code> is a dev-only opt-out for plaintext/insecure registry access.</li>
 <li><code>AE_CRI_REGISTRY_TRUST=1</code> to apply trust configuration during strict CRI startup (auto-enabled for managed TLS).</li>
-<li><code>AE_CRI_REGISTRY_TRUST_SYSTEM=1|0</code> controls system trust installation (<code>/usr/local/share/ca-certificates</code> + <code>update-ca-certificates</code>).
+<li><code>AE_CRI_REGISTRY_TRUST_SYSTEM=1|0</code> controls system trust installation.
 <ul>
+<li>Debian/Ubuntu: <code>/usr/local/share/ca-certificates</code> + <code>update-ca-certificates</code></li>
+<li>RHEL/Fedora: <code>update-ca-trust</code></li>
+<li>NixOS: <code>/var/lib/k1s-dev/certs</code> via the existing bridge module and <code>nixos-rebuild</code></li>
 <li>Default in managed TLS lanes is <code>1</code> unless explicitly overridden.</li>
 </ul>
 </li>
@@ -911,12 +951,44 @@ AE_USE_REGISTRY_CACHE=0</code></pre>
 </li>
 <li><code>AE_CRI_REGISTRY_PRELOAD_IMAGES=&lt;csv&gt;</code> overrides preload sources (default: etcd, nats, postgres, envoy, rathole strict-CRI core images).</li>
 <li><code>AE_CRI_IMAGE_POLICY=prompt|pull|fail</code> for strict-CRI missing-image behavior.</li>
-<li><code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr</code> to pick strict-CRI local build backend for fallback action <code>b</code>.</li>
+<li><code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr</code> to pick strict-CRI local build backend for fallback action <code>b</code>.
+<ul>
+<li>On NixOS managed-TLS lanes, strict startup defaults mirror/preload to <code>podman</code> when unset; if <code>podman</code> is unavailable it falls back to <code>docker</code>, then <code>nerdctl</code>.</li>
+<li><code>ctr</code> remains available only as an explicit override for per-arch mirror/preload.</li>
+</ul>
+</li>
+<li><code>AE_CTR_PLATFORM=&lt;platform&gt;</code> selects which single platform <code>ctr</code> mirrors when backend=<code>ctr</code>.
+<ul>
+<li>default: host arch (<code>linux/amd64</code>, <code>linux/arm64</code>, etc.)</li>
+<li>intended use: per-arch local preload/mirror into the managed registry</li>
+<li>not intended as a full multi-arch publishing flow for a shared heterogeneous registry</li>
+</ul>
+</li>
 <li><code>AE_APISHIM_IMAGE=&lt;image-ref&gt;</code> to override strict-CRI apishim image.</li>
 <li><code>AE_CRI_SET_HOSTNAME=1</code> to request explicit hostname wiring for CRI stack components.</li>
 <li><code>AE_CRI_ALLOW_HOST_NS=1</code> to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default).</li>
 <li><code>AE_CRI_REQUIRE_RUNTIME_READY=1</code> / <code>AE_CRI_REQUIRE_NETWORK_READY=1</code> to make preflight fail hard when CRI conditions are not ready.</li>
 </ul>
+<h3 id="cni-bootstrap">CNI bootstrap</h3>
+<ul>
+<li>Debian/Ubuntu and RHEL/Fedora strict startup expects containerd-style CNI paths:
+<ul>
+<li>plugin dir: <code>/opt/cni/bin</code></li>
+<li>config dir: <code>/etc/cni/net.d</code></li>
+</ul>
+</li>
+<li>On those distros, <code>make k1s-core-cri</code> auto-materializes <code>/opt/cni/bin</code> when the required plugins already exist in standard source dirs.</li>
+<li>On NixOS, use the declarative CRI host module instead of trying to bootstrap Debian-style paths:</li>
+</ul>
+<pre><code>sudo install -D -m 0644 ops/nixos/k1s-cri-host.nix /etc/nixos/nixos/modules/k1s-cri-host.nix
+# add ./nixos/modules/k1s-cri-host.nix to your host imports
+sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)</code></pre>
+<ul>
+<li>After that rebuild, strict startup reads <code>bin_dir</code> / <code>conf_dir</code> from the live <code>containerd config dump</code> output and reuses the module-managed CNI files.</li>
+<li>Debian-style manual bootstrap is still available:</li>
+</ul>
+<pre><code>./scripts/cni_bin_bootstrap.sh
+./scripts/cni_init.sh</code></pre>
 <h3 id="temporary-socket-access-dev">Temporary socket access (dev)</h3>
 <p>If you want to run CRI operations without sudo, grant ACL access to the containerd socket for the current user:</p>
 <pre><code>./scripts/containerd_socket_access.sh --grant
@@ -1050,7 +1122,7 @@ kubectl apply -f specs/examples/k1s-node-daemonset-k8s.yaml</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 12:10:03</span>
+        <span>Built 2026-04-14 17:31:27</span>
       </div>
     </footer>
     <script>

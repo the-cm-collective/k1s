@@ -1,6 +1,6 @@
 # Kubernetes Compliance
 
-This page summarizes our current Kubernetes spec compliance for exported manifests.
+This page summarizes our current Kubernetes portability and compliance status for exported manifests and the shim-backed validation lanes we run against them. It is not an upstream Kubernetes conformance claim.
 
 How it works
 - We export K8s YAML from representative Deployment manifests using `ae export-k8s` (preset: web-hardened).
@@ -9,18 +9,19 @@ How it works
 
 Update the status
 - Generate a fresh report and write it where the docs server picks it up:
-  - `python -m ae.cli k8s-report --run-dry-run -o docs/site/k8s_status.json`
+  - `python -m ae.cli k8s-report --run-dry-run --kubeconfig ~/.kube/config -o docs/site/k8s_status.json`
+  - Prefer `--kubeconfig` over an ambient context. `k8s-report` now fails fast if `kubectl` cannot reach the selected API target for server-side checks.
 - Rebuild docs to embed the status in this page:
   - `python docs/build_docs.py`
 
 Online (cluster-backed) checks
 - If you have kubectl and a cluster (Kind or k3s via k3d):
-  - `python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup -o docs/site/k8s_status.json`
+  - `python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup --kubeconfig ~/.kube/config -o docs/site/k8s_status.json`
 - This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.
 
 The compliance status and per-sample details render below when a report is present.
 
-## Current Coverage Summary (2026-02-14)
+## Current Coverage Summary
 
 - Workloads: Deployment full support; StatefulSet/DaemonSet/Job/CronJob are stored with best-effort status but emulated as Deployment-like apps (no real completion, scheduling, or per-node placement).
 - Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.
@@ -81,8 +82,8 @@ The compliance status and per-sample details render below when a report is prese
 - [x] Support `envFrom` for ConfigMap/Secret; exporter maps to envFrom.
 - [x] Support `imagePullSecrets` and `imagePullPolicy` in spec/exporter.
 - [x] Allow PDB percentage values and validate exclusivity with integers.
-- [ ] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).
-- [ ] Model Config/Secret volume mounts and mountPaths; exporter emits volumes/volumeMounts.
+- [x] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).
+- [x] Model Config/Secret volume mounts and mountPaths; exporter emits volumes/volumeMounts.
 - [ ] PVC `storageClassName` and `accessModes` selection flags; document defaults.
 - [ ] Service healthCheckNodePort and advanced Ingress annotations (behind explicit flag).
 - [ ] RBAC: broaden exporter coverage for ClusterRole/ClusterRoleBinding presets.

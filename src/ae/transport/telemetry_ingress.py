@@ -6,7 +6,7 @@ import json
 import logging
 
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
-from ae.observability.http_api import record_gateway_metrics, record_site_seen
+from ae.observability.http_api import record_gateway_identity, record_gateway_metrics, record_site_seen
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,7 +43,19 @@ class TelemetryIngress:
         payload = _safe_json(msg.data)
         site_id = _site_id_from_subject(msg.subject)
         if site_id:
-            record_site_seen(site_id)
+            node_id = None
+            if isinstance(payload, dict):
+                node_id = str(payload.get("node_id") or "").strip() or None
+            record_site_seen(site_id, node_id=node_id)
+            build = payload.get("build") if isinstance(payload, dict) else None
+            if isinstance(build, dict):
+                record_gateway_identity(
+                    site_id,
+                    node_id,
+                    version=build.get("version"),
+                    sha=build.get("sha"),
+                    date=build.get("date"),
+                )
             metrics = payload.get("metrics") if isinstance(payload, dict) else None
             if isinstance(metrics, dict):
                 record_gateway_metrics(
@@ -51,6 +63,9 @@ class TelemetryIngress:
                     work_stale_total=metrics.get("work_stale_total"),
                     work_nak_total=metrics.get("work_nak_total"),
                     lease_retry_total=metrics.get("lease_retry_total"),
+                    result_replay_total=metrics.get("result_replay_total"),
+                    result_replay_fail_total=metrics.get("result_replay_fail_total"),
+                    result_replay_backlog=metrics.get("result_replay_backlog"),
                 )
             LOGGER.debug("site status %s: %s", site_id, payload)
 

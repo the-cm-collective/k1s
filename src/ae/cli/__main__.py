@@ -32,7 +32,12 @@ from ae.controller.spec import (
     parse_app_ref,
     split_app_key,
 )
-from ae.controller.state import AppStatus, SQLiteStateStore, state_store_from_env
+from ae.controller.state import (
+    AppStatus,
+    RegistryConflictError,
+    SQLiteStateStore,
+    state_store_from_env,
+)
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.k8s.check import k8s_portability_issues
 from ae.k8s.exporter import ExportOptions, export_k8s_yaml
@@ -77,6 +82,10 @@ class CLIArgumentParser(argparse.ArgumentParser):
         cmd = list(getattr(parsed, "cmd", []) or [])
         parsed.cmd = cmd + leading + trailing
         return []
+
+
+def _ha_mode_enabled() -> bool:
+    return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -789,6 +798,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Attempt kubectl server-side dry-run if available",
     )
     kr.add_argument("--kubectl-bin", default=os.getenv("KUBECTL_BIN", "kubectl"))
+    kr.add_argument(
+        "--kubeconfig",
+        type=Path,
+        default=None,
+        help="Use this kubeconfig for kubectl dry-run/apply checks instead of the ambient context",
+    )
     kr.add_argument("--kubeconform-bin", default=os.getenv("KUBECONFORM_BIN", "kubeconform"))
     kr.add_argument(
         "--apply-online",
@@ -872,7 +887,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--controller-env",
         type=Path,
         default=None,
-        help="Path to controller env file (default: state/env.sh)",
+        help="Path to controller env file (default: inferred profile controller.env or state/env.sh)",
     )
     auth_local.add_argument(
         "--dev-env",
@@ -1751,10 +1766,16 @@ def handle_apply(
                     raise ValueError("expected a single Deployment manifest document")
                 payload = docs[0]
             resp = _http_post_json(base, "/apply", payload, tok)
-            print(
-                f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
-                f"ops=+{resp.get('created')}/~{resp.get('updated')}/-{resp.get('removed')}"
-            )
+            if str(resp.get("status", "")).lower() == "accepted":
+                print(
+                    f"applied desired state for {resp.get('app')} "
+                    f"resourceVersion={resp.get('resourceVersion')}"
+                )
+            else:
+                print(
+                    f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
+                    f"ops=+{resp.get('created')}/~{resp.get('updated')}/-{resp.get('removed')}"
+                )
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"remote apply failed: {exc}")
@@ -1790,7 +1811,21 @@ def handle_apply(
         existing = store.get_registered_entry(app_key_for_manifest(manifest))
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(manifest.metadata, "labels", None)
-        store.register_app(manifest, source=src, labels=lbls)
+        rv = store.register_app(
+            manifest,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"Applied desired state for {_display_app_name(app_key_for_manifest(manifest))}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"apply conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(manifest)
@@ -2025,6 +2060,19 @@ def handle_delete(
             print(f"remote delete failed: {exc}")
             return 1
     name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
+    if _ha_mode_enabled():
+        print("local delete is not supported in HA mode; target a controller API with --server")
+        return 2
+    existing = store.get_registered_entry(name)
+    try:
+        if existing is not None:
+            store.delete_registered_app(
+                name,
+                expected_resource_version=existing.resource_version,
+            )
+    except RegistryConflictError as exc:
+        print(f"delete conflict: {exc}")
+        return 1
     removed = runtime.remove_app(name)
     if ingress_service:
         try:
@@ -2050,10 +2098,6 @@ def handle_delete(
                         pass
         except Exception:
             pass
-    try:
-        store.delete_registered_app(name)
-    except Exception:
-        pass
     store.delete_app_state(name, purge_history=bool(args.purge))
     print(
         f"deleted {_display_app_name(name)}: removed={removed} containers{' (purged history)' if args.purge else ''}"
@@ -2075,9 +2119,15 @@ def handle_scale(
             resp = _http_post_json(
                 base, f"/scale/{app_name}", {"replicas": int(args.replicas)}, tok
             )
-            print(
-                f"scaled {_display_app_name(app_name)} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
-            )
+            if str(resp.get("status", "")).lower() == "accepted":
+                print(
+                    f"scaled desired state for {_display_app_name(app_name)} to replicas={resp.get('replicas')} "
+                    f"resourceVersion={resp.get('resourceVersion')}"
+                )
+            else:
+                print(
+                    f"scaled {_display_app_name(app_name)} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
+                )
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"remote scale failed: {exc}")
@@ -2094,7 +2144,21 @@ def handle_scale(
         existing = store.get_registered_entry(name)
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(new_manifest.metadata, "labels", None)
-        store.register_app(new_manifest, source=src, labels=lbls)
+        rv = store.register_app(
+            new_manifest,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"scaled desired state for {_display_app_name(name)} to replicas={args.replicas}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"scale conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(new_manifest)
@@ -2221,6 +2285,7 @@ def handle_backup(args: argparse.Namespace) -> int:
 def handle_k8s_report(args: argparse.Namespace) -> int:
     import json
     import shutil
+    import subprocess as sp
     import tempfile
     from datetime import datetime
 
@@ -2251,6 +2316,48 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
     kubectl_bin = (
         shutil.which(args.kubectl_bin) if (args.run_dry_run or args.apply_online) else None
     )
+    kubectl_env = os.environ.copy()
+    kube_target = "the current kubectl context"
+    if getattr(args, "kubeconfig", None):
+        kubeconfig_path = Path(args.kubeconfig)
+        if not kubeconfig_path.exists():
+            print(f"k8s-report: kubeconfig not found: {kubeconfig_path}")
+            return 1
+        kubectl_env["KUBECONFIG"] = str(kubeconfig_path)
+        kube_target = f"kubeconfig {kubeconfig_path}"
+    elif os.getenv("KUBECONFIG"):
+        kube_target = f"KUBECONFIG={os.getenv('KUBECONFIG')}"
+
+    if args.run_dry_run or args.apply_online:
+        if not kubectl_bin:
+            print(
+                "k8s-report: kubectl is required for --run-dry-run/--apply-online but was not found on PATH."
+            )
+            print(
+                "k8s-report: install kubectl or omit --run-dry-run/--apply-online for offline-only scoring."
+            )
+            return 1
+        try:
+            probe = sp.run(
+                [kubectl_bin, "--request-timeout=15s", "get", "--raw", "/openapi/v2"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=kubectl_env,
+            )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
+        except Exception as exc:  # noqa: BLE001
+            print(f"k8s-report: unable to probe a Kubernetes API via {kube_target}: {exc}")
+            print(
+                "k8s-report: pass --kubeconfig <path> or set KUBECONFIG to a reachable cluster, or omit --run-dry-run/--apply-online for offline-only scoring."
+            )
+            return 1
+        if probe.returncode != 0:
+            detail = (probe.stderr or probe.stdout).strip() or "unknown error"
+            print(f"k8s-report: unable to reach a Kubernetes API via {kube_target}: {detail}")
+            print(
+                "k8s-report: pass --kubeconfig <path> or set KUBECONFIG to a reachable cluster, or omit --run-dry-run/--apply-online for offline-only scoring."
+            )
+            return 1
 
     results: list[dict] = []
     checks_total = 0
@@ -2297,7 +2404,6 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
             with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
                 tmp.write(yaml_text)
                 tmp.flush()
-                import subprocess as sp
 
                 try:
                     proc = sp.run(
@@ -2320,7 +2426,6 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
             with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
                 tmp.write(yaml_text)
                 tmp.flush()
-                import subprocess as sp
 
                 try:
                     proc = sp.run(
@@ -2336,6 +2441,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
+                        env=kubectl_env,
                     )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     dr_res["ok"] = proc.returncode == 0
                     dr_res["output"] = (proc.stdout or proc.stderr).strip()
@@ -2361,13 +2467,12 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
         if kubectl_bin and args.apply_online:
             online["ran"] = True
             # Ensure namespace exists
-            import subprocess as sp
-
             try:
                 sp.run(
                     [kubectl_bin, "create", "namespace", str(args.namespace)],
                     capture_output=True,
                     text=True,
+                    env=kubectl_env,
                 )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
             except Exception:
                 pass
@@ -2380,6 +2485,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
+                        env=kubectl_env,
                     )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     # Try to find the Deployment name(s) from parsed docs
                     dep_name = manifest.metadata.name
@@ -2397,6 +2503,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
+                        env=kubectl_env,
                     )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     online["ok"] = ap.returncode == 0 and rs.returncode == 0
                     online["details"] = {
@@ -2423,6 +2530,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                                 ],
                                 capture_output=True,
                                 text=True,
+                                env=kubectl_env,
                             )
                         except Exception:
                             pass
@@ -2529,6 +2637,13 @@ def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
             print(f"invalid --target json: {exc}")
             return 2
     payload.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    if not payload.get("controller_id") or not payload.get("controller_epoch"):
+        from ae.ha.fencing import resolve_controller_identity, work_operation
+
+        identity = resolve_controller_identity(None)
+        payload.setdefault("controller_id", identity.controller_id)
+        payload.setdefault("controller_epoch", identity.controller_epoch)
+        payload.setdefault("operation_id", work_operation(work_id, attempt))
     desired_generation = payload.get("desired_generation")
     try:
         desired_generation = int(desired_generation) if desired_generation is not None else None
@@ -2539,6 +2654,13 @@ def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
         attempt=attempt,
         site_id=site_id,
         state="Pending",
+        controller_id=str(payload.get("controller_id") or "") or None,
+        controller_epoch=(
+            int(payload.get("controller_epoch"))
+            if payload.get("controller_epoch") is not None
+            else None
+        ),
+        operation_id=str(payload.get("operation_id") or "") or None,
         desired_generation=desired_generation,
     )
     if ns.mode == "queue":
@@ -3207,7 +3329,21 @@ def handle_rollout(
         existing = store.get_registered_entry(app)
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(updated.metadata, "labels", None)
-        store.register_app(updated, source=src, labels=lbls)
+        rv = store.register_app(
+            updated,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"rollout {args.rollout_cmd} desired state for {_display_app_name(app)}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"rollout conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(updated)
@@ -3356,6 +3492,35 @@ def _preferred_profile_apishim_env(profile_dir: Path) -> Path | None:
     return None
 
 
+def _profile_private_apishim_env(apishim_env: Path | None) -> Path | None:
+    if apishim_env is None:
+        return None
+    try:
+        candidate = apishim_env.expanduser()
+        if candidate.parent.parent.name != "profiles":
+            return None
+        if candidate.name == "apishim.env":
+            return candidate
+        sibling = candidate.with_name("apishim.env")
+        if sibling == candidate:
+            return candidate
+        return sibling
+    except Exception:
+        return None
+
+
+def _profile_controller_env(apishim_env: Path | None) -> Path | None:
+    if apishim_env is None:
+        return None
+    try:
+        candidate = apishim_env.expanduser().parent
+        if candidate.parent.name != "profiles":
+            return None
+        return candidate / "controller.env"
+    except Exception:
+        return None
+
+
 def _profile_state_db_from_env(apishim_env: Path | None) -> Path | None:
     if not apishim_env:
         return None
@@ -3500,11 +3665,8 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
     if args.auth_cmd == "local":
         import sys
 
-        controller_env = Path(
-            args.controller_env
-            if args.controller_env
-            else os.getenv("CONTROLLER_ENV_FILE", "state/env.sh")
-        )
+        explicit_controller_env = args.controller_env or os.getenv("CONTROLLER_ENV_FILE")
+        controller_env = Path(explicit_controller_env if explicit_controller_env else "state/env.sh")
         dev_env = Path(args.dev_env if args.dev_env else os.getenv("DEV_ENV_FILE", "state/dev.env"))
         apishim_pid = Path(
             args.apishim_pid
@@ -3539,6 +3701,11 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
         apishim_env = _detect_apishim_env(
             args.apishim_env if args.apishim_env else None, controller_env, proc_env
         )
+        if not explicit_controller_env:
+            inferred_controller_env = _profile_controller_env(apishim_env)
+            if inferred_controller_env and inferred_controller_env.is_file():
+                controller_env = inferred_controller_env
+        private_apishim_env = _profile_private_apishim_env(apishim_env)
         profile_state_db_path = _profile_state_db_from_env(apishim_env)
         profile_state_db = None
         if profile_state_db_path:
@@ -3601,20 +3768,40 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
         admin_token = pick(
             proc_env.get("AE_API_ADMIN_TOKEN"),
             _read_env_file_var(apishim_env, "AE_API_ADMIN_TOKEN"),
+            (
+                _read_env_file_var(private_apishim_env, "AE_API_ADMIN_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_API_ADMIN_TOKEN"),
             os.getenv("AE_API_ADMIN_TOKEN"),
         )
         labs_token = pick(
             proc_env.get("AE_LABS_TOKEN"),
             _read_env_file_var(apishim_env, "AE_LABS_TOKEN"),
+            (
+                _read_env_file_var(private_apishim_env, "AE_LABS_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_LABS_TOKEN"),
             os.getenv("AE_LABS_TOKEN"),
         )
         scaler_token = pick(
+            (
+                _read_env_file_var(private_apishim_env, "AE_API_SCALER_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_API_SCALER_TOKEN"),
             os.getenv("AE_API_SCALER_TOKEN"),
         )
         read_token = pick(
+            (
+                _read_env_file_var(private_apishim_env, "AE_API_READ_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_API_READ_TOKEN"),
             os.getenv("AE_API_READ_TOKEN"),
         )

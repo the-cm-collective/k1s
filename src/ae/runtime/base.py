@@ -70,6 +70,18 @@ class RuntimeResult:
         return self.pod_states
 
 
+@dataclass(slots=True)
+class WorkloadMetricSample:
+    """Per-node workload metrics summary for autoscaling."""
+
+    app_name: str
+    node_id: str
+    collected_at: datetime
+    cpu_cores: float | None = None
+    memory_bytes: int = 0
+    pod_count: int = 0
+
+
 class RuntimeAdapter(Protocol):
     """Adapter that drives container runtime operations."""
 
@@ -134,6 +146,10 @@ class RuntimeAdapter(Protocol):
         """
         return []
 
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        """Return per-node workload metrics summaries for autoscaling."""
+        return []
+
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:
         """Execute a command inside the target pod's container.
 
@@ -170,3 +186,14 @@ class RuntimeAdapter(Protocol):
         """Optionally return exit code for a completed exec session."""
         _ = exec_id
         return 0
+
+    def port_forward_socket(
+        self,
+        *,
+        pod_id: str | None,
+        pod_name: str | None,
+        namespace: str | None,
+        port: int,
+    ):  # pragma: no cover
+        """Optionally open a raw port-forward socket to a pod port."""
+        ...

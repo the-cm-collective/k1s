@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -17,8 +18,10 @@ from typing import Any
 
 try:
     import grpc
-except Exception:  # pragma: no cover - optional dependency
+    _grpc_import_error: Exception | None = None
+except Exception as exc:  # pragma: no cover - optional dependency
     grpc = None
+    _grpc_import_error = exc
 
 from ae._utc import UTC
 from ae.controller.spec import (
@@ -30,10 +33,18 @@ from ae.controller.spec import (
 )
 from ae.runtime.ports import choose_host_port
 
-from .base import PodState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 from .registry import RegistryAuthProvider
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _StalePodSandboxError(RuntimeError):
+    """Raised when CRI reports a dead or missing pod sandbox task."""
+
+    def __init__(self, pod_id: str, message: str) -> None:
+        super().__init__(message)
+        self.pod_id = str(pod_id)
 
 
 class CRIRuntime(RuntimeAdapter):
@@ -75,6 +86,7 @@ class CRIRuntime(RuntimeAdapter):
         self._apishim_store_checked = False
         self._apishim_store = None
         self._apishim_state = None
+        self._cpu_sample_cache: dict[str, tuple[int, int]] = {}
 
     # --- RuntimeAdapter API -----------------------------------------
     def ensure_app(
@@ -238,6 +250,56 @@ class CRIRuntime(RuntimeAdapter):
                         "pod_ip": pod_ip,
                     }
                 )
+        return out
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        self._ensure_clients()
+        pb2 = self._pb2()
+        req = pb2.ListPodSandboxStatsRequest()
+        resp = self._runtime_call("ListPodSandboxStats", req)
+        items = getattr(resp, "stats", None)
+        if items is None:
+            items = getattr(resp, "items", None)
+        node_id = str(
+            self._current_node_id or os.getenv("AE_NODE_ID") or socket.gethostname() or "unknown-node"
+        )
+        collected_at = datetime.now(UTC)
+        aggregates: dict[str, dict[str, object]] = {}
+        for item in list(items or []):
+            labels = self._stats_labels(item)
+            app_name = str(labels.get(self.APP_LABEL) or "").strip()
+            if not app_name:
+                continue
+            aggregate = aggregates.setdefault(
+                app_name,
+                {
+                    "cpu_cores": 0.0,
+                    "cpu_seen": False,
+                    "memory_bytes": 0,
+                    "pod_count": 0,
+                },
+            )
+            cpu_cores = self._stats_cpu_cores(item)
+            if cpu_cores is not None:
+                aggregate["cpu_cores"] = float(aggregate["cpu_cores"]) + float(cpu_cores)
+                aggregate["cpu_seen"] = True
+            aggregate["memory_bytes"] = int(aggregate["memory_bytes"]) + self._stats_memory_bytes(item)
+            aggregate["pod_count"] = int(aggregate["pod_count"]) + 1
+        out: list[WorkloadMetricSample] = []
+        for app_name, aggregate in sorted(aggregates.items()):
+            cpu_cores = (
+                float(aggregate["cpu_cores"]) if bool(aggregate.get("cpu_seen")) else None
+            )
+            out.append(
+                WorkloadMetricSample(
+                    app_name=app_name,
+                    node_id=node_id,
+                    collected_at=collected_at,
+                    cpu_cores=cpu_cores,
+                    memory_bytes=int(aggregate["memory_bytes"]),
+                    pod_count=int(aggregate["pod_count"]),
+                )
+            )
         return out
 
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:
@@ -643,7 +705,10 @@ class CRIRuntime(RuntimeAdapter):
         if self._runtime and self._images:
             return
         if grpc is None:  # pragma: no cover - optional dependency
-            raise RuntimeError("grpc is required for CRI runtime (install grpcio)")
+            detail = ""
+            if _grpc_import_error is not None:
+                detail = f": {type(_grpc_import_error).__name__}: {_grpc_import_error}"
+            raise RuntimeError(f"grpc is required for CRI runtime (install grpcio){detail}")
         try:
             from ae.runtime.cri.api.runtime.v1 import api_pb2_grpc
         except Exception as exc:  # pragma: no cover - depends on generated stubs
@@ -803,6 +868,74 @@ class CRIRuntime(RuntimeAdapter):
                 return str(container.id)
         return None
 
+    def _pod_id_for_replica(self, replica_id: str) -> str | None:
+        for pod in self._list_pods():
+            labels = self._pod_labels(pod)
+            if labels.get(self.REPLICA_LABEL) != replica_id:
+                continue
+            pod_id = getattr(pod, "id", None) or getattr(pod, "pod_sandbox_id", None)
+            if pod_id:
+                return str(pod_id)
+        return None
+
+    def _stats_labels(self, stats: Any) -> dict[str, str]:
+        candidates = [
+            getattr(getattr(stats, "attributes", None), "labels", None),
+            getattr(stats, "labels", None),
+        ]
+        for labels in candidates:
+            if labels:
+                return {str(key): str(value) for key, value in labels.items()}
+        return {}
+
+    def _stats_cpu_cores(self, stats: Any) -> float | None:
+        cpu = getattr(stats, "cpu", None)
+        usage = getattr(cpu, "usage", None) if cpu is not None else None
+        instant = getattr(usage, "usage_nano_cores", None) if usage is not None else None
+        try:
+            if instant is not None:
+                return max(0.0, float(instant) / 1_000_000_000.0)
+        except Exception:
+            pass
+        total = getattr(usage, "usage_core_nano_seconds", None) if usage is not None else None
+        timestamp = getattr(cpu, "timestamp", None)
+        if timestamp is None:
+            timestamp = getattr(stats, "timestamp", None)
+        sample_id = str(
+            getattr(getattr(stats, "attributes", None), "id", None)
+            or getattr(stats, "id", None)
+            or getattr(stats, "pod_sandbox_id", None)
+            or ""
+        ).strip()
+        try:
+            if not sample_id or total is None or timestamp is None:
+                return None
+            total_i = int(total)
+            ts_i = int(timestamp)
+        except Exception:
+            return None
+        previous = self._cpu_sample_cache.get(sample_id)
+        self._cpu_sample_cache[sample_id] = (ts_i, total_i)
+        if previous is None:
+            return None
+        prev_ts, prev_total = previous
+        delta_ts = ts_i - prev_ts
+        delta_total = total_i - prev_total
+        if delta_ts <= 0 or delta_total < 0:
+            return None
+        return max(0.0, float(delta_total) / float(delta_ts))
+
+    def _stats_memory_bytes(self, stats: Any) -> int:
+        memory = getattr(stats, "memory", None)
+        for field in ("working_set_bytes", "usage_bytes"):
+            value = getattr(memory, field, None) if memory is not None else None
+            try:
+                if value is not None:
+                    return max(0, int(value))
+            except Exception:
+                continue
+        return 0
+
     def _ensure_image(self, image_ref: str) -> None:
         pb2 = self._pb2()
         spec = pb2.ImageSpec(image=str(image_ref))
@@ -865,8 +998,21 @@ class CRIRuntime(RuntimeAdapter):
             self._apishim_store = None
         return self._apishim_store
 
+    @staticmethod
+    def _ha_mode_enabled() -> bool:
+        return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
     def _get_apishim_state(self):
         if self._apishim_state is not None:
+            return self._apishim_state
+        try:
+            from ae.storage.state import ApishimHttpStorageState
+        except Exception:
+            ApishimHttpStorageState = None  # type: ignore[assignment]
+        if self._ha_mode_enabled():
+            if ApishimHttpStorageState is None:
+                return None
+            self._apishim_state = ApishimHttpStorageState.from_env()
             return self._apishim_state
         store = self._get_apishim_store()
         if store is not None:
@@ -876,9 +1022,7 @@ class CRIRuntime(RuntimeAdapter):
                 return None
             self._apishim_state = ApishimStorageState(store)
             return self._apishim_state
-        try:
-            from ae.storage.state import ApishimHttpStorageState
-        except Exception:
+        if ApishimHttpStorageState is None:
             return None
         self._apishim_state = ApishimHttpStorageState.from_env()
         return self._apishim_state
@@ -1016,25 +1160,25 @@ class CRIRuntime(RuntimeAdapter):
     def _service_account_pull_secrets(
         self, manifest: AppManifest
     ) -> list[tuple[str | None, str | None]]:
-        store = self._get_apishim_store()
-        if store is None:
+        state = self._get_apishim_state()
+        if state is None:
             return []
         namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
-        sa_name = (
-            getattr(manifest.spec, "service_account_name", None)
-            or self._service_account_name_from_store(manifest, store)
-            or "default"
-        )
+        sa_name = getattr(manifest.spec, "service_account_name", None)
+        if not sa_name and not self._ha_mode_enabled():
+            store = self._get_apishim_store()
+            if store is not None:
+                sa_name = self._service_account_name_from_store(manifest, store)
+        sa_name = sa_name or "default"
         try:
-            sa = store.get("", "v1", "serviceaccounts", namespace, str(sa_name))
+            sa = state.get_service_account(namespace, str(sa_name))
         except Exception:
             sa = None
         if sa is None:
             return []
-        spec = getattr(sa, "spec", None) or {}
-        if not isinstance(spec, dict):
+        if not isinstance(sa, dict):
             return []
-        secrets = spec.get("imagePullSecrets") or []
+        secrets = sa.get("imagePullSecrets") or []
         out: list[tuple[str | None, str | None]] = []
         for entry in secrets:
             if isinstance(entry, dict):
@@ -1098,6 +1242,7 @@ class CRIRuntime(RuntimeAdapter):
         *,
         node_id: str | None = None,
         attempt: int = 0,
+        sandbox_recovery_attempt: int = 0,
     ) -> None:
         pb2 = self._pb2()
         app_name = app_key_for_manifest(manifest)
@@ -1129,12 +1274,39 @@ class CRIRuntime(RuntimeAdapter):
         req = pb2.RunPodSandboxRequest(config=pod_config)
         if runtime_handler:
             req.runtime_handler = str(runtime_handler)
-        resp = self._runtime_call("RunPodSandbox", req)
+        try:
+            resp = self._runtime_call("RunPodSandbox", req)
+        except Exception as exc:
+            if self._is_reserved_pod_sandbox_name_error(exc):
+                self._recover_from_reserved_pod_sandbox_name(
+                    manifest,
+                    replica_id=replica_id,
+                    revision=revision,
+                    attempt=attempt,
+                    sandbox_recovery_attempt=sandbox_recovery_attempt,
+                    cause=exc,
+                    node_id=node_id,
+                )
+                return
+            raise
         pod_id = getattr(resp, "pod_sandbox_id", None)
         if not pod_id:
             raise RuntimeError("CRI RunPodSandbox returned no pod_sandbox_id")
         self._port_assignments[str(replica_id)] = port_map
-        self._create_main_container(manifest, pod_id, replica_id, revision, attempt=attempt)
+        try:
+            self._create_main_container(manifest, pod_id, replica_id, revision, attempt=attempt)
+        except _StalePodSandboxError as exc:
+            self._recover_from_stale_pod_sandbox(
+                manifest,
+                stale_pod_id=exc.pod_id,
+                replica_id=replica_id,
+                revision=revision,
+                attempt=attempt,
+                sandbox_recovery_attempt=sandbox_recovery_attempt,
+                cause=exc,
+                node_id=node_id,
+            )
+            return
         try:
             self._ensure_sidecars(manifest, pod_id, replica_id, revision)
         except Exception as exc:
@@ -1155,13 +1327,26 @@ class CRIRuntime(RuntimeAdapter):
         container = self._find_container(pod_id, container_label="main")
         replica_id = self._pod_labels(pod).get(self.REPLICA_LABEL, "")
         if not container:
-            self._create_main_container(
-                manifest,
-                pod_id,
-                replica_id,
-                revision,
-                attempt=0,
-            )
+            try:
+                self._create_main_container(
+                    manifest,
+                    pod_id,
+                    replica_id,
+                    revision,
+                    attempt=0,
+                )
+            except _StalePodSandboxError as exc:
+                self._recover_from_stale_pod_sandbox(
+                    manifest,
+                    stale_pod_id=exc.pod_id,
+                    replica_id=replica_id,
+                    revision=revision,
+                    attempt=0,
+                    sandbox_recovery_attempt=0,
+                    cause=exc,
+                    node_id=self._current_node_id,
+                )
+                return True
             try:
                 if replica_id:
                     self._ensure_sidecars(manifest, pod_id, replica_id, revision)
@@ -1194,19 +1379,192 @@ class CRIRuntime(RuntimeAdapter):
         self._runtime_call(
             "RemoveContainer", self._pb2().RemoveContainerRequest(container_id=container.id)
         )
-        self._create_main_container(
-            manifest,
-            pod_id,
-            replica_id,
-            revision,
-            attempt=attempt + 1,
-        )
+        try:
+            self._create_main_container(
+                manifest,
+                pod_id,
+                replica_id,
+                revision,
+                attempt=attempt + 1,
+            )
+        except _StalePodSandboxError as exc:
+            self._recover_from_stale_pod_sandbox(
+                manifest,
+                stale_pod_id=exc.pod_id,
+                replica_id=replica_id,
+                revision=revision,
+                attempt=attempt + 1,
+                sandbox_recovery_attempt=0,
+                cause=exc,
+                node_id=self._current_node_id,
+            )
+            return True
         try:
             if replica_id:
                 self._ensure_sidecars(manifest, pod_id, replica_id, revision)
         except Exception as exc:
             LOGGER.warning("Failed to ensure sidecars for %s: %s", replica_id, exc)
         return True
+
+    def _grpc_error_details(self, exc: Exception) -> str:
+        details = ""
+        with contextlib.suppress(Exception):
+            details = str(exc.details() or "")
+        return details or str(exc)
+
+    def _is_stale_pod_sandbox_error(self, exc: Exception) -> bool:
+        if grpc is None or not isinstance(exc, grpc.RpcError):
+            return False
+        try:
+            if exc.code() != grpc.StatusCode.NOT_FOUND:
+                return False
+        except Exception:
+            return False
+        details = self._grpc_error_details(exc).lower()
+        if "sandbox" not in details:
+            return False
+        stale_markers = (
+            "sandbox container task",
+            "no running task found",
+            "podsandbox not found",
+            "pod sandbox not found",
+            "sandbox not found",
+        )
+        return any(marker in details for marker in stale_markers)
+
+    def _is_reserved_pod_sandbox_name_error(self, exc: Exception) -> bool:
+        if grpc is None or not isinstance(exc, grpc.RpcError):
+            return False
+        try:
+            code = exc.code()
+        except Exception:
+            return False
+        if code not in {
+            grpc.StatusCode.UNKNOWN,
+            grpc.StatusCode.ALREADY_EXISTS,
+            grpc.StatusCode.FAILED_PRECONDITION,
+        }:
+            return False
+        details = self._grpc_error_details(exc).lower()
+        return "failed to reserve sandbox name" in details and "reserved for" in details
+
+    def _reserved_pod_sandbox_id_from_error(self, exc: Exception) -> str | None:
+        details = self._grpc_error_details(exc)
+        match = re.search(r'reserved for "([^"]+)"', details)
+        if match:
+            return str(match.group(1))
+        return None
+
+    def _wait_for_pod_sandbox_absent(self, pod_id: str, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while time.monotonic() < deadline:
+            present = False
+            with contextlib.suppress(Exception):
+                for pod in self._list_pods():
+                    current_id = getattr(pod, "id", None) or getattr(pod, "pod_sandbox_id", None)
+                    if str(current_id or "") == str(pod_id):
+                        present = True
+                        break
+            if not present:
+                return
+            time.sleep(0.2)
+
+    def _remove_pod_sandbox(self, pod_id: str) -> None:
+        pb2 = self._pb2()
+        containers = []
+        with contextlib.suppress(Exception):
+            flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id))
+            resp = self._runtime_call("ListContainers", pb2.ListContainersRequest(filter=flt))
+            items = getattr(resp, "containers", None)
+            if items is None:
+                items = getattr(resp, "items", None)
+            containers = list(items or [])
+        for container in containers:
+            container_id = getattr(container, "id", None)
+            if not container_id:
+                continue
+            with contextlib.suppress(Exception):
+                self._runtime_call(
+                    "StopContainer", pb2.StopContainerRequest(container_id=container_id, timeout=0)
+                )
+            with contextlib.suppress(Exception):
+                self._runtime_call(
+                    "RemoveContainer", pb2.RemoveContainerRequest(container_id=container_id)
+                )
+        with contextlib.suppress(Exception):
+            self._runtime_call(
+                "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
+            )
+        with contextlib.suppress(Exception):
+            self._runtime_call(
+                "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
+            )
+        self._wait_for_pod_sandbox_absent(str(pod_id))
+
+    def _recover_from_stale_pod_sandbox(
+        self,
+        manifest: AppManifest,
+        *,
+        stale_pod_id: str,
+        replica_id: str,
+        revision: int,
+        attempt: int,
+        sandbox_recovery_attempt: int,
+        cause: _StalePodSandboxError,
+        node_id: str | None,
+    ) -> None:
+        if sandbox_recovery_attempt >= 1:
+            raise cause
+        LOGGER.warning(
+            "CRI sandbox stale for replica %s (pod_id=%s); recreating pod: %s",
+            replica_id,
+            stale_pod_id,
+            cause,
+        )
+        self._remove_pod_sandbox(stale_pod_id)
+        self._run_pod(
+            manifest,
+            replica_id,
+            revision,
+            node_id=node_id,
+            attempt=attempt,
+            sandbox_recovery_attempt=sandbox_recovery_attempt + 1,
+        )
+
+    def _recover_from_reserved_pod_sandbox_name(
+        self,
+        manifest: AppManifest,
+        *,
+        replica_id: str,
+        revision: int,
+        attempt: int,
+        sandbox_recovery_attempt: int,
+        cause: Exception,
+        node_id: str | None,
+    ) -> None:
+        if sandbox_recovery_attempt >= 1:
+            raise cause
+        reserved_pod_id = self._reserved_pod_sandbox_id_from_error(cause)
+        if not reserved_pod_id:
+            reserved_pod_id = self._pod_id_for_replica(replica_id)
+        LOGGER.warning(
+            "CRI sandbox name still reserved for replica %s (pod_id=%s); retrying pod create: %s",
+            replica_id,
+            reserved_pod_id or "?",
+            cause,
+        )
+        if reserved_pod_id:
+            self._remove_pod_sandbox(reserved_pod_id)
+        else:
+            time.sleep(1.0)
+        self._run_pod(
+            manifest,
+            replica_id,
+            revision,
+            node_id=node_id,
+            attempt=attempt,
+            sandbox_recovery_attempt=sandbox_recovery_attempt + 1,
+        )
 
     def _ensure_sidecars(
         self,
@@ -1324,11 +1682,23 @@ class CRIRuntime(RuntimeAdapter):
             config=config,
             sandbox_config=pod_config,
         )
-        resp = self._runtime_call("CreateContainer", req)
+        try:
+            resp = self._runtime_call("CreateContainer", req)
+        except Exception as exc:
+            if self._is_stale_pod_sandbox_error(exc):
+                detail = self._grpc_error_details(exc)
+                raise _StalePodSandboxError(str(pod_id), detail) from exc
+            raise
         container_id = getattr(resp, "container_id", None)
         if not container_id:
             raise RuntimeError("CRI CreateContainer returned no container_id")
-        self._runtime_call("StartContainer", pb2.StartContainerRequest(container_id=container_id))
+        try:
+            self._runtime_call("StartContainer", pb2.StartContainerRequest(container_id=container_id))
+        except Exception as exc:
+            if self._is_stale_pod_sandbox_error(exc):
+                detail = self._grpc_error_details(exc)
+                raise _StalePodSandboxError(str(pod_id), detail) from exc
+            raise
 
     def _stop_and_remove_pod(self, manifest: AppManifest | None, pod: Any) -> None:
         pb2 = self._pb2()

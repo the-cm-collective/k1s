@@ -63,7 +63,7 @@ To start a session: enable <strong>Controlled Actions</strong>, click <strong>Us
       <option value="k1s-docker">k1s-in-Docker (compose)</option>
       <option value="k3s">k3s via k3d</option>
     </select>
-  - <label><input type="checkbox" id="toggle-actions"/> Enable Controlled Actions</label>
+  - <label class="labs-toggle-label"><input type="checkbox" id="toggle-actions"/> <span>Enable Controlled Actions</span></label>
   - Token: <input id="labs-token" type="password" placeholder="paste AE_LABS_TOKEN"/> <button id="btn-use-token" onclick="window.k1sUseToken && window.k1sUseToken()">Use Token</button> <span id="labs-token-nudge" class="nudge hidden" role="status" aria-live="polite">Paste AE_LABS_TOKEN, then click <em>Use Token</em>.</span>
   - <button id="btn-start-session" class="btn-primary">Start Session</button>
   - Session: <span id="session-id">(none)</span>

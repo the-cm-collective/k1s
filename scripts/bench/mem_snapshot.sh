@@ -663,6 +663,22 @@ fi
 if [[ "$mode" == "k3s" ]] && command -v docker >/dev/null 2>&1; then
   {
     echo "[mem-snapshot] k3s extras: probing k3d node containers via docker exec" >&2
+    k3s_pod_uid_patterns=""
+    if [[ -n "${AE_K3S_POD_UIDS:-}" ]]; then
+      IFS=',' read -r -a k3s_pod_uids <<< "${AE_K3S_POD_UIDS}"
+      for uid in "${k3s_pod_uids[@]}"; do
+        uid="${uid// /}"
+        [[ -z "$uid" ]] && continue
+        if [[ -n "$k3s_pod_uid_patterns" ]]; then
+          k3s_pod_uid_patterns+=","
+        fi
+        k3s_pod_uid_patterns+="${uid}"
+        uid_pat="${uid//-/_}"
+        if [[ "$uid_pat" != "$uid" ]]; then
+          k3s_pod_uid_patterns+=",${uid_pat}"
+        fi
+      done
+    fi
     # Discover k3d server/agent containers
     mapfile -t k3d_nodes < <(docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | awk '{ if ($2 ~ /k3d-.*-(server|agent)-[0-9]+$/) print $1" "$2 }')
     if (( ${#k3d_nodes[@]} > 0 )); then
@@ -689,13 +705,27 @@ else
 fi' 2>/dev/null || echo 0)
         cp_kb=${cp_kb:-0}
         total_cp_pss_kb=$(( total_cp_pss_kb + ${cp_kb:-0} ))
-        # App cgroups: sum memory.current for leaf cgroups under kubepods{,.slice}
-        app_b=$(docker exec "$cid" sh -c '
+        # App cgroups: sum memory.current for leaf cgroups matching current app pod UIDs only.
+        app_b=$(docker exec -e AE_K3S_POD_UID_PATTERNS="$k3s_pod_uid_patterns" "$cid" sh -c '
+if [ -z "${AE_K3S_POD_UID_PATTERNS:-}" ]; then
+  echo 0
+  exit 0
+fi
+oldifs="$IFS"
+IFS=","
+set -- $AE_K3S_POD_UID_PATTERNS
+IFS="$oldifs"
 for base in /sys/fs/cgroup/kubepods.slice /sys/fs/cgroup/kubepods; do
   if [ -d "$base" ]; then
-    # leaf heuristic: directory has memory.current and no immediate child directory
     find "$base" -type d 2>/dev/null | while read d; do
       [ -f "$d/memory.current" ] || continue
+      match=0
+      for pat in "$@"; do
+        case "$d" in
+          *"$pat"*) match=1; break ;;
+        esac
+      done
+      [ "$match" -eq 1 ] || continue
       if find "$d" -mindepth 1 -maxdepth 1 -type d | read _; then
         :
       else
@@ -717,9 +747,17 @@ echo 0
           tmp_total=0
           for entry2 in "${k3d_nodes[@]}"; do
             cid2="${entry2%% *}"
-            app2=$(docker exec "$cid2" sh -c '
+            app2=$(docker exec -e AE_K3S_POD_UID_PATTERNS="$k3s_pod_uid_patterns" "$cid2" sh -c '
+if [ -z "${AE_K3S_POD_UID_PATTERNS:-}" ]; then
+  echo 0
+  exit 0
+fi
+oldifs="$IFS"
+IFS=","
+set -- $AE_K3S_POD_UID_PATTERNS
+IFS="$oldifs"
 base=/sys/fs/cgroup/kubepods; [ -d "$base" ] || base=/sys/fs/cgroup/kubepods.slice;
-find "$base" -type d 2>/dev/null | while read d; do [ -f "$d/memory.current" ] || continue; if find "$d" -mindepth 1 -maxdepth 1 -type d | read _; then :; else cat "$d/memory.current"; fi; done | awk "{s+=\$1} END{print s+0}"
+find "$base" -type d 2>/dev/null | while read d; do [ -f "$d/memory.current" ] || continue; match=0; for pat in "$@"; do case "$d" in *"$pat"*) match=1; break ;; esac; done; [ "$match" -eq 1 ] || continue; if find "$d" -mindepth 1 -maxdepth 1 -type d | read _; then :; else cat "$d/memory.current"; fi; done | awk "{s+=\$1} END{print s+0}"
 ' 2>/dev/null || echo 0)
             tmp_total=$(( tmp_total + ${app2:-0} ))
           done

@@ -21,6 +21,7 @@ fi
 
 systemctl restart containerd
 
+mkdir -p /etc/k1s-image
 cat >/etc/k1s-image/gpu-info.json <<JSON
 {
   "driver_package": "${NVIDIA_DRIVER_PACKAGE}",

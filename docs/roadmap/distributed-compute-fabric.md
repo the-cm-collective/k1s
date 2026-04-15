@@ -183,9 +183,9 @@ The deployment milestones are secondary and deliberately coupled to the substrat
 | --- | --- | --- |
 | D0 | F0 | One cell is only meaningful if readiness and validation are real. |
 | D1 | D0, F0, H3 | The edge and broker cannot be trusted until the execution cell is trusted and the backend authority model is a real HA control plane. |
-| D2 | D1, F1, H4 | A lease path needs typed capability and status facts, plus one shared HA authority model for controller and shim/API surfaces. |
-| D3 | D2, F1, F2, H5 | Multi-cell service requires explicit locality and cross-cell cost awareness plus repeatable HA recovery patterns. |
-| D4 | D3, F3, H5 | Domain-scale partner operation needs explainable decisions, stable evidence, and operator-readable HA recovery posture. |
+| D2 | D1, F1, H4b2c-csi | A lease path needs typed capability and status facts, plus one fully converged HA authority model for controller and shim/API surfaces. |
+| D3 | D2, F1, F2, H5c-ha-closeout | Multi-cell service requires explicit locality and cross-cell cost awareness plus a closed HA evidence and recovery posture. |
+| D4 | D3, F3, H5c-ha-closeout | Domain-scale partner operation needs explainable decisions, stable evidence, and a decision-complete HA operations baseline. |
 
 ## Hyperon Trajectory
 

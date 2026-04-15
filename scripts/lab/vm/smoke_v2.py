@@ -16,18 +16,48 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[3]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from ae import build_info as ae_build_info  # noqa: E402
+
 VARIANT_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "lib" / "variant.py"
 DEFAULT_LANES = ["single_non_gpu", "single_gpu", "multi_non_gpu", "multi_gpu"]
+SUPPORTED_LANES = [*DEFAULT_LANES, "ha_control_plane"]
 DEFAULT_PHASE_TIMEOUTS = {
     "provision": 1800,
     "seed_cache": 1200,
+    "ha_shared_infra": 900,
     "bootstrap": 1800,
     "service_ready": 900,
     "fabric_validate": 600,
     "functional_basic": 300,
+    "ha_acceptance": 900,
 }
+DEFAULT_HA_HELPER_TIMEOUTS = {
+    "ha_core_preflight": 30,
+    "ha_core_precheck": 60,
+    "ha_core_cluster_verify": 60,
+    "ha_hub_transport_precheck": 45,
+    "ha_attached_node_precheck": 45,
+    "ha_edge_precheck": 45,
+    "ha_edge_verify": 45,
+    "ha_attached_node_ingress_smoke": 180,
+    "ha_edge_runtime_ingress_smoke": 180,
+    "ha_drill_leader_failover": 90,
+    "ha_drill_etcd_restart": 90,
+    "ha_drill_transport_recovery": 90,
+}
+ATTACHED_NODE_INGRESS_TIMEOUT_S = 120
+ATTACHED_NODE_DIRECT_PROBE_TIMEOUT_S = 45
+ATTACHED_NODE_INGRESS_CHECK_TIMEOUT_S = 45
+EDGE_RUNTIME_INGRESS_TIMEOUT_S = 120
+EDGE_RUNTIME_TARGET_PROBE_TIMEOUT_S = 60
+EDGE_RUNTIME_INGRESS_CHECK_TIMEOUT_S = 45
 DEFAULT_RETRY_POLICY = {
     "initial_backoff_s": 2.0,
     "max_backoff_s": 15.0,
@@ -36,6 +66,12 @@ DEFAULT_RETRY_POLICY = {
 EP = "unix:///run/containerd/containerd.sock"
 CRI_SEED_MANIFEST = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
 CRI_SEED_BUNDLE_NAME = "cri-seed-images.oci.tar"
+GLOBAL_PHASE_NOISE_MARKERS = (
+    "Permanently added ",
+    "REMOTE HOST IDENTIFICATION HAS CHANGED",
+    "Offending ",
+    "This host key is known by the following other names/addresses",
+)
 
 
 @dataclass
@@ -71,7 +107,9 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def write_unhandled_failure_summary(args: argparse.Namespace, run_id: str, exc: Exception) -> None:
-    output_root = Path(args.output_root).expanduser().resolve() if args.output_root else ROOT / "runs"
+    output_root = (
+        Path(args.output_root).expanduser().resolve() if args.output_root else ROOT / "runs"
+    )
     run_dir = output_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     summary = {
@@ -90,6 +128,27 @@ def write_unhandled_failure_summary(args: argparse.Namespace, run_id: str, exc: 
 
 def parse_csv(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def parse_label_csv(raw: str | None) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for item in parse_csv(str(raw or "")):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            labels[key] = value
+    return labels
+
+
+def _url_host(raw: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    parsed = urlparse(value if "://" in value else f"http://{value}")
+    return str(parsed.hostname or "").strip()
 
 
 def parse_phase_overrides(items: list[str]) -> dict[str, int]:
@@ -170,6 +229,30 @@ def run_cmd(
         raise SmokeError(f"command timed out: {' '.join(cmd)}") from exc
 
 
+def tail_lines(raw: str | None, limit: int = 10) -> list[str]:
+    if not raw:
+        return []
+    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
+    return lines[-limit:]
+
+
+def is_noise_line(line: str) -> bool:
+    stripped = line.strip()
+    return any(marker in stripped for marker in GLOBAL_PHASE_NOISE_MARKERS)
+
+
+def select_failure_detail(stderr: str | None, stdout: str | None) -> str:
+    for raw in (stderr, stdout):
+        for line in reversed(tail_lines(raw, limit=50)):
+            if not is_noise_line(line):
+                return line
+    for raw in (stderr, stdout):
+        lines = tail_lines(raw, limit=50)
+        if lines:
+            return lines[-1]
+    return "command failed"
+
+
 def load_variant(variant_path: Path) -> dict[str, Any]:
     res = run_cmd(
         [
@@ -188,7 +271,9 @@ def load_variant(variant_path: Path) -> dict[str, Any]:
 
 
 def ssh_base(ip: str) -> list[str]:
-    key_path = Path(os.environ.get("SSH_KEY_PATH", str(Path.home() / ".ssh" / "id_rsa"))).expanduser()
+    key_path = Path(
+        os.environ.get("SSH_KEY_PATH", str(Path.home() / ".ssh" / "id_rsa"))
+    ).expanduser()
     return [
         "ssh",
         "-o",
@@ -199,6 +284,21 @@ def ssh_base(ip: str) -> list[str]:
         str(key_path),
         f"ae@{ip}",
     ]
+
+
+def require_vm_host_prereqs(*, skip_up: bool, auto_down: bool) -> None:
+    if not skip_up or auto_down:
+        key_path = Path(
+            os.environ.get("SSH_KEY_PATH", str(Path.home() / ".ssh" / "id_rsa"))
+        ).expanduser()
+        if not key_path.is_file():
+            raise SmokeError(f"ssh key not found at {key_path}; set SSH_KEY_PATH")
+        pubkey_path = Path(f"{key_path}.pub")
+        if not pubkey_path.is_file():
+            raise SmokeError(f"ssh public key not found at {pubkey_path}")
+        res = run_cmd(["sudo", "-n", "true"], check=False)
+        if res.returncode != 0:
+            raise SmokeError("local sudo credentials are required; run 'sudo -v' and retry")
 
 
 def run_remote(ip: str, command: str, *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -269,8 +369,13 @@ def core_host(hosts: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+def ha_core_hosts(hosts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [host for host in hosts if host["role"] == "k1s-ha-core"]
+
+
 def lane_hosts(lane: str, hosts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     core = core_host(hosts)
+    ha_cores = ha_core_hosts(hosts)
     if lane == "single_non_gpu":
         target = next((h for h in hosts if not h.get("gpu", False)), None)
         if target is None:
@@ -296,10 +401,125 @@ def lane_hosts(lane: str, hosts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         gpu_hosts = [h for h in hosts if h.get("gpu", False)]
         if not gpu_hosts:
             return []
-        control = [h for h in hosts if h["role"] in {"k1s-core", "k1s-edge-core"}]
+        control = [h for h in hosts if h["role"] in {"k1s-core", "k1s-ha-core", "k1s-edge-core"}]
         return ensure_unique_hosts([*control, *gpu_hosts])
 
+    if lane == "ha_control_plane":
+        if not ha_cores:
+            return []
+        return ensure_unique_hosts(list(hosts))
+
     raise SmokeError(f"unsupported lane: {lane}")
+
+
+def _ha_urls_for_host(host: dict[str, Any], variant: dict[str, Any]) -> tuple[str, str]:
+    ha_cfg = variant.get("ha") if isinstance(variant.get("ha"), dict) else {}
+    controller_scheme = str(ha_cfg.get("controller_scheme") or "http").strip()
+    apishim_scheme = str(ha_cfg.get("apishim_scheme") or "http").strip()
+    controller_port = int(variant["k1s"]["controller_port"])
+    apishim_port = int(variant["k1s"].get("apishim_port", 8445))
+    ip = str(host["ip"])
+    return (
+        f"{controller_scheme}://{ip}:{controller_port}",
+        f"{apishim_scheme}://{ip}:{apishim_port}",
+    )
+
+
+def build_ha_lane_config(
+    variant: dict[str, Any], lane_hosts_full: list[dict[str, Any]]
+) -> dict[str, Any]:
+    ha_cfg = variant.get("ha") if isinstance(variant.get("ha"), dict) else {}
+    core_nodes = []
+    for host in lane_hosts_full:
+        if host["role"] != "k1s-ha-core":
+            continue
+        controller_url, apishim_url = _ha_urls_for_host(host, variant)
+        core_nodes.append(
+            {
+                "name": host["name"],
+                "node_id": host.get("node_id") or host["name"],
+                "ip": host["ip"],
+                "controller_url": controller_url,
+                "apishim_url": apishim_url,
+            }
+        )
+    controller_metrics_url = str(ha_cfg.get("controller_metrics_url") or "").strip()
+    if not controller_metrics_url and core_nodes:
+        controller_metrics_url = f"{core_nodes[0]['controller_url'].rstrip('/')}/metrics"
+    build = ae_build_info()
+    return {
+        "core_nodes": core_nodes,
+        "runtime_nodes": [
+            {
+                "name": host["name"],
+                "node_id": host.get("node_id") or host["name"],
+                "ip": host["ip"],
+                "agent_url": f"http://{host['ip']}:{int(host.get('agent_port') or 9111)}",
+                "labels": parse_label_csv(host.get("node_labels")),
+            }
+            for host in lane_hosts_full
+            if host["role"] == "k1s-core-node"
+        ],
+        "edge_runtime_nodes": [
+            {
+                "name": host["name"],
+                "node_id": host.get("node_id") or host["name"],
+                "ip": host["ip"],
+                "site_id": str(host.get("site_id") or "").strip(),
+                "agent_url": f"http://{host['ip']}:{int(host.get('agent_port') or 9112)}",
+                "labels": parse_label_csv(host.get("node_labels")),
+            }
+            for host in lane_hosts_full
+            if host["role"] == "k1s-edge-node"
+        ],
+        "edge_core_sites": sorted(
+            {
+                str(host.get("site_id") or "").strip()
+                for host in lane_hosts_full
+                if host["role"] == "k1s-edge-core" and str(host.get("site_id") or "").strip()
+            }
+        ),
+        "controller_metrics_url": controller_metrics_url,
+        "etcd_endpoints": [str(item) for item in ha_cfg.get("etcd_endpoints") or []],
+        "etcd_prefix": str(ha_cfg.get("etcd_prefix") or "").strip(),
+        "nats_url": str(ha_cfg.get("nats_url") or "").strip(),
+        "hub_nodes": list(ha_cfg.get("hub_nodes") or []),
+        "edge_sites": list(ha_cfg.get("edge_sites") or []),
+        "drills": dict(ha_cfg.get("drills") or {}),
+        "expected_version": str(
+            ha_cfg.get("expected_version") or build.get("version") or ""
+        ).strip(),
+        "expected_sha": str(ha_cfg.get("expected_sha") or "").strip(),
+    }
+
+
+def uses_vm_managed_ha_infra(variant: dict[str, Any], requested_lanes: list[str]) -> bool:
+    if "ha_control_plane" not in requested_lanes:
+        return False
+    ha_cfg = variant.get("ha") if isinstance(variant.get("ha"), dict) else {}
+    hosts = variant.get("hosts") if isinstance(variant.get("hosts"), list) else []
+    core_hosts = [
+        host for host in hosts if isinstance(host, dict) and host.get("role") == "k1s-ha-core"
+    ]
+    if len(core_hosts) != 3:
+        return False
+    core_ips = {
+        str(host.get("ip") or "").strip()
+        for host in core_hosts
+        if str(host.get("ip") or "").strip()
+    }
+    if len(core_ips) != 3:
+        return False
+    etcd_hosts = {
+        _url_host(item) for item in ha_cfg.get("etcd_endpoints") or [] if _url_host(str(item))
+    }
+    hub_hosts = {
+        _url_host(str(node.get("monitor_url") or ""))
+        for node in ha_cfg.get("hub_nodes") or []
+        if isinstance(node, dict) and _url_host(str(node.get("monitor_url") or ""))
+    }
+    nats_host = _url_host(str(ha_cfg.get("nats_url") or ""))
+    return bool(etcd_hosts == core_ips and hub_hosts == core_ips and nats_host in core_ips)
 
 
 def parse_log_time(line: str) -> datetime | None:
@@ -325,13 +545,15 @@ def host_component_name(host: dict[str, Any]) -> str:
     return ""
 
 
-def host_service_check_command(host: dict[str, Any], controller_port: int) -> str:
+def host_service_check_command(
+    host: dict[str, Any], controller_port: int, apishim_port: int
+) -> str:
     role = host["role"]
     if role == "k1s-core":
         return (
             f"EP='{EP}'; "
-            "CID=$(sudo crictl --runtime-endpoint \"$EP\" ps --label ae.stack.component=k1s-core-nats-hub -q | head -n1); "
-            "if [ -z \"$CID\" ]; then CID=$(sudo crictl --runtime-endpoint \"$EP\" ps -a --label ae.stack.component=k1s-core-nats-hub -q | head -n1); fi; "
+            'CID=$(sudo crictl --runtime-endpoint "$EP" ps --label ae.stack.component=k1s-core-nats-hub -q | head -n1); '
+            'if [ -z "$CID" ]; then CID=$(sudo crictl --runtime-endpoint "$EP" ps -a --label ae.stack.component=k1s-core-nats-hub -q | head -n1); fi; '
             "if [ -z \"$CID\" ]; then echo 'nats_hub_not_running'; exit 10; fi; "
             "if ! ss -ltn | awk '$4 ~ /:7422$/ {f=1} END {exit(f?0:1)}'; then echo 'leaf_port_7422_not_listening'; exit 11; fi; "
             f"if ! ss -ltn | awk '$4 ~ /:{controller_port}$/ {{f=1}} END {{exit(f?0:1)}}'; then "
@@ -339,12 +561,29 @@ def host_service_check_command(host: dict[str, Any], controller_port: int) -> st
             "echo 'ok'"
         )
 
+    if role == "k1s-ha-core":
+        return (
+            f"if ! ss -ltn | awk '$4 ~ /:{controller_port}$/ {{f=1}} END {{exit(f?0:1)}}'; then "
+            "echo 'controller_port_not_listening'; exit 40; fi; "
+            f"if ! ss -ltn | awk '$4 ~ /:{apishim_port}$/ {{f=1}} END {{exit(f?0:1)}}'; then "
+            "echo 'apishim_port_not_listening'; exit 41; fi; "
+            "echo 'ok'"
+        )
+
+    if role == "k1s-core-node":
+        port = int(host.get("agent_port") or 9111)
+        return (
+            f"if ss -ltn | awk '$4 ~ /:{port}$/ {{f=1}} END {{exit(f?0:1)}}'; then echo 'ok'; exit 0; fi; "
+            "if pgrep -f 'k1s-core-node|ae.node' >/dev/null 2>&1; then echo 'agent_process_running'; exit 0; fi; "
+            "echo 'core_node_agent_not_ready'; exit 13"
+        )
+
     if role == "k1s-edge-core":
         component = host_component_name(host)
         return (
             f"EP='{EP}'; "
-            f"CID=$(sudo crictl --runtime-endpoint \"$EP\" ps --label ae.stack.component={component} -q | head -n1); "
-            f"if [ -z \"$CID\" ]; then CID=$(sudo crictl --runtime-endpoint \"$EP\" ps -a --label ae.stack.component={component} -q | head -n1); fi; "
+            f'CID=$(sudo crictl --runtime-endpoint "$EP" ps --label ae.stack.component={component} -q | head -n1); '
+            f'if [ -z "$CID" ]; then CID=$(sudo crictl --runtime-endpoint "$EP" ps -a --label ae.stack.component={component} -q | head -n1); fi; '
             "if [ -z \"$CID\" ]; then echo 'edge_nats_not_running'; exit 20; fi; "
             "echo 'ok'"
         )
@@ -364,13 +603,13 @@ def nats_hub_logs(core_ip: str, *, lines: int = 4000) -> tuple[str, str]:
     cmd = (
         f"EP='{EP}'; "
         "cids=$({ "
-        "sudo crictl --runtime-endpoint \"$EP\" ps --label ae.stack.component=k1s-core-nats-hub -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps -a --label ae.stack.component=k1s-core-nats-hub -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps --name k1s-core-nats-hub -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps -a --name k1s-core-nats-hub -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps --name nats -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps -a --name nats -q; "
-        "sudo crictl --runtime-endpoint \"$EP\" ps -a | "
+        'sudo crictl --runtime-endpoint "$EP" ps --label ae.stack.component=k1s-core-nats-hub -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps -a --label ae.stack.component=k1s-core-nats-hub -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps --name k1s-core-nats-hub -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps -a --name k1s-core-nats-hub -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps --name nats -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps -a --name nats -q; '
+        'sudo crictl --runtime-endpoint "$EP" ps -a | '
         "awk 'NR>1 && ($0 ~ /k1s-core-nats-hub|[[:space:]]nats[[:space:]]|\\/nats:|\\/nats@/) {print $1}'; "
         "} 2>/dev/null | awk 'NF && !seen[$1]++'); "
         "if [ -z \"$cids\" ]; then echo '__NATS_LOG_STATUS__:cid_not_found' 1>&2; exit 0; fi; "
@@ -378,8 +617,8 @@ def nats_hub_logs(core_ip: str, *, lines: int = 4000) -> tuple[str, str]:
         "had_log_path=0; "
         "had_log_path_file=0; "
         "for cid in $cids; do "
-        "  if out=$(sudo crictl --runtime-endpoint \"$EP\" logs \"$cid\" 2>/dev/null); then "
-        "    if [ -n \"$out\" ]; then "
+        '  if out=$(sudo crictl --runtime-endpoint "$EP" logs "$cid" 2>/dev/null); then '
+        '    if [ -n "$out" ]; then '
         f"      printf '%s\\n' \"$out\" | tail -n {lines}; "
         "      echo '__NATS_LOG_STATUS__:ok' 1>&2; "
         "      exit 0; "
@@ -387,21 +626,21 @@ def nats_hub_logs(core_ip: str, *, lines: int = 4000) -> tuple[str, str]:
         "  else "
         "    had_log_error=1; "
         "  fi; "
-        "  log_path=$(sudo crictl --runtime-endpoint \"$EP\" inspect \"$cid\" 2>/dev/null "
-        "    | sed -n 's/.*\"logPath\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' | head -n1); "
-        "  if [ -z \"$log_path\" ]; then continue; fi; "
+        '  log_path=$(sudo crictl --runtime-endpoint "$EP" inspect "$cid" 2>/dev/null '
+        '    | sed -n \'s/.*"logPath"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' | head -n1); '
+        '  if [ -z "$log_path" ]; then continue; fi; '
         "  had_log_path=1; "
-        "  if ! sudo test -f \"$log_path\"; then continue; fi; "
+        '  if ! sudo test -f "$log_path"; then continue; fi; '
         "  had_log_path_file=1; "
-        f"  out=$(sudo tail -n {lines} \"$log_path\" 2>/dev/null || true); "
-        "  if [ -n \"$out\" ]; then "
+        f'  out=$(sudo tail -n {lines} "$log_path" 2>/dev/null || true); '
+        '  if [ -n "$out" ]; then '
         "    printf '%s\\n' \"$out\"; "
         "    echo '__NATS_LOG_STATUS__:logpath_ok' 1>&2; "
         "    exit 0; "
         "  fi; "
         "done; "
         "if [ \"$had_log_error\" -eq 1 ]; then echo '__NATS_LOG_STATUS__:logs_cmd_failed' 1>&2; exit 0; fi; "
-        "if [ \"$had_log_path\" -eq 1 ] && [ \"$had_log_path_file\" -eq 0 ]; then "
+        'if [ "$had_log_path" -eq 1 ] && [ "$had_log_path_file" -eq 0 ]; then '
         "  echo '__NATS_LOG_STATUS__:logpath_missing' 1>&2; exit 0; "
         "fi; "
         "if [ \"$had_log_path_file\" -eq 1 ]; then echo '__NATS_LOG_STATUS__:logpath_empty' 1>&2; exit 0; fi; "
@@ -424,18 +663,18 @@ def nats_edge_logs(edge: dict[str, Any], *, lines: int = 2500) -> tuple[str, str
     cmd = (
         f"EP='{EP}'; "
         f"cids=$({{ "
-        f"sudo crictl --runtime-endpoint \"$EP\" ps --label ae.stack.component={component} -q; "
-        f"sudo crictl --runtime-endpoint \"$EP\" ps -a --label ae.stack.component={component} -q; "
-        f"sudo crictl --runtime-endpoint \"$EP\" ps --name {component} -q; "
-        f"sudo crictl --runtime-endpoint \"$EP\" ps -a --name {component} -q; "
+        f'sudo crictl --runtime-endpoint "$EP" ps --label ae.stack.component={component} -q; '
+        f'sudo crictl --runtime-endpoint "$EP" ps -a --label ae.stack.component={component} -q; '
+        f'sudo crictl --runtime-endpoint "$EP" ps --name {component} -q; '
+        f'sudo crictl --runtime-endpoint "$EP" ps -a --name {component} -q; '
         "} 2>/dev/null | awk 'NF && !seen[$1]++'); "
         "if [ -z \"$cids\" ]; then echo '__NATS_EDGE_LOG_STATUS__:cid_not_found' 1>&2; exit 0; fi; "
         "had_log_error=0; "
         "had_log_path=0; "
         "had_log_path_file=0; "
         "for cid in $cids; do "
-        "  if out=$(sudo crictl --runtime-endpoint \"$EP\" logs \"$cid\" 2>/dev/null); then "
-        "    if [ -n \"$out\" ]; then "
+        '  if out=$(sudo crictl --runtime-endpoint "$EP" logs "$cid" 2>/dev/null); then '
+        '    if [ -n "$out" ]; then '
         f"      printf '%s\\n' \"$out\" | tail -n {lines}; "
         "      echo '__NATS_EDGE_LOG_STATUS__:ok' 1>&2; "
         "      exit 0; "
@@ -443,21 +682,21 @@ def nats_edge_logs(edge: dict[str, Any], *, lines: int = 2500) -> tuple[str, str
         "  else "
         "    had_log_error=1; "
         "  fi; "
-        "  log_path=$(sudo crictl --runtime-endpoint \"$EP\" inspect \"$cid\" 2>/dev/null "
-        "    | sed -n 's/.*\"logPath\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' | head -n1); "
-        "  if [ -z \"$log_path\" ]; then continue; fi; "
+        '  log_path=$(sudo crictl --runtime-endpoint "$EP" inspect "$cid" 2>/dev/null '
+        '    | sed -n \'s/.*"logPath"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' | head -n1); '
+        '  if [ -z "$log_path" ]; then continue; fi; '
         "  had_log_path=1; "
-        "  if ! sudo test -f \"$log_path\"; then continue; fi; "
+        '  if ! sudo test -f "$log_path"; then continue; fi; '
         "  had_log_path_file=1; "
-        f"  out=$(sudo tail -n {lines} \"$log_path\" 2>/dev/null || true); "
-        "  if [ -n \"$out\" ]; then "
+        f'  out=$(sudo tail -n {lines} "$log_path" 2>/dev/null || true); '
+        '  if [ -n "$out" ]; then '
         "    printf '%s\\n' \"$out\"; "
         "    echo '__NATS_EDGE_LOG_STATUS__:logpath_ok' 1>&2; "
         "    exit 0; "
         "  fi; "
         "done; "
         "if [ \"$had_log_error\" -eq 1 ]; then echo '__NATS_EDGE_LOG_STATUS__:logs_cmd_failed' 1>&2; exit 0; fi; "
-        "if [ \"$had_log_path\" -eq 1 ] && [ \"$had_log_path_file\" -eq 0 ]; then "
+        'if [ "$had_log_path" -eq 1 ] && [ "$had_log_path_file" -eq 0 ]; then '
         "  echo '__NATS_EDGE_LOG_STATUS__:logpath_missing' 1>&2; exit 0; "
         "fi; "
         "if [ \"$had_log_path_file\" -eq 1 ]; then echo '__NATS_EDGE_LOG_STATUS__:logpath_empty' 1>&2; exit 0; fi; "
@@ -540,6 +779,482 @@ def leaf_matches_edge(leaf: dict[str, Any], edge: dict[str, Any]) -> bool:
     return any(alias and (leaf_name == alias or leaf_name.endswith(alias)) for alias in aliases)
 
 
+def _first_output_line(stdout: str | None, stderr: str | None) -> str:
+    for source in (stdout or "", stderr or ""):
+        lines = [line.strip() for line in source.splitlines() if line.strip()]
+        if lines:
+            return lines[0]
+    return ""
+
+
+def _run_helper_check(
+    name: str,
+    command: list[str],
+    *,
+    timeout_s: int,
+    env: dict[str, str] | None = None,
+    optional: bool = False,
+) -> dict[str, Any]:
+    started = utc_now()
+    try:
+        res = run_cmd(command, timeout=timeout_s, check=False, env=env)
+        ok = res.returncode == 0
+        detail = "ok" if ok else (_first_output_line(res.stdout, res.stderr) or "command failed")
+        payload = {
+            "command": command,
+            "stdout": res.stdout,
+            "stderr": res.stderr,
+            "returncode": res.returncode,
+        }
+    except SmokeError as exc:
+        ok = False
+        detail = str(exc)
+        payload = {"command": command, "error": str(exc)}
+    ended = utc_now()
+    return {
+        "name": name,
+        "status": "passed" if ok else "failed",
+        "detail": detail,
+        "optional": optional,
+        "started_at": iso(started),
+        "ended_at": iso(ended),
+        "duration_s": round((ended - started).total_seconds(), 3),
+        "payload": payload,
+    }
+
+
+def _ha_helper_timeout(name: str, phase_timeout_s: int) -> int:
+    if name.startswith("ha_edge_precheck:"):
+        cap = DEFAULT_HA_HELPER_TIMEOUTS["ha_edge_precheck"]
+    elif name.startswith("ha_edge_verify:"):
+        cap = DEFAULT_HA_HELPER_TIMEOUTS["ha_edge_verify"]
+    elif name.startswith("ha_edge_runtime_ingress_smoke:"):
+        cap = DEFAULT_HA_HELPER_TIMEOUTS["ha_edge_runtime_ingress_smoke"]
+    else:
+        cap = DEFAULT_HA_HELPER_TIMEOUTS.get(name, phase_timeout_s)
+    return max(1, min(int(phase_timeout_s), int(cap)))
+
+
+def _skip_helper_check(name: str, detail: str, *, optional: bool = False) -> dict[str, Any]:
+    now = utc_now()
+    return {
+        "name": name,
+        "status": "skipped",
+        "detail": detail,
+        "optional": optional,
+        "started_at": iso(now),
+        "ended_at": iso(now),
+        "duration_s": 0.0,
+        "payload": {},
+    }
+
+
+def _ha_env(config: dict[str, Any]) -> dict[str, str]:
+    env = dict(os.environ)
+    controller = (config.get("core_nodes") or [None])[0]
+    if isinstance(controller, dict):
+        env["AE_CONTROLLER_ID"] = str(controller.get("node_id") or controller.get("name") or "")
+        env["AE_CONTROLLER_ADVERTISE_ADDR"] = str(controller.get("controller_url") or "")
+    env["AE_STATE_BACKEND"] = str(env.get("AE_STATE_BACKEND") or "etcd")
+    env["AE_HA_MODE"] = str(env.get("AE_HA_MODE") or "1")
+    env["AE_JS_REPLICAS"] = str(env.get("AE_JS_REPLICAS") or "3")
+    env["AE_ETCD_ENDPOINTS"] = ",".join(str(item) for item in config.get("etcd_endpoints") or [])
+    env["AE_ETCD_PREFIX"] = str(config.get("etcd_prefix") or "")
+    env["AE_NATS_URL"] = str(config.get("nats_url") or "")
+    ca_bundle = ROOT / "state" / "profiles" / "k1s-ha-core" / "apishim.ca.crt"
+    if ca_bundle.is_file():
+        env["AE_APISHIM_CA_BUNDLE"] = str(ca_bundle)
+    return env
+
+
+def _ha_node_args(config: dict[str, Any]) -> list[str]:
+    args: list[str] = []
+    for node in config.get("core_nodes") or []:
+        args.extend(
+            [
+                "--node",
+                f"{node['name']}={node['controller_url']},{node['apishim_url']}",
+            ]
+        )
+    return args
+
+
+def run_ha_acceptance_checks(config: dict[str, Any], *, timeout_s: int) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    issues: list[str] = []
+    env = _ha_env(config)
+    scripts_dir = ROOT / "scripts" / "dev"
+
+    if not config.get("core_nodes"):
+        issues.append("no_k1s-ha-core_hosts")
+    if not config.get("controller_metrics_url"):
+        issues.append("missing_controller_metrics_url")
+    if not config.get("etcd_endpoints"):
+        issues.append("missing_etcd_endpoints")
+    if not config.get("etcd_prefix"):
+        issues.append("missing_etcd_prefix")
+    if not config.get("nats_url"):
+        issues.append("missing_nats_url")
+    if not config.get("hub_nodes"):
+        issues.append("missing_hub_nodes")
+    edge_core_sites = set(config.get("edge_core_sites") or [])
+    configured_sites = {
+        str(site.get("site_id") or "").strip() for site in config.get("edge_sites") or []
+    }
+    missing_edge_sites = sorted(
+        site for site in edge_core_sites if site and site not in configured_sites
+    )
+    for site_id in missing_edge_sites:
+        issues.append(f"missing_edge_site_config:{site_id}")
+
+    if issues:
+        return {
+            "status": "failed",
+            "detail": "; ".join(issues),
+            "checks": [_skip_helper_check("ha_acceptance", "; ".join(issues))],
+        }
+
+    def _append_required_check(name: str, command: list[str]) -> None:
+        checks.append(
+            _run_helper_check(
+                name,
+                command,
+                timeout_s=_ha_helper_timeout(name, timeout_s),
+                env=env,
+            )
+        )
+
+    def _append_optional_check(name: str, command: list[str]) -> None:
+        checks.append(
+            _run_helper_check(
+                name,
+                command,
+                timeout_s=_ha_helper_timeout(name, timeout_s),
+                optional=True,
+            )
+        )
+
+    _append_required_check(
+        "ha_core_preflight",
+        [sys.executable, str(scripts_dir / "ha_core_preflight.py")],
+    )
+    _append_required_check(
+        "ha_core_precheck",
+        [
+            sys.executable,
+            str(scripts_dir / "ha_core_upgrade.py"),
+            "precheck",
+            "--metrics-url",
+            str(config["controller_metrics_url"]),
+            "--etcd-endpoints",
+            ",".join(config["etcd_endpoints"]),
+            "--etcd-prefix",
+            str(config["etcd_prefix"]),
+            "--nats-urls",
+            str(config["nats_url"]),
+        ],
+    )
+    cluster_cmd = [
+        sys.executable,
+        str(scripts_dir / "ha_core_upgrade.py"),
+        "cluster-verify",
+        *_ha_node_args(config),
+        "--expected-version",
+        str(config["expected_version"]),
+    ]
+    if config.get("expected_sha"):
+        cluster_cmd.extend(["--expected-sha", str(config["expected_sha"])])
+    _append_required_check("ha_core_cluster_verify", cluster_cmd)
+
+    hub_cmd = [
+        sys.executable,
+        str(scripts_dir / "ha_transport_upgrade.py"),
+        "precheck",
+        "--controller-metrics-url",
+        str(config["controller_metrics_url"]),
+    ]
+    for node in config.get("hub_nodes") or []:
+        hub_cmd.extend(["--node", f"{node['name']}={node['monitor_url']}"])
+    _append_required_check("ha_hub_transport_precheck", hub_cmd)
+
+    runtime_nodes = list(config.get("runtime_nodes") or [])
+    if runtime_nodes:
+        runtime_node = runtime_nodes[0]
+        core_ingress_ip = str(config["core_nodes"][0].get("ip") or "").strip()
+        if not core_ingress_ip:
+            core_ingress_ip = _url_host(str(config["core_nodes"][0].get("controller_url") or ""))
+        precheck_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_core_node_smoke.py"),
+            "precheck",
+            "--node-id",
+            str(runtime_node["node_id"]),
+        ]
+        for key, value in sorted((runtime_node.get("labels") or {}).items()):
+            precheck_cmd.extend(["--label", f"{key}={value}"])
+        _append_required_check("ha_attached_node_precheck", precheck_cmd)
+
+        ingress_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_core_node_smoke.py"),
+            "ingress-smoke",
+            "--node-id",
+            str(runtime_node["node_id"]),
+            "--manifest",
+            str(ROOT / "docs" / "site" / "examples" / "ha-web-smoke.yaml"),
+            "--app-name",
+            "ha-web-smoke",
+            "--ingress-host",
+            "ha-web-smoke.home.arpa",
+            "--ingress-port",
+            "10443",
+            "--resolve-ip",
+            core_ingress_ip,
+            "--direct-probe-host",
+            core_ingress_ip,
+            "--health-path",
+            "/healthz",
+            "--root-path",
+            "/",
+            "--expected-text",
+            "Shell + Port-Forward Smoke",
+            "--timeout",
+            str(min(int(timeout_s), ATTACHED_NODE_INGRESS_TIMEOUT_S)),
+            "--direct-probe-timeout",
+            str(min(int(timeout_s), ATTACHED_NODE_DIRECT_PROBE_TIMEOUT_S)),
+            "--ingress-timeout",
+            str(min(int(timeout_s), ATTACHED_NODE_INGRESS_CHECK_TIMEOUT_S)),
+            "--poll",
+            "2",
+            "--purge-history",
+        ]
+        for key, value in sorted((runtime_node.get("labels") or {}).items()):
+            ingress_cmd.extend(["--label", f"{key}={value}"])
+        _append_required_check("ha_attached_node_ingress_smoke", ingress_cmd)
+
+    for site in config.get("edge_sites") or []:
+        expected_gateways = [str(item) for item in site.get("expected_gateways") or []]
+        precheck_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_edge_transport.py"),
+            "precheck",
+            "--site",
+            f"{site['site_id']}={site['monitor_url']}",
+            "--controller-metrics-url",
+            str(config["controller_metrics_url"]),
+        ]
+        verify_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_edge_transport.py"),
+            "site-verify",
+            "--site",
+            f"{site['site_id']}={site['monitor_url']}",
+            "--controller-metrics-url",
+            str(config["controller_metrics_url"]),
+            "--require-gateway-converged",
+        ]
+        for gateway in expected_gateways:
+            precheck_cmd.extend(["--expected-gateway", gateway])
+            verify_cmd.extend(["--expected-gateway", gateway])
+        _append_required_check(f"ha_edge_precheck:{site['site_id']}", precheck_cmd)
+        _append_required_check(f"ha_edge_verify:{site['site_id']}", verify_cmd)
+
+    edge_runtime_nodes = list(config.get("edge_runtime_nodes") or [])
+    if edge_runtime_nodes and config.get("edge_sites"):
+        edge_runtime = edge_runtime_nodes[0]
+        edge_site = next(
+            (
+                site
+                for site in config.get("edge_sites") or []
+                if str(site.get("site_id") or "").strip()
+                == str(edge_runtime.get("site_id") or "").strip()
+            ),
+            None,
+        )
+        target_probe_host = _url_host(
+            edge_site.get("monitor_url") if isinstance(edge_site, dict) else ""
+        )
+        edge_runtime_ip = str(edge_runtime.get("ip") or "").strip()
+        ingress_cmd = [
+            sys.executable,
+            str(scripts_dir / "ha_core_node_smoke.py"),
+            "ingress-smoke",
+            "--node-id",
+            str(edge_runtime["node_id"]),
+            "--manifest",
+            str(ROOT / "docs" / "site" / "examples" / "ha-web-smoke-edge.yaml"),
+            "--app-name",
+            "ha-edge-web-smoke",
+            "--ingress-host",
+            "ha-edge-web-smoke.home.arpa",
+            "--ingress-port",
+            "10443",
+            "--resolve-ip",
+            str(config["core_nodes"][0]["ip"]),
+            "--health-path",
+            "/healthz",
+            "--root-path",
+            "/",
+            "--expected-text",
+            "Shell + Port-Forward Smoke",
+            "--timeout",
+            str(min(int(timeout_s), EDGE_RUNTIME_INGRESS_TIMEOUT_S)),
+            "--ingress-timeout",
+            str(min(int(timeout_s), EDGE_RUNTIME_INGRESS_CHECK_TIMEOUT_S)),
+            "--poll",
+            "2",
+            "--purge-history",
+        ]
+        if target_probe_host and edge_runtime_ip:
+            ingress_cmd.extend(
+                [
+                    "--target-probe-host",
+                    target_probe_host,
+                    "--target-probe-user",
+                    "ae",
+                    "--target-probe-url",
+                    f"http://{edge_runtime_ip}:18081/healthz",
+                    "--target-probe-timeout",
+                    str(min(int(timeout_s), EDGE_RUNTIME_TARGET_PROBE_TIMEOUT_S)),
+                ]
+            )
+        for key, value in sorted((edge_runtime.get("labels") or {}).items()):
+            ingress_cmd.extend(["--label", f"{key}={value}"])
+        _append_required_check(
+            f"ha_edge_runtime_ingress_smoke:{edge_runtime.get('site_id') or edge_runtime['node_id']}",
+            ingress_cmd,
+        )
+
+    required_failures = [
+        check for check in checks if check["status"] == "failed" and not check["optional"]
+    ]
+
+    drills = config.get("drills") if isinstance(config.get("drills"), dict) else {}
+    leader_failover_command = str(drills.get("leader_failover_command") or "").strip()
+    if leader_failover_command:
+        if required_failures:
+            checks.append(
+                _skip_helper_check(
+                    "ha_drill_leader_failover",
+                    "skipped after required HA failure",
+                    optional=True,
+                )
+            )
+        else:
+            _append_optional_check(
+                "ha_drill_leader_failover",
+                [
+                    sys.executable,
+                    str(scripts_dir / "ha_core_drills.py"),
+                    "leader-failover",
+                    "--command",
+                    leader_failover_command,
+                    "--etcd-endpoints",
+                    ",".join(config["etcd_endpoints"]),
+                    "--etcd-prefix",
+                    str(config["etcd_prefix"]),
+                    "--require-controller-change",
+                ],
+            )
+    else:
+        checks.append(
+            _skip_helper_check(
+                "ha_drill_leader_failover",
+                "not configured in variant.ha.drills.leader_failover_command",
+                optional=True,
+            )
+        )
+
+    etcd_restart_command = str(drills.get("etcd_restart_command") or "").strip()
+    if etcd_restart_command:
+        if required_failures:
+            checks.append(
+                _skip_helper_check(
+                    "ha_drill_etcd_restart",
+                    "skipped after required HA failure",
+                    optional=True,
+                )
+            )
+        else:
+            _append_optional_check(
+                "ha_drill_etcd_restart",
+                [
+                    sys.executable,
+                    str(scripts_dir / "ha_core_drills.py"),
+                    "etcd-restart",
+                    "--command",
+                    etcd_restart_command,
+                    "--metrics-url",
+                    str(config["controller_metrics_url"]),
+                    "--etcd-endpoints",
+                    ",".join(config["etcd_endpoints"]),
+                    "--etcd-prefix",
+                    str(config["etcd_prefix"]),
+                ],
+            )
+    else:
+        checks.append(
+            _skip_helper_check(
+                "ha_drill_etcd_restart",
+                "not configured in variant.ha.drills.etcd_restart_command",
+                optional=True,
+            )
+        )
+
+    transport_recovery_command = str(drills.get("transport_recovery_command") or "").strip()
+    first_site = next(iter(config.get("edge_sites") or []), None)
+    if transport_recovery_command and isinstance(first_site, dict):
+        if required_failures:
+            checks.append(
+                _skip_helper_check(
+                    "ha_drill_transport_recovery",
+                    "skipped after required HA failure",
+                    optional=True,
+                )
+            )
+        else:
+            _append_optional_check(
+                "ha_drill_transport_recovery",
+                [
+                    sys.executable,
+                    str(scripts_dir / "ha_core_drills.py"),
+                    "transport-recovery",
+                    "--command",
+                    transport_recovery_command,
+                    "--metrics-url",
+                    str(config["controller_metrics_url"]),
+                    "--etcd-endpoints",
+                    ",".join(config["etcd_endpoints"]),
+                    "--etcd-prefix",
+                    str(config["etcd_prefix"]),
+                    "--site",
+                    str(first_site["site_id"]),
+                ],
+            )
+    else:
+        checks.append(
+            _skip_helper_check(
+                "ha_drill_transport_recovery",
+                "not configured in variant.ha.drills.transport_recovery_command",
+                optional=True,
+            )
+        )
+
+    required_failures = [
+        check for check in checks if check["status"] == "failed" and not check["optional"]
+    ]
+    status = "failed" if required_failures else "passed"
+    detail = "ok" if status == "passed" else "; ".join(check["name"] for check in required_failures)
+    return {
+        "status": status,
+        "detail": detail,
+        "checks": checks,
+        "core_nodes": config["core_nodes"],
+        "hub_nodes": config["hub_nodes"],
+        "edge_sites": config["edge_sites"],
+    }
+
+
 def status_rank(status: str) -> int:
     if status == "failed":
         return 3
@@ -581,7 +1296,9 @@ def smoke_v2(args: argparse.Namespace) -> int:
         raise SmokeError(f"variant not found: {variant_path}")
 
     run_id = args.run_id or os.environ.get("RUN_ID") or default_run_id()
-    output_root = Path(args.output_root).expanduser().resolve() if args.output_root else ROOT / "runs"
+    output_root = (
+        Path(args.output_root).expanduser().resolve() if args.output_root else ROOT / "runs"
+    )
     run_dir = output_root / run_id
     lanes_dir = run_dir / "lanes"
     logs_dir = run_dir / "logs"
@@ -592,8 +1309,14 @@ def smoke_v2(args: argparse.Namespace) -> int:
     variant = load_variant(variant_path)
 
     smoke_cfg = variant.get("smoke") if isinstance(variant.get("smoke"), dict) else {}
-    smoke_defaults = smoke_cfg.get("defaults") if isinstance(smoke_cfg.get("defaults"), dict) else {}
-    cfg_phase_timeouts = smoke_defaults.get("phase_timeouts") if isinstance(smoke_defaults.get("phase_timeouts"), dict) else {}
+    smoke_defaults = (
+        smoke_cfg.get("defaults") if isinstance(smoke_cfg.get("defaults"), dict) else {}
+    )
+    cfg_phase_timeouts = (
+        smoke_defaults.get("phase_timeouts")
+        if isinstance(smoke_defaults.get("phase_timeouts"), dict)
+        else {}
+    )
 
     phase_timeouts = dict(DEFAULT_PHASE_TIMEOUTS)
     for key in phase_timeouts:
@@ -602,15 +1325,22 @@ def smoke_v2(args: argparse.Namespace) -> int:
     phase_timeouts.update(parse_phase_overrides(args.phase_timeout or []))
 
     retry_policy = dict(DEFAULT_RETRY_POLICY)
-    cfg_retry = smoke_defaults.get("retry_policy") if isinstance(smoke_defaults.get("retry_policy"), dict) else {}
+    cfg_retry = (
+        smoke_defaults.get("retry_policy")
+        if isinstance(smoke_defaults.get("retry_policy"), dict)
+        else {}
+    )
     for key in retry_policy:
         if key in cfg_retry:
             retry_policy[key] = float(cfg_retry[key])
     cli_retry = parse_retry_policy(args.retry_policy)
     retry_policy.update(cli_retry)
 
-    default_lanes = smoke_cfg.get("lanes") if isinstance(smoke_cfg.get("lanes"), list) else DEFAULT_LANES
+    default_lanes = (
+        smoke_cfg.get("lanes") if isinstance(smoke_cfg.get("lanes"), list) else DEFAULT_LANES
+    )
     requested_lanes = parse_csv(args.lanes) if args.lanes else [str(x) for x in default_lanes]
+    vm_managed_ha_infra = uses_vm_managed_ha_infra(variant, requested_lanes)
 
     if args.down:
         args.auto_down_on_success = True
@@ -619,13 +1349,16 @@ def smoke_v2(args: argparse.Namespace) -> int:
     run_started = utc_now()
     lane_plans: list[dict[str, Any]] = []
     for lane_name in requested_lanes:
-        if lane_name not in DEFAULT_LANES:
+        if lane_name not in SUPPORTED_LANES:
             raise SmokeError(f"unknown lane: {lane_name}")
         selected_hosts = lane_hosts(lane_name, variant["hosts"])
         lane_plans.append(
             {
                 "name": lane_name,
-                "hosts": [{"name": h["name"], "role": h["role"], "gpu": bool(h.get("gpu", False))} for h in selected_hosts],
+                "hosts": [
+                    {"name": h["name"], "role": h["role"], "gpu": bool(h.get("gpu", False))}
+                    for h in selected_hosts
+                ],
                 "host_count": len(selected_hosts),
                 "skipped": len(selected_hosts) == 0,
                 "skip_reason": "no matching hosts in variant" if not selected_hosts else "",
@@ -646,6 +1379,7 @@ def smoke_v2(args: argparse.Namespace) -> int:
             "fabric_validate": True,
             "functional_basic": True,
             "functional_advanced": bool(parse_csv(args.enable_advanced_checks)),
+            "ha_acceptance": True,
             "advanced_enabled": parse_csv(args.enable_advanced_checks),
             "disabled": parse_csv(args.disable_checks),
         },
@@ -658,7 +1392,10 @@ def smoke_v2(args: argparse.Namespace) -> int:
             "run_id": run_id,
             "variant_name": variant["name"],
             "status": "planned",
-            "lanes": [{"name": lane["name"], "status": "skipped" if lane["skipped"] else "planned"} for lane in lane_plans],
+            "lanes": [
+                {"name": lane["name"], "status": "skipped" if lane["skipped"] else "planned"}
+                for lane in lane_plans
+            ],
         }
         write_json(run_dir / "summary.json", summary)
         return 0
@@ -676,7 +1413,9 @@ def smoke_v2(args: argparse.Namespace) -> int:
         res = run_cmd(command, timeout=timeout_s, check=False, env=env)
         ended = utc_now()
         ok = res.returncode == 0
-        detail = "ok" if ok else ((res.stderr or res.stdout or "command failed").strip().splitlines()[:1] or ["failed"])[0]
+        stderr_tail = tail_lines(res.stderr)
+        stdout_tail = tail_lines(res.stdout)
+        detail = "ok" if ok else select_failure_detail(res.stderr, res.stdout)
         global_phases.append(
             {
                 "phase": phase,
@@ -687,6 +1426,8 @@ def smoke_v2(args: argparse.Namespace) -> int:
                 "attempts": 1,
                 "detail": detail,
                 "command": command,
+                "stderr_tail": stderr_tail,
+                "stdout_tail": stdout_tail,
             }
         )
         return ok
@@ -754,8 +1495,37 @@ def smoke_v2(args: argparse.Namespace) -> int:
             )
             return 1
 
+        if vm_managed_ha_infra:
+            shared_infra_ok = run_global_phase(
+                "ha_shared_infra",
+                [
+                    str(ROOT / "scripts" / "lab" / "vm" / "ha_shared_infra.sh"),
+                    "--variant",
+                    str(variant_path),
+                    "--run-id",
+                    run_id,
+                    "--execute",
+                ],
+                timeout_s=phase_timeouts["ha_shared_infra"],
+            )
+            if not shared_infra_ok:
+                write_json(run_dir / "global_phases.json", global_phases)
+                write_json(
+                    run_dir / "summary.json",
+                    {
+                        "run_id": run_id,
+                        "variant_name": variant["name"],
+                        "status": "failed",
+                        "reason": "ha_shared_infra failed",
+                        "global_phases": global_phases,
+                    },
+                )
+                return 1
+
         bootstrap_env = dict(os.environ)
-        bootstrap_env["AE_CRI_CACHE_SEED_MODE"] = os.environ.get("AE_CRI_CACHE_SEED_MODE", "required")
+        bootstrap_env["AE_CRI_CACHE_SEED_MODE"] = os.environ.get(
+            "AE_CRI_CACHE_SEED_MODE", "required"
+        )
         bootstrap_env["AE_CRI_CACHE_SEED_MANIFEST"] = str(seed_manifest_path)
         bootstrap_env["AE_CRI_CACHE_SEED_BUNDLE"] = os.environ.get(
             "AE_CRI_CACHE_SEED_BUNDLE",
@@ -818,6 +1588,7 @@ def smoke_v2(args: argparse.Namespace) -> int:
 
         hosts_by_name = {h["name"]: h for h in variant["hosts"]}
         lane_hosts_full = [hosts_by_name[h["name"]] for h in lane["hosts"]]
+        is_ha_lane = lane_name == "ha_control_plane"
 
         # service_ready
         if "service_ready" in disabled_checks:
@@ -839,13 +1610,14 @@ def smoke_v2(args: argparse.Namespace) -> int:
             host_failures = 0
             host_service_timeout = max(
                 60,
-                int(
-                    phase_timeouts["service_ready"]
-                    / max(1, len(lane_hosts_full))
-                ),
+                int(phase_timeouts["service_ready"] / max(1, len(lane_hosts_full))),
             )
             for host in lane_hosts_full:
-                command = host_service_check_command(host, int(variant["k1s"]["controller_port"]))
+                command = host_service_check_command(
+                    host,
+                    int(variant["k1s"]["controller_port"]),
+                    int(variant["k1s"].get("apishim_port", 8445)),
+                )
 
                 def _check_host(
                     host: dict[str, Any] = host, command: str = command
@@ -857,7 +1629,11 @@ def smoke_v2(args: argparse.Namespace) -> int:
                     ok = res.returncode == 0
                     detail = (res.stdout or res.stderr or "").strip().splitlines()
                     msg = detail[-1] if detail else "ok" if ok else "service_not_ready"
-                    return ok, msg, {"stdout": res.stdout, "stderr": res.stderr, "returncode": res.returncode}
+                    return (
+                        ok,
+                        msg,
+                        {"stdout": res.stdout, "stderr": res.stderr, "returncode": res.returncode},
+                    )
 
                 ok, attempts, detail, payload = with_retry(
                     _check_host,
@@ -898,7 +1674,23 @@ def smoke_v2(args: argparse.Namespace) -> int:
             }
 
         # fabric_validate
-        if "fabric_validate" in disabled_checks:
+        if is_ha_lane:
+            phase_status.append(
+                {
+                    "phase": "fabric_validate",
+                    "status": "skipped",
+                    "detail": "ha_control_plane lane uses ha_acceptance instead",
+                    "attempts": 0,
+                    "started_at": iso(utc_now()),
+                    "ended_at": iso(utc_now()),
+                    "duration_s": 0.0,
+                }
+            )
+            check_outputs["fabric_validate"] = {
+                "status": "skipped",
+                "reason": "ha_control_plane lane",
+            }
+        elif "fabric_validate" in disabled_checks:
             phase_status.append(
                 {
                     "phase": "fabric_validate",
@@ -955,7 +1747,9 @@ def smoke_v2(args: argparse.Namespace) -> int:
                         edge_log_status[edge["name"]] = edge_logs_reason
                         if edge_logs.strip():
                             edge_filtered = edge_logs.splitlines()
-                            edge_created, edge_js_ok, edge_auth_fail = nats_signal_counts(edge_filtered)
+                            edge_created, edge_js_ok, edge_auth_fail = nats_signal_counts(
+                                edge_filtered
+                            )
                             created = max(created, edge_created)
                             js_ok = max(js_ok, edge_js_ok)
                             auth_fail = max(auth_fail, edge_auth_fail)
@@ -1010,7 +1804,10 @@ def smoke_v2(args: argparse.Namespace) -> int:
                     if leafz_count < 0:
                         if signal_gaps:
                             return False, "leafz_unavailable_with_partial_log_signals", payload
-                        if not logs_available and all(reason in {"empty_logs", "cid_not_found", "ssh_failed", "unknown"} for reason in edge_log_status.values()):
+                        if not logs_available and all(
+                            reason in {"empty_logs", "cid_not_found", "ssh_failed", "unknown"}
+                            for reason in edge_log_status.values()
+                        ):
                             return False, "hub_and_edge_nats_logs_unavailable", payload
                         return True, "ok (logs-only)", payload
 
@@ -1042,7 +1839,23 @@ def smoke_v2(args: argparse.Namespace) -> int:
             }
 
         # functional_basic
-        if "functional_basic" in disabled_checks:
+        if is_ha_lane:
+            phase_status.append(
+                {
+                    "phase": "functional_basic",
+                    "status": "skipped",
+                    "detail": "ha_control_plane lane uses ha_acceptance instead",
+                    "attempts": 0,
+                    "started_at": iso(utc_now()),
+                    "ended_at": iso(utc_now()),
+                    "duration_s": 0.0,
+                }
+            )
+            check_outputs["functional_basic"] = {
+                "status": "skipped",
+                "reason": "ha_control_plane lane",
+            }
+        elif "functional_basic" in disabled_checks:
             phase_status.append(
                 {
                     "phase": "functional_basic",
@@ -1106,6 +1919,60 @@ def smoke_v2(args: argparse.Namespace) -> int:
             }
 
         # functional_advanced
+        ha_summary_payload: dict[str, Any] | None = None
+        if is_ha_lane:
+            ha_started = utc_now()
+            if "ha_acceptance" in disabled_checks:
+                ha_status = "skipped"
+                ha_detail = "disabled via --disable-checks"
+                ha_attempts = 0
+                ha_payload = {"status": "skipped"}
+            else:
+                ha_config = build_ha_lane_config(variant, lane_hosts_full)
+                ha_payload = run_ha_acceptance_checks(
+                    ha_config,
+                    timeout_s=phase_timeouts["ha_acceptance"],
+                )
+                ha_status = str(ha_payload.get("status") or "failed")
+                ha_detail = str(ha_payload.get("detail") or "")
+                ha_attempts = len(ha_payload.get("checks") or [])
+            ha_ended = utc_now()
+            phase_status.append(
+                {
+                    "phase": "ha_acceptance",
+                    "status": ha_status,
+                    "detail": ha_detail,
+                    "attempts": ha_attempts,
+                    "started_at": iso(ha_started),
+                    "ended_at": iso(ha_ended),
+                    "duration_s": round((ha_ended - ha_started).total_seconds(), 3),
+                }
+            )
+            ha_summary_payload = {
+                "lane": lane_name,
+                "status": ha_status,
+                "detail": ha_detail,
+                "checks": ha_payload.get("checks") if isinstance(ha_payload, dict) else [],
+                "core_nodes": ha_payload.get("core_nodes") if isinstance(ha_payload, dict) else [],
+                "hub_nodes": ha_payload.get("hub_nodes") if isinstance(ha_payload, dict) else [],
+                "edge_sites": ha_payload.get("edge_sites") if isinstance(ha_payload, dict) else [],
+            }
+            check_outputs["ha_acceptance"] = ha_summary_payload
+        else:
+            phase_status.append(
+                {
+                    "phase": "ha_acceptance",
+                    "status": "skipped",
+                    "detail": "non-HA lane",
+                    "attempts": 0,
+                    "started_at": iso(utc_now()),
+                    "ended_at": iso(utc_now()),
+                    "duration_s": 0.0,
+                }
+            )
+            check_outputs["ha_acceptance"] = {"status": "skipped", "reason": "non-HA lane"}
+
+        # functional_advanced
         adv_started = utc_now()
         if not advanced_checks or "functional_advanced" in disabled_checks:
             adv_status = "skipped"
@@ -1137,6 +2004,8 @@ def smoke_v2(args: argparse.Namespace) -> int:
 
         for check_name, payload in check_outputs.items():
             write_json(lane_path / "checks" / f"{check_name}.json", payload)
+        if ha_summary_payload is not None:
+            write_json(lane_path / "ha_summary.json", ha_summary_payload)
         write_json(lane_path / "phase_status.json", phase_status)
 
         lane_status = lane_status_from_phases(phase_status)
@@ -1166,6 +2035,21 @@ def smoke_v2(args: argparse.Namespace) -> int:
         "lanes": lane_summaries,
     }
     write_json(run_dir / "summary.json", summary_payload)
+    ha_lane_summary = next(
+        (lane for lane in lane_summaries if lane["name"] == "ha_control_plane"), None
+    )
+    if ha_lane_summary is not None:
+        lane_ha_summary = lanes_dir / "ha_control_plane" / "ha_summary.json"
+        if lane_ha_summary.is_file():
+            payload = json.loads(lane_ha_summary.read_text(encoding="utf-8"))
+            write_json(
+                run_dir / "ha_summary.json",
+                {
+                    "run_id": run_id,
+                    "variant_name": variant["name"],
+                    **payload,
+                },
+            )
 
     lines = [
         f"# Smoke Summary ({run_id})",
@@ -1219,9 +2103,15 @@ def smoke_v2(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="VM smoke harness v2 (phased/lane-aware)")
     parser.add_argument("--variant", required=True, help="Path to variant yaml")
-    parser.add_argument("--run-id", default="", help="Run id (default: RUN_ID env or UTC timestamp)")
-    parser.add_argument("--profile", default="local-vm", help="Execution profile (local-vm|remote-lab)")
-    parser.add_argument("--overlay", default="", help="Optional overlay path (reserved for future use)")
+    parser.add_argument(
+        "--run-id", default="", help="Run id (default: RUN_ID env or UTC timestamp)"
+    )
+    parser.add_argument(
+        "--profile", default="local-vm", help="Execution profile (local-vm|remote-lab)"
+    )
+    parser.add_argument(
+        "--overlay", default="", help="Optional overlay path (reserved for future use)"
+    )
     parser.add_argument("--lanes", default="", help="Comma-separated lane override")
     parser.add_argument(
         "--phase-timeout",
@@ -1249,13 +2139,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-validate", action="store_true", help="Skip lane validation phases")
     parser.add_argument("--plan-only", action="store_true", help="Only write plan artifacts")
     parser.add_argument("--output-root", default="", help="Override run artifacts root directory")
-    parser.add_argument("--down", action="store_true", help="Compatibility shortcut for auto teardown")
-    parser.add_argument("--auto-down-on-success", action="store_true", help="Run variant down on success")
-    parser.add_argument("--auto-down-on-fail", action="store_true", help="Run variant down on failure")
+    parser.add_argument(
+        "--down", action="store_true", help="Compatibility shortcut for auto teardown"
+    )
+    parser.add_argument(
+        "--auto-down-on-success", action="store_true", help="Run variant down on success"
+    )
+    parser.add_argument(
+        "--auto-down-on-fail", action="store_true", help="Run variant down on failure"
+    )
     parser.add_argument("--keep-on-fail", dest="keep_on_fail", action="store_true", default=True)
     parser.add_argument("--no-keep-on-fail", dest="keep_on_fail", action="store_false")
     parser.add_argument("--purge", action="store_true", help="With teardown, purge state dir")
-    parser.add_argument("--destroy-network", action="store_true", help="With teardown, remove bridge/NAT")
+    parser.add_argument(
+        "--destroy-network", action="store_true", help="With teardown, remove bridge/NAT"
+    )
     return parser
 
 
@@ -1266,9 +2164,20 @@ def main() -> int:
         args.run_id = os.environ.get("RUN_ID") or default_run_id()
     if args.skip_validate:
         args.disable_checks = ",".join(
-            [x for x in [args.disable_checks, "service_ready,fabric_validate,functional_basic,functional_advanced"] if x]
+            [
+                x
+                for x in [
+                    args.disable_checks,
+                    "service_ready,fabric_validate,functional_basic,ha_acceptance,functional_advanced",
+                ]
+                if x
+            ]
         )
     try:
+        require_vm_host_prereqs(
+            skip_up=bool(args.skip_up or args.plan_only),
+            auto_down=bool(args.down or args.auto_down_on_success or args.auto_down_on_fail),
+        )
         return smoke_v2(args)
     except Exception as exc:
         write_unhandled_failure_summary(args, args.run_id, exc)

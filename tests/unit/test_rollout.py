@@ -2,7 +2,7 @@ from pathlib import Path
 
 from ae.controller.health import HealthManager
 from ae.controller.reconciler import Reconciler
-from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec
+from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec, ServiceSpec
 from ae.controller.state import SQLiteStateStore
 
 
@@ -83,3 +83,24 @@ def test_old_removal_gated_by_readiness(tmp_path: Path):
     m = _manifest("parallel", replicas=1)
     rec.reconcile(m)
     assert any(c[0] == "remove_old" for c in rt.calls if isinstance(c, tuple) and len(c) > 0)
+
+
+def test_serial_service_rollout_disables_keep_old_for_fixed_port_single_replica(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("AE_SERIAL_SERVICE_ROLLOUT", "1")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    rt = DummyRuntime()
+    rec = Reconciler(rt, store, health_manager=HealthManager(), ingress_service=None)
+    m = _manifest("parallel", replicas=1).model_copy(
+        update={
+            "spec": _manifest("parallel", replicas=1).spec.model_copy(
+                update={"service": ServiceSpec(port=18080, targetPort=8080)}
+            )
+        }
+    )
+    rec.reconcile(m)
+    assert rt.calls, "ensure_app was not called"
+    keep_old, limit = rt.calls[0]
+    assert keep_old is False
+    assert limit is None

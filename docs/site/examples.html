@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -630,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -693,28 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
       <a href="project-philosophy.html">Philosophy</a>
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -736,7 +768,71 @@
 <p>The init script can stand up different demo combinations. Use the flags below to control which apps are applied. Add <code>-y</code> to auto-add hosts and <code>-d</code> to attach logs (Ctrl-C to exit).</p>
 <p>Note</p>
 <ul>
-<li><code>make demo</code> now starts the playground labs demo by default. Use <code>make demo ARGS=&quot;...&quot;</code> for the modes below.</li>
+<li><code>make demo</code> is the current seeded default: it runs <code>dev-min</code> with blue/green sample apps plus docs/api/dashboard.</li>
+<li>When you need a flag-driven <code>init_demo.sh</code> mode, use the script directly or <code>make demo-legacy ARGS=&quot;...&quot;</code>.</li>
+</ul>
+<h2 id="dashboard-modes">Dashboard Modes</h2>
+<p>The built-in dashboard has two intended operator presentations. The layout is chosen by profile/topology, not by browser URL alone.</p>
+<p>Simple dashboard</p>
+<ul>
+<li>Use this for single-controller local/dev/demo flows:
+<ul>
+<li><code>make demo</code></li>
+<li><code>make dev-min</code></li>
+<li><code>make dev-min-caddy</code></li>
+<li><code>make dev-etcd</code></li>
+<li><code>make dev-etcd-caddy</code></li>
+<li><code>make labs</code></li>
+<li>local <code>make loop</code> / <code>make run</code> flows when there is no HA/site-aware topology</li>
+</ul>
+</li>
+<li>User-test URLs:
+<ul>
+<li><code>https://dash.home.arpa:8443/dashboard</code></li>
+<li><code>https://docs.home.arpa:8443/</code></li>
+</ul>
+</li>
+<li>Expected UI:
+<ul>
+<li>shared <code>System Graph</code> remains visible</li>
+<li><code>HA Control Plane</code> section is hidden</li>
+<li><code>HA Members</code> legend key is hidden</li>
+</ul>
+</li>
+</ul>
+<p>Advanced dashboard</p>
+<ul>
+<li>Use this for HA, core, edge, and site-aware flows:
+<ul>
+<li><code>make k1s-core</code></li>
+<li><code>make k1s-core-caddy</code></li>
+<li><code>make k1s-ha-core</code></li>
+<li><code>make k1s-edge</code></li>
+<li><code>make k1s-core-node</code></li>
+<li><code>make k1s-edge-node</code></li>
+<li><code>make edge-site</code></li>
+<li>strict-CRI variants inherit the same advanced layout as their base profile</li>
+</ul>
+</li>
+<li>Access surfaces depend on how the profile was started:
+<ul>
+<li>local docs-enabled profiles: <code>http://127.0.0.1:9109/</code> and <code>http://127.0.0.1:9108/dashboard</code></li>
+<li>local profiles with Caddy enabled: <code>https://docs.home.arpa:8443/</code> and <code>https://dash.home.arpa:8443/dashboard</code></li>
+<li>retained HA VM harness: <code>https://docs.home.arpa:10443/</code> and <code>https://dash.home.arpa:10443/dashboard</code></li>
+</ul>
+</li>
+<li>Expected UI:
+<ul>
+<li>shared <code>System Graph</code> remains visible</li>
+<li><code>HA Control Plane</code> section is visible</li>
+<li>HA/site-aware topology indicators remain visible</li>
+</ul>
+</li>
+</ul>
+<p>Practical note</p>
+<ul>
+<li>Do not use the presence of <code>System Graph</code> by itself to classify the page as advanced. It is shared between both layouts.</li>
+<li>For the exact dashboard user-test command readouts, use <a href="validated-procedures.html#simple-dashboard-user-test">Validated Procedures: simple dashboard</a> and <a href="validated-procedures.html#advanced-dashboard-user-test-retained-ha-vm">Validated Procedures: advanced dashboard</a>.</li>
 </ul>
 <h2 id="demo-modes">Demo modes</h2>
 <h3 id="standard-demo-blue-green">Standard Demo (blue/green)</h3>
@@ -744,14 +840,22 @@
 <li>Apps: blue and green services behind TLS via Caddy.</li>
 <li>Command:
 <ul>
+<li><code>make demo</code></li>
 <li><code>./scripts/init_demo.sh --demo-standard -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code></li>
+<li><code>make demo-legacy ARGS=&quot;--demo-standard -y -d&quot;</code></li>
 </ul>
 </li>
 <li>Endpoints:
 <ul>
 <li><code>https://blue.home.arpa:8443/</code></li>
 <li><code>https://green.home.arpa:8443/</code></li>
+<li><code>https://docs.home.arpa:8443/</code></li>
+<li><code>https://dash.home.arpa:8443/dashboard</code></li>
+</ul>
+</li>
+<li>Dashboard expectation:
+<ul>
+<li>this is the simple layout, not the HA/site layout</li>
 </ul>
 </li>
 </ul>
@@ -762,7 +866,7 @@
 <li>Command:
 <ul>
 <li><code>./scripts/init_demo.sh --with-secrets-env --demo-configs -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-configs -y -d&quot;</code></li>
+<li><code>make demo-legacy ARGS=&quot;--demo-configs -y -d&quot;</code></li>
 </ul>
 </li>
 </ul>
@@ -773,7 +877,7 @@
 <li>Command:
 <ul>
 <li><code>./scripts/init_demo.sh --demo-echo-mr -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-echo-mr -y -d&quot;</code></li>
+<li><code>make demo-legacy ARGS=&quot;--demo-echo-mr -y -d&quot;</code></li>
 </ul>
 </li>
 </ul>
@@ -784,7 +888,7 @@
 <li>Commands:
 <ul>
 <li><code>./scripts/init_demo.sh --demo-echo-multi -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-echo-multi -y -d&quot;</code></li>
+<li><code>make demo-legacy ARGS=&quot;--demo-echo-multi -y -d&quot;</code></li>
 </ul>
 </li>
 <li>Endpoint: <code>https://echo-multi.home.arpa:8443/</code></li>
@@ -796,7 +900,7 @@
 <li>Commands:
 <ul>
 <li><code>./scripts/init_demo.sh --demo-hardened -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-hardened -y -d&quot;</code></li>
+<li><code>make demo-legacy ARGS=&quot;--demo-hardened -y -d&quot;</code></li>
 </ul>
 </li>
 <li>Endpoint: <code>https://echo-hardened.home.arpa:8443/</code></li>
@@ -806,7 +910,7 @@
 <li>Ordered rollout for <code>echo</code> with default prefer-first routing:
 <ul>
 <li><code>./scripts/init_demo.sh --demo-rollout -y -d</code></li>
-<li><code>make demo ARGS=&quot;--demo-rollout -y -d&quot;</code></li>
+<li><code>make demo-legacy ARGS=&quot;--demo-rollout -y -d&quot;</code></li>
 <li>Optional canary: set <code>spec.rollout.strategy: canary</code> with <code>weight</code> (and <code>auto</code> for ramps).</li>
 </ul>
 </li>
@@ -817,7 +921,7 @@
 <li>Command:
 <ul>
 <li><code>./scripts/init_demo.sh --demo-storage -y</code></li>
-<li><code>make demo ARGS=&quot;--demo-storage -y -d&quot;</code></li>
+<li><code>make demo-legacy ARGS=&quot;--demo-storage -y -d&quot;</code></li>
 </ul>
 </li>
 <li>Inspect volumes:
@@ -837,7 +941,7 @@
 <li>Command:
 <ul>
 <li><code>./scripts/init_demo.sh --docs-only -y</code></li>
-<li><code>make demo ARGS=&quot;--docs-only -y -d&quot;</code></li>
+<li><code>make demo-legacy ARGS=&quot;--docs-only -y -d&quot;</code></li>
 </ul>
 </li>
 <li>Endpoints:
@@ -847,12 +951,18 @@
 <li>Dashboard: <code>https://dash.home.arpa:8443/dashboard</code> and <code>http://127.0.0.1:9108/dashboard</code></li>
 </ul>
 </li>
+<li>Dashboard expectation:
+<ul>
+<li>this stays on the simple layout because it is still a local single-controller flow</li>
+</ul>
+</li>
 </ul>
 <h3 id="helpful-flags-targets">Helpful Flags &amp; Targets</h3>
 <ul>
 <li><code>-d, --debug</code> — attach logs for controller, caddy, prometheus, and site changes.</li>
 <li><code>--with-secrets-env</code> — export <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and <code>SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt</code> for the demo session.</li>
 <li><code>--down -y</code> — tear down: <code>./scripts/init_demo.sh --down -y</code></li>
+<li><code>make demo-legacy</code> — run flag-driven <code>init_demo.sh</code> modes through Make</li>
 <li><code>make demo-help</code> — print demo script usage</li>
 <li><code>make demo-down</code> — tear down demo</li>
 <li><code>make integ-test</code> — run integration tests (set <code>AE_INTEG_RUNTIME=podman</code> or <code>docker</code>)</li>
@@ -861,12 +971,10 @@
 <ul>
 <li>Demo apps are copied into <code>state/profiles/demo/specs</code> and reconciled from that directory. Changes made via CLI/API (like scaling) are temporary unless you edit those files or rerun the demo after updating <code>specs/examples/</code>.</li>
 <li>Caddy HTTP: <code>:8888</code>, HTTPS: <code>:8443</code> (the demo auto-picks free ports if these are busy).</li>
-<li>Hosts entries (added with <code>-y</code>) include: <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>blue.home.arpa</code>, <code>green.home.arpa</code>, plus the selected <code>echo-*</code> demo hosts (e.g., <code>echo-mr</code>, <code>echo-multi</code>, <code>echo-hardened</code>, <code>echo-sec</code>, <code>echo-exec</code>, <code>echo-tcp</code>, <code>echo-storage</code>).
-<ul>
-<li>Dashboard: <code>https://dash.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
-</ul>
-</li>
+<li>Hosts entries (added with <code>-y</code>) include: <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>blue.home.arpa</code>, <code>green.home.arpa</code>, plus the selected <code>echo-*</code> demo hosts (e.g., <code>echo-mr</code>, <code>echo-multi</code>, <code>echo-hardened</code>, <code>echo-sec</code>, <code>echo-exec</code>, <code>echo-tcp</code>, <code>echo-storage</code>).</li>
+<li>Dashboard access: <code>https://dash.home.arpa:8443/dashboard</code> (or <code>http://127.0.0.1:9108/dashboard</code> directly).</li>
 <li>Health checks are disabled by default for compatibility; enable with <code>AE_CADDY_ACTIVE_HEALTH=1</code> if your Caddy supports the directive.</li>
+<li>For the advanced dashboard user-test procedure on the HA VM harness, use <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>.</li>
 </ul>
 <h2 id="example-manifests-standalone">Example manifests (standalone)</h2>
 <h3 id="multi-port-service-http-metrics">Multi-Port Service (HTTP + Metrics)</h3>
@@ -898,7 +1006,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 12:10:03</span>
+        <span>Built 2026-04-14 17:31:27</span>
       </div>
     </footer>
     <script>

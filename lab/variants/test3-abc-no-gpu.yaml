@@ -13,8 +13,8 @@ vm:
   vcpus: 4
   disk_gb: 50
 images:
-  base: /home/m4xx3d0ut/git/k1s-wt/dev-fabric-0/artifacts/images/ubuntu-22.04-k1s-base.qcow2
-  gpu: /home/m4xx3d0ut/git/k1s-wt/dev-fabric-0/artifacts/images/ubuntu-22.04-k1s-gpu.qcow2
+  base: artifacts/images/ubuntu-22.04-k1s-base.qcow2
+  gpu: artifacts/images/ubuntu-22.04-k1s-gpu.qcow2
 hosts:
 - name: a-core
   ip: 192.168.152.10

@@ -26,7 +26,7 @@ from ae.controller.spec import (
     split_app_key,
 )
 
-from .base import PodState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 from .ports import choose_host_port
 
 
@@ -54,6 +54,10 @@ class PodmanRuntime(RuntimeAdapter):
         self._bin = shutil.which(configured_bin) or configured_bin
         # Optional shared network for ingress to reach containers by DNS name
         self._network_name = os.getenv("AE_PODMAN_NETWORK") or os.getenv("AE_NETWORK_NAME")
+        self._prefer_direct_endpoint = (
+            os.getenv("AE_PODMAN_ENDPOINT_PREFER_DIRECT", "").strip().lower()
+            in {"1", "true", "yes"}
+        )
         self._serial_service_rollout = os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
         self._podman_retry_max = max(0, int(os.getenv("AE_PODMAN_RETRY_MAX", "2")))
         try:
@@ -328,97 +332,7 @@ class PodmanRuntime(RuntimeAdapter):
             except Exception:
                 exit_code = None
             finished_at = self._parse_dt(state.get("FinishedAt"))
-            endpoint = None
-            # Prefer published host ports (so Caddy can reach via host alias).
-            # Selection order: preferred probe port; 80/tcp; 8080/tcp; first non‑443 mapping.
-            try:
-                pmap = (c.get("NetworkSettings") or {}).get("Ports") or {}
-                # Prefer host-published ports
-                # 1) check preferred container port first
-                if preferred_port is not None:
-                    binds = (pmap or {}).get(f"{int(preferred_port)}/tcp")
-                    if binds:
-                        b0 = binds[0] or {}
-                        hp = b0.get("HostPort")
-                        if hp:
-                            hip = (b0.get("HostIp") or "").strip()
-                            loop_host = (
-                                "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
-                            )
-                            endpoint = f"{loop_host}:{hp}"
-                # 2) common HTTP ports
-                if endpoint is None:
-                    for cp in (80, 8080):
-                        binds = (pmap or {}).get(f"{int(cp)}/tcp")
-                        if binds:
-                            b0 = binds[0] or {}
-                            hp = b0.get("HostPort")
-                            if hp:
-                                hip = (b0.get("HostIp") or "").strip()
-                                loop_host = (
-                                    "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
-                                )
-                                endpoint = f"{loop_host}:{hp}"
-                                break
-                # 3) otherwise pick the first published host port that is not 443
-                if endpoint is None:
-                    for k, binds in (pmap or {}).items():
-                        if not binds:
-                            continue
-                        # Skip HTTPS container port to avoid http-over-https probe mismatch
-                        port_key = str(k).split("/")[0]
-                        if port_key.isdigit() and int(port_key) == 443:
-                            continue
-                        b0 = binds[0] or {}
-                        hp = b0.get("HostPort")
-                        if hp:
-                            hip = (b0.get("HostIp") or "").strip()
-                            loop_host = (
-                                "[::1]" if hip.startswith("[") or hip == "::" else "127.0.0.1"
-                            )
-                            endpoint = f"{loop_host}:{hp}"
-                            break
-                if endpoint is None:
-                    # Fallback to `podman port <id>` which reliably reports published mappings
-                    cid = c.get("Id") or ""
-                    if cid:
-                        pr = self._run_ok([self._bin, "port", cid], allow_fail=True)
-                        # Expected lines like: "8080/tcp -> 0.0.0.0:49213" or "8080/tcp -> [::]:49213"
-                        for line in (pr.out or "").splitlines():
-                            try:
-                                _lhs, _arrow, rhs = line.partition("->")
-                                host = rhs.strip()
-                                if host:
-                                    # host may be "0.0.0.0:PORT" or "[::]:PORT"; use 127.0.0.1 or ::1 accordingly
-                                    hp = host.split(":")[-1].strip()
-                                    if hp.isdigit():
-                                        loop_host = "[::1]" if host.startswith("[") else "127.0.0.1"
-                                        endpoint = f"{loop_host}:{hp}"
-                                        break
-                            except Exception:
-                                continue
-                if endpoint is None and pmap:
-                    # Last resort: container DNS name (only usable from other containers on the network)
-                    for k in (pmap or {}).keys():
-                        port = k.split("/")[0]
-                        if port:
-                            endpoint = f"{(c.get('Name', '').lstrip('/'))}:{port}"
-                            break
-                if endpoint is None and self._network_name:
-                    try:
-                        nets = (c.get("NetworkSettings") or {}).get("Networks") or {}
-                        netinfo = nets.get(self._network_name) or {}
-                        ipaddr = netinfo.get("IPAddress")
-                        if ipaddr:
-                            p = preferred_port or 0
-                            if p == 0 and manifest.spec.ports:
-                                p = int(getattr(manifest.spec.ports[0], "container_port", 0))
-                            if p:
-                                endpoint = f"{ipaddr}:{p}"
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            endpoint = self._endpoint_from_container(manifest, c, preferred=preferred_port)
             ready = st == "running"
             if is_job:
                 ready = False if st == "running" else exit_code == 0
@@ -1238,6 +1152,9 @@ class PodmanRuntime(RuntimeAdapter):
             )
         return out
 
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        return []
+
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:  # type: ignore[override]
         # Locate container by label
         cid = self._find_by_label(self.POD_LABEL, pod_name)
@@ -1250,6 +1167,48 @@ class PodmanRuntime(RuntimeAdapter):
         cmd += [cid] + [str(x) for x in command]
         r = self._run_ok(cmd, allow_fail=True)
         return int(r.code)
+
+    def port_forward_socket(
+        self,
+        *,
+        pod_id: str | None,
+        pod_name: str | None,
+        namespace: str | None,
+        port: int,
+    ):
+        _ = namespace
+        container_id = (pod_id or "").strip() or None
+        if container_id is None and pod_name:
+            container_id = self._find_by_label(self.POD_LABEL, pod_name)
+        if not container_id:
+            raise RuntimeError(f"Podman pod not found for port-forward: {pod_name or pod_id or '?'}")
+
+        container = self._inspect_container_record(container_id)
+        if not container:
+            raise RuntimeError(f"Podman inspect failed for {container_id}")
+
+        pid = self._container_pid(container)
+        if pid <= 0:
+            raise RuntimeError(f"Podman container has no running pid: {container_id}")
+
+        hosts = ["127.0.0.1", *self._container_probe_hosts(container)]
+        seen: set[str] = set()
+        timeout = max(1, int(os.getenv("AE_PODMAN_PORTFORWARD_TIMEOUT", "2")))
+        last_error: Exception | None = None
+        for host in hosts:
+            if not host or host in seen:
+                continue
+            seen.add(host)
+            try:
+                return self._connect_in_network_namespace(pid, host, int(port), timeout=timeout)
+            except Exception as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise RuntimeError(
+                f"Podman namespace socket failed for {container_id}:{int(port)}: {last_error}"
+            ) from last_error
+        raise RuntimeError(f"Podman namespace socket failed for {container_id}:{int(port)}")
 
     # Helpers ----------------------------------------------------------
     def _create_container(
@@ -1315,7 +1274,8 @@ class PodmanRuntime(RuntimeAdapter):
             lims = getattr(getattr(manifest.spec, "resources", None), "limits", None)  # noqa: B009
             if lims is not None and getattr(lims, "memory", None) is not None:  # noqa: B009
                 try:
-                    mem = str(getattr(lims, "memory"))  # noqa: B009
+                    raw_mem = str(getattr(lims, "memory"))  # noqa: B009
+                    mem = str(self._parse_memory_bytes(raw_mem) or raw_mem)
                     cmd += ["--memory", mem]
                 except Exception:
                     pass
@@ -1328,7 +1288,8 @@ class PodmanRuntime(RuntimeAdapter):
                     except Exception:
                         pass
                 if getattr(reqs, "memory", None) is not None:  # noqa: B009
-                    mem = str(getattr(reqs, "memory"))  # noqa: B009
+                    raw_mem = str(getattr(reqs, "memory"))  # noqa: B009
+                    mem = str(self._parse_memory_bytes(raw_mem) or raw_mem)
                     cmd += ["--memory-reservation", mem]
         except Exception:
             pass
@@ -1626,6 +1587,104 @@ class PodmanRuntime(RuntimeAdapter):
             cid = (r.out or "").strip().splitlines()
         return cid[0] if cid else None
 
+    def _inspect_container_record(self, container_id: str) -> dict | None:
+        res = self._run_ok(
+            [self._bin, "inspect", "--format", "json", str(container_id)],
+            allow_fail=True,
+        )
+        try:
+            payload = json.loads(res.out or "[]")
+        except Exception:
+            return None
+        if isinstance(payload, list):
+            first = payload[0] if payload else None
+            return first if isinstance(first, dict) else None
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    def _container_pid(self, container: dict) -> int:
+        try:
+            return int(((container.get("State") or {}).get("Pid") or 0))
+        except Exception:
+            return 0
+
+    def _container_probe_hosts(self, container: dict) -> list[str]:
+        hosts: list[str] = []
+        try:
+            net_settings = container.get("NetworkSettings") or {}
+            pod_ip = str(net_settings.get("IPAddress") or "").strip()
+            if pod_ip:
+                hosts.append(pod_ip)
+            nets = net_settings.get("Networks") or {}
+            if self._network_name:
+                netinfo = nets.get(self._network_name) or {}
+                ipaddr = str(netinfo.get("IPAddress") or "").strip()
+                if ipaddr:
+                    hosts.append(ipaddr)
+            for netinfo in nets.values():
+                ipaddr = str((netinfo or {}).get("IPAddress") or "").strip()
+                if ipaddr:
+                    hosts.append(ipaddr)
+        except Exception:
+            return hosts
+        return hosts
+
+    def _connect_in_network_namespace(
+        self, pid: int, host: str, port: int, *, timeout: int
+    ):
+        import socket
+
+        self_ns_fd = os.open("/proc/self/ns/net", os.O_RDONLY)
+        target_ns_fd = os.open(f"/proc/{int(pid)}/ns/net", os.O_RDONLY)
+        sock = None
+        restore_error: Exception | None = None
+        try:
+            self._setns(target_ns_fd, 0)
+            sock = socket.create_connection((host, int(port)), timeout=timeout)
+        finally:
+            try:
+                self._setns(self_ns_fd, 0)
+            except Exception as exc:
+                restore_error = exc
+            try:
+                os.close(target_ns_fd)
+            except Exception:
+                pass
+            try:
+                os.close(self_ns_fd)
+            except Exception:
+                pass
+        if restore_error is not None:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            raise RuntimeError(f"failed to restore network namespace after probing {host}:{port}") from restore_error
+        if sock is None:
+            raise RuntimeError(f"failed to connect to {host}:{port} in network namespace")
+        return sock
+
+    def _setns(self, fd: int, nstype: int = 0) -> None:
+        if hasattr(os, "setns"):
+            os.setns(int(fd), int(nstype))
+            return
+
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        fn = getattr(libc, "setns", None)
+        if fn is None:
+            raise RuntimeError("setns unavailable")
+        fn.argtypes = [ctypes.c_int, ctypes.c_int]
+        fn.restype = ctypes.c_int
+        rc = int(fn(int(fd), int(nstype)))
+        if rc == 0:
+            return
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno))
+
     def _parse_dt(self, raw: str | None) -> datetime | None:
         if not raw:
             return None
@@ -1783,6 +1842,146 @@ class PodmanRuntime(RuntimeAdapter):
             return None
         host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
         return f"{host}:{port}"
+
+    def _endpoint_from_container(
+        self, manifest: AppManifest, container: dict, *, preferred: int | None = None
+    ) -> str | None:
+        try:
+            pmap = (container.get("NetworkSettings") or {}).get("Ports") or {}
+        except Exception:
+            pmap = {}
+
+        direct_endpoint = self._direct_endpoint_from_container(
+            manifest, container, pmap=pmap, preferred=preferred
+        )
+        if self._prefer_direct_endpoint and direct_endpoint:
+            return direct_endpoint
+
+        published_endpoint = self._published_endpoint_from_container(
+            container, pmap=pmap, preferred=preferred
+        )
+        if published_endpoint:
+            return published_endpoint
+
+        if direct_endpoint:
+            return direct_endpoint
+
+        if pmap:
+            for key in pmap.keys():
+                port = str(key).split("/")[0]
+                if port:
+                    return f"{(container.get('Name', '').lstrip('/'))}:{port}"
+        return None
+
+    def _published_endpoint_from_container(
+        self, container: dict, *, pmap: dict, preferred: int | None = None
+    ) -> str | None:
+        def _binding_endpoint(binding: dict) -> str | None:
+            host_port = (binding or {}).get("HostPort")
+            if not host_port:
+                return None
+            host_ip = str((binding or {}).get("HostIp") or "").strip()
+            loop_host = "[::1]" if host_ip.startswith("[") or host_ip == "::" else "127.0.0.1"
+            return f"{loop_host}:{host_port}"
+
+        if preferred is not None:
+            binds = (pmap or {}).get(f"{int(preferred)}/tcp")
+            if binds:
+                endpoint = _binding_endpoint(binds[0] or {})
+                if endpoint:
+                    return endpoint
+
+        for container_port in (80, 8080):
+            binds = (pmap or {}).get(f"{int(container_port)}/tcp")
+            if binds:
+                endpoint = _binding_endpoint(binds[0] or {})
+                if endpoint:
+                    return endpoint
+
+        for key, binds in (pmap or {}).items():
+            if not binds:
+                continue
+            port_key = str(key).split("/")[0]
+            if port_key.isdigit() and int(port_key) == 443:
+                continue
+            endpoint = _binding_endpoint(binds[0] or {})
+            if endpoint:
+                return endpoint
+
+        container_id = container.get("Id") or ""
+        if container_id:
+            pr = self._run_ok([self._bin, "port", container_id], allow_fail=True)
+            for line in (pr.out or "").splitlines():
+                try:
+                    _lhs, _arrow, rhs = line.partition("->")
+                    host = rhs.strip()
+                    if not host:
+                        continue
+                    host_port = host.split(":")[-1].strip()
+                    if host_port.isdigit():
+                        loop_host = "[::1]" if host.startswith("[") else "127.0.0.1"
+                        return f"{loop_host}:{host_port}"
+                except Exception:
+                    continue
+        return None
+
+    def _direct_endpoint_from_container(
+        self, manifest: AppManifest, container: dict, *, pmap: dict, preferred: int | None = None
+    ) -> str | None:
+        port = self._container_endpoint_port(manifest, pmap=pmap, preferred=preferred)
+        if port is None:
+            return None
+        try:
+            net_settings = container.get("NetworkSettings") or {}
+            nets = net_settings.get("Networks") or {}
+            ipaddr = None
+            if self._network_name:
+                netinfo = nets.get(self._network_name) or {}
+                ipaddr = str(netinfo.get("IPAddress") or "").strip() or None
+            if not ipaddr:
+                ipaddr = str(net_settings.get("IPAddress") or "").strip() or None
+            if not ipaddr:
+                for netinfo in nets.values():
+                    candidate = str((netinfo or {}).get("IPAddress") or "").strip()
+                    if candidate:
+                        ipaddr = candidate
+                        break
+            if not ipaddr:
+                return None
+            return f"{ipaddr}:{port}"
+        except Exception:
+            return None
+
+    def _container_endpoint_port(
+        self, manifest: AppManifest, *, pmap: dict, preferred: int | None = None
+    ) -> int | None:
+        if preferred is not None:
+            return int(preferred)
+
+        if getattr(manifest.spec, "ports", None):
+            for item in manifest.spec.ports:
+                try:
+                    return int(getattr(item, "container_port"))
+                except Exception:
+                    continue
+
+        if getattr(manifest.spec, "service", None):
+            svc = manifest.spec.service
+            try:
+                target = getattr(svc, "target_port", None)
+                return int(target if target is not None else getattr(svc, "port", None))
+            except Exception:
+                pass
+
+        for container_port in (80, 8080):
+            if f"{int(container_port)}/tcp" in (pmap or {}):
+                return int(container_port)
+
+        for key in (pmap or {}).keys():
+            port_key = str(key).split("/")[0]
+            if port_key.isdigit() and int(port_key) != 443:
+                return int(port_key)
+        return None
 
     @staticmethod
     def _normalize_host_ip(host_ip: str | None) -> str:

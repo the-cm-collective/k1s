@@ -27,6 +27,7 @@ from ae.controller.spec import (
     app_key,
     app_key_for_manifest,
 )
+from ae.ha.fencing import parse_envelope, work_operation
 from ae.resources import loader as resource_loader
 from ae.runtime import RuntimeResult
 
@@ -61,6 +62,53 @@ class RegistryEntry:
     source: str
     labels: dict
     updated_at: datetime
+    resource_version: int = 0
+
+
+@dataclass(slots=True)
+class AuthorityObjectEntry:
+    """Shared-authority shim object persisted outside the legacy apishim DB."""
+
+    group: str
+    version: str
+    resource: str
+    namespace: str | None
+    name: str
+    kind: str
+    metadata: dict
+    spec: dict
+    status: dict
+    updated_at: datetime
+    resource_version: int = 0
+
+
+@dataclass(slots=True)
+class WorkloadMetricsSnapshot:
+    """Aggregated workload metrics used by the HA HPA controller."""
+
+    app_name: str
+    controller_id: str
+    controller_epoch: int
+    collected_at: datetime
+    cpu_utilization: float | None
+    memory_utilization: float | None
+    memory_bytes: int
+    pod_count: int
+    node_count: int
+    updated_at: datetime
+
+
+class RegistryConflictError(RuntimeError):
+    """Raised when a registry CAS write sees a stale resource version."""
+
+    def __init__(self, app_name: str, *, expected: int, actual: int) -> None:
+        self.app_name = str(app_name)
+        self.expected = int(expected)
+        self.actual = int(actual)
+        super().__init__(
+            f"registry resourceVersion conflict for {self.app_name}: "
+            f"expected={self.expected} actual={self.actual}"
+        )
 
 
 @dataclass(slots=True)
@@ -208,7 +256,11 @@ class WorkOutboxEntry:
     attempt: int
     site_id: str
     payload: dict
+    publish_subject: str
+    publish_msg_id: str
     publish_attempts: int
+    last_publish_at: datetime | None = None
+    last_publish_error: str | None = None
 
 
 @dataclass(slots=True)
@@ -217,6 +269,9 @@ class WorkLedgerEntry:
     attempt: int
     site_id: str
     state: str
+    controller_id: str | None
+    controller_epoch: int | None
+    operation_id: str | None
     desired_generation: int | None
     assigned_node_id: str | None
     observed_generation: int | None
@@ -536,6 +591,46 @@ class SQLiteStateStore:
             )
             conn.execute(resource_loader.load_text("sql", "controller", "create_app_status.sql"))
             conn.execute(resource_loader.load_text("sql", "controller", "create_app_registry.sql"))
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS authority_objects (
+                  grp TEXT NOT NULL,
+                  ver TEXT NOT NULL,
+                  resource TEXT NOT NULL,
+                  namespace TEXT NOT NULL,
+                  name TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  metadata_json TEXT NOT NULL,
+                  spec_json TEXT NOT NULL,
+                  status_json TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  resource_version INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY (grp, ver, resource, namespace, name)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_authority_objects_gvr
+                ON authority_objects (grp, ver, resource, namespace, name)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workload_metrics_snapshots (
+                  app_name TEXT PRIMARY KEY,
+                  controller_id TEXT NOT NULL,
+                  controller_epoch INTEGER NOT NULL,
+                  collected_at TEXT NOT NULL,
+                  cpu_utilization REAL,
+                  memory_utilization REAL,
+                  memory_bytes INTEGER NOT NULL,
+                  pod_count INTEGER NOT NULL,
+                  node_count INTEGER NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
             conn.execute(resource_loader.load_text("sql", "controller", "create_pod_status.sql"))
             conn.execute(
                 resource_loader.render_text(
@@ -597,9 +692,24 @@ class SQLiteStateStore:
                 conn,
                 resource_loader.load_text("sql", "controller", "create_edge_ingress_policies.sql"),
             )
+            self._ensure_column(
+                conn,
+                "app_registry",
+                "resource_version",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            conn.execute(
+                "UPDATE app_registry SET resource_version = 1 WHERE COALESCE(resource_version, 0) < 1"
+            )
             self._ensure_column(conn, "edge_ingress_routes", "status_json", "TEXT")
             self._ensure_column(conn, "edge_ingress_policies", "status_json", "TEXT")
             self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
+            self._ensure_column(conn, "work_ledger", "controller_id", "TEXT")
+            self._ensure_column(conn, "work_ledger", "controller_epoch", "INTEGER")
+            self._ensure_column(conn, "work_ledger", "operation_id", "TEXT")
+            self._ensure_column(conn, "work_outbox", "publish_subject", "TEXT")
+            self._ensure_column(conn, "work_outbox", "publish_msg_id", "TEXT")
+            self._ensure_column(conn, "work_outbox", "last_publish_error", "TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS inference_cells (
@@ -1058,37 +1168,42 @@ class SQLiteStateStore:
         *,
         source: str | None = None,
         labels: dict | None = None,
-    ) -> None:
+        expected_resource_version: int | None = None,
+    ) -> int:
         spec_json = json.dumps(manifest.model_dump(by_alias=True), sort_keys=True)
         spec_hash = self._manifest_hash(manifest)
         updated_at = datetime.now(timezone.utc).isoformat()
         app_name = app_key_for_manifest(manifest)
         existing_source = None
         existing_labels: dict | None = None
-        if source is None or labels is None:
-            try:
-                with self._connect() as conn:
-                    row = conn.execute(
-                        "SELECT source, labels FROM app_registry WHERE app_name = ?",
-                        (app_name,),
-                    ).fetchone()
-                if row is not None:
-                    existing_source = row[0]
-                    try:
-                        existing_labels = json.loads(row[1] or "{}")
-                        if not isinstance(existing_labels, dict):
-                            existing_labels = {}
-                    except Exception:
-                        existing_labels = {}
-            except Exception:
-                existing_source = None
-                existing_labels = None
-        labels_json = json.dumps(
-            labels if labels is not None else (existing_labels or {}),
-            sort_keys=True,
-        )
-        source_val = str(source or existing_source or "unknown")
+        current_rv = 0
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT source, labels, resource_version FROM app_registry WHERE app_name = ?",
+                (app_name,),
+            ).fetchone()
+            if row is not None:
+                existing_source = row[0]
+                current_rv = int(row[2] or 0)
+                try:
+                    existing_labels = json.loads(row[1] or "{}")
+                    if not isinstance(existing_labels, dict):
+                        existing_labels = {}
+                except Exception:
+                    existing_labels = {}
+            if expected_resource_version is not None:
+                if current_rv != int(expected_resource_version):
+                    raise RegistryConflictError(
+                        app_name,
+                        expected=int(expected_resource_version),
+                        actual=current_rv,
+                    )
+            labels_json = json.dumps(
+                labels if labels is not None else (existing_labels or {}),
+                sort_keys=True,
+            )
+            source_val = str(source or existing_source or "unknown")
+            next_resource_version = max(1, current_rv + 1)
             conn.execute(
                 resource_loader.load_text("sql", "controller", "insert_app_registry_upsert.sql"),
                 (
@@ -1098,9 +1213,11 @@ class SQLiteStateStore:
                     source_val,
                     labels_json,
                     updated_at,
+                    next_resource_version,
                 ),
             )
             conn.commit()
+        return next_resource_version
 
     def list_registered_apps(self) -> list[RegistryEntry]:
         with self._connect() as conn:
@@ -1142,10 +1259,30 @@ class SQLiteStateStore:
         except Exception:
             return None
 
-    def delete_registered_app(self, app_name: str) -> None:
+    def delete_registered_app(
+        self,
+        app_name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        deleted = False
         with self._connect() as conn:
+            if expected_resource_version is not None:
+                row = conn.execute(
+                    "SELECT resource_version FROM app_registry WHERE app_name = ?",
+                    (app_name,),
+                ).fetchone()
+                current_rv = int(row[0] or 0) if row is not None else 0
+                if current_rv != int(expected_resource_version):
+                    raise RegistryConflictError(
+                        app_name,
+                        expected=int(expected_resource_version),
+                        actual=current_rv,
+                    )
             conn.execute("DELETE FROM app_registry WHERE app_name = ?", (app_name,))
+            deleted = bool(getattr(conn, "total_changes", 0))
             conn.commit()
+        return deleted
 
     def _registry_entry_from_row(self, row) -> RegistryEntry | None:
         try:
@@ -1169,6 +1306,352 @@ class SQLiteStateStore:
             source=row[3],
             labels=labels,
             updated_at=updated,
+            resource_version=int(row[6] or 0),
+        )
+
+    @staticmethod
+    def _authority_object_conflict_key(
+        group: str, version: str, resource: str, namespace: str | None, name: str
+    ) -> str:
+        return "/".join(
+            [
+                group or "core",
+                version,
+                resource,
+                namespace or "_cluster",
+                name,
+            ]
+        )
+
+    def register_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        kind: str,
+        metadata: dict | None = None,
+        spec: dict | None = None,
+        status: dict | None = None,
+        expected_resource_version: int | None = None,
+    ) -> int:
+        metadata_json = json.dumps(metadata or {}, sort_keys=True)
+        spec_json = json.dumps(spec or {}, sort_keys=True)
+        status_json = json.dumps(status or {}, sort_keys=True)
+        updated_at = datetime.now(timezone.utc).isoformat()
+        ns_key = str(namespace or "")
+        current_rv = 0
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT resource_version
+                  FROM authority_objects
+                 WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                """,
+                (group, version, resource, ns_key, name),
+            ).fetchone()
+            if row is not None:
+                current_rv = int(row[0] or 0)
+            if expected_resource_version is not None and current_rv != int(expected_resource_version):
+                raise RegistryConflictError(
+                    self._authority_object_conflict_key(group, version, resource, namespace, name),
+                    expected=int(expected_resource_version),
+                    actual=current_rv,
+                )
+            next_resource_version = max(1, current_rv + 1)
+            conn.execute(
+                """
+                INSERT INTO authority_objects (
+                  grp,
+                  ver,
+                  resource,
+                  namespace,
+                  name,
+                  kind,
+                  metadata_json,
+                  spec_json,
+                  status_json,
+                  updated_at,
+                  resource_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(grp, ver, resource, namespace, name) DO UPDATE SET
+                  kind = excluded.kind,
+                  metadata_json = excluded.metadata_json,
+                  spec_json = excluded.spec_json,
+                  status_json = excluded.status_json,
+                  updated_at = excluded.updated_at,
+                  resource_version = excluded.resource_version
+                """,
+                (
+                    group,
+                    version,
+                    resource,
+                    ns_key,
+                    name,
+                    kind,
+                    metadata_json,
+                    spec_json,
+                    status_json,
+                    updated_at,
+                    next_resource_version,
+                ),
+            )
+            conn.commit()
+        return next_resource_version
+
+    def list_authority_objects(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None = None,
+    ) -> list[AuthorityObjectEntry]:
+        params: list[object] = [group, version, resource]
+        query = (
+            """
+            SELECT grp, ver, resource, namespace, name, kind,
+                   metadata_json, spec_json, status_json, updated_at, resource_version
+              FROM authority_objects
+             WHERE grp = ? AND ver = ? AND resource = ?
+            """
+        )
+        if namespace is not None:
+            query += " AND namespace = ?"
+            params.append(str(namespace))
+        query += " ORDER BY namespace, name"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[AuthorityObjectEntry] = []
+        for row in rows:
+            entry = self._authority_object_from_row(row)
+            if entry is not None:
+                out.append(entry)
+        return out
+
+    def get_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+    ) -> AuthorityObjectEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT grp, ver, resource, namespace, name, kind,
+                       metadata_json, spec_json, status_json, updated_at, resource_version
+                  FROM authority_objects
+                 WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                """,
+                (group, version, resource, str(namespace or ""), name),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._authority_object_from_row(row)
+
+    def delete_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        ns_key = str(namespace or "")
+        deleted = False
+        with self._connect() as conn:
+            if expected_resource_version is not None:
+                row = conn.execute(
+                    """
+                    SELECT resource_version
+                      FROM authority_objects
+                     WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                    """,
+                    (group, version, resource, ns_key, name),
+                ).fetchone()
+                current_rv = int(row[0] or 0) if row is not None else 0
+                if current_rv != int(expected_resource_version):
+                    raise RegistryConflictError(
+                        self._authority_object_conflict_key(group, version, resource, namespace, name),
+                        expected=int(expected_resource_version),
+                        actual=current_rv,
+                    )
+            conn.execute(
+                """
+                DELETE FROM authority_objects
+                 WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                """,
+                (group, version, resource, ns_key, name),
+            )
+            deleted = bool(getattr(conn, "total_changes", 0))
+            conn.commit()
+        return deleted
+
+    def _authority_object_from_row(self, row) -> AuthorityObjectEntry | None:
+        try:
+            metadata = json.loads(row[6] or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+        try:
+            spec = json.loads(row[7] or "{}")
+            if not isinstance(spec, dict):
+                spec = {}
+        except Exception:
+            spec = {}
+        try:
+            status = json.loads(row[8] or "{}")
+            if not isinstance(status, dict):
+                status = {}
+        except Exception:
+            status = {}
+        try:
+            updated = datetime.fromisoformat(row[9]) if row[9] else datetime.now(timezone.utc)
+        except Exception:
+            updated = datetime.now(timezone.utc)
+        return AuthorityObjectEntry(
+            group=str(row[0] or ""),
+            version=str(row[1] or ""),
+            resource=str(row[2] or ""),
+            namespace=(str(row[3]) if row[3] not in {None, ""} else None),
+            name=str(row[4] or ""),
+            kind=str(row[5] or ""),
+            metadata=metadata,
+            spec=spec,
+            status=status,
+            updated_at=updated,
+            resource_version=int(row[10] or 0),
+        )
+
+    def upsert_workload_metrics_snapshot(
+        self,
+        app_name: str,
+        *,
+        controller_id: str,
+        controller_epoch: int,
+        collected_at: datetime,
+        cpu_utilization: float | None,
+        memory_utilization: float | None,
+        memory_bytes: int,
+        pod_count: int,
+        node_count: int,
+    ) -> None:
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO workload_metrics_snapshots (
+                  app_name,
+                  controller_id,
+                  controller_epoch,
+                  collected_at,
+                  cpu_utilization,
+                  memory_utilization,
+                  memory_bytes,
+                  pod_count,
+                  node_count,
+                  updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(app_name) DO UPDATE SET
+                  controller_id = excluded.controller_id,
+                  controller_epoch = excluded.controller_epoch,
+                  collected_at = excluded.collected_at,
+                  cpu_utilization = excluded.cpu_utilization,
+                  memory_utilization = excluded.memory_utilization,
+                  memory_bytes = excluded.memory_bytes,
+                  pod_count = excluded.pod_count,
+                  node_count = excluded.node_count,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    str(app_name),
+                    str(controller_id),
+                    int(controller_epoch),
+                    collected_at.astimezone(timezone.utc).isoformat(),
+                    float(cpu_utilization) if cpu_utilization is not None else None,
+                    float(memory_utilization) if memory_utilization is not None else None,
+                    int(memory_bytes),
+                    int(pod_count),
+                    int(node_count),
+                    updated_at,
+                ),
+            )
+            conn.commit()
+
+    def get_workload_metrics_snapshot(self, app_name: str) -> WorkloadMetricsSnapshot | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT app_name, controller_id, controller_epoch, collected_at,
+                       cpu_utilization, memory_utilization, memory_bytes,
+                       pod_count, node_count, updated_at
+                  FROM workload_metrics_snapshots
+                 WHERE app_name = ?
+                """,
+                (str(app_name),),
+            ).fetchone()
+        return self._workload_metrics_snapshot_from_row(row)
+
+    def list_workload_metrics_snapshots(self) -> list[WorkloadMetricsSnapshot]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT app_name, controller_id, controller_epoch, collected_at,
+                       cpu_utilization, memory_utilization, memory_bytes,
+                       pod_count, node_count, updated_at
+                  FROM workload_metrics_snapshots
+                 ORDER BY app_name
+                """
+            ).fetchall()
+        out: list[WorkloadMetricsSnapshot] = []
+        for row in rows:
+            entry = self._workload_metrics_snapshot_from_row(row)
+            if entry is not None:
+                out.append(entry)
+        return out
+
+    def delete_workload_metrics_snapshot(self, app_name: str) -> bool:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM workload_metrics_snapshots WHERE app_name = ?",
+                (str(app_name),),
+            )
+            deleted = bool(getattr(conn, "total_changes", 0))
+            conn.commit()
+        return deleted
+
+    def _workload_metrics_snapshot_from_row(self, row) -> WorkloadMetricsSnapshot | None:
+        if row is None:
+            return None
+        try:
+            collected_at = (
+                datetime.fromisoformat(row[3]) if row[3] else datetime.fromtimestamp(0, timezone.utc)
+            )
+        except Exception:
+            collected_at = datetime.fromtimestamp(0, timezone.utc)
+        try:
+            updated_at = (
+                datetime.fromisoformat(row[9]) if row[9] else datetime.fromtimestamp(0, timezone.utc)
+            )
+        except Exception:
+            updated_at = datetime.fromtimestamp(0, timezone.utc)
+        return WorkloadMetricsSnapshot(
+            app_name=str(row[0] or ""),
+            controller_id=str(row[1] or ""),
+            controller_epoch=int(row[2] or 0),
+            collected_at=collected_at,
+            cpu_utilization=float(row[4]) if row[4] is not None else None,
+            memory_utilization=float(row[5]) if row[5] is not None else None,
+            memory_bytes=int(row[6] or 0),
+            pod_count=int(row[7] or 0),
+            node_count=int(row[8] or 0),
+            updated_at=updated_at,
         )
 
     def _get_latest_revision(self, app_name: str) -> Optional[RevisionInfo]:
@@ -2188,6 +2671,63 @@ class SQLiteStateStore:
             conn.commit()
         return updated
 
+    def ack_work_items(self, ack_items: list[dict]) -> int:
+        if not ack_items:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        updated = 0
+        with self._connect() as conn:
+            for item in ack_items:
+                if not isinstance(item, dict):
+                    continue
+                lease_id = str(item.get("lease_id") or "").strip()
+                if not lease_id:
+                    continue
+                envelope = parse_envelope(item)
+                if envelope is None:
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT work_id, attempt, payload_json
+                    FROM work_queue
+                    WHERE lease_id = ?
+                    """,
+                    (lease_id,),
+                ).fetchone()
+                if not row:
+                    continue
+                work_id = str(row[0] or "")
+                attempt = int(row[1] or 0)
+                try:
+                    payload = json.loads(row[2]) if row[2] else {}
+                except Exception:
+                    payload = {}
+                queued_envelope = parse_envelope(payload)
+                if queued_envelope != envelope:
+                    continue
+                if item.get("work_id") not in {None, "", work_id}:
+                    continue
+                try:
+                    ack_attempt = int(item.get("attempt") or 0)
+                except Exception:
+                    ack_attempt = 0
+                if ack_attempt not in {0, attempt}:
+                    continue
+                cursor = conn.execute(
+                    """
+                    UPDATE work_queue
+                    SET state = ?, acked_at = ?, updated_at = ?
+                    WHERE lease_id = ?
+                    """,
+                    ("Acked", now, now, lease_id),
+                )
+                try:
+                    updated += int(getattr(cursor, "rowcount", 0) or 0)
+                except Exception:
+                    pass
+            conn.commit()
+        return updated
+
     # --- Site ingress endpoints (edge ingress scaffolding) ---
     def get_site_ingress_endpoint(self, site_id: str) -> SiteIngressEndpoint | None:
         with self._connect() as conn:
@@ -2427,6 +2967,16 @@ class SQLiteStateStore:
                 (status_json, now, name, namespace),
             )
             conn.commit()
+
+    def delete_edge_ingress_route(self, *, name: str, namespace: str) -> bool:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM edge_ingress_routes WHERE name = ? AND namespace = ?",
+                (name, namespace),
+            )
+            deleted = bool(getattr(conn, "total_changes", 0))
+            conn.commit()
+        return deleted
 
     def update_edge_ingress_policy_status(
         self,
@@ -2687,6 +3237,8 @@ class SQLiteStateStore:
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         payload_json = json.dumps(payload)
+        publish_subject = _outbox_publish_subject(site_id)
+        publish_msg_id = _outbox_publish_msg_id(work_id, attempt, payload)
         with self._connect() as conn:
             conn.execute(
                 "DELETE FROM work_outbox WHERE work_id = ? AND attempt = ?",
@@ -2695,17 +3247,20 @@ class SQLiteStateStore:
             conn.execute(
                 """
                 INSERT INTO work_outbox
-                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
-                   last_publish_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (work_id, attempt, site_id, payload_json, publish_subject, publish_msg_id,
+                   state, publish_attempts, last_publish_at, last_publish_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     work_id,
                     int(attempt),
                     site_id,
                     payload_json,
+                    publish_subject,
+                    publish_msg_id,
                     "Unpublished",
                     0,
+                    None,
                     None,
                     now,
                     now,
@@ -2717,7 +3272,8 @@ class SQLiteStateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT work_id, attempt, site_id, payload_json, publish_attempts
+                SELECT work_id, attempt, site_id, payload_json, publish_subject,
+                       publish_msg_id, publish_attempts, last_publish_at, last_publish_error
                 FROM work_outbox
                 WHERE state = 'Unpublished'
                 ORDER BY created_at
@@ -2734,7 +3290,15 @@ class SQLiteStateStore:
                     attempt=int(row[1]),
                     site_id=str(row[2]),
                     payload=payload,
-                    publish_attempts=int(row[4] or 0),
+                    publish_subject=str(row[4] or _outbox_publish_subject(str(row[2]))),
+                    publish_msg_id=str(
+                        row[5] or _outbox_publish_msg_id(str(row[0]), int(row[1]), payload)
+                    ),
+                    publish_attempts=int(row[6] or 0),
+                    last_publish_at=(
+                        datetime.fromisoformat(str(row[7])) if row[7] else None
+                    ),
+                    last_publish_error=str(row[8]) if row[8] else None,
                 )
             )
         return entries
@@ -2763,23 +3327,30 @@ class SQLiteStateStore:
                 """
                 UPDATE work_outbox
                 SET state = ?, publish_attempts = publish_attempts + 1,
-                    last_publish_at = ?, updated_at = ?
+                    last_publish_at = ?, last_publish_error = NULL, updated_at = ?
                 WHERE work_id = ? AND attempt = ?
                 """,
                 ("Published", now, now, work_id, int(attempt)),
             )
             conn.commit()
 
-    def record_outbox_publish_attempt(self, work_id: str, attempt: int) -> None:
+    def record_outbox_publish_attempt(
+        self,
+        work_id: str,
+        attempt: int,
+        *,
+        error: str | None = None,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE work_outbox
-                SET publish_attempts = publish_attempts + 1, last_publish_at = ?, updated_at = ?
+                SET publish_attempts = publish_attempts + 1, last_publish_at = ?,
+                    last_publish_error = ?, updated_at = ?
                 WHERE work_id = ? AND attempt = ?
                 """,
-                (now, now, work_id, int(attempt)),
+                (now, error, now, work_id, int(attempt)),
             )
             conn.commit()
 
@@ -2791,6 +3362,9 @@ class SQLiteStateStore:
         attempt: int,
         site_id: str,
         state: str,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
+        operation_id: str | None = None,
         desired_generation: int | None = None,
     ) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -2803,7 +3377,8 @@ class SQLiteStateStore:
                 conn.execute(
                     """
                     UPDATE work_ledger
-                    SET attempt = ?, site_id = ?, state = ?, desired_generation = ?,
+                    SET attempt = ?, site_id = ?, state = ?, controller_id = ?,
+                        controller_epoch = ?, operation_id = ?, desired_generation = ?,
                         updated_at = ?, state_updated_at = ?
                     WHERE work_id = ?
                     """,
@@ -2811,6 +3386,9 @@ class SQLiteStateStore:
                         int(attempt),
                         site_id,
                         state,
+                        controller_id,
+                        controller_epoch,
+                        operation_id,
                         desired_generation,
                         now_iso,
                         now_iso,
@@ -2821,16 +3399,20 @@ class SQLiteStateStore:
                 conn.execute(
                     """
                     INSERT INTO work_ledger
-                      (work_id, attempt, site_id, state, desired_generation,
+                      (work_id, attempt, site_id, state, controller_id, controller_epoch,
+                       operation_id, desired_generation,
                        assigned_node_id, observed_generation, result_json,
                        created_at, updated_at, state_updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         work_id,
                         int(attempt),
                         site_id,
                         state,
+                        controller_id,
+                        controller_epoch,
+                        operation_id,
                         desired_generation,
                         None,
                         None,
@@ -2846,7 +3428,8 @@ class SQLiteStateStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT work_id, attempt, site_id, state, desired_generation,
+                SELECT work_id, attempt, site_id, state, controller_id,
+                       controller_epoch, operation_id, desired_generation,
                        assigned_node_id, observed_generation, result_json,
                        created_at, updated_at, state_updated_at
                 FROM work_ledger
@@ -2857,9 +3440,9 @@ class SQLiteStateStore:
             if not row:
                 return None
             result = None
-            if row[7]:
+            if row[10]:
                 try:
-                    result = json.loads(row[7])
+                    result = json.loads(row[10])
                 except Exception:
                     result = None
             return WorkLedgerEntry(
@@ -2867,13 +3450,16 @@ class SQLiteStateStore:
                 attempt=int(row[1]),
                 site_id=str(row[2]),
                 state=str(row[3]),
-                desired_generation=int(row[4]) if row[4] is not None else None,
-                assigned_node_id=str(row[5]) if row[5] else None,
-                observed_generation=int(row[6]) if row[6] is not None else None,
+                controller_id=str(row[4]) if row[4] else None,
+                controller_epoch=int(row[5]) if row[5] is not None else None,
+                operation_id=str(row[6]) if row[6] else None,
+                desired_generation=int(row[7]) if row[7] is not None else None,
+                assigned_node_id=str(row[8]) if row[8] else None,
+                observed_generation=int(row[9]) if row[9] is not None else None,
                 result=result,
-                created_at=datetime.fromisoformat(row[8]),
-                updated_at=datetime.fromisoformat(row[9]),
-                state_updated_at=datetime.fromisoformat(row[10]),
+                created_at=datetime.fromisoformat(row[11]),
+                updated_at=datetime.fromisoformat(row[12]),
+                state_updated_at=datetime.fromisoformat(row[13]),
             )
 
     def update_work_state(
@@ -2922,7 +3508,8 @@ class SQLiteStateStore:
         with self._connect() as conn:
             results = conn.execute(
                 """
-                SELECT work_id, attempt, site_id, state, desired_generation,
+                SELECT work_id, attempt, site_id, state, controller_id,
+                       controller_epoch, operation_id, desired_generation,
                        assigned_node_id, observed_generation, result_json,
                        created_at, updated_at, state_updated_at
                 FROM work_ledger
@@ -2933,9 +3520,9 @@ class SQLiteStateStore:
             ).fetchall()
             for row in results:
                 result = None
-                if row[7]:
+                if row[10]:
                     try:
-                        result = json.loads(row[7])
+                        result = json.loads(row[10])
                     except Exception:
                         result = None
                 rows.append(
@@ -2944,13 +3531,16 @@ class SQLiteStateStore:
                         attempt=int(row[1]),
                         site_id=str(row[2]),
                         state=str(row[3]),
-                        desired_generation=int(row[4]) if row[4] is not None else None,
-                        assigned_node_id=str(row[5]) if row[5] else None,
-                        observed_generation=int(row[6]) if row[6] is not None else None,
+                        controller_id=str(row[4]) if row[4] else None,
+                        controller_epoch=int(row[5]) if row[5] is not None else None,
+                        operation_id=str(row[6]) if row[6] else None,
+                        desired_generation=int(row[7]) if row[7] is not None else None,
+                        assigned_node_id=str(row[8]) if row[8] else None,
+                        observed_generation=int(row[9]) if row[9] is not None else None,
                         result=result,
-                        created_at=datetime.fromisoformat(row[8]),
-                        updated_at=datetime.fromisoformat(row[9]),
-                        state_updated_at=datetime.fromisoformat(row[10]),
+                        created_at=datetime.fromisoformat(row[11]),
+                        updated_at=datetime.fromisoformat(row[12]),
+                        state_updated_at=datetime.fromisoformat(row[13]),
                     )
                 )
         return rows
@@ -2960,6 +3550,8 @@ class SQLiteStateStore:
         *,
         work_id: str,
         attempt: int,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
     ) -> int | None:
         now_iso = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
@@ -2983,15 +3575,25 @@ class SQLiteStateStore:
             payload.setdefault("work_id", work_id)
             payload.setdefault("site_id", site_id)
             payload["created_at"] = now_iso
+            if controller_id:
+                payload["controller_id"] = controller_id
+            if controller_epoch is not None:
+                payload["controller_epoch"] = int(controller_epoch)
+            if payload.get("controller_id") and payload.get("controller_epoch") is not None:
+                payload["operation_id"] = work_operation(work_id, new_attempt)
             cursor = conn.execute(
                 """
                 UPDATE work_ledger
-                SET attempt = ?, state = ?, updated_at = ?, state_updated_at = ?
+                SET attempt = ?, state = ?, controller_id = ?, controller_epoch = ?,
+                    operation_id = ?, updated_at = ?, state_updated_at = ?
                 WHERE work_id = ? AND attempt = ?
                 """,
                 (
                     new_attempt,
                     "Pending",
+                    payload.get("controller_id"),
+                    payload.get("controller_epoch"),
+                    payload.get("operation_id"),
                     now_iso,
                     now_iso,
                     work_id,
@@ -3008,17 +3610,20 @@ class SQLiteStateStore:
             conn.execute(
                 """
                 INSERT INTO work_outbox
-                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
-                   last_publish_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (work_id, attempt, site_id, payload_json, publish_subject, publish_msg_id,
+                   state, publish_attempts, last_publish_at, last_publish_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     work_id,
                     new_attempt,
                     site_id,
                     json.dumps(payload),
+                    _outbox_publish_subject(site_id),
+                    _outbox_publish_msg_id(work_id, new_attempt, payload),
                     "Unpublished",
                     0,
+                    None,
                     None,
                     now_iso,
                     now_iso,
@@ -3026,7 +3631,6 @@ class SQLiteStateStore:
             )
             conn.commit()
             return new_attempt
-
     # --- Canary rollout state ----------------------------------------------
 
     def get_canary_state(self, app_name: str) -> dict | None:
@@ -3382,6 +3986,14 @@ class SQLiteStateStore:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
                 conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))
             conn.commit()
+
+
+def _outbox_publish_subject(site_id: str) -> str:
+    return f"k1s.v1.work.site.{site_id}"
+
+
+def _outbox_publish_msg_id(work_id: str, attempt: int, payload: dict) -> str:
+    return str(payload.get("operation_id") or f"{work_id}:{attempt}")
 
 
 def state_store_from_env() -> SQLiteStateStore:

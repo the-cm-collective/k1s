@@ -50,6 +50,11 @@ sudo_env_snapshot=(
 
 info(){ echo "[k3s-rollout] $*" >&2; }
 
+current_pod_uids() {
+  local selector="${AE_K3S_POD_SELECTOR:-app=${deploy}}"
+  kubectl -n "$namespace" get pods -l "$selector" -o jsonpath='{range .items[*]}{.metadata.uid}{","}{end}' 2>/dev/null | sed 's/,$//'
+}
+
 ensure_kube() {
   if kubectl cluster-info >/dev/null 2>&1; then
     return 0
@@ -100,7 +105,7 @@ run_rollout_once() {
 
   info "scale ${deploy} to ${replicas}"
   kubectl -n "$namespace" scale deploy "$deploy" --replicas "$replicas"
-  wait_ready "$deploy" "$replicas" || true
+  wait_ready "$deploy" "$replicas"
 
   local cur
   local target
@@ -112,31 +117,31 @@ run_rollout_once() {
   kubectl -n "$namespace" set image deploy/"$deploy" "$deploy"="$target"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+      sudo env "${sudo_env_snapshot[@]}" AE_K3S_POD_UIDS="$(current_pod_uids)" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
     else
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+      sudo env "${sudo_env_snapshot[@]}" AE_K3S_POD_UIDS="$(current_pod_uids)" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
     fi
   else
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+      AE_K3S_POD_UIDS="$(current_pod_uids)" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
     else
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+      AE_K3S_POD_UIDS="$(current_pod_uids)" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
     fi
   fi
 
   info "wait ready and snapshot POST"
-  wait_ready "$deploy" "$replicas" || true
+  wait_ready "$deploy" "$replicas"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+      sudo env "${sudo_env_snapshot[@]}" AE_K3S_POD_UIDS="$(current_pod_uids)" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
     else
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+      sudo env "${sudo_env_snapshot[@]}" AE_K3S_POD_UIDS="$(current_pod_uids)" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
     fi
   else
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+      AE_K3S_POD_UIDS="$(current_pod_uids)" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
     else
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+      AE_K3S_POD_UIDS="$(current_pod_uids)" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k3s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
     fi
   fi
 }

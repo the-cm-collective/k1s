@@ -26,6 +26,23 @@ from datetime import datetime, timezone
 import json, hashlib
 import yaml
 
+from ae.apishim.ha_store import materialize_registry_manifests
+from ae.controller.authority import AuthorityConfig, ControllerAuthorityService, NotLeaderError
+from ae.controller.cronjob_authority import (
+    CronJobAuthorityController,
+    CronJobAuthorityControllerConfig,
+)
+from ae.controller.hpa_authority import (
+    HPAAuthorityController,
+    HPAAuthorityControllerConfig,
+    WorkloadMetricsCollector,
+    WorkloadMetricsCollectorConfig,
+)
+from ae.controller.app_ingress import sync_translated_app_ingress
+from ae.controller.storage_authority import (
+    StorageAuthorityRunner,
+    build_storage_authority_store,
+)
 from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
@@ -40,9 +57,15 @@ from ae.observability.http_api import (
     set_reconcile_metrics,
     start_http_api,
 )
+from ae.ha.dashboard import HaDashboardProbeCache
 from ae.controller.agent_api import start_agent_api
 from ae.observability.logging import configure_logging
-from ae.config.transport import TransportConfig, check_nats_connectivity
+from ae.config.transport import (
+    TransportConfig,
+    check_nats_connectivity,
+    desired_js_replicas,
+    ha_mode_enabled,
+)
 from ae.transport.nats_client import NatsClient, NatsClientError
 from ae.transport.controller_ingress import NatsControllerIngress
 from ae.transport.telemetry_ingress import TelemetryIngress
@@ -210,12 +233,11 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
     stream_name = os.getenv("AE_JS_STREAM_NAME", "K1S_WORK")
     work_subject = os.getenv("AE_JS_WORK_SUBJECT", "k1s.v1.work.site.>")
     storage = os.getenv("AE_JS_STORAGE", "file")
-    ack_wait_s = _parse_duration_seconds(
-        os.getenv("AE_GATEWAY_JS_ACK_WAIT"), default=30.0
-    )
+    ack_wait_s = _parse_duration_seconds(os.getenv("AE_GATEWAY_JS_ACK_WAIT"), default=30.0)
     max_ack_pending = int(os.getenv("AE_GATEWAY_JS_MAX_ACK_PENDING", "32") or 32)
     max_deliver = int(os.getenv("AE_GATEWAY_JS_MAX_DELIVER", "20") or 20)
     max_waiting = int(os.getenv("AE_GATEWAY_JS_MAX_WAITING", "512") or 512)
+    replicas = desired_js_replicas()
     client = None
     try:
         client = NatsClient(
@@ -229,6 +251,14 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
             subjects=[work_subject],
             storage=storage,
             retention="workqueue",
+            replicas=replicas,
+        )
+        client.validate_stream(
+            name=stream_name,
+            subjects=[work_subject],
+            storage=storage,
+            retention="workqueue",
+            replicas=replicas,
         )
         if not site_ids:
             logger.info(
@@ -244,8 +274,21 @@ def _bootstrap_jetstream(transport: TransportConfig) -> None:
                     max_ack_pending=max_ack_pending,
                     max_deliver=max_deliver,
                     max_waiting=max_waiting,
+                    replicas=replicas,
+                )
+                client.validate_consumer(
+                    stream=stream_name,
+                    durable=f"WORK_SITE_{site_id}",
+                    filter_subject=f"k1s.v1.work.site.{site_id}",
+                    ack_wait_s=ack_wait_s,
+                    max_ack_pending=max_ack_pending,
+                    max_deliver=max_deliver,
+                    max_waiting=max_waiting,
+                    replicas=replicas,
                 )
     except Exception as exc:  # noqa: BLE001
+        if ha_mode_enabled():
+            raise
         logger.warning("jetstream bootstrap failed: %s", exc)
     finally:
         if client is not None:
@@ -328,149 +371,32 @@ def _import_specs(specs_dir: Path, store: SQLiteStateStore, source: str = "specs
         manifest_map = _load_all(_find_manifests(specs_dir))
     except Exception:
         return
-    translate_ingress = _truthy_env("AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS")
     for manifest, _path in manifest_map.values():
         try:
             labels = getattr(getattr(manifest, "metadata", None), "labels", None)
             store.register_app(manifest, source=source, labels=labels)
-            if translate_ingress:
-                _translate_app_ingress(manifest, store)
         except Exception:
             continue
 
 
-def _translate_app_ingress(manifest: AppManifest, store: SQLiteStateStore) -> None:
-    ingress = getattr(manifest.spec, "ingress", None)
-    if ingress is None:
-        return
-    ns = getattr(manifest.metadata, "namespace", None) or DEFAULT_NAMESPACE
-    app_name = manifest.metadata.name
-    route_name = f"{app_name}-ingress"
-    existing = store.get_edge_ingress_route(name=route_name, namespace=ns)
-    if existing is not None and not _edge_ingress_is_translated(existing):
-        return
-    mode = _translate_ingress_mode()
-    site_id = _translate_ingress_site(mode)
-    exposure: dict = {"mode": mode}
-    if mode not in {"core-local", "core"}:
-        exposure["placement"] = {"site": site_id}
-    tls_block = _translate_ingress_tls(ingress)
-    if tls_block:
-        exposure["tls"] = tls_block
-
-    port = _translate_ingress_port(manifest)
-    paths_raw = list(getattr(ingress, "paths", []) or [])
-    if not paths_raw:
-        paths_raw = [getattr(ingress, "path", "/") or "/"]
-    paths = []
-    for p in paths_raw:
-        path = str(p or "/").strip() or "/"
-        if not path.startswith("/"):
-            path = f"/{path}"
-        entry = {
-            "path": path,
-            "serviceRef": {
-                "name": app_name,
-                "namespace": ns,
-                **({"port": port} if port is not None else {}),
-            },
-        }
-        paths.append(entry)
-
-    payload = {
-        "apiVersion": "k1s.io/v1",
-        "kind": "EdgeIngressRoute",
-        "metadata": {
-            "name": route_name,
-            "namespace": ns,
-            "annotations": {"k1s.io/translated-from": "AppManifest"},
-        },
-        "spec": {
-            "host": ingress.host,
-            "paths": paths,
-            "exposure": exposure,
-        },
+def _reserved_controlplane_hosts_from_env() -> set[str]:
+    enabled = str(os.getenv("AE_CONTROLPLANE_PUBLIC_ENABLE", "0") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
     }
-    store.upsert_edge_ingress_route(
-        name=route_name,
-        namespace=ns,
-        site_id=site_id if mode not in {"core-local", "core"} else "core",
-        policy_name=None,
-        policy_namespace=None,
-        document=payload,
-    )
-
-
-def _edge_ingress_is_translated(record) -> bool:
-    doc = record.spec if isinstance(record.spec, dict) else {}
-    meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
-    ann = meta.get("annotations") if isinstance(meta.get("annotations"), dict) else {}
-    return ann.get("k1s.io/translated-from") == "AppManifest"
-
-
-def _translate_ingress_mode() -> str:
-    raw = (
-        os.getenv("AE_EDGE_INGRESS_TRANSLATE_MODE")
-        or os.getenv("AE_EDGE_INGRESS_MODE")
-        or os.getenv("EDGE_INGRESS_MODE")
-        or ""
-    ).strip()
-    if raw:
-        raw = raw.lower().replace("_", "-")
-        if raw in {"core", "core-local"}:
-            return "core-local"
-        if raw in {"core-proxy", "core-proxy"}:
-            return "core-proxy"
-        if raw in {"core-to-edge-public", "core-to-edge", "public"}:
-            return "core-to-edge-public"
-        if raw in {"edge-local", "edge"}:
-            return "edge-local"
-    backend = (os.getenv("AE_TRANSPORT_BACKEND") or "http").lower()
-    if backend == "http":
-        return "core-local"
-    return "core-proxy"
-
-
-def _translate_ingress_site(mode: str) -> str:
-    site = (os.getenv("AE_EDGE_INGRESS_APP_SITE") or os.getenv("AE_SITE_ID") or "").strip()
-    if not site or site == "core":
-        site = "sfo-edge-01"
-    if mode in {"core-local", "core"}:
-        return "core"
-    return site
-
-
-def _translate_ingress_tls(ingress) -> dict | None:
-    if getattr(ingress, "tls", True) is False and not getattr(ingress, "tls_secret_name", None):
-        return None
-    tls_block = {"mode": "terminate-core", "terminateCore": {"redirectHttpToHttps": True}}
-    secret = getattr(ingress, "tls_secret_name", None)
-    if secret:
-        tls_block["terminateCore"]["secretName"] = str(secret)
-    return tls_block
-
-
-def _translate_ingress_port(manifest: AppManifest) -> int | None:
-    try:
-        if manifest.spec.health and manifest.spec.health.readiness:
-            r = manifest.spec.health.readiness
-            if getattr(r, "http_get", None) is not None:
-                return int(r.http_get.port)
-            if getattr(r, "tcp_socket", None) is not None:
-                return int(r.tcp_socket.port)
-    except Exception:
-        pass
-    try:
-        if manifest.spec.service and getattr(manifest.spec.service, "target_port", None):
-            return int(manifest.spec.service.target_port)
-    except Exception:
-        pass
-    try:
-        if manifest.spec.ports:
-            return int(manifest.spec.ports[0].container_port)
-    except Exception:
-        pass
-    return None
+    if not enabled:
+        return set()
+    return {
+        host
+        for host in {
+            str(os.getenv("AE_CONTROLPLANE_DASH_HOST", "dash.home.arpa") or "").strip().lower(),
+            str(os.getenv("AE_CONTROLPLANE_DOCS_HOST", "docs.home.arpa") or "").strip().lower(),
+            str(os.getenv("AE_CONTROLPLANE_API_HOST", "api.home.arpa") or "").strip().lower(),
+        }
+        if host
+    }
 
 
 def _iter_yaml_docs(paths: Iterable[Path]) -> Iterable[dict]:
@@ -529,17 +455,13 @@ def _store_edge_ingress_route(doc: dict, store: SQLiteStateStore) -> None:
     meta, name, namespace = meta_info
     spec = doc.get("spec") if isinstance(doc.get("spec"), dict) else {}
     exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
-    placement = (
-        exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
-    )
+    placement = exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
     site_id = str(placement.get("site") or "").strip()
     policy_ref = spec.get("policyRef") if isinstance(spec.get("policyRef"), dict) else {}
     policy_name = str(policy_ref.get("name") or "").strip() or None
     policy_namespace = None
     if policy_name:
-        policy_namespace = (
-            str(policy_ref.get("namespace") or namespace).strip() or namespace
-        )
+        policy_namespace = str(policy_ref.get("namespace") or namespace).strip() or namespace
     payload = {
         "apiVersion": "k1s.io/v1",
         "kind": "EdgeIngressRoute",
@@ -624,21 +546,22 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
     forward_auth_urls = _collect_core_forward_auth_urls(store, policy_cache)
     primary_forward_auth_url = sorted(forward_auth_urls)[0] if forward_auth_urls else None
     multiple_forward_auth = len(forward_auth_urls) > 1
+    reserved_hosts = _reserved_controlplane_hosts_from_env()
 
     for route in store.list_edge_ingress_routes():
         spec = _edge_ingress_route_spec(route)
         exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
         mode = str(exposure.get("mode") or "").strip().lower()
-        placement = (
-            exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
-        )
+        placement = exposure.get("placement") if isinstance(exposure.get("placement"), dict) else {}
         site_id = str(placement.get("site") or route.site_id or "").strip()
         errors: list[str] = []
         policy_unsupported: list[str] = []
 
-        host = str(spec.get("host") or "").strip()
+        host = str(spec.get("host") or "").strip().lower()
         if not host:
             errors.append("missing_host")
+        elif host in reserved_hosts:
+            errors.append("reserved_control_plane_host")
         if mode not in {"core-proxy", "core-to-edge-public", "edge-local", "core-local", "core"}:
             errors.append("invalid_exposure_mode")
         if mode not in {"core-local", "core"} and not site_id:
@@ -672,9 +595,7 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
         policy_namespace = str(policy_ref.get("namespace") or route.namespace or "").strip()
         policy = None
         if policy_name:
-            policy = _lookup_edge_ingress_policy(
-                store, policy_name, policy_namespace, policy_cache
-            )
+            policy = _lookup_edge_ingress_policy(store, policy_name, policy_namespace, policy_cache)
             if policy is None:
                 errors.append("policy_ref_not_found")
         if isinstance(policy, dict):
@@ -682,9 +603,7 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
                 policy_unsupported = _edge_local_policy_unsupported(policy)
             elif mode in {"core-proxy", "core-to-edge-public"}:
                 errors.extend(
-                    _core_policy_errors(
-                        policy, primary_forward_auth_url, multiple_forward_auth
-                    )
+                    _core_policy_errors(policy, primary_forward_auth_url, multiple_forward_auth)
                 )
 
         status = {
@@ -950,6 +869,8 @@ def _apishim_sot_enabled() -> bool:
 
 
 def _apishim_mirror_enabled() -> bool:
+    if ha_mode_enabled():
+        return False
     if _apishim_sot_enabled():
         return True
     if os.getenv("AE_APISHIM_MIRROR") is not None:
@@ -1324,6 +1245,7 @@ def _snapshot_apishim_manifests(
         return {}, False
 
     try:
+
         class _NullReconciler:
             _runtime = _StubRuntime()
 
@@ -1568,7 +1490,11 @@ def _merge_file_and_db_manifests(
     return merged
 
 
-def _make_reconciler() -> Reconciler:
+def _make_reconciler(
+    *,
+    authority_config: AuthorityConfig | None = None,
+    authority=None,
+) -> Reconciler:
     store = state_store_from_env()
     registry_auth = registry_auth_factory()
     base_runtime = runtime_factory(registry_auth=registry_auth)
@@ -1576,7 +1502,7 @@ def _make_reconciler() -> Reconciler:
     try:
         from ae.runtime import RemoteRuntime
 
-        runtime = RemoteRuntime(agent_url, base_runtime)
+        runtime = RemoteRuntime(agent_url, base_runtime, authority=authority)
     except Exception:
         runtime = base_runtime
     health = health_manager_factory()
@@ -1584,7 +1510,9 @@ def _make_reconciler() -> Reconciler:
     secrets = secret_manager_factory()
     configs = config_manager_factory()
     svc_controller = service_controller_factory(store)
-    if _truthy_env("AE_REGISTER_LOCAL_NODE"):
+    if _truthy_env("AE_REGISTER_LOCAL_NODE") and not (
+        authority_config is not None and authority_config.enabled
+    ):
         _register_local_node(store, runtime.__class__.__name__.lower())
     return Reconciler(
         runtime,
@@ -1594,15 +1522,42 @@ def _make_reconciler() -> Reconciler:
         secret_manager=secrets,
         config_manager=configs,
         service_controller=svc_controller,
+        authority=authority,
     )
 
 
-def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> None:
+def _make_hpa_sample_reader(*, authority=None):
+    registry_auth = registry_auth_factory()
+    base_runtime = runtime_factory(registry_auth=registry_auth)
+    local_node_id = str(os.getenv("AE_NODE_ID") or "").strip()
+
+    def _read(node) -> list:
+        agent_url = str(getattr(node, "endpoint", "") or "").strip() or None
+        node_id = str(getattr(node, "node_id", "") or "").strip()
+        if agent_url is None and local_node_id and node_id and node_id != local_node_id:
+            return []
+        from ae.runtime import RemoteRuntime
+
+        runtime = RemoteRuntime(agent_url, base_runtime, authority=authority, node_id=node_id)
+        return runtime.list_workload_metrics()
+
+    return _read
+
+
+def _reconcile_all(
+    reconciler: Reconciler,
+    manifests: Iterable[AppManifest],
+    *,
+    should_continue=None,
+) -> None:
     import time as _t
     from ae.observability.http_api import record_app_reconcile, _labs_is_blocked
     import logging as _log
 
     for m in manifests:
+        if should_continue is not None and not should_continue():
+            _log.getLogger(__name__).info("authority changed; stopping reconcile sweep")
+            break
         app_name = app_key_for_manifest(m)
         if _labs_is_blocked(app_name):
             try:
@@ -1642,6 +1597,8 @@ def _reconcile_all(reconciler: Reconciler, manifests: Iterable[AppManifest]) -> 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via unit test paths)
     args = build_parser().parse_args(argv)
     specs_dir = Path(args.specs)
+    authority_config = AuthorityConfig.from_env()
+    authority = None
     # logging setup
     if args.verbose:
         configure_logging("DEBUG")
@@ -1703,11 +1660,22 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     except Exception:
         pass
 
+    if authority_config.enabled:
+        try:
+            authority = ControllerAuthorityService.from_env()
+            authority.start()
+            authority.wait_until_ready(timeout=max(1.0, authority_config.follower_poll_seconds))
+        except Exception as exc:
+            import logging as _log
+
+            _log.getLogger(__name__).error("failed to start HA controller authority: %s", exc)
+            return 1
+
     if transport:
         _bootstrap_jetstream(transport)
 
     # Build reconciler (runtime, ingress, secrets, store)
-    reconciler = _make_reconciler()
+    reconciler = _make_reconciler(authority_config=authority_config, authority=authority)
     store = state_store_from_env()
     _nats_ingress = None
     _telemetry_ingress = None
@@ -1716,6 +1684,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     _work_watchdog = None
     _route_bundle = None
     _edge_renderer = None
+    _cronjob_authority = None
+    _storage_authority = None
+    _hpa_metrics_collector = None
+    _hpa_authority = None
+    _ha_dashboard_probes = None
     if transport and transport.backend in {"nats-core", "nats-js"} and transport.nats_url:
         try:
             edge_cfg = build_core_proxy_config()
@@ -1727,6 +1700,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 creds=transport.nats_creds,
                 js_provision=transport.backend == "nats-js",
                 edge_renderer=_edge_renderer,
+                authority=authority,
             )
             _nats_ingress.start()
         except Exception as exc:  # noqa: BLE001
@@ -1745,15 +1719,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             _log.getLogger(__name__).warning("failed to start telemetry ingress: %s", exc)
         if transport.backend == "nats-js":
             try:
-                interval_s = float(
-                    os.getenv("AE_OUTBOX_PUBLISH_INTERVAL_S", "0.5") or 0.5
-                )
+                interval_s = float(os.getenv("AE_OUTBOX_PUBLISH_INTERVAL_S", "0.5") or 0.5)
                 batch_size = int(os.getenv("AE_OUTBOX_PUBLISH_BATCH", "100") or 100)
                 _outbox_publisher = OutboxPublisher(
                     store,
                     nats_url=transport.nats_url,
                     nats_creds=transport.nats_creds,
                     config=OutboxPublisherConfig(interval_s=interval_s, batch_size=batch_size),
+                    authority=authority,
                 )
                 _outbox_publisher.start()
             except Exception as exc:  # noqa: BLE001
@@ -1761,9 +1734,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
                 _log.getLogger(__name__).warning("failed to start outbox publisher: %s", exc)
             try:
-                watchdog_enabled = str(
-                    os.getenv("AE_WORK_WATCHDOG", "1") or "1"
-                ).lower() in {"1", "true", "yes", "on"}
+                watchdog_enabled = str(os.getenv("AE_WORK_WATCHDOG", "1") or "1").lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
                 if watchdog_enabled:
                     dispatched_max = _parse_duration_seconds(
                         os.getenv("AE_WORK_DISPATCHED_MAX"), default=300.0
@@ -1781,6 +1757,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                             dispatched_max_s=dispatched_max,
                             running_max_s=running_max,
                         ),
+                        authority=authority,
                     )
                     _work_watchdog.start()
             except Exception as exc:  # noqa: BLE001
@@ -1788,9 +1765,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
                 _log.getLogger(__name__).warning("failed to start work watchdog: %s", exc)
             try:
-                monitor_interval = float(
-                    os.getenv("AE_JS_MONITOR_INTERVAL_S", "10") or 10
-                )
+                monitor_interval = float(os.getenv("AE_JS_MONITOR_INTERVAL_S", "10") or 10)
             except Exception:
                 monitor_interval = 10.0
             if monitor_interval > 0:
@@ -1813,24 +1788,109 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     _log.getLogger(__name__).warning("failed to start js monitor: %s", exc)
         if transport.backend in {"nats-core", "nats-js"}:
             try:
-                bundle_enabled = str(
-                    os.getenv("AE_ROUTE_BUNDLE_ENABLED", "0") or "0"
-                ).lower() in {"1", "true", "yes", "on"}
+                bundle_enabled = str(os.getenv("AE_ROUTE_BUNDLE_ENABLED", "0") or "0").lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
                 if bundle_enabled:
-                    bundle_interval = float(
-                        os.getenv("AE_ROUTE_BUNDLE_INTERVAL_S", "5") or 5
-                    )
+                    bundle_interval = float(os.getenv("AE_ROUTE_BUNDLE_INTERVAL_S", "5") or 5)
                     _route_bundle = RouteBundlePublisher(
                         store,
                         nats_url=transport.nats_url,
                         nats_creds=transport.nats_creds,
                         config=RouteBundlePublisherConfig(interval_s=bundle_interval),
+                        authority=authority,
                     )
                     _route_bundle.start()
             except Exception as exc:  # noqa: BLE001
                 import logging as _log
 
                 _log.getLogger(__name__).warning("failed to start route bundle: %s", exc)
+    if authority_config.enabled:
+        try:
+            storage_poll = float(os.getenv("AE_STORAGE_AUTHORITY_POLL_S", "1") or 1)
+        except Exception:
+            storage_poll = 1.0
+        if storage_poll > 0:
+            try:
+                _storage_authority = StorageAuthorityRunner(
+                    build_storage_authority_store(store),
+                    authority=authority,
+                    poll_interval_s=storage_poll,
+                    close_store=True,
+                )
+                _storage_authority.start()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+
+                _log.getLogger(__name__).warning(
+                    "failed to start storage authority controller: %s", exc
+                )
+        try:
+            cronjob_interval = float(os.getenv("AE_CRONJOB_AUTHORITY_INTERVAL_S", "5") or 5)
+        except Exception:
+            cronjob_interval = 5.0
+        if cronjob_interval > 0:
+            try:
+                _cronjob_authority = CronJobAuthorityController(
+                    store,
+                    config=CronJobAuthorityControllerConfig(interval_s=cronjob_interval),
+                    authority=authority,
+                )
+                _cronjob_authority.start()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+
+                _log.getLogger(__name__).warning(
+                    "failed to start cronjob authority controller: %s", exc
+                )
+        try:
+            hpa_interval = float(os.getenv("AE_HPA_POLL_INTERVAL_SECONDS", "15") or 15)
+        except Exception:
+            hpa_interval = 15.0
+        try:
+            hpa_metrics_max_age = float(os.getenv("AE_HPA_METRICS_MAX_AGE_SECONDS", "45") or 45)
+        except Exception:
+            hpa_metrics_max_age = 45.0
+        try:
+            hpa_cooldown = float(os.getenv("AE_HPA_COOLDOWN_SECONDS", "30") or 30)
+        except Exception:
+            hpa_cooldown = 30.0
+        if hpa_interval > 0:
+            try:
+                _hpa_metrics_collector = WorkloadMetricsCollector(
+                    store,
+                    _make_hpa_sample_reader(authority=authority),
+                    config=WorkloadMetricsCollectorConfig(interval_s=hpa_interval),
+                    authority=authority,
+                )
+                _hpa_metrics_collector.start()
+                _hpa_authority = HPAAuthorityController(
+                    store,
+                    config=HPAAuthorityControllerConfig(
+                        interval_s=hpa_interval,
+                        metrics_max_age_s=hpa_metrics_max_age,
+                        cooldown_s=hpa_cooldown,
+                    ),
+                    authority=authority,
+                )
+                _hpa_authority.start()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+
+                _log.getLogger(__name__).warning(
+                    "failed to start hpa authority components: %s", exc
+                )
+    try:
+        _ha_dashboard_probes = HaDashboardProbeCache.from_env()
+        if _ha_dashboard_probes is not None:
+            _ha_dashboard_probes.start()
+    except Exception as exc:  # noqa: BLE001
+        import logging as _log
+
+        _log.getLogger(__name__).warning("failed to start HA dashboard probes: %s", exc)
     _agent_api_server = None
     try:
         agent_port = int(os.getenv("AE_AGENT_API_PORT", os.getenv("AE_AGENT_PORT", "0") or 0))
@@ -1859,20 +1919,39 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     api_server = None
     if args.metrics_port and args.metrics_port > 0:
         # Optional mutators wired via closures and gated at handler level
+        def _require_mutation_authority() -> None:
+            if not authority_config.enabled:
+                return
+            snapshot = authority.snapshot() if authority is not None else None
+            leader_info = snapshot.leader_info if snapshot is not None else None
+            if snapshot is None or not snapshot.is_leader:
+                raise NotLeaderError(leader_info)
+
         def _scale(app: str, replicas: int):  # noqa: ANN001
+            _require_mutation_authority()
             revs = store.list_revisions(app, limit=1)
             if not revs:
                 raise RuntimeError(f"no revisions recorded for {app}")
             manifest = store.get_revision_manifest(app, revs[0].revision)
             new_spec = manifest.spec.model_copy(update={"replicas": int(replicas)})
             updated = manifest.model_copy(update={"spec": new_spec})
-            try:
-                existing = store.get_registered_entry(app)
-                src = existing.source if existing else "api"
-                lbls = existing.labels if existing else None
-                store.register_app(updated, source=src, labels=lbls)
-            except Exception:
-                pass
+            existing = store.get_registered_entry(app)
+            src = existing.source if existing else "api"
+            lbls = existing.labels if existing else None
+            resource_version = store.register_app(
+                updated,
+                source=src,
+                labels=lbls,
+                expected_resource_version=(existing.resource_version if existing else None),
+            )
+
+            if authority_config.enabled:
+                return {
+                    "app": app,
+                    "replicas": int(replicas),
+                    "status": "accepted",
+                    "resourceVersion": resource_version,
+                }
 
             # First reconcile immediately
             report = reconciler.reconcile(updated)
@@ -1905,6 +1984,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             }
 
         def _delete(app: str, purge: bool):  # noqa: ANN001
+            _require_mutation_authority()
+            existing = store.get_registered_entry(app)
+            if existing is not None:
+                store.delete_registered_app(
+                    app,
+                    expected_resource_version=existing.resource_version,
+                )
             # Remove runtime containers
             runtime = reconciler._runtime  # type: ignore[attr-defined]
             removed = runtime.remove_app(app)
@@ -1916,14 +2002,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     ingress.reload()
                 except Exception:
                     pass
-            try:
-                store.delete_registered_app(app)
-            except Exception:
-                pass
             store.delete_app_state(app, purge_history=bool(purge))
             return {"app": app, "removed": removed, "purged": bool(purge)}
 
         def _apply(payload: dict, source: str | None = None, labels: dict | None = None):  # noqa: ANN001
+            _require_mutation_authority()
             # Accept a Deployment manifest JSON and reconcile
             from ae.controller.spec import AppManifest
 
@@ -1932,14 +2015,23 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"invalid manifest: {exc}")
             warnings: list[str] = []
-            try:
-                app_name = app_key_for_manifest(manifest)
-                existing = store.get_registered_entry(app_name)
-                src = source or (existing.source if existing else "api")
-                lbls = labels if labels is not None else (existing.labels if existing else None)
-                store.register_app(manifest, source=src, labels=lbls)
-            except Exception:
-                pass
+            app_name = app_key_for_manifest(manifest)
+            existing = store.get_registered_entry(app_name)
+            src = source or (existing.source if existing else "api")
+            lbls = labels if labels is not None else (existing.labels if existing else None)
+            resource_version = store.register_app(
+                manifest,
+                source=src,
+                labels=lbls,
+                expected_resource_version=(existing.resource_version if existing else None),
+            )
+            if authority_config.enabled:
+                return {
+                    "app": app_name,
+                    "status": "accepted",
+                    "resourceVersion": resource_version,
+                    "warnings": warnings,
+                }
             # First reconcile immediately
             report = reconciler.reconcile(manifest)
 
@@ -2086,11 +2178,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 # Fallback: run in a matching pod name
                 reps = store.list_pods(app)
                 target = next(
-                    (
-                        r
-                        for r in reps
-                        if (r.pod_name == container or str(container) in r.pod_name)
-                    ),
+                    (r for r in reps if (r.pod_name == container or str(container) in r.pod_name)),
                     None,
                 )
                 if target is None and reps:
@@ -2158,6 +2246,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             # Site summary (derived from node labels + node ids)
             sites_summary: list[dict] = []
             try:
+
                 def _site_from_node_id(node_id: str | None) -> str | None:
                     if not node_id:
                         return None
@@ -2425,12 +2514,18 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                             wg_ok = bool(hub.get("wg_pubkey") and node.get("wg_pubkey"))
                             rp_ok = bool(hub.get("rp_pubkey") and node.get("rp_pubkey"))
                             transport = "wireguard" if wg_ok else "unknown"
-                            psk = "rosenpass" if (wg_ok and rp_ok) else ("none" if wg_ok else "unknown")
+                            psk = (
+                                "rosenpass"
+                                if (wg_ok and rp_ok)
+                                else ("none" if wg_ok else "unknown")
+                            )
                             handshake_age = None
                             if wg_ok:
                                 handshake_age = handshake_map.get(str(node.get("wg_pubkey") or ""))
                             last_handshake_at = (
-                                None if handshake_age is None else max(0.0, now_ts - float(handshake_age))
+                                None
+                                if handshake_age is None
+                                else max(0.0, now_ts - float(handshake_age))
                             )
                             if handshake_age is None:
                                 status = "unknown"
@@ -2526,7 +2621,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 api = None
 
             # Return combined snapshot
-            return {
+            payload = {
                 "ingress": ing,
                 "services": services,
                 "service_endpoints": {
@@ -2548,6 +2643,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 "docs": docs,
                 "api": api,
             }
+            if _ha_dashboard_probes is not None:
+                try:
+                    payload["ha_probes"] = _ha_dashboard_probes.snapshot()
+                except Exception:
+                    pass
+            return payload
 
         try:
             # Planner: reuse CLI planner logic for diagnostics and host-port checks
@@ -2674,6 +2775,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 }
 
             def _rollout_pause(app: str) -> dict:
+                _require_mutation_authority()
                 revs = store.list_revisions(app, limit=1)
                 if not revs:
                     raise RuntimeError(f"no revisions recorded for {app}")
@@ -2682,13 +2784,21 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 ro["pause"] = True
                 new_spec = man.spec.model_copy(update={"rollout": ro})
                 updated = man.model_copy(update={"spec": new_spec})
-                try:
-                    existing = store.get_registered_entry(app)
-                    src = existing.source if existing else "api"
-                    lbls = existing.labels if existing else None
-                    store.register_app(updated, source=src, labels=lbls)
-                except Exception:
-                    pass
+                existing = store.get_registered_entry(app)
+                src = existing.source if existing else "api"
+                lbls = existing.labels if existing else None
+                resource_version = store.register_app(
+                    updated,
+                    source=src,
+                    labels=lbls,
+                    expected_resource_version=(existing.resource_version if existing else None),
+                )
+                if authority_config.enabled:
+                    return {
+                        "app": app,
+                        "status": "accepted",
+                        "resourceVersion": resource_version,
+                    }
                 report = reconciler.reconcile(updated)
                 # Best-effort fast-follow burst to surface "paused" promptly
                 try:
@@ -2707,6 +2817,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 return {"app": app, "revision": report.revision, "status": report.revision_status}
 
             def _rollout_resume(app: str) -> dict:
+                _require_mutation_authority()
                 revs = store.list_revisions(app, limit=1)
                 if not revs:
                     raise RuntimeError(f"no revisions recorded for {app}")
@@ -2715,13 +2826,21 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 ro["pause"] = False
                 new_spec = man.spec.model_copy(update={"rollout": ro})
                 updated = man.model_copy(update={"spec": new_spec})
-                try:
-                    existing = store.get_registered_entry(app)
-                    src = existing.source if existing else "api"
-                    lbls = existing.labels if existing else None
-                    store.register_app(updated, source=src, labels=lbls)
-                except Exception:
-                    pass
+                existing = store.get_registered_entry(app)
+                src = existing.source if existing else "api"
+                lbls = existing.labels if existing else None
+                resource_version = store.register_app(
+                    updated,
+                    source=src,
+                    labels=lbls,
+                    expected_resource_version=(existing.resource_version if existing else None),
+                )
+                if authority_config.enabled:
+                    return {
+                        "app": app,
+                        "status": "accepted",
+                        "resourceVersion": resource_version,
+                    }
                 report = reconciler.reconcile(updated)
                 try:
                     store.record_event(app, report.revision, "RolloutResumed", "Rollout resumed")
@@ -2752,6 +2871,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 exec_fn=_exec,
                 logs_fn=_logs,
                 system_info_fn=_system_info,
+                authority_info_fn=(
+                    (lambda: authority.snapshot()) if authority is not None else None
+                ),
+                authority_members_fn=(
+                    (lambda: authority.list_members()) if authority is not None else None
+                ),
                 plan_fn=_plan,
                 rollout_pause_fn=_rollout_pause,
                 rollout_resume_fn=_rollout_resume,
@@ -2768,24 +2893,69 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
     if args.once:
         try:
-            _import_specs(specs_dir, store, source="specs")
-            _import_edge_ingress_specs(specs_dir, store, source="specs")
-            _reconcile_edge_ingress(store, _edge_renderer)
+            if authority_config.enabled:
+                snapshot = authority.snapshot() if authority is not None else None
+                if snapshot is None or not snapshot.is_leader:
+                    import logging as _logging
+
+                    _logging.getLogger(__name__).info(
+                        "HA standby/unknown authority in --once mode; skipping reconcile"
+                    )
+                    if _storage_authority is not None:
+                        _storage_authority.stop()
+                    if _cronjob_authority is not None:
+                        _cronjob_authority.stop()
+                    if _hpa_authority is not None:
+                        _hpa_authority.stop()
+                    if _hpa_metrics_collector is not None:
+                        _hpa_metrics_collector.stop()
+                    if _ha_dashboard_probes is not None:
+                        _ha_dashboard_probes.stop()
+                    if authority is not None:
+                        authority.stop()
+                    return 0
+            else:
+                _import_specs(specs_dir, store, source="specs")
+                _import_edge_ingress_specs(specs_dir, store, source="specs")
         except Exception:
             pass
+        if not authority_config.enabled:
+            try:
+                _sync_apishim_registry(store, reconciler)
+            except Exception:
+                pass
         try:
-            _sync_apishim_registry(store, reconciler)
+            sync_translated_app_ingress(store)
+            _reconcile_edge_ingress(store, _edge_renderer)
         except Exception:
             pass
         try:
             entries = store.list_registered_apps()
         except Exception:
             entries = []
-        _reconcile_all(reconciler, [entry.manifest for entry in entries])
+        _reconcile_all(
+            reconciler,
+            materialize_registry_manifests(store, entries),
+            should_continue=(
+                (lambda: authority is None or authority.snapshot().is_leader)
+                if authority_config.enabled
+                else None
+            ),
+        )
         try:
             _prune_orphan_status(store, entries)
         except Exception:
             pass
+        if _cronjob_authority is not None:
+            _cronjob_authority.stop()
+        if _storage_authority is not None:
+            _storage_authority.stop()
+        if _hpa_authority is not None:
+            _hpa_authority.stop()
+        if _hpa_metrics_collector is not None:
+            _hpa_metrics_collector.stop()
+        if authority is not None:
+            authority.stop()
         return 0
 
     # loop mode
@@ -2796,9 +2966,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         heartbeat_grace = 40
     heartbeat_interval = max(5, min(20, max(1, heartbeat_grace // 2)))
     last_heartbeat = 0.0
-    etcd_maintenance_enabled = (
-        getattr(store, "backend", "").lower() == "etcd"
-        and _truthy_env("AE_ETCD_MAINTENANCE_ENABLE", "1")
+    etcd_maintenance_enabled = getattr(store, "backend", "").lower() == "etcd" and _truthy_env(
+        "AE_ETCD_MAINTENANCE_ENABLE", "1"
     )
     etcd_maintenance_interval = _parse_duration_seconds(
         os.getenv("AE_ETCD_MAINTENANCE_INTERVAL_SEC", "900"),
@@ -2827,7 +2996,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     changed = True  # force initial reconcile
     observer = None
     last_full = 0.0
-    if args.watch:
+    last_is_leader = authority is None
+    if args.watch and authority_config.enabled:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "HA mode disables local specs watch; using shared desired state only"
+        )
+    elif args.watch:
         try:
             from watchdog.observers import Observer  # type: ignore
             from watchdog.events import FileSystemEventHandler  # type: ignore
@@ -2866,7 +3042,16 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     try:
         while not stop:
             now = time.time()
-            if etcd_maintenance_enabled and (now - last_etcd_maintenance) >= etcd_maintenance_interval:
+            is_leader = True
+            if authority is not None:
+                is_leader = authority.snapshot().is_leader
+            if is_leader and not last_is_leader:
+                changed = True
+            last_is_leader = is_leader
+            if (
+                etcd_maintenance_enabled
+                and (now - last_etcd_maintenance) >= etcd_maintenance_interval
+            ):
                 triggered = False
                 try:
                     watchdog_fn = getattr(store, "run_maintenance_watchdog", None)
@@ -2879,33 +3064,48 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 finally:
                     record_etcd_maintenance_run(triggered=triggered)
                     last_etcd_maintenance = now
-            if now - last_heartbeat >= heartbeat_interval:
+            if not authority_config.enabled and now - last_heartbeat >= heartbeat_interval:
                 try:
                     store.record_heartbeat(_local_node_id(), "Ready")
                 except Exception:
                     pass
                 else:
                     last_heartbeat = now
-            do_full = changed or (now - last_full) >= max(1, int(args.interval))
+            do_full = is_leader and (changed or (now - last_full) >= max(1, int(args.interval)))
             if do_full:
                 t0 = time.time()
                 try:
-                    _import_specs(specs_dir, store, source="specs")
-                    _import_edge_ingress_specs(specs_dir, store, source="specs")
-                    _reconcile_edge_ingress(store, _edge_renderer)
+                    if not authority_config.enabled:
+                        _import_specs(specs_dir, store, source="specs")
+                        _import_edge_ingress_specs(specs_dir, store, source="specs")
                 except Exception:
                     pass
+                if not authority_config.enabled:
+                    try:
+                        _sync_apishim_registry(store, reconciler)
+                    except Exception:
+                        pass
                 try:
-                    _sync_apishim_registry(store, reconciler)
+                    sync_translated_app_ingress(store)
+                    _reconcile_edge_ingress(store, _edge_renderer)
                 except Exception:
                     pass
                 try:
                     entries = store.list_registered_apps()
                 except Exception:
                     entries = []
-                _reconcile_all(reconciler, [entry.manifest for entry in entries])
+                _reconcile_all(
+                    reconciler,
+                    materialize_registry_manifests(store, entries),
+                    should_continue=(
+                        (lambda: authority is None or authority.snapshot().is_leader)
+                        if authority_config.enabled
+                        else None
+                    ),
+                )
                 try:
-                    _prune_orphan_status(store, entries)
+                    if authority is None or authority.snapshot().is_leader:
+                        _prune_orphan_status(store, entries)
                 except Exception:
                     pass
                 t1 = time.time()
@@ -2919,6 +3119,35 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     except KeyboardInterrupt:
         pass
     finally:
+        for component in (
+            _storage_authority,
+            _cronjob_authority,
+            _hpa_authority,
+            _hpa_metrics_collector,
+            _ha_dashboard_probes,
+            _route_bundle,
+            _outbox_publisher,
+            _nats_ingress,
+            _telemetry_ingress,
+            _js_monitor,
+            _work_watchdog,
+        ):
+            if component is None:
+                continue
+            try:
+                stop_fn = getattr(component, "stop", None) or getattr(component, "close", None)
+                if callable(stop_fn):
+                    stop_fn()
+            except Exception:
+                pass
+        if _agent_api_server is not None:
+            try:
+                _agent_api_server.shutdown()
+                _agent_api_server.server_close()
+            except Exception:
+                pass
+        if authority is not None:
+            authority.stop()
         if api_server is not None:
             api_server.shutdown()
             api_server.server_close()

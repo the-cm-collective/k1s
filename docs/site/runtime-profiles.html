@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -630,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -693,28 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
       <a href="project-philosophy.html">Philosophy</a>
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -738,6 +770,7 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 <ul>
 <li>These aliases set <code>AE_RUNTIME_BACKEND=cri</code> and <code>AE_INFRA_BACKEND=cri</code>.</li>
 <li>Use <code>sudo -E</code> when your containerd environment requires elevated privileges.</li>
+<li>If <code>crictl</code> reports <code>permission denied</code> on the containerd socket, either keep using <code>sudo -E</code> or grant temporary access with <code>./scripts/containerd_socket_access.sh --grant</code>.</li>
 <li>See <code>docs/reference/cri-containerd.md</code> for registry-first image prep and trust setup.</li>
 </ul>
 <p><code>dev-min</code> (SQLite + HTTP, local loop)</p>
@@ -783,6 +816,9 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 </li>
 <li>local build backend order: <code>nerdctl</code>, then <code>podman</code>, then <code>docker</code>, then <code>ctr</code></li>
 <li>optional override: <code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr</code></li>
+<li>NixOS managed-registry TLS defaults mirror/preload to <code>podman</code> when unset, then falls back to <code>docker</code>, then <code>nerdctl</code></li>
+<li>explicit <code>AE_CRI_IMAGE_MIRROR_BACKEND=ctr</code> remains available for per-arch mirror/preload when you want it</li>
+<li>when backend=<code>ctr</code>, mirror pushes are normalized to <code>AE_CTR_PLATFORM</code> (or the host-arch default) before pushing into the managed registry; treat that path as a per-arch preload cache, not a multi-arch publishing helper</li>
 </ul>
 </li>
 <li>Registry mapping in strict CRI:
@@ -803,6 +839,9 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 <li>Optional containerd trust hook for strict CRI startup:
 <ul>
 <li>managed registry TLS (<code>AE_CRI_REGISTRY_MODE=managed</code>) defaults to secure trust wiring.</li>
+<li>Debian/Ubuntu writes the managed registry CA into <code>/usr/local/share/ca-certificates</code>; NixOS writes it into <code>/var/lib/k1s-dev/certs</code> and reuses the existing bridge module + <code>nixos-rebuild</code> flow.</li>
+<li>Debian/Ubuntu and RHEL/Fedora bootstrap <code>/opt/cni/bin</code> automatically when the required CNI plugins are available in standard source dirs.</li>
+<li>NixOS strict CRI is declarative: install/import <code>ops/nixos/k1s-cri-host.nix</code>, rebuild, and strict startup will reuse the live containerd CNI paths instead of rewriting <code>/etc/cni/net.d</code>.</li>
 <li>on scheme transitions (<code>http</code> &lt;-&gt; <code>https</code>), strict startup auto-restarts containerd by default (<code>AE_CRI_REGISTRY_AUTO_RESTART=1</code>).</li>
 <li>set <code>AE_CRI_REGISTRY_AUTO_RESTART=0</code> to disable auto-restart (startup will fail fast on unresolved transitions).</li>
 <li>set <code>AE_CRI_REGISTRY_TRUST=1</code> to force trust configuration for external registries.</li>
@@ -885,11 +924,50 @@ CORE_CADDY=1 make dev-etcd</code></pre>
 <ul>
 <li><code>AE_DEV_LOCAL=1 make dev-min</code> (or <code>dev-etcd</code> / <code>k1s-core</code>) will:
 <ul>
-<li>add <code>docs.home.arpa</code>, <code>api.home.arpa</code>, <code>dash.home.arpa</code>, <code>echo.home.arpa</code> to <code>/etc/hosts</code></li>
-<li>install local Caddy/Apishim/Envoy certs into system trust (requires <code>update-ca-certificates</code>)</li>
+<li>add the local ingress names to host DNS resolution</li>
+<li>install local Caddy/Apishim/Envoy trust material for TLS</li>
+<li>include <code>blue.home.arpa</code> and <code>green.home.arpa</code> automatically when <code>make demo</code> seeds the standard demo</li>
 </ul>
 </li>
 <li><code>make dev-local</code> runs the helper on demand (useful after Caddy/Envoy have minted certs)</li>
+<li><code>make dev-local-clean</code> removes helper-managed DNS/TLS state</li>
+<li>Debian/Ubuntu and RHEL/Fedora:
+<ul>
+<li>the helper updates <code>/etc/hosts</code> directly</li>
+<li>the helper updates system trust with <code>update-ca-certificates</code> or <code>update-ca-trust</code></li>
+</ul>
+</li>
+<li>NixOS:
+<ul>
+<li>the helper writes bridge state under <code>/var/lib/k1s-dev</code></li>
+<li>a one-time imported bridge module at <code>ops/nixos/k1s-local-dev-bridge.nix</code> lets <code>nixos-rebuild --impure switch</code> project that state into <code>networking.extraHosts</code> and <code>security.pki.certificateFiles</code></li>
+<li><code>make env-doctor</code> reports whether the bridge module is installed/imported and what the demo domains currently resolve to</li>
+<li>bootstrap once with:
+<ul>
+<li><code>sudo install -D -m 0644 ops/nixos/k1s-local-dev-bridge.nix /etc/nixos/nixos/modules/k1s-local-dev-bridge.nix</code></li>
+<li>add <code>./nixos/modules/k1s-local-dev-bridge.nix</code> to your host imports</li>
+<li><code>sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)</code></li>
+</ul>
+</li>
+<li>strict CRI bootstrap once with:
+<ul>
+<li><code>sudo install -D -m 0644 ops/nixos/k1s-cri-host.nix /etc/nixos/nixos/modules/k1s-cri-host.nix</code></li>
+<li>add <code>./nixos/modules/k1s-cri-host.nix</code> to your host imports</li>
+<li><code>sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)</code></li>
+</ul>
+</li>
+<li>after the CRI module is imported, <code>make k1s-core-cri</code> reuses containerd&#x27;s configured CNI <code>bin_dir</code> / <code>conf_dir</code> and no longer tries to rewrite <code>/etc/cni/net.d</code></li>
+<li>for local strict-CRI smoke on NixOS, prefer <code>AE_NIXOS_REBUILD=never</code> and validate ingress with <code>curl --resolve ...:10443:127.0.0.1</code> so the smoke does not depend on an inline <code>nixos-rebuild</code></li>
+</ul>
+</li>
+<li>Additive NixOS shell:
+<ul>
+<li><code>direnv allow</code> or <code>nix develop</code> provides missing userland tools such as <code>podman-compose</code></li>
+<li><code>nix develop .#cri</code> adds CRI-facing tooling for strict lanes</li>
+<li><code>make env-doctor</code> reports shell-provided tools, bridge status, and host-managed services/sockets</li>
+<li>Host runtime concerns remain outside the shell: Podman/Docker runtime and <code>containerd</code></li>
+</ul>
+</li>
 </ul>
 <p>Aliases:</p>
 <ul>
@@ -950,7 +1028,7 @@ make k1s-edge-core-cri</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 12:10:03</span>
+        <span>Built 2026-04-14 17:31:27</span>
       </div>
     </footer>
     <script>

@@ -77,6 +77,7 @@ class Reconciler:
         secret_manager: SecretManager | None = None,
         config_manager: ConfigManager | None = None,
         service_controller=None,
+        authority=None,
     ) -> None:
         self._runtime = runtime
         self._state_store = state_store
@@ -86,11 +87,16 @@ class Reconciler:
         self._config_manager = config_manager or ConfigManager()
         self._service_controller = service_controller
         self._scheduler = Scheduler(self._state_store)
-        self._runtime_cache: dict[str, RuntimeAdapter] = {}
+        self._runtime_cache: dict[tuple[str, str], RuntimeAdapter] = {}
         self._base_runtime = getattr(runtime, "_local", runtime)
+        self._mutation_authority = authority
         # Inject exec callback for exec probes
         try:
             self._health_manager.set_exec_callback(self._exec_across_runtimes)
+        except Exception:
+            pass
+        try:
+            self._health_manager.set_portforward_callback(self._portforward_across_runtimes)
         except Exception:
             pass
         try:
@@ -107,19 +113,25 @@ class Reconciler:
         self._default_sc_name: str | None = None
         self._register_local_node = _truthy_env("AE_REGISTER_LOCAL_NODE")
 
-    def _runtime_for_agent(self, agent_url: str | None) -> RuntimeAdapter:
+    def _runtime_for_agent(self, agent_url: str | None, node_id: str | None = None) -> RuntimeAdapter:
         """Return a runtime bound to the target agent URL (cached)."""
         if not agent_url:
             return self._runtime
-        cached = self._runtime_cache.get(agent_url)
+        key = (agent_url, str(node_id or ""))
+        cached = self._runtime_cache.get(key)
         if cached:
             return cached
         try:
             from ae.runtime import RemoteRuntime
 
             base = getattr(self._runtime, "_local", self._base_runtime)
-            rt = RemoteRuntime(agent_url, base)
-            self._runtime_cache[agent_url] = rt
+            rt = RemoteRuntime(
+                agent_url,
+                base,
+                authority=self._mutation_authority,
+                node_id=node_id,
+            )
+            self._runtime_cache[key] = rt
             return rt
         except Exception:
             return self._runtime
@@ -133,6 +145,33 @@ class Reconciler:
             except Exception:
                 continue
         return 127
+
+    def _portforward_across_runtimes(self, pod_name: str, namespace: str | None, port: int):
+        """Try port-forward across cached remote runtimes, then the base runtime."""
+        runtimes = list(self._runtime_cache.values()) + [self._runtime]
+        last_error: Exception | None = None
+        seen: set[int] = set()
+        for rt in runtimes:
+            ident = id(rt)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            fn = getattr(rt, "port_forward_socket", None)
+            if not callable(fn):
+                continue
+            try:
+                return fn(
+                    pod_id=None,
+                    pod_name=pod_name,
+                    namespace=namespace,
+                    port=int(port),
+                )
+            except Exception as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise RuntimeError(f"port-forward failed for {pod_name}:{int(port)}: {last_error}") from last_error
+        raise RuntimeError(f"port-forward unsupported for {pod_name}:{int(port)}")
 
     def _runtime_backend_name(self) -> str:
         env_backend = os.getenv("AE_RUNTIME_BACKEND")
@@ -355,6 +394,31 @@ class Reconciler:
         until = float(self._create_cooldown_until.get(app_name, 0.0) or 0.0)
         if until > now_ts:
             limit_create = 0
+        keep_old = True
+        try:
+            import os as _os
+
+            serial_service_rollout = str(
+                _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") or "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            svc = getattr(manifest_for_runtime.spec, "service", None)
+            svc_ports = list(getattr(svc, "ports", None) or []) if svc is not None else []
+            fixed_service_port = bool(
+                svc is not None
+                and (
+                    getattr(svc, "port", None) is not None
+                    or any(getattr(p, "node_port", None) is not None for p in svc_ports)
+                )
+            )
+            if (
+                serial_service_rollout
+                and strategy != "canary"
+                and getattr(manifest_for_runtime.spec, "replicas", 1) == 1
+                and fixed_service_port
+            ):
+                keep_old = False
+        except Exception:
+            keep_old = True
 
         placements, schedule_warnings = self._scheduler.plan(manifest_for_runtime, revision)
         for w in schedule_warnings:
@@ -385,7 +449,10 @@ class Reconciler:
         for placement in placements:
             # Ensure pod_names are unique per app/revision (avoid duplicate scheduling across nodes)
             pod_names = list(dict.fromkeys(getattr(placement, "pod_names", []) or []))
-            runtime = self._runtime_for_agent(getattr(placement, "agent_url", None))
+            runtime = self._runtime_for_agent(
+                getattr(placement, "agent_url", None),
+                node_id=getattr(getattr(placement, "node", None), "node_id", None),
+            )
             if runtime not in runtimes_used:
                 runtimes_used.append(runtime)
             per_limit = None
@@ -409,7 +476,7 @@ class Reconciler:
                 runtime,
                 manifest_for_runtime,
                 revision,
-                keep_old=True,
+                keep_old=keep_old,
                 limit_create=per_limit,
                 pod_names=pod_names,
                 node_id=getattr(getattr(placement, "node", None), "node_id", None),
@@ -927,6 +994,8 @@ class Reconciler:
                     return [f"{svc.cluster_ip}:{svc_port}"]
 
         states_by_id = {state.pod_name: state for state in result.pod_states}
+        preferred_port = self._preferred_container_port(manifest)
+        container_infos_by_pod = self._container_infos_by_pod()
 
         # Prefer only ready endpoints; defer ingress changes until at least one
         # replica is ready to avoid transient 502s during warm-up.
@@ -934,6 +1003,13 @@ class Reconciler:
         for pod in health_report.pods:
             if not pod.ready:
                 continue
+            info = container_infos_by_pod.get(pod.pod_name)
+            if info:
+                target = self._endpoint_from_container_info(info, preferred_port)
+                if target:
+                    host, port = target
+                    ready_eps.append(f"{host}:{int(port)}")
+                    continue
             state = states_by_id.get(pod.pod_name)
             if state and state.endpoint:
                 host, port = self._split_host_port(state.endpoint)
@@ -951,7 +1027,6 @@ class Reconciler:
                 items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
             except Exception:
                 items = []
-            preferred_port = self._preferred_container_port(manifest)
             prev_eps: list[str] = []
             cur_rev = str(result.revision)
             for it in items or []:
@@ -1026,9 +1101,37 @@ class Reconciler:
             pass
         return None
 
+    def _docker_container_dns_enabled(self) -> bool:
+        runtime = self._base_runtime
+        runtime_name = runtime.__class__.__name__.lower()
+        return (
+            "docker" in runtime_name
+            and "podman" not in runtime_name
+            and bool(getattr(runtime, "_network_name", None))
+        )
+
+    def _container_infos_by_pod(self) -> dict[str, dict]:
+        if not self._docker_container_dns_enabled():
+            return {}
+        try:
+            items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
+        except Exception:
+            return {}
+        out: dict[str, dict] = {}
+        for item in items or []:
+            labels = (item or {}).get("labels") or {}
+            pod_name = str(labels.get("ae.pod_name") or labels.get("ae.replica_id") or "").strip()
+            if pod_name:
+                out[pod_name] = item
+        return out
+
     def _endpoint_from_container_info(
         self, info: dict, port_hint: int | None
     ) -> tuple[str, int] | None:
+        if self._docker_container_dns_enabled() and port_hint is not None:
+            name = str((info or {}).get("name") or "").strip()
+            if name:
+                return name, int(port_hint)
         pod_ip = (info or {}).get("pod_ip")
         host_ip = (info or {}).get("host_ip") or "127.0.0.1"
         port_map = (info or {}).get("port_map") or {}

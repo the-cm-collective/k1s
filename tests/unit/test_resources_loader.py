@@ -11,11 +11,14 @@ def test_render_text_replaces_placeholders():
         "observability",
         "dashboard.html",
         LABS_TOKEN="lab",  # noqa: S106
+        DASHBOARD_TOKEN="dash",  # noqa: S106
         APISHIM_BASE="base",
     )
     assert "__LABS_TOKEN__" not in html
+    assert "__DASHBOARD_TOKEN__" not in html
     assert "__APISHIM_BASE__" not in html
     assert "lab" in html
+    assert "dash" in html
     assert "base" in html
 
 

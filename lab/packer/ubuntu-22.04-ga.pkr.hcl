@@ -12,13 +12,17 @@ variable "variant" {
   default = "base"
   validation {
     condition     = contains(["base", "gpu"], var.variant)
-    error_message = "variant must be base or gpu"
+    error_message = "Variant must be base or gpu."
   }
 }
 
 variable "output_dir" {
   type    = string
   default = "artifacts/images"
+}
+
+variable "seed_bundle" {
+  type = string
 }
 
 variable "vm_memory" {
@@ -33,17 +37,18 @@ variable "vm_cpus" {
 
 variable "ubuntu_image_url" {
   type    = string
-  default = "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+  default = "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
 }
 
 variable "ubuntu_image_checksum" {
   type    = string
-  default = "sha256:53c9f90f0f3b8f6ca8f9f7fcbc1b325f6cbe8f9f3895ea665c19fdd84c400c5f"
+  default = "sha256:e66ef756881b5e682c496112201382abd76291797a7395bf81fd1bd0888f5b6f"
 }
 
 source "qemu" "ubuntu" {
   accelerator      = "kvm"
   communicator     = "ssh"
+  disk_interface   = "virtio"
   disk_image       = true
   format           = "qcow2"
   headless         = true
@@ -89,11 +94,21 @@ build {
     destination = "/tmp/cri_seed_images.lock.json"
   }
 
+  provisioner "file" {
+    source      = var.seed_bundle
+    destination = "/tmp/cri-seed-images.oci.tar"
+  }
+
+  provisioner "file" {
+    source      = "scripts/cri_smoke.sh"
+    destination = "/tmp/cri_smoke.sh"
+  }
+
   provisioner "shell" {
     execute_command = "echo 'packer' | {{.Vars}} sudo -S -E bash '{{.Path}}'"
     inline = [
-      "chmod +x /tmp/common-bootstrap.sh /tmp/gpu-bootstrap.sh",
-      "/tmp/common-bootstrap.sh ${var.variant} /tmp/cri_seed_images.lock.json",
+      "chmod +x /tmp/common-bootstrap.sh /tmp/gpu-bootstrap.sh /tmp/cri_smoke.sh",
+      "/tmp/common-bootstrap.sh ${var.variant} /tmp/cri_seed_images.lock.json /tmp/cri-seed-images.oci.tar /tmp/cri_smoke.sh",
       "if [ '${var.variant}' = 'gpu' ]; then /tmp/gpu-bootstrap.sh; fi",
       "cloud-init clean --logs",
       "truncate -s 0 /etc/machine-id",

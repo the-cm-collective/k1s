@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: shell-demo-node-hub
 spec:
-  image: demo-shell:latest
+  image: docker.io/library/demo-shell:latest
   replicas: 1
   ports:
     - name: http

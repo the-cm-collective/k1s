@@ -1,5 +1,7 @@
+import json
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,6 +105,125 @@ def test_start_etcd_uses_ae_cri_data_root(monkeypatch, tmp_path) -> None:
     } in mounts
 
 
+def test_cri_data_root_defaults_to_profile_scoped_path_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("AE_CRI_DATA_ROOT", raising=False)
+    assert cri_stack._cri_data_root("k1s-core") == (
+        cri_stack.ROOT / "state" / "profiles" / "k1s-core" / "cri-data"
+    )
+
+
+def test_start_etcd_allows_cluster_overrides(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_start_component(**kwargs):
+        captured.update(kwargs)
+
+    data_root = (tmp_path / "cri-data").resolve()
+    monkeypatch.setenv("AE_CRI_DATA_ROOT", str(data_root))
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+
+    cri_stack._start_etcd(
+        "k1s-ha-core",
+        name="core-a",
+        component="k1s-ha-core-etcd",
+        advertise_client_urls="http://192.168.155.10:2379",
+        initial_advertise_peer_urls="http://192.168.155.10:2380",
+        initial_cluster=(
+            "core-a=http://192.168.155.10:2380,"
+            "core-b=http://192.168.155.11:2380,"
+            "core-c=http://192.168.155.12:2380"
+        ),
+        data_dir_name="ha-etcd",
+        runtime_handler="runc",
+        recreate=True,
+    )
+
+    assert captured["component"] == "k1s-ha-core-etcd"
+    assert captured["recreate"] is True
+    assert "--name=core-a" in captured["command"]
+    assert "--advertise-client-urls=http://192.168.155.10:2379" in captured["command"]
+    assert "--initial-advertise-peer-urls=http://192.168.155.10:2380" in captured["command"]
+    assert (
+        "--initial-cluster=core-a=http://192.168.155.10:2380,"
+        "core-b=http://192.168.155.11:2380,"
+        "core-c=http://192.168.155.12:2380"
+    ) in captured["command"]
+    mounts = captured["mounts"]
+    assert isinstance(mounts, list)
+    assert {
+        "host_path": str(data_root / "ha-etcd"),
+        "container_path": "/etcd-data",
+        "readonly": False,
+    } in mounts
+
+
+def test_start_postgres_reset_data_removes_only_profile_dir(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+    removed: list[str] = []
+
+    def fake_start_component(**kwargs):
+        captured.update(kwargs)
+
+    def fake_find_pod(profile: str, component: str):
+        assert profile == "k1s-core"
+        assert component == "k1s-core-postgres"
+        return {"id": "pod-1"}
+
+    def fake_remove_pod(pod_id: str) -> None:
+        removed.append(pod_id)
+
+    data_root = (tmp_path / "cri-data").resolve()
+    pg_data = data_root / "postgres"
+    pg_data.mkdir(parents=True, exist_ok=True)
+    (pg_data / "PG_VERSION").write_text("16", encoding="utf-8")
+    monkeypatch.setenv("AE_CRI_DATA_ROOT", str(data_root))
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+    monkeypatch.setattr(cri_stack, "_find_pod", fake_find_pod)
+    monkeypatch.setattr(cri_stack, "_remove_pod", fake_remove_pod)
+
+    cri_stack._start_postgres("k1s-core", runtime_handler="runc", recreate=True, reset_data=True)
+
+    assert removed == ["pod-1"]
+    assert not (pg_data / "PG_VERSION").exists()
+    mounts = captured["mounts"]
+    assert isinstance(mounts, list)
+    assert {
+        "host_path": str(pg_data),
+        "container_path": "/var/lib/postgresql/data",
+        "readonly": False,
+    } in mounts
+
+
+def test_start_postgres_honors_configured_bind_ip_and_port(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_start_component(**kwargs):
+        captured.update(kwargs)
+
+    data_root = (tmp_path / "cri-data").resolve()
+    monkeypatch.setenv("AE_CRI_DATA_ROOT", str(data_root))
+    monkeypatch.setenv("POSTGRES_PORT", "35432")
+    monkeypatch.setenv("POSTGRES_BIND_IP", "10.55.0.2")
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+
+    cri_stack._start_postgres("k1s-core", runtime_handler="runc", recreate=True)
+
+    assert captured["component"] == "k1s-core-postgres"
+    assert captured["runtime_handler"] == "runc"
+    assert captured["recreate"] is True
+    assert captured["args"] == [
+        "-c",
+        "port=35432",
+        "-c",
+        "listen_addresses=10.55.0.2,127.0.0.1",
+    ]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["POSTGRES_USER"] == "shim"
+    assert env["POSTGRES_PASSWORD"] == "shim"
+    assert env["POSTGRES_DB"] == "shim"
+
+
 def test_start_envoy_mounts_state_paths_for_tls_resolution(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
@@ -110,6 +231,9 @@ def test_start_envoy_mounts_state_paths_for_tls_resolution(monkeypatch, tmp_path
         captured.update(kwargs)
 
     monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+    monkeypatch.setattr(cri_stack, "_ensure_envoy_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cri_stack, "_stable_hash", lambda parts: "|".join(str(item) for item in parts))
+    monkeypatch.setattr(cri_stack, "_envoy_base_id", lambda *_args, **_kwargs: 4242)
     monkeypatch.delenv("AE_TLS_DIR", raising=False)
     cfg = tmp_path / "envoy.yaml"
     cfg.write_text("static_resources: {}", encoding="utf-8")
@@ -119,7 +243,24 @@ def test_start_envoy_mounts_state_paths_for_tls_resolution(monkeypatch, tmp_path
     mounts = captured["mounts"]
     assert isinstance(mounts, list)
     state_dir = str((cri_stack.ROOT / "state").resolve())
-    assert {"host_path": str(cfg), "container_path": "/etc/envoy/envoy.yaml", "readonly": True} in mounts
+    assert {
+        "host_path": str(cfg),
+        "container_path": "/etc/envoy/envoy.yaml",
+        "readonly": True,
+    } in mounts
+    assert captured["stable_seconds"] == 2
+    assert captured["run_as_user"] == 0
+    assert "run_as_user=0" in captured["rollout_key"]
+    assert "base_id=4242" in captured["rollout_key"]
+    assert captured["command"] == [
+        "envoy",
+        "-c",
+        "/etc/envoy/envoy.yaml",
+        "--log-level",
+        "info",
+        "--base-id",
+        "4242",
+    ]
     assert {"host_path": state_dir, "container_path": "/state", "readonly": True} in mounts
     assert {"host_path": state_dir, "container_path": state_dir, "readonly": True} in mounts
 
@@ -131,6 +272,8 @@ def test_start_envoy_mounts_external_absolute_tls_dir(monkeypatch, tmp_path) -> 
         captured.update(kwargs)
 
     monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+    monkeypatch.setattr(cri_stack, "_ensure_envoy_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cri_stack, "_envoy_base_id", lambda *_args, **_kwargs: 4242)
     external_tls = (tmp_path / "tls-outside").resolve()
     external_tls.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("AE_TLS_DIR", str(external_tls))
@@ -146,6 +289,177 @@ def test_start_envoy_mounts_external_absolute_tls_dir(monkeypatch, tmp_path) -> 
         "container_path": str(external_tls),
         "readonly": True,
     } in mounts
+
+
+def test_start_envoy_supports_controlplane_component_and_secret_mounts(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_start_component(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+    monkeypatch.setattr(cri_stack, "_ensure_envoy_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cri_stack, "_envoy_base_id", lambda *_args, **_kwargs: 8484)
+    cfg = tmp_path / "envoy.yaml"
+    cfg.write_text("static_resources: {}", encoding="utf-8")
+    secret = tmp_path / "controlplane-secrets.yaml"
+    secret.write_text("static_resources: {}", encoding="utf-8")
+
+    cri_stack._start_envoy(
+        "k1s-core",
+        cfg,
+        component="k1s-core-envoy-controlplane",
+        extra_mounts=(secret,),
+        runtime_handler="runc",
+    )
+
+    mounts = captured["mounts"]
+    assert isinstance(mounts, list)
+    assert captured["component"] == "k1s-core-envoy-controlplane"
+    assert captured["run_as_user"] == 0
+    assert captured["command"][-2:] == ["--base-id", "8484"]
+    assert {
+        "host_path": str(secret.resolve()),
+        "container_path": str(secret.resolve()),
+        "readonly": True,
+    } in mounts
+
+
+def test_envoy_base_id_is_stable_and_component_specific() -> None:
+    assert cri_stack._envoy_base_id("k1s-core", "k1s-core-envoy") == cri_stack._envoy_base_id(
+        "k1s-core", "k1s-core-envoy"
+    )
+    assert cri_stack._envoy_base_id("k1s-core", "k1s-core-envoy") != cri_stack._envoy_base_id(
+        "k1s-core", "k1s-core-envoy-controlplane"
+    )
+    assert cri_stack._envoy_base_id("k1s-core", "k1s-core-envoy") > 0
+
+
+def test_start_component_unlocked_writes_run_as_user_security_context(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(cri_stack, "ROOT", tmp_path)
+    monkeypatch.setattr(cri_stack, "_find_pod", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cri_stack, "_ensure_image", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cri_stack, "_component_running_container", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cri_stack, "_record_event", lambda *_args, **_kwargs: None)
+
+    def fake_crictl(args, check=True):
+        if args[0] == "runp":
+            return SimpleNamespace(stdout="pod-1\n", returncode=0)
+        if args[0] == "create":
+            return SimpleNamespace(stdout="ctr-1\n", returncode=0)
+        if args[0] == "start":
+            return SimpleNamespace(stdout="", returncode=0)
+        raise AssertionError(args)
+
+    monkeypatch.setattr(cri_stack, "_crictl", fake_crictl)
+
+    cri_stack._start_component_unlocked(
+        profile="k1s-core",
+        component="k1s-core-envoy",
+        image="localhost:5001/envoyproxy/envoy:v1.29-latest",
+        command=["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"],
+        resolve_image=False,
+        run_as_user=0,
+    )
+
+    container_cfg = (
+        tmp_path / "state" / "profiles" / "k1s-core" / "cri" / "k1s-core-envoy" / "container.json"
+    )
+    payload = json.loads(container_cfg.read_text(encoding="utf-8"))
+    assert payload["linux"]["security_context"]["run_as_user"]["value"] == 0
+
+
+def test_envoy_expected_endpoints_reads_listener_and_admin_ports(tmp_path) -> None:
+    cfg = tmp_path / "envoy.yaml"
+    cfg.write_text(
+        """
+static_resources:
+  listeners:
+    - name: edge_listener_http
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10080
+    - name: edge_listener_tls
+      address:
+        socket_address:
+          address: 127.0.0.1
+          port_value: 10443
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 9901
+""",
+        encoding="utf-8",
+    )
+
+    assert cri_stack._envoy_expected_endpoints(cfg) == [
+        ("edge_listener_http", "127.0.0.1", 10080),
+        ("edge_listener_tls", "127.0.0.1", 10443),
+        ("admin", "127.0.0.1", 9901),
+    ]
+
+
+def test_ensure_envoy_ready_reports_missing_ports(monkeypatch, tmp_path) -> None:
+    cfg = tmp_path / "envoy.yaml"
+    cfg.write_text(
+        """
+static_resources:
+  listeners:
+    - name: edge_listener_tls
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10443
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 9901
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cri_stack, "_tcp_port_open", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        cri_stack,
+        "_component_status_summary",
+        lambda profile, component: f"component={component} pod=pod-1 state=CONTAINER_EXITED",
+    )
+    monotonic = iter([0.0, 11.0])
+    monkeypatch.setattr(cri_stack.time, "monotonic", lambda: next(monotonic))
+    monkeypatch.setattr(cri_stack.time, "sleep", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="envoy listeners not ready for k1s-core-envoy"):
+        cri_stack._ensure_envoy_ready("k1s-core", "k1s-core-envoy", cfg)
+
+
+def test_start_envoy_recreates_once_when_listener_check_fails(monkeypatch, tmp_path) -> None:
+    recreates: list[bool] = []
+    ready_calls = {"count": 0}
+
+    def fake_start_component(**kwargs):
+        recreates.append(bool(kwargs["recreate"]))
+
+    def fake_ensure_ready(*_args, **_kwargs):
+        ready_calls["count"] += 1
+        if ready_calls["count"] == 1:
+            raise RuntimeError("missing listener")
+
+    monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+    monkeypatch.setattr(cri_stack, "_ensure_envoy_ready", fake_ensure_ready)
+    cfg = tmp_path / "envoy.yaml"
+    cfg.write_text("static_resources: {}", encoding="utf-8")
+
+    cri_stack._start_envoy("k1s-core", cfg, runtime_handler="runc")
+
+    assert recreates == [False, True]
 
 
 def test_component_running_container_ignores_non_component_containers(monkeypatch) -> None:
@@ -185,8 +499,7 @@ def test_resolve_image_ref_registry_mode_off_skips_rewrite(monkeypatch) -> None:
     monkeypatch.setenv("AE_CRI_REGISTRY_MODE", "off")
     monkeypatch.setenv("AE_CRI_REGISTRY", "127.0.0.1:32000")
     assert (
-        cri_stack._resolve_image_ref("docker.io/library/nats:2.10")
-        == "docker.io/library/nats:2.10"
+        cri_stack._resolve_image_ref("docker.io/library/nats:2.10") == "docker.io/library/nats:2.10"
     )
 
 
@@ -309,6 +622,38 @@ def test_start_registry_uses_upstream_image_without_registry_rewrite(monkeypatch
     assert captured["runtime_handler"] == "runc"
     env = captured["env"]
     assert env["REGISTRY_HTTP_ADDR"] == "127.0.0.1:5001"
+
+
+def test_up_postgres_parser_invokes_reset_data(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_check_ready() -> None:
+        return None
+
+    def fake_start_postgres(
+        profile: str,
+        *,
+        runtime_handler: str | None = None,
+        recreate: bool = False,
+        reset_data: bool = False,
+    ) -> None:
+        captured["profile"] = profile
+        captured["runtime_handler"] = runtime_handler
+        captured["recreate"] = recreate
+        captured["reset_data"] = reset_data
+
+    monkeypatch.setattr(cri_stack, "_check_ready", fake_check_ready)
+    monkeypatch.setattr(cri_stack, "_start_postgres", fake_start_postgres)
+
+    rc = cri_stack.main(["up-postgres", "--profile", "k1s-core", "--recreate", "--reset-data"])
+
+    assert rc == 0
+    assert captured == {
+        "profile": "k1s-core",
+        "runtime_handler": "runc",
+        "recreate": True,
+        "reset_data": True,
+    }
 
 
 def test_ensure_image_fail_policy_errors_without_pull(monkeypatch) -> None:

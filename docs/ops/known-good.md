@@ -1,43 +1,52 @@
-# Known-Good Dev Configuration (2025-10-24)
+# Known-Good Validation Snapshot (2026-04-14)
 
-This snapshot captures a stable, working demo configuration.
+This page tracks the latest validated operator workflows. It is a status index, not the full procedure source of truth.
 
-- Caddy (dev)
-  - HTTP: 8888 (host) → 80 (container)
-  - HTTPS: 8443 (host) → 443 (container)
-  - Static sites: `ops/dev/caddy/sites/` (kept minimal; do not remove Caddyfile)
-  - Dynamic sites: `state/caddy/` mounted into container at `/etc/caddy/dynsites`
-  - Health checks: disabled by default (set `AE_CADDY_ACTIVE_HEALTH=1` to opt-in)
-  - Reloads validated with `caddy adapt` before `reload`
+Published command reference
+- Use [Validated Procedures](validated-procedures.html) for the exact copy/paste command sequences behind this snapshot.
 
-- Hosts entries (optional, added by `init_demo.sh -y`)
-  - `blue.home.arpa`, `green.home.arpa`, `echo-mr.home.arpa`, `docs.home.arpa`, `api.home.arpa` → `127.0.0.1`
+Validated workflows
+- Full clean memory benchmark rerun passed:
+  - k1s rootless
+  - k1s rootful
+  - k1nd
+  - k3d
+  - CRI/containerd
+  - Current procedure and acceptance checks: [Memory Overhead Benchmarks](benchmarks.html)
+- HA VM harness validation passed:
+  - retained stage-1 flow on `ha-control-plane-attached-node`
+  - live stage-2 helper on `ha-control-plane-core`
+  - Current procedure and cleanup flow: [HA Cluster Bring-Up](ha-cluster-bring-up.html)
+- User-facing docs/dashboard checks passed:
+  - simple dashboard profile on `:8443`
+  - advanced dashboard profile on `:10443`
+  - Current layout expectations: [Demos & Examples](examples.html)
 
-- Controller + API
-  - Supervisor auto-start enabled
-  - API on `:9108` (Direct: `http://127.0.0.1:9108/`)
-- API via Caddy: `https://api.home.arpa:8443/` (Swagger `/swagger`, ReDoc `/redoc`, Dashboard `/dashboard`)
+Current dashboard expectations
+- Simple layout:
+  - local single-controller demo/dev flows such as `make demo`
+  - shared `System Graph` visible
+  - `HA Control Plane` section hidden
+  - `HA Members` legend key hidden
+- Advanced layout:
+  - HA/core/edge/site-aware flows
+  - shared `System Graph` visible
+  - `HA Control Plane` section visible
 
-- Docs
-  - Built to `docs/site/`, served by `python -m http.server` on `:9109`
-  - Dynsite seeds ensure `https://docs.home.arpa:8443/` works via Caddy
+Current benchmark expectations
+- The authoritative benchmark artifacts are `combined/combined.csv` and `combined/combined.json`.
+- `Ctrl/CP` in the summary table is scenario-aware:
+  - k1s / k1nd: AE controller PSS
+  - k3d: k3s control-plane PSS
+- Missing `matplotlib` only blocks chart regeneration; it does not invalidate a completed run.
 
-- Service networking
-  - Podman (default): create a shared network, e.g., `podman network create devnet`, then `export AE_PODMAN_NETWORK=devnet`
-  - Docker (fallback): shared network `dev_default` via compose; `export AE_DOCKER_NETWORK=dev_default`
-  - Multi-replica routing via container DNS on shared network
-  - Single-replica stable port via `spec.service.port` when needed
+Current HA surface expectations
+- Retained/operator-facing HA URLs:
+  - `https://dash.home.arpa:10443/dashboard`
+  - `https://docs.home.arpa:10443/`
+  - `https://api.home.arpa:10443/swagger`
+- Local/demo URLs:
+  - `https://dash.home.arpa:8443/dashboard`
+  - `https://docs.home.arpa:8443/`
 
-- Environment exports written to `state/env.sh`
-  - `AE_CADDY_SITES=state/caddy`
-  - `AE_CADDY_FILE=/etc/caddy/Caddyfile`
-  - `AE_CADDY_CONTAINER=dev-caddy-1`
-  - `AE_CONTAINER_CLI=docker` (set to `podman` if using Podman for the Caddy container)
-  - `AE_PODMAN_NETWORK=devnet` (when using Podman)
-  - `AE_DOCKER_NETWORK=dev_default` (when using Docker)
-
-- Troubleshooting helpers
-  - `./scripts/init_demo.sh -d` attaches logs: controller, caddy, prometheus, and site changes
-  - Sanity checks validate upstream DNS/ports from appropriate context
-
-Use `./scripts/init_demo.sh --down` to tear down and clean hosts entries.
+Use the linked docs above for the exact commands and acceptance checks.

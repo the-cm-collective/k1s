@@ -204,6 +204,43 @@ ctr_cmd() {
   fi
 }
 
+cri_wait_pod_ids_gone() {
+  local -a ids=("$@")
+  (( ${#ids[@]} == 0 )) && return 0
+  local timeout="${CRI_POD_CLEANUP_TIMEOUT:-30}"
+  local settle="${CRI_POD_CLEANUP_SETTLE:-1}"
+  local deadline=$((SECONDS + timeout))
+  local pending=""
+  while :; do
+    pending=$(cri_cmd pods -a -o json 2>/dev/null | \
+      "$python_bin" -c '
+import json, sys
+targets = set(sys.argv[1:])
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+items = data.get("items") or data.get("pods") or []
+remaining = []
+for pod in items:
+    pid = pod.get("id") or pod.get("podSandboxId") or pod.get("pod_sandbox_id")
+    if pid and pid in targets:
+        remaining.append(pid)
+print("\n".join(remaining))
+' "${ids[@]}" || true)
+    if [[ -z "$pending" ]]; then
+      sleep "$settle"
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "[cri-refresh] warning: CRI pod cleanup still pending for: ${pending//$'\n'/ }" >&2
+      sleep "$settle"
+      return 0
+    fi
+    sleep 1
+  done
+}
+
 cri_has_image() {
   local ref="$1"
   if ! command -v crictl >/dev/null 2>&1; then
@@ -424,8 +461,12 @@ print("\n".join(ids))
     return 0
   fi
   echo "[cri-refresh] removing stale CRI pods for app=${app}" >&2
+  local -a pod_ids_arr=()
   local pid
-  for pid in $pod_ids; do
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && pod_ids_arr+=("$pid")
+  done <<< "$pod_ids"
+  for pid in "${pod_ids_arr[@]}"; do
     local cids
     cids=$(cri_cmd ps -a --pod "$pid" -o json 2>/dev/null | \
       "$python_bin" -c '
@@ -444,6 +485,7 @@ print("\n".join([c.get("id","") for c in items if c.get("id")]))
     cri_cmd stopp "$pid" >/dev/null 2>&1 || true
     cri_cmd rmp "$pid" >/dev/null 2>&1 || true
   done
+  cri_wait_pod_ids_gone "${pod_ids_arr[@]}"
 }
 
 cri_cleanup_app_pods "$bench_app_name"

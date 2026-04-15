@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -630,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
-    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -693,28 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
       <a href="project-philosophy.html">Philosophy</a>
       <a href="inference-fabric.html">Inference Fabric</a>
       <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -740,11 +772,11 @@
 <li>Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning.</li>
 <li>Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.</li>
 <li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.</li>
-<li>Transport/gateway (src/ae/gateway + NATS): supports both NATS + JetStream (<code>nats-js</code>) and NATS Core (<code>nats-core</code>) control-plane lanes for core/edge operation. The true HA target keeps this as the transport plane behind <code>etcd</code> authority.</li>
+<li>Transport/gateway (src/ae/gateway + NATS): controller-to-agent work can run through <code>direct</code>, NATS Core (<code>nats-core</code>), or NATS + JetStream (<code>nats-js</code>) transport lanes depending on profile and topology. HA keeps transport as a delivery plane behind <code>etcd</code> authority.</li>
 <li>Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).</li>
 <li>Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).</li>
 <li>Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).</li>
-<li>State store (src/ae/controller/state.py): SQLite schema and queries (+ nodes/services/storage tables), with Postgres and etcd-backed durable lanes available for multi-node/strict CRI setups. The HA control-plane target uses <code>etcd</code> as the authority store.</li>
+<li>State store (src/ae/controller/state.py): SQLite backs the lightweight local controller snapshot, shared-authority HA and strict-CRI paths use <code>etcd</code>, and externalized Postgres/store wiring remains available where deployments need compatibility or integration plumbing.</li>
 <li>Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.</li>
 <li>API shim (src/ae/apishim): Kubernetes-compatible API for kubectl/helm with SSA/patch and port-forward.</li>
 <li>Inference fabric (src/ae/controller/inference_cell + node fabric endpoints): experimental distributed-inference lane with stage placement, admission budgets, fabric-session orchestration, and cell lifecycle control. The formal roadmap targets AI Max+ 395 cells behind a provider-facing HA edge, with an exact public node baseline documented separately.</li>
@@ -753,7 +785,7 @@
 </ul>
 <h2 id="state-store-notes">State Store Notes</h2>
 <ul>
-<li>Relational schema changes (SQLite/Postgres lanes) should be documented here alongside the state store design.</li>
+<li>State-model changes should document how they map across the local SQLite snapshot, shared-authority <code>etcd</code> keys, and any externalized compatibility stores.</li>
 <li>For implementation details, see <code>src/ae/controller/state.py</code> and related ADRs.</li>
 </ul>
 <h2 id="reconcile-loop">Reconcile Loop</h2>
@@ -804,27 +836,30 @@
   participant CLI as ae CLI
   participant C as Controller
   participant SCH as Scheduler
+  participant T as Transport
   participant A as Node Agent
   participant R as Runtime (Podman/Docker/CRI)
   participant H as Health
   participant I as Ingress
-  participant S as State Store (SQLite/Postgres/etcd lanes)
+  participant S as State Store
 
   CLI-&gt;&gt;C: apply(manifest)
   C-&gt;&gt;SCH: plan placements(nodeSelector/tolerations/storage)
   SCH--&gt;&gt;C: placements (+warnings)
-  C-&gt;&gt;A: ensure_app(manifest, rev, placements)
+  C-&gt;&gt;T: dispatch ensure/logs/exec work
+  T-&gt;&gt;A: deliver runtime work
   A-&gt;&gt;R: ensure/exec/logs
   R--&gt;&gt;A: RuntimeResult(pod states)
-  A--&gt;&gt;C: Pod states
+  A--&gt;&gt;T: pod states + heartbeats
+  T--&gt;&gt;C: pod states + heartbeats
   C-&gt;&gt;H: evaluate(manifest, result)
   H--&gt;&gt;C: HealthReport(ready/live)
+  C-&gt;&gt;S: record snapshot, revisions, events
   alt ingress configured
     C-&gt;&gt;I: apply(upstream), reload()
   else no ingress
     C-&gt;&gt;I: remove(app), reload()
   end
-  C-&gt;&gt;S: record_snapshot + events
   C--&gt;&gt;CLI: report(created/updated/removed, status)</pre>
 <h2 id="inference-fabric-experimental">Inference Fabric (Experimental)</h2>
 <p>The repo also includes a controller-owned distributed-inference lane built around <code>InferenceCell</code> and <code>InferenceCellSet</code>.</p>
@@ -884,8 +919,8 @@ spec:
   ingress: { host: echo.localtest.me, path: /, tls: false }
   resources: { limits: { cpu: 0.25, memory: 256Mi } }
   volumes: [{ hostPath: /tmp, mountPath: /host-tmp, readOnly: false }]</code></pre>
-<h2 id="state-model-relational-store-sqlite-postgres">State Model (Relational Store: SQLite/Postgres)</h2>
-<p>The table model below describes the controller&#x27;s relational state lanes (SQLite default, Postgres optional). etcd-backed strict-CRI lanes track equivalent logical entities for reconcile, service, and event continuity.</p>
+<h2 id="controller-state-model">Controller State Model</h2>
+<p>The table model below describes the controller&#x27;s local relational snapshot (SQLite default, Postgres-compatible where configured). Shared-authority HA and strict-CRI lanes persist the same logical controller entities in <code>etcd</code>, while externalized stores remain optional deployment plumbing rather than the HA authority path.</p>
 <p>Tables (created in src/ae/controller/state.py)</p>
 <ul>
 <li>app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)</li>
@@ -1009,7 +1044,7 @@ spec:
 <li>RuntimeAdapter protocol: implement <code>ensure_app</code> and <code>read_logs</code> for alternate engines.</li>
 <li>IngressManager: implement <code>apply/remove/reload</code> for nginx or other proxies.</li>
 <li>SecretManager: swap SOPS shell calls with a native decryptor if desired.</li>
-<li>Store backends are lane-aware: SQLite is the default local store, with Postgres and etcd-backed durable lanes for multi-node/strict-CRI operation.</li>
+<li>Store backends are lane-aware: SQLite is the default local snapshot store, <code>etcd</code> backs shared authority in HA/strict-CRI lanes, and Postgres or other externalized stores remain available when deployments need compatibility plumbing.</li>
 </ul>
 <h2 id="environment-variables">Environment Variables</h2>
 <ul>
@@ -1040,17 +1075,16 @@ spec:
 </ul>
 <h2 id="performance-footprint">Performance &amp; Footprint</h2>
 <ul>
-<li>Controller + API + metrics: ~85-90 MiB PSS in recent Podman+crun rootless idle snapshots (Feb 2026).</li>
-<li>Caddy: ~40–50 MiB PSS in k1nd (Docker + Caddy) idle runs; runtime daemon footprint varies by engine.</li>
-<li>See <code>docs/benchmarks/memory.md</code> for updated measurements and charts.</li>
-<li>Suitable for 1–3 small services with sane limits on a 2 GB VPS.</li>
+<li>Current memory and footprint measurements live in <a href="benchmarks.html">Benchmarks</a>.</li>
+<li>Runtime, ingress, transport, and HA topology materially change footprint, so keep exact numbers out of this reference page.</li>
+<li>Use the relevant runtime profile and validated procedure when sizing a concrete deployment or demo flow.</li>
 </ul>
 <h2 id="future-work">Future Work</h2>
 <ul>
 <li>Full Job/CronJob/DaemonSet/StatefulSet semantics in apishim (completion, one‑per‑node, PVC templates).</li>
 <li>Resource requests/QoS enforcement beyond container limits (cgroup tuning, priorities).</li>
 <li>Advanced ingress routing (header manipulation, rewrites/regex, richer traffic shaping).</li>
-<li>Multi‑controller HA/leader election and broader K8s parity (metrics.k8s.io, admission/policy, CSI/CNI plugins).</li>
+<li>Broader K8s parity beyond the current HA baseline (metrics.k8s.io, admission/policy, CSI/CNI plugins).</li>
 </ul>
 <h3 id="configs-and-secrets-environment">Configs and Secrets → Environment</h3>
 <p>Apps can project values from config files and sealed secrets into environment variables. The merge order is: configRefs &lt; secretRefs &lt; spec.env (manifest wins last).</p>
@@ -1076,7 +1110,7 @@ spec:
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-03-11 15:27:58</span>
+        <span>Built 2026-04-14 17:31:27</span>
       </div>
     </footer>
     <script>

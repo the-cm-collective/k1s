@@ -21,10 +21,16 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
 Notes:
 - If your containerd setup requires elevated privileges, run strict CRI profile
   targets with `sudo -E`.
+- If `crictl` reports `permission denied` on `/run/containerd/containerd.sock`,
+  use `sudo -E` or grant temporary ACL access with
+  `./scripts/containerd_socket_access.sh --grant`.
 - `k1s-core-cri` and related targets wire `AE_RUNTIME_BACKEND=cri` and
   `AE_INFRA_BACKEND=cri` for you.
-- Detailed profile behavior: `docs/guides/runtime-profiles.md`.
-- End-to-end core/edge CRI runbook: `docs/guides/multinode-lab.md`.
+- Strict startup now bootstraps `/opt/cni/bin` automatically when required CNI
+  plugins are already available in standard locations or NixOS PATH-managed
+  plugin paths.
+- Detailed profile behavior: [Runtime Profiles](runtime-profiles.html).
+- End-to-end core/edge CRI runbook: [Multi-Node Lab](multinode-lab.html).
 
 ## Strict CRI control-plane defaults
 
@@ -47,8 +53,14 @@ scripts/dev/etcd_maintenance.sh watchdog
 Optional guided wrapper with restart checkpoints:
 
 ```bash
+scripts/dev/run_ingress_lanes.sh --lanes all
+# Compatibility alias:
 scripts/dev/run_ingress_mode_lanes.sh --lanes all
 ```
+
+The fully validated startup and lane sequence lives on
+[Ingress Capability Test Sequence](ingress-capability-test-sequence.html). This
+page keeps the CRI-specific ingress framing and helper surfaces.
 
 Core-proxy mini sanity:
 
@@ -71,14 +83,14 @@ Strict LB proof lane (`edge-local`, separate stack start):
 scripts/dev/test_ingress_matrix_single_host.sh \
   --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep \
   --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 \
-  --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa:443/
+  --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/
 ```
 
 Interpretation:
 - `core-proxy` LB rows are `assertion_level=policy_switch_only` when strict distribution is not required.
 - `edge-local` LB rows are `assertion_level=strict_distribution` and are the strict proof source.
 - Recommended security gates after lane runs: `scripts/dev/security_baseline_check.sh --fail-on high` then `scripts/dev/security_active_tests.sh --fail-on high`.
-- Full sequence and failure triage: `docs/guides/ingress-capability-test-sequence.md`.
+- Full sequence and failure triage: [Ingress Capability Test Sequence](ingress-capability-test-sequence.html).
 
 ## Runtime selection and advanced overrides
 
@@ -168,6 +180,7 @@ Use the helper to write `/etc/containerd/certs.d/<host>/hosts.toml`:
 
 The helper also ensures containerd CRI registry `config_path` points to `/etc/containerd/certs.d` and restarts containerd automatically when that setting changes.
 For strict-CRI managed TLS lanes, `run_profile.sh` now defaults `AE_CRI_REGISTRY_TRUST_SYSTEM=1` so the managed CA is also installed into system trust.
+On NixOS, that same flag writes into the existing `/var/lib/k1s-dev` bridge and prompts or logs for `nixos-rebuild` instead of writing into `/usr/local/share/ca-certificates`.
 
 ```
 scripts/containerd_registry_trust.sh \
@@ -274,7 +287,10 @@ Kubernetes clusters.
 - Managed TLS material defaults under `state/profiles/<profile>/registry/tls` and is auto-generated when missing.
 - `AE_CRI_REGISTRY_INSECURE=1` is a dev-only opt-out for plaintext/insecure registry access.
 - `AE_CRI_REGISTRY_TRUST=1` to apply trust configuration during strict CRI startup (auto-enabled for managed TLS).
-- `AE_CRI_REGISTRY_TRUST_SYSTEM=1|0` controls system trust installation (`/usr/local/share/ca-certificates` + `update-ca-certificates`).
+- `AE_CRI_REGISTRY_TRUST_SYSTEM=1|0` controls system trust installation.
+  - Debian/Ubuntu: `/usr/local/share/ca-certificates` + `update-ca-certificates`
+  - RHEL/Fedora: `update-ca-trust`
+  - NixOS: `/var/lib/k1s-dev/certs` via the existing bridge module and `nixos-rebuild`
   - Default in managed TLS lanes is `1` unless explicitly overridden.
 - `AE_CRI_REGISTRY_TRUST_CA=/path/to/ca.crt` or `AE_CRI_REGISTRY_TRUST_INSECURE=1` (dev).
 - `AE_CRI_REGISTRY_TRUST_SCHEME=http` to override scheme (default `https`).
@@ -285,10 +301,42 @@ Kubernetes clusters.
 - `AE_CRI_REGISTRY_PRELOAD_IMAGES=<csv>` overrides preload sources (default: etcd, nats, postgres, envoy, rathole strict-CRI core images).
 - `AE_CRI_IMAGE_POLICY=prompt|pull|fail` for strict-CRI missing-image behavior.
 - `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr` to pick strict-CRI local build backend for fallback action `b`.
+  - On NixOS managed-TLS lanes, strict startup defaults mirror/preload to `podman` when unset; if `podman` is unavailable it falls back to `docker`, then `nerdctl`.
+  - `ctr` remains available only as an explicit override for per-arch mirror/preload.
+- `AE_CTR_PLATFORM=<platform>` selects which single platform `ctr` mirrors when backend=`ctr`.
+  - default: host arch (`linux/amd64`, `linux/arm64`, etc.)
+  - intended use: per-arch local preload/mirror into the managed registry
+  - not intended as a full multi-arch publishing flow for a shared heterogeneous registry
 - `AE_APISHIM_IMAGE=<image-ref>` to override strict-CRI apishim image.
 - `AE_CRI_SET_HOSTNAME=1` to request explicit hostname wiring for CRI stack components.
 - `AE_CRI_ALLOW_HOST_NS=1` to enable hostNetwork/hostPID/hostIPC/shareProcessNamespace (off by default).
 - `AE_CRI_REQUIRE_RUNTIME_READY=1` / `AE_CRI_REQUIRE_NETWORK_READY=1` to make preflight fail hard when CRI conditions are not ready.
+
+### CNI bootstrap
+
+- Debian/Ubuntu and RHEL/Fedora strict startup expects containerd-style CNI
+  paths:
+  - plugin dir: `/opt/cni/bin`
+  - config dir: `/etc/cni/net.d`
+- On those distros, `make k1s-core-cri` auto-materializes `/opt/cni/bin` when
+  the required plugins already exist in standard source dirs.
+- On NixOS, use the declarative CRI host module instead of trying to bootstrap
+  Debian-style paths:
+
+```
+sudo install -D -m 0644 ops/nixos/k1s-cri-host.nix /etc/nixos/nixos/modules/k1s-cri-host.nix
+# add ./nixos/modules/k1s-cri-host.nix to your host imports
+sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)
+```
+
+- After that rebuild, strict startup reads `bin_dir` / `conf_dir` from the live
+  `containerd config dump` output and reuses the module-managed CNI files.
+- Debian-style manual bootstrap is still available:
+
+```
+./scripts/cni_bin_bootstrap.sh
+./scripts/cni_init.sh
+```
 
 ### Temporary socket access (dev)
 

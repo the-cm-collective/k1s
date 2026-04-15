@@ -82,7 +82,9 @@
 #backend-select,#example-select{min-width:240px}
 #labs-token{min-width:220px}
 #canary-weight{width:180px}
-#toggle-actions{margin-left:25px}
+.labs-toggle-label{display:inline-flex;align-items:center;gap:8px}
+.labs-toggle-label span{white-space:nowrap}
+#toggle-actions{margin:0}
 /* Backend status ribbon */
 #backend-status{font-size:.95rem; white-space:normal; overflow-wrap:anywhere}
 /* Floating, sticky header-style banner used for feedback */
@@ -192,8 +194,9 @@ html[data-theme='light'] .helm-demo-log{background:var(--k1s-panel, #f1f5f9);col
   @media (min-width: 880px){
     .container ul ul:has(#backend-select){
       display:grid;
-      grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
-      column-gap:12px;
+      grid-template-columns:max-content max-content;
+      justify-content:start;
+      column-gap:20px;
       row-gap:8px;
       align-items:center;
     }

@@ -10,7 +10,7 @@ This document captures the staged plan to make k1s surface a Kubernetes‑compat
 - Deliverables: this roadmap; smoke target that starts `ae.apishim serve` and answers `/health`.
 
 ## Phase 1 — Kubectl “get/apply” happy path
-(status: functionally complete; VIP/loadBalancer status polish remains)
+(status: functionally complete)
 - Harden discovery: `/api`, `/apis`, preferred versions, correct `resourceVersion` on list/watch, bookmarks, list‑continue stubs.
 - Auth baseline: bearer token required by default; optional mTLS for kubeconfig; minimal RBAC scaffold (cluster‑admin only).
 - Objects: Deployments, Services, Ingresses, Namespaces, Roles/RoleBindings, CRDs (already), plus Nodes and Endpoints/EndpointSlice projected from controller state/runtime.
@@ -46,6 +46,7 @@ Phase 3 action items:
 - Deliverables: basic helm charts that expect these kinds render and run; HPA status visible; events stream consumable by `kubectl get events`. *(Covered by helm-shim-smoke CI workflow exercising Deployment+HPA+StatefulSet+DaemonSet+Job+CronJob on stub runtime.)*
 
 ## Phase 5 — AuthZ, SSA, patch semantics
+(status: functionally complete for the documented RBAC / SSA / patch subset)
 - Implement Role/RoleBinding enforcement; optional ServiceAccounts + projected tokens.
 - Support JSONPatch/mergePatch; scoped server‑side apply (SSA) for supported kinds; manage `managedFields`.
 - Admission/validation hooks for custom App CRD (optional) to keep native k1s schema authoritative.
@@ -57,19 +58,19 @@ Phase 5 action items:
 - Patch semantics: add JSONPatch and mergePatch handlers for supported kinds with correct content-type negotiation and status errors. *(json/merge/apply supported; json-patch added with unit coverage.)*
 - SSA + managedFields: honor `fieldManager`/`force`, track managedFields per object in shim storage, and surface conflicts on overlapping fields. *(implemented; conflict 409s covered in unit tests.)*
 - App CRD admission: validating hook to keep native App schema authoritative; reject by default and allow warn/off via `AE_APISHIM_APP_ADMISSION`. *(implemented; warn/off emit Warning headers instead of rejection.)*
-- CLI parity: implement `kubectl auth can-i` via a SubjectAccessReview-equivalent endpoint bound to RBAC evaluation. *(endpoint present; no e2e CI yet.)*
+- CLI parity: implement `kubectl auth can-i` via a SubjectAccessReview-equivalent endpoint bound to RBAC evaluation. *(endpoint present; the `kubectl auth can-i` flow is exercised by the `apishim-ssa-rbac` CI workflow.)*
 - Tests/CI: unit matrix for RBAC decisions and patch/SSA behavior; add integration smoke that exercises can-i, JSONPatch/mergePatch, and SSA apply flows against the stub runtime. *(covered by `apishim-ssa-rbac` CI workflow.)*
 
 ## Current Gaps and Next Steps
-- **Phase 6 rollout in progress:** Shim and controller can target Postgres via `AE_APISHIM_DSN`/`AE_STATE_DSN`; migrations preserve resourceVersions; HA shim with shared Postgres is validated in CI as a transitional path. The long-term HA authority target now follows the [HA Control Plane Roadmap](high-availability-control-plane.html): shared controller and shim authority converges on `etcd`. Remaining: production-grade watch propagation metrics across shim replicas and the storage convergence work needed for `etcd`-backed HA.
-- **Phase 7 polish in flight:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2/ v3 and schemas are richer with fixture validation and live gate coverage. Remaining polish: promote the live gate to release-blocking, wire compat/OpenAPI links into docs + release notes, and round out sample coverage.
+- **Phase 6 rollout in progress:** Shim and controller can target Postgres via `AE_APISHIM_DSN`/`AE_STATE_DSN`; migrations preserve resourceVersions; HA shim with shared Postgres is validated in CI as a transitional path. The long-term HA authority target now follows the [HA Control Plane Roadmap](high-availability-control-plane.html): `H4a` routes workload-core HA mutation onto shared controller authority, `H4b1` converges `CronJob`, `ConfigMap`, `Secret`, and `ServiceAccount`, `H4b-hpa` adds shared-metrics HPA control, `H4b2a` extends shared authority to `Namespace`, RBAC resources, and `PodDisruptionBudget`, `H4b2b-crd` converges CRDs plus dynamic custom resources, `H4b2c-core` converges `StorageClass`, PVC, and PV with leader-owned core storage reconcile, and `H4b2c-csi` now brings snapshot and CSI resources onto the same HA authority path while CRI and node-agent storage reads stop depending on local shim DB state. The HA ops surface now includes `H5a-core` bootstrap/snapshot/drill helpers, `H5b1-etcd-recovery` procedures, `H5b2a-core-upgrades` for systemd-managed `k1s-ha-core` rolling upgrades, `H5b2b-hub-transport-upgrades` for shared hub NATS/JetStream sequencing, `H5b2c-edge-transport-upgrades` for edge-site transport choreography with per-gateway build visibility, and `H5c-ha-closeout` for the final audit plus integrated HA evidence lanes.
+- **Phase 7 polish in flight:** Compatibility matrix + kubeconfig/auth docs + helm smoke gate are in place; OpenAPI v2/v3 and schemas are richer with fixture validation and live gate coverage. Remaining polish is broader sample coverage, clearer conformance-lite reporting, and continued watch/streaming hardening under churn rather than basic site wiring.
 
 ### Auth defaults (dev toggle)
 - Bearer token is now required by default; shim refuses to start without `AE_APISHIM_TOKEN` unless explicitly started with `AE_APISHIM_ALLOW_ANON=1` or `python -m ae.apishim serve --allow-anonymous` for local experiments.
 - Requests without a bearer token receive `401 Unauthorized` (or `403` when RBAC blocks a verb). Document this flow in kubeconfig examples and keep dev overrides scoped to local testing.
 
 ## Phase 6 — Reliability, storage, and scale
-- Move shim object storage off SQLite to the primary HA authority store. Postgres remains a transitional externalized path, but the target HA end state aligns on `etcd` with the core controller.
+- Move shim object storage off SQLite to the primary HA authority store. Postgres remains a transitional externalized path, but the target HA end state aligns on `etcd` with the core controller; workload-core HA mutation is now on that path, CRDs and dynamic custom resources now follow it via `H4b2b-crd`, `StorageClass`/PVC/PV now follow it via `H4b2c-core`, and snapshot plus CSI storage resources now follow it via `H4b2c-csi`. Remaining polish is about watch scalability and operational confidence rather than a second public storage truth store.
 - Improve watch scalability (per‑resource queues, backpressure, timeouts) and add metrics/tracing.
 - Conformance subset: target the “Kubernetes API conformance lite” we define; document exclusions.
 - Deliverables: soak tests under churn; dashboard panel for shim health; failover of shim without object loss.
@@ -80,11 +81,11 @@ Phase 5 action items:
 - Backwards compatibility policy and versioning of the shim.
 - Deliverables: published compatibility matrix; release note gate that runs kubectl/helm smoke; docs for kubeconfig and auth modes.
 
-### Phase 7 current status (2026-01-14)
+### Phase 7 status
 - Discovery/OpenAPI: `/openapi/v2` now includes richer shapes (Service ports + external/loadBalancer/ipFamily fields, Deployment/DaemonSet/StatefulSet conditions, Job/CronJob/HPA status); `/openapi/v3` now mirrors `/openapi/v2` and is treated as authoritative. CI guards drift via `scripts/validate-openapi.sh` (helm-dryrun-openapi workflow), Helm/kubectl dry-run is exercised in CI, and OpenAPI artifacts are published. A lightweight fixture check (`scripts/validate-openapi-fixtures.py`) validates the schemas against the shipped sample manifests.
 - Compatibility matrix: published at `docs/reference/apishim-compatibility-matrix.md`; release gate runs helm shim smoke and uploads the matrix + OpenAPI artifacts and emits a release-note snippet.
-- Live gate: `.github/workflows/apishim-live-openapi.yml` now runs a Postgres-backed shim and exercises kubectl/helm server-side validation plus short get/watch churn, collecting `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots as artifacts. The script accepts a provided kubeconfig (including kind/dev lab) via `APISHIM_LIVE_KUBECONFIG`/`APISHIM_LIVE_KUBECONFIG_B64` or a kind cluster name via `APISHIM_KIND_CLUSTER`.
-- Pending: fold the live gate into the release-blocking checks, wire compatibility matrix/OpenAPI links into website docs and the release-note template, and expand sample coverage used by the live gate.
+- Live gate: `.github/workflows/apishim-live-openapi.yml` runs local stub and docker runtime lanes plus an optional external kubeconfig target, collecting `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots as artifacts. The script accepts a provided kubeconfig (including kind/dev lab) via `APISHIM_LIVE_KUBECONFIG`/`APISHIM_LIVE_KUBECONFIG_B64` or a kind cluster name via `APISHIM_KIND_CLUSTER`.
+- Current focus: expand sample coverage and conformance-lite reporting, not the basic docs/release-note wiring.
 
 #### Phase 7.1 — OpenAPI validation hardening (complete)
 - Added schemas for the k1s `App` CRD and policy/v1 PodDisruptionBudget so sample manifests validate end-to-end instead of being skipped.
@@ -93,15 +94,15 @@ Phase 5 action items:
 - `/openapi/v3` remains the authoritative mirror of `/openapi/v2` and is called out in release notes and docs; compatibility matrix links are included in the release summary artifacts.
 
 #### Phase 7.2 — Live cluster gate + doc linkage (complete)
-- Live gate landed: `scripts/ci/apishim-live-openapi.sh` drives kubectl/helm dry-run plus short watch churn against a Postgres-backed shim, capturing live `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots. `.github/workflows/apishim-live-openapi.yml` publishes these artifacts on push/PR. The gate can point at a supplied kubeconfig (kind/dev lab) via `APISHIM_LIVE_KUBECONFIG(_B64)` or pull a kind kubeconfig by name with `APISHIM_KIND_CLUSTER`.
+- Live gate landed: `scripts/ci/apishim-live-openapi.sh` drives kubectl/helm dry-run plus short watch churn against local shim lanes and optional external kubeconfig targets, capturing live `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots. `.github/workflows/apishim-live-openapi.yml` publishes these artifacts on push/PR. The gate can point at a supplied kubeconfig (kind/dev lab) via `APISHIM_LIVE_KUBECONFIG(_B64)` or pull a kind kubeconfig by name with `APISHIM_KIND_CLUSTER`.
 - Follow-ups promoted to Phase 7.3: release-blocking promotion, docs/release-note wiring, and expanded sample set validated by the gate.
 
-#### Phase 7.3 — Release gate + site wiring (in progress)
+#### Phase 7.3 — Release gate + site wiring (complete)
 - Promotion: `apishim-live-openapi` now runs on `main`/PRs and release tags; release workflow fails if the live gate fails. Skips are a manual exception reserved for sealed-secret fixtures with explicit justification.
-- Coverage: nightly live gate runs both local (Postgres-backed shim) and external kubeconfig targets when configured; artifacts are uploaded per run.
+- Coverage: nightly live gate runs local stub/docker lanes plus an optional external kubeconfig target when configured; artifacts are uploaded per run.
 - Samples: live gate now validates the multi-replica/PDB+HPA manifest set; fixtures already include the Deployment/HPA exporter output and PDB-emitting Deployment manifests in `specs/examples/`.
-- Docs/release notes: docs nav now links `/openapi/v3`, and release notes call out v3 as primary with v2 as the compatibility mirror.
-- Fidelity: live gate includes a non-stub runtime lane (docker) and exercises logs/exec; service status is captured in live artifacts. Postgres storage remains enabled for resourceVersion stability.
+- Docs/release notes: the API docs now point readers at the shim docs surfaces, and release notes call out v3 as primary with v2 as the compatibility mirror.
+- Fidelity: live gate includes a non-stub runtime lane (docker) and exercises logs/exec; service status is captured in live artifacts. Optional externalized Postgres remains supported for transitional deployments, but it is not the default local live-gate lane.
 
 ## Non‑goals (for now)
 - Aggregated API servers, PSP/PodSecurity admission, or CSI/CNI plugins. These would require extra control-plane components, admission/webhook plumbing, and host kernel capabilities (CNI/CSI) that we deliberately avoid to keep the shim lean. PSA alignment and a basic storage story may appear under the conformance-lite track, but full plugin ecosystems stay deferred.
@@ -144,7 +145,7 @@ Phase 5 action items:
 - ServiceAccount tokens rehydrate from stored annotations at startup and fall back to store lookup when a token is unknown, enabling HA replicas to accept each other’s minted tokens. Remaining: move to durable JWT or DB-backed tokens with rotation.
 - CronJob scheduling now includes `croniter` in project dependencies, so cron expressions resolve instead of falling back to 60s/annotation intervals.
 - Docs drift fixed: the compatibility matrix now reflects best-effort CronJob scheduling and Job completion.
-- Live OpenAPI gate is promoted: it runs on main/PRs plus nightly local/external targets, and release tags now run the live gate alongside OpenAPI exports. Docs/nav and release notes now treat `/openapi/v3` as primary with `/openapi/v2` as the compatibility mirror; the live gate validates the multi-replica/PDB+HPA sample set.
+- Live OpenAPI gate is promoted: it runs on main/PRs plus nightly local/external targets, and release tags now run the live gate alongside OpenAPI exports. API docs and release notes now treat `/openapi/v3` as primary with `/openapi/v2` as the compatibility mirror; the live gate validates the multi-replica/PDB+HPA sample set.
 - Live OpenAPI gate now exercises a docker runtime lane with logs/exec smoke checks for non-stub fidelity.
 - Focused `kubectl exec` SPDY tests now succeed against both docker and podman runtimes (error/stdout/stderr streams open cleanly); the JSON exec fallback in the live gate can be retired after a full lane rerun.
 

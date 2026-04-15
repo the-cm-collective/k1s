@@ -14,6 +14,8 @@ from pathlib import Path
 from ae.controller.etcd_state import EtcdStateStore
 from ae.controller.node_identity import scoped_node_id
 
+LOCAL_EDGE_SITE_ID = "sfo-edge-01"
+
 
 @dataclass
 class _Proc:
@@ -205,6 +207,7 @@ def run_core_edge_e2e() -> int:
 
     print(f"[e2e] workspace={base_dir}")
     _write_compose(compose_path, root, state_dir)
+    edge_node_key = scoped_node_id(LOCAL_EDGE_SITE_ID, "edge-node-1")
 
     compose_cmd = ["docker", "compose", "-f", str(compose_path)]
     subprocess.run([*compose_cmd, "up", "-d"], check=True)
@@ -261,7 +264,12 @@ def run_core_edge_e2e() -> int:
         )
 
         worker_env = env_base.copy()
-        worker_env.update({"AE_NATS_URL": "nats://worker:dev@127.0.0.1:4223"})
+        worker_env.update(
+            {
+                "AE_NATS_URL": "nats://worker:dev@127.0.0.1:4223",
+                "AE_SITE_ID": LOCAL_EDGE_SITE_ID,
+            }
+        )
         worker = _start_proc(
             [
                 sys.executable,
@@ -286,7 +294,7 @@ def run_core_edge_e2e() -> int:
             {
                 "work_id": work1,
                 "attempt": 1,
-                "site_id": "sfo-edge-01",
+                "site_id": LOCAL_EDGE_SITE_ID,
                 "op": "deploy",
                 "desired_generation": 1,
                 "target": {"app": "edge-demo", "replicas": 1},
@@ -300,13 +308,13 @@ def run_core_edge_e2e() -> int:
                 "work",
                 "enqueue",
                 "--site-id",
-                "sfo-edge-01",
+                LOCAL_EDGE_SITE_ID,
                 "--work-id",
                 work1,
                 "--mode",
                 "outbox",
                 "--preferred-node",
-                "edge-node-1",
+                edge_node_key,
                 "--payload",
                 payload1,
             ],
@@ -320,7 +328,7 @@ def run_core_edge_e2e() -> int:
         gateway_env.update(
             {
                 "AE_NATS_URL": "nats://gateway:dev@127.0.0.1:4223",
-                "AE_SITE_ID": "sfo-edge-01",
+                "AE_SITE_ID": LOCAL_EDGE_SITE_ID,
                 "AE_NODE_ID": "edge-node-1",
                 "AE_GATEWAY_SPOOL_PATH": str(base_dir / "gateway-spool.db"),
                 "AE_GATEWAY_LEASE_TIMEOUT": "10s",
@@ -332,7 +340,6 @@ def run_core_edge_e2e() -> int:
             env=gateway_env,
             log_path=logs_dir / "gateway.log",
         )
-        edge_node_key = scoped_node_id("sfo-edge-01", "edge-node-1")
         if not _wait_node_ready(store, edge_node_key, timeout_s=20):
             _terminate(gateway)
             gateway = _start_proc(
@@ -350,7 +357,7 @@ def run_core_edge_e2e() -> int:
             {
                 "work_id": work2,
                 "attempt": 1,
-                "site_id": "sfo-edge-01",
+                "site_id": LOCAL_EDGE_SITE_ID,
                 "op": "deploy",
                 "desired_generation": 1,
                 "target": {"app": "edge-demo", "replicas": 2},
@@ -364,13 +371,13 @@ def run_core_edge_e2e() -> int:
                 "work",
                 "enqueue",
                 "--site-id",
-                "sfo-edge-01",
+                LOCAL_EDGE_SITE_ID,
                 "--work-id",
                 work2,
                 "--mode",
                 "outbox",
                 "--preferred-node",
-                "edge-node-1",
+                edge_node_key,
                 "--payload",
                 payload2,
             ],
