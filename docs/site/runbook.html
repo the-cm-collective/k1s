@@ -654,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:44395';</script>
-    <script>window.DOCS_DASHBOARD_URL='http://127.0.0.1:44395/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -745,7 +745,7 @@
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="http://127.0.0.1:44395/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
@@ -1593,6 +1593,16 @@
 <li>It forces <code>AE_JS_REPLICAS=1</code>, so it is useful for failover and replay regression but not as transport-fidelity evidence for the shared hub cluster.</li>
 </ul>
 </li>
+<li>Current release policy (2026-04-15 tag):
+<ul>
+<li>Treat Debian and NixOS as pooled cross-host verification inputs rather than requiring both hosts to pass the full release matrix independently.</li>
+<li>Standardize both hosts on <code>AE_USE_REGISTRY_CACHE=0</code> for release verification.</li>
+<li>Require the shared baseline on both hosts: <code>make env-doctor</code>, <code>AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh</code>, <code>python -m pytest --maxfail=1 --disable-warnings -q</code>, <code>make docs-verify</code>, <code>make profile-smoke</code>, and <code>make ha-closeout-e2e</code>.</li>
+<li>Debian owns the authoritative <code>make e2e</code> and <code>make strict-cri-smoke</code> lanes for this tag.</li>
+<li>NixOS owns the authoritative <code>make lab-vm-ha-validation</code> and full benchmark rerun lanes for this tag.</li>
+<li>Per-host full-matrix verification becomes the default starting with the next release.</li>
+</ul>
+</li>
 <li>Closeout rule:
 <ul>
 <li>The 2026-03-19 HA closeout checkpoint satisfies the original evidence rule: <a href="ha-closeout.html">HA Closeout: current audit status</a> shows zero <code>must_fix_before_closeout</code> gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.</li>
@@ -2084,7 +2094,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-14 18:22:48</span>
+        <span>Built 2026-04-15 12:27:46</span>
       </div>
     </footer>
     <script>

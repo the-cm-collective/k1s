@@ -654,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:44395';</script>
-    <script>window.DOCS_DASHBOARD_URL='http://127.0.0.1:44395/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -745,7 +745,7 @@
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="http://127.0.0.1:44395/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
@@ -771,6 +771,9 @@
 <li>The original <code>H*</code> track closure remains the 2026-03-19 roadmap checkpoint after the primary VM/lab HA lane and the reduced local harness both passed.</li>
 <li>Historical closeout evidence remains <code>runs/ha-cp-drills-20260319T213601Z/summary.json</code> and <code>runs/ha-cp-drills-20260319T213601Z/ha_summary.json</code>, including the optional <code>ha_drill_leader_failover</code>, <code>ha_drill_etcd_restart</code>, and <code>ha_drill_transport_recovery</code> checks.</li>
 <li>The strongest post-closeout maintenance rerun remains 2026-04-07: <code>make lab-vm-ha-validation</code> stayed green across <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code>, and <code>make ha-closeout-e2e</code> also passed.</li>
+<li>For the 2026-04-15 release tag, verification is pooled across Debian and NixOS rather than requiring both hosts to pass the full release matrix independently.</li>
+<li>Pooled-release details for this tag: both hosts must pass <code>make env-doctor</code>, <code>AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh</code>, <code>python -m pytest --maxfail=1 --disable-warnings -q</code>, <code>make docs-verify</code>, <code>make profile-smoke</code>, and <code>make ha-closeout-e2e</code>, all with <code>AE_USE_REGISTRY_CACHE=0</code>; Debian owns <code>make e2e</code> and <code>make strict-cri-smoke</code>; NixOS owns <code>make lab-vm-ha-validation</code> and the full benchmark rerun.</li>
+<li>Full split-host verification becomes the default starting with the next release.</li>
 <li>Strongest 2026-04-07 run artifacts:
 <ul>
 <li><code>runs/20260407T172320Z_ha_attached_node_stage1/ha_summary.json</code></li>
@@ -847,7 +850,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-14 18:22:48</span>
+        <span>Built 2026-04-15 12:27:46</span>
       </div>
     </footer>
     <script>

@@ -654,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='http://127.0.0.1:44395';</script>
-    <script>window.DOCS_DASHBOARD_URL='http://127.0.0.1:44395/dashboard';</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -745,7 +745,7 @@
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="http://127.0.0.1:44395/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
@@ -766,6 +766,33 @@
 </ul>
 <p>Latest validation snapshot</p>
 <table><thead><tr><th>Procedure</th><th>Primary entrypoint</th><th>Success signal</th><th>Last validated</th></tr></thead><tbody><tr><td>Simple dashboard user test</td><td><code>make demo</code></td><td>docs + dashboard load on <code>:8443</code>, simple layout visible</td><td>2026-04-14</td></tr><tr><td>Advanced dashboard user test</td><td><code>make lab-vm-ha-attached-node-up</code></td><td>docs + dashboard load on <code>:10443</code>, HA section visible</td><td>2026-04-14</td></tr><tr><td>HA stage 1/2 validation</td><td><code>make lab-vm-ha-validation</code></td><td><code>stage1</code>, <code>retained</code>, <code>stage2</code>, <code>stage2-live</code> green</td><td>2026-04-14</td></tr><tr><td>Full benchmark rerun</td><td>split baseline + CRI flow</td><td><code>combined/combined.csv</code> has 40 rows for the run stamp</td><td>2026-04-14</td></tr></tbody></table>
+<p>Release policy for the 2026-04-15 tag</p>
+<ul>
+<li>Treat Debian and NixOS as pooled cross-host verification inputs for this tag; do not claim that each host independently passed the full release matrix.</li>
+<li>Standardize release verification on <code>AE_USE_REGISTRY_CACHE=0</code> on both hosts.</li>
+<li>Require the common baseline on both hosts:</li>
+</ul>
+<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+export AE_USE_REGISTRY_CACHE=0
+
+make env-doctor
+AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh
+python -m pytest --maxfail=1 --disable-warnings -q
+make docs-verify
+make profile-smoke
+make ha-closeout-e2e</code></pre>
+<ul>
+<li>Authoritative host-owned lanes for this tag:
+<ul>
+<li>Debian: <code>make e2e</code></li>
+<li>Debian: <code>make strict-cri-smoke</code></li>
+<li>NixOS: <code>make lab-vm-ha-validation</code></li>
+<li>NixOS: full benchmark rerun from this page</li>
+</ul>
+</li>
+<li>Starting with the next release, require both hosts to pass the full release matrix independently.</li>
+</ul>
 <h2 id="simple-dashboard-user-test">Simple Dashboard User Test</h2>
 <p>Preconditions</p>
 <ul>
@@ -890,11 +917,13 @@ make lab-vm-ha-attached-node-reset</code></pre>
 <p>Canonical command sequence</p>
 <pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+export AE_USE_REGISTRY_CACHE=0
 
 nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -lc &#x27;
 set -euo pipefail
 cd /home/m4xx3d0ut/git/k1s-wt/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+export AE_USE_REGISTRY_CACHE=0
 STAMP=&quot;r$(date +%Y%m%d)-fullretest&quot;
 
 sudo -v
@@ -978,7 +1007,7 @@ PY</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-14 18:22:48</span>
+        <span>Built 2026-04-15 12:27:46</span>
       </div>
     </footer>
     <script>
