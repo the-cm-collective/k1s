@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from ae.apishim.adapter import AdapterWorker
 from ae.apishim.store import K8sObject, ObjectStore
 from ae.controller.health import HealthManager
@@ -17,6 +19,23 @@ def _make_adapter(tmp_path):
     return store, state, adapter
 
 
+def _status_row(
+    *,
+    desired: int = 1,
+    ready: int = 1,
+    live: int = 1,
+    revision: int = 1,
+    revision_status: str = "ready",
+):
+    return SimpleNamespace(
+        desired_replicas=desired,
+        ready_replicas=ready,
+        live_replicas=live,
+        revision=revision,
+        revision_status=revision_status,
+    )
+
+
 def test_statefulset_status_populated(tmp_path):
     store, _state, adapter = _make_adapter(tmp_path)
     md = {"name": "db", "namespace": "default", "generation": 2}
@@ -29,6 +48,7 @@ def test_statefulset_status_populated(tmp_path):
         },
     }
     sts = K8sObject("apps", "v1", "statefulsets", "default", "db", md, spec, {}, 1)
+    store.upsert("apps", "v1", "statefulsets", "default", "db", md, spec, status={})
 
     adapter._apply_statefulset(sts)
 
@@ -57,6 +77,7 @@ def test_daemonset_status_reflects_nodes(tmp_path):
         },
     }
     ds = K8sObject("apps", "v1", "daemonsets", "default", "agent", md, spec, {}, 1)
+    store.upsert("apps", "v1", "daemonsets", "default", "agent", md, spec, status={})
 
     adapter._apply_daemonset(ds)
 
@@ -78,6 +99,7 @@ def test_job_completes_and_records_event(tmp_path):
         },
     }
     job = K8sObject("batch", "v1", "jobs", "default", "batcher", md, spec, {}, 1)
+    store.upsert("batch", "v1", "jobs", "default", "batcher", md, spec, status={})
 
     adapter._apply_job(job)
 
@@ -120,6 +142,135 @@ def test_cronjob_fires_job_with_owner_reference(tmp_path):
     assert owner_refs and owner_refs[0].get("kind") == "CronJob"
     cj_status = store.get("batch", "v1", "cronjobs", "default", "cron").status
     assert cj_status.get("lastScheduleTime") is not None
+
+
+def test_statefulset_deleted_during_reconcile_is_not_recreated(tmp_path, monkeypatch):
+    monkeypatch.setenv("AE_APISHIM_TOMBSTONE_TTL", "0")
+    store, _state, adapter = _make_adapter(tmp_path)
+    md = {"name": "db", "namespace": "default", "generation": 2, "uid": "sts-old"}
+    spec = {
+        "replicas": 1,
+        "selector": {"matchLabels": {"app": "db"}},
+        "template": {
+            "metadata": {"labels": {"app": "db"}},
+            "spec": {"containers": [{"name": "db", "image": "busybox"}]},
+        },
+    }
+    store.upsert("apps", "v1", "statefulsets", "default", "db", md, spec, status={})
+    sts = K8sObject("apps", "v1", "statefulsets", "default", "db", md, spec, {}, 1)
+    adapter._state.get_status = lambda _app: _status_row()  # type: ignore[method-assign]
+
+    def _delete_during_reconcile(_manifest):
+        assert store.delete("apps", "v1", "statefulsets", "default", "db")
+
+    adapter._reconciler.reconcile = _delete_during_reconcile  # type: ignore[method-assign]
+
+    adapter._apply_statefulset(sts)
+
+    assert store.get("apps", "v1", "statefulsets", "default", "db") is None
+
+
+def test_daemonset_replaced_during_reconcile_does_not_overwrite_new_uid(tmp_path, monkeypatch):
+    monkeypatch.setenv("AE_APISHIM_TOMBSTONE_TTL", "0")
+    store, _state, adapter = _make_adapter(tmp_path)
+    old_md = {"name": "agent", "namespace": "default", "uid": "ds-old"}
+    old_spec = {
+        "selector": {"matchLabels": {"app": "agent"}},
+        "template": {
+            "metadata": {"labels": {"app": "agent"}},
+            "spec": {"containers": [{"name": "agent", "image": "busybox"}]},
+        },
+    }
+    new_md = {
+        "name": "agent",
+        "namespace": "default",
+        "uid": "ds-new",
+        "labels": {"version": "replacement"},
+    }
+    new_spec = {
+        "selector": {"matchLabels": {"app": "agent-v2"}},
+        "template": {
+            "metadata": {"labels": {"app": "agent-v2"}},
+            "spec": {"containers": [{"name": "agent", "image": "busybox:1.37"}]},
+        },
+    }
+    replacement_status = {"phase": "replacement"}
+    store.upsert("apps", "v1", "daemonsets", "default", "agent", old_md, old_spec, status={})
+    ds = K8sObject("apps", "v1", "daemonsets", "default", "agent", old_md, old_spec, {}, 1)
+    adapter._state.get_status = lambda _app: _status_row(desired=1, ready=1, live=1)  # type: ignore[method-assign]
+
+    def _replace_during_reconcile(_manifest):
+        assert store.delete("apps", "v1", "daemonsets", "default", "agent")
+        store.upsert(
+            "apps",
+            "v1",
+            "daemonsets",
+            "default",
+            "agent",
+            new_md,
+            new_spec,
+            status=replacement_status,
+        )
+
+    adapter._reconciler.reconcile = _replace_during_reconcile  # type: ignore[method-assign]
+
+    adapter._apply_daemonset(ds)
+
+    current = store.get("apps", "v1", "daemonsets", "default", "agent")
+    assert current is not None
+    assert current.metadata.get("uid") == "ds-new"
+    assert current.spec == new_spec
+    assert current.status == replacement_status
+
+
+def test_pending_status_write_skips_replaced_workload(tmp_path, monkeypatch):
+    monkeypatch.setenv("AE_APISHIM_TOMBSTONE_TTL", "0")
+    store, _state, adapter = _make_adapter(tmp_path)
+    old_md = {"name": "db", "namespace": "default", "generation": 2, "uid": "sts-old"}
+    old_spec = {
+        "replicas": 1,
+        "selector": {"matchLabels": {"app": "db"}},
+        "template": {
+            "metadata": {"labels": {"app": "db"}},
+            "spec": {"containers": [{"name": "db", "image": "busybox"}]},
+        },
+    }
+    new_md = {"name": "db", "namespace": "default", "generation": 3, "uid": "sts-new"}
+    new_spec = {
+        "replicas": 2,
+        "selector": {"matchLabels": {"app": "db-v2"}},
+        "template": {
+            "metadata": {"labels": {"app": "db-v2"}},
+            "spec": {"containers": [{"name": "db", "image": "busybox:1.37"}]},
+        },
+    }
+    replacement_status = {"message": "replacement"}
+    store.upsert("apps", "v1", "statefulsets", "default", "db", old_md, old_spec, status={})
+    assert store.delete("apps", "v1", "statefulsets", "default", "db")
+    store.upsert(
+        "apps",
+        "v1",
+        "statefulsets",
+        "default",
+        "db",
+        new_md,
+        new_spec,
+        status=replacement_status,
+    )
+    stale = K8sObject("apps", "v1", "statefulsets", "default", "db", old_md, old_spec, {}, 1)
+
+    adapter._update_workload_pending_status(
+        stale,
+        desired=1,
+        pending=["data-db-0"],
+        kind="statefulset",
+    )
+
+    current = store.get("apps", "v1", "statefulsets", "default", "db")
+    assert current is not None
+    assert current.metadata.get("uid") == "sts-new"
+    assert current.spec == new_spec
+    assert current.status == replacement_status
 
 
 # ruff: noqa: E501

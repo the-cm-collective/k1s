@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import subprocess
@@ -27,6 +28,8 @@ from ae.k8s import convert as k8s_convert
 from ae.runtime import CRIRuntime, DockerRuntime, PodmanRuntime, RuntimeAdapter, StubRuntime
 
 from .store import K8sObject, ObjectStore
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _app_name(ns: str | None, name: str) -> str:
@@ -258,24 +261,13 @@ class AdapterWorker(threading.Thread):
                     {"type": "Progressing", "status": "False", "reason": "ScaledDown"},
                 ],
             }
-            try:
-                still_exists = (
-                    self._store.get("apps", "v1", "deployments", dep.namespace, dep.name)
-                    is not None
-                )
-            except Exception:
-                still_exists = False
-            if still_exists:
-                self._store.upsert_if_not_deleted(
-                    "apps",
-                    "v1",
-                    "deployments",
-                    dep.namespace,
-                    dep.name,
-                    dep.metadata,
-                    dep.spec,
-                    status=st,
-                )
+            self._upsert_current_workload_status(
+                dep,
+                group="apps",
+                version="v1",
+                resource="deployments",
+                status=st,
+            )
             return
 
         dep_key = (dep.namespace, dep.name)
@@ -330,24 +322,13 @@ class AdapterWorker(threading.Thread):
                 ],
                 "observedGeneration": st_row.revision,
             }
-            try:
-                still_exists = (
-                    self._store.get("apps", "v1", "deployments", dep.namespace, dep.name)
-                    is not None
-                )
-            except Exception:
-                still_exists = False
-            if still_exists:
-                self._store.upsert_if_not_deleted(
-                    "apps",
-                    "v1",
-                    "deployments",
-                    dep.namespace,
-                    dep.name,
-                    dep.metadata,
-                    dep.spec,
-                    status=st,
-                )
+            self._upsert_current_workload_status(
+                dep,
+                group="apps",
+                version="v1",
+                resource="deployments",
+                status=st,
+            )
 
     def _apply_statefulset(self, sts: K8sObject) -> None:
         spec = sts.spec or {}
@@ -362,24 +343,13 @@ class AdapterWorker(threading.Thread):
                 "currentRevision": sts.metadata.get("generation", 1),
                 "updateRevision": sts.metadata.get("generation", 1),
             }
-            try:
-                still_exists = (
-                    self._store.get("apps", "v1", "statefulsets", sts.namespace, sts.name)
-                    is not None
-                )
-            except Exception:
-                still_exists = False
-            if still_exists:
-                self._store.upsert_if_not_deleted(
-                    "apps",
-                    "v1",
-                    "statefulsets",
-                    sts.namespace,
-                    sts.name,
-                    sts.metadata,
-                    sts.spec,
-                    status=st,
-                )
+            self._upsert_current_workload_status(
+                sts,
+                group="apps",
+                version="v1",
+                resource="statefulsets",
+                status=st,
+            )
             return
         self._ensure_statefulset_claims(sts)
         dep_key = (sts.namespace, sts.name)
@@ -430,14 +400,11 @@ class AdapterWorker(threading.Thread):
                     }
                 ],
             }
-            self._store.upsert_if_not_deleted(
-                "apps",
-                "v1",
-                "statefulsets",
-                sts.namespace,
-                sts.name,
-                sts.metadata,
-                sts.spec,
+            self._upsert_current_workload_status(
+                sts,
+                group="apps",
+                version="v1",
+                resource="statefulsets",
                 status=st,
             )
 
@@ -513,23 +480,13 @@ class AdapterWorker(threading.Thread):
                 "numberReady": 0,
                 "numberAvailable": 0,
             }
-            try:
-                still_exists = (
-                    self._store.get("apps", "v1", "daemonsets", ds.namespace, ds.name) is not None
-                )
-            except Exception:
-                still_exists = False
-            if still_exists:
-                self._store.upsert_if_not_deleted(
-                    "apps",
-                    "v1",
-                    "daemonsets",
-                    ds.namespace,
-                    ds.name,
-                    ds.metadata,
-                    ds.spec,
-                    status=st,
-                )
+            self._upsert_current_workload_status(
+                ds,
+                group="apps",
+                version="v1",
+                resource="daemonsets",
+                status=st,
+            )
             return
         spec_mod = dict(spec)
         spec_mod["replicas"] = desired
@@ -578,8 +535,12 @@ class AdapterWorker(threading.Thread):
                 "numberAvailable": st_row.ready_replicas,
                 "updatedNumberScheduled": st_row.live_replicas,
             }
-            self._store.upsert_if_not_deleted(
-                "apps", "v1", "daemonsets", ds.namespace, ds.name, ds.metadata, spec_mod, status=st
+            self._upsert_current_workload_status(
+                ds,
+                group="apps",
+                version="v1",
+                resource="daemonsets",
+                status=st,
             )
 
     def _apply_job(self, job: K8sObject) -> None:
@@ -589,23 +550,13 @@ class AdapterWorker(threading.Thread):
         if parallelism <= 0:
             self._remove_app_for(job)
             st = {"active": 0, "succeeded": 0, "failed": 0, "conditions": []}
-            try:
-                still_exists = (
-                    self._store.get("batch", "v1", "jobs", job.namespace, job.name) is not None
-                )
-            except Exception:
-                still_exists = False
-            if still_exists:
-                self._store.upsert_if_not_deleted(
-                    "batch",
-                    "v1",
-                    "jobs",
-                    job.namespace,
-                    job.name,
-                    job.metadata,
-                    job.spec,
-                    status=st,
-                )
+            self._upsert_current_workload_status(
+                job,
+                group="batch",
+                version="v1",
+                resource="jobs",
+                status=st,
+            )
             return
         # Treat Job as short-lived deployment with desired replicas=parallelism
         spec_mod = dict(spec)
@@ -698,8 +649,64 @@ class AdapterWorker(threading.Thread):
             "failed": failed,
             "conditions": conditions,
         }
-        self._store.upsert_if_not_deleted(
-            "batch", "v1", "jobs", job.namespace, job.name, job.metadata, job.spec, status=st
+        self._upsert_current_workload_status(
+            job,
+            group="batch",
+            version="v1",
+            resource="jobs",
+            status=st,
+        )
+
+    def _upsert_current_workload_status(
+        self,
+        obj: K8sObject,
+        *,
+        group: str,
+        version: str,
+        resource: str,
+        status: dict[str, Any],
+    ) -> K8sObject | None:
+        try:
+            current = self._store.get(group, version, resource, obj.namespace, obj.name)
+        except Exception:
+            current = None
+        if current is None:
+            LOGGER.info(
+                "Skipping stale APISHim %s status write for %s/%s: object no longer exists",
+                resource,
+                obj.namespace or "default",
+                obj.name,
+            )
+            return None
+        stale_uid = None
+        current_uid = None
+        try:
+            stale_uid = (obj.metadata or {}).get("uid")
+        except Exception:
+            stale_uid = None
+        try:
+            current_uid = (current.metadata or {}).get("uid")
+        except Exception:
+            current_uid = None
+        if stale_uid and current_uid and stale_uid != current_uid:
+            LOGGER.info(
+                "Skipping stale APISHim %s status write for %s/%s: uid changed from %s to %s",
+                resource,
+                current.namespace or "default",
+                current.name,
+                stale_uid,
+                current_uid,
+            )
+            return None
+        return self._store.upsert_if_not_deleted(
+            group,
+            version,
+            resource,
+            current.namespace,
+            current.name,
+            current.metadata,
+            current.spec,
+            status=status,
         )
 
     def _apply_cronjob(self, cj: K8sObject) -> None:
@@ -761,8 +768,8 @@ class AdapterWorker(threading.Thread):
                     }
                 ],
             }
-            job_obj = K8sObject(
-                "batch", "v1", "jobs", cj.namespace, fired_name, job_md, job_spec, {}, 0
+            job_obj = self._store.upsert(
+                "batch", "v1", "jobs", cj.namespace, fired_name, job_md, job_spec, status={}
             )
             self._apply_job(job_obj)
             last_schedule = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1105,14 +1112,11 @@ class AdapterWorker(threading.Thread):
             still_exists = None
         if still_exists is None:
             return
-        self._store.upsert_if_not_deleted(
-            "apps",
-            "v1",
-            resource,
-            obj.namespace,
-            obj.name,
-            obj.metadata,
-            obj.spec,
+        self._upsert_current_workload_status(
+            obj,
+            group="apps",
+            version="v1",
+            resource=resource,
             status=st,
         )
 
