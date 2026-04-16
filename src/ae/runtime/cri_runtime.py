@@ -57,6 +57,8 @@ class CRIRuntime(RuntimeAdapter):
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
     JOB_ATTEMPT_LABEL = "ae.job_attempt"
+    SANDBOX_RECOVERY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
+    SANDBOX_CLEANUP_SETTLE_SECONDS = 0.5
 
     def __init__(
         self,
@@ -1425,6 +1427,7 @@ class CRIRuntime(RuntimeAdapter):
             return False
         stale_markers = (
             "sandbox container task",
+            "failed to find sandbox id",
             "no running task found",
             "podsandbox not found",
             "pod sandbox not found",
@@ -1455,6 +1458,41 @@ class CRIRuntime(RuntimeAdapter):
             return str(match.group(1))
         return None
 
+    def _is_container_in_removing_state_error(self, exc: Exception) -> bool:
+        if grpc is None or not isinstance(exc, grpc.RpcError):
+            return False
+        try:
+            code = exc.code()
+        except Exception:
+            return False
+        if code not in {
+            grpc.StatusCode.UNKNOWN,
+            grpc.StatusCode.ALREADY_EXISTS,
+            grpc.StatusCode.FAILED_PRECONDITION,
+        }:
+            return False
+        details = self._grpc_error_details(exc).lower()
+        return "container is in removing state" in details and "can't be started" in details
+
+    def _pod_cleanup_timeout(self, manifest: AppManifest | None) -> int:
+        timeout = 10
+        if manifest is not None:
+            try:
+                timeout = int(getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
+            except Exception:
+                timeout = 10
+        return max(0, int(timeout))
+
+    def _pod_matches_replica(self, pod: Any, replica_id: str | None) -> bool:
+        if not replica_id:
+            return False
+        labels = self._pod_labels(pod)
+        if labels.get(self.REPLICA_LABEL) == replica_id:
+            return True
+        if labels.get(self.LEGACY_REPLICA_LABEL) == replica_id:
+            return True
+        return self._pod_name(pod) == replica_id
+
     def _wait_for_pod_sandbox_absent(self, pod_id: str, timeout: float = 5.0) -> None:
         deadline = time.monotonic() + max(0.0, float(timeout))
         while time.monotonic() < deadline:
@@ -1469,7 +1507,74 @@ class CRIRuntime(RuntimeAdapter):
                 return
             time.sleep(0.2)
 
-    def _remove_pod_sandbox(self, pod_id: str) -> None:
+    def _wait_for_pod_sandbox_name_available(
+        self, replica_id: str | None, timeout: float = 5.0
+    ) -> None:
+        if not replica_id:
+            return
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while time.monotonic() < deadline:
+            present = False
+            with contextlib.suppress(Exception):
+                for pod in self._list_pods():
+                    if self._pod_matches_replica(pod, replica_id):
+                        present = True
+                        break
+            if not present:
+                return
+            time.sleep(0.2)
+
+    def _sandbox_recovery_backoff(self, sandbox_recovery_attempt: int) -> float:
+        idx = min(
+            max(0, int(sandbox_recovery_attempt)),
+            len(self.SANDBOX_RECOVERY_BACKOFF_SECONDS) - 1,
+        )
+        return float(self.SANDBOX_RECOVERY_BACKOFF_SECONDS[idx])
+
+    def _prepare_pod_sandbox_recovery(
+        self,
+        manifest: AppManifest,
+        *,
+        replica_id: str,
+        pod_id: str | None,
+        sandbox_recovery_attempt: int,
+        cause: Exception,
+        reason: str,
+    ) -> None:
+        max_attempts = len(self.SANDBOX_RECOVERY_BACKOFF_SECONDS)
+        if sandbox_recovery_attempt >= max_attempts:
+            raise cause
+        backoff = self._sandbox_recovery_backoff(sandbox_recovery_attempt)
+        LOGGER.warning(
+            "%s for replica %s (pod_id=%s); recovery_attempt=%d/%d backoff=%.1fs: %s",
+            reason,
+            replica_id,
+            pod_id or "?",
+            sandbox_recovery_attempt + 1,
+            max_attempts,
+            backoff,
+            cause,
+        )
+        cleanup_timeout = self._pod_cleanup_timeout(manifest)
+        if pod_id:
+            self._remove_pod_sandbox(
+                str(pod_id),
+                replica_id=replica_id,
+                timeout=cleanup_timeout,
+            )
+        else:
+            wait_timeout = max(5.0, float(cleanup_timeout))
+            self._wait_for_pod_sandbox_name_available(replica_id, timeout=wait_timeout)
+            time.sleep(self.SANDBOX_CLEANUP_SETTLE_SECONDS)
+        time.sleep(backoff)
+
+    def _remove_pod_sandbox(
+        self,
+        pod_id: str,
+        *,
+        replica_id: str | None = None,
+        timeout: int = 0,
+    ) -> None:
         pb2 = self._pb2()
         containers = []
         with contextlib.suppress(Exception):
@@ -1485,7 +1590,11 @@ class CRIRuntime(RuntimeAdapter):
                 continue
             with contextlib.suppress(Exception):
                 self._runtime_call(
-                    "StopContainer", pb2.StopContainerRequest(container_id=container_id, timeout=0)
+                    "StopContainer",
+                    pb2.StopContainerRequest(
+                        container_id=container_id,
+                        timeout=max(0, int(timeout)),
+                    ),
                 )
             with contextlib.suppress(Exception):
                 self._runtime_call(
@@ -1499,7 +1608,10 @@ class CRIRuntime(RuntimeAdapter):
             self._runtime_call(
                 "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
             )
-        self._wait_for_pod_sandbox_absent(str(pod_id))
+        wait_timeout = max(5.0, float(timeout))
+        self._wait_for_pod_sandbox_absent(str(pod_id), timeout=wait_timeout)
+        self._wait_for_pod_sandbox_name_available(replica_id, timeout=wait_timeout)
+        time.sleep(self.SANDBOX_CLEANUP_SETTLE_SECONDS)
 
     def _recover_from_stale_pod_sandbox(
         self,
@@ -1513,15 +1625,14 @@ class CRIRuntime(RuntimeAdapter):
         cause: _StalePodSandboxError,
         node_id: str | None,
     ) -> None:
-        if sandbox_recovery_attempt >= 1:
-            raise cause
-        LOGGER.warning(
-            "CRI sandbox stale for replica %s (pod_id=%s); recreating pod: %s",
-            replica_id,
-            stale_pod_id,
-            cause,
+        self._prepare_pod_sandbox_recovery(
+            manifest,
+            replica_id=replica_id,
+            pod_id=stale_pod_id,
+            sandbox_recovery_attempt=sandbox_recovery_attempt,
+            cause=cause,
+            reason="CRI sandbox stale",
         )
-        self._remove_pod_sandbox(stale_pod_id)
         self._run_pod(
             manifest,
             replica_id,
@@ -1542,21 +1653,17 @@ class CRIRuntime(RuntimeAdapter):
         cause: Exception,
         node_id: str | None,
     ) -> None:
-        if sandbox_recovery_attempt >= 1:
-            raise cause
         reserved_pod_id = self._reserved_pod_sandbox_id_from_error(cause)
         if not reserved_pod_id:
             reserved_pod_id = self._pod_id_for_replica(replica_id)
-        LOGGER.warning(
-            "CRI sandbox name still reserved for replica %s (pod_id=%s); retrying pod create: %s",
-            replica_id,
-            reserved_pod_id or "?",
-            cause,
+        self._prepare_pod_sandbox_recovery(
+            manifest,
+            replica_id=replica_id,
+            pod_id=reserved_pod_id,
+            sandbox_recovery_attempt=sandbox_recovery_attempt,
+            cause=cause,
+            reason="CRI sandbox name still reserved",
         )
-        if reserved_pod_id:
-            self._remove_pod_sandbox(reserved_pod_id)
-        else:
-            time.sleep(1.0)
         self._run_pod(
             manifest,
             replica_id,
@@ -1693,46 +1800,28 @@ class CRIRuntime(RuntimeAdapter):
         if not container_id:
             raise RuntimeError("CRI CreateContainer returned no container_id")
         try:
-            self._runtime_call("StartContainer", pb2.StartContainerRequest(container_id=container_id))
+            self._runtime_call(
+                "StartContainer",
+                pb2.StartContainerRequest(container_id=container_id),
+            )
         except Exception as exc:
-            if self._is_stale_pod_sandbox_error(exc):
+            if self._is_stale_pod_sandbox_error(exc) or self._is_container_in_removing_state_error(
+                exc
+            ):
                 detail = self._grpc_error_details(exc)
                 raise _StalePodSandboxError(str(pod_id), detail) from exc
             raise
 
     def _stop_and_remove_pod(self, manifest: AppManifest | None, pod: Any) -> None:
-        pb2 = self._pb2()
         pod_id = getattr(pod, "id", None) or getattr(pod, "pod_sandbox_id", None)
         if not pod_id:
             return
-        containers = []
-        try:
-            flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id))
-            resp = self._runtime_call("ListContainers", pb2.ListContainersRequest(filter=flt))
-            containers = list(getattr(resp, "containers", None) or [])
-        except Exception:
-            containers = []
-        timeout = 10
-        if manifest is not None:
-            try:
-                timeout = int(getattr(manifest.spec, "termination_grace_period_seconds", 10) or 10)
-            except Exception:
-                timeout = 10
-        for c in containers:
-            with contextlib.suppress(Exception):
-                self._runtime_call(
-                    "StopContainer", pb2.StopContainerRequest(container_id=c.id, timeout=timeout)
-                )
-            with contextlib.suppress(Exception):
-                self._runtime_call("RemoveContainer", pb2.RemoveContainerRequest(container_id=c.id))
-        with contextlib.suppress(Exception):
-            self._runtime_call(
-                "StopPodSandbox", pb2.StopPodSandboxRequest(pod_sandbox_id=str(pod_id))
-            )
-        with contextlib.suppress(Exception):
-            self._runtime_call(
-                "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
-            )
+        replica_id = self._pod_labels(pod).get(self.REPLICA_LABEL) or self._pod_name(pod)
+        self._remove_pod_sandbox(
+            str(pod_id),
+            replica_id=replica_id,
+            timeout=self._pod_cleanup_timeout(manifest),
+        )
 
     def _container_config(
         self,

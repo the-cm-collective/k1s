@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 RUN_ALL_BASELINES = ROOT / "scripts" / "bench" / "run_all_baselines.sh"
 K1ND_SINGLE = ROOT / "scripts" / "bench" / "k1nd_single.sh"
@@ -13,6 +12,8 @@ RUN_MATRIX_K3S = ROOT / "scripts" / "bench" / "run_matrix_k3s.sh"
 RUN_ROLLOUT_K3S = ROOT / "scripts" / "bench" / "run_rollout_k3s.sh"
 BENCH_ENV_PREP = ROOT / "scripts" / "bench" / "bench_env_prep.sh"
 RUN_CRI_REFRESH = ROOT / "scripts" / "bench" / "run_cri_refresh.sh"
+RUN_CRI_VERIFY = ROOT / "scripts" / "bench" / "run_cri_verify.sh"
+PIN_RUNTIME_CLASS = ROOT / "scripts" / "bench" / "pin_runtime_class.py"
 K1ND_COMPOSE = ROOT / "ops" / "bench" / "k1nd-compose.yaml"
 K1ND_ENTRYPOINT = ROOT / "ops" / "bench" / "k1nd-entrypoint.sh"
 
@@ -26,11 +27,20 @@ def test_run_all_baselines_keeps_rootless_and_rootful_podman_collection_split() 
     assert rootless_anchor in text
     assert rootful_anchor in text
 
-    rootless_block = text.split(rootless_anchor, maxsplit=1)[1].split(rootful_anchor, maxsplit=1)[0]
+    rootless_block = text.split(rootless_anchor, maxsplit=1)[1].split(
+        rootful_anchor,
+        maxsplit=1,
+    )[0]
     rootful_block = text.split(rootful_anchor, maxsplit=1)[1]
 
-    assert 'run_isolated_k1s_suite rootless 9210 bench-mem-e2e-k1s "$LBL_K1S_ROOTLESS" 0' in rootless_block
-    assert 'run_isolated_k1s_suite rootful 9211 bench-mem-e2e-k1s-sudo "$LBL_K1S_ROOTFUL" 1' in rootful_block
+    assert (
+        'run_isolated_k1s_suite rootless 9210 bench-mem-e2e-k1s "$LBL_K1S_ROOTLESS" 0'
+        in rootless_block
+    )
+    assert (
+        'run_isolated_k1s_suite rootful 9211 bench-mem-e2e-k1s-sudo "$LBL_K1S_ROOTFUL" 1'
+        in rootful_block
+    )
     assert "bench_env_prep.sh" in text
     assert "bench_env_teardown.sh" in text
     assert 'APP="$BENCH_PRIMARY_MANIFEST"' in text
@@ -114,8 +124,14 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
     assert run_rollout_text.count('settle_current_revision "$app_name" "$replicas"') == 2
     assert 'host_manifest="$manifest"' in run_rollout_text
     assert 'host_apply_dir="${K1ND_APPLY_DIR:-state/bench-k1nd-apply}"' in run_rollout_text
-    assert 'startman="${container_apply_dir}/rollout-start-${app_name}-${replicas}.yaml"' in run_rollout_text
-    assert 'tmpman="${container_apply_dir}/rollout-${app_name}-${replicas}.yaml"' in run_rollout_text
+    assert (
+        'startman="${container_apply_dir}/rollout-start-${app_name}-${replicas}.yaml"'
+        in run_rollout_text
+    )
+    assert (
+        'tmpman="${container_apply_dir}/rollout-${app_name}-${replicas}.yaml"'
+        in run_rollout_text
+    )
 
     assert 'wait_ready "$app_name" "$n" || true' not in run_matrix_k3s_text
     assert 'wait_ready "$deploy" "$replicas" || true' not in run_rollout_k3s_text
@@ -144,7 +160,10 @@ def test_bench_env_prep_prefers_direct_podman_endpoints_for_sudo_controller() ->
     assert 'NIX_LD_LIBRARY_PATH="${NIX_LD_LIBRARY_PATH:-}" \\' in text
     assert 'NIX_LD="${NIX_LD:-}" \\' in text
     assert 'AE_PODMAN_ENDPOINT_PREFER_DIRECT="$bench_podman_endpoint_prefer_direct" \\' in text
-    assert 'export AE_PODMAN_ENDPOINT_PREFER_DIRECT="${bench_podman_endpoint_prefer_direct}"' in text
+    assert (
+        'export AE_PODMAN_ENDPOINT_PREFER_DIRECT="${bench_podman_endpoint_prefer_direct}"'
+        in text
+    )
 
 
 def test_run_cri_refresh_waits_for_sandbox_cleanup_between_rollouts() -> None:
@@ -154,3 +173,43 @@ def test_run_cri_refresh_waits_for_sandbox_cleanup_between_rollouts() -> None:
     assert 'cri_wait_pod_ids_gone "${pod_ids_arr[@]}"' in text
     assert 'CRI_POD_CLEANUP_TIMEOUT' in text
     assert 'CRI_POD_CLEANUP_SETTLE' in text
+
+
+def test_run_cri_refresh_pins_workloads_to_runc_and_rejects_kata_snapshots() -> None:
+    text = RUN_CRI_REFRESH.read_text(encoding="utf-8")
+
+    assert 'bench_runtime_handler="runc"' in text
+    assert 'AE_CRI_RUNTIME_HANDLER="${bench_runtime_handler}"' in text
+    assert "scripts/bench/pin_runtime_class.py" in text
+    assert 'verify_snapshot_runtime_handler "${LABEL_CRI}-pods-1"' in text
+    assert """find "snapshots/${label}" -type f -path '*/raw/containers_mem.csv'""" in text
+    assert '"/k8s.io/kata"' in text
+
+
+def test_run_cri_verify_persists_logs_and_checks_complete_run_rows() -> None:
+    text = RUN_CRI_VERIFY.read_text(encoding="utf-8")
+
+    assert "set -Eeuo pipefail" in text
+    assert "count_combined_rows()" in text
+    assert 'log_file="${CRI_VERIFY_LOG_FILE:-state/bench-cri-rerun-' in text
+    assert 'exec > >(tee -a "$log_file") 2>&1' in text
+    assert (
+        'trap \'rc=$?; log "error at line $LINENO: $BASH_COMMAND (exit=$rc)"; exit $rc\' ERR'
+        in text
+    )
+    assert 'PURGE_EXISTING_RUNS="${PURGE_EXISTING_RUNS:-0}"' in text
+    assert "make bench-mem-cri" in text
+    assert "import csv" in text
+    assert 'base, sep, engine = label.rpartition("+")' in text
+    assert 'if current.startswith(label + "-"):' in text
+    assert 'if sep and oci and current.startswith(f"{base}+{oci}+{engine}-"):' in text
+    assert 'rows="$(count_combined_rows "$label")"' in text
+    assert 'log "rows ${label}: $(count_combined_rows "$label")"' in text
+
+
+def test_pin_runtime_class_helper_exists_for_bench_local_manifest_overrides() -> None:
+    text = PIN_RUNTIME_CLASS.read_text(encoding="utf-8")
+
+    assert 'default="runc"' in text
+    assert 'spec["runtimeClassName"] = args.runtime_class' in text
+    assert 'kind not in {"app", "deployment"}' in text

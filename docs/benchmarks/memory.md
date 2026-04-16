@@ -160,6 +160,29 @@ make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yam
 
 Use [Validated Procedures](validated-procedures.html#full-benchmark-rerun) for the exact full clean rerun command block and acceptance checks. That page is the published copy/paste source of truth for the validated split baseline + CRI flow.
 
+For CRI reruns, use `scripts/bench/run_cri_verify.sh` instead of looping over
+`make bench-mem-cri` manually. The wrapper:
+- tears down `state/bench-cri` between runs and kills stale bench controllers
+- writes a durable operator log under `state/bench-cri-rerun-*.log`
+- pins the bench-local manifest to `runtimeClassName: runc`
+- rejects `/k8s.io/kata` cgroup paths in the `pods-1` snapshot
+- checks for `8` combined rows per run before and after finalization
+
+Recommended smoke lane:
+
+```bash
+./scripts/bench/bench_env_teardown.sh --env state/bench-cri/env.sh || true
+sudo pkill -f "python .*ae\\.controller.*state/bench-cri/specs" || true
+
+export BASE="r$(date +%Y%m%d-%H%M)-cri-runc-wrapper-check"
+RUNS="1" ./scripts/bench/run_cri_verify.sh
+grep -c "^${BASE}-run1+cri+crun+containerd-" combined/combined.csv
+```
+
+Important: set `BASE=...` / `RUNS=...` before the script name (or `export`
+them). `./scripts/bench/run_cri_verify.sh BASE=...` passes positional args and
+does not override the wrapper environment.
+
 Result interpretation
 - Treat `combined/combined.csv` and `combined/combined.json` as the authoritative artifacts.
 - If `bench-mem-finalize-sudo` prints `matplotlib not available`, the benchmark run is still valid; only chart regeneration was skipped.

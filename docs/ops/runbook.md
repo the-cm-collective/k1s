@@ -125,6 +125,17 @@ CRI nodes (containerd)
 - Optional pull test: `AE_CRI_SMOKE_PULL=1 pytest tests/integration/test_cri_smoke.py -k pull`
 - Optional lifecycle test: `AE_CRI_IT=1 pytest tests/integration/test_cri_runtime_integration.py -q`
 - CI-style bootstrap (installs containerd/CNI/crictl): `./scripts/cri_ci_setup.sh`
+- CRI benchmark reruns: prefer `./scripts/bench/run_cri_verify.sh`
+  - Smoke lane:
+    - `./scripts/bench/bench_env_teardown.sh --env state/bench-cri/env.sh || true`
+    - `sudo pkill -f "python .*ae\\.controller.*state/bench-cri/specs" || true`
+    - `export BASE="r$(date +%Y%m%d-%H%M)-cri-runc-wrapper-check"`
+    - `RUNS="1" ./scripts/bench/run_cri_verify.sh`
+  - Full verify:
+    - `export BASE="r$(date +%Y%m%d-%H%M)-cri-runc-verify"`
+    - `RUNS="1 2 3" ./scripts/bench/run_cri_verify.sh`
+  - The wrapper logs to `state/bench-cri-rerun-*.log`, forces a bench-local `runtimeClassName: runc`, rejects `/k8s.io/kata` cgroup paths in `pods-1`, and checks for `8` finalized rows per CRI run.
+  - Set `BASE=...` / `RUNS=...` before the script name (or `export` them); do not pass them after `run_cri_verify.sh` as positional args.
 
 Export and Validate K8s YAML
 - Hardened export with validation:

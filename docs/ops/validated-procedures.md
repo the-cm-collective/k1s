@@ -219,7 +219,7 @@ rm -rf \
   "snapshots/${STAMP}+podman+priv+cg2"* \
   "snapshots/${STAMP}+docker+k1nd"* \
   "snapshots/${STAMP}+k3d"* \
-  "snapshots/${STAMP}+cri+containerd"* \
+  "snapshots/${STAMP}+cri-runc-verify-run"* \
   combined charts
 
 make bench-state-clean
@@ -238,23 +238,24 @@ DURATION=30 \
 REPLICAS="1,5,10" \
 make bench-mem-e2e-baselines-sudo
 
-LABEL_CRI="${STAMP}+cri+containerd" \
+BASE="${STAMP}+cri-runc-verify" \
 APP="specs/examples/echo.yaml" \
 APP_NAME="echo" \
 DURATION=30 \
 REPLICAS="1,5,10" \
 ROLL_REPLICAS="2,5" \
-make bench-mem-cri
+RUNS="1 2 3" \
+./scripts/bench/run_cri_verify.sh
 
 scripts/bench/k1nd_single.sh down || true
 make bench-k3s-down K3S_NAME=bench || true
-sudo make bench-mem-finalize-sudo
 '
 ```
 
 Acceptance checks
-- All five scenarios complete: `k1s rootless`, `k1s rootful`, `k1nd`, `k3d`, and `cri+containerd`.
-- `combined/combined.csv` contains `40` rows for the fresh stamp (`5 scenarios x 8 stages`):
+- All baseline scenarios complete: `k1s rootless`, `k1s rootful`, `k1nd`, and `k3d`.
+- CRI verify completes three clean runs: `run1`, `run2`, and `run3`.
+- `combined/combined.csv` contains `56` rows for the fresh stamp (`4 baseline scenarios x 8 stages` plus `3 CRI runs x 8 stages`):
 
 ```bash
 STAMP="r$(date +%Y%m%d)-fullretest" python - <<'PY'
@@ -272,6 +273,19 @@ PY
   - `Ctrl/CP` for k1s/k1nd as AE controller PSS
   - `Ctrl/CP` for k3d as k3s control-plane PSS
   - `AppCG` for k3d scaling with replicas
-- CRI must include `idle`, `pods-1`, `pods-5`, `pods-10`, `rollout-2-during`, `rollout-2-post`, `rollout-5-during`, and `rollout-5-post`.
+- CRI wrapper log (`state/bench-cri-rerun-*.log`) must end with:
+  - `rows ${STAMP}+cri-runc-verify-run1+cri+containerd: 8`
+  - `rows ${STAMP}+cri-runc-verify-run2+cri+containerd: 8`
+  - `rows ${STAMP}+cri-runc-verify-run3+cri+containerd: 8`
+- Finalized CRI rows must also count as `8 / 8 / 8`:
+
+```bash
+BASE="${STAMP}+cri-runc-verify"
+for run in 1 2 3; do
+  grep -c "^${BASE}-run${run}+cri+crun+containerd-" combined/combined.csv
+done
+```
+
+- Each CRI run must include `idle`, `pods-1`, `pods-5`, `pods-10`, `rollout-2-during`, `rollout-2-post`, `rollout-5-during`, and `rollout-5-post`.
 - `combined/combined.csv` and `combined/combined.json` are the authoritative artifacts.
 - `matplotlib not available` only means chart generation was skipped; it does not invalidate the run.

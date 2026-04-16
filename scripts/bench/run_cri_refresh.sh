@@ -19,6 +19,7 @@ APP_NAME="${APP_NAME:-echo}"
 REPLICAS="${REPLICAS:-1,5,10}"
 ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 DURATION="${DURATION:-30}"
+bench_runtime_handler="runc"
 
 LABEL_CRI="${LABEL_CRI:-r$(date +%Y%m%d)+cri+containerd}"
 metrics_port="${BENCH_CRI_METRICS_PORT:-9212}"
@@ -203,6 +204,47 @@ ctr_cmd() {
     ctr -n k8s.io "$@"
   fi
 }
+
+cri_default_runtime_name() {
+  cri_cmd info 2>/dev/null | "$python_bin" -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("")
+    sys.exit(0)
+containerd = (data.get("config") or {}).get("containerd") or {}
+print(containerd.get("defaultRuntimeName") or "")
+' || true
+}
+
+run_cri_preflight() {
+  if [[ "$cri_use_sudo" == "1" ]]; then
+    "${sudo_cmd[@]}" env PATH="$PATH" \
+      AE_CRI_REQUIRE_RUNTIME_READY=1 \
+      AE_CRI_RUNTIME_HANDLER="${bench_runtime_handler}" \
+      ./scripts/cri_preflight.sh
+  else
+    env PATH="$PATH" \
+      AE_CRI_REQUIRE_RUNTIME_READY=1 \
+      AE_CRI_RUNTIME_HANDLER="${bench_runtime_handler}" \
+      ./scripts/cri_preflight.sh
+  fi
+}
+
+default_runtime_name="$(cri_default_runtime_name)"
+if [[ -n "$default_runtime_name" ]]; then
+  log "containerd default runtime handler: ${default_runtime_name}"
+fi
+log "verifying CRI preflight with runtime handler=${bench_runtime_handler}"
+run_cri_preflight
+
+bench_runtime_manifest="${BENCH_APPLY_DIR}/runtime-class/${bench_app_name}-${bench_runtime_handler}.yaml"
+"$python_bin" scripts/bench/pin_runtime_class.py \
+  "$BENCH_PRIMARY_MANIFEST" \
+  "$bench_runtime_manifest" \
+  --runtime-class "$bench_runtime_handler" >/dev/null
+log "using bench-local manifest override: ${bench_runtime_manifest}"
 
 cri_wait_pod_ids_gone() {
   local -a ids=("$@")
@@ -488,19 +530,52 @@ print("\n".join([c.get("id","") for c in items if c.get("id")]))
   cri_wait_pod_ids_gone "${pod_ids_arr[@]}"
 }
 
+verify_snapshot_runtime_handler() {
+  local label="$1"
+  local csv
+  csv=$(find "snapshots/${label}" -type f -path '*/raw/containers_mem.csv' | sort | tail -n1)
+  if [[ -z "$csv" ]]; then
+    echo "[cri-refresh] unable to locate CRI snapshot cgroup data for ${label}" >&2
+    exit 4
+  fi
+  if ! "$python_bin" - "$csv" <<'PY'
+import csv
+import sys
+
+path = sys.argv[1]
+with open(path, newline="", encoding="utf-8") as fh:
+    rows = list(csv.DictReader(fh))
+
+if not rows:
+    print(f"[cri-refresh] no container rows found in {path}", file=sys.stderr)
+    raise SystemExit(1)
+
+bad = [row.get("cg_path", "") for row in rows if "/k8s.io/kata" in row.get("cg_path", "")]
+if bad:
+    print("[cri-refresh] benchmark workload did not pin to runc; found kata cgroup paths:", file=sys.stderr)
+    for item in bad:
+        print(f"  {item}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+  then
+    exit 4
+  fi
+}
+
 cri_cleanup_app_pods "$bench_app_name"
 
 AE_ENGINE_STRICT=1 \
 LABEL_SUITE="$LABEL_CRI" \
-APP="$BENCH_PRIMARY_MANIFEST" APP_NAME="$bench_app_name" \
+APP="$bench_runtime_manifest" APP_NAME="$bench_app_name" \
 REPLICAS="$REPLICAS" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
 ./scripts/bench/run_matrix.sh \
   --label-suite "$LABEL_CRI" \
-  --app "$BENCH_PRIMARY_MANIFEST" \
+  --app "$bench_runtime_manifest" \
   --app-name "$bench_app_name" \
   --replicas "$REPLICAS" \
   --duration "$DURATION" \
   --sudo
+verify_snapshot_runtime_handler "${LABEL_CRI}-pods-1"
 
 rollout_replicas=()
 IFS=',' read -r -a rollout_replicas_raw <<< "$ROLL_REPLICAS"
@@ -523,11 +598,11 @@ for rep in "${rollout_replicas[@]}"; do
   cri_cleanup_app_pods "$bench_app_name"
   AE_ENGINE_STRICT=1 \
   LABEL_SUITE_ROLL="$LABEL_CRI" \
-  APP="$BENCH_PRIMARY_MANIFEST" APP_NAME="$bench_app_name" \
+  APP="$bench_runtime_manifest" APP_NAME="$bench_app_name" \
   ROLL_REPLICAS="$rep" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
   ./scripts/bench/run_rollout_k1s.sh \
     --label-suite "$LABEL_CRI" \
-    --app "$BENCH_PRIMARY_MANIFEST" \
+    --app "$bench_runtime_manifest" \
     --app-name "$bench_app_name" \
     --replicas "$rep" \
     --duration "$DURATION" \
