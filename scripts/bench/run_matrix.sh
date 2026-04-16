@@ -321,9 +321,14 @@ wait_ready() {
   fi
   local tries=${WAIT_READY_TRIES:-$default_tries}
   local delay=${WAIT_READY_DELAY:-2}
+  local stable_polls=${BENCH_READY_STABLE_POLLS:-2}
+  local stable_hits=0
   info "[matrix] wait_ready name=$name target=$want tries=$tries delay=${delay}s"
   local use_runtime_wait="${BENCH_WAIT_RUNTIME:-0}"
   local backend="${AE_RUNTIME_BACKEND:-podman}"
+  if (( stable_polls < 1 )); then
+    stable_polls=1
+  fi
   while (( tries-- > 0 )); do
     if [[ "$use_runtime_wait" == "1" ]]; then
       local count=0
@@ -343,17 +348,31 @@ wait_ready() {
         use_runtime_wait="0"
       fi
       if [[ "$use_runtime_wait" == "1" && "$count" -ge "$want" ]]; then
-        return 0
+        stable_hits=$((stable_hits + 1))
+        if (( stable_hits >= stable_polls )); then
+          return 0
+        fi
+      else
+        stable_hits=0
       fi
       sleep "$delay"
       continue
     fi
     local js
     if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
-    local ready desired
+    local ready desired live revision_status
     ready=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("ready_replicas",0))') || ready=0
     desired=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("desired_replicas",0))') || desired=0
-    if [[ "$ready" == "$want" && "$desired" == "$want" ]]; then return 0; fi
+    live=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("live_replicas",0))') || live=0
+    revision_status=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("revision_status",""))') || revision_status=""
+    if [[ "$ready" == "$want" && "$desired" == "$want" && "$live" == "$want" && "$revision_status" == "ready" ]]; then
+      stable_hits=$((stable_hits + 1))
+      if (( stable_hits >= stable_polls )); then
+        return 0
+      fi
+    else
+      stable_hits=0
+    fi
     sleep "$delay"
   done
   echo "timeout waiting for $name ready=$want" >&2
@@ -362,9 +381,14 @@ wait_ready() {
 
 settle_current_revision() {
   local name="$1"; local want="$2"
+  local settle_delay=${BENCH_SETTLE_DELAY:-2}
   info "settle current revision name=$name target=$want"
   ae scale "$name" --replicas "$want" >/dev/null
   wait_ready "$name" "$want"
+  if (( settle_delay > 0 )); then
+    info "settle delay name=$name target=$want sleep=${settle_delay}s"
+    sleep "$settle_delay"
+  fi
 }
 
 # Idle snapshot (skippable)

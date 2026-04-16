@@ -12,6 +12,7 @@ set -euo pipefail
 mode="k1s"
 label="manual"
 duration=30
+capture_timing="warm"
 outroot="snapshots"
 
 podman_bin="${AE_PODMAN_BIN:-podman}"
@@ -38,10 +39,16 @@ while [[ $# -gt 0 ]]; do
     --mode) mode="$2"; shift 2;;
     --label) label="$2"; shift 2;;
     --duration) duration="$2"; shift 2;;
+    --capture-timing) capture_timing="$2"; shift 2;;
     --outdir) outroot="$2"; shift 2;;
     *) echo "unknown arg: $1"; exit 2;;
   esac
 done
+
+if [[ "$capture_timing" != "warm" && "$capture_timing" != "immediate" ]]; then
+  echo "invalid --capture-timing: $capture_timing" >&2
+  exit 2
+fi
 
 ts=$(date +%Y%m%d-%H%M%S)
 outdir="${outroot}/${label}/${ts}"
@@ -195,6 +202,7 @@ log_step "write meta and preflight"
   echo "  \"label\": \"${label}\"," 
   echo "  \"mode\": \"${mode}\"," 
   echo "  \"duration_sec\": ${duration},"
+  echo "  \"capture_timing\": \"${capture_timing}\"," 
   echo "  \"timestamp\": \"${ts}\"," 
   echo "  \"uname\": \"$(uname -a | sed 's/\"/\\\"/g')\"," 
   echo "  \"backend\": \"$(detect_backend)\"," 
@@ -214,52 +222,49 @@ ps -eo pid,ppid,comm,rss --sort -rss > "${outdir}/raw/ps_before.txt" 2>>"${outdi
 ps -eo pid,ppid,comm,args --sort -rss > "${outdir}/raw/ps_scan_before.txt" 2>>"${outdir}/status.log" || log_err "ps_scan_before failed"
 log_step "ps snapshots captured"
 
-# Streaming vmstat during warm window (non-fatal)
-vmcount=$(( duration > 5 ? duration : 5 ))
-vmstat 1 "${vmcount}" > "${outdir}/raw/vmstat.txt" 2>>"${outdir}/status.log" || log_err "vmstat failed"
+capture_process_and_container_state() {
+  # Process target patterns
+  # Use args-aware scan to capture controller accurately and avoid shims
+  case "${mode}" in
+    k1s)
+      # match: python -m ae.controller, caddy, docker/containerd, and podman/conmon (but NOT containerd-shim)
+      proc_pat='ae\.controller|\bcaddy\b|\bdockerd\b|\bcontainerd\b|\bpodman\b|\bconmon\b'
+      scan_file="${outdir}/raw/ps_scan_before.txt"
+      ;;
+    k3s)
+      proc_pat='\bk3s\b|\bcontainerd\b|\bcoredns\b|\btraefik\b'
+      scan_file="${outdir}/raw/ps_scan_before.txt"
+      ;;
+    *)
+      proc_pat='.'
+      scan_file="${outdir}/raw/ps_scan_before.txt"
+      ;;
+  esac
 
-# Process target patterns
-# Use args-aware scan to capture controller accurately and avoid shims
-case "${mode}" in
-  k1s)
-    # match: python -m ae.controller, caddy, docker/containerd, and podman/conmon (but NOT containerd-shim)
-    proc_pat='ae\.controller|\bcaddy\b|\bdockerd\b|\bcontainerd\b|\bpodman\b|\bconmon\b'
-    scan_file="${outdir}/raw/ps_scan_before.txt"
-    ;;
-  k3s)
-    proc_pat='\bk3s\b|\bcontainerd\b|\bcoredns\b|\btraefik\b'
-    scan_file="${outdir}/raw/ps_scan_before.txt"
-    ;;
-  *)
-    proc_pat='.'
-    scan_file="${outdir}/raw/ps_scan_before.txt"
-    ;;
-esac
+  # Capture smaps_rollup + status for matching processes (exclude containerd-shim)
+  matches=$(grep -E "${proc_pat}" "${scan_file}" 2>/dev/null | grep -v "containerd-shim" || true)
+  awk '{print $1" "$3}' <<< "$matches" | while read -r pid comm; do
+    [[ -z "${pid}" ]] && continue
+    if [[ -r "/proc/${pid}/smaps_rollup" ]]; then
+      cp "/proc/${pid}/smaps_rollup" "${outdir}/raw/smaps_${pid}_${comm//\//_}.txt" 2>/dev/null || true
+    fi
+    if [[ -r "/proc/${pid}/status" ]]; then
+      cp "/proc/${pid}/status" "${outdir}/raw/status_${pid}_${comm//\//_}.txt" 2>/dev/null || true
+    fi
+  done
+  log_step "process smaps/status captured"
 
-# Capture smaps_rollup + status for matching processes (exclude containerd-shim)
-matches=$(grep -E "${proc_pat}" "${scan_file}" 2>/dev/null | grep -v "containerd-shim" || true)
-awk '{print $1" "$3}' <<< "$matches" | while read -r pid comm; do
-  [[ -z "${pid}" ]] && continue
-  if [[ -r "/proc/${pid}/smaps_rollup" ]]; then
-    cp "/proc/${pid}/smaps_rollup" "${outdir}/raw/smaps_${pid}_${comm//\//_}.txt" 2>/dev/null || true
-  fi
-  if [[ -r "/proc/${pid}/status" ]]; then
-    cp "/proc/${pid}/status" "${outdir}/raw/status_${pid}_${comm//\//_}.txt" 2>/dev/null || true
-  fi
-done
-log_step "process smaps/status captured"
+  ## Containers (collect only from the selected engine to avoid contamination)
+  {
+    # Include cg_path for downstream de-duplication in aggregation
+    echo "container_id,name,pid,mem_current_bytes,cg_path"
+  } > "${outdir}/raw/containers_mem.csv"
 
-## Containers (collect only from the selected engine to avoid contamination)
-{
-  # Include cg_path for downstream de-duplication in aggregation
-  echo "container_id,name,pid,mem_current_bytes,cg_path"
-} > "${outdir}/raw/containers_mem.csv"
-
-# CRI (only when selected)
-if [[ "$collect_engine" == "cri" ]]; then
-  crictl_bin="${AE_CRICTL_BIN:-crictl}"
-  if command -v "$crictl_bin" >/dev/null 2>&1; then
-    python - "$outdir" "$crictl_bin" "${AE_CRI_ENDPOINT:-}" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
+  # CRI (only when selected)
+  if [[ "$collect_engine" == "cri" ]]; then
+    crictl_bin="${AE_CRICTL_BIN:-crictl}"
+    if command -v "$crictl_bin" >/dev/null 2>&1; then
+      python - "$outdir" "$crictl_bin" "${AE_CRI_ENDPOINT:-}" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, subprocess, sys
 from typing import Optional
 
@@ -371,20 +376,20 @@ for item in containers:
 with open(os.path.join(root, "raw", "cri_inspect.json"), "w", encoding="utf-8") as fh:
     json.dump(inspect_out, fh)
 PY
-  else
-    echo "[mem-snapshot] crictl not found (engine_filter=cri); container metrics skipped." >&2
+    else
+      echo "[mem-snapshot] crictl not found (engine_filter=cri); container metrics skipped." >&2
+    fi
   fi
-fi
-log_step "cri containers collected (if selected)"
+  log_step "cri containers collected (if selected)"
 
-# Podman (only when selected)
-if [[ "$collect_engine" == "podman" || "$collect_engine" == "both" ]] && podman_available; then
-  podman_cmd ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
-  ids=$(podman_cmd ps -aq 2>/dev/null || true)
-  if [[ -n "${ids}" ]]; then
-    podman_cmd inspect --format json $ids > "${outdir}/raw/podman_inspect.json" 2>/dev/null || true
-  fi
-  python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
+  # Podman (only when selected)
+  if [[ "$collect_engine" == "podman" || "$collect_engine" == "both" ]] && podman_available; then
+    podman_cmd ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
+    ids=$(podman_cmd ps -aq 2>/dev/null || true)
+    if [[ -n "${ids}" ]]; then
+      podman_cmd inspect --format json $ids > "${outdir}/raw/podman_inspect.json" 2>/dev/null || true
+    fi
+    python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, sys
 from typing import Optional
 
@@ -445,21 +450,21 @@ for c in data:
     mem, cg = read_mem_bytes_and_path(pid) if pid and pid != '0' else (-1, '')
     print(f"{cid},{name},{pid},{mem},{cg}")
 PY
-fi
-log_step "podman containers collected (if selected)"
-
-# Docker (only when selected)
-if [[ "$collect_engine" == "docker" || "$collect_engine" == "both" ]] && command -v docker >/dev/null 2>&1; then
-  docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' > "${outdir}/raw/docker_ps.txt" || true
-  if docker ps -aq >/dev/null 2>&1; then
-    ids=$(docker ps -aq)
-    if [[ -n "${ids}" ]]; then
-      docker inspect ${ids} > "${outdir}/raw/docker_inspect.json" || true
-    fi
   fi
-  # Try to capture per-container cgroup memory via the main process PID
-  if [[ -f "${outdir}/raw/docker_inspect.json" ]]; then
-    python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
+  log_step "podman containers collected (if selected)"
+
+  # Docker (only when selected)
+  if [[ "$collect_engine" == "docker" || "$collect_engine" == "both" ]] && command -v docker >/dev/null 2>&1; then
+    docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' > "${outdir}/raw/docker_ps.txt" || true
+    if docker ps -aq >/dev/null 2>&1; then
+      ids=$(docker ps -aq)
+      if [[ -n "${ids}" ]]; then
+        docker inspect ${ids} > "${outdir}/raw/docker_inspect.json" || true
+      fi
+    fi
+    # Try to capture per-container cgroup memory via the main process PID
+    if [[ -f "${outdir}/raw/docker_inspect.json" ]]; then
+      python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, sys
 from typing import Optional
 
@@ -517,13 +522,13 @@ for c in data:
     mem, cg = read_mem_bytes_and_path(pid) if pid and pid!='0' else (-1, '')
     print(f"{cid},{name},{pid},{mem},{cg}")
 PY
+    fi
   fi
-fi
-log_step "docker containers collected (if selected)"
+  log_step "docker containers collected (if selected)"
 
-# k1nd extras: collect control-plane PSS from inside dev containers (when running in docker)
-if [[ "$mode" == "k1s" ]] && command -v docker >/dev/null 2>&1; then
-  {
+  # k1nd extras: collect control-plane PSS from inside dev containers (when running in docker)
+  if [[ "$mode" == "k1s" ]] && command -v docker >/dev/null 2>&1; then
+    {
     k1nd_controller_name="${AE_K1ND_CONTROLLER_CONTAINER:-dev-controller-1}"
     k1nd_apishim_name="${AE_K1ND_APISHIM_CONTAINER:-dev-apishim-1}"
     k1nd_ingress_name="${AE_K1ND_INGRESS_CONTAINER:-dev-caddy-1}"
@@ -633,35 +638,35 @@ echo "$total"
 EOF
       echo "[mem-snapshot] k1nd extras: controller=${controller_pss} apishim=${apishim_pss} ingress=${ingress_pss}" >&2
     fi
-  } 2>>"${outdir}/status.log"
-fi
+    } 2>>"${outdir}/status.log"
+  fi
 
-# Guard rail: fail fast if we expected containers but captured none.
-require_containers="${AE_REQUIRE_CONTAINERS:-}"
-if [[ -z "${require_containers}" ]]; then
-  label_lc="${label,,}"
-  if [[ "${AE_ALLOW_EMPTY_CONTAINERS:-0}" == "1" ]]; then
-    require_containers=0
-  elif [[ "${label_lc}" == *"idle"* ]]; then
-    require_containers=0
-  else
-    require_containers=1
+  # Guard rail: fail fast if we expected containers but captured none.
+  require_containers="${AE_REQUIRE_CONTAINERS:-}"
+  if [[ -z "${require_containers}" ]]; then
+    label_lc="${label,,}"
+    if [[ "${AE_ALLOW_EMPTY_CONTAINERS:-0}" == "1" ]]; then
+      require_containers=0
+    elif [[ "${label_lc}" == *"idle"* ]]; then
+      require_containers=0
+    else
+      require_containers=1
+    fi
   fi
-fi
-if [[ "${require_containers}" == "1" ]]; then
-  row_count=0
-  if [[ -f "${outdir}/raw/containers_mem.csv" ]]; then
-    row_count=$(tail -n +2 "${outdir}/raw/containers_mem.csv" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t')
+  if [[ "${require_containers}" == "1" ]]; then
+    row_count=0
+    if [[ -f "${outdir}/raw/containers_mem.csv" ]]; then
+      row_count=$(tail -n +2 "${outdir}/raw/containers_mem.csv" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t')
+    fi
+    if [[ "${row_count}" == "0" ]]; then
+      log_err "no containers captured (AE_REQUIRE_CONTAINERS=1); failing snapshot"
+      exit 4
+    fi
   fi
-  if [[ "${row_count}" == "0" ]]; then
-    log_err "no containers captured (AE_REQUIRE_CONTAINERS=1); failing snapshot"
-    exit 4
-  fi
-fi
 
-# k3s extras: collect control-plane PSS and app cgroup bytes from inside k3d node containers
-if [[ "$mode" == "k3s" ]] && command -v docker >/dev/null 2>&1; then
-  {
+  # k3s extras: collect control-plane PSS and app cgroup bytes from inside k3d node containers
+  if [[ "$mode" == "k3s" ]] && command -v docker >/dev/null 2>&1; then
+    {
     echo "[mem-snapshot] k3s extras: probing k3d node containers via docker exec" >&2
     k3s_pod_uid_patterns=""
     if [[ -n "${AE_K3S_POD_UIDS:-}" ]]; then
@@ -773,7 +778,20 @@ find "$base" -type d 2>/dev/null | while read d; do [ -f "$d/memory.current" ] |
     else
       echo "[mem-snapshot] k3s extras: no k3d node containers detected; skipping inner metrics" >&2
     fi
-  } 2>>"${outdir}/status.log"
+    } 2>>"${outdir}/status.log"
+  fi
+}
+
+if [[ "$capture_timing" == "immediate" ]]; then
+  capture_process_and_container_state
+fi
+
+# Streaming vmstat during warm window (non-fatal)
+vmcount=$(( duration > 5 ? duration : 5 ))
+vmstat 1 "${vmcount}" > "${outdir}/raw/vmstat.txt" 2>>"${outdir}/status.log" || log_err "vmstat failed"
+
+if [[ "$capture_timing" == "warm" ]]; then
+  capture_process_and_container_state
 fi
 
 if [[ "$collect_engine" == "podman" ]] && ! podman_available; then

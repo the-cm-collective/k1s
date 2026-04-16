@@ -166,6 +166,8 @@ For CRI reruns, use `scripts/bench/run_cri_verify.sh` instead of looping over
 - writes a durable operator log under `state/bench-cri-rerun-*.log`
 - pins the bench-local manifest to `runtimeClassName: runc`
 - rejects `/k8s.io/kata` cgroup paths in the `pods-1` snapshot
+- captures rollout `-during` process/container state immediately after `ae apply`
+- waits for a stable `ready/live/desired` window before `-post` snapshots
 - checks for `8` combined rows per run before and after finalization
 
 Recommended smoke lane:

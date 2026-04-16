@@ -335,23 +335,42 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "[rollout] docker not found; snapshots will skip container cgroup metrics." >&2
 fi
 
+during_capture_timing="${BENCH_ROLLOUT_DURING_CAPTURE_TIMING:-immediate}"
+post_capture_timing="${BENCH_ROLLOUT_POST_CAPTURE_TIMING:-warm}"
+
 wait_ready() {
   local name="$1"; local want="$2"; local tries=${WAIT_READY_TRIES:-120}
   local delay=${WAIT_READY_DELAY:-2}
+  local stable_polls=${BENCH_READY_STABLE_POLLS:-2}
+  local stable_hits=0
   local use_runtime_wait="${BENCH_WAIT_RUNTIME:-0}"
   local backend="${AE_RUNTIME_BACKEND:-podman}"
   info "[rollout] wait_ready name=$name target=$want tries=$tries delay=${delay}s"
+  if (( stable_polls < 1 )); then
+    stable_polls=1
+  fi
   while (( tries-- > 0 )); do
-    local js status_ok=0 ready desired
+    local js status_ok=0 ready desired live revision_status
     if js=$(ae status "$name" --json 2>/dev/null); then
       ready=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("ready_replicas",0))') || ready=0
       desired=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("desired_replicas",0))') || desired=0
+      live=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("live_replicas",0))') || live=0
+      revision_status=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("revision_status",""))') || revision_status=""
       status_ok=1
     else
       ready=0
       desired=0
+      live=0
+      revision_status=""
     fi
-    if [[ "$ready" == "$want" && "$desired" == "$want" ]]; then return 0; fi
+    if [[ "$ready" == "$want" && "$desired" == "$want" && "$live" == "$want" && "$revision_status" == "ready" ]]; then
+      stable_hits=$((stable_hits + 1))
+      if (( stable_hits >= stable_polls )); then
+        return 0
+      fi
+    else
+      stable_hits=0
+    fi
     if [[ "$use_runtime_wait" == "1" && "$status_ok" == "0" ]]; then
       local count=0
       if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
@@ -367,7 +386,14 @@ wait_ready() {
           count=$(docker ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
         fi
       fi
-      if [[ "$count" -ge "$want" ]]; then return 0; fi
+      if [[ "$count" -ge "$want" ]]; then
+        stable_hits=$((stable_hits + 1))
+        if (( stable_hits >= stable_polls )); then
+          return 0
+        fi
+      else
+        stable_hits=0
+      fi
     fi
     sleep "$delay"
   done
@@ -377,9 +403,14 @@ wait_ready() {
 
 settle_current_revision() {
   local name="$1"; local want="$2"
+  local settle_delay=${BENCH_SETTLE_DELAY:-2}
   info "[rollout] settle current revision name=$name target=$want"
   ae scale "$name" --replicas "$want" >/dev/null
   wait_ready "$name" "$want"
+  if (( settle_delay > 0 )); then
+    info "[rollout] settle delay name=$name target=$want sleep=${settle_delay}s"
+    sleep "$settle_delay"
+  fi
 }
 
 current_image() {
@@ -539,15 +570,15 @@ PY
   else
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" --capture-timing "$during_capture_timing"
     else
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" --capture-timing "$during_capture_timing" || true
     fi
     else
       if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" --capture-timing "$during_capture_timing"
       else
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" --capture-timing "$during_capture_timing" || true
       fi
     fi
   fi
@@ -563,15 +594,15 @@ PY
   else
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" --capture-timing "$post_capture_timing"
     else
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" --capture-timing "$post_capture_timing" || true
     fi
     else
       if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" --capture-timing "$post_capture_timing"
       else
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" --capture-timing "$post_capture_timing" || true
       fi
     fi
   fi

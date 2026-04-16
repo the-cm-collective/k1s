@@ -14,6 +14,7 @@ BENCH_ENV_PREP = ROOT / "scripts" / "bench" / "bench_env_prep.sh"
 RUN_CRI_REFRESH = ROOT / "scripts" / "bench" / "run_cri_refresh.sh"
 RUN_CRI_VERIFY = ROOT / "scripts" / "bench" / "run_cri_verify.sh"
 PIN_RUNTIME_CLASS = ROOT / "scripts" / "bench" / "pin_runtime_class.py"
+MEM_SNAPSHOT = ROOT / "scripts" / "bench" / "mem_snapshot.sh"
 K1ND_COMPOSE = ROOT / "ops" / "bench" / "k1nd-compose.yaml"
 K1ND_ENTRYPOINT = ROOT / "ops" / "bench" / "k1nd-entrypoint.sh"
 
@@ -113,6 +114,16 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
     assert 'ae apply -f "$manifest" || true' not in run_matrix_text
     assert 'ae scale "$app_name" --replicas "$n" || true' not in run_matrix_text
     assert 'wait_ready "$app_name" "$n" || true' not in run_matrix_text
+    assert 'stable_polls=${BENCH_READY_STABLE_POLLS:-2}' in run_matrix_text
+    assert 'live=$(echo "$js"' in run_matrix_text
+    assert 'revision_status=$(echo "$js"' in run_matrix_text
+    stable_ready_check = (
+        'if [[ "$ready" == "$want" && "$desired" == "$want" && "$live" == "$want" && '
+        '"$revision_status" == "ready" ]]; then'
+    )
+    assert (
+        stable_ready_check in run_matrix_text
+    )
 
     assert 'ae apply -f "$startman" || true' not in run_rollout_text
     assert 'ae scale "$app_name" --replicas "$replicas" || true' not in run_rollout_text
@@ -120,8 +131,18 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
     assert 'ae apply -f "$tmpman" || true' not in run_rollout_text
     assert "settle_current_revision()" in run_matrix_text
     assert 'settle_current_revision "$app_name" "$n"' in run_matrix_text
+    assert 'local settle_delay=${BENCH_SETTLE_DELAY:-2}' in run_matrix_text
+    assert 'sleep "$settle_delay"' in run_matrix_text
     assert "settle_current_revision()" in run_rollout_text
     assert run_rollout_text.count('settle_current_revision "$app_name" "$replicas"') == 2
+    assert 'stable_polls=${BENCH_READY_STABLE_POLLS:-2}' in run_rollout_text
+    assert 'live=$(echo "$js"' in run_rollout_text
+    assert 'revision_status=$(echo "$js"' in run_rollout_text
+    assert (
+        stable_ready_check in run_rollout_text
+    )
+    assert 'local settle_delay=${BENCH_SETTLE_DELAY:-2}' in run_rollout_text
+    assert 'sleep "$settle_delay"' in run_rollout_text
     assert 'host_manifest="$manifest"' in run_rollout_text
     assert 'host_apply_dir="${K1ND_APPLY_DIR:-state/bench-k1nd-apply}"' in run_rollout_text
     assert (
@@ -132,6 +153,13 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
         'tmpman="${container_apply_dir}/rollout-${app_name}-${replicas}.yaml"'
         in run_rollout_text
     )
+    assert (
+        'during_capture_timing="${BENCH_ROLLOUT_DURING_CAPTURE_TIMING:-immediate}"'
+        in run_rollout_text
+    )
+    assert 'post_capture_timing="${BENCH_ROLLOUT_POST_CAPTURE_TIMING:-warm}"' in run_rollout_text
+    assert '--capture-timing "$during_capture_timing"' in run_rollout_text
+    assert '--capture-timing "$post_capture_timing"' in run_rollout_text
 
     assert 'wait_ready "$app_name" "$n" || true' not in run_matrix_k3s_text
     assert 'wait_ready "$deploy" "$replicas" || true' not in run_rollout_k3s_text
@@ -213,3 +241,14 @@ def test_pin_runtime_class_helper_exists_for_bench_local_manifest_overrides() ->
     assert 'default="runc"' in text
     assert 'spec["runtimeClassName"] = args.runtime_class' in text
     assert 'kind not in {"app", "deployment"}' in text
+
+
+def test_mem_snapshot_supports_immediate_capture_timing() -> None:
+    text = MEM_SNAPSHOT.read_text(encoding="utf-8")
+
+    assert 'capture_timing="warm"' in text
+    assert "--capture-timing" in text
+    assert 'if [[ "$capture_timing" != "warm" && "$capture_timing" != "immediate" ]]; then' in text
+    assert 'capture_process_and_container_state()' in text
+    assert 'if [[ "$capture_timing" == "immediate" ]]; then' in text
+    assert 'if [[ "$capture_timing" == "warm" ]]; then' in text

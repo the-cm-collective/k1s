@@ -255,6 +255,9 @@ make bench-k3s-down K3S_NAME=bench || true
 Acceptance checks
 - All baseline scenarios complete: `k1s rootless`, `k1s rootful`, `k1nd`, and `k3d`.
 - CRI verify completes three clean runs: `run1`, `run2`, and `run3`.
+- CRI rollout stages follow the stabilized semantics:
+  - `rollout-*-during` captures process/container state immediately after the image apply.
+  - `rollout-*-post` is taken only after a stable `ready/live/desired` window.
 - `combined/combined.csv` contains `56` rows for the fresh stamp (`4 baseline scenarios x 8 stages` plus `3 CRI runs x 8 stages`):
 
 ```bash
