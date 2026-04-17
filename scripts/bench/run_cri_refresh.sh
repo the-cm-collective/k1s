@@ -12,6 +12,21 @@ fi
 log() { echo "[cri-refresh] $*" >&2; }
 trap 'log "error at line $LINENO: $BASH_COMMAND"' ERR
 
+cleanup_done=0
+cleanup_env_file=""
+
+bench_cleanup() {
+  if [[ "${cleanup_done:-0}" == "1" ]]; then
+    return 0
+  fi
+  cleanup_done=1
+  if [[ -n "${cleanup_env_file:-}" && -f "$cleanup_env_file" ]]; then
+    ./scripts/bench/bench_env_teardown.sh --env "$cleanup_env_file" || true
+  fi
+}
+
+trap 'rc=$?; set +e; bench_cleanup; exit "$rc"' EXIT
+
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 APP="${APP:-specs/examples/echo.yaml}"
@@ -132,6 +147,7 @@ if ! source "$ENV_FILE"; then
   log "failed to source env file: $ENV_FILE"
   exit 4
 fi
+cleanup_env_file="$ENV_FILE"
 log "bench environment ready: $ENV_FILE"
 
 bench_app_name="${BENCH_PRIMARY_APP:-$APP_NAME}"
@@ -143,6 +159,19 @@ fi
 
 cri_can_nosudo() {
   command -v crictl >/dev/null 2>&1 && crictl --runtime-endpoint "$AE_CRI_ENDPOINT" info >/dev/null 2>&1
+}
+
+cri_switch_to_sudo() {
+  local reason="${1:-runtime access}"
+  if [[ "$cri_use_sudo" == "1" ]]; then
+    return 0
+  fi
+  if ! "${sudo_cmd[@]}" true >/dev/null 2>&1; then
+    return 1
+  fi
+  echo "[cri-refresh] non-sudo CRI access unavailable after ${reason}; falling back to sudo for remainder of run" >&2
+  cri_use_sudo=1
+  return 0
 }
 
 cri_try_enable_nosudo() {
@@ -192,17 +221,35 @@ fi
 cri_cmd() {
   if [[ "$cri_use_sudo" == "1" ]]; then
     "${sudo_cmd[@]}" crictl --runtime-endpoint "$AE_CRI_ENDPOINT" "$@"
-  else
-    crictl --runtime-endpoint "$AE_CRI_ENDPOINT" "$@"
+    return $?
   fi
+  crictl --runtime-endpoint "$AE_CRI_ENDPOINT" "$@"
+  local rc=$?
+  if (( rc == 0 )); then
+    return 0
+  fi
+  if ! cri_can_nosudo && cri_switch_to_sudo "crictl $1"; then
+    "${sudo_cmd[@]}" crictl --runtime-endpoint "$AE_CRI_ENDPOINT" "$@"
+    return $?
+  fi
+  return $rc
 }
 
 ctr_cmd() {
   if [[ "$cri_use_sudo" == "1" ]]; then
     "${sudo_cmd[@]}" ctr -n k8s.io "$@"
-  else
-    ctr -n k8s.io "$@"
+    return $?
   fi
+  ctr -n k8s.io "$@"
+  local rc=$?
+  if (( rc == 0 )); then
+    return 0
+  fi
+  if ! cri_can_nosudo && cri_switch_to_sudo "ctr $1"; then
+    "${sudo_cmd[@]}" ctr -n k8s.io "$@"
+    return $?
+  fi
+  return $rc
 }
 
 cri_default_runtime_name() {
@@ -218,7 +265,7 @@ print(containerd.get("defaultRuntimeName") or "")
 ' || true
 }
 
-run_cri_preflight() {
+run_cri_preflight_inner() {
   if [[ "$cri_use_sudo" == "1" ]]; then
     "${sudo_cmd[@]}" env PATH="$PATH" \
       AE_CRI_REQUIRE_RUNTIME_READY=1 \
@@ -230,6 +277,162 @@ run_cri_preflight() {
       AE_CRI_RUNTIME_HANDLER="${bench_runtime_handler}" \
       ./scripts/cri_preflight.sh
   fi
+}
+
+run_cri_preflight() {
+  if run_cri_preflight_inner; then
+    return 0
+  fi
+  local rc=$?
+  if [[ "$cri_use_sudo" == "0" ]] && ! cri_can_nosudo && cri_switch_to_sudo "CRI preflight"; then
+    run_cri_preflight_inner
+    return $?
+  fi
+  return $rc
+}
+
+cri_wait_runtime_ready() {
+  local reason="${1:-runtime transition}"
+  local timeout="${CRI_RUNTIME_READY_TIMEOUT:-90}"
+  local delay="${CRI_RUNTIME_READY_DELAY:-2}"
+  local settle="${CRI_RUNTIME_READY_SETTLE:-2}"
+  local deadline=$((SECONDS + timeout))
+
+  log "waiting for CRI runtime ready after ${reason} (timeout=${timeout}s delay=${delay}s)"
+  while :; do
+    if run_cri_preflight >/dev/null 2>&1; then
+      if (( settle > 0 )); then
+        sleep "$settle"
+      fi
+      log "CRI runtime ready after ${reason}"
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      log "CRI runtime did not become ready after ${reason} within ${timeout}s"
+      run_cri_preflight || true
+      return 1
+    fi
+    sleep "$delay"
+  done
+}
+
+cri_collect_app_state_json() {
+  local app="$1"
+  local pods_json="" containers_json="" query_failed=0
+  if ! pods_json=$(cri_cmd pods -o json 2>/dev/null); then
+    query_failed=1
+  fi
+  if ! containers_json=$(cri_cmd ps -a -o json 2>/dev/null); then
+    query_failed=1
+  fi
+  "$python_bin" - "$app" "$query_failed" <(printf '%s' "$pods_json") <(printf '%s' "$containers_json") <<'PY' || true
+import json
+import sys
+
+app = sys.argv[1]
+query_failed = bool(int(sys.argv[2]))
+pods_path = sys.argv[3]
+containers_path = sys.argv[4]
+
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def labels_for(item):
+    labels = item.get("labels") or {}
+    if labels:
+        return {str(k): str(v) for k, v in labels.items()}
+    meta = item.get("metadata") or {}
+    meta_labels = meta.get("labels") or {}
+    return {str(k): str(v) for k, v in meta_labels.items()}
+
+
+def item_name(item):
+    meta = item.get("metadata") or {}
+    return str(meta.get("name") or item.get("name") or "")
+
+
+pods = load(pods_path)
+containers = load(containers_path)
+pod_ids = []
+live_pod_ids = set()
+
+for pod in (pods.get("items") or pods.get("pods") or []):
+    labels = labels_for(pod)
+    name = item_name(pod)
+    if labels.get("ae.app") == app or (name.startswith(f"{app}-rev") and not labels.get("ae.app")):
+        pid = pod.get("id") or pod.get("podSandboxId") or pod.get("pod_sandbox_id")
+        if pid:
+            pod_ids.append(str(pid))
+    pid = pod.get("id") or pod.get("podSandboxId") or pod.get("pod_sandbox_id")
+    if pid:
+        live_pod_ids.add(str(pid))
+
+orphan_container_ids = []
+for container in (containers.get("containers") or containers.get("items") or []):
+    labels = labels_for(container)
+    replica_id = labels.get("ae.pod_name") or labels.get("ae.replica_id") or ""
+    app_label = labels.get("ae.app") or ""
+    if app_label != app and not replica_id.startswith(f"{app}-rev"):
+        continue
+    pod_id = (
+        container.get("podSandboxId")
+        or container.get("pod_sandbox_id")
+        or container.get("pod_id")
+        or ""
+    )
+    if pod_id and str(pod_id) in live_pod_ids:
+        continue
+    cid = container.get("id") or container.get("containerId") or container.get("container_id")
+    if cid:
+        orphan_container_ids.append(str(cid))
+
+print(
+    json.dumps(
+        {
+            "query_failed": query_failed,
+            "pod_ids": pod_ids,
+            "orphan_container_ids": orphan_container_ids,
+        }
+    )
+)
+PY
+}
+
+cri_state_field_lines() {
+  local field="$1"
+  local state_json="$2"
+  printf '%s' "$state_json" | "$python_bin" - "$field" <<'PY' || true
+import json
+import sys
+
+field = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+
+for item in data.get(field) or []:
+    if item:
+        print(str(item))
+PY
+}
+
+cri_state_query_failed() {
+  local state_json="$1"
+  printf '%s' "$state_json" | "$python_bin" -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if data.get("query_failed") else 1)
+' >/dev/null 2>&1
 }
 
 default_runtime_name="$(cri_default_runtime_name)"
@@ -253,8 +456,18 @@ cri_wait_pod_ids_gone() {
   local settle="${CRI_POD_CLEANUP_SETTLE:-1}"
   local deadline=$((SECONDS + timeout))
   local pending=""
+  local json_out=""
   while :; do
-    pending=$(cri_cmd pods -a -o json 2>/dev/null | \
+    if ! json_out=$(cri_cmd pods -o json 2>/dev/null); then
+      if (( SECONDS >= deadline )); then
+        echo "[cri-refresh] warning: unable to confirm CRI pod cleanup state" >&2
+        sleep "$settle"
+        return 1
+      fi
+      sleep 1
+      continue
+    fi
+    pending=$(printf '%s' "$json_out" | \
       "$python_bin" -c '
 import json, sys
 targets = set(sys.argv[1:])
@@ -277,7 +490,54 @@ print("\n".join(remaining))
     if (( SECONDS >= deadline )); then
       echo "[cri-refresh] warning: CRI pod cleanup still pending for: ${pending//$'\n'/ }" >&2
       sleep "$settle"
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+cri_wait_container_ids_gone() {
+  local -a ids=("$@")
+  (( ${#ids[@]} == 0 )) && return 0
+  local timeout="${CRI_POD_CLEANUP_TIMEOUT:-30}"
+  local settle="${CRI_POD_CLEANUP_SETTLE:-1}"
+  local deadline=$((SECONDS + timeout))
+  local pending=""
+  local json_out=""
+  while :; do
+    if ! json_out=$(cri_cmd ps -a -o json 2>/dev/null); then
+      if (( SECONDS >= deadline )); then
+        echo "[cri-refresh] warning: unable to confirm CRI container cleanup state" >&2
+        sleep "$settle"
+        return 1
+      fi
+      sleep 1
+      continue
+    fi
+    pending=$(printf '%s' "$json_out" | \
+      "$python_bin" -c '
+import json, sys
+targets = set(sys.argv[1:])
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+items = data.get("containers") or data.get("items") or []
+remaining = []
+for container in items:
+    cid = container.get("id") or container.get("containerId") or container.get("container_id")
+    if cid and cid in targets:
+        remaining.append(cid)
+print("\n".join(remaining))
+' "${ids[@]}" || true)
+    if [[ -z "$pending" ]]; then
+      sleep "$settle"
       return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "[cri-refresh] warning: CRI container cleanup still pending for: ${pending//$'\n'/ }" >&2
+      sleep "$settle"
+      return 1
     fi
     sleep 1
   done
@@ -474,44 +734,47 @@ cri_cleanup_app_pods() {
   if ! command -v crictl >/dev/null 2>&1; then
     return 0
   fi
-  local pods_json
-  pods_json=$(cri_cmd pods -o json 2>/dev/null || true)
-  if [[ -z "$pods_json" ]]; then
-    return 0
-  fi
-  local pod_ids
-  pod_ids=$(printf '%s' "$pods_json" | "$python_bin" -c '
-import json, sys
-app = sys.argv[1]
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-items = data.get("items") or data.get("pods") or []
-ids = []
-for pod in items:
-    labels = pod.get("labels") or {}
-    meta = pod.get("metadata") or {}
-    name = meta.get("name") or pod.get("name") or ""
-    if labels.get("ae.app") == app or (name.startswith(f"{app}-rev") and not labels.get("ae.app")):
-        pid = pod.get("id") or pod.get("podSandboxId") or pod.get("pod_sandbox_id")
-        if pid:
-            ids.append(pid)
-print("\n".join(ids))
-' "$app" || true)
-  if [[ -z "$pod_ids" ]]; then
-    return 0
-  fi
-  echo "[cri-refresh] removing stale CRI pods for app=${app}" >&2
+  local timeout="${CRI_POD_CLEANUP_TIMEOUT:-30}"
+  local settle="${CRI_POD_CLEANUP_SETTLE:-1}"
+  local deadline=$((SECONDS + timeout))
+  local state_json=""
   local -a pod_ids_arr=()
-  local pid
-  while IFS= read -r pid; do
-    [[ -n "$pid" ]] && pod_ids_arr+=("$pid")
-  done <<< "$pod_ids"
-  for pid in "${pod_ids_arr[@]}"; do
-    local cids
-    cids=$(cri_cmd ps -a --pod "$pid" -o json 2>/dev/null | \
-      "$python_bin" -c '
+  local -a orphan_ids_arr=()
+  local pid cid cids
+
+  while :; do
+    state_json="$(cri_collect_app_state_json "$app")"
+    if cri_state_query_failed "$state_json"; then
+      if (( SECONDS >= deadline )); then
+        echo "[cri-refresh] unable to inspect CRI state for app=${app} within ${timeout}s" >&2
+        return 1
+      fi
+      cri_wait_runtime_ready "CRI cleanup state refresh for app=${app}"
+      sleep 1
+      continue
+    fi
+    pod_ids_arr=()
+    orphan_ids_arr=()
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && pod_ids_arr+=("$pid")
+    done < <(cri_state_field_lines "pod_ids" "$state_json")
+    while IFS= read -r cid; do
+      [[ -n "$cid" ]] && orphan_ids_arr+=("$cid")
+    done < <(cri_state_field_lines "orphan_container_ids" "$state_json")
+
+    if (( ${#pod_ids_arr[@]} == 0 && ${#orphan_ids_arr[@]} == 0 )); then
+      if (( settle > 0 )); then
+        sleep "$settle"
+      fi
+      return 0
+    fi
+
+    local op_failed=0
+    if (( ${#pod_ids_arr[@]} > 0 )); then
+      echo "[cri-refresh] removing stale CRI pods for app=${app}" >&2
+      for pid in "${pod_ids_arr[@]}"; do
+        cids=$(cri_cmd ps -a --pod "$pid" -o json 2>/dev/null | \
+          "$python_bin" -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
@@ -520,14 +783,90 @@ except Exception:
 items = data.get("containers") or data.get("items") or []
 print("\n".join([c.get("id","") for c in items if c.get("id")]))
 ' || true)
-    for cid in $cids; do
-      cri_cmd stop "$cid" >/dev/null 2>&1 || true
-      cri_cmd rm "$cid" >/dev/null 2>&1 || true
-    done
-    cri_cmd stopp "$pid" >/dev/null 2>&1 || true
-    cri_cmd rmp "$pid" >/dev/null 2>&1 || true
+        for cid in $cids; do
+          if ! cri_cmd stop "$cid" >/dev/null 2>&1; then
+            op_failed=1
+          fi
+          if ! cri_cmd rm "$cid" >/dev/null 2>&1; then
+            op_failed=1
+          fi
+        done
+        if ! cri_cmd stopp "$pid" >/dev/null 2>&1; then
+          op_failed=1
+        fi
+        if ! cri_cmd rmp "$pid" >/dev/null 2>&1; then
+          op_failed=1
+        fi
+      done
+      if ! cri_wait_pod_ids_gone "${pod_ids_arr[@]}"; then
+        op_failed=1
+      fi
+      state_json="$(cri_collect_app_state_json "$app")"
+      if cri_state_query_failed "$state_json"; then
+        op_failed=1
+      fi
+      orphan_ids_arr=()
+      while IFS= read -r cid; do
+        [[ -n "$cid" ]] && orphan_ids_arr+=("$cid")
+      done < <(cri_state_field_lines "orphan_container_ids" "$state_json")
+    fi
+
+    if (( ${#orphan_ids_arr[@]} > 0 )); then
+      echo "[cri-refresh] removing orphan CRI containers for app=${app}: ${#orphan_ids_arr[@]}" >&2
+      for cid in "${orphan_ids_arr[@]}"; do
+        if ! cri_cmd stop "$cid" >/dev/null 2>&1; then
+          op_failed=1
+        fi
+        if ! cri_cmd rm "$cid" >/dev/null 2>&1; then
+          op_failed=1
+        fi
+      done
+      if ! cri_wait_container_ids_gone "${orphan_ids_arr[@]}"; then
+        op_failed=1
+      fi
+    fi
+
+    state_json="$(cri_collect_app_state_json "$app")"
+    if cri_state_query_failed "$state_json"; then
+      if (( SECONDS >= deadline )); then
+        echo "[cri-refresh] unable to inspect CRI state for app=${app} within ${timeout}s" >&2
+        return 1
+      fi
+      cri_wait_runtime_ready "CRI cleanup state refresh for app=${app}"
+      sleep 1
+      continue
+    fi
+    pod_ids_arr=()
+    orphan_ids_arr=()
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && pod_ids_arr+=("$pid")
+    done < <(cri_state_field_lines "pod_ids" "$state_json")
+    while IFS= read -r cid; do
+      [[ -n "$cid" ]] && orphan_ids_arr+=("$cid")
+    done < <(cri_state_field_lines "orphan_container_ids" "$state_json")
+
+    if (( ${#pod_ids_arr[@]} == 0 && ${#orphan_ids_arr[@]} == 0 )); then
+      if (( settle > 0 )); then
+        sleep "$settle"
+      fi
+      return 0
+    fi
+
+    if (( SECONDS >= deadline )); then
+      if (( ${#pod_ids_arr[@]} > 0 )); then
+        echo "[cri-refresh] remaining stale CRI pods for app=${app}: ${#pod_ids_arr[@]} (${pod_ids_arr[*]})" >&2
+      fi
+      if (( ${#orphan_ids_arr[@]} > 0 )); then
+        echo "[cri-refresh] remaining orphan CRI containers for app=${app}: ${#orphan_ids_arr[@]} (${orphan_ids_arr[*]})" >&2
+      fi
+      return 1
+    fi
+
+    if (( op_failed > 0 )); then
+      cri_wait_runtime_ready "CRI cleanup for app=${app}"
+    fi
+    sleep 1
   done
-  cri_wait_pod_ids_gone "${pod_ids_arr[@]}"
 }
 
 verify_snapshot_runtime_handler() {
@@ -563,6 +902,7 @@ PY
 }
 
 cri_cleanup_app_pods "$bench_app_name"
+cri_wait_runtime_ready "cleanup for app=${bench_app_name}"
 
 AE_ENGINE_STRICT=1 \
 LABEL_SUITE="$LABEL_CRI" \
@@ -577,25 +917,30 @@ REPLICAS="$REPLICAS" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
   --sudo
 verify_snapshot_runtime_handler "${LABEL_CRI}-pods-1"
 
-rollout_replicas=()
-IFS=',' read -r -a rollout_replicas_raw <<< "$ROLL_REPLICAS"
-for rep in "${rollout_replicas_raw[@]}"; do
+rollout_replicas_list=""
+rollout_replicas_count=0
+old_ifs="$IFS"
+IFS=','
+for rep in $ROLL_REPLICAS; do
   rep="${rep// /}"
   [[ -z "$rep" ]] && continue
   if [[ ! "$rep" =~ ^[0-9]+$ ]]; then
     log "invalid rollout replicas '${rep}' (expected integer); aborting"
     exit 2
   fi
-  rollout_replicas+=("$rep")
+  rollout_replicas_list="${rollout_replicas_list}${rollout_replicas_list:+ }${rep}"
+  rollout_replicas_count=$((rollout_replicas_count + 1))
 done
-if (( ${#rollout_replicas[@]} == 0 )); then
+IFS="$old_ifs"
+if (( rollout_replicas_count == 0 )); then
   log "no valid rollout replicas provided (ROLL_REPLICAS='${ROLL_REPLICAS}')"
   exit 2
 fi
 
-for rep in "${rollout_replicas[@]}"; do
+for rep in $rollout_replicas_list; do
   log "cleanup CRI pods before rollout replicas=${rep}"
   cri_cleanup_app_pods "$bench_app_name"
+  cri_wait_runtime_ready "cleanup before rollout replicas=${rep}"
   AE_ENGINE_STRICT=1 \
   LABEL_SUITE_ROLL="$LABEL_CRI" \
   APP="$bench_runtime_manifest" APP_NAME="$bench_app_name" \
@@ -609,6 +954,6 @@ for rep in "${rollout_replicas[@]}"; do
     --sudo
 done
 
-./scripts/bench/bench_env_teardown.sh --env "$ENV_FILE"
+bench_cleanup
 
 make bench-mem-docs

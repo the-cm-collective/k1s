@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -88,6 +89,14 @@ def _split_label_stage(label: str) -> tuple[str, str]:
     return label[: m.start()], m.group(1)
 
 
+def _snapshot_dir_label(snap: Path) -> str:
+    for candidate in (snap.name, snap.parent.name):
+        _, stage = _split_label_stage(candidate)
+        if stage:
+            return candidate
+    return ""
+
+
 def _stamp_prefix(head: str, *markers: str) -> str:
     for marker in markers:
         idx = head.find(marker)
@@ -120,6 +129,9 @@ def _normalize_label(
         stamp = _stamp_prefix(head, "+docker")
         return f"{stamp}+docker{oci_part}+k1nd-{stage}"
     if backend == "cri":
+        m = re.match(r"^(?P<prefix>.+\+cri)(?:\+[^+]+)?\+containerd$", head)
+        if m:
+            return f"{m.group('prefix')}{oci_part}+containerd-{stage}"
         stamp = _stamp_prefix(head, "+cri")
         return f"{stamp}+cri{oci_part}+containerd-{stage}"
     if backend == "podman":
@@ -128,6 +140,34 @@ def _normalize_label(
         cgroups_tag = cgroups or "cg2"
         return f"{stamp}+podman{oci_part}+{root_tag}+{cgroups_tag}-{stage}"
     return label
+
+
+def _reaggregate_snapshot(snap: Path) -> None:
+    proc = subprocess.run(
+        ["python", "scripts/bench/mem_aggregate.py", str(snap)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode == 0:
+        return
+    print(f"[label-backfill] mem_aggregate failed for {snap}", file=sys.stderr)
+    stderr = (proc.stderr or "").strip()
+    stdout = (proc.stdout or "").strip()
+    if stderr:
+        print(stderr, file=sys.stderr)
+    elif stdout:
+        print(stdout, file=sys.stderr)
+
+
+def _summary_message(updated: int, *, oci: str, force_oci: bool) -> str:
+    details: list[str] = []
+    if force_oci and oci:
+        details.append(f"forced_oci={oci}")
+    elif updated and oci:
+        details.append(f"fallback_oci={oci}")
+    suffix = f" ({', '.join(details)})" if details else ""
+    return f"patched {updated} snapshots{suffix}"
 
 
 def patch_snapshot(snap: Path, fallback_oci: str, *, force_oci: bool, insert_into_label: bool) -> bool:
@@ -139,33 +179,41 @@ def patch_snapshot(snap: Path, fallback_oci: str, *, force_oci: bool, insert_int
     except Exception:
         return False
     changed = False
-    meta_oci = str(meta.get("oci_runtime") or "").strip()
-    snap_oci = _detect_oci_from_snapshot(snap)
-    effective_oci = fallback_oci if force_oci else (meta_oci or snap_oci or fallback_oci)
-    if effective_oci and meta_oci != effective_oci:
-        meta["oci_runtime"] = effective_oci
-        changed = True
-    label = meta.get("label") or ""
+    meta_label = str(meta.get("label") or "")
+    label = _snapshot_dir_label(snap) or meta_label
     backend = (meta.get("backend") or "").lower()
     mode = str(meta.get("mode") or "").lower()
     cgroups = str(meta.get("cgroups") or "").strip()
     rootless = bool(meta.get("rootless"))
-    if insert_into_label and effective_oci:
-        new_label = _normalize_label(
-            label,
-            backend=backend,
-            oci=effective_oci.lower(),
-            mode=mode,
-            rootless=rootless,
-            cgroups=cgroups,
-        )
-        if new_label != label:
+    meta_oci = str(meta.get("oci_runtime") or "").strip()
+    snap_oci = _detect_oci_from_snapshot(snap)
+    if force_oci:
+        effective_oci = fallback_oci
+    elif backend == "cri":
+        effective_oci = meta_oci or snap_oci
+    else:
+        effective_oci = meta_oci or snap_oci or fallback_oci
+    if effective_oci and meta_oci != effective_oci:
+        meta["oci_runtime"] = effective_oci
+        changed = True
+    if insert_into_label:
+        new_label = label
+        if effective_oci:
+            new_label = _normalize_label(
+                label,
+                backend=backend,
+                oci=effective_oci.lower(),
+                mode=mode,
+                rootless=rootless,
+                cgroups=cgroups,
+            )
+        if new_label != meta_label:
             meta["label"] = new_label
             changed = True
     if changed:
         meta_path.write_text(json.dumps(meta, indent=2) + "\n")
         # Re-aggregate summary so mem_combine/plots pick up the new meta
-        subprocess.run(["python", "scripts/bench/mem_aggregate.py", str(snap)], check=False)
+        _reaggregate_snapshot(snap)
     return changed
 
 
@@ -205,7 +253,7 @@ def main() -> int:
             insert_into_label=args.insert_into_label,
         ):
             updated += 1
-    print(f"patched {updated} snapshots (backend={backend}, oci={oci or 'unknown'})")
+    print(_summary_message(updated, oci=oci, force_oci=bool(args.oci)))
     return 0
 
 

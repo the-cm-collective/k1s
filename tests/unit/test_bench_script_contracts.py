@@ -11,6 +11,8 @@ RUN_ROLLOUT_K1S = ROOT / "scripts" / "bench" / "run_rollout_k1s.sh"
 RUN_MATRIX_K3S = ROOT / "scripts" / "bench" / "run_matrix_k3s.sh"
 RUN_ROLLOUT_K3S = ROOT / "scripts" / "bench" / "run_rollout_k3s.sh"
 BENCH_ENV_PREP = ROOT / "scripts" / "bench" / "bench_env_prep.sh"
+BENCH_ENV_TEARDOWN = ROOT / "scripts" / "bench" / "bench_env_teardown.sh"
+BENCH_CLEAN_STATE = ROOT / "scripts" / "bench" / "clean_state.sh"
 RUN_CRI_REFRESH = ROOT / "scripts" / "bench" / "run_cri_refresh.sh"
 RUN_CRI_VERIFY = ROOT / "scripts" / "bench" / "run_cri_verify.sh"
 PIN_RUNTIME_CLASS = ROOT / "scripts" / "bench" / "pin_runtime_class.py"
@@ -194,13 +196,84 @@ def test_bench_env_prep_prefers_direct_podman_endpoints_for_sudo_controller() ->
     )
 
 
+def test_bench_env_teardown_cleans_cri_owned_app_pods_and_orphans() -> None:
+    text = BENCH_ENV_TEARDOWN.read_text(encoding="utf-8")
+
+    assert 'if [[ "${AE_RUNTIME_BACKEND:-}" == "cri" ]]; then' in text
+    assert 'cri_cleanup_app "${BENCH_PRIMARY_APP:-}"' in text
+    assert "collect_controller_pids_for_specs()" in text
+    assert 'pgrep -af "python .*ae\\\\.controller"' in text
+    assert 'kill_controller_pids "${bench_spec_rel:-$bench_spec_dir}" "${fallback_controller_pids[@]}"' in text
+    assert "cri_can_nosudo()" in text
+    assert "cri_switch_to_sudo()" in text
+    assert 'crictl --runtime-endpoint "$AE_CRI_ENDPOINT" info' in text
+    assert 'if ! cri_can_nosudo && cri_switch_to_sudo "crictl $1"; then' in text
+    assert 'state_json="$(cri_collect_app_state_json "$app")"' in text
+    assert 'done < <(cri_state_field_lines "orphan_container_ids" "$state_json")' in text
+    assert 'labels.get("ae.app") == app' in text
+    assert 'replica_id = labels.get("ae.pod_name") or labels.get("ae.replica_id") or ""' in text
+    assert 'echo "[bench-env] removing CRI pods for app=${app}: ${#pod_ids_arr[@]}" >&2' in text
+    assert (
+        'echo "[bench-env] removing orphan CRI containers for app=${app}: ${#container_ids_arr[@]}" >&2'
+        in text
+    )
+    assert '[bench-env] remaining orphan CRI containers for app=${app}' in text
+
+
 def test_run_cri_refresh_waits_for_sandbox_cleanup_between_rollouts() -> None:
     text = RUN_CRI_REFRESH.read_text(encoding="utf-8")
 
+    assert "bench_cleanup()" in text
+    assert "cleanup_env_file=" in text
+    assert "trap 'rc=$?; set +e; bench_cleanup; exit \"$rc\"' EXIT" in text
+    assert 'cleanup_env_file="$ENV_FILE"' in text
+    assert "bench_cleanup" in text
     assert "cri_wait_pod_ids_gone()" in text
     assert 'cri_wait_pod_ids_gone "${pod_ids_arr[@]}"' in text
+    assert 'cri_cmd pods -o json' in text
+    assert 'cri_cmd pods -a -o json' not in text
+    assert "cri_wait_container_ids_gone()" in text
+    assert 'cri_wait_container_ids_gone "${orphan_ids_arr[@]}"' in text
+    assert "cri_wait_runtime_ready()" in text
+    assert 'cri_wait_runtime_ready "cleanup for app=${bench_app_name}"' in text
+    assert 'cri_wait_runtime_ready "cleanup before rollout replicas=${rep}"' in text
     assert 'CRI_POD_CLEANUP_TIMEOUT' in text
     assert 'CRI_POD_CLEANUP_SETTLE' in text
+    assert 'CRI_RUNTIME_READY_TIMEOUT' in text
+    assert 'CRI_RUNTIME_READY_DELAY' in text
+    assert 'CRI_RUNTIME_READY_SETTLE' in text
+
+
+def test_run_cri_refresh_falls_back_to_sudo_when_socket_acl_is_lost() -> None:
+    text = RUN_CRI_REFRESH.read_text(encoding="utf-8")
+
+    assert "cri_switch_to_sudo()" in text
+    assert "run_cri_preflight_inner()" in text
+    assert (
+        'non-sudo CRI access unavailable after ${reason}; falling back to sudo for remainder of run'
+        in text
+    )
+    assert 'if ! cri_can_nosudo && cri_switch_to_sudo "crictl $1"; then' in text
+    assert 'if ! cri_can_nosudo && cri_switch_to_sudo "ctr $1"; then' in text
+    assert 'if [[ "$cri_use_sudo" == "0" ]] && ! cri_can_nosudo && cri_switch_to_sudo "CRI preflight"; then' in text
+
+
+def test_run_cri_refresh_cleans_orphan_cri_containers_by_app_labels() -> None:
+    text = RUN_CRI_REFRESH.read_text(encoding="utf-8")
+
+    assert "cri_collect_app_state_json()" in text
+    assert 'cri_cmd pods -o json' in text
+    assert 'cri_cmd ps -a -o json' in text
+    assert 'state_json="$(cri_collect_app_state_json "$app")"' in text
+    assert 'done < <(cri_state_field_lines "orphan_container_ids" "$state_json")' in text
+    assert 'labels.get("ae.app")' in text
+    assert 'labels.get("ae.pod_name") or labels.get("ae.replica_id")' in text
+    assert 'replica_id.startswith(f"{app}-rev")' in text
+    assert '[cri-refresh] removing orphan CRI containers for app=${app}' in text
+    assert '[cri-refresh] remaining stale CRI pods for app=${app}' in text
+    assert '[cri-refresh] remaining orphan CRI containers for app=${app}' in text
+    assert text.count('cri_cleanup_app_pods "$bench_app_name"') == 2
+    assert 'log "cleanup CRI pods before rollout replicas=${rep}"' in text
 
 
 def test_run_cri_refresh_pins_workloads_to_runc_and_rejects_kata_snapshots() -> None:
@@ -233,6 +306,29 @@ def test_run_cri_verify_persists_logs_and_checks_complete_run_rows() -> None:
     assert 'if sep and oci and current.startswith(f"{base}+{oci}+{engine}-"):' in text
     assert 'rows="$(count_combined_rows "$label")"' in text
     assert 'log "rows ${label}: $(count_combined_rows "$label")"' in text
+
+
+def test_clean_state_stops_bench_controllers_before_removing_bench_state() -> None:
+    text = BENCH_CLEAN_STATE.read_text(encoding="utf-8")
+
+    assert "collect_bench_controller_pids()" in text
+    assert 'pgrep -af "python .*ae\\\\.controller"' in text
+    assert 'sudo pgrep -af "python .*ae\\\\.controller"' in text
+    assert "stop_bench_controllers" in text
+    assert '[clean-state] stopping ${#pids[@]} benchmark controller(s): ${pids[*]}' in text
+    assert 'if [[ "$cmd" == *"--specs ${abs_specs_prefix}"* || "$cmd" == *"--specs ${rel_specs_prefix}"* ]]; then' in text
+
+
+def test_bench_mem_finalize_sudo_rebuilds_charts_and_docs_as_invoking_user() -> None:
+    text = MAKEFILE.read_text(encoding="utf-8")
+
+    assert "bench-mem-finalize-sudo:" in text
+    assert '@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}' in text
+    assert text.count("@$(MAKE) bench-fix-perms") >= 2
+    assert 'RUN_AS="$${SUDO_USER:+sudo -u $$SUDO_USER}"' in text
+    assert 'USER_PATH="$$(pwd)/.venv/bin:$${PATH}"' in text
+    assert '$$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py' in text
+    assert '$$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py' in text
 
 
 def test_pin_runtime_class_helper_exists_for_bench_local_manifest_overrides() -> None:

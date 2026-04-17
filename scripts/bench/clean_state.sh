@@ -40,11 +40,93 @@ fi
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 state_dir="$repo_root/state"
 
+process_alive() {
+  local pid="$1"
+  if kill -0 "$pid" >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    sudo kill -0 "$pid" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
+kill_controller_pids() {
+  local pids=("$@")
+  if (( ${#pids[@]} == 0 )); then
+    return 0
+  fi
+  echo "[clean-state] stopping ${#pids[@]} benchmark controller(s): ${pids[*]}" >&2
+  for pid in "${pids[@]}"; do
+    if process_alive "$pid"; then
+      kill "$pid" >/dev/null 2>&1 || sudo kill "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+  sleep 2
+  for pid in "${pids[@]}"; do
+    if process_alive "$pid"; then
+      kill -9 "$pid" >/dev/null 2>&1 || sudo kill -9 "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+collect_bench_controller_pids() {
+  local line pid cmd
+  local abs_specs_prefix="$state_dir/bench-"
+  local rel_specs_prefix="state/bench-"
+  declare -A seen=()
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == *"pgrep -af python .*ae.controller"* ]]; then
+      continue
+    fi
+    pid="${line%% *}"
+    cmd="${line#* }"
+    [[ -z "$pid" || "$cmd" == "$line" ]] && continue
+    if [[ "$cmd" == *"--specs ${abs_specs_prefix}"* || "$cmd" == *"--specs ${rel_specs_prefix}"* ]]; then
+      if [[ -z "${seen[$pid]:-}" ]]; then
+        printf '%s\n' "$pid"
+        seen["$pid"]=1
+      fi
+    fi
+  done < <(pgrep -af "python .*ae\\.controller" 2>/dev/null || true)
+
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      if [[ "$line" == *"pgrep -af python .*ae.controller"* ]]; then
+        continue
+      fi
+      pid="${line%% *}"
+      cmd="${line#* }"
+      [[ -z "$pid" || "$cmd" == "$line" ]] && continue
+      if [[ "$cmd" == *"--specs ${abs_specs_prefix}"* || "$cmd" == *"--specs ${rel_specs_prefix}"* ]]; then
+        if [[ -z "${seen[$pid]:-}" ]]; then
+          printf '%s\n' "$pid"
+          seen["$pid"]=1
+        fi
+      fi
+    done < <(sudo pgrep -af "python .*ae\\.controller" 2>/dev/null || true)
+  fi
+}
+
+stop_bench_controllers() {
+  local -a pids=()
+  local pid
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && pids+=("$pid")
+  done < <(collect_bench_controller_pids)
+  kill_controller_pids "${pids[@]}"
+}
+
 if [[ "$mode" == "bench" ]]; then
   if [[ ! -d "$state_dir" ]]; then
     echo "[clean-state] state directory not found: $state_dir" >&2
     exit 0
   fi
+  stop_bench_controllers
   shopt -s nullglob
   bench_dirs=("$state_dir"/bench-*)
   shopt -u nullglob

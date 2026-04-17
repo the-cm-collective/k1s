@@ -980,8 +980,8 @@ bench-mem-backfill-oci-latest:
 .PHONY: bench-mem-finalize-sudo
 # Finalize benchmarks after mixed non-root/root runs (run with sudo):
 # - Backfill OCI runtime into labels and metadata across ALL snapshots
-# - Recombine results and regenerate charts with a wider history window
-# - Rebuild docs with a one-week staleness threshold
+# - Recombine results under sudo, then normalize ownership
+# - Regenerate charts/docs as the invoking user so repo venv matplotlib works
 # - Normalize permissions back to the invoking user
 #
 # Usage:
@@ -994,10 +994,15 @@ bench-mem-finalize-sudo:
 	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" python scripts/bench/label_backfill.py "snapshots/*/*" --insert-into-label || true
 	@echo "[finalize] combining snapshots" >&2
 	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@$(MAKE) bench-fix-perms
 	@echo "[finalize] plotting charts (PLOT_LATEST=$${PLOT_LATEST:-500})" >&2
-	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@RUN_AS="$${SUDO_USER:+sudo -u $$SUDO_USER}"; \
+	 USER_PATH="$$(pwd)/.venv/bin:$${PATH}"; \
+	 $$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@echo "[finalize] building docs (DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168})" >&2
-	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
+	@RUN_AS="$${SUDO_USER:+sudo -u $$SUDO_USER}"; \
+	 USER_PATH="$$(pwd)/.venv/bin:$${PATH}"; \
+	 $$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
 	@$(MAKE) bench-fix-perms
 
 .PHONY: docs-watch
