@@ -154,8 +154,9 @@ def ensure_matplotlib():
         import matplotlib.pyplot as plt  # type: ignore
 
         return plt
-    except Exception:
+    except Exception as exc:
         print("matplotlib not available; install with: pip install matplotlib", file=sys.stderr)
+        print(f"matplotlib import error: {exc}", file=sys.stderr)
         print("skipping plot generation; combined CSV remains available", file=sys.stderr)
         return None
 

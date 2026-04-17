@@ -136,6 +136,47 @@ def port_in_use(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _describe_tree(path: Path, *, max_entries: int = 24) -> str:
+    if not path.exists():
+        return "(path missing)"
+    entries: list[str] = []
+    for entry in sorted(path.rglob("*")):
+        rel = entry.relative_to(path)
+        kind = "/" if entry.is_dir() else ""
+        try:
+            size = entry.stat().st_size
+            entries.append(f"{rel}{kind} size={size}")
+        except OSError as exc:
+            entries.append(f"{rel}{kind} stat_error={exc}")
+        if len(entries) >= max_entries:
+            break
+    if not entries:
+        return "(empty directory)"
+    if len(entries) >= max_entries:
+        entries.append("... truncated ...")
+    return "\n".join(entries)
+
+
+def remove_tree_with_retries(path: Path, *, timeout_s: float = 15.0, interval_s: float = 0.5) -> None:
+    if not path.exists():
+        return
+    deadline = time.time() + timeout_s
+    last_error: OSError | None = None
+    while time.time() < deadline:
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(interval_s)
+    details = _describe_tree(path)
+    raise RuntimeError(
+        f"failed to remove tree {path} after {timeout_s:.1f}s: {last_error}\n{details}"
+    )
+
+
 def cleanup_dev_state() -> None:
     subprocess.run(
         ["bash", "scripts/stop_all.sh"],

@@ -327,8 +327,11 @@ def test_bench_mem_finalize_sudo_rebuilds_charts_and_docs_as_invoking_user() -> 
     assert text.count("@$(MAKE) bench-fix-perms") >= 2
     assert 'RUN_AS="$${SUDO_USER:+sudo -u $$SUDO_USER}"' in text
     assert 'USER_PATH="$$(pwd)/.venv/bin:$${PATH}"' in text
-    assert '$$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py' in text
-    assert '$$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py' in text
+    assert 'LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}"' in text
+    assert 'NIX_LD_LIBRARY_PATH="$${NIX_LD_LIBRARY_PATH:-}"' in text
+    assert 'NIX_LD="$${NIX_LD:-}"' in text
+    assert '$$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}" NIX_LD_LIBRARY_PATH="$${NIX_LD_LIBRARY_PATH:-}" NIX_LD="$${NIX_LD:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py' in text
+    assert '$$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}" NIX_LD_LIBRARY_PATH="$${NIX_LD_LIBRARY_PATH:-}" NIX_LD="$${NIX_LD:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py' in text
 
 
 def test_pin_runtime_class_helper_exists_for_bench_local_manifest_overrides() -> None:

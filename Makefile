@@ -998,11 +998,11 @@ bench-mem-finalize-sudo:
 	@echo "[finalize] plotting charts (PLOT_LATEST=$${PLOT_LATEST:-500})" >&2
 	@RUN_AS="$${SUDO_USER:+sudo -u $$SUDO_USER}"; \
 	 USER_PATH="$$(pwd)/.venv/bin:$${PATH}"; \
-	 $$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	 $$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}" NIX_LD_LIBRARY_PATH="$${NIX_LD_LIBRARY_PATH:-}" NIX_LD="$${NIX_LD:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@echo "[finalize] building docs (DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168})" >&2
 	@RUN_AS="$${SUDO_USER:+sudo -u $$SUDO_USER}"; \
 	 USER_PATH="$$(pwd)/.venv/bin:$${PATH}"; \
-	 $$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
+	 $$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}" NIX_LD_LIBRARY_PATH="$${NIX_LD_LIBRARY_PATH:-}" NIX_LD="$${NIX_LD:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
 	@$(MAKE) bench-fix-perms
 
 .PHONY: docs-watch

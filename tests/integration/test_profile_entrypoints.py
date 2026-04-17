@@ -16,6 +16,7 @@ from tests.integration._profile_smoke import (
     find_free_port,
     isolated_test_env,
     port_in_use,
+    remove_tree_with_retries,
     wait_profile_api_token,
     select_runtime,
     start_make_target,
@@ -115,6 +116,7 @@ def test_profile_entrypoints(case: ProfileCase, tmp_path: Path) -> None:
         pytest.skip(f"required fixed ports busy for {case.target}: {busy_ports}")
 
     profile_dir = tmp_path / case.target
+    compose_state_dir = profile_dir / "compose-state"
     specs_dir = profile_dir / "specs"
     metrics_port = find_free_port()
     apishim_port = find_free_port()
@@ -213,3 +215,5 @@ def test_profile_entrypoints(case: ProfileCase, tmp_path: Path) -> None:
     finally:
         stop_target(running)
         cleanup_dev_state()
+        if case.needs_compose:
+            remove_tree_with_retries(compose_state_dir)
