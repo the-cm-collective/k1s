@@ -199,7 +199,7 @@ def item_name(item):
 
 pods = load(pods_path)
 containers = load(containers_path)
-pod_ids = []
+pod_ids = set()
 live_pod_ids = set()
 
 for pod in (pods.get("items") or pods.get("pods") or []):
@@ -208,11 +208,13 @@ for pod in (pods.get("items") or pods.get("pods") or []):
     if labels.get("ae.app") == app or (name.startswith(f"{app}-rev") and not labels.get("ae.app")):
         pid = pod.get("id") or pod.get("podSandboxId") or pod.get("pod_sandbox_id")
         if pid:
-            pod_ids.append(str(pid))
+            pod_ids.add(str(pid))
     pid = pod.get("id") or pod.get("podSandboxId") or pod.get("pod_sandbox_id")
     if pid:
         live_pod_ids.add(str(pid))
 
+live_container_ids = set()
+container_pod_ids = set()
 orphan_container_ids = []
 for container in (containers.get("containers") or containers.get("items") or []):
     labels = labels_for(container)
@@ -220,24 +222,32 @@ for container in (containers.get("containers") or containers.get("items") or [])
     app_label = labels.get("ae.app") or ""
     if app_label != app and not replica_id.startswith(f"{app}-rev"):
         continue
+    cid = container.get("id") or container.get("containerId") or container.get("container_id")
+    if cid:
+        live_container_ids.add(str(cid))
     pod_id = (
         container.get("podSandboxId")
         or container.get("pod_sandbox_id")
         or container.get("pod_id")
         or ""
     )
-    if pod_id and str(pod_id) in live_pod_ids:
+    if pod_id:
+        pod_id = str(pod_id)
+    if pod_id and pod_id in live_pod_ids:
+        container_pod_ids.add(pod_id)
         continue
-    cid = container.get("id") or container.get("containerId") or container.get("container_id")
     if cid:
         orphan_container_ids.append(str(cid))
+
+pod_ids.update(container_pod_ids)
 
 print(
     json.dumps(
         {
             "query_failed": query_failed,
-            "pod_ids": pod_ids,
-            "orphan_container_ids": orphan_container_ids,
+            "pod_ids": sorted(pod_ids),
+            "live_container_ids": sorted(live_container_ids),
+            "orphan_container_ids": sorted(set(orphan_container_ids)),
         }
     )
 )
@@ -247,20 +257,17 @@ PY
 cri_state_field_lines() {
   local field="$1"
   local state_json="$2"
-  printf '%s' "$state_json" | "${PYTHON_BIN:-python}" - "$field" <<'PY' || true
-import json
-import sys
-
+  printf '%s' "$state_json" | "${PYTHON_BIN:-python}" -c '
+import json, sys
 field = sys.argv[1]
 try:
     data = json.load(sys.stdin)
 except Exception:
     raise SystemExit(0)
-
 for item in data.get(field) or []:
     if item:
         print(str(item))
-PY
+' "$field" || true
 }
 
 cri_state_query_failed() {

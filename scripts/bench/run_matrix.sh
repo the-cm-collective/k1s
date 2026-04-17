@@ -391,22 +391,41 @@ settle_current_revision() {
   fi
 }
 
+validate_idle_snapshot() {
+  local snapshot_path="$1"
+  local name="$2"
+  if [[ "${BENCH_IDLE_VALIDATE_ZERO_APP:-0}" != "1" ]]; then
+    return 0
+  fi
+  if [[ -z "$snapshot_path" ]]; then
+    echo "[matrix] idle snapshot validation requested but snapshot path was empty" >&2
+    return 1
+  fi
+  info "validate idle snapshot path=${snapshot_path} app=${name}"
+  "$python_bin" scripts/bench/check_idle_snapshot.py "$snapshot_path" --app-name "$name"
+}
+
 # Idle snapshot (skippable)
 if [[ "${SKIP_IDLE:-0}" != "1" ]]; then
   info "idle snapshot"
+  idle_snapshot_path=""
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
+      idle_snapshot_path="$(sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration")"
     else
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+      idle_snapshot_path="$(sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true)"
     fi
   else
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
+      idle_snapshot_path="$(scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration")"
     else
-      scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+      idle_snapshot_path="$(scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true)"
     fi
   fi
+  if [[ -n "$idle_snapshot_path" ]]; then
+    echo "$idle_snapshot_path"
+  fi
+  validate_idle_snapshot "$idle_snapshot_path" "$app_name"
 fi
 
 # Ensure app applied

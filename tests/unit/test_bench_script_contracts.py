@@ -236,12 +236,27 @@ def test_run_cri_refresh_waits_for_sandbox_cleanup_between_rollouts() -> None:
     assert 'cri_wait_container_ids_gone "${orphan_ids_arr[@]}"' in text
     assert "cri_wait_runtime_ready()" in text
     assert 'cri_wait_runtime_ready "cleanup for app=${bench_app_name}"' in text
+    assert 'cri_wait_runtime_ready "delete before rollout replicas=${rep}"' in text
     assert 'cri_wait_runtime_ready "cleanup before rollout replicas=${rep}"' in text
+    assert "cri_wait_app_quiet()" in text
+    assert 'cri_wait_app_quiet "$bench_app_name" "cleanup for app=${bench_app_name}"' in text
+    assert 'cri_wait_app_quiet "$bench_app_name" "cleanup before rollout replicas=${rep}"' in text
+    assert ': "${BENCH_READY_STABLE_POLLS:=3}"' in text
+    assert ': "${BENCH_SETTLE_DELAY:=5}"' in text
     assert 'CRI_POD_CLEANUP_TIMEOUT' in text
     assert 'CRI_POD_CLEANUP_SETTLE' in text
     assert 'CRI_RUNTIME_READY_TIMEOUT' in text
     assert 'CRI_RUNTIME_READY_DELAY' in text
     assert 'CRI_RUNTIME_READY_SETTLE' in text
+    assert 'CRI_IDLE_QUIET_TIMEOUT' in text
+    assert 'CRI_IDLE_QUIET_DELAY' in text
+    assert 'CRI_IDLE_QUIET_POLLS' in text
+    assert ': "${BENCH_IDLE_VALIDATE_ZERO_APP:=1}"' in text
+    assert "export BENCH_READY_STABLE_POLLS" in text
+    assert "export BENCH_SETTLE_DELAY" in text
+    assert "export CRI_IDLE_QUIET_POLLS" in text
+    assert "export BENCH_IDLE_VALIDATE_ZERO_APP" in text
+    assert 'BENCH_IDLE_VALIDATE_ZERO_APP="$BENCH_IDLE_VALIDATE_ZERO_APP" \\' in text
 
 
 def test_run_cri_refresh_falls_back_to_sudo_when_socket_acl_is_lost() -> None:
@@ -265,15 +280,72 @@ def test_run_cri_refresh_cleans_orphan_cri_containers_by_app_labels() -> None:
     assert 'cri_cmd pods -o json' in text
     assert 'cri_cmd ps -a -o json' in text
     assert 'state_json="$(cri_collect_app_state_json "$app")"' in text
+    assert '"live_container_ids"' in text
     assert 'done < <(cri_state_field_lines "orphan_container_ids" "$state_json")' in text
     assert 'labels.get("ae.app")' in text
     assert 'labels.get("ae.pod_name") or labels.get("ae.replica_id")' in text
     assert 'replica_id.startswith(f"{app}-rev")' in text
+    assert "container_pod_ids = set()" in text
+    assert "pod_ids.update(container_pod_ids)" in text
     assert '[cri-refresh] removing orphan CRI containers for app=${app}' in text
     assert '[cri-refresh] remaining stale CRI pods for app=${app}' in text
     assert '[cri-refresh] remaining orphan CRI containers for app=${app}' in text
     assert text.count('cri_cleanup_app_pods "$bench_app_name"') == 2
+    assert 'delete_bench_app "$bench_app_name" "rollout replicas=${rep}"' in text
     assert 'log "cleanup CRI pods before rollout replicas=${rep}"' in text
+    assert 'printf \'%s\' "$state_json" | "$python_bin" -c ' in text
+
+
+def test_run_cri_refresh_captures_debug_and_preidle_inspect_guard() -> None:
+    text = RUN_CRI_REFRESH.read_text(encoding="utf-8")
+
+    assert ': "${CRI_DEBUG_STATE_DIR:=state/bench-cri-debug}"' in text
+    assert ': "${CRI_DEBUG_CAPTURE_ON_QUIET:=1}"' in text
+    assert "cri_dump_app_state_debug()" in text
+    assert 'printf \'%s\\n\' "$state_json" > "$outdir/state.json"' in text
+    assert 'printf \'%s\\n\' "$pods_json" > "$outdir/pods.json"' in text
+    assert 'printf \'%s\\n\' "$ps_json" > "$outdir/containers.json"' in text
+    assert "cri_collect_matching_containers_via_inspect()" in text
+    assert 'cri_cmd inspect -o json "$cid"' in text
+    assert 'cri_cmd inspectp -o json "$pod_id"' in text
+    assert "cri_assert_app_absent_via_inspect()" in text
+    assert 'cri_dump_app_state_debug "$app" "quiet-${reason}"' in text
+    assert 'cri_dump_app_state_debug "$app" "quiet-timeout-${reason}"' in text
+    assert 'cri_dump_app_state_debug "$app" "inspect-failure-${reason}"' in text
+    assert (
+        'cri_assert_app_absent_via_inspect "$bench_app_name" "cleanup for app=${bench_app_name}"'
+        in text
+    )
+    assert (
+        'cri_assert_app_absent_via_inspect "$bench_app_name" "cleanup before rollout replicas=${rep}"'
+        in text
+    )
+
+
+def test_run_cri_refresh_uses_bench_local_ae_cli_for_rollout_reset() -> None:
+    text = RUN_CRI_REFRESH.read_text(encoding="utf-8")
+
+    assert "ae_cli()" in text
+    assert 'sudo env "${sudo_env_clean[@]}" "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@"' in text
+    assert 'delete_bench_app()' in text
+    assert 'ae_cli delete "$app"' in text
+    assert 'log "delete desired state for app=${app} before ${reason}"' in text
+
+
+def test_run_matrix_can_validate_idle_snapshots() -> None:
+    text = RUN_MATRIX.read_text(encoding="utf-8")
+
+    assert "validate_idle_snapshot()" in text
+    assert 'if [[ "${BENCH_IDLE_VALIDATE_ZERO_APP:-0}" != "1" ]]; then' in text
+    assert 'scripts/bench/check_idle_snapshot.py "$snapshot_path" --app-name "$name"' in text
+    assert 'idle_snapshot_path="$(scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration")"' in text
+    assert 'validate_idle_snapshot "$idle_snapshot_path" "$app_name"' in text
+
+
+def test_bench_env_teardown_reads_state_fields_from_json_stdin() -> None:
+    text = BENCH_ENV_TEARDOWN.read_text(encoding="utf-8")
+
+    assert 'printf \'%s\' "$state_json" | "${PYTHON_BIN:-python}" -c ' in text
 
 
 def test_run_cri_refresh_pins_workloads_to_runc_and_rejects_kata_snapshots() -> None:
