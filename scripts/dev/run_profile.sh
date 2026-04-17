@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT_DIR}/scripts/lib/nixos_bridge.sh"
+source "${ROOT_DIR}/scripts/lib/python_runtime.sh"
 PROFILE="${1:-}"
 
 if [[ -z "$PROFILE" ]]; then
@@ -24,42 +25,18 @@ if [[ "$PROFILE" == "k1s-ha-core" ]]; then
 fi
 
 detect_python() {
-  if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
-    printf '%s' "$ROOT_DIR/.venv/bin/python"
-  else
-    printf '%s' "python"
-  fi
+  k1s_find_python "$ROOT_DIR"
 }
 
 ensure_runtime_libs() {
-  if ! command -v nix >/dev/null 2>&1; then
-    return 0
-  fi
-  local cc_lib
-  cc_lib="$(nix eval --raw nixpkgs#stdenv.cc.cc.lib.outPath 2>/dev/null || true)"
-  if [[ -z "$cc_lib" ]]; then
-    return 0
-  fi
-  export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  k1s_ensure_runtime_libs
 }
 
 grpc_preflight() {
   if ! is_strict_cri; then
     return 0
   fi
-  local output
-  local rc=0
-  output="$(PYTHONPATH=src "$PYTHON_BIN" - 2>&1 <<'PY'
-import grpc
-print(grpc.__version__)
-PY
-)" || rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    echo "[cri] grpc preflight failed" >&2
-    echo "$output" >&2
-    echo "[cri] ensure the repo venv is installed and libstdc++ is available via LD_LIBRARY_PATH" >&2
-    return "$rc"
-  fi
+  k1s_grpc_preflight "$PYTHON_BIN" "[cri]" "src"
 }
 
 detect_engine() {

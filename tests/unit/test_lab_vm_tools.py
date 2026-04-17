@@ -2614,10 +2614,10 @@ def test_make_ha_closeout_e2e_uses_wrapper_script() -> None:
 
 def test_ha_closeout_e2e_wrapper_prepares_runtime_and_runs_pytest() -> None:
     text = HA_CLOSEOUT_E2E_SCRIPT.read_text(encoding="utf-8")
-    assert "$ROOT_DIR/.venv/bin/python" in text
-    assert "nix eval --raw nixpkgs#stdenv.cc.cc.lib.outPath" in text
-    assert 'export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' in text
-    assert "import grpc" in text
+    assert 'source "${ROOT_DIR}/scripts/lib/python_runtime.sh"' in text
+    assert 'PYTHON_BIN="$(k1s_find_python "$ROOT_DIR")"' in text
+    assert "k1s_ensure_runtime_libs" in text
+    assert 'k1s_grpc_preflight "$PYTHON_BIN" "[ha-closeout-e2e]"' in text
     assert "AE_E2E_HA_CLOSEOUT=1" in text
     assert "-m pytest -q tests/integration/test_ha_closeout_e2e.py" in text
 
@@ -2631,10 +2631,10 @@ def test_make_strict_cri_smoke_uses_wrapper_script() -> None:
 
 def test_strict_cri_smoke_wrapper_prepares_runtime_and_runs_pytest() -> None:
     text = STRICT_CRI_SMOKE_SCRIPT.read_text(encoding="utf-8")
-    assert "$ROOT_DIR/.venv/bin/python" in text
-    assert "nix eval --raw nixpkgs#stdenv.cc.cc.lib.outPath" in text
-    assert 'export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' in text
-    assert "import grpc" in text
+    assert 'source "${ROOT_DIR}/scripts/lib/python_runtime.sh"' in text
+    assert 'PYTHON_BIN="$(k1s_find_python "$ROOT_DIR")"' in text
+    assert "k1s_ensure_runtime_libs" in text
+    assert 'k1s_grpc_preflight "$PYTHON_BIN" "[strict-cri-smoke]"' in text
     assert 'AE_STRICT_CRI_PROFILE_SMOKE="${AE_STRICT_CRI_PROFILE_SMOKE:-1}"' in text
     assert 'AE_CRI_IT="${AE_CRI_IT:-1}"' in text
     assert 'AE_CRI_SMOKE_PULL="${AE_CRI_SMOKE_PULL:-1}"' in text

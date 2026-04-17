@@ -58,9 +58,10 @@
             export PODMAN_COMPOSE_PROVIDER="''${PODMAN_COMPOSE_PROVIDER:-podman-compose}"
             export LD_LIBRARY_PATH="${libPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-            if [ -d "$PWD/.venv" ] && [ -x "$PWD/.venv/bin/activate" ]; then
-              . "$PWD/.venv/bin/activate"
-              echo "[nix-shell] activated .venv"
+            if [ -d "$PWD/.venv" ] && [ -x "$PWD/.venv/bin/python" ]; then
+              export VIRTUAL_ENV="$PWD/.venv"
+              export PATH="$VIRTUAL_ENV/bin:$PATH"
+              echo "[nix-shell] using .venv"
             else
               echo "[nix-shell] bootstrap: python -m venv .venv && . .venv/bin/activate && python -m pip install -e .[dev]"
             fi

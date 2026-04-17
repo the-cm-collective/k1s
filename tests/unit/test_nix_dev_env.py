@@ -18,6 +18,7 @@ INIT_DEMO = ROOT / "scripts" / "init_demo.sh"
 NIXOS_BRIDGE = ROOT / "ops" / "nixos" / "k1s-local-dev-bridge.nix"
 NIXOS_CRI_HOST = ROOT / "ops" / "nixos" / "k1s-cri-host.nix"
 DOCKER_COMPOSE = ROOT / "ops" / "dev" / "docker-compose.yaml"
+PYTHON_RUNTIME_HELPER = ROOT / "scripts" / "lib" / "python_runtime.sh"
 
 
 def _case_body(text: str, label: str, next_label: str) -> str:
@@ -32,6 +33,9 @@ def test_flake_declares_default_and_cri_shells() -> None:
     assert "default = pkgs.mkShell" in text
     assert "cri = pkgs.mkShell" in text
     assert "podman-compose" in text
+    assert 'export VIRTUAL_ENV="$PWD/.venv"' in text
+    assert 'export PATH="$VIRTUAL_ENV/bin:$PATH"' in text
+    assert 'echo "[nix-shell] using .venv"' in text
     assert "python -m venv .venv && . .venv/bin/activate && python -m pip install -e .[dev]" in text
     assert "PODMAN_COMPOSE_PROVIDER" in text
 
@@ -51,6 +55,7 @@ def test_makefile_exposes_env_doctor_target() -> None:
 
 def test_run_profile_guards_compose_provider_and_host_fallback() -> None:
     text = RUN_PROFILE.read_text(encoding="utf-8")
+    helper_text = PYTHON_RUNTIME_HELPER.read_text(encoding="utf-8")
     assert "compose_provider_available()" in text
     assert "compose_provider_hint()" in text
     assert "default_apishim_mode()" in text
@@ -105,13 +110,19 @@ def test_run_profile_guards_compose_provider_and_host_fallback() -> None:
     assert "run_controller_loop --loop" in text
     assert "ensure_runtime_libs() {" in text
     assert "grpc_preflight() {" in text
-    assert 'export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' in text
-    assert "[cri] grpc preflight failed" in text
+    assert 'source "${ROOT_DIR}/scripts/lib/python_runtime.sh"' in text
+    assert 'k1s_find_python "$ROOT_DIR"' in text
+    assert "k1s_ensure_runtime_libs" in text
+    assert 'k1s_grpc_preflight "$PYTHON_BIN" "[cri]" "src"' in text
+    assert "k1s_find_python() {" in helper_text
+    assert "k1s_ensure_runtime_libs() {" in helper_text
+    assert "k1s_grpc_preflight() {" in helper_text
+    assert 'export LD_LIBRARY_PATH="$cc_lib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' in helper_text
+    assert 'echo "${prefix} grpc preflight failed" >&2' in helper_text
     assert (
-        'echo "[cri] ensure the repo venv is installed and libstdc++ is available via LD_LIBRARY_PATH" >&2'
-        in text
+        'echo "${prefix} ensure the repo venv is installed and libstdc++ is available via LD_LIBRARY_PATH" >&2'
+        in helper_text
     )
-    assert "PYTHONPATH=src \"$PYTHON_BIN\" - 2>&1 <<'PY'" in text
 
 
 def test_compose_and_dev_env_use_explicit_podman_safe_apishim_values() -> None:
