@@ -949,6 +949,26 @@
 <li>Optional pull test: <code>AE_CRI_SMOKE_PULL=1 pytest tests/integration/test_cri_smoke.py -k pull</code></li>
 <li>Optional lifecycle test: <code>AE_CRI_IT=1 pytest tests/integration/test_cri_runtime_integration.py -q</code></li>
 <li>CI-style bootstrap (installs containerd/CNI/crictl): <code>./scripts/cri_ci_setup.sh</code></li>
+<li>CRI benchmark reruns: prefer <code>./scripts/bench/run_cri_verify.sh</code>
+<ul>
+<li>Smoke lane:
+<ul>
+<li><code>./scripts/bench/bench_env_teardown.sh --env state/bench-cri/env.sh || true</code></li>
+<li><code>sudo pkill -f &quot;python .*ae\\.controller.*state/bench-cri/specs&quot; || true</code></li>
+<li><code>export BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-wrapper-check&quot;</code></li>
+<li><code>RUNS=&quot;1&quot; ./scripts/bench/run_cri_verify.sh</code></li>
+</ul>
+</li>
+<li>Full verify:
+<ul>
+<li><code>export BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-verify&quot;</code></li>
+<li><code>RUNS=&quot;1 2 3&quot; ./scripts/bench/run_cri_verify.sh</code></li>
+</ul>
+</li>
+<li>The wrapper logs to <code>state/bench-cri-rerun-*.log</code>, forces a bench-local <code>runtimeClassName: runc</code>, rejects <code>/k8s.io/kata</code> cgroup paths in <code>pods-1</code>, captures rollout <code>-during</code> state immediately after apply, waits for a stable <code>ready/live/desired</code> window before <code>-post</code>, and checks for <code>8</code> finalized rows per CRI run.</li>
+<li>Set <code>BASE=...</code> / <code>RUNS=...</code> before the script name (or <code>export</code> them); do not pass them after <code>run_cri_verify.sh</code> as positional args.</li>
+</ul>
+</li>
 </ul>
 <p>Export and Validate K8s YAML</p>
 <ul>
@@ -2094,7 +2114,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-15 12:27:46</span>
+        <span>Built 2026-04-17 10:02:07</span>
       </div>
     </footer>
     <script>

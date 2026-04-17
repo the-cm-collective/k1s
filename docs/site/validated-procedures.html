@@ -943,7 +943,7 @@ rm -rf \
   &quot;snapshots/${STAMP}+podman+priv+cg2&quot;* \
   &quot;snapshots/${STAMP}+docker+k1nd&quot;* \
   &quot;snapshots/${STAMP}+k3d&quot;* \
-  &quot;snapshots/${STAMP}+cri+containerd&quot;* \
+  &quot;snapshots/${STAMP}+cri-runc-verify-run&quot;* \
   combined charts
 
 make bench-state-clean
@@ -962,22 +962,29 @@ DURATION=30 \
 REPLICAS=&quot;1,5,10&quot; \
 make bench-mem-e2e-baselines-sudo
 
-LABEL_CRI=&quot;${STAMP}+cri+containerd&quot; \
+BASE=&quot;${STAMP}+cri-runc-verify&quot; \
 APP=&quot;specs/examples/echo.yaml&quot; \
 APP_NAME=&quot;echo&quot; \
 DURATION=30 \
 REPLICAS=&quot;1,5,10&quot; \
 ROLL_REPLICAS=&quot;2,5&quot; \
-make bench-mem-cri
+RUNS=&quot;1 2 3&quot; \
+./scripts/bench/run_cri_verify.sh
 
 scripts/bench/k1nd_single.sh down || true
 make bench-k3s-down K3S_NAME=bench || true
-sudo make bench-mem-finalize-sudo
 &#x27;</code></pre>
 <p>Acceptance checks</p>
 <ul>
-<li>All five scenarios complete: <code>k1s rootless</code>, <code>k1s rootful</code>, <code>k1nd</code>, <code>k3d</code>, and <code>cri+containerd</code>.</li>
-<li><code>combined/combined.csv</code> contains <code>40</code> rows for the fresh stamp (<code>5 scenarios x 8 stages</code>):</li>
+<li>All baseline scenarios complete: <code>k1s rootless</code>, <code>k1s rootful</code>, <code>k1nd</code>, and <code>k3d</code>.</li>
+<li>CRI verify completes three clean runs: <code>run1</code>, <code>run2</code>, and <code>run3</code>.</li>
+<li>CRI rollout stages follow the stabilized semantics:
+<ul>
+<li><code>rollout-*-during</code> captures process/container state immediately after the image apply.</li>
+<li><code>rollout-*-post</code> is taken only after a stable <code>ready/live/desired</code> window.</li>
+</ul>
+</li>
+<li><code>combined/combined.csv</code> contains <code>56</code> rows for the fresh stamp (<code>4 baseline scenarios x 8 stages</code> plus <code>3 CRI runs x 8 stages</code>):</li>
 </ul>
 <pre><code>STAMP=&quot;r$(date +%Y%m%d)-fullretest&quot; python - &lt;&lt;&#x27;PY&#x27;
 import pathlib, os
@@ -996,7 +1003,21 @@ PY</code></pre>
 <li><code>AppCG</code> for k3d scaling with replicas</li>
 </ul>
 </li>
-<li>CRI must include <code>idle</code>, <code>pods-1</code>, <code>pods-5</code>, <code>pods-10</code>, <code>rollout-2-during</code>, <code>rollout-2-post</code>, <code>rollout-5-during</code>, and <code>rollout-5-post</code>.</li>
+<li>CRI wrapper log (<code>state/bench-cri-rerun-*.log</code>) must end with:
+<ul>
+<li><code>rows ${STAMP}+cri-runc-verify-run1+cri+containerd: 8</code></li>
+<li><code>rows ${STAMP}+cri-runc-verify-run2+cri+containerd: 8</code></li>
+<li><code>rows ${STAMP}+cri-runc-verify-run3+cri+containerd: 8</code></li>
+</ul>
+</li>
+<li>Finalized CRI rows must also count as <code>8 / 8 / 8</code>:</li>
+</ul>
+<pre><code>BASE=&quot;${STAMP}+cri-runc-verify&quot;
+for run in 1 2 3; do
+  grep -c &quot;^${BASE}-run${run}+cri+crun+containerd-&quot; combined/combined.csv
+done</code></pre>
+<ul>
+<li>Each CRI run must include <code>idle</code>, <code>pods-1</code>, <code>pods-5</code>, <code>pods-10</code>, <code>rollout-2-during</code>, <code>rollout-2-post</code>, <code>rollout-5-during</code>, and <code>rollout-5-post</code>.</li>
 <li><code>combined/combined.csv</code> and <code>combined/combined.json</code> are the authoritative artifacts.</li>
 <li><code>matplotlib not available</code> only means chart generation was skipped; it does not invalidate the run.</li>
 </ul>
@@ -1007,7 +1028,7 @@ PY</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-15 12:27:46</span>
+        <span>Built 2026-04-17 10:02:07</span>
       </div>
     </footer>
     <script>
