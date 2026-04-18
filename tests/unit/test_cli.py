@@ -84,6 +84,12 @@ ghcr.io:
     status_json = capsys.readouterr().out
     assert '"app_name": "echo"' in status_json
     assert '"namespace": "default"' in status_json
+    assert '"current_revision_ready_replicas": 1' in status_json
+    assert '"current_revision_live_replicas": 1' in status_json
+    assert '"old_revision_ready_replicas": 0' in status_json
+    assert '"old_revision_live_replicas": 0' in status_json
+    assert '"overlap_ready_replicas": 0' in status_json
+    assert '"overlap_live_replicas": 0' in status_json
 
     exit_code = main(["metrics"])
     assert exit_code == 0

@@ -3100,6 +3100,11 @@ def handle_status(
                 if args.wide:
                     path += "?details=1"
                 data = _http_get_json(base, path, tok)
+                if args.json:
+                    import json
+
+                    print(json.dumps(data, indent=2))
+                    return 0
                 print(
                     ", ".join(
                         [
@@ -3148,6 +3153,11 @@ def handle_status(
                     for s0 in items
                     if split_app_key(str((s0 or {}).get("app_name", "")))[0] == ns_filter
                 ]
+            if args.json:
+                import json
+
+                print(json.dumps(items, indent=2))
+                return 0
             for s0 in items:
                 line = ", ".join(
                     [
@@ -3299,6 +3309,12 @@ def handle_status(
                 "image": s.image,
                 "ingress_host": s.ingress_host,
                 "ingress_path": s.ingress_path,
+                "current_revision_ready_replicas": s.current_revision_ready_replicas,
+                "current_revision_live_replicas": s.current_revision_live_replicas,
+                "old_revision_ready_replicas": s.old_revision_ready_replicas,
+                "old_revision_live_replicas": s.old_revision_live_replicas,
+                "overlap_ready_replicas": s.overlap_ready_replicas,
+                "overlap_live_replicas": s.overlap_live_replicas,
             }
             return d
 
@@ -5508,6 +5524,12 @@ def _status_to_json(status: AppStatus, store: SQLiteStateStore, *, include_detai
         "image": status.image,
         "ingress_host": status.ingress_host,
         "ingress_path": status.ingress_path,
+        "current_revision_ready_replicas": status.current_revision_ready_replicas,
+        "current_revision_live_replicas": status.current_revision_live_replicas,
+        "old_revision_ready_replicas": status.old_revision_ready_replicas,
+        "old_revision_live_replicas": status.old_revision_live_replicas,
+        "overlap_ready_replicas": status.overlap_ready_replicas,
+        "overlap_live_replicas": status.overlap_live_replicas,
     }
     if include_details:
         try:

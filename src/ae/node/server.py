@@ -621,6 +621,7 @@ def _result_to_dict(res: RuntimeResult) -> dict:
             "replica_id": r.pod_name,
             "ready": r.ready,
             "status": r.status,
+            "revision": r.revision,
             "endpoint": r.endpoint,
         }
         for r in res.pod_states
@@ -636,6 +637,7 @@ def _result_to_dict(res: RuntimeResult) -> dict:
                 "replica_id": item["pod_name"],
                 "ready": item["ready"],
                 "status": item["status"],
+                "revision": item.get("revision"),
                 "endpoint": item["endpoint"],
             }
             for item in pod_states

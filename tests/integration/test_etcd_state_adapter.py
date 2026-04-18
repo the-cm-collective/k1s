@@ -54,19 +54,37 @@ def test_etcd_state_store_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
         created=1,
         updated=0,
         removed=0,
-        pod_states=[PodState(pod_name=pod_name, ready=True, status="running")],
+        pod_states=[PodState(pod_name=pod_name, ready=True, status="running", revision=revision)],
     )
     health = HealthReport(
         ready_replicas=1,
         live_replicas=1,
         pods=[PodHealth(pod_name=pod_name, ready=True, live=True, readiness_message="", liveness_message="")],
     )
-    store.record_snapshot(manifest, runtime, health, revision, "ready")
+    store.record_snapshot(
+        manifest,
+        runtime,
+        health,
+        revision,
+        "ready",
+        current_revision_ready_replicas=1,
+        current_revision_live_replicas=1,
+        old_revision_ready_replicas=0,
+        old_revision_live_replicas=0,
+        overlap_ready_replicas=0,
+        overlap_live_replicas=0,
+    )
     store.record_event("etcd-demo", revision, "TestEvent", "hello")
 
     status = store.get_status("etcd-demo")
     assert status is not None
     assert status.ready_replicas == 1
+    assert status.current_revision_ready_replicas == 1
+    assert status.current_revision_live_replicas == 1
+    assert status.old_revision_ready_replicas == 0
+    assert status.old_revision_live_replicas == 0
+    assert status.overlap_ready_replicas == 0
+    assert status.overlap_live_replicas == 0
 
     pods = store.list_pods("etcd-demo")
     assert pods and pods[0].pod_name == pod_name

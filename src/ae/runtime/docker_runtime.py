@@ -1419,6 +1419,9 @@ class DockerRuntime(RuntimeAdapter):
             pod_name=pod_name,
             ready=ready,
             status=status,
+            revision=int(labels.get(self.REVISION_LABEL))
+            if str(labels.get(self.REVISION_LABEL, "")).isdigit()
+            else None,
             endpoint=endpoint,
             started_at=started_at,
             exit_code=exit_code,

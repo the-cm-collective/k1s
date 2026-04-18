@@ -96,10 +96,58 @@ def test_metrics_expose_per_app_series(tmp_path: Path) -> None:
     assert 'ae_app_desired_replicas{app="demo"} 2' in txt
     assert 'ae_app_ready_replicas{app="demo"} 2' in txt
     assert 'ae_app_live_replicas{app="demo"} 2' in txt
+    assert 'ae_app_current_revision_ready_replicas{app="demo"} 2' in txt
+    assert 'ae_app_current_revision_live_replicas{app="demo"} 2' in txt
+    assert 'ae_app_old_revision_ready_replicas{app="demo"} 0' in txt
+    assert 'ae_app_old_revision_live_replicas{app="demo"} 0' in txt
+    assert 'ae_app_overlap_ready_replicas{app="demo"} 0' in txt
+    assert 'ae_app_overlap_live_replicas{app="demo"} 0' in txt
     # Status one-hot includes ready=1
     assert 'ae_app_status{app="demo",status="ready"} 1' in txt
     # Alias families kept for compatibility
     assert 'ae_ready_replicas{app="demo"} 2' in txt
+
+
+def test_http_status_surfaces_include_rollout_overlap_fields(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    reconciler = Reconciler(runtime=_StubRuntime(), state_store=store)
+    man = _build_manifest("demo", replicas=2)
+    report = reconciler.reconcile(man)
+    assert report.current_revision_ready_replicas == 2
+
+    handler = object.__new__(_ApiHandler)
+    handler.store = store  # type: ignore[attr-defined]
+    handler.path = "/status"  # type: ignore[attr-defined]
+    handler._presented_role = lambda: None  # type: ignore[attr-defined]
+
+    captured: dict[str, object] = {}
+
+    def _json_ok(payload):  # noqa: ANN001
+        captured["payload"] = payload
+
+    handler._json_ok = _json_ok  # type: ignore[attr-defined]
+
+    _ApiHandler._handle_status_list(handler)  # type: ignore[arg-type]
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    item = payload["items"][0]  # type: ignore[index]
+    assert item["current_revision_ready_replicas"] == 2  # type: ignore[index]
+    assert item["current_revision_live_replicas"] == 2  # type: ignore[index]
+    assert item["old_revision_ready_replicas"] == 0  # type: ignore[index]
+    assert item["old_revision_live_replicas"] == 0  # type: ignore[index]
+    assert item["overlap_ready_replicas"] == 0  # type: ignore[index]
+    assert item["overlap_live_replicas"] == 0  # type: ignore[index]
+
+    captured.clear()
+    _ApiHandler._handle_status_single(handler, "demo")  # type: ignore[arg-type]
+    single = captured["payload"]
+    assert isinstance(single, dict)
+    assert single["current_revision_ready_replicas"] == 2  # type: ignore[index]
+    assert single["current_revision_live_replicas"] == 2  # type: ignore[index]
+    assert single["old_revision_ready_replicas"] == 0  # type: ignore[index]
+    assert single["old_revision_live_replicas"] == 0  # type: ignore[index]
+    assert single["overlap_ready_replicas"] == 0  # type: ignore[index]
+    assert single["overlap_live_replicas"] == 0  # type: ignore[index]
 
 
 def test_metrics_expose_ha_fence_counters(tmp_path: Path) -> None:

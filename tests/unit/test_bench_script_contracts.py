@@ -15,6 +15,8 @@ BENCH_ENV_TEARDOWN = ROOT / "scripts" / "bench" / "bench_env_teardown.sh"
 BENCH_CLEAN_STATE = ROOT / "scripts" / "bench" / "clean_state.sh"
 RUN_CRI_REFRESH = ROOT / "scripts" / "bench" / "run_cri_refresh.sh"
 RUN_CRI_VERIFY = ROOT / "scripts" / "bench" / "run_cri_verify.sh"
+RUN_CRI_ROLLOUT_PROBE = ROOT / "scripts" / "bench" / "run_cri_rollout_probe.sh"
+AUDIT_CP_METRICS = ROOT / "scripts" / "bench" / "audit_cp_metrics.py"
 PIN_RUNTIME_CLASS = ROOT / "scripts" / "bench" / "pin_runtime_class.py"
 MEM_SNAPSHOT = ROOT / "scripts" / "bench" / "mem_snapshot.sh"
 K1ND_COMPOSE = ROOT / "ops" / "bench" / "k1nd-compose.yaml"
@@ -159,9 +161,19 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
         'during_capture_timing="${BENCH_ROLLOUT_DURING_CAPTURE_TIMING:-immediate}"'
         in run_rollout_text
     )
+    assert (
+        'during_warm_capture_timing="${BENCH_ROLLOUT_DURING_WARM_CAPTURE_TIMING:-warm}"'
+        in run_rollout_text
+    )
     assert 'post_capture_timing="${BENCH_ROLLOUT_POST_CAPTURE_TIMING:-warm}"' in run_rollout_text
-    assert '--capture-timing "$during_capture_timing"' in run_rollout_text
-    assert '--capture-timing "$post_capture_timing"' in run_rollout_text
+    assert '--capture-timing "$capture_timing"' in run_rollout_text
+    assert 'run_rollout_snapshot "$label" "$capture_timing" >/dev/null' in run_rollout_text
+    assert 'printf -v "$pid_var" \'%s\' "$!"' in run_rollout_text
+    assert 'during_pid="$(start_rollout_snapshot' not in run_rollout_text
+    assert 'during_warm_pid="$(start_rollout_snapshot' not in run_rollout_text
+    assert 'start_rollout_snapshot during_pid "$during_label" "$during_capture_timing" "DURING"' in run_rollout_text
+    assert 'start_rollout_snapshot during_warm_pid "$during_warm_label" "$during_warm_capture_timing" "DURING-WARM"' in run_rollout_text
+    assert 'local during_warm_label="${label_suite}-rollout-${replicas}-during-warm"' in run_rollout_text
 
     assert 'wait_ready "$app_name" "$n" || true' not in run_matrix_k3s_text
     assert 'wait_ready "$deploy" "$replicas" || true' not in run_rollout_k3s_text
@@ -175,6 +187,23 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
     assert 'NIX_LD=${NIX_LD:-}' in run_rollout_text
     assert "current_pod_uids()" in run_rollout_k3s_text
     assert 'AE_K3S_POD_UIDS="$(current_pod_uids)"' in run_rollout_k3s_text
+    assert (
+        'during_capture_timing="${BENCH_ROLLOUT_DURING_CAPTURE_TIMING:-immediate}"'
+        in run_rollout_k3s_text
+    )
+    assert (
+        'during_warm_capture_timing="${BENCH_ROLLOUT_DURING_WARM_CAPTURE_TIMING:-warm}"'
+        in run_rollout_k3s_text
+    )
+    assert 'post_capture_timing="${BENCH_ROLLOUT_POST_CAPTURE_TIMING:-warm}"' in run_rollout_k3s_text
+    assert '--capture-timing "$capture_timing"' in run_rollout_k3s_text
+    assert 'run_rollout_snapshot "$label" "$capture_timing" >/dev/null' in run_rollout_k3s_text
+    assert 'printf -v "$pid_var" \'%s\' "$!"' in run_rollout_k3s_text
+    assert 'during_pid="$(start_rollout_snapshot' not in run_rollout_k3s_text
+    assert 'during_warm_pid="$(start_rollout_snapshot' not in run_rollout_k3s_text
+    assert 'start_rollout_snapshot during_pid "$during_label" "$during_capture_timing" "DURING"' in run_rollout_k3s_text
+    assert 'start_rollout_snapshot during_warm_pid "$during_warm_label" "$during_warm_capture_timing" "DURING-WARM"' in run_rollout_k3s_text
+    assert 'local during_warm_label="${label_suite}-rollout-${replicas}-during-warm"' in run_rollout_k3s_text
 
 
 def test_bench_env_prep_prefers_direct_podman_endpoints_for_sudo_controller() -> None:
@@ -354,7 +383,9 @@ def test_run_cri_refresh_pins_workloads_to_runc_and_rejects_kata_snapshots() -> 
     assert 'bench_runtime_handler="runc"' in text
     assert 'AE_CRI_RUNTIME_HANDLER="${bench_runtime_handler}"' in text
     assert "scripts/bench/pin_runtime_class.py" in text
-    assert 'verify_snapshot_runtime_handler "${LABEL_CRI}-pods-1"' in text
+    assert "first_requested_replica()" in text
+    assert 'first_steady_replica="$(first_requested_replica "$REPLICAS")"' in text
+    assert 'verify_snapshot_runtime_handler "${LABEL_CRI}-pods-${first_steady_replica}"' in text
     assert """find "snapshots/${label}" -type f -path '*/raw/containers_mem.csv'""" in text
     assert '"/k8s.io/kata"' in text
 
@@ -363,6 +394,8 @@ def test_run_cri_verify_persists_logs_and_checks_complete_run_rows() -> None:
     text = RUN_CRI_VERIFY.read_text(encoding="utf-8")
 
     assert "set -Eeuo pipefail" in text
+    assert "count_requested_replicas()" in text
+    assert "first_requested_replica()" in text
     assert "count_combined_rows()" in text
     assert 'log_file="${CRI_VERIFY_LOG_FILE:-state/bench-cri-rerun-' in text
     assert 'exec > >(tee -a "$log_file") 2>&1' in text
@@ -376,8 +409,40 @@ def test_run_cri_verify_persists_logs_and_checks_complete_run_rows() -> None:
     assert 'base, sep, engine = label.rpartition("+")' in text
     assert 'if current.startswith(label + "-"):' in text
     assert 'if sep and oci and current.startswith(f"{base}+{oci}+{engine}-"):' in text
+    assert 'first_steady_replica="$(first_requested_replica "$REPLICAS")"' in text
+    assert 'expected_rows=$((1 + steady_count + (3 * rollout_count)))' in text
+    assert 'find "snapshots/${label}-pods-${first_steady_replica}"' in text
     assert 'rows="$(count_combined_rows "$label")"' in text
+    assert 'test "$rows" -eq "$expected_rows"' in text
     assert 'log "rows ${label}: $(count_combined_rows "$label")"' in text
+
+
+def test_run_cri_rollout_probe_wraps_narrow_verify_suite() -> None:
+    text = RUN_CRI_ROLLOUT_PROBE.read_text(encoding="utf-8")
+
+    assert "Usage: scripts/bench/run_cri_rollout_probe.sh" in text
+    assert '--during-capture-timing MODE' in text
+    assert 'during_capture_timing="${BENCH_ROLLOUT_DURING_CAPTURE_TIMING:-immediate}"' in text
+    assert 'during_warm_capture_timing="${BENCH_ROLLOUT_DURING_WARM_CAPTURE_TIMING:-warm}"' in text
+    assert 'post_capture_timing="${BENCH_ROLLOUT_POST_CAPTURE_TIMING:-warm}"' in text
+    assert 'REPLICAS="5" \\' in text
+    assert 'ROLL_REPLICAS="5" \\' in text
+    assert 'BENCH_ROLLOUT_DURING_CAPTURE_TIMING="$during_capture_timing" \\' in text
+    assert 'BENCH_ROLLOUT_DURING_WARM_CAPTURE_TIMING="$during_warm_capture_timing" \\' in text
+    assert 'BENCH_ROLLOUT_POST_CAPTURE_TIMING="$post_capture_timing" \\' in text
+    assert './scripts/bench/run_cri_verify.sh' in text
+
+
+def test_audit_cp_metrics_reads_shadow_control_plane_fields() -> None:
+    text = AUDIT_CP_METRICS.read_text(encoding="utf-8")
+
+    assert 'controller_pss_kb' in text
+    assert 'ingress_pss_kb' in text
+    assert 'k3s_control_plane_pss_kb' in text
+    assert 'control_plane_pss_kb' in text
+    assert 'host_system_cgroups_bytes' in text
+    assert 'mem_available_delta_bytes' in text
+    assert 'docs_cp_mib' in text
 
 
 def test_clean_state_stops_bench_controllers_before_removing_bench_state() -> None:
@@ -422,4 +487,7 @@ def test_mem_snapshot_supports_immediate_capture_timing() -> None:
     assert 'if [[ "$capture_timing" != "warm" && "$capture_timing" != "immediate" ]]; then' in text
     assert 'capture_process_and_container_state()' in text
     assert 'if [[ "$capture_timing" == "immediate" ]]; then' in text
+    assert 'cri_ps.json' in text
+    assert 'cri_pods.json' in text
+    assert 'cri_info.json' in text
     assert 'if [[ "$capture_timing" == "warm" ]]; then' in text

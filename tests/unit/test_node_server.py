@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ae.ha.fencing import MutationEnvelope, SQLiteFenceStore
-from ae.node.server import AgentHandler, _build_volume_manager, _json_response
-from ae.runtime import RuntimeResult, WorkloadMetricSample
+from ae.node.server import AgentHandler, _build_volume_manager, _json_response, _result_to_dict
+from ae.runtime import PodState, RuntimeResult, WorkloadMetricSample
 
 
 class _BrokenPipeWriter:
@@ -105,6 +105,28 @@ class _RuntimeStub:
 
     def list_workload_metrics(self) -> list[WorkloadMetricSample]:
         return list(self.workload_metrics)
+
+
+def test_result_to_dict_preserves_revision_on_pod_and_replica_states() -> None:
+    result = RuntimeResult(
+        revision=3,
+        created=1,
+        updated=0,
+        removed=0,
+        pod_states=[
+            PodState(
+                pod_name="demo-rev3-0",
+                ready=True,
+                status="running",
+                revision=3,
+                endpoint="127.0.0.1:32000",
+            )
+        ],
+    )
+    payload = _result_to_dict(result)
+
+    assert payload["pod_states"][0]["revision"] == 3
+    assert payload["replica_states"][0]["revision"] == 3
 
 
 def test_json_response_returns_false_on_broken_pipe() -> None:

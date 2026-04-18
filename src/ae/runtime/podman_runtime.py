@@ -341,6 +341,9 @@ class PodmanRuntime(RuntimeAdapter):
                     pod_name=rid,
                     ready=ready,
                     status=st or "",
+                    revision=int(labs.get(self.REVISION_LABEL))
+                    if str(labs.get(self.REVISION_LABEL, "")).isdigit()
+                    else None,
                     endpoint=endpoint,
                     started_at=started,
                     exit_code=exit_code,

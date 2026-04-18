@@ -513,6 +513,13 @@ class EtcdStateStore(SQLiteStateStore):
         health_report: HealthReport,
         revision: int,
         revision_status: str,
+        *,
+        current_revision_ready_replicas: int = 0,
+        current_revision_live_replicas: int = 0,
+        old_revision_ready_replicas: int = 0,
+        old_revision_live_replicas: int = 0,
+        overlap_ready_replicas: int = 0,
+        overlap_live_replicas: int = 0,
     ) -> None:
         app_name = app_key_for_manifest(manifest)
         status = {
@@ -526,6 +533,12 @@ class EtcdStateStore(SQLiteStateStore):
             "created": int(runtime_result.created),
             "updated": int(runtime_result.updated),
             "removed": int(runtime_result.removed),
+            "current_revision_ready_replicas": int(current_revision_ready_replicas),
+            "current_revision_live_replicas": int(current_revision_live_replicas),
+            "old_revision_ready_replicas": int(old_revision_ready_replicas),
+            "old_revision_live_replicas": int(old_revision_live_replicas),
+            "overlap_ready_replicas": int(overlap_ready_replicas),
+            "overlap_live_replicas": int(overlap_live_replicas),
             "ingress_host": getattr(manifest.spec.ingress, "host", None)
             if manifest.spec.ingress
             else None,
@@ -673,6 +686,12 @@ class EtcdStateStore(SQLiteStateStore):
             created=int(rec.get("created", 0)),
             updated=int(rec.get("updated", 0)),
             removed=int(rec.get("removed", 0)),
+            current_revision_ready_replicas=int(rec.get("current_revision_ready_replicas", 0)),
+            current_revision_live_replicas=int(rec.get("current_revision_live_replicas", 0)),
+            old_revision_ready_replicas=int(rec.get("old_revision_ready_replicas", 0)),
+            old_revision_live_replicas=int(rec.get("old_revision_live_replicas", 0)),
+            overlap_ready_replicas=int(rec.get("overlap_ready_replicas", 0)),
+            overlap_live_replicas=int(rec.get("overlap_live_replicas", 0)),
             ingress_host=rec.get("ingress_host"),
             ingress_path=rec.get("ingress_path"),
         )
@@ -693,6 +712,16 @@ class EtcdStateStore(SQLiteStateStore):
                     created=int(rec.get("created", 0)),
                     updated=int(rec.get("updated", 0)),
                     removed=int(rec.get("removed", 0)),
+                    current_revision_ready_replicas=int(
+                        rec.get("current_revision_ready_replicas", 0)
+                    ),
+                    current_revision_live_replicas=int(
+                        rec.get("current_revision_live_replicas", 0)
+                    ),
+                    old_revision_ready_replicas=int(rec.get("old_revision_ready_replicas", 0)),
+                    old_revision_live_replicas=int(rec.get("old_revision_live_replicas", 0)),
+                    overlap_ready_replicas=int(rec.get("overlap_ready_replicas", 0)),
+                    overlap_live_replicas=int(rec.get("overlap_live_replicas", 0)),
                     ingress_host=rec.get("ingress_host"),
                     ingress_path=rec.get("ingress_path"),
                 )

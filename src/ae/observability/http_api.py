@@ -3832,6 +3832,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "live": s.live_replicas,
                         "revision": s.revision,
                         "status": s.revision_status,
+                        "current_revision_ready_replicas": s.current_revision_ready_replicas,
+                        "current_revision_live_replicas": s.current_revision_live_replicas,
+                        "old_revision_ready_replicas": s.old_revision_ready_replicas,
+                        "old_revision_live_replicas": s.old_revision_live_replicas,
+                        "overlap_ready_replicas": s.overlap_ready_replicas,
+                        "overlap_live_replicas": s.overlap_live_replicas,
                         "ingress_host": s.ingress_host,
                         "ingress_path": s.ingress_path,
                     }
@@ -4063,6 +4069,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# TYPE ae_app_ready_replicas gauge",
             "# HELP ae_app_live_replicas Live replicas per app",
             "# TYPE ae_app_live_replicas gauge",
+            "# HELP ae_app_current_revision_ready_replicas Ready replicas for the current revision",
+            "# TYPE ae_app_current_revision_ready_replicas gauge",
+            "# HELP ae_app_current_revision_live_replicas Live replicas for the current revision",
+            "# TYPE ae_app_current_revision_live_replicas gauge",
+            "# HELP ae_app_old_revision_ready_replicas Ready replicas for older revisions",
+            "# TYPE ae_app_old_revision_ready_replicas gauge",
+            "# HELP ae_app_old_revision_live_replicas Live replicas for older revisions",
+            "# TYPE ae_app_old_revision_live_replicas gauge",
+            "# HELP ae_app_overlap_ready_replicas Ready replicas above desired during overlap",
+            "# TYPE ae_app_overlap_ready_replicas gauge",
+            "# HELP ae_app_overlap_live_replicas Live replicas above desired during overlap",
+            "# TYPE ae_app_overlap_live_replicas gauge",
             "# HELP ae_app_status One-hot app status by label {status=ready|progressing|degraded}",
             "# TYPE ae_app_status gauge",
             # Backwards/compat aliases to match earlier docs snippets
@@ -4161,6 +4179,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 lines.append(f'ae_app_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
                 lines.append(f'ae_app_ready_replicas{{app="{app}"}} {s0.ready_replicas}')
                 lines.append(f'ae_app_live_replicas{{app="{app}"}} {s0.live_replicas}')
+                lines.append(
+                    f'ae_app_current_revision_ready_replicas{{app="{app}"}} {s0.current_revision_ready_replicas}'
+                )
+                lines.append(
+                    f'ae_app_current_revision_live_replicas{{app="{app}"}} {s0.current_revision_live_replicas}'
+                )
+                lines.append(
+                    f'ae_app_old_revision_ready_replicas{{app="{app}"}} {s0.old_revision_ready_replicas}'
+                )
+                lines.append(
+                    f'ae_app_old_revision_live_replicas{{app="{app}"}} {s0.old_revision_live_replicas}'
+                )
+                lines.append(
+                    f'ae_app_overlap_ready_replicas{{app="{app}"}} {s0.overlap_ready_replicas}'
+                )
+                lines.append(
+                    f'ae_app_overlap_live_replicas{{app="{app}"}} {s0.overlap_live_replicas}'
+                )
                 # Aliases used by playground docs examples
                 lines.append(f'ae_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
                 lines.append(f'ae_ready_replicas{{app="{app}"}} {s0.ready_replicas}')
@@ -4856,6 +4892,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             "revision": {"type": "integer"},
                             "revision_status": {"type": "string"},
                             "image": {"type": "string"},
+                            "current_revision_ready_replicas": {"type": "integer"},
+                            "current_revision_live_replicas": {"type": "integer"},
+                            "old_revision_ready_replicas": {"type": "integer"},
+                            "old_revision_live_replicas": {"type": "integer"},
+                            "overlap_ready_replicas": {"type": "integer"},
+                            "overlap_live_replicas": {"type": "integer"},
                             "ingress_host": {"type": "string", "nullable": True},
                             "ingress_path": {"type": "string", "nullable": True},
                         },
@@ -5186,6 +5228,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 "image": s.image,
                 "ingress_host": s.ingress_host,
                 "ingress_path": s.ingress_path,
+                "current_revision_ready_replicas": s.current_revision_ready_replicas,
+                "current_revision_live_replicas": s.current_revision_live_replicas,
+                "old_revision_ready_replicas": s.old_revision_ready_replicas,
+                "old_revision_live_replicas": s.old_revision_live_replicas,
+                "overlap_ready_replicas": s.overlap_ready_replicas,
+                "overlap_live_replicas": s.overlap_live_replicas,
             }
             # Best-effort rollout summary for list view
             try:
@@ -5276,6 +5324,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "image": s.image,
             "ingress_host": s.ingress_host,
             "ingress_path": s.ingress_path,
+            "current_revision_ready_replicas": s.current_revision_ready_replicas,
+            "current_revision_live_replicas": s.current_revision_live_replicas,
+            "old_revision_ready_replicas": s.old_revision_ready_replicas,
+            "old_revision_live_replicas": s.old_revision_live_replicas,
+            "overlap_ready_replicas": s.overlap_ready_replicas,
+            "overlap_live_replicas": s.overlap_live_replicas,
         }
         # If details requested, include manifest and replica summaries
         want_details = str(params.get("details", ["0"])[0]).lower() in {"1", "true", "yes"}

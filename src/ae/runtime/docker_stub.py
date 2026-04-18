@@ -62,6 +62,7 @@ class StubRuntime(RuntimeAdapter):
                     pod_name=pod_name,
                     ready=True if is_job else True,
                     status=status,
+                    revision=revision,
                     endpoint=f"{self._backend_host}:{host_port}",
                     started_at=now,
                     exit_code=exit_code,

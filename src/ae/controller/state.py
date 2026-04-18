@@ -50,6 +50,12 @@ class AppStatus:
     removed: int
     ingress_host: str | None = None
     ingress_path: str | None = None
+    current_revision_ready_replicas: int = 0
+    current_revision_live_replicas: int = 0
+    old_revision_ready_replicas: int = 0
+    old_revision_live_replicas: int = 0
+    overlap_ready_replicas: int = 0
+    overlap_live_replicas: int = 0
 
 
 @dataclass(slots=True)
@@ -450,6 +456,18 @@ class SQLiteStateStore:
                 self._ensure_column(conn, "pod_status", "updated_at", "TEXT")
             except Exception:
                 pass
+            for column in (
+                "current_revision_ready_replicas",
+                "current_revision_live_replicas",
+                "old_revision_ready_replicas",
+                "old_revision_live_replicas",
+                "overlap_ready_replicas",
+                "overlap_live_replicas",
+            ):
+                try:
+                    self._ensure_column(conn, "app_status", column, "INTEGER NOT NULL DEFAULT 0")
+                except Exception:
+                    pass
             try:
                 self._ensure_column(conn, "nodes", "rp_pubkey", "TEXT")
             except Exception:
@@ -468,6 +486,12 @@ class SQLiteStateStore:
                     "created",
                     "updated",
                     "removed",
+                    "current_revision_ready_replicas",
+                    "current_revision_live_replicas",
+                    "old_revision_ready_replicas",
+                    "old_revision_live_replicas",
+                    "overlap_ready_replicas",
+                    "overlap_live_replicas",
                     "ingress_host",
                     "ingress_path",
                 ],
@@ -881,6 +905,13 @@ class SQLiteStateStore:
         health_report: HealthReport,
         revision: int,
         revision_status: str,
+        *,
+        current_revision_ready_replicas: int = 0,
+        current_revision_live_replicas: int = 0,
+        old_revision_ready_replicas: int = 0,
+        old_revision_live_replicas: int = 0,
+        overlap_ready_replicas: int = 0,
+        overlap_live_replicas: int = 0,
     ) -> None:
         state_by_id = {state.pod_name: state for state in runtime_result.pod_states}
         app_name = app_key_for_manifest(manifest)
@@ -899,6 +930,12 @@ class SQLiteStateStore:
                     runtime_result.created,
                     runtime_result.updated,
                     runtime_result.removed,
+                    int(current_revision_ready_replicas),
+                    int(current_revision_live_replicas),
+                    int(old_revision_ready_replicas),
+                    int(old_revision_live_replicas),
+                    int(overlap_ready_replicas),
+                    int(overlap_live_replicas),
                     manifest.spec.ingress.host if manifest.spec.ingress else None,
                     manifest.spec.ingress.path if manifest.spec.ingress else None,
                 ),
@@ -1029,8 +1066,14 @@ class SQLiteStateStore:
                 created=row[7],
                 updated=row[8],
                 removed=row[9],
-                ingress_host=row[10],
-                ingress_path=row[11],
+                current_revision_ready_replicas=row[10],
+                current_revision_live_replicas=row[11],
+                old_revision_ready_replicas=row[12],
+                old_revision_live_replicas=row[13],
+                overlap_ready_replicas=row[14],
+                overlap_live_replicas=row[15],
+                ingress_host=row[16],
+                ingress_path=row[17],
             )
 
     def list_status(self) -> list[AppStatus]:
@@ -1050,8 +1093,14 @@ class SQLiteStateStore:
                 created=row[7],
                 updated=row[8],
                 removed=row[9],
-                ingress_host=row[10],
-                ingress_path=row[11],
+                current_revision_ready_replicas=row[10],
+                current_revision_live_replicas=row[11],
+                old_revision_ready_replicas=row[12],
+                old_revision_live_replicas=row[13],
+                overlap_ready_replicas=row[14],
+                overlap_live_replicas=row[15],
+                ingress_host=row[16],
+                ingress_path=row[17],
             )
             for row in rows
         ]

@@ -210,6 +210,64 @@ class CallbackCaptureHealthManager:
         self.event_cb = fn
 
 
+class RolloutOverlapRuntime(RuntimeAdapter):
+    def ensure_app(self, manifest: AppManifest, revision: int, **_kwargs) -> RuntimeResult:  # type: ignore[override]
+        return RuntimeResult(
+            revision=revision,
+            created=2,
+            updated=0,
+            removed=0,
+            pod_states=[
+                PodState(
+                    pod_name=f"{manifest.metadata.name}-rev{revision}-0",
+                    ready=True,
+                    status="running",
+                    revision=revision,
+                ),
+                PodState(
+                    pod_name=f"{manifest.metadata.name}-rev{revision}-1",
+                    ready=True,
+                    status="running",
+                    revision=revision,
+                ),
+                PodState(
+                    pod_name=f"{manifest.metadata.name}-rev{max(revision - 1, 0)}-0",
+                    ready=True,
+                    status="running",
+                    revision=max(revision - 1, 0),
+                ),
+            ],
+        )
+
+
+class StubHealthManager:
+    def set_exec_callback(self, _fn) -> None:  # noqa: ANN001
+        return None
+
+    def set_portforward_callback(self, _fn) -> None:  # noqa: ANN001
+        return None
+
+    def set_event_callback(self, _fn) -> None:  # noqa: ANN001
+        return None
+
+    def evaluate(self, manifest: AppManifest, result: RuntimeResult) -> HealthReport:
+        pods = [
+            PodHealth(
+                pod_name=state.pod_name,
+                ready=True,
+                live=True,
+                readiness_message="ok",
+                liveness_message="ok",
+            )
+            for state in result.pod_states
+        ]
+        return HealthReport(
+            ready_replicas=len(pods),
+            live_replicas=len(pods),
+            pods=pods,
+        )
+
+
 def test_reconciler_updates_state(tmp_path: Path) -> None:
     runtime = StubRuntime()
     state = SQLiteStateStore(tmp_path / "state.db")
@@ -239,6 +297,39 @@ def test_reconciler_updates_state(tmp_path: Path) -> None:
     assert replicas[0].live is True
     events = state.list_events("demo", limit=5)
     assert any(event.event_type == "ApplyCompleted" for event in events)
+
+
+def test_reconciler_records_rollout_overlap_counts(tmp_path: Path) -> None:
+    state = SQLiteStateStore(tmp_path / "state.db")
+    reconciler = Reconciler(
+        runtime=RolloutOverlapRuntime(),
+        state_store=state,
+        health_manager=StubHealthManager(),
+    )
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(image="alpine:3.20", replicas=2),
+    )
+
+    report = reconciler.reconcile(manifest)
+    status = state.get_status("demo")
+
+    assert status is not None
+    assert report.current_revision_ready_replicas == 2
+    assert report.current_revision_live_replicas == 2
+    assert report.old_revision_ready_replicas == 1
+    assert report.old_revision_live_replicas == 1
+    assert report.overlap_ready_replicas == 1
+    assert report.overlap_live_replicas == 1
+    assert status.current_revision_ready_replicas == 2
+    assert status.current_revision_live_replicas == 2
+    assert status.old_revision_ready_replicas == 1
+    assert status.old_revision_live_replicas == 1
+    assert status.overlap_ready_replicas == 1
+    assert status.overlap_live_replicas == 1
 
 
 def test_reconciler_with_ingress(tmp_path: Path) -> None:

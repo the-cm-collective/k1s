@@ -977,6 +977,26 @@ bench-mem-backfill-oci-latest:
 		echo "[oci-backfill-latest] latest label=$$LBL" >&2; \
 		$(MAKE) bench-mem-backfill-oci LABEL="$$LBL*" $${OCI:+OCI=$$OCI} $${REBUILD_DOCS:+REBUILD_DOCS=$$REBUILD_DOCS}
 
+.PHONY: bench-retained-rebuild
+# Rebuild published benchmark artifacts from an explicit retained snapshot set plus
+# the frozen 20260203 legacy reference import.
+#
+# Variables:
+#   PROFILE        - retained profile name (`interim-20260417` or `final`)
+#   STAMP          - required when PROFILE=final; the fresh rerun stamp prefix
+#   DELETE_DROPPED - set to 1 to delete snapshot dirs outside the retained set
+#   DRY_RUN        - set to 1 to write keep/drop inventories without rebuilding
+#   SKIP_PLOTS     - set to 1 to skip chart regeneration
+#   SKIP_DOCS      - set to 1 to skip docs rebuild
+bench-retained-rebuild:
+	@ARGS="--profile $${PROFILE:-interim-20260417}"; \
+	if [ -n "$${STAMP:-}" ]; then ARGS="$$ARGS --stamp $$STAMP"; fi; \
+	if [ "$${DELETE_DROPPED:-0}" = "1" ]; then ARGS="$$ARGS --delete-dropped"; fi; \
+	if [ "$${DRY_RUN:-0}" = "1" ]; then ARGS="$$ARGS --dry-run"; fi; \
+	if [ "$${SKIP_PLOTS:-0}" = "1" ]; then ARGS="$$ARGS --skip-plots"; fi; \
+	if [ "$${SKIP_DOCS:-0}" = "1" ]; then ARGS="$$ARGS --skip-docs"; fi; \
+	python scripts/bench/rebuild_retained_artifacts.py $$ARGS
+
 .PHONY: bench-mem-finalize-sudo
 # Finalize benchmarks after mixed non-root/root runs (run with sudo):
 # - Backfill OCI runtime into labels and metadata across ALL snapshots

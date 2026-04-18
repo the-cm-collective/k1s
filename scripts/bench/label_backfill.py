@@ -79,7 +79,7 @@ def detect_oci(backend: str) -> str:
     return ""
 
 
-_STAGE_RE = re.compile(r"-(idle|pods-\d+|rollout-\d+-(?:during|post))$")
+_STAGE_RE = re.compile(r"-(idle|pods-\d+|rollout-\d+-(?:during(?:-warm)?|post))$")
 
 
 def _split_label_stage(label: str) -> tuple[str, str]:

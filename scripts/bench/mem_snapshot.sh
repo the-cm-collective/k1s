@@ -264,13 +264,44 @@ capture_process_and_container_state() {
   if [[ "$collect_engine" == "cri" ]]; then
     crictl_bin="${AE_CRICTL_BIN:-crictl}"
     if command -v "$crictl_bin" >/dev/null 2>&1; then
-      python - "$outdir" "$crictl_bin" "${AE_CRI_ENDPOINT:-}" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
+      cri_ps_json="${outdir}/raw/cri_ps.json"
+      cri_ps_stderr="${outdir}/raw/cri_ps.stderr"
+      cri_pods_json="${outdir}/raw/cri_pods.json"
+      cri_pods_stderr="${outdir}/raw/cri_pods.stderr"
+      cri_info_json="${outdir}/raw/cri_info.json"
+      cri_info_stderr="${outdir}/raw/cri_info.stderr"
+      cri_cmd=("$crictl_bin")
+      if [[ -n "${AE_CRI_ENDPOINT:-}" ]]; then
+        cri_cmd+=("--runtime-endpoint" "${AE_CRI_ENDPOINT}")
+      fi
+      "${cri_cmd[@]}" info -o json >"${cri_info_json}" 2>"${cri_info_stderr}" || true
+      "${cri_cmd[@]}" ps -a -o json >"${cri_ps_json}" 2>"${cri_ps_stderr}" || true
+      "${cri_cmd[@]}" pods -o json >"${cri_pods_json}" 2>"${cri_pods_stderr}" || true
+      python - "$cri_ps_json" "$cri_pods_json" << 'PY' >> "${outdir}/status.log" 2>>"${outdir}/status.log" || true
+import json, sys
+
+def count(path: str, keys: tuple[str, ...]) -> int:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return -1
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return -1
+
+print(f"CRI debug ps_count={count(sys.argv[1], ('containers', 'items'))} pods_count={count(sys.argv[2], ('items',))}")
+PY
+      python - "$outdir" "$crictl_bin" "${AE_CRI_ENDPOINT:-}" "${cri_ps_json}" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, subprocess, sys
 from typing import Optional
 
 root = sys.argv[1]
 crictl = sys.argv[2]
 endpoint = sys.argv[3] if len(sys.argv) > 3 else ""
+ps_json_path = sys.argv[4] if len(sys.argv) > 4 else ""
 
 def run(args: list[str]) -> str:
     cmd = [crictl]
@@ -329,11 +360,19 @@ def read_mem_bytes_and_path(pid: str, cg_path: str = ""):
         return read_mem_for_cg(cg), cg
     return -1, ""
 
-ps_raw = run(["ps", "-a", "-o", "json"])
-try:
-    ps_data = json.loads(ps_raw or "{}")
-except Exception:
-    ps_data = {}
+ps_data = {}
+if ps_json_path:
+    try:
+        with open(ps_json_path, "r", encoding="utf-8") as fh:
+            ps_data = json.load(fh)
+    except Exception:
+        ps_data = {}
+if not ps_data:
+    ps_raw = run(["ps", "-a", "-o", "json"])
+    try:
+        ps_data = json.loads(ps_raw or "{}")
+    except Exception:
+        ps_data = {}
 
 containers = ps_data.get("containers") or ps_data.get("items") or []
 inspect_out = []
@@ -659,6 +698,9 @@ EOF
       row_count=$(tail -n +2 "${outdir}/raw/containers_mem.csv" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t')
     fi
     if [[ "${row_count}" == "0" ]]; then
+      if [[ "$collect_engine" == "cri" ]]; then
+        log_err "no containers captured (AE_REQUIRE_CONTAINERS=1); see raw/cri_ps.json raw/cri_pods.json raw/cri_info.json"
+      fi
       log_err "no containers captured (AE_REQUIRE_CONTAINERS=1); failing snapshot"
       exit 4
     fi

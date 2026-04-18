@@ -1939,7 +1939,7 @@ def build_one(
                         m = re.search(r"-pods-(\d+)$", l)
                         if m:
                             return f"pods-{m.group(1)}"
-                        m = re.search(r"-rollout-(\d+)-(during|post)$", l)
+                        m = re.search(r"-rollout-(\d+)-(during(?:-warm)?|post)$", l)
                         if m:
                             return f"rollout-{m.group(1)}-{m.group(2)}"
                         return "other"
@@ -2083,7 +2083,8 @@ def build_one(
                             ("MemAvail Δ", lambda r: _mad_backfill_local(r)),
                         ]
                         totals: dict[str, tuple[float, int]] = {c: (0.0, 0) for c in col_order}
-                        for st in stages:
+                        ranking_stages = [st for st in stages if not st.endswith("-during-warm")]
+                        for st in ranking_stages:
                             for _mt, ex in metric_extractors:
                                 vals_per_col: dict[str, float] = {}
                                 for c in col_order:
@@ -2235,6 +2236,10 @@ def build_one(
                             "control_plane_pss_k1s_rootful.png",
                             "Control‑plane PSS — Timeline (k1s rootful)",
                         ),
+                        (
+                            "control_plane_pss_k1s_cri.png",
+                            "Control‑plane PSS — Timeline (k1s cri)",
+                        ),
                         ("control_plane_pss_k1nd.png", "Control‑plane PSS — Timeline (k1nd)"),
                         ("system_cgroups_k3d.png", "System Cgroups — Timeline (k3s)"),
                         (
@@ -2244,6 +2249,10 @@ def build_one(
                         (
                             "system_cgroups_k1s_rootful.png",
                             "System Cgroups — Timeline (k1s rootful)",
+                        ),
+                        (
+                            "system_cgroups_k1s_cri.png",
+                            "System Cgroups — Timeline (k1s cri)",
                         ),
                         ("system_cgroups_k1nd.png", "System Cgroups — Timeline (k1nd)"),
                         ("per_pod_overhead.png", "Per‑Pod Overhead (MiB)"),

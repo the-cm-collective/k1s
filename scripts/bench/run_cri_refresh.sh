@@ -141,6 +141,22 @@ if [[ "${AE_BENCH_QUICK:-0}" == "1" ]]; then
   unset AE_BENCH_QUICK
 fi
 
+first_requested_replica() {
+  local raw="$1"
+  local item=""
+  raw="${raw//,/ }"
+  for item in $raw; do
+    item="${item// /}"
+    [[ -z "$item" ]] && continue
+    if [[ ! "$item" =~ ^[0-9]+$ ]]; then
+      return 1
+    fi
+    printf '%s\n' "$item"
+    return 0
+  done
+  return 1
+}
+
 log "preparing bench environment"
 bench_log="$(mktemp)"
 if ! ENV_FILE="$(
@@ -1186,7 +1202,11 @@ REPLICAS="$REPLICAS" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
   --replicas "$REPLICAS" \
   --duration "$DURATION" \
   --sudo
-verify_snapshot_runtime_handler "${LABEL_CRI}-pods-1"
+first_steady_replica="$(first_requested_replica "$REPLICAS")" || {
+  log "invalid or empty REPLICAS='${REPLICAS}'"
+  exit 2
+}
+verify_snapshot_runtime_handler "${LABEL_CRI}-pods-${first_steady_replica}"
 
 rollout_replicas_list=""
 rollout_replicas_count=0

@@ -2500,6 +2500,9 @@ class CRIRuntime(RuntimeAdapter):
                     pod_name=str(pod_name),
                     ready=bool(ready),
                     status=status,
+                    revision=int(labels.get(self.REVISION_LABEL))
+                    if str(labels.get(self.REVISION_LABEL, "")).isdigit()
+                    else None,
                     endpoint=endpoint,
                     started_at=started_at,
                     exit_code=int(exit_code) if exit_code is not None else None,

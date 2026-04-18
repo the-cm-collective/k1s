@@ -286,6 +286,7 @@ Benchmarks (memory + runtime tooling)
 - `make bench-mem-e2e-baselines`: run baseline suite matrix.
 - `make bench-mem-e2e-baselines-sudo`: baseline suite with sudo.
 - `make bench-mem-docs`: combine + plot + rebuild docs.
+- `make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1`: rebuild published artifacts from the retained set plus the frozen `20260203` reference import.
 - `make bench-fix-perms`: normalize artifact permissions.
 - `make bench-mem-backfill`: backfill missing summary.json + rebuild docs.
 - `make bench-engines-clear`: stop/remove all containers (dangerous).
@@ -293,10 +294,14 @@ Benchmarks (memory + runtime tooling)
 - `make dev-state-clean`: wipe full `state/` (requires `CONFIRM=1`).
 - `make bench-mem-backfill-oci`: add OCI runtime metadata and recompute charts.
 - `make bench-mem-backfill-oci-latest`: backfill OCI metadata for latest label only.
-- `make bench-mem-finalize-sudo`: finalize benchmarks and normalize perms (sudo).
+- `make bench-mem-finalize-sudo`: legacy finalize helper for mixed-ownership cleanup; retained publishing should use `bench-retained-rebuild`.
 - `make bench-mem-e2e-k3s`: full k3s e2e (matrix + rollout + charts).
 - `make bench-mem-idle-k1s`: idle baseline snapshot for k1s.
 - `make bench-mem-idle-k3s`: idle baseline snapshot for k3s.
+
+Benchmark note
+- Use [Validated Procedures](validated-procedures.html#full-benchmark-rerun) for the current full rerun sequence.
+- Use [Memory Overhead Benchmarks](benchmarks.html#retained-artifact-rebuild) for retained-artifact rebuild and interim review guidance.
 
 Images and containers
 - `make image-docker`: build controller image with Dockerfile.

@@ -160,15 +160,30 @@ make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yam
 
 Use [Validated Procedures](validated-procedures.html#full-benchmark-rerun) for the exact full clean rerun command block and acceptance checks. That page is the published copy/paste source of truth for the validated split baseline + CRI flow.
 
-For CRI reruns, use `scripts/bench/run_cri_verify.sh` instead of looping over
-`make bench-mem-cri` manually. The wrapper:
+Current rollout stage model
+- Baseline lanes (`rootless`, `rootful`, `k1nd`, `k3d`) publish `10` stages per family:
+  - `idle`
+  - `pods-1`
+  - `pods-5`
+  - `pods-10`
+  - `rollout-2-during`
+  - `rollout-2-during-warm`
+  - `rollout-2-post`
+  - `rollout-5-during`
+  - `rollout-5-during-warm`
+  - `rollout-5-post`
+- CRI verify publishes the same `10` stages per run.
+- `during-warm` is additive diagnostic data and stays out of ranking weight; the docs/chart builders keep using the legacy stage set for rollup weighting.
+
+For CRI reruns, use `scripts/bench/run_cri_verify.sh` instead of looping over `make bench-mem-cri` manually. The wrapper:
 - tears down `state/bench-cri` between runs and kills stale bench controllers
 - writes a durable operator log under `state/bench-cri-rerun-*.log`
 - pins the bench-local manifest to `runtimeClassName: runc`
 - rejects `/k8s.io/kata` cgroup paths in the `pods-1` snapshot
-- captures rollout `-during` process/container state immediately after `ae apply`
-- waits for a stable `ready/live/desired` window before `-post` snapshots
-- checks for `8` combined rows per run before and after finalization
+- captures rollout `-during` immediately after `ae apply`
+- captures `-during-warm` as the warmed transition sample
+- waits for a stable `ready/live/desired` window before `-post`
+- checks for `10` combined rows per run before and after finalization
 
 Recommended smoke lane:
 
@@ -185,9 +200,61 @@ Important: set `BASE=...` / `RUNS=...` before the script name (or `export`
 them). `./scripts/bench/run_cri_verify.sh BASE=...` passes positional args and
 does not override the wrapper environment.
 
+## Retained Artifact Rebuild
+
+Published benchmark artifacts now come from an explicit retained set, not from every snapshot left under `snapshots/`.
+
+Retained publish model
+- Frozen reference import: `scripts/bench/data/legacy_20260203_frozen.csv`
+- Interim review profile: April 17, 2026 validated families only
+- Final publish profile: frozen `20260203` reference plus one fresh full-pass stamp
+
+Use the helper directly:
+
+```bash
+python scripts/bench/rebuild_retained_artifacts.py --profile interim-20260417 --delete-dropped
+```
+
+Or via `make`:
+
+```bash
+make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1
+```
+
+Interim retained set
+- `r20260417-cri-runc-baseline-clean5-run1+cri+containerd`
+- `r20260417-cri-runc-baseline-clean5-run2+cri+containerd`
+- `r20260417-cri-runc-baseline-clean5-run3+cri+containerd`
+- `r20260417-overlap-smoke-rootless`
+- `r20260417-overlap-smoke-rootful`
+- `r20260417-overlap-smoke-cri-run1+cri+containerd`
+- `r20260417-overlap-smoke-k1nd`
+- `r20260417-overlap-smoke-k3d`
+
+Interim rebuild expectations
+- `combined/combined.csv` contains `89` rows:
+  - `40` frozen legacy rows
+  - `24` retained `clean5` CRI rows
+  - `25` retained overlap-smoke rows
+- superseded April 13/15 reruns and the CRI rollout-probe families are absent from the rebuilt artifacts
+
+Final publish expectations
+- Run the full baseline + CRI sequence with a fresh `STAMP`
+- then rebuild with:
+
+```bash
+python scripts/bench/rebuild_retained_artifacts.py --profile final --stamp "$STAMP" --delete-dropped
+```
+
+- final `combined/combined.csv` contains `110` rows:
+  - `40` frozen legacy rows
+  - `40` fresh baseline rows
+  - `30` fresh CRI rows
+
 Result interpretation
 - Treat `combined/combined.csv` and `combined/combined.json` as the authoritative artifacts.
-- If `bench-mem-finalize-sudo` prints `matplotlib not available`, the benchmark run is still valid; only chart regeneration was skipped.
+- `bench-mem-finalize-sudo` is still useful for mixed-ownership cleanup and local chart/doc refresh, but retained publishing should use `bench-retained-rebuild`.
+- If chart generation prints `matplotlib not available`, the benchmark run is still valid; only plot regeneration was skipped.
 - `Ctrl/CP` is scenario-aware:
   - k1s / k1nd: AE controller PSS
   - k3d: k3s control-plane PSS
@@ -208,11 +275,12 @@ The helper scripts `scripts/bench/bench_env_prep.sh` and `scripts/bench/bench_en
 
 - `make bench-mem-e2e-all` is still useful for a quick all-baselines sweep.
 - `make bench-mem-e2e-minimal` is the fast rootful-only sanity lane while iterating on manifests or Podman tuning.
+- `make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1` is the canonical retained-artifact rebuild for the April 17 validated interim set.
 - For release-grade reruns, prefer the validated full clean sequence above because it includes:
   - explicit pre-teardown
   - baseline + CRI split
-  - final artifact normalization
-  - the k3d and CRI fixes validated in the 2026-04-13 rerun
+  - retained-artifact rebuild against the frozen `20260203` reference import
+  - the k3d socket and CRI rollout fixes validated on 2026-04-17
 
 <details>
 <summary><strong>Troubleshooting: Rootful Podman readiness timeouts (host ports hang)</strong></summary>

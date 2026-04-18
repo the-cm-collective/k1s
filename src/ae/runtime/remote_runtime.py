@@ -445,6 +445,11 @@ def _runtime_result_from_json(data: dict) -> RuntimeResult:
                 pod_name=pod_name,
                 ready=bool(item.get("ready")),
                 status=item.get("status", "unknown"),
+                revision=(
+                    int(item.get("revision"))
+                    if str(item.get("revision", "")).isdigit()
+                    else None
+                ),
                 endpoint=item.get("endpoint"),
                 exit_code=exit_code,
                 finished_at=finished_at,

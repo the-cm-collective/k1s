@@ -16,6 +16,7 @@ class PodState:
     ready: bool
     status: str = "running"
     pod_name: str = ""
+    revision: int | None = None
     endpoint: str | None = None
     started_at: datetime | None = None
     exit_code: int | None = None

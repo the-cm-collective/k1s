@@ -12,7 +12,8 @@ Latest validation snapshot
 | Simple dashboard user test | `make demo` | docs + dashboard load on `:8443`, simple layout visible | 2026-04-14 |
 | Advanced dashboard user test | `make lab-vm-ha-attached-node-up` | docs + dashboard load on `:10443`, HA section visible | 2026-04-14 |
 | HA stage 1/2 validation | `make lab-vm-ha-validation` | `stage1`, `retained`, `stage2`, `stage2-live` green | 2026-04-14 |
-| Full benchmark rerun | split baseline + CRI flow | `combined/combined.csv` has 40 rows for the run stamp | 2026-04-14 |
+| Benchmark retained rebuild | `make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1` | `combined/combined.csv` has `89` retained rows (`40` frozen legacy + `49` current) | 2026-04-17 |
+| Full benchmark rerun | split baseline + CRI flow | fresh `STAMP` contributes `70` rows; retained publish set has `110` rows after rebuild | 2026-04-17 |
 
 Release policy for the 2026-04-15 tag
 - Treat Debian and NixOS as pooled cross-host verification inputs for this tag; do not claim that each host independently passed the full release matrix.
@@ -181,28 +182,49 @@ make lab-vm-ha-attached-node-purge
 make lab-vm-ha-attached-node-reset
 ```
 
+## Interim Retained Benchmark Review
+
+Use this when you want the current published artifacts to contain only the frozen `20260203` reference set plus the validated April 17, 2026 families from this session.
+
+```bash
+cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH="$PWD/.venv/bin:$PATH"
+
+make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1
+```
+
+Acceptance checks
+- `combined/combined.csv` contains `89` rows total:
+  - `40` frozen `r20260203-legacy*` rows
+  - `24` retained `r20260417-cri-runc-baseline-clean5-run*+cri+containerd` rows
+  - `25` retained `r20260417-overlap-smoke-*` rows
+- `combined/combined.csv` contains no `r20260413*`, `r20260415*`, or `r20260417-cri-runc-rollout-probe-*` families.
+- `combined/combined.csv` and `combined/combined.json` remain the authoritative artifacts.
+
 ## Full Benchmark Rerun
 
 Preconditions
 - Run from the repo root with the repo venv on `PATH`.
-- If `k3d` and `kubectl` are not installed on the host, use the Nix shell wrapper below.
 - The benchmark helpers must be able to build or reuse `localhost/demo-blue:latest` and `localhost/demo-green:latest`.
+- On this host, `k3d` must be able to reach the dedicated Docker socket at `unix:///run/docker-k3d.sock`.
+- If `k3d cluster list` fails with a missing `/run/docker-k3d.sock`, restart the Docker socket/service before starting the rerun.
 
 Canonical command sequence
 
 ```bash
 cd /home/m4xx3d0ut/git/k1s-wt/k1s
 export PATH="$PWD/.venv/bin:$PATH"
-export AE_USE_REGISTRY_CACHE=0
-
-nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -lc '
-set -euo pipefail
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
-export PATH="$PWD/.venv/bin:$PATH"
+export PYTHONPATH="${PYTHONPATH:-src}"
 export AE_USE_REGISTRY_CACHE=0
 STAMP="r$(date +%Y%m%d)-fullretest"
 
 sudo -v
+sudo systemctl daemon-reload
+sudo systemctl restart docker.socket docker.service
+ss -lx | rg 'docker(.sock|-k3d.sock)' || true
+ls -l /run/docker.sock /run/docker-k3d.sock
+k3d cluster list
+AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh
 
 scripts/bench/k1nd_single.sh down || true
 make bench-k3s-down K3S_NAME=bench || true
@@ -236,6 +258,7 @@ APP_NAME="echo" \
 K3S_MANIFEST="specs/examples/k3s-echo.yaml" \
 DURATION=30 \
 REPLICAS="1,5,10" \
+ROLL_REPLICAS="2,5" \
 make bench-mem-e2e-baselines-sudo
 
 BASE="${STAMP}+cri-runc-verify" \
@@ -249,38 +272,59 @@ RUNS="1 2 3" \
 
 scripts/bench/k1nd_single.sh down || true
 make bench-k3s-down K3S_NAME=bench || true
-'
+
+make bench-retained-rebuild PROFILE=final STAMP="$STAMP" DELETE_DROPPED=1
 ```
 
 Acceptance checks
 - All baseline scenarios complete: `k1s rootless`, `k1s rootful`, `k1nd`, and `k3d`.
 - CRI verify completes three clean runs: `run1`, `run2`, and `run3`.
-- CRI rollout stages follow the stabilized semantics:
-  - `rollout-*-during` captures process/container state immediately after the image apply.
-  - `rollout-*-post` is taken only after a stable `ready/live/desired` window.
-- `combined/combined.csv` contains `56` rows for the fresh stamp (`4 baseline scenarios x 8 stages` plus `3 CRI runs x 8 stages`):
+- Baseline and CRI families publish `10` stages each:
+  - `idle`
+  - `pods-1`
+  - `pods-5`
+  - `pods-10`
+  - `rollout-2-during`
+  - `rollout-2-during-warm`
+  - `rollout-2-post`
+  - `rollout-5-during`
+  - `rollout-5-during-warm`
+  - `rollout-5-post`
+- `combined/combined.csv` contains `70` rows for the fresh stamp:
 
 ```bash
 STAMP="r$(date +%Y%m%d)-fullretest" python - <<'PY'
-import pathlib, os
+import csv
+import os
+from pathlib import Path
+
 stamp = os.environ["STAMP"]
 rows = 0
-for line in pathlib.Path("combined/combined.csv").read_text().splitlines():
-    if stamp + "+" in line:
-        rows += 1
+with Path("combined/combined.csv").open(newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle):
+        if row["label"].startswith(stamp + "+"):
+            rows += 1
 print(rows)
 PY
 ```
 
-- The live summary is expected to show:
-  - `Ctrl/CP` for k1s/k1nd as AE controller PSS
-  - `Ctrl/CP` for k3d as k3s control-plane PSS
-  - `AppCG` for k3d scaling with replicas
+- the retained publish set contains `110` rows after the final rebuild:
+
+```bash
+python - <<'PY'
+import csv
+from pathlib import Path
+
+with Path("combined/combined.csv").open(newline="", encoding="utf-8") as handle:
+    print(sum(1 for _ in csv.DictReader(handle)))
+PY
+```
+
 - CRI wrapper log (`state/bench-cri-rerun-*.log`) must end with:
-  - `rows ${STAMP}+cri-runc-verify-run1+cri+containerd: 8`
-  - `rows ${STAMP}+cri-runc-verify-run2+cri+containerd: 8`
-  - `rows ${STAMP}+cri-runc-verify-run3+cri+containerd: 8`
-- Finalized CRI rows must also count as `8 / 8 / 8`:
+  - `rows ${STAMP}+cri-runc-verify-run1+cri+containerd: 10`
+  - `rows ${STAMP}+cri-runc-verify-run2+cri+containerd: 10`
+  - `rows ${STAMP}+cri-runc-verify-run3+cri+containerd: 10`
+- Finalized CRI rows must also count as `10 / 10 / 10`:
 
 ```bash
 BASE="${STAMP}+cri-runc-verify"
@@ -289,6 +333,9 @@ for run in 1 2 3; do
 done
 ```
 
-- Each CRI run must include `idle`, `pods-1`, `pods-5`, `pods-10`, `rollout-2-during`, `rollout-2-post`, `rollout-5-during`, and `rollout-5-post`.
+- The live summary is expected to show:
+  - `Ctrl/CP` for k1s/k1nd as AE controller PSS
+  - `Ctrl/CP` for k3d as k3s control-plane PSS
+  - `AppCG` for k3d scaling with replicas
 - `combined/combined.csv` and `combined/combined.json` are the authoritative artifacts.
 - `matplotlib not available` only means chart generation was skipped; it does not invalidate the run.

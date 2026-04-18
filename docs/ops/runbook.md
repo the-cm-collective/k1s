@@ -134,8 +134,20 @@ CRI nodes (containerd)
   - Full verify:
     - `export BASE="r$(date +%Y%m%d-%H%M)-cri-runc-verify"`
     - `RUNS="1 2 3" ./scripts/bench/run_cri_verify.sh`
-  - The wrapper logs to `state/bench-cri-rerun-*.log`, forces a bench-local `runtimeClassName: runc`, rejects `/k8s.io/kata` cgroup paths in `pods-1`, captures rollout `-during` state immediately after apply, waits for a stable `ready/live/desired` window before `-post`, and checks for `8` finalized rows per CRI run.
+  - The wrapper logs to `state/bench-cri-rerun-*.log`, forces a bench-local `runtimeClassName: runc`, rejects `/k8s.io/kata` cgroup paths in `pods-1`, captures rollout `-during` immediately after apply, captures `-during-warm` as the warmed transition sample, waits for a stable `ready/live/desired` window before `-post`, and checks for `10` finalized rows per CRI run.
   - Set `BASE=...` / `RUNS=...` before the script name (or `export` them); do not pass them after `run_cri_verify.sh` as positional args.
+  - Full-stage expectation per CRI run:
+    - `idle`
+    - `pods-1`
+    - `pods-5`
+    - `pods-10`
+    - `rollout-2-during`
+    - `rollout-2-during-warm`
+    - `rollout-2-post`
+    - `rollout-5-during`
+    - `rollout-5-during-warm`
+    - `rollout-5-post`
+  - Host note for this machine: `k3d` is expected to use `unix:///run/docker-k3d.sock`. If `k3d cluster list` fails with a missing `docker-k3d.sock`, run `sudo systemctl daemon-reload && sudo systemctl restart docker.socket docker.service` before benchmarking the `k3d` lane.
 
 Export and Validate K8s YAML
 - Hardened export with validation:

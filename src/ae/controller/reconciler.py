@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 import os
@@ -63,6 +64,12 @@ class ReconcileReport:
     live_replicas: int
     revision: int
     revision_status: str
+    current_revision_ready_replicas: int = 0
+    current_revision_live_replicas: int = 0
+    old_revision_ready_replicas: int = 0
+    old_revision_live_replicas: int = 0
+    overlap_ready_replicas: int = 0
+    overlap_live_replicas: int = 0
 
 
 class Reconciler:
@@ -600,6 +607,12 @@ class Reconciler:
         except Exception:
             pass
 
+        rollout_counts = self._calculate_rollout_replica_counts(
+            manifest,
+            health_report,
+            result,
+        )
+
         # Remove old revisions if availability is satisfied, except while canary is active
         desired = manifest.spec.replicas
         ro_now = getattr(manifest.spec, "rollout", {}) or {}
@@ -683,6 +696,7 @@ class Reconciler:
             health_report=health_report,
             revision=revision,
             revision_status=revision_status,
+            **rollout_counts,
         )
         self._state_store.record_event(
             app_name,
@@ -712,6 +726,7 @@ class Reconciler:
             live_replicas=health_report.live_replicas,
             revision=revision,
             revision_status=revision_status,
+            **rollout_counts,
         )
 
     def _run_prestop_on_old(self, manifest: AppManifest, *, keep_revision: int) -> None:
@@ -1159,6 +1174,51 @@ class Reconciler:
             sort_keys=True,
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
+
+    def _pod_revision(self, pod_name: str, states: list[Any]) -> int | None:
+        for state in states:
+            revision = getattr(state, "revision", None)
+            if isinstance(revision, int):
+                return revision
+            if isinstance(revision, str) and revision.isdigit():
+                return int(revision)
+        match = re.search(r"-rev(\d+)-", str(pod_name))
+        if match:
+            return int(match.group(1))
+        return None
+
+    def _calculate_rollout_replica_counts(
+        self,
+        manifest: AppManifest,
+        health_report: HealthReport,
+        runtime_result: RuntimeResult,
+    ) -> dict[str, int]:
+        desired = max(int(getattr(manifest.spec, "replicas", 0) or 0), 0)
+        current_revision = int(getattr(runtime_result, "revision", 0) or 0)
+        pods_by_name = {pod.pod_name: pod for pod in health_report.pods}
+        states_by_name: dict[str, list[Any]] = {}
+        for state in runtime_result.pod_states:
+            states_by_name.setdefault(state.pod_name, []).append(state)
+
+        counts = {
+            "current_revision_ready_replicas": 0,
+            "current_revision_live_replicas": 0,
+            "old_revision_ready_replicas": 0,
+            "old_revision_live_replicas": 0,
+        }
+        for pod_name, pod in pods_by_name.items():
+            pod_revision = self._pod_revision(pod_name, states_by_name.get(pod_name, []))
+            if pod_revision is None:
+                continue
+            prefix = "current_revision" if pod_revision == current_revision else "old_revision"
+            if pod.ready:
+                counts[f"{prefix}_ready_replicas"] += 1
+            if pod.live:
+                counts[f"{prefix}_live_replicas"] += 1
+
+        counts["overlap_ready_replicas"] = max(int(health_report.ready_replicas) - desired, 0)
+        counts["overlap_live_replicas"] = max(int(health_report.live_replicas) - desired, 0)
+        return counts
 
     def _calculate_revision_status(
         self, manifest: AppManifest, report: HealthReport, runtime_result: RuntimeResult

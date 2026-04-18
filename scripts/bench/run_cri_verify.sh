@@ -7,6 +7,38 @@ cd "$repo_root"
 log() { echo "[cri-verify] $*"; }
 trap 'rc=$?; log "error at line $LINENO: $BASH_COMMAND (exit=$rc)"; exit $rc' ERR
 
+count_requested_replicas() {
+  local raw="$1"
+  local count=0
+  local item=""
+  raw="${raw//,/ }"
+  for item in $raw; do
+    item="${item// /}"
+    [[ -z "$item" ]] && continue
+    if [[ ! "$item" =~ ^[0-9]+$ ]]; then
+      return 1
+    fi
+    ((count += 1))
+  done
+  printf '%s\n' "$count"
+}
+
+first_requested_replica() {
+  local raw="$1"
+  local item=""
+  raw="${raw//,/ }"
+  for item in $raw; do
+    item="${item// /}"
+    [[ -z "$item" ]] && continue
+    if [[ ! "$item" =~ ^[0-9]+$ ]]; then
+      return 1
+    fi
+    printf '%s\n' "$item"
+    return 0
+  done
+  return 1
+}
+
 count_combined_rows() {
   local label="$1"
   python - "$label" <<'PY'
@@ -77,6 +109,20 @@ for run in "${runs[@]}"; do
   fi
 done
 
+first_steady_replica="$(first_requested_replica "$REPLICAS")" || {
+  log "invalid or empty REPLICAS='${REPLICAS}'"
+  exit 2
+}
+steady_count="$(count_requested_replicas "$REPLICAS")" || {
+  log "invalid REPLICAS='${REPLICAS}'"
+  exit 2
+}
+rollout_count="$(count_requested_replicas "$ROLL_REPLICAS")" || {
+  log "invalid ROLL_REPLICAS='${ROLL_REPLICAS}'"
+  exit 2
+}
+expected_rows=$((1 + steady_count + (3 * rollout_count)))
+
 sudo -v
 sudo make bench-fix-perms
 
@@ -100,11 +146,11 @@ for run in "${runs[@]}"; do
   ROLL_REPLICAS="$ROLL_REPLICAS" \
   make bench-mem-cri
 
-  latest_csv="$(find "snapshots/${label}-pods-1" -type f -path '*/raw/containers_mem.csv' | sort | tail -n1)"
+  latest_csv="$(find "snapshots/${label}-pods-${first_steady_replica}" -type f -path '*/raw/containers_mem.csv' | sort | tail -n1)"
   test -n "$latest_csv"
   ! rg -n '/k8s.io/kata' "$latest_csv"
   rows="$(count_combined_rows "$label")"
-  test "$rows" -eq 8
+  test "$rows" -eq "$expected_rows"
 done
 
 sudo make bench-fix-perms

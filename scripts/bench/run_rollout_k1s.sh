@@ -336,7 +336,54 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 during_capture_timing="${BENCH_ROLLOUT_DURING_CAPTURE_TIMING:-immediate}"
+during_warm_capture_timing="${BENCH_ROLLOUT_DURING_WARM_CAPTURE_TIMING:-warm}"
 post_capture_timing="${BENCH_ROLLOUT_POST_CAPTURE_TIMING:-warm}"
+
+run_rollout_snapshot() {
+  local label="$1"
+  local capture_timing="$2"
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "$label" --duration "$duration" --capture-timing "$capture_timing"
+    else
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "$label" --duration "$duration" --capture-timing "$capture_timing" || true
+    fi
+  else
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "$label" --duration "$duration" --capture-timing "$capture_timing"
+    else
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "$label" --duration "$duration" --capture-timing "$capture_timing" || true
+    fi
+  fi
+}
+
+start_rollout_snapshot() {
+  local pid_var="$1"
+  local label="$2"
+  local capture_timing="$3"
+  local phase="$4"
+  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label}"/* >/dev/null 2>&1; then
+    echo "[rollout] skip existing ${phase} snapshot ${label}" >&2
+    printf -v "$pid_var" '%s' ""
+    return 0
+  fi
+  (
+    run_rollout_snapshot "$label" "$capture_timing" >/dev/null
+  ) &
+  printf -v "$pid_var" '%s' "$!"
+}
+
+wait_rollout_snapshot() {
+  local pid="${1:-}"
+  local label="$2"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+  if ! wait "$pid"; then
+    echo "[rollout] snapshot failed: ${label}" >&2
+    return 1
+  fi
+}
 
 wait_ready() {
   local name="$1"; local want="$2"; local tries=${WAIT_READY_TRIES:-120}
@@ -564,48 +611,21 @@ PY
   ae apply -f "$tmpman"
 
   echo "[rollout] snapshot DURING rollout" >&2
-  # Skip if existing and SKIP_EXISTING=1
-  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-during"/* >/dev/null 2>&1; then
-    echo "[rollout] skip existing DURING snapshot ${label_suite}-rollout-${replicas}-during" >&2
-  else
-  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" --capture-timing "$during_capture_timing"
-    else
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" --capture-timing "$during_capture_timing" || true
-    fi
-    else
-      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" --capture-timing "$during_capture_timing"
-      else
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" --capture-timing "$during_capture_timing" || true
-      fi
-    fi
-  fi
+  local during_label="${label_suite}-rollout-${replicas}-during"
+  local during_warm_label="${label_suite}-rollout-${replicas}-during-warm"
+  local during_warm_pid
+  local during_pid
+  start_rollout_snapshot during_warm_pid "$during_warm_label" "$during_warm_capture_timing" "DURING-WARM"
+  start_rollout_snapshot during_pid "$during_label" "$during_capture_timing" "DURING"
+  wait_rollout_snapshot "$during_pid" "$during_label"
+  wait_rollout_snapshot "$during_warm_pid" "$during_warm_label"
 
   echo "[rollout] wait ready post-rollout" >&2
   wait_ready "$app_name" "$replicas"
   settle_current_revision "$app_name" "$replicas"
 
   echo "[rollout] snapshot POST rollout" >&2
-  # Skip if existing and SKIP_EXISTING=1
-  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-post"/* >/dev/null 2>&1; then
-    echo "[rollout] skip existing POST snapshot ${label_suite}-rollout-${replicas}-post" >&2
-  else
-  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" --capture-timing "$post_capture_timing"
-    else
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" --capture-timing "$post_capture_timing" || true
-    fi
-    else
-      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" --capture-timing "$post_capture_timing"
-      else
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" --capture-timing "$post_capture_timing" || true
-      fi
-    fi
-  fi
+  run_rollout_snapshot "${label_suite}-rollout-${replicas}-post" "$post_capture_timing"
 }
 
 for replicas in "${rollout_replicas[@]}"; do

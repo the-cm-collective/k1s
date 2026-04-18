@@ -1,4 +1,4 @@
-# Known-Good Validation Snapshot (2026-04-14)
+# Known-Good Validation Snapshot (2026-04-17)
 
 This page tracks the latest validated operator workflows. It is a status index, not the full procedure source of truth.
 
@@ -35,6 +35,14 @@ Current dashboard expectations
 
 Current benchmark expectations
 - The authoritative benchmark artifacts are `combined/combined.csv` and `combined/combined.json`.
+- Published benchmark artifacts now follow the retained-set model:
+  - frozen `r20260203-legacy*` reference import
+  - validated current families only (`interim-20260417`) or one fresh rerun stamp (`final`)
+- Rollout reporting is dual-published:
+  - `rollout-*-during`
+  - `rollout-*-during-warm`
+  - `rollout-*-post`
+- Ranking and top-line comparisons exclude `*-during-warm` from stage weighting.
 - `Ctrl/CP` in the summary table is scenario-aware:
   - k1s / k1nd: AE controller PSS
   - k3d: k3s control-plane PSS
