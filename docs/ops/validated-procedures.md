@@ -21,7 +21,7 @@ Release policy for the 2026-04-15 tag
 - Require the common baseline on both hosts:
 
 ```bash
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
+cd /path/to/k1s
 export PATH="$PWD/.venv/bin:$PATH"
 export AE_USE_REGISTRY_CACHE=0
 
@@ -49,7 +49,7 @@ Preconditions
 Commands
 
 ```bash
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
+cd /path/to/k1s
 export PATH="$PWD/.venv/bin:$PATH"
 
 sudo -v
@@ -83,7 +83,7 @@ Preconditions
 Commands
 
 ```bash
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
+cd /path/to/k1s
 export PATH="$PWD/.venv/bin:$PATH"
 
 sudo -v
@@ -123,7 +123,7 @@ make lab-vm-ha-attached-node-purge
 Preferred umbrella runner
 
 ```bash
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
+cd /path/to/k1s
 export PATH="$PWD/.venv/bin:$PATH"
 
 sudo -v
@@ -141,7 +141,7 @@ Expected green stages
 Narrow retained/live helper flow
 
 ```bash
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
+cd /path/to/k1s
 export PATH="$PWD/.venv/bin:$PATH"
 
 sudo -v
@@ -187,7 +187,7 @@ make lab-vm-ha-attached-node-reset
 Use this when you want the current published artifacts to contain only the frozen `20260203` reference set plus the validated April 17, 2026 families from this session.
 
 ```bash
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
+cd /path/to/k1s
 export PATH="$PWD/.venv/bin:$PATH"
 
 make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1
@@ -212,7 +212,7 @@ Preconditions
 Canonical command sequence
 
 ```bash
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
+cd /path/to/k1s
 export PATH="$PWD/.venv/bin:$PATH"
 export PYTHONPATH="${PYTHONPATH:-src}"
 export AE_USE_REGISTRY_CACHE=0

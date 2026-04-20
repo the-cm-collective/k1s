@@ -772,7 +772,7 @@
 <li>Standardize release verification on <code>AE_USE_REGISTRY_CACHE=0</code> on both hosts.</li>
 <li>Require the common baseline on both hosts:</li>
 </ul>
-<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+<pre><code>cd /path/to/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
 export AE_USE_REGISTRY_CACHE=0
 
@@ -800,7 +800,7 @@ make ha-closeout-e2e</code></pre>
 <li>This procedure is for local single-controller demo/dev flows.</li>
 </ul>
 <p>Commands</p>
-<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+<pre><code>cd /path/to/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
 
 sudo -v
@@ -828,7 +828,7 @@ getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code></pre>
 <li>If image/bootstrap contracts changed, rebuild/verify images first.</li>
 </ul>
 <p>Commands</p>
-<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+<pre><code>cd /path/to/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
 
 sudo -v
@@ -861,7 +861,7 @@ curl -sk \
 make lab-vm-ha-attached-node-purge</code></pre>
 <h2 id="ha-stage-1-2-validation">HA Stage 1/2 Validation</h2>
 <p>Preferred umbrella runner</p>
-<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+<pre><code>cd /path/to/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
 
 sudo -v
@@ -876,7 +876,7 @@ make lab-vm-ha-validation</code></pre>
 <li><code>drills</code></li>
 </ul>
 <p>Narrow retained/live helper flow</p>
-<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+<pre><code>cd /path/to/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
 
 sudo -v
@@ -909,7 +909,7 @@ make lab-vm-smoke \
 make lab-vm-ha-attached-node-reset</code></pre>
 <h2 id="interim-retained-benchmark-review">Interim Retained Benchmark Review</h2>
 <p>Use this when you want the current published artifacts to contain only the frozen <code>20260203</code> reference set plus the validated April 17, 2026 families from this session.</p>
-<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+<pre><code>cd /path/to/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
 
 make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1</code></pre>
@@ -934,7 +934,7 @@ make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1</code></pr
 <li>If <code>k3d cluster list</code> fails with a missing <code>/run/docker-k3d.sock</code>, restart the Docker socket/service before starting the rerun.</li>
 </ul>
 <p>Canonical command sequence</p>
-<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+<pre><code>cd /path/to/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
 export PYTHONPATH=&quot;${PYTHONPATH:-src}&quot;
 export AE_USE_REGISTRY_CACHE=0
@@ -1091,7 +1091,7 @@ RUNS=&quot;1 2 3&quot; \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-19 09:23:07</span>
+        <span>Built 2026-04-20 08:00:13</span>
       </div>
     </footer>
     <script>
