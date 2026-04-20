@@ -976,6 +976,7 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make bench-mem-e2e-baselines</code>: run baseline suite matrix.</li>
 <li><code>make bench-mem-e2e-baselines-sudo</code>: baseline suite with sudo.</li>
 <li><code>make bench-mem-docs</code>: combine + plot + rebuild docs.</li>
+<li><code>make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1</code>: rebuild published artifacts from the retained set plus the frozen <code>20260203</code> reference import.</li>
 <li><code>make bench-fix-perms</code>: normalize artifact permissions.</li>
 <li><code>make bench-mem-backfill</code>: backfill missing summary.json + rebuild docs.</li>
 <li><code>make bench-engines-clear</code>: stop/remove all containers (dangerous).</li>
@@ -983,10 +984,15 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make dev-state-clean</code>: wipe full <code>state/</code> (requires <code>CONFIRM=1</code>).</li>
 <li><code>make bench-mem-backfill-oci</code>: add OCI runtime metadata and recompute charts.</li>
 <li><code>make bench-mem-backfill-oci-latest</code>: backfill OCI metadata for latest label only.</li>
-<li><code>make bench-mem-finalize-sudo</code>: finalize benchmarks and normalize perms (sudo).</li>
+<li><code>make bench-mem-finalize-sudo</code>: legacy finalize helper for mixed-ownership cleanup; retained publishing should use <code>bench-retained-rebuild</code>.</li>
 <li><code>make bench-mem-e2e-k3s</code>: full k3s e2e (matrix + rollout + charts).</li>
 <li><code>make bench-mem-idle-k1s</code>: idle baseline snapshot for k1s.</li>
 <li><code>make bench-mem-idle-k3s</code>: idle baseline snapshot for k3s.</li>
+</ul>
+<p>Benchmark note</p>
+<ul>
+<li>Use <a href="validated-procedures.html#full-benchmark-rerun">Validated Procedures</a> for the current full rerun sequence.</li>
+<li>Use <a href="benchmarks.html#retained-artifact-rebuild">Memory Overhead Benchmarks</a> for retained-artifact rebuild and interim review guidance.</li>
 </ul>
 <p>Images and containers</p>
 <ul>
@@ -1112,7 +1118,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-17 10:02:07</span>
+        <span>Built 2026-04-17 17:35:12</span>
       </div>
     </footer>
     <script>

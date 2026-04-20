@@ -405,6 +405,23 @@ validate_idle_snapshot() {
   "$python_bin" scripts/bench/check_idle_snapshot.py "$snapshot_path" --app-name "$name"
 }
 
+run_pre_snapshot_hook() {
+  local stage="$1"
+  local replicas="$2"
+  local label="$3"
+  local cmd="${4:-}"
+  if [[ -z "$cmd" ]]; then
+    return 0
+  fi
+  info "pre-snapshot hook stage=${stage} replicas=${replicas} label=${label}"
+  export BENCH_SNAPSHOT_LABEL="$label"
+  export BENCH_SNAPSHOT_STAGE="$stage"
+  export BENCH_SNAPSHOT_REPLICAS="$replicas"
+  export BENCH_BACKEND="${AE_RUNTIME_BACKEND:-podman}"
+  export BENCH_APP_NAME="$app_name"
+  bash -lc "$cmd"
+}
+
 # Idle snapshot (skippable)
 if [[ "${SKIP_IDLE:-0}" != "1" ]]; then
   info "idle snapshot"
@@ -455,6 +472,7 @@ for n in "${reps[@]}"; do
     info "skip existing snapshot label=${label_suite}-pods-${n}"
     continue
   fi
+  run_pre_snapshot_hook "pods-${n}" "$n" "${label_suite}-pods-${n}" "${BENCH_PRE_STEADY_SNAPSHOT_CMD:-}"
   info "snapshot label=${label_suite}-pods-${n}"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then

@@ -765,7 +765,7 @@
 <li>Use the surrounding docs for context, rationale, topology details, and troubleshooting.</li>
 </ul>
 <p>Latest validation snapshot</p>
-<table><thead><tr><th>Procedure</th><th>Primary entrypoint</th><th>Success signal</th><th>Last validated</th></tr></thead><tbody><tr><td>Simple dashboard user test</td><td><code>make demo</code></td><td>docs + dashboard load on <code>:8443</code>, simple layout visible</td><td>2026-04-14</td></tr><tr><td>Advanced dashboard user test</td><td><code>make lab-vm-ha-attached-node-up</code></td><td>docs + dashboard load on <code>:10443</code>, HA section visible</td><td>2026-04-14</td></tr><tr><td>HA stage 1/2 validation</td><td><code>make lab-vm-ha-validation</code></td><td><code>stage1</code>, <code>retained</code>, <code>stage2</code>, <code>stage2-live</code> green</td><td>2026-04-14</td></tr><tr><td>Full benchmark rerun</td><td>split baseline + CRI flow</td><td><code>combined/combined.csv</code> has 40 rows for the run stamp</td><td>2026-04-14</td></tr></tbody></table>
+<table><thead><tr><th>Procedure</th><th>Primary entrypoint</th><th>Success signal</th><th>Last validated</th></tr></thead><tbody><tr><td>Simple dashboard user test</td><td><code>make demo</code></td><td>docs + dashboard load on <code>:8443</code>, simple layout visible</td><td>2026-04-14</td></tr><tr><td>Advanced dashboard user test</td><td><code>make lab-vm-ha-attached-node-up</code></td><td>docs + dashboard load on <code>:10443</code>, HA section visible</td><td>2026-04-14</td></tr><tr><td>HA stage 1/2 validation</td><td><code>make lab-vm-ha-validation</code></td><td><code>stage1</code>, <code>retained</code>, <code>stage2</code>, <code>stage2-live</code> green</td><td>2026-04-14</td></tr><tr><td>Benchmark retained rebuild</td><td><code>make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1</code></td><td><code>combined/combined.csv</code> has <code>89</code> retained rows (<code>40</code> frozen legacy + <code>49</code> current)</td><td>2026-04-17</td></tr><tr><td>Full benchmark rerun</td><td>split baseline + CRI flow</td><td>fresh <code>STAMP</code> contributes <code>70</code> rows; retained publish set has <code>110</code> rows after rebuild</td><td>2026-04-17</td></tr></tbody></table>
 <p>Release policy for the 2026-04-15 tag</p>
 <ul>
 <li>Treat Debian and NixOS as pooled cross-host verification inputs for this tag; do not claim that each host independently passed the full release matrix.</li>
@@ -907,26 +907,46 @@ make lab-vm-smoke \
 <pre><code>make lab-vm-ha-attached-node-purge
 # or retained reset:
 make lab-vm-ha-attached-node-reset</code></pre>
+<h2 id="interim-retained-benchmark-review">Interim Retained Benchmark Review</h2>
+<p>Use this when you want the current published artifacts to contain only the frozen <code>20260203</code> reference set plus the validated April 17, 2026 families from this session.</p>
+<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+
+make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1</code></pre>
+<p>Acceptance checks</p>
+<ul>
+<li><code>combined/combined.csv</code> contains <code>89</code> rows total:
+<ul>
+<li><code>40</code> frozen <code>r20260203-legacy*</code> rows</li>
+<li><code>24</code> retained <code>r20260417-cri-runc-baseline-clean5-run*+cri+containerd</code> rows</li>
+<li><code>25</code> retained <code>r20260417-overlap-smoke-*</code> rows</li>
+</ul>
+</li>
+<li><code>combined/combined.csv</code> contains no <code>r20260413*</code>, <code>r20260415*</code>, or <code>r20260417-cri-runc-rollout-probe-*</code> families.</li>
+<li><code>combined/combined.csv</code> and <code>combined/combined.json</code> remain the authoritative artifacts.</li>
+</ul>
 <h2 id="full-benchmark-rerun">Full Benchmark Rerun</h2>
 <p>Preconditions</p>
 <ul>
 <li>Run from the repo root with the repo venv on <code>PATH</code>.</li>
-<li>If <code>k3d</code> and <code>kubectl</code> are not installed on the host, use the Nix shell wrapper below.</li>
 <li>The benchmark helpers must be able to build or reuse <code>localhost/demo-blue:latest</code> and <code>localhost/demo-green:latest</code>.</li>
+<li>On this host, <code>k3d</code> must be able to reach the dedicated Docker socket at <code>unix:///run/docker-k3d.sock</code>.</li>
+<li>If <code>k3d cluster list</code> fails with a missing <code>/run/docker-k3d.sock</code>, restart the Docker socket/service before starting the rerun.</li>
 </ul>
 <p>Canonical command sequence</p>
 <pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
 export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
-export AE_USE_REGISTRY_CACHE=0
-
-nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -lc &#x27;
-set -euo pipefail
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
-export PATH=&quot;$PWD/.venv/bin:$PATH&quot;
+export PYTHONPATH=&quot;${PYTHONPATH:-src}&quot;
 export AE_USE_REGISTRY_CACHE=0
 STAMP=&quot;r$(date +%Y%m%d)-fullretest&quot;
 
 sudo -v
+sudo systemctl daemon-reload
+sudo systemctl restart docker.socket docker.service
+ss -lx | rg &#x27;docker(.sock|-k3d.sock)&#x27; || true
+ls -l /run/docker.sock /run/docker-k3d.sock
+k3d cluster list
+AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh
 
 scripts/bench/k1nd_single.sh down || true
 make bench-k3s-down K3S_NAME=bench || true
@@ -960,6 +980,7 @@ APP_NAME=&quot;echo&quot; \
 K3S_MANIFEST=&quot;specs/examples/k3s-echo.yaml&quot; \
 DURATION=30 \
 REPLICAS=&quot;1,5,10&quot; \
+ROLL_REPLICAS=&quot;2,5&quot; \
 make bench-mem-e2e-baselines-sudo
 
 BASE=&quot;${STAMP}+cri-runc-verify&quot; \
@@ -973,28 +994,85 @@ RUNS=&quot;1 2 3&quot; \
 
 scripts/bench/k1nd_single.sh down || true
 make bench-k3s-down K3S_NAME=bench || true
-&#x27;</code></pre>
+
+make bench-retained-rebuild PROFILE=final STAMP=&quot;$STAMP&quot; DELETE_DROPPED=1</code></pre>
 <p>Acceptance checks</p>
 <ul>
 <li>All baseline scenarios complete: <code>k1s rootless</code>, <code>k1s rootful</code>, <code>k1nd</code>, and <code>k3d</code>.</li>
 <li>CRI verify completes three clean runs: <code>run1</code>, <code>run2</code>, and <code>run3</code>.</li>
-<li>CRI rollout stages follow the stabilized semantics:
+<li>CRI verify uses the promoted retained profile by default:
 <ul>
-<li><code>rollout-*-during</code> captures process/container state immediately after the image apply.</li>
-<li><code>rollout-*-post</code> is taken only after a stable <code>ready/live/desired</code> window.</li>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=ordered</code></li>
+<li><code>BENCH_CRI_STEADY_QUIET=1</code></li>
 </ul>
 </li>
-<li><code>combined/combined.csv</code> contains <code>56</code> rows for the fresh stamp (<code>4 baseline scenarios x 8 stages</code> plus <code>3 CRI runs x 8 stages</code>):</li>
+<li>Baseline and CRI families publish <code>10</code> stages each:
+<ul>
+<li><code>idle</code></li>
+<li><code>pods-1</code></li>
+<li><code>pods-5</code></li>
+<li><code>pods-10</code></li>
+<li><code>rollout-2-during</code></li>
+<li><code>rollout-2-during-warm</code></li>
+<li><code>rollout-2-post</code></li>
+<li><code>rollout-5-during</code></li>
+<li><code>rollout-5-during-warm</code></li>
+<li><code>rollout-5-post</code></li>
+</ul>
+</li>
+<li><code>combined/combined.csv</code> contains <code>70</code> rows for the fresh stamp:</li>
 </ul>
 <pre><code>STAMP=&quot;r$(date +%Y%m%d)-fullretest&quot; python - &lt;&lt;&#x27;PY&#x27;
-import pathlib, os
+import csv
+import os
+from pathlib import Path
+
 stamp = os.environ[&quot;STAMP&quot;]
 rows = 0
-for line in pathlib.Path(&quot;combined/combined.csv&quot;).read_text().splitlines():
-    if stamp + &quot;+&quot; in line:
-        rows += 1
+with Path(&quot;combined/combined.csv&quot;).open(newline=&quot;&quot;, encoding=&quot;utf-8&quot;) as handle:
+    for row in csv.DictReader(handle):
+        if row[&quot;label&quot;].startswith(stamp + &quot;+&quot;):
+            rows += 1
 print(rows)
 PY</code></pre>
+<ul>
+<li>the retained publish set contains <code>110</code> rows after the final rebuild:</li>
+</ul>
+<pre><code>python - &lt;&lt;&#x27;PY&#x27;
+import csv
+from pathlib import Path
+
+with Path(&quot;combined/combined.csv&quot;).open(newline=&quot;&quot;, encoding=&quot;utf-8&quot;) as handle:
+    print(sum(1 for _ in csv.DictReader(handle)))
+PY</code></pre>
+<ul>
+<li>CRI wrapper log (<code>state/bench-cri-rerun-*.log</code>) must end with:
+<ul>
+<li><code>rows ${STAMP}+cri-runc-verify-run1+cri+containerd: 10</code></li>
+<li><code>rows ${STAMP}+cri-runc-verify-run2+cri+containerd: 10</code></li>
+<li><code>rows ${STAMP}+cri-runc-verify-run3+cri+containerd: 10</code></li>
+</ul>
+</li>
+<li>Finalized CRI rows must also count as <code>10 / 10 / 10</code>:</li>
+</ul>
+<pre><code>BASE=&quot;${STAMP}+cri-runc-verify&quot;
+for run in 1 2 3; do
+  grep -c &quot;^${BASE}-run${run}+cri+crun+containerd-&quot; combined/combined.csv
+done</code></pre>
+<ul>
+<li>Optional rollback/comparison rerun for the old CRI parallel baseline:</li>
+</ul>
+<pre><code>STAMP=&quot;r$(date +%Y%m%d)-fullretest&quot;
+BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_STEADY_QUIET=0 \
+BASE=&quot;${STAMP}+cri-runc-parallel-verify&quot; \
+APP=&quot;specs/examples/echo.yaml&quot; \
+APP_NAME=&quot;echo&quot; \
+DURATION=30 \
+REPLICAS=&quot;1,5,10&quot; \
+ROLL_REPLICAS=&quot;2,5&quot; \
+RUNS=&quot;1 2 3&quot; \
+./scripts/bench/run_cri_verify.sh</code></pre>
 <ul>
 <li>The live summary is expected to show:
 <ul>
@@ -1003,21 +1081,6 @@ PY</code></pre>
 <li><code>AppCG</code> for k3d scaling with replicas</li>
 </ul>
 </li>
-<li>CRI wrapper log (<code>state/bench-cri-rerun-*.log</code>) must end with:
-<ul>
-<li><code>rows ${STAMP}+cri-runc-verify-run1+cri+containerd: 8</code></li>
-<li><code>rows ${STAMP}+cri-runc-verify-run2+cri+containerd: 8</code></li>
-<li><code>rows ${STAMP}+cri-runc-verify-run3+cri+containerd: 8</code></li>
-</ul>
-</li>
-<li>Finalized CRI rows must also count as <code>8 / 8 / 8</code>:</li>
-</ul>
-<pre><code>BASE=&quot;${STAMP}+cri-runc-verify&quot;
-for run in 1 2 3; do
-  grep -c &quot;^${BASE}-run${run}+cri+crun+containerd-&quot; combined/combined.csv
-done</code></pre>
-<ul>
-<li>Each CRI run must include <code>idle</code>, <code>pods-1</code>, <code>pods-5</code>, <code>pods-10</code>, <code>rollout-2-during</code>, <code>rollout-2-post</code>, <code>rollout-5-during</code>, and <code>rollout-5-post</code>.</li>
 <li><code>combined/combined.csv</code> and <code>combined/combined.json</code> are the authoritative artifacts.</li>
 <li><code>matplotlib not available</code> only means chart generation was skipped; it does not invalidate the run.</li>
 </ul>
@@ -1028,7 +1091,7 @@ done</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-17 10:02:07</span>
+        <span>Built 2026-04-19 09:23:07</span>
       </div>
     </footer>
     <script>

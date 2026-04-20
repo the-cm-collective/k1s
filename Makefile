@@ -543,7 +543,7 @@ bench-mem-matrix-k1s:
 	@./scripts/bench/run_matrix.sh --label-suite $${LABEL_SUITE:-baseline} --app $${APP:-specs/examples/echo.yaml} --app-name $${APP_NAME:-echo} --replicas $${REPLICAS:-1,5,10} --duration $${DURATION:-30}
 
 bench-mem-combine:
-	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@python scripts/bench/mem_combine.py $${COMBINE_OUTDIR:+--outdir $$COMBINE_OUTDIR} $${GLOB:-snapshots/*/*}
 
 # Verify a specific snapshot (or latest for LABEL) and print per-container split
 bench-mem-verify:
@@ -572,6 +572,14 @@ bench-mem-rollout-k3s:
 
 bench-mem-plot:
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+.PHONY: bench-rollout-tuning-experiment
+bench-rollout-tuning-experiment:
+	@./scripts/bench/run_rollout_tuning_experiment.sh --lane $${LANE:?set LANE=cri|rootless|rootful|k1nd} $${LABEL_BASE:+--label-base "$$LABEL_BASE"} $${EXPERIMENT_ID:+--experiment-id "$$EXPERIMENT_ID"}
+
+.PHONY: bench-cri-rollout-candidate
+bench-cri-rollout-candidate:
+	@./scripts/bench/run_cri_rollout_candidate.sh
 
 .PHONY: bench-mem-e2e-k3s-sudo
 # End-to-end K3s (with sudo for snapshots to capture accurate PSS)

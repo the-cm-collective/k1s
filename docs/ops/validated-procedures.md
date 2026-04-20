@@ -279,6 +279,9 @@ make bench-retained-rebuild PROFILE=final STAMP="$STAMP" DELETE_DROPPED=1
 Acceptance checks
 - All baseline scenarios complete: `k1s rootless`, `k1s rootful`, `k1nd`, and `k3d`.
 - CRI verify completes three clean runs: `run1`, `run2`, and `run3`.
+- CRI verify uses the promoted retained profile by default:
+  - `BENCH_CRI_ROLLOUT_STRATEGY=ordered`
+  - `BENCH_CRI_STEADY_QUIET=1`
 - Baseline and CRI families publish `10` stages each:
   - `idle`
   - `pods-1`
@@ -331,6 +334,22 @@ BASE="${STAMP}+cri-runc-verify"
 for run in 1 2 3; do
   grep -c "^${BASE}-run${run}+cri+crun+containerd-" combined/combined.csv
 done
+```
+
+- Optional rollback/comparison rerun for the old CRI parallel baseline:
+
+```bash
+STAMP="r$(date +%Y%m%d)-fullretest"
+BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_STEADY_QUIET=0 \
+BASE="${STAMP}+cri-runc-parallel-verify" \
+APP="specs/examples/echo.yaml" \
+APP_NAME="echo" \
+DURATION=30 \
+REPLICAS="1,5,10" \
+ROLL_REPLICAS="2,5" \
+RUNS="1 2 3" \
+./scripts/bench/run_cri_verify.sh
 ```
 
 - The live summary is expected to show:

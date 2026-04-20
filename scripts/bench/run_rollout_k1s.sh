@@ -385,6 +385,23 @@ wait_rollout_snapshot() {
   fi
 }
 
+run_rollout_hook() {
+  local stage="$1"
+  local replicas="$2"
+  local label="$3"
+  local cmd="${4:-}"
+  if [[ -z "$cmd" ]]; then
+    return 0
+  fi
+  info "hook stage=${stage} replicas=${replicas} label=${label}"
+  export BENCH_SNAPSHOT_LABEL="$label"
+  export BENCH_SNAPSHOT_STAGE="$stage"
+  export BENCH_SNAPSHOT_REPLICAS="$replicas"
+  export BENCH_BACKEND="${AE_RUNTIME_BACKEND:-podman}"
+  export BENCH_APP_NAME="$app_name"
+  bash -lc "$cmd"
+}
+
 wait_ready() {
   local name="$1"; local want="$2"; local tries=${WAIT_READY_TRIES:-120}
   local delay=${WAIT_READY_DELAY:-2}
@@ -625,6 +642,7 @@ PY
   settle_current_revision "$app_name" "$replicas"
 
   echo "[rollout] snapshot POST rollout" >&2
+  run_rollout_hook "rollout-${replicas}-post" "$replicas" "${label_suite}-rollout-${replicas}-post" "${BENCH_PRE_POST_SNAPSHOT_CMD:-}"
   run_rollout_snapshot "${label_suite}-rollout-${replicas}-post" "$post_capture_timing"
 }
 

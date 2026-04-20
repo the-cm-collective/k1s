@@ -175,6 +175,104 @@ Current rollout stage model
 - CRI verify publishes the same `10` stages per run.
 - `during-warm` is additive diagnostic data and stays out of ranking weight; the docs/chart builders keep using the legacy stage set for rollup weighting.
 
+## Isolated Rollout Tuning Experiments
+
+Use the experiment runner when you want to test rollout quieting or strategy changes without touching the published benchmark path.
+
+Experiment guarantees
+- Labels must contain `+exp+`.
+- Outputs stay under `state/bench-experiments/<experiment-id>/`.
+- The runner does not write `combined/combined.csv`, `charts/`, or docs artifacts.
+- Retained rebuild profiles ignore these experiment families because they only keep explicit published prefixes.
+
+Quick examples
+
+CRI, baseline behavior but isolated output:
+```bash
+make bench-rollout-tuning-experiment \
+  LANE=cri \
+  LABEL_BASE="r$(date +%Y%m%d-%H%M)-cri+exp+baseline" \
+  EXPERIMENT_ID="cri-baseline-exp"
+```
+
+CRI, steady-quiet hook plus ordered rollout override:
+```bash
+BENCH_EXPERIMENT_STEADY_QUIET=1 \
+BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered \
+make bench-rollout-tuning-experiment \
+  LANE=cri \
+  LABEL_BASE="r$(date +%Y%m%d-%H%M)-cri+exp+ordered" \
+  EXPERIMENT_ID="cri-ordered-exp"
+```
+
+Cross-check the same logic on other k1s-family lanes:
+```bash
+BENCH_EXPERIMENT_STEADY_QUIET=1 \
+make bench-rollout-tuning-experiment \
+  LANE=rootless \
+  LABEL_BASE="r$(date +%Y%m%d-%H%M)-rootless+exp+quiet" \
+  EXPERIMENT_ID="rootless-quiet-exp"
+```
+
+Available lanes
+- `cri`
+- `rootless`
+- `rootful`
+- `k1nd`
+
+Relevant experiment env vars
+- `BENCH_EXPERIMENT_STEADY_QUIET=1` enables backend-aware steady-state checks before `pods-*` and `rollout-*-post` snapshots. Leave it unset for control runs; the default is `0`.
+- `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered|parallel` rewrites only the bench-local manifest copy used by the experiment.
+- `EXPERIMENT_STEADY_TIMEOUT`, `EXPERIMENT_STEADY_DELAY`, and `EXPERIMENT_STEADY_POLLS` tune the steady-state wait helper.
+
+Outputs
+- `state/bench-experiments/<id>/snapshots/`
+- `state/bench-experiments/<id>/combined/combined.csv`
+- `state/bench-experiments/<id>/charts/`
+- `state/bench-experiments/<id>/reports/audit.txt`
+- `state/bench-experiments/<id>/reports/summary.txt`
+
+The experiment harness uses the same generic k1s matrix/rollout scripts as the baseline lanes. Only the optional pre-snapshot hooks and bench-local manifest overrides change, so viability checks stay close to the published benchmark behavior.
+
+CRI ordered candidate workflow
+
+The CRI retained rerun path now defaults to the promoted profile:
+- `BENCH_CRI_ROLLOUT_STRATEGY=ordered`
+- `BENCH_CRI_STEADY_QUIET=1`
+
+That is the profile used by `scripts/bench/run_cri_verify.sh` and future retained CRI publishes.
+
+If you need to compare the promoted CRI profile against the old parallel baseline again, use the paired candidate wrapper instead of re-running ad hoc control/ordered commands:
+
+```bash
+make bench-cri-rollout-candidate
+```
+
+The wrapper creates a group under `state/bench-experiments/<group-id>/` and runs:
+- `baseline-r1..rN` with `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel` and `BENCH_EXPERIMENT_STEADY_QUIET=0`
+- `ordered-r1..rN` with `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered` and `BENCH_EXPERIMENT_STEADY_QUIET=1`
+
+After the runs complete it writes:
+- `reports/candidate.txt`
+- `reports/candidate.json`
+
+The candidate summary reports scenario means for the key rollout stages and evaluates these CRI promotion gates by default:
+- `pods-5` app drift `<= 3 MiB`
+- `rollout-5-post` app drift `<= 3 MiB`
+- `rollout-5-during` app improvement `>= 30 MiB`
+
+These candidate groups still live on the experiment path. They are for promotion decisions, not for direct publication into retained benchmark artifacts.
+
+To force the old retained CRI baseline for an explicit comparison run:
+
+```bash
+BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_STEADY_QUIET=0 \
+BASE="r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify" \
+RUNS="1 2 3" \
+./scripts/bench/run_cri_verify.sh
+```
+
 For CRI reruns, use `scripts/bench/run_cri_verify.sh` instead of looping over `make bench-mem-cri` manually. The wrapper:
 - tears down `state/bench-cri` between runs and kills stale bench controllers
 - writes a durable operator log under `state/bench-cri-rerun-*.log`

@@ -35,6 +35,8 @@ REPLICAS="${REPLICAS:-1,5,10}"
 ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 DURATION="${DURATION:-30}"
 bench_runtime_handler="runc"
+bench_rollout_strategy="${BENCH_CRI_ROLLOUT_STRATEGY:-ordered}"
+bench_steady_quiet="${BENCH_CRI_STEADY_QUIET:-1}"
 
 : "${BENCH_READY_STABLE_POLLS:=3}"
 : "${BENCH_SETTLE_DELAY:=5}"
@@ -49,6 +51,9 @@ bench_runtime_handler="runc"
 : "${BENCH_IDLE_VALIDATE_ZERO_APP:=1}"
 : "${CRI_DEBUG_STATE_DIR:=state/bench-cri-debug}"
 : "${CRI_DEBUG_CAPTURE_ON_QUIET:=1}"
+: "${BENCH_CRI_STEADY_TIMEOUT:=20}"
+: "${BENCH_CRI_STEADY_DELAY:=2}"
+: "${BENCH_CRI_STEADY_POLLS:=3}"
 
 export BENCH_READY_STABLE_POLLS
 export BENCH_SETTLE_DELAY
@@ -199,6 +204,22 @@ sudo_cmd=(sudo -n)
 if [[ "${SUDO_INTERACTIVE:-0}" == "1" ]]; then
   sudo_cmd=(sudo)
 fi
+
+case "$bench_rollout_strategy" in
+  ordered|parallel) ;;
+  *)
+    log "invalid BENCH_CRI_ROLLOUT_STRATEGY='${bench_rollout_strategy}' (expected ordered|parallel)"
+    exit 2
+    ;;
+esac
+case "$bench_steady_quiet" in
+  0|1) ;;
+  *)
+    log "invalid BENCH_CRI_STEADY_QUIET='${bench_steady_quiet}' (expected 0|1)"
+    exit 2
+    ;;
+esac
+
 sudo_env_base=(
   "HOME=/root"
   "XDG_CONFIG_HOME=/root/.config"
@@ -237,6 +258,36 @@ ae_cli() {
   else
     "$python_bin" -m ae.cli "$@"
   fi
+}
+
+build_steady_cmd() {
+  local app="$1"
+  local -a cmd=(
+    sudo
+    -n
+    env
+    "PATH=${PATH}"
+    "PYTHONPATH=${py_path}"
+    "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+    "NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}"
+    "NIX_LD=${NIX_LD:-}"
+    "AE_PODMAN_BIN=${AE_PODMAN_BIN:-podman}"
+    "AE_CRI_ENDPOINT=${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
+    "$python_bin"
+    scripts/bench/wait_rollout_steady.py
+    --backend
+    cri
+    --app
+    "$app"
+    --timeout
+    "$BENCH_CRI_STEADY_TIMEOUT"
+    --delay
+    "$BENCH_CRI_STEADY_DELAY"
+    --stable-polls
+    "$BENCH_CRI_STEADY_POLLS"
+    --require-app-present
+  )
+  printf '%q ' "${cmd[@]}"
 }
 
 delete_bench_app() {
@@ -731,7 +782,14 @@ bench_runtime_manifest="${BENCH_APPLY_DIR}/runtime-class/${bench_app_name}-${ben
   "$BENCH_PRIMARY_MANIFEST" \
   "$bench_runtime_manifest" \
   --runtime-class "$bench_runtime_handler" >/dev/null
+bench_rollout_manifest="${BENCH_APPLY_DIR}/rollout/${bench_app_name}-${bench_runtime_handler}-${bench_rollout_strategy}.yaml"
+"$python_bin" scripts/bench/pin_rollout_policy.py \
+  "$bench_runtime_manifest" \
+  "$bench_rollout_manifest" \
+  --strategy "$bench_rollout_strategy" >/dev/null
+bench_runtime_manifest="$bench_rollout_manifest"
 log "using bench-local manifest override: ${bench_runtime_manifest}"
+log "published CRI profile: strategy=${bench_rollout_strategy} steady_quiet=${bench_steady_quiet}"
 
 cri_wait_pod_ids_gone() {
   local -a ids=("$@")
@@ -1190,11 +1248,17 @@ cri_wait_runtime_ready "cleanup for app=${bench_app_name}"
 cri_wait_app_quiet "$bench_app_name" "cleanup for app=${bench_app_name}"
 cri_assert_app_absent_via_inspect "$bench_app_name" "cleanup for app=${bench_app_name}"
 
+steady_hook_cmd=""
+if [[ "$bench_steady_quiet" == "1" ]]; then
+  steady_hook_cmd="$(build_steady_cmd "$bench_app_name")"
+fi
+
 AE_ENGINE_STRICT=1 \
 BENCH_IDLE_VALIDATE_ZERO_APP="$BENCH_IDLE_VALIDATE_ZERO_APP" \
 LABEL_SUITE="$LABEL_CRI" \
 APP="$bench_runtime_manifest" APP_NAME="$bench_app_name" \
 REPLICAS="$REPLICAS" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
+BENCH_PRE_STEADY_SNAPSHOT_CMD="$steady_hook_cmd" \
 ./scripts/bench/run_matrix.sh \
   --label-suite "$LABEL_CRI" \
   --app "$bench_runtime_manifest" \
@@ -1240,6 +1304,7 @@ for rep in $rollout_replicas_list; do
   LABEL_SUITE_ROLL="$LABEL_CRI" \
   APP="$bench_runtime_manifest" APP_NAME="$bench_app_name" \
   ROLL_REPLICAS="$rep" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
+  BENCH_PRE_POST_SNAPSHOT_CMD="$steady_hook_cmd" \
   ./scripts/bench/run_rollout_k1s.sh \
     --label-suite "$LABEL_CRI" \
     --app "$bench_runtime_manifest" \
@@ -1250,5 +1315,10 @@ for rep in $rollout_replicas_list; do
 done
 
 bench_cleanup
+
+if [[ -n "${BENCH_EXPERIMENT_OUTPUT_ROOT:-}" ]]; then
+  log "experiment output root detected; skipping shared combined/charts/docs rebuild"
+  exit 0
+fi
 
 make bench-mem-docs

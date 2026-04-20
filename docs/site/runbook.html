@@ -965,8 +965,92 @@
 <li><code>RUNS=&quot;1 2 3&quot; ./scripts/bench/run_cri_verify.sh</code></li>
 </ul>
 </li>
-<li>The wrapper logs to <code>state/bench-cri-rerun-*.log</code>, forces a bench-local <code>runtimeClassName: runc</code>, rejects <code>/k8s.io/kata</code> cgroup paths in <code>pods-1</code>, captures rollout <code>-during</code> state immediately after apply, waits for a stable <code>ready/live/desired</code> window before <code>-post</code>, and checks for <code>8</code> finalized rows per CRI run.</li>
+<li>The wrapper logs to <code>state/bench-cri-rerun-*.log</code>, forces a bench-local <code>runtimeClassName: runc</code>, rejects <code>/k8s.io/kata</code> cgroup paths in <code>pods-1</code>, captures rollout <code>-during</code> immediately after apply, captures <code>-during-warm</code> as the warmed transition sample, waits for a stable <code>ready/live/desired</code> window before <code>-post</code>, and checks for <code>10</code> finalized rows per CRI run.</li>
 <li>Set <code>BASE=...</code> / <code>RUNS=...</code> before the script name (or <code>export</code> them); do not pass them after <code>run_cri_verify.sh</code> as positional args.</li>
+<li>Full-stage expectation per CRI run:
+<ul>
+<li><code>idle</code></li>
+<li><code>pods-1</code></li>
+<li><code>pods-5</code></li>
+<li><code>pods-10</code></li>
+<li><code>rollout-2-during</code></li>
+<li><code>rollout-2-during-warm</code></li>
+<li><code>rollout-2-post</code></li>
+<li><code>rollout-5-during</code></li>
+<li><code>rollout-5-during-warm</code></li>
+<li><code>rollout-5-post</code></li>
+</ul>
+</li>
+<li>Host note for this machine: <code>k3d</code> is expected to use <code>unix:///run/docker-k3d.sock</code>. If <code>k3d cluster list</code> fails with a missing <code>docker-k3d.sock</code>, run <code>sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart docker.socket docker.service</code> before benchmarking the <code>k3d</code> lane.</li>
+</ul>
+</li>
+</ul>
+<p>Isolated rollout-tuning experiments</p>
+<ul>
+<li>Use <code>make bench-rollout-tuning-experiment</code> for <code>cri</code>, <code>rootless</code>, <code>rootful</code>, or <code>k1nd</code> when evaluating quiet gates or rollout strategy changes.</li>
+<li>These runs are intentionally non-publishable by default:
+<ul>
+<li>labels must contain <code>+exp+</code></li>
+<li>outputs live under <code>state/bench-experiments/&lt;experiment-id&gt;/</code></li>
+<li>they do not update <code>combined/combined.csv</code>, <code>charts/</code>, or docs</li>
+<li>steady-quiet is disabled by default; set <code>BENCH_EXPERIMENT_STEADY_QUIET=1</code> explicitly when you want the extra pre-snapshot gate</li>
+</ul>
+</li>
+<li>Example CRI experiment:
+<ul>
+<li><code>BENCH_EXPERIMENT_STEADY_QUIET=1 BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered make bench-rollout-tuning-experiment LANE=cri LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-cri+exp+ordered&quot; EXPERIMENT_ID=cri-ordered-exp</code></li>
+</ul>
+</li>
+<li>Example rootless cross-check:
+<ul>
+<li><code>BENCH_EXPERIMENT_STEADY_QUIET=1 make bench-rollout-tuning-experiment LANE=rootless LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-rootless+exp+quiet&quot; EXPERIMENT_ID=rootless-quiet-exp</code></li>
+</ul>
+</li>
+<li>Review the experiment-local outputs before considering promotion:
+<ul>
+<li><code>state/bench-experiments/&lt;id&gt;/combined/combined.csv</code></li>
+<li><code>state/bench-experiments/&lt;id&gt;/charts/</code></li>
+<li><code>state/bench-experiments/&lt;id&gt;/reports/audit.txt</code></li>
+</ul>
+</li>
+<li>CRI ordered candidate verification:
+<ul>
+<li><code>make bench-cri-rollout-candidate</code></li>
+<li>The wrapper runs paired CRI experiments under <code>state/bench-experiments/&lt;group-id&gt;/</code>:
+<ul>
+<li><code>baseline-r1..rN</code>: explicit <code>parallel</code> rollout baseline with <code>BENCH_EXPERIMENT_STEADY_QUIET=0</code></li>
+<li><code>ordered-r1..rN</code>: ordered rollout override with <code>BENCH_EXPERIMENT_STEADY_QUIET=1</code></li>
+</ul>
+</li>
+<li>Candidate group outputs:
+<ul>
+<li><code>state/bench-experiments/&lt;group-id&gt;/reports/candidate.txt</code></li>
+<li><code>state/bench-experiments/&lt;group-id&gt;/reports/candidate.json</code></li>
+</ul>
+</li>
+<li>Current promotion gates used by the helper:
+<ul>
+<li><code>pods-5</code> steady-state app drift <code>&lt;= 3 MiB</code></li>
+<li><code>rollout-5-post</code> app drift <code>&lt;= 3 MiB</code></li>
+<li><code>rollout-5-during</code> app improvement <code>&gt;= 30 MiB</code></li>
+</ul>
+</li>
+<li>These groups remain non-publishable experiment outputs; they do not touch retained baseline artifacts.</li>
+</ul>
+</li>
+<li>Retained CRI publish default:
+<ul>
+<li><code>./scripts/bench/run_cri_verify.sh</code> now defaults to the promoted CRI profile:
+<ul>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=ordered</code></li>
+<li><code>BENCH_CRI_STEADY_QUIET=1</code></li>
+</ul>
+</li>
+<li>To force the old retained parallel baseline for comparison:
+<ul>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel BENCH_CRI_STEADY_QUIET=0 BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify&quot; RUNS=&quot;1 2 3&quot; ./scripts/bench/run_cri_verify.sh</code></li>
+</ul>
+</li>
 </ul>
 </li>
 </ul>
@@ -2114,7 +2198,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-17 10:02:07</span>
+        <span>Built 2026-04-19 09:23:07</span>
       </div>
     </footer>
     <script>

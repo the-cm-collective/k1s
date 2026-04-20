@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "bench" / "rebuild_retained_artifacts.py"
 LEGACY_CSV = ROOT / "scripts" / "bench" / "data" / "legacy_20260203_frozen.csv"
@@ -89,7 +88,7 @@ def test_dry_run_writes_keep_drop_inventory(tmp_path: Path) -> None:
         "20260413-000001",
     )
 
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603
         [
             sys.executable,
             str(SCRIPT),
@@ -116,3 +115,51 @@ def test_dry_run_writes_keep_drop_inventory(tmp_path: Path) -> None:
     assert "r20260417-overlap-smoke-rootless-idle" in keep_text
     assert "r20260413-old-invalid-idle" in drop_text
     assert not (combined_dir / "combined.csv").exists()
+
+
+def test_final_profile_drops_experiment_labels_from_retained_inventory(tmp_path: Path) -> None:
+    snapshot_root = tmp_path / "snapshots"
+    combined_dir = tmp_path / "combined"
+    state_dir = tmp_path / "state"
+    legacy_csv = tmp_path / "legacy.csv"
+    legacy_csv.write_text(LEGACY_CSV.read_text(encoding="utf-8"), encoding="utf-8")
+
+    _write_summary(
+        snapshot_root / "r20260417-fullretest+podman+rootless+cg2-idle" / "20260417-000001",
+        "r20260417-fullretest+podman+crun+rootless+cg2-idle",
+        "20260417-000001",
+    )
+    _write_summary(
+        snapshot_root / "r20260417+exp+cri-idle" / "20260417-000002",
+        "r20260417+exp+cri-idle",
+        "20260417-000002",
+    )
+
+    result = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--profile",
+            "final",
+            "--stamp",
+            "r20260417-fullretest",
+            "--snapshot-root",
+            str(snapshot_root),
+            "--combined-dir",
+            str(combined_dir),
+            "--state-dir",
+            str(state_dir),
+            "--legacy-csv",
+            str(legacy_csv),
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    keep_text = (state_dir / "bench-retained.keep.txt").read_text(encoding="utf-8")
+    drop_text = (state_dir / "bench-retained.drop.txt").read_text(encoding="utf-8")
+    assert "r20260417-fullretest+podman+rootless+cg2-idle" in keep_text
+    assert "r20260417+exp+cri-idle" in drop_text

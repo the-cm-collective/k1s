@@ -149,6 +149,41 @@ CRI nodes (containerd)
     - `rollout-5-post`
   - Host note for this machine: `k3d` is expected to use `unix:///run/docker-k3d.sock`. If `k3d cluster list` fails with a missing `docker-k3d.sock`, run `sudo systemctl daemon-reload && sudo systemctl restart docker.socket docker.service` before benchmarking the `k3d` lane.
 
+Isolated rollout-tuning experiments
+- Use `make bench-rollout-tuning-experiment` for `cri`, `rootless`, `rootful`, or `k1nd` when evaluating quiet gates or rollout strategy changes.
+- These runs are intentionally non-publishable by default:
+  - labels must contain `+exp+`
+  - outputs live under `state/bench-experiments/<experiment-id>/`
+  - they do not update `combined/combined.csv`, `charts/`, or docs
+  - steady-quiet is disabled by default; set `BENCH_EXPERIMENT_STEADY_QUIET=1` explicitly when you want the extra pre-snapshot gate
+- Example CRI experiment:
+  - `BENCH_EXPERIMENT_STEADY_QUIET=1 BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered make bench-rollout-tuning-experiment LANE=cri LABEL_BASE="r$(date +%Y%m%d-%H%M)-cri+exp+ordered" EXPERIMENT_ID=cri-ordered-exp`
+- Example rootless cross-check:
+  - `BENCH_EXPERIMENT_STEADY_QUIET=1 make bench-rollout-tuning-experiment LANE=rootless LABEL_BASE="r$(date +%Y%m%d-%H%M)-rootless+exp+quiet" EXPERIMENT_ID=rootless-quiet-exp`
+- Review the experiment-local outputs before considering promotion:
+  - `state/bench-experiments/<id>/combined/combined.csv`
+  - `state/bench-experiments/<id>/charts/`
+  - `state/bench-experiments/<id>/reports/audit.txt`
+- CRI ordered candidate verification:
+  - `make bench-cri-rollout-candidate`
+  - The wrapper runs paired CRI experiments under `state/bench-experiments/<group-id>/`:
+    - `baseline-r1..rN`: explicit `parallel` rollout baseline with `BENCH_EXPERIMENT_STEADY_QUIET=0`
+    - `ordered-r1..rN`: ordered rollout override with `BENCH_EXPERIMENT_STEADY_QUIET=1`
+  - Candidate group outputs:
+    - `state/bench-experiments/<group-id>/reports/candidate.txt`
+    - `state/bench-experiments/<group-id>/reports/candidate.json`
+  - Current promotion gates used by the helper:
+    - `pods-5` steady-state app drift `<= 3 MiB`
+    - `rollout-5-post` app drift `<= 3 MiB`
+    - `rollout-5-during` app improvement `>= 30 MiB`
+  - These groups remain non-publishable experiment outputs; they do not touch retained baseline artifacts.
+- Retained CRI publish default:
+  - `./scripts/bench/run_cri_verify.sh` now defaults to the promoted CRI profile:
+    - `BENCH_CRI_ROLLOUT_STRATEGY=ordered`
+    - `BENCH_CRI_STEADY_QUIET=1`
+  - To force the old retained parallel baseline for comparison:
+    - `BENCH_CRI_ROLLOUT_STRATEGY=parallel BENCH_CRI_STEADY_QUIET=0 BASE="r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify" RUNS="1 2 3" ./scripts/bench/run_cri_verify.sh`
+
 Export and Validate K8s YAML
 - Hardened export with validation:
   - `python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/echo-k8s.yaml`

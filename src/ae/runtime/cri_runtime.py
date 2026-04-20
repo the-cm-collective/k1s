@@ -75,6 +75,7 @@ class CRIRuntime(RuntimeAdapter):
     SANDBOX_RECOVERY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
     SANDBOX_CLEANUP_SETTLE_SECONDS = 0.5
     RESERVED_NAME_RECOVERY_TIMEOUT_SECONDS = 30.0
+    CONTAINER_RECYCLE_SETTLE_TIMEOUT_SECONDS = 10.0
 
     def __init__(
         self,
@@ -856,6 +857,19 @@ class CRIRuntime(RuntimeAdapter):
         resp = self._runtime_call("ContainerStatus", req)
         return getattr(resp, "status", None)
 
+    def _list_containers(self, pod_id: str | None = None) -> list[Any]:
+        pb2 = self._pb2()
+        if pod_id:
+            flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id))
+        else:
+            flt = pb2.ContainerFilter()
+        req = pb2.ListContainersRequest(filter=flt)
+        resp = self._runtime_call("ListContainers", req)
+        items = getattr(resp, "containers", None)
+        if items is None:
+            items = getattr(resp, "items", None)
+        return list(items or [])
+
     def _container_labels(self, container: Any) -> dict[str, str]:
         labels = getattr(container, "labels", None)
         if labels:
@@ -875,17 +889,13 @@ class CRIRuntime(RuntimeAdapter):
     def _find_container(self, pod_id: str | None, *, container_label: str | None = None):
         if not pod_id:
             return None
-        pb2 = self._pb2()
-        selector = {}
+        containers = self._list_containers(str(pod_id))
         if container_label:
-            selector[self.CONTAINER_LABEL] = container_label
-        flt = pb2.ContainerFilter(pod_sandbox_id=str(pod_id), label_selector=selector)
-        req = pb2.ListContainersRequest(filter=flt)
-        resp = self._runtime_call("ListContainers", req)
-        items = getattr(resp, "containers", None)
-        if items is None:
-            items = getattr(resp, "items", None)
-        containers = list(items or [])
+            containers = [
+                container
+                for container in containers
+                if self._container_labels(container).get(self.CONTAINER_LABEL) == container_label
+            ]
         return containers[0] if containers else None
 
     def _container_id_for_replica(
@@ -1439,9 +1449,18 @@ class CRIRuntime(RuntimeAdapter):
             if job_backoff_limit is not None and attempt >= job_backoff_limit:
                 return False
         # Containers are single-use in CRI; recreate instead of restart.
-        self._runtime_call(
-            "RemoveContainer", self._pb2().RemoveContainerRequest(container_id=container.id)
-        )
+        if self._prepare_main_container_for_recreate(
+            manifest,
+            str(container.id),
+            status,
+            replica_id=replica_id,
+        ):
+            try:
+                if replica_id:
+                    self._ensure_sidecars(manifest, pod_id, replica_id, revision)
+            except Exception as exc:
+                LOGGER.warning("Failed to ensure sidecars for %s: %s", replica_id, exc)
+            return False
         try:
             self._create_main_container(
                 manifest,
@@ -1586,6 +1605,22 @@ class CRIRuntime(RuntimeAdapter):
         details = self._grpc_error_details(exc).lower()
         return "container is in removing state" in details and "can't be started" in details
 
+    def _is_container_in_starting_state_remove_error(self, exc: Exception) -> bool:
+        if grpc is None or not isinstance(exc, grpc.RpcError):
+            return False
+        try:
+            code = exc.code()
+        except Exception:
+            return False
+        if code not in {
+            grpc.StatusCode.UNKNOWN,
+            grpc.StatusCode.ALREADY_EXISTS,
+            grpc.StatusCode.FAILED_PRECONDITION,
+        }:
+            return False
+        details = self._grpc_error_details(exc).lower()
+        return "container is in starting state" in details and "can't be removed" in details
+
     def _pod_cleanup_timeout(self, manifest: AppManifest | None) -> int:
         timeout = 10
         if manifest is not None:
@@ -1645,6 +1680,91 @@ class CRIRuntime(RuntimeAdapter):
             if status is None:
                 return
             time.sleep(0.2)
+
+    def _wait_for_container_settle(self, container_id: str, timeout: float = 5.0) -> Any | None:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        last_status = None
+        while True:
+            status = None
+            with contextlib.suppress(Exception):
+                status = self._container_status(container_id)
+            if status is None:
+                return None
+            last_status = status
+            if self._container_state_name(status) != "created":
+                return status
+            if time.monotonic() >= deadline:
+                return last_status
+            time.sleep(0.2)
+
+    def _prepare_main_container_for_recreate(
+        self,
+        manifest: AppManifest,
+        container_id: str,
+        status: Any,
+        *,
+        replica_id: str | None,
+    ) -> bool:
+        recycle_timeout = max(
+            float(self.CONTAINER_RECYCLE_SETTLE_TIMEOUT_SECONDS),
+            float(self._pod_cleanup_timeout(manifest)),
+        )
+        deadline = time.monotonic() + recycle_timeout
+        current_status = status
+        last_exc: Exception | None = None
+
+        if self._container_state_name(current_status) == "created":
+            current_status = self._wait_for_container_settle(
+                container_id,
+                timeout=min(recycle_timeout, float(self.CONTAINER_RECYCLE_SETTLE_TIMEOUT_SECONDS)),
+            )
+            if current_status is None:
+                return False
+            if self._is_container_running(current_status):
+                return True
+
+        pb2 = self._pb2()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if last_exc is not None:
+                    raise last_exc
+                raise RuntimeError(
+                    f"timed out waiting for container {container_id} to settle before recycle"
+                )
+            try:
+                self._runtime_call(
+                    "RemoveContainer",
+                    pb2.RemoveContainerRequest(container_id=str(container_id)),
+                )
+                self._wait_for_container_absent(str(container_id), timeout=max(0.2, remaining))
+                time.sleep(self.SANDBOX_CLEANUP_SETTLE_SECONDS)
+                return False
+            except Exception as exc:
+                if not self._is_container_in_starting_state_remove_error(exc):
+                    raise
+                last_exc = exc
+                LOGGER.warning(
+                    "CRI main container still starting for replica %s (container_id=%s); "
+                    "waiting for settle before recycle: %s",
+                    replica_id or "?",
+                    container_id,
+                    exc,
+                )
+                current_status = self._wait_for_container_settle(
+                    str(container_id),
+                    timeout=min(
+                        max(0.0, deadline - time.monotonic()),
+                        float(self.CONTAINER_RECYCLE_SETTLE_TIMEOUT_SECONDS),
+                    ),
+                )
+                if current_status is None:
+                    return False
+                if self._is_container_running(current_status):
+                    return True
+                if time.monotonic() >= deadline:
+                    raise last_exc
+                time.sleep(0.2)
 
     def _sandbox_recovery_backoff(self, sandbox_recovery_attempt: int) -> float:
         idx = min(
@@ -1767,6 +1887,15 @@ class CRIRuntime(RuntimeAdapter):
                     return str(value)
         return None
 
+    def _container_name(self, container: Any) -> str:
+        meta = getattr(container, "metadata", None)
+        if meta and getattr(meta, "name", None):
+            return str(meta.name)
+        labels = self._container_labels(container)
+        if labels.get(self.CONTAINER_LABEL):
+            return str(labels[self.CONTAINER_LABEL])
+        return str(getattr(container, "id", ""))
+
     def _pod_metadata_for_container_request(
         self,
         manifest: AppManifest,
@@ -1857,6 +1986,163 @@ class CRIRuntime(RuntimeAdapter):
             seen.add(pod_id_s)
             pod_ids.append(pod_id_s)
         return pod_ids
+
+    def _visible_main_container_ids_for_replica(self, replica_id: str | None) -> list[str]:
+        if not replica_id:
+            return []
+        container_ids: list[str] = []
+        seen: set[str] = set()
+        with contextlib.suppress(Exception):
+            for container in self._list_containers():
+                if not self._container_matches_replica(container, replica_id, container_label="main"):
+                    continue
+                container_id = getattr(container, "id", None)
+                if not container_id:
+                    continue
+                container_id_s = str(container_id)
+                if container_id_s in seen:
+                    continue
+                seen.add(container_id_s)
+                container_ids.append(container_id_s)
+        return container_ids
+
+    def _reserved_name_recovery_snapshot(
+        self,
+        replica_id: str,
+        *,
+        reserved_pod_id: str | None = None,
+        reserved_container_id: str | None = None,
+        reserved_container_name: str | None = None,
+        expected_container_name: str | None = None,
+    ) -> dict[str, Any]:
+        replica_pod_ids: list[str] = []
+        replica_container_ids: list[str] = []
+        reserved_pod_present = False
+        reserved_container_present = False
+
+        with contextlib.suppress(Exception):
+            replica_pod_ids = self._pod_ids_for_replica(replica_id)
+        with contextlib.suppress(Exception):
+            replica_container_ids = self._visible_main_container_ids_for_replica(replica_id)
+        if reserved_pod_id:
+            with contextlib.suppress(Exception):
+                reserved_pod_present = self._pod_status(reserved_pod_id) is not None
+        if reserved_container_id:
+            with contextlib.suppress(Exception):
+                reserved_container_present = self._container_status(reserved_container_id) is not None
+
+        pod_entries: list[dict[str, Any]] = []
+        with contextlib.suppress(Exception):
+            for pod in self._list_pods():
+                pod_id = getattr(pod, "id", None) or getattr(pod, "pod_sandbox_id", None)
+                pod_id_s = str(pod_id or "")
+                if not pod_id_s:
+                    continue
+                if pod_id_s != str(reserved_pod_id or "") and not self._pod_matches_replica(
+                    pod, replica_id
+                ):
+                    continue
+                pod_entries.append(
+                    {
+                        "id": pod_id_s,
+                        "name": self._pod_name(pod),
+                        "labels": self._pod_labels(pod),
+                    }
+                )
+
+        container_entries: list[dict[str, Any]] = []
+        with contextlib.suppress(Exception):
+            for container in self._list_containers():
+                container_id = getattr(container, "id", None)
+                container_id_s = str(container_id or "")
+                if not container_id_s:
+                    continue
+                if container_id_s != str(reserved_container_id or "") and not self._container_matches_replica(
+                    container, replica_id, container_label="main"
+                ):
+                    continue
+                container_entries.append(
+                    {
+                        "id": container_id_s,
+                        "name": self._container_name(container),
+                        "pod_id": self._container_pod_id(container),
+                        "labels": self._container_labels(container),
+                    }
+                )
+
+        return {
+            "replica_id": replica_id,
+            "reserved_pod_id": reserved_pod_id,
+            "reserved_pod_present": reserved_pod_present,
+            "reserved_container_id": reserved_container_id,
+            "reserved_container_present": reserved_container_present,
+            "reserved_container_name": reserved_container_name,
+            "expected_container_name": expected_container_name,
+            "visible_pod_ids": replica_pod_ids,
+            "visible_main_container_ids": replica_container_ids,
+            "pods": pod_entries,
+            "containers": container_entries,
+        }
+
+    def _wait_for_reserved_name_release(
+        self,
+        *,
+        replica_id: str,
+        reason: str,
+        cause: Exception,
+        cleanup_result: str,
+        recovery_deadline: float,
+        reserved_pod_id: str | None = None,
+        reserved_container_id: str | None = None,
+        reserved_container_name: str | None = None,
+        expected_container_name: str | None = None,
+    ) -> None:
+        poll_interval = 0.2
+        logged_wait = False
+        while True:
+            snapshot = self._reserved_name_recovery_snapshot(
+                replica_id,
+                reserved_pod_id=reserved_pod_id,
+                reserved_container_id=reserved_container_id,
+                reserved_container_name=reserved_container_name,
+                expected_container_name=expected_container_name,
+            )
+            blocked_on_sandbox = bool(
+                snapshot["reserved_pod_present"] or snapshot["visible_pod_ids"]
+            )
+            blocked_on_container = bool(
+                snapshot["reserved_container_present"] or snapshot["visible_main_container_ids"]
+            )
+            if not blocked_on_sandbox and not blocked_on_container:
+                return
+            now = time.monotonic()
+            remaining = max(0.0, float(recovery_deadline) - now)
+            if remaining <= 0.0:
+                LOGGER.error(
+                    "%s timed out for replica %s after %s; blocked_on_sandbox=%s "
+                    "blocked_on_container=%s current_state=%s",
+                    reason,
+                    replica_id,
+                    cleanup_result,
+                    blocked_on_sandbox,
+                    blocked_on_container,
+                    snapshot,
+                )
+                raise cause
+            if not logged_wait:
+                LOGGER.warning(
+                    "%s cleanup complete for replica %s; waiting for name release "
+                    "blocked_on_sandbox=%s blocked_on_container=%s "
+                    "deadline_remaining=%.1fs cleanup_result=%s",
+                    reason,
+                    replica_id,
+                    blocked_on_sandbox,
+                    blocked_on_container,
+                    remaining,
+                    cleanup_result,
+                )
+                logged_wait = True
+            time.sleep(min(poll_interval, remaining))
 
     def _cleanup_replica_pod_sandboxes(
         self,
@@ -2033,6 +2319,14 @@ class CRIRuntime(RuntimeAdapter):
             sweep_replica_pods=True,
             recovery_deadline=recovery_deadline,
         )
+        self._wait_for_reserved_name_release(
+            replica_id=replica_id,
+            reason="CRI sandbox name still reserved",
+            cause=cause,
+            cleanup_result="replica pod sandbox cleanup complete",
+            recovery_deadline=recovery_deadline,
+            reserved_pod_id=reserved_pod_id,
+        )
         self._run_pod(
             manifest,
             replica_id,
@@ -2105,6 +2399,17 @@ class CRIRuntime(RuntimeAdapter):
             sweep_replica_pods=True,
             extra_pod_ids=[pid for pid in [reserved_pod_id] if pid],
             recovery_deadline=recovery_deadline,
+        )
+        self._wait_for_reserved_name_release(
+            replica_id=replica_id,
+            reason="CRI container name still reserved",
+            cause=cause,
+            cleanup_result="reserved container cleanup complete",
+            recovery_deadline=recovery_deadline,
+            reserved_pod_id=reserved_pod_id or pod_id,
+            reserved_container_id=reserved_container_id,
+            reserved_container_name=reserved_container_name,
+            expected_container_name=expected_container_name,
         )
         self._run_pod(
             manifest,

@@ -56,6 +56,32 @@ class _FakeClock:
 
 
 class _PB2:
+    class PodSandboxFilter:
+        def __init__(self, **kwargs) -> None:
+            self.__dict__.update(kwargs)
+
+    class ListPodSandboxRequest:
+        def __init__(self, *, filter=None) -> None:
+            self.filter = filter
+
+    class PodSandboxStatusRequest:
+        def __init__(self, *, pod_sandbox_id: str, verbose: bool) -> None:
+            self.pod_sandbox_id = pod_sandbox_id
+            self.verbose = verbose
+
+    class ContainerFilter:
+        def __init__(self, **kwargs) -> None:
+            self.__dict__.update(kwargs)
+
+    class ListContainersRequest:
+        def __init__(self, *, filter=None) -> None:
+            self.filter = filter
+
+    class ContainerStatusRequest:
+        def __init__(self, *, container_id: str, verbose: bool) -> None:
+            self.container_id = container_id
+            self.verbose = verbose
+
     class PodSandboxMetadata:
         def __init__(self, **kwargs) -> None:
             self.__dict__.update(kwargs)
@@ -136,6 +162,24 @@ def test_cri_runtime_detects_container_in_removing_state_error() -> None:
 
     assert runtime._is_container_in_removing_state_error(removing) is True
     assert runtime._is_container_in_removing_state_error(other) is False
+
+
+def test_cri_runtime_detects_container_in_starting_state_remove_error() -> None:
+    if grpc is None:
+        pytest.skip("grpc unavailable")
+    runtime = CRIRuntime()
+
+    starting = _FakeGrpcError(
+        grpc.StatusCode.UNKNOWN,
+        (
+            'failed to set removing state for container "abc": '
+            "container is in starting state, can't be removed"
+        ),
+    )
+    other = _FakeGrpcError(grpc.StatusCode.UNKNOWN, "transport unavailable")
+
+    assert runtime._is_container_in_starting_state_remove_error(starting) is True
+    assert runtime._is_container_in_starting_state_remove_error(other) is False
 
 
 def test_cri_runtime_detects_reserved_container_name_error_and_extracts_id() -> None:
@@ -448,13 +492,14 @@ def test_run_pod_reserved_sandbox_name_sweeps_all_replica_pods(monkeypatch) -> N
     removed: list[str] = []
     sleeps: list[float] = []
     failures = iter(["pod-1"])
+    visible_pods = ["pod-2", "pod-3"]
 
     monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
     monkeypatch.setattr(runtime, "_port_mappings", lambda _manifest: ([], {}))
     monkeypatch.setattr(runtime, "_ensure_sidecars", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runtime, "_pod_ids_for_replica", lambda _replica_id: [])
     monkeypatch.setattr(cri_runtime_module.time, "sleep", lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(runtime, "_pod_ids_for_replica", lambda _replica_id: ["pod-2", "pod-3"])
+    monkeypatch.setattr(runtime, "_pod_ids_for_replica", lambda _replica_id: list(visible_pods))
 
     def _runtime_call(method, _req):
         if method == "RunPodSandbox":
@@ -469,10 +514,17 @@ def test_run_pod_reserved_sandbox_name_sweeps_all_replica_pods(monkeypatch) -> N
         return None
 
     monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
+
+    def _remove_pod_sandbox(pod_id, **_kwargs) -> None:
+        pod_id_s = str(pod_id)
+        removed.append(pod_id_s)
+        if pod_id_s in visible_pods:
+            visible_pods.remove(pod_id_s)
+
     monkeypatch.setattr(
         runtime,
         "_remove_pod_sandbox",
-        lambda pod_id, **_kwargs: removed.append(str(pod_id)),
+        _remove_pod_sandbox,
     )
     monkeypatch.setattr(
         runtime,
@@ -485,6 +537,70 @@ def test_run_pod_reserved_sandbox_name_sweeps_all_replica_pods(monkeypatch) -> N
     assert removed == ["pod-1", "pod-2", "pod-3"]
     assert created_for == ["pod-4"]
     assert sleeps == [0.5, 1.0]
+
+
+def test_run_pod_reserved_sandbox_name_waits_for_name_release_before_retry(monkeypatch) -> None:
+    if grpc is None:
+        pytest.skip("grpc unavailable")
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    created_for: list[str] = []
+    removed: list[str] = []
+    sleeps: list[float] = []
+    reserved_present = {"value": True}
+    run_pod_results = iter(
+        [
+            _FakeGrpcError(
+                grpc.StatusCode.UNKNOWN,
+                'failed to reserve sandbox name "default/demo-rev1-0_default_abc_0": '
+                'name "default/demo-rev1-0_default_abc_0" is reserved for "pod-1"',
+            ),
+            "pod-2",
+        ]
+    )
+
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(runtime, "_port_mappings", lambda _manifest: ([], {}))
+    monkeypatch.setattr(runtime, "_ensure_sidecars", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_pod_ids_for_replica", lambda _replica_id: [])
+
+    def _sleep(seconds: float) -> None:
+        sleeps.append(float(seconds))
+        if float(seconds) == 0.2:
+            reserved_present["value"] = False
+
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", _sleep)
+
+    def _runtime_call(method, _req):
+        if method == "RunPodSandbox":
+            next_result = next(run_pod_results)
+            if isinstance(next_result, Exception):
+                raise next_result
+            return SimpleNamespace(pod_sandbox_id=next_result)
+        return None
+
+    monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
+    monkeypatch.setattr(
+        runtime,
+        "_remove_pod_sandbox",
+        lambda pod_id, **_kwargs: removed.append(str(pod_id)),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_pod_status",
+        lambda pod_id: SimpleNamespace(id=pod_id) if reserved_present["value"] else None,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_create_main_container",
+        lambda *_args, **_kwargs: created_for.append(str(_args[1])),
+    )
+
+    runtime._run_pod(manifest, "default/demo-rev1-0", 1)
+
+    assert removed == ["pod-1"]
+    assert created_for == ["pod-2"]
+    assert sleeps == [0.5, 1.0, 0.2]
 
 
 def test_run_pod_recovers_from_stale_sandbox_with_backoff(monkeypatch) -> None:
@@ -581,6 +697,139 @@ def test_run_pod_recovers_from_reserved_container_name_with_backoff(monkeypatch)
     assert sleeps == [0.5, 1.0]
 
 
+def test_run_pod_reserved_container_name_waits_for_name_release_before_retry(
+    monkeypatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    created_for: list[str] = []
+    cleaned: list[tuple[str | None, str | None, int]] = []
+    removed: list[str] = []
+    sleeps: list[float] = []
+    reserved_present = {"value": True}
+    pod_ids = iter(["pod-1", "pod-2"])
+
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(runtime, "_port_mappings", lambda _manifest: ([], {}))
+    monkeypatch.setattr(runtime, "_ensure_sidecars", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_pod_ids_for_replica", lambda _replica_id: [])
+
+    def _sleep(seconds: float) -> None:
+        sleeps.append(float(seconds))
+        if float(seconds) == 0.2:
+            reserved_present["value"] = False
+
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", _sleep)
+    monkeypatch.setattr(
+        runtime,
+        "_runtime_call",
+        lambda method, _req: (
+            SimpleNamespace(pod_sandbox_id=next(pod_ids))
+            if method == "RunPodSandbox"
+            else None
+        ),
+    )
+
+    def _create(*_args, **_kwargs) -> None:
+        pod_id = str(_args[1])
+        created_for.append(pod_id)
+        if pod_id == "pod-1":
+            raise _ReservedContainerNameError("ctr-1", "reserved container name")
+
+    monkeypatch.setattr(runtime, "_create_main_container", _create)
+    monkeypatch.setattr(
+        runtime,
+        "_cleanup_reserved_container_for_replica",
+        lambda replica_id, container_id, *, timeout=0, **_kwargs: (
+            cleaned.append((replica_id, container_id, timeout)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_container_status",
+        lambda container_id: (
+            SimpleNamespace(pod_sandbox_id="pod-9", labels={})
+            if str(container_id) == "ctr-1" and reserved_present["value"]
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_remove_pod_sandbox",
+        lambda pod_id, **_kwargs: removed.append(str(pod_id)),
+    )
+
+    runtime._run_pod(manifest, "default/demo-rev1-0", 1)
+
+    assert cleaned == [("default/demo-rev1-0", "ctr-1", 10)]
+    assert removed == ["pod-1", "pod-9"]
+    assert created_for == ["pod-1", "pod-2"]
+    assert sleeps == [0.5, 1.0, 0.2]
+
+
+def test_run_pod_reserved_container_name_raises_after_release_deadline_with_debug_state(
+    monkeypatch, caplog
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    clock = _FakeClock()
+    removed: list[str] = []
+    cleaned: list[tuple[str | None, str | None, int]] = []
+
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(runtime, "_port_mappings", lambda _manifest: ([], {}))
+    monkeypatch.setattr(runtime, "_ensure_sidecars", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_pod_ids_for_replica", lambda _replica_id: [])
+    monkeypatch.setattr(runtime, "RESERVED_NAME_RECOVERY_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(cri_runtime_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(
+        runtime,
+        "_runtime_call",
+        lambda method, _req: (
+            SimpleNamespace(pod_sandbox_id="pod-1") if method == "RunPodSandbox" else None
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_create_main_container",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            _ReservedContainerNameError("ctr-1", "reserved container name")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_cleanup_reserved_container_for_replica",
+        lambda replica_id, container_id, *, timeout=0, **_kwargs: (
+            cleaned.append((replica_id, container_id, timeout)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_container_status",
+        lambda container_id: (
+            SimpleNamespace(pod_sandbox_id="pod-9", labels={})
+            if str(container_id) == "ctr-1"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_remove_pod_sandbox",
+        lambda pod_id, **_kwargs: removed.append(str(pod_id)),
+    )
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(_ReservedContainerNameError, match="reserved container name"):
+            runtime._run_pod(manifest, "default/demo-rev1-0", 1)
+
+    assert cleaned == [("default/demo-rev1-0", "ctr-1", 10)]
+    assert removed == ["pod-1", "pod-9"]
+    assert "waiting for name release" in caplog.text
+    assert "current_state=" in caplog.text
+    assert "reserved_container_id" in caplog.text
+
+
 def test_run_pod_raises_reserved_container_name_when_cleanup_is_not_safe(monkeypatch) -> None:
     runtime = CRIRuntime(node_id="hub-1")
     manifest = _manifest()
@@ -621,6 +870,7 @@ def test_run_pod_reserved_container_name_recovers_after_hidden_sandbox_reservati
     removed: list[str] = []
     cleaned: list[tuple[str | None, str | None, int]] = []
     sleeps: list[float] = []
+    reserved_container_present = {"value": True}
     run_pod_results = iter(
         [
             "pod-1",
@@ -679,7 +929,9 @@ def test_run_pod_reserved_container_name_recovers_after_hidden_sandbox_reservati
         runtime,
         "_cleanup_reserved_container_for_replica",
         lambda replica_id, container_id, *, timeout=0, **_kwargs: (
-            cleaned.append((replica_id, container_id, timeout)) or True
+            cleaned.append((replica_id, container_id, timeout))
+            or reserved_container_present.__setitem__("value", False)
+            or True
         ),
     )
     monkeypatch.setattr(
@@ -687,7 +939,7 @@ def test_run_pod_reserved_container_name_recovers_after_hidden_sandbox_reservati
         "_container_status",
         lambda container_id: (
             SimpleNamespace(pod_sandbox_id="pod-9", labels={})
-            if str(container_id) == "ctr-1"
+            if str(container_id) == "ctr-1" and reserved_container_present["value"]
             else None
         ),
     )
@@ -716,6 +968,7 @@ def test_run_pod_recovers_from_stale_then_reserved_container_name_without_labels
     calls: list[tuple[str, str]] = []
     sleeps: list[float] = []
     pod_ids = iter(["pod-1", "pod-2", "pod-3"])
+    reserved_container_present = {"value": True}
 
     monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
     monkeypatch.setattr(runtime, "_port_mappings", lambda _manifest: ([], {}))
@@ -729,6 +982,8 @@ def test_run_pod_recovers_from_stale_then_reserved_container_name_without_labels
             return SimpleNamespace(pod_sandbox_id=next(pod_ids))
         if method in {"StopContainer", "RemoveContainer"}:
             calls.append((method, str(getattr(req, "container_id", "?"))))
+            if method == "RemoveContainer":
+                reserved_container_present["value"] = False
         return None
 
     monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
@@ -740,7 +995,11 @@ def test_run_pod_recovers_from_stale_then_reserved_container_name_without_labels
     monkeypatch.setattr(
         runtime,
         "_container_status",
-        lambda container_id: SimpleNamespace(labels={}) if str(container_id) == "ctr-1" else None,
+        lambda container_id: (
+            SimpleNamespace(labels={})
+            if str(container_id) == "ctr-1" and reserved_container_present["value"]
+            else None
+        ),
     )
 
     expected_name = runtime._expected_main_containerd_name(
@@ -824,6 +1083,55 @@ def test_ensure_main_container_recovers_from_stale_sandbox(monkeypatch) -> None:
     assert changed is True
     assert removed == ["pod-1"]
     assert recreated == [("default/demo-rev1-0", 1, "hub-1", 0, 1)]
+
+
+def test_ensure_main_container_waits_for_created_container_to_reach_running(
+    monkeypatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    pod = SimpleNamespace(id="pod-1", labels={"ae.pod_name": "default/demo-rev1-0"})
+    container = SimpleNamespace(id="ctr-1")
+    clock = _FakeClock()
+    statuses = iter(
+        [
+            SimpleNamespace(state="created", exit_code=None, labels={}),
+            SimpleNamespace(state="created", exit_code=None, labels={}),
+            SimpleNamespace(state="running", exit_code=None, labels={}),
+        ]
+    )
+    runtime_calls: list[str] = []
+    sidecars: list[str] = []
+
+    monkeypatch.setattr(cri_runtime_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(runtime, "_find_container", lambda *_args, **_kwargs: container)
+    monkeypatch.setattr(runtime, "_container_status", lambda _container_id: next(statuses))
+    monkeypatch.setattr(runtime, "_container_state_name", lambda status: str(status.state))
+    monkeypatch.setattr(
+        runtime,
+        "_is_container_running",
+        lambda status: str(getattr(status, "state", "")) == "running",
+    )
+    monkeypatch.setattr(runtime, "_runtime_call", lambda method, _req: runtime_calls.append(method))
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_sidecars",
+        lambda *_args, **_kwargs: sidecars.append("default/demo-rev1-0"),
+    )
+
+    changed = runtime._ensure_main_container(
+        manifest,
+        pod,
+        1,
+        is_job=False,
+        job_backoff_limit=None,
+    )
+
+    assert changed is False
+    assert runtime_calls == []
+    assert sidecars == ["default/demo-rev1-0"]
+    assert clock.sleeps == [0.2]
 
 
 def test_cleanup_reserved_container_refuses_mismatched_replica(monkeypatch) -> None:
@@ -942,6 +1250,83 @@ def test_ensure_main_container_recovers_from_reserved_container_name(monkeypatch
     assert cleaned == [("default/demo-rev1-0", "ctr-1", 10)]
     assert removed == ["pod-1"]
     assert recreated == [("default/demo-rev1-0", 1, "hub-1", 0, 1)]
+
+
+def test_ensure_main_container_retries_remove_when_container_is_still_starting(
+    monkeypatch,
+) -> None:
+    if grpc is None:
+        pytest.skip("grpc unavailable")
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    pod = SimpleNamespace(id="pod-1", labels={"ae.pod_name": "default/demo-rev1-0"})
+    container = SimpleNamespace(id="ctr-1")
+    clock = _FakeClock()
+    statuses = iter(
+        [
+            SimpleNamespace(state="exited", exit_code=1, labels={}),
+            SimpleNamespace(state="created", exit_code=None, labels={}),
+            SimpleNamespace(state="exited", exit_code=1, labels={}),
+        ]
+    )
+    remove_attempts = {"count": 0}
+    runtime_calls: list[tuple[str, str]] = []
+    created_attempts: list[int] = []
+    sidecars: list[str] = []
+
+    monkeypatch.setattr(cri_runtime_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(runtime, "_find_container", lambda *_args, **_kwargs: container)
+    monkeypatch.setattr(runtime, "_container_status", lambda _container_id: next(statuses))
+    monkeypatch.setattr(runtime, "_container_state_name", lambda status: str(status.state))
+    monkeypatch.setattr(
+        runtime,
+        "_is_container_running",
+        lambda status: str(getattr(status, "state", "")) == "running",
+    )
+    monkeypatch.setattr(runtime, "_wait_for_container_absent", lambda *_args, **_kwargs: None)
+
+    def _runtime_call(method, req):
+        container_id = str(getattr(req, "container_id", "?"))
+        runtime_calls.append((method, container_id))
+        if method == "RemoveContainer":
+            remove_attempts["count"] += 1
+            if remove_attempts["count"] == 1:
+                raise _FakeGrpcError(
+                    grpc.StatusCode.UNKNOWN,
+                    (
+                        f'failed to set removing state for container "{container_id}": '
+                        "container is in starting state, can't be removed"
+                    ),
+                )
+        return None
+
+    monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
+    monkeypatch.setattr(
+        runtime,
+        "_create_main_container",
+        lambda *_args, **kwargs: created_attempts.append(int(kwargs.get("attempt", 0))),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_sidecars",
+        lambda *_args, **_kwargs: sidecars.append("default/demo-rev1-0"),
+    )
+
+    changed = runtime._ensure_main_container(
+        manifest,
+        pod,
+        1,
+        is_job=False,
+        job_backoff_limit=None,
+    )
+
+    assert changed is True
+    assert runtime_calls == [("RemoveContainer", "ctr-1"), ("RemoveContainer", "ctr-1")]
+    assert created_attempts == [1]
+    assert sidecars == ["default/demo-rev1-0"]
+    assert clock.sleeps == [0.2, 0.2, 0.5]
 
 
 def test_stop_and_remove_pod_uses_blocking_sandbox_cleanup(monkeypatch) -> None:
