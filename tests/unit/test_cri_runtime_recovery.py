@@ -113,6 +113,16 @@ class _PB2:
             self.container_id = container_id
 
 
+class _PodCleanupPB2(_PB2):
+    class StopPodSandboxRequest:
+        def __init__(self, *, pod_sandbox_id: str) -> None:
+            self.pod_sandbox_id = pod_sandbox_id
+
+    class RemovePodSandboxRequest:
+        def __init__(self, *, pod_sandbox_id: str) -> None:
+            self.pod_sandbox_id = pod_sandbox_id
+
+
 def test_cri_runtime_detects_stale_pod_sandbox_error() -> None:
     if grpc is None:
         pytest.skip("grpc unavailable")
@@ -1346,3 +1356,213 @@ def test_stop_and_remove_pod_uses_blocking_sandbox_cleanup(monkeypatch) -> None:
     runtime._stop_and_remove_pod(manifest, pod)
 
     assert removed == [("pod-1", "default/demo-rev1-0", 21)]
+
+
+def test_remove_pod_sandbox_raises_when_cleanup_leaves_pod_visible(monkeypatch) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    clock = _FakeClock()
+    pod = SimpleNamespace(id="pod-1", labels={runtime.REPLICA_LABEL: "default/demo-rev1-0"})
+
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PodCleanupPB2)
+    monkeypatch.setattr(cri_runtime_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(runtime, "_list_pods", lambda: [pod])
+    monkeypatch.setattr(
+        runtime,
+        "_runtime_call",
+        lambda method, _req: SimpleNamespace(containers=[]) if method == "ListContainers" else None,
+    )
+
+    with pytest.raises(
+        RuntimeError, match="timed out waiting for CRI pod sandbox pod-1 to disappear after cleanup"
+    ):
+        runtime._remove_pod_sandbox("pod-1", replica_id="default/demo-rev1-0", timeout=1)
+
+
+def test_cleanup_replica_pod_sandboxes_raises_when_name_stays_reserved(monkeypatch) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    clock = _FakeClock()
+    pod = SimpleNamespace(id="pod-1", labels={runtime.REPLICA_LABEL: "default/demo-rev1-0"})
+
+    monkeypatch.setattr(cri_runtime_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(runtime, "_pod_ids_for_replica", lambda _replica_id: [])
+    monkeypatch.setattr(runtime, "_list_pods", lambda: [pod])
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "timed out waiting for CRI pod sandbox name release for replica "
+            "default/demo-rev1-0 after cleanup"
+        ),
+    ):
+        runtime._cleanup_replica_pod_sandboxes("default/demo-rev1-0", timeout=1)
+
+
+def test_prepare_pod_sandbox_recovery_skips_name_release_wait_for_reserved_name_recovery(
+    monkeypatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    cleanup_calls: list[tuple[str, bool, list[str] | None, int]] = []
+
+    monkeypatch.setattr(cri_runtime_module.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        runtime,
+        "_cleanup_replica_pod_sandboxes",
+        lambda replica_id, *, timeout=0, extra_pod_ids=None, wait_for_name_release=True: cleanup_calls.append(
+            (
+                replica_id,
+                bool(wait_for_name_release),
+                None if extra_pod_ids is None else list(extra_pod_ids),
+                int(timeout),
+            )
+        ),
+    )
+
+    runtime._prepare_pod_sandbox_recovery(
+        manifest,
+        replica_id="default/demo-rev1-0",
+        pod_id="pod-stale",
+        sandbox_recovery_attempt=0,
+        cause=RuntimeError("reserved sandbox name"),
+        reason="CRI sandbox name still reserved",
+        sweep_replica_pods=True,
+        recovery_deadline=30.0,
+    )
+
+    assert cleanup_calls == [("default/demo-rev1-0", False, ["pod-stale"], 10)]
+
+
+def test_wait_for_reserved_name_release_allows_reappeared_replica_resources(monkeypatch) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    snapshot = {
+        "replica_id": "default/demo-rev1-0",
+        "reserved_pod_id": "pod-stale",
+        "reserved_pod_present": False,
+        "reserved_container_id": "ctr-stale",
+        "reserved_container_present": False,
+        "reserved_container_name": "main_demo-rev1-0_default_uid_0",
+        "expected_container_name": "main_demo-rev1-0_default_uid_0",
+        "visible_pod_ids": ["pod-new"],
+        "visible_main_container_ids": ["ctr-new"],
+        "pods": [],
+        "containers": [],
+    }
+
+    monkeypatch.setattr(
+        runtime,
+        "_reserved_name_recovery_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    result = runtime._wait_for_reserved_name_release(
+        replica_id="default/demo-rev1-0",
+        reason="CRI container name still reserved",
+        cause=RuntimeError("reserved container name"),
+        cleanup_result="reserved container cleanup complete",
+        recovery_deadline=10.0,
+        reserved_pod_id="pod-stale",
+        reserved_container_id="ctr-stale",
+        reserved_container_name="main_demo-rev1-0_default_uid_0",
+        expected_container_name="main_demo-rev1-0_default_uid_0",
+        allow_reappeared_replica_resources=True,
+    )
+
+    assert result == snapshot
+
+
+def test_reserved_container_name_recovery_skips_run_pod_when_replacement_reappears(
+    monkeypatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    run_calls: list[tuple[str, int]] = []
+    snapshot = {
+        "visible_pod_ids": ["pod-new"],
+        "visible_main_container_ids": ["ctr-new"],
+    }
+
+    monkeypatch.setattr(runtime, "_container_status", lambda _container_id: None)
+    monkeypatch.setattr(
+        runtime,
+        "_cleanup_reserved_container_for_replica",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_pod_sandbox_recovery",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_wait_for_reserved_name_release",
+        lambda **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_run_pod",
+        lambda _manifest, replica_id, revision, **_kwargs: run_calls.append((replica_id, revision)),
+    )
+
+    runtime._recover_from_reserved_container_name(
+        manifest,
+        pod_id="pod-current",
+        reserved_container_id="ctr-stale",
+        replica_id="default/demo-rev1-0",
+        revision=1,
+        attempt=0,
+        sandbox_recovery_attempt=0,
+        cause=_ReservedContainerNameError("ctr-stale", "reserved container name"),
+        node_id="hub-1",
+    )
+
+    assert run_calls == []
+
+
+def test_reserved_pod_sandbox_name_recovery_skips_run_pod_when_replacement_reappears(
+    monkeypatch,
+) -> None:
+    if grpc is None:
+        pytest.skip("grpc unavailable")
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    run_calls: list[tuple[str, int]] = []
+    snapshot = {
+        "visible_pod_ids": ["pod-new"],
+        "visible_main_container_ids": ["ctr-new"],
+    }
+    cause = _FakeGrpcError(
+        grpc.StatusCode.UNKNOWN,
+        'failed to reserve sandbox name "default/demo-rev1-0_default_uid_0": '
+        'name "default/demo-rev1-0_default_uid_0" is reserved for "pod-stale"',
+    )
+
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_pod_sandbox_recovery",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_wait_for_reserved_name_release",
+        lambda **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_run_pod",
+        lambda _manifest, replica_id, revision, **_kwargs: run_calls.append((replica_id, revision)),
+    )
+
+    runtime._recover_from_reserved_pod_sandbox_name(
+        manifest,
+        replica_id="default/demo-rev1-0",
+        revision=1,
+        attempt=0,
+        sandbox_recovery_attempt=0,
+        cause=cause,
+        node_id="hub-1",
+    )
+
+    assert run_calls == []

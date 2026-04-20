@@ -1640,9 +1640,9 @@ class CRIRuntime(RuntimeAdapter):
             return True
         return self._pod_name(pod) == replica_id
 
-    def _wait_for_pod_sandbox_absent(self, pod_id: str, timeout: float = 5.0) -> None:
+    def _wait_for_pod_sandbox_absent(self, pod_id: str, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + max(0.0, float(timeout))
-        while time.monotonic() < deadline:
+        while True:
             present = False
             with contextlib.suppress(Exception):
                 for pod in self._list_pods():
@@ -1651,16 +1651,18 @@ class CRIRuntime(RuntimeAdapter):
                         present = True
                         break
             if not present:
-                return
+                return True
+            if time.monotonic() >= deadline:
+                return False
             time.sleep(0.2)
 
     def _wait_for_pod_sandbox_name_available(
         self, replica_id: str | None, timeout: float = 5.0
-    ) -> None:
+    ) -> bool:
         if not replica_id:
-            return
+            return True
         deadline = time.monotonic() + max(0.0, float(timeout))
-        while time.monotonic() < deadline:
+        while True:
             present = False
             with contextlib.suppress(Exception):
                 for pod in self._list_pods():
@@ -1668,7 +1670,9 @@ class CRIRuntime(RuntimeAdapter):
                         present = True
                         break
             if not present:
-                return
+                return True
+            if time.monotonic() >= deadline:
+                return False
             time.sleep(0.2)
 
     def _wait_for_container_absent(self, container_id: str, timeout: float = 5.0) -> None:
@@ -1798,6 +1802,7 @@ class CRIRuntime(RuntimeAdapter):
             raise cause
         if recovery_deadline is not None and now >= recovery_deadline:
             raise cause
+        allow_reappeared_replica_resources = recovery_deadline is not None
         backoff = self._sandbox_recovery_backoff(sandbox_recovery_attempt)
         if recovery_deadline is None:
             LOGGER.warning(
@@ -1830,12 +1835,14 @@ class CRIRuntime(RuntimeAdapter):
                     replica_id,
                     timeout=cleanup_timeout,
                     extra_pod_ids=[str(pod_id), *(extra_pod_ids or [])],
+                    wait_for_name_release=not allow_reappeared_replica_resources,
                 )
             else:
                 self._remove_pod_sandbox(
                     str(pod_id),
                     replica_id=replica_id,
                     timeout=cleanup_timeout,
+                    wait_for_name_release=not allow_reappeared_replica_resources,
                 )
         else:
             if sweep_replica_pods:
@@ -1843,10 +1850,17 @@ class CRIRuntime(RuntimeAdapter):
                     replica_id,
                     timeout=cleanup_timeout,
                     extra_pod_ids=extra_pod_ids,
+                    wait_for_name_release=not allow_reappeared_replica_resources,
                 )
             else:
                 wait_timeout = max(5.0, float(cleanup_timeout))
-                self._wait_for_pod_sandbox_name_available(replica_id, timeout=wait_timeout)
+                if not self._wait_for_pod_sandbox_name_available(
+                    replica_id, timeout=wait_timeout
+                ):
+                    raise RuntimeError(
+                        "timed out waiting for CRI pod sandbox name release for "
+                        f"replica {replica_id} during recovery"
+                    )
                 time.sleep(self.SANDBOX_CLEANUP_SETTLE_SECONDS)
         sleep_for = backoff
         if recovery_deadline is not None:
@@ -2096,7 +2110,8 @@ class CRIRuntime(RuntimeAdapter):
         reserved_container_id: str | None = None,
         reserved_container_name: str | None = None,
         expected_container_name: str | None = None,
-    ) -> None:
+        allow_reappeared_replica_resources: bool = False,
+    ) -> dict[str, Any]:
         poll_interval = 0.2
         logged_wait = False
         while True:
@@ -2108,13 +2123,20 @@ class CRIRuntime(RuntimeAdapter):
                 expected_container_name=expected_container_name,
             )
             blocked_on_sandbox = bool(
-                snapshot["reserved_pod_present"] or snapshot["visible_pod_ids"]
+                snapshot["reserved_pod_present"]
+                or (
+                    not allow_reappeared_replica_resources and snapshot["visible_pod_ids"]
+                )
             )
             blocked_on_container = bool(
-                snapshot["reserved_container_present"] or snapshot["visible_main_container_ids"]
+                snapshot["reserved_container_present"]
+                or (
+                    not allow_reappeared_replica_resources
+                    and snapshot["visible_main_container_ids"]
+                )
             )
             if not blocked_on_sandbox and not blocked_on_container:
-                return
+                return snapshot
             now = time.monotonic()
             remaining = max(0.0, float(recovery_deadline) - now)
             if remaining <= 0.0:
@@ -2150,6 +2172,7 @@ class CRIRuntime(RuntimeAdapter):
         *,
         timeout: int = 0,
         extra_pod_ids: list[str] | None = None,
+        wait_for_name_release: bool = True,
     ) -> None:
         cleanup_ids: list[str] = []
         seen: set[str] = set()
@@ -2169,9 +2192,17 @@ class CRIRuntime(RuntimeAdapter):
                 pod_id_s,
                 replica_id=None,
                 timeout=timeout,
+                wait_for_name_release=False,
             )
+        if not wait_for_name_release:
+            time.sleep(self.SANDBOX_CLEANUP_SETTLE_SECONDS)
+            return
         wait_timeout = max(5.0, float(timeout))
-        self._wait_for_pod_sandbox_name_available(replica_id, timeout=wait_timeout)
+        if not self._wait_for_pod_sandbox_name_available(replica_id, timeout=wait_timeout):
+            raise RuntimeError(
+                "timed out waiting for CRI pod sandbox name release for "
+                f"replica {replica_id} after cleanup"
+            )
         time.sleep(self.SANDBOX_CLEANUP_SETTLE_SECONDS)
 
     def _cleanup_reserved_container_for_replica(
@@ -2223,6 +2254,7 @@ class CRIRuntime(RuntimeAdapter):
         *,
         replica_id: str | None = None,
         timeout: int = 0,
+        wait_for_name_release: bool = True,
     ) -> None:
         pb2 = self._pb2()
         containers = []
@@ -2258,8 +2290,18 @@ class CRIRuntime(RuntimeAdapter):
                 "RemovePodSandbox", pb2.RemovePodSandboxRequest(pod_sandbox_id=str(pod_id))
             )
         wait_timeout = max(5.0, float(timeout))
-        self._wait_for_pod_sandbox_absent(str(pod_id), timeout=wait_timeout)
-        self._wait_for_pod_sandbox_name_available(replica_id, timeout=wait_timeout)
+        if not self._wait_for_pod_sandbox_absent(str(pod_id), timeout=wait_timeout):
+            raise RuntimeError(
+                "timed out waiting for CRI pod sandbox "
+                f"{pod_id} to disappear after cleanup"
+            )
+        if wait_for_name_release and not self._wait_for_pod_sandbox_name_available(
+            replica_id, timeout=wait_timeout
+        ):
+            raise RuntimeError(
+                "timed out waiting for CRI pod sandbox name release for "
+                f"replica {replica_id} after removing pod {pod_id}"
+            )
         time.sleep(self.SANDBOX_CLEANUP_SETTLE_SECONDS)
 
     def _recover_from_stale_pod_sandbox(
@@ -2319,14 +2361,24 @@ class CRIRuntime(RuntimeAdapter):
             sweep_replica_pods=True,
             recovery_deadline=recovery_deadline,
         )
-        self._wait_for_reserved_name_release(
+        snapshot = self._wait_for_reserved_name_release(
             replica_id=replica_id,
             reason="CRI sandbox name still reserved",
             cause=cause,
             cleanup_result="replica pod sandbox cleanup complete",
             recovery_deadline=recovery_deadline,
             reserved_pod_id=reserved_pod_id,
+            allow_reappeared_replica_resources=True,
         )
+        if snapshot["visible_pod_ids"] or snapshot["visible_main_container_ids"]:
+            LOGGER.info(
+                "CRI sandbox name recovery observed replacement replica resources for %s; "
+                "skipping local pod recreate visible_pods=%s visible_main_containers=%s",
+                replica_id,
+                snapshot["visible_pod_ids"],
+                snapshot["visible_main_container_ids"],
+            )
+            return
         self._run_pod(
             manifest,
             replica_id,
@@ -2400,7 +2452,7 @@ class CRIRuntime(RuntimeAdapter):
             extra_pod_ids=[pid for pid in [reserved_pod_id] if pid],
             recovery_deadline=recovery_deadline,
         )
-        self._wait_for_reserved_name_release(
+        snapshot = self._wait_for_reserved_name_release(
             replica_id=replica_id,
             reason="CRI container name still reserved",
             cause=cause,
@@ -2410,7 +2462,17 @@ class CRIRuntime(RuntimeAdapter):
             reserved_container_id=reserved_container_id,
             reserved_container_name=reserved_container_name,
             expected_container_name=expected_container_name,
+            allow_reappeared_replica_resources=True,
         )
+        if snapshot["visible_pod_ids"] or snapshot["visible_main_container_ids"]:
+            LOGGER.info(
+                "CRI container name recovery observed replacement replica resources for %s; "
+                "skipping local pod recreate visible_pods=%s visible_main_containers=%s",
+                replica_id,
+                snapshot["visible_pod_ids"],
+                snapshot["visible_main_container_ids"],
+            )
+            return
         self._run_pod(
             manifest,
             replica_id,
