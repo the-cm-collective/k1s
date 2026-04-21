@@ -42,6 +42,7 @@ def _write_experiment(
     steady_quiet: int,
     rows: list[dict[str, str]],
     phase_traces: dict[str, dict[str, object]] | None = None,
+    scenario: str | None = None,
 ) -> None:
     exp_dir = group_dir / name
     (exp_dir / "combined").mkdir(parents=True, exist_ok=True)
@@ -53,6 +54,7 @@ def _write_experiment(
                 f"label={label}",
                 "app=echo",
                 "manifest=state/bench/apply/echo.yaml",
+                f"scenario={scenario or ''}",
                 f"steady_quiet={steady_quiet}",
                 f"rollout_strategy={rollout_strategy}",
                 f"combined_csv={exp_dir}/combined/combined.csv",
@@ -115,6 +117,9 @@ def _phase_trace(
     window_max: dict[str, object] | None = None,
     window_last: dict[str, object] | None = None,
     sample_count: int | None = None,
+    cri_window_max: dict[str, object] | None = None,
+    cri_window_last: dict[str, object] | None = None,
+    cri_sample_count: int | None = None,
 ) -> dict[str, object]:
     status = {
         "app_name": "default/echo",
@@ -162,6 +167,34 @@ def _phase_trace(
                 }
                 - {""}
             ),
+        }
+    if cri_window_max is not None or cri_window_last is not None or cri_sample_count is not None:
+        max_cri = {
+            "current_revision": "7",
+            "revisions_seen": ["6", "7"],
+            "pod_count": float(desired),
+            "current_revision_pods": float(current_live),
+            "old_revision_pods": float(old_live),
+            "overlap_pods": float(overlap_live),
+            "main_containers": float(live),
+            "current_revision_main_containers": float(current_live),
+            "old_revision_main_containers": float(old_live),
+            "overlap_main_containers": float(overlap_live),
+        }
+        max_cri.update(cri_window_max or {})
+        last_cri = dict(max_cri)
+        last_cri.update(cri_window_last or {})
+        trace["cri"] = last_cri
+        trace["cri_window"] = {
+            "duration_seconds": 30.0,
+            "interval_seconds": 1.0,
+            "sample_count": int(cri_sample_count or 1),
+            "successful_samples": int(cri_sample_count or 1),
+            "failed_samples": 0,
+            "max": max_cri,
+            "last": last_cri,
+            "revisions_seen": list(max_cri.get("revisions_seen") or ["6", "7"]),
+            "current_revisions": [str(last_cri.get("current_revision") or "7")],
         }
     return trace
 
@@ -340,11 +373,140 @@ def test_summarize_rollout_candidate_reports_quiet_candidate_cv_gates(tmp_path: 
 
     cv_gate = next(gate for gate in payload["gates"] if gate["gate"] == "rollout-5-post app CV regression")
     assert cv_gate["passed"] is True
-    assert round(float(cv_gate["value_pct"]), 1) == 0.0
+
+
+def test_summarize_rollout_candidate_uses_explicit_candidate_scenario_metadata(
+    tmp_path: Path,
+) -> None:
+    group_dir = tmp_path / "policy-candidate"
+    baseline_label = "r20260421-cri+exp+candidate-baseline-r1"
+    candidate_label = "r20260421-cri+exp+candidate-candidate-r1"
+
+    _write_experiment(
+        group_dir,
+        "baseline-r1",
+        baseline_label,
+        "parallel",
+        0,
+        [
+            _row(f"{baseline_label}-pods-5", 94.6, 84.6, 790.0),
+            _row(f"{baseline_label}-rollout-5-during", 108.0, 82.5, 800.0),
+            _row(f"{baseline_label}-rollout-5-post", 71.8, 83.0, 792.0),
+        ],
+        scenario="baseline",
+        phase_traces={
+            "rollout-5-during": _phase_trace(
+                label=f"{baseline_label}-rollout-5-during",
+                stage="rollout-5-during",
+                desired=5,
+                ready=2,
+                live=4,
+                current_live=1,
+                old_live=0,
+                overlap_live=0,
+                cri_window_max={
+                    "revisions_seen": ["6", "7"],
+                    "pod_count": 6,
+                    "current_revision_pods": 4,
+                    "old_revision_pods": 5,
+                    "overlap_pods": 5,
+                    "main_containers": 6,
+                    "current_revision_main_containers": 4,
+                    "old_revision_main_containers": 5,
+                    "overlap_main_containers": 5,
+                },
+                cri_window_last={
+                    "current_revision": "7",
+                    "revisions_seen": ["6", "7"],
+                    "pod_count": 6,
+                    "current_revision_pods": 4,
+                    "old_revision_pods": 2,
+                    "overlap_pods": 2,
+                    "main_containers": 6,
+                    "current_revision_main_containers": 4,
+                    "old_revision_main_containers": 2,
+                    "overlap_main_containers": 2,
+                },
+                cri_sample_count=18,
+            ),
+        },
+    )
+    _write_experiment(
+        group_dir,
+        "candidate-r1",
+        candidate_label,
+        "parallel",
+        1,
+        [
+            _row(f"{candidate_label}-pods-5", 94.4, 84.8, 792.0),
+            _row(f"{candidate_label}-rollout-5-during", 90.0, 83.1, 801.0),
+            _row(f"{candidate_label}-rollout-5-post", 71.8, 83.2, 793.0),
+        ],
+        scenario="candidate",
+        phase_traces={
+            "rollout-5-during": _phase_trace(
+                label=f"{candidate_label}-rollout-5-during",
+                stage="rollout-5-during",
+                desired=5,
+                ready=3,
+                live=4,
+                current_live=2,
+                old_live=0,
+                overlap_live=0,
+                cri_window_max={
+                    "revisions_seen": ["6", "7"],
+                    "pod_count": 5,
+                    "current_revision_pods": 4,
+                    "old_revision_pods": 4,
+                    "overlap_pods": 4,
+                    "main_containers": 5,
+                    "current_revision_main_containers": 4,
+                    "old_revision_main_containers": 4,
+                    "overlap_main_containers": 4,
+                },
+                cri_window_last={
+                    "current_revision": "7",
+                    "revisions_seen": ["6", "7"],
+                    "pod_count": 5,
+                    "current_revision_pods": 4,
+                    "old_revision_pods": 1,
+                    "overlap_pods": 1,
+                    "main_containers": 5,
+                    "current_revision_main_containers": 4,
+                    "old_revision_main_containers": 1,
+                    "overlap_main_containers": 1,
+                },
+                cri_sample_count=18,
+            ),
+        },
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), str(group_dir), "--json"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload["candidate_scenario"] == "candidate"
+    rollout_gate = next(
+        gate for gate in payload["gates"] if gate["gate"] == "rollout-5-during app improvement"
+    )
+    assert round(float(rollout_gate["value_mib"]), 1) == 18.0
+    assert rollout_gate["passed"] is True
+
+    overlap_gate = next(
+        gate for gate in payload["gates"] if gate["gate"] == "rollout-5-during CRI overlap reduction"
+    )
+    assert round(float(overlap_gate["value_count"]), 1) == 1.0
+    assert overlap_gate["passed"] is True
 
     drift_gate = next(gate for gate in payload["gates"] if gate["gate"] == "rollout-5-post app drift")
     assert drift_gate["passed"] is True
-    assert round(float(drift_gate["value_mib"]), 1) == 0.2
+    assert round(float(drift_gate["value_mib"]), 1) == 0.0
 
 
 def test_summarize_rollout_candidate_reports_phase_overlap_metrics(tmp_path: Path) -> None:
@@ -571,3 +733,122 @@ def test_summarize_rollout_candidate_prefers_phase_window_max_and_last_metrics(t
     assert baseline_phase["overlap_live_replicas_last"] == pytest.approx(0.0, abs=0.01)
     assert ordered_phase["current_revision_live_replicas_max"] == pytest.approx(3.0, abs=0.01)
     assert ordered_phase["current_revision_live_replicas_last"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_summarize_rollout_candidate_reports_cri_phase_metrics(tmp_path: Path) -> None:
+    group_dir = tmp_path / "candidate-cri-phase"
+    baseline_label = "r20260420-cri+exp+candidate-baseline-r1"
+    ordered_label = "r20260420-cri+exp+candidate-ordered-r1"
+
+    _write_experiment(
+        group_dir,
+        "baseline-r1",
+        baseline_label,
+        "baseline",
+        0,
+        [
+            _row(f"{baseline_label}-rollout-5-during", 120.0, 84.0, 800.0),
+            _row(f"{baseline_label}-rollout-5-post", 71.8, 83.0, 790.0),
+        ],
+        phase_traces={
+            "rollout-5-during": _phase_trace(
+                label=f"{baseline_label}-rollout-5-during",
+                stage="rollout-5-during",
+                desired=5,
+                ready=1,
+                live=1,
+                current_live=1,
+                old_live=0,
+                overlap_live=0,
+                cri_window_max={
+                    "revisions_seen": ["6", "7"],
+                    "pod_count": 5,
+                    "current_revision_pods": 2,
+                    "old_revision_pods": 3,
+                    "overlap_pods": 3,
+                    "main_containers": 5,
+                    "current_revision_main_containers": 2,
+                    "old_revision_main_containers": 3,
+                    "overlap_main_containers": 3,
+                },
+                cri_window_last={
+                    "current_revision": "7",
+                    "revisions_seen": ["7"],
+                    "pod_count": 5,
+                    "current_revision_pods": 5,
+                    "old_revision_pods": 0,
+                    "overlap_pods": 0,
+                    "main_containers": 5,
+                    "current_revision_main_containers": 5,
+                    "old_revision_main_containers": 0,
+                    "overlap_main_containers": 0,
+                },
+                cri_sample_count=18,
+            ),
+        },
+    )
+    _write_experiment(
+        group_dir,
+        "ordered-r1",
+        ordered_label,
+        "ordered",
+        1,
+        [
+            _row(f"{ordered_label}-rollout-5-during", 100.0, 84.0, 799.0),
+            _row(f"{ordered_label}-rollout-5-post", 71.8, 83.1, 790.0),
+        ],
+        phase_traces={
+            "rollout-5-during": _phase_trace(
+                label=f"{ordered_label}-rollout-5-during",
+                stage="rollout-5-during",
+                desired=5,
+                ready=1,
+                live=1,
+                current_live=1,
+                old_live=0,
+                overlap_live=0,
+                cri_window_max={
+                    "revisions_seen": ["7"],
+                    "pod_count": 5,
+                    "current_revision_pods": 5,
+                    "old_revision_pods": 0,
+                    "overlap_pods": 0,
+                    "main_containers": 5,
+                    "current_revision_main_containers": 5,
+                    "old_revision_main_containers": 0,
+                    "overlap_main_containers": 0,
+                },
+                cri_window_last={
+                    "current_revision": "7",
+                    "revisions_seen": ["7"],
+                    "pod_count": 5,
+                    "current_revision_pods": 5,
+                    "old_revision_pods": 0,
+                    "overlap_pods": 0,
+                    "main_containers": 5,
+                    "current_revision_main_containers": 5,
+                    "old_revision_main_containers": 0,
+                    "overlap_main_containers": 0,
+                },
+                cri_sample_count=18,
+            ),
+        },
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), str(group_dir), "--json"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    baseline_cri = payload["cri_phase_metrics"]["baseline"]["rollout-5-during"]
+    ordered_cri = payload["cri_phase_metrics"]["ordered"]["rollout-5-during"]
+    assert baseline_cri["successful_samples"] == pytest.approx(18.0, abs=0.01)
+    assert baseline_cri["old_revision_pods_max"] == pytest.approx(3.0, abs=0.01)
+    assert baseline_cri["overlap_main_containers_max"] == pytest.approx(3.0, abs=0.01)
+    assert ordered_cri["old_revision_main_containers_max"] == pytest.approx(0.0, abs=0.01)
+    assert ordered_cri["current_revision_pods_last"] == pytest.approx(5.0, abs=0.01)

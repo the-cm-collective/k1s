@@ -342,6 +342,29 @@ class DockerRuntime(RuntimeAdapter):
                 removed += 1
         return removed
 
+    def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:
+        targets = {str(replica_id) for replica_id in replica_ids if replica_id}
+        if not targets:
+            return 0
+        try:
+            containers = self._client.containers.list(
+                all=True, filters={"label": f"{self.APP_LABEL}={app_name}"}
+            )
+        except APIError as exc:
+            raise RuntimeError(f"Failed to list containers for {app_name}: {exc}") from exc
+        removed = 0
+        for container in containers:
+            try:
+                labels = container.labels or {}
+            except NotFound:
+                continue
+            replica_id = self._pod_label(labels)
+            if replica_id not in targets:
+                continue
+            self._stop_and_remove(container)
+            removed += 1
+        return removed
+
     # Internal helpers -------------------------------------------------
 
     def _pod_label(self, labels: dict) -> str | None:

@@ -124,6 +124,26 @@ class StubRuntime(RuntimeAdapter):
         _ = (app_name, keep_revision)
         return 0
 
+    def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:  # type: ignore[override]
+        _ = app_name
+        if not replica_ids:
+            return 0
+        removed = 0
+        for app_key, containers in list(self._containers.items()):
+            kept = []
+            for container in containers:
+                replica_id = (
+                    (container.get("labels") or {}).get("ae.pod_name")
+                    or container.get("name")
+                    or ""
+                )
+                if replica_id in replica_ids:
+                    removed += 1
+                    continue
+                kept.append(container)
+            self._containers[app_key] = kept
+        return removed
+
     def list_containers_info(self) -> list[dict]:
         """Return synthetic container info for apishim pod projection."""
         containers: list[dict] = []

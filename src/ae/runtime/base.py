@@ -121,6 +121,14 @@ class RuntimeAdapter(Protocol):
     def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
         """Remove containers of older revisions for a given app, keeping the specified revision."""
 
+    def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:
+        """Remove specific replicas for a given app.
+
+        Replica IDs are the pod/replica labels used by the runtimes, for example
+        ``echo-rev7-0``. Implementations should ignore unknown replica IDs and
+        return the number of replicas they actually removed.
+        """
+
     def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:
         """Ensure named storage volumes exist for the app.
 

@@ -87,6 +87,51 @@ data:
     assert pinned_docs[1]["data"]["mode"] == "demo"
 
 
+def test_pin_rollout_policy_overrides_full_rollout_policy(tmp_path: Path) -> None:
+    source = tmp_path / "echo.yaml"
+    source.write_text(
+        """\
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: echo
+spec:
+  image: docker.io/mendhak/http-https-echo:37
+  rollout:
+    strategy: parallel
+    maxSurge: 1
+    maxUnavailable: 0
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "candidate.yaml"
+
+    subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(SCRIPT),
+            str(source),
+            str(output),
+            "--strategy",
+            "parallel",
+            "--max-surge",
+            "0",
+            "--max-unavailable",
+            "1",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    pinned_docs = _load_docs(output)
+    rollout = pinned_docs[0]["spec"]["rollout"]
+    assert rollout["strategy"] == "parallel"
+    assert rollout["maxSurge"] == 0
+    assert rollout["maxUnavailable"] == 1
+
+
 def test_pin_rollout_policy_fails_without_deployment_or_app(tmp_path: Path) -> None:
     source = tmp_path / "configmap.yaml"
     source.write_text(

@@ -12,15 +12,27 @@ ALLOWED_STRATEGIES = {"ordered", "parallel"}
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Write a bench-local manifest copy with a forced rollout strategy."
+        description="Write a bench-local manifest copy with a forced rollout policy."
     )
     parser.add_argument("input", type=Path, help="source manifest path")
     parser.add_argument("output", type=Path, help="output manifest path")
     parser.add_argument(
         "--strategy",
-        required=True,
+        default=None,
         choices=sorted(ALLOWED_STRATEGIES),
         help="rollout strategy to enforce",
+    )
+    parser.add_argument(
+        "--max-surge",
+        type=int,
+        default=None,
+        help="optional maxSurge override",
+    )
+    parser.add_argument(
+        "--max-unavailable",
+        type=int,
+        default=None,
+        help="optional maxUnavailable override",
     )
     return parser.parse_args()
 
@@ -50,7 +62,12 @@ def main() -> int:
         if not isinstance(rollout, dict):
             print(f"manifest has non-mapping rollout block in {args.input}", file=sys.stderr)
             return 2
-        rollout["strategy"] = args.strategy
+        if args.strategy is not None:
+            rollout["strategy"] = args.strategy
+        if args.max_surge is not None:
+            rollout["maxSurge"] = int(args.max_surge)
+        if args.max_unavailable is not None:
+            rollout["maxUnavailable"] = int(args.max_unavailable)
         updated = True
 
     if not updated:

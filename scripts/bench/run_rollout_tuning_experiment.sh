@@ -25,6 +25,10 @@ Environment:
   DURATION                         snapshot duration seconds (default: 30)
   BENCH_EXPERIMENT_ROLLOUT_STRATEGY
                                    optional rollout strategy override (ordered|parallel)
+  BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE
+                                   optional rollout maxSurge override
+  BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE
+                                   optional rollout maxUnavailable override
   BENCH_EXPERIMENT_STEADY_QUIET    enable steady quiet hooks (default: 0)
   EXPERIMENT_STEADY_TIMEOUT        quiet helper timeout seconds (default: 20)
   EXPERIMENT_STEADY_DELAY          quiet helper delay seconds (default: 2)
@@ -61,6 +65,8 @@ DURATION=${DURATION:-30}
 WAIT_READY_TRIES=${WAIT_READY_TRIES:-300}
 BENCH_EXPERIMENT_STEADY_QUIET=${BENCH_EXPERIMENT_STEADY_QUIET:-0}
 BENCH_EXPERIMENT_ROLLOUT_STRATEGY=${BENCH_EXPERIMENT_ROLLOUT_STRATEGY:-}
+BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=${BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE:-}
+BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=${BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE:-}
 EXPERIMENT_STEADY_TIMEOUT=${EXPERIMENT_STEADY_TIMEOUT:-20}
 EXPERIMENT_STEADY_DELAY=${EXPERIMENT_STEADY_DELAY:-2}
 EXPERIMENT_STEADY_POLLS=${EXPERIMENT_STEADY_POLLS:-3}
@@ -208,6 +214,7 @@ build_bench_manifest() {
   local lane_name="$2"
   local current="$source"
   local next=""
+  local rollout_suffix=""
 
   if [[ "$lane_name" == "cri" ]]; then
     next="${experiment_apply_dir}/$(basename "${source%.yaml}")-runc.yaml"
@@ -218,12 +225,29 @@ build_bench_manifest() {
     current="$next"
   fi
 
-  if [[ -n "$BENCH_EXPERIMENT_ROLLOUT_STRATEGY" ]]; then
-    next="${experiment_apply_dir}/$(basename "${source%.yaml}")-${BENCH_EXPERIMENT_ROLLOUT_STRATEGY}.yaml"
+  if [[ -n "$BENCH_EXPERIMENT_ROLLOUT_STRATEGY" || -n "$BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE" || -n "$BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE" ]]; then
+    local -a rollout_args=()
+    rollout_suffix="${BENCH_EXPERIMENT_ROLLOUT_STRATEGY:-policy}"
+    if [[ -n "$BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE" ]]; then
+      rollout_suffix="${rollout_suffix}-ms${BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE}"
+    fi
+    if [[ -n "$BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE" ]]; then
+      rollout_suffix="${rollout_suffix}-mu${BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE}"
+    fi
+    if [[ -n "$BENCH_EXPERIMENT_ROLLOUT_STRATEGY" ]]; then
+      rollout_args+=(--strategy "$BENCH_EXPERIMENT_ROLLOUT_STRATEGY")
+    fi
+    if [[ -n "$BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE" ]]; then
+      rollout_args+=(--max-surge "$BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE")
+    fi
+    if [[ -n "$BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE" ]]; then
+      rollout_args+=(--max-unavailable "$BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE")
+    fi
+    next="${experiment_apply_dir}/$(basename "${source%.yaml}")-${rollout_suffix}.yaml"
     "$python_bin" scripts/bench/pin_rollout_policy.py \
       "$current" \
       "$next" \
-      --strategy "$BENCH_EXPERIMENT_ROLLOUT_STRATEGY" >/dev/null
+      "${rollout_args[@]}" >/dev/null
     current="$next"
   fi
 
@@ -365,6 +389,9 @@ run_cri_lane() {
     REPLICAS="$REPLICAS" \
     ROLL_REPLICAS="$ROLL_REPLICAS" \
     DURATION="$DURATION" \
+    BENCH_CRI_ROLLOUT_STRATEGY="${BENCH_EXPERIMENT_ROLLOUT_STRATEGY:-}" \
+    BENCH_CRI_ROLLOUT_MAX_SURGE="${BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE:-}" \
+    BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE="${BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE:-}" \
     BENCH_PRE_STEADY_SNAPSHOT_CMD="$hook_cmd" \
     BENCH_PRE_POST_SNAPSHOT_CMD="$hook_cmd" \
     ./scripts/bench/run_cri_refresh.sh
@@ -564,8 +591,11 @@ lane=${lane}
 label=${label_base}
 app=${APP_NAME}
 manifest=${bench_manifest}
+scenario=${BENCH_EXPERIMENT_SCENARIO:-}
 steady_quiet=${BENCH_EXPERIMENT_STEADY_QUIET}
 rollout_strategy=${BENCH_EXPERIMENT_ROLLOUT_STRATEGY:-baseline}
+rollout_max_surge=${BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE:-}
+rollout_max_unavailable=${BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE:-}
 combined_csv=${experiment_combined_dir}/combined.csv
 charts_dir=${experiment_charts_dir}
 EOF

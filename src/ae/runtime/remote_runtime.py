@@ -252,6 +252,31 @@ class RemoteRuntime(RuntimeAdapter):
         )
         return int(resp.json().get("removed", 0))
 
+    def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:
+        if self._use_local():
+            remove = getattr(self._local, "remove_replicas", None)
+            if callable(remove):
+                return int(remove(app_name, replica_ids))
+            return 0
+        identity = resolve_controller_identity(self._authority)
+        op_id = "gc.replicas:{app}:{node}:{replicas}".format(
+            app=app_name,
+            node=str(self._node_id or ""),
+            replicas=",".join(sorted(str(replica_id) for replica_id in replica_ids if replica_id)),
+        )
+        payload = self._mutation_payload(
+            {"app": app_name, "replica_ids": list(replica_ids or [])},
+            op_id,
+            identity=identity,
+        )
+        resp = self._request(
+            "POST",
+            "/v1/remove_replicas",
+            json=payload,
+            timeout=15,
+        )
+        return int(resp.json().get("removed", 0))
+
     def list_containers_info(self) -> list[dict]:
         if self._use_local():
             return self._local.list_containers_info()

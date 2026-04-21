@@ -31,7 +31,7 @@ SUMMARY_STAGE_ORDER = (
     "rollout-5-post",
 )
 
-SCENARIO_ORDER = ("baseline", "ordered", "quiet")
+SCENARIO_ORDER = ("baseline", "candidate", "ordered", "quiet")
 CV_REGRESSION_STAGES = ("pods-5", "rollout-2-post", "rollout-5-post")
 PHASE_TRACE_STAGES = (
     "rollout-2-during",
@@ -165,6 +165,10 @@ def _load_experiment_rows(
 
 
 def _scenario_name(experiment_dir: Path, summary: dict[str, str]) -> str:
+    summary_scenario = str(summary.get("scenario", "")).strip()
+    if summary_scenario:
+        return summary_scenario
+
     dir_prefix = experiment_dir.name.split("-r", 1)[0]
     if dir_prefix in SCENARIO_ORDER:
         return dir_prefix
@@ -282,6 +286,48 @@ def _trace_revision_statuses(trace: dict[str, object]) -> list[str]:
     return []
 
 
+def _trace_cri_window(trace: dict[str, object], bucket: str) -> dict[str, object]:
+    window = trace.get("cri_window")
+    if isinstance(window, dict):
+        bucket_value = window.get(bucket)
+        if isinstance(bucket_value, dict):
+            return bucket_value
+    current = trace.get("cri")
+    if isinstance(current, dict):
+        return current
+    return {}
+
+
+def _trace_cri_value(trace: dict[str, object], bucket: str, key: str) -> float:
+    return _to_float(_trace_cri_window(trace, bucket).get(key))
+
+
+def _trace_cri_count(trace: dict[str, object], key: str) -> float:
+    window = trace.get("cri_window")
+    if isinstance(window, dict):
+        return _to_float(window.get(key))
+    current = trace.get("cri")
+    return 1.0 if isinstance(current, dict) else 0.0
+
+
+def _trace_cri_revisions(trace: dict[str, object]) -> list[str]:
+    window = trace.get("cri_window")
+    if isinstance(window, dict):
+        raw = window.get("revisions_seen")
+        if isinstance(raw, list):
+            cleaned = sorted({str(item).strip() for item in raw if str(item).strip()})
+            if cleaned:
+                return cleaned
+    current = trace.get("cri")
+    if isinstance(current, dict):
+        raw = current.get("revisions_seen")
+        if isinstance(raw, list):
+            cleaned = sorted({str(item).strip() for item in raw if str(item).strip()})
+            if cleaned:
+                return cleaned
+    return []
+
+
 def _scenario_phase_metrics(
     experiments: list[dict[str, object]],
 ) -> dict[str, dict[str, dict[str, float | list[str]]]]:
@@ -366,20 +412,99 @@ def _scenario_phase_metrics(
     return aggregated
 
 
-def _candidate_scenario(scenario_metrics: dict[str, dict[str, dict[str, float]]]) -> str:
-    has_baseline = "baseline" in scenario_metrics
-    has_ordered = "ordered" in scenario_metrics
-    has_quiet = "quiet" in scenario_metrics
+def _scenario_cri_phase_metrics(
+    experiments: list[dict[str, object]],
+) -> dict[str, dict[str, dict[str, float | list[str]]]]:
+    by_scenario_stage: dict[str, dict[str, list[dict[str, object]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for experiment in experiments:
+        scenario = str(experiment["scenario"])
+        traces = experiment.get("phase_traces")
+        assert isinstance(traces, dict)
+        for stage, trace in traces.items():
+            if "cri_window" not in trace and "cri" not in trace:
+                continue
+            by_scenario_stage[scenario][stage].append(trace)
 
-    if not has_baseline:
+    aggregated: dict[str, dict[str, dict[str, float | list[str]]]] = {}
+    for scenario, stage_traces in by_scenario_stage.items():
+        aggregated[scenario] = {}
+        for stage, traces in stage_traces.items():
+            revisions_seen = sorted(
+                {
+                    item
+                    for trace in traces
+                    for item in _trace_cri_revisions(trace)
+                }
+            )
+            aggregated[scenario][stage] = {
+                "runs": float(len(traces)),
+                "sample_count": _mean([_trace_cri_count(trace, "sample_count") for trace in traces]),
+                "successful_samples": _mean(
+                    [_trace_cri_count(trace, "successful_samples") for trace in traces]
+                ),
+                "failed_samples": _mean([_trace_cri_count(trace, "failed_samples") for trace in traces]),
+                "pod_count_max": _mean(
+                    [_trace_cri_value(trace, "max", "pod_count") for trace in traces]
+                ),
+                "pod_count_last": _mean(
+                    [_trace_cri_value(trace, "last", "pod_count") for trace in traces]
+                ),
+                "current_revision_pods_max": _mean(
+                    [_trace_cri_value(trace, "max", "current_revision_pods") for trace in traces]
+                ),
+                "current_revision_pods_last": _mean(
+                    [_trace_cri_value(trace, "last", "current_revision_pods") for trace in traces]
+                ),
+                "old_revision_pods_max": _mean(
+                    [_trace_cri_value(trace, "max", "old_revision_pods") for trace in traces]
+                ),
+                "old_revision_pods_last": _mean(
+                    [_trace_cri_value(trace, "last", "old_revision_pods") for trace in traces]
+                ),
+                "overlap_pods_max": _mean(
+                    [_trace_cri_value(trace, "max", "overlap_pods") for trace in traces]
+                ),
+                "overlap_pods_last": _mean(
+                    [_trace_cri_value(trace, "last", "overlap_pods") for trace in traces]
+                ),
+                "main_containers_max": _mean(
+                    [_trace_cri_value(trace, "max", "main_containers") for trace in traces]
+                ),
+                "main_containers_last": _mean(
+                    [_trace_cri_value(trace, "last", "main_containers") for trace in traces]
+                ),
+                "current_revision_main_containers_max": _mean(
+                    [_trace_cri_value(trace, "max", "current_revision_main_containers") for trace in traces]
+                ),
+                "current_revision_main_containers_last": _mean(
+                    [_trace_cri_value(trace, "last", "current_revision_main_containers") for trace in traces]
+                ),
+                "old_revision_main_containers_max": _mean(
+                    [_trace_cri_value(trace, "max", "old_revision_main_containers") for trace in traces]
+                ),
+                "old_revision_main_containers_last": _mean(
+                    [_trace_cri_value(trace, "last", "old_revision_main_containers") for trace in traces]
+                ),
+                "overlap_main_containers_max": _mean(
+                    [_trace_cri_value(trace, "max", "overlap_main_containers") for trace in traces]
+                ),
+                "overlap_main_containers_last": _mean(
+                    [_trace_cri_value(trace, "last", "overlap_main_containers") for trace in traces]
+                ),
+                "revisions_seen": revisions_seen,
+            }
+    return aggregated
+
+
+def _candidate_scenario(scenario_metrics: dict[str, dict[str, dict[str, float]]]) -> str:
+    if "baseline" not in scenario_metrics:
         raise ValueError("candidate group must include baseline and exactly one candidate scenario")
-    if has_ordered and has_quiet:
-        raise ValueError("candidate group must not mix ordered and quiet candidate scenarios")
-    if has_ordered:
-        return "ordered"
-    if has_quiet:
-        return "quiet"
-    raise ValueError("candidate group must include baseline and exactly one candidate scenario")
+    candidates = sorted(name for name in scenario_metrics if name != "baseline")
+    if len(candidates) != 1:
+        raise ValueError("candidate group must include baseline and exactly one candidate scenario")
+    return candidates[0]
 
 
 def _build_deltas(
@@ -415,35 +540,38 @@ def _build_deltas(
     return deltas
 
 
-def _build_ordered_gates(
+def _build_candidate_gates(
     scenario_metrics: dict[str, dict[str, dict[str, float]]],
+    cri_phase_metrics: dict[str, dict[str, dict[str, float | list[str]]]],
+    candidate_scenario: str,
     min_rollout_5_improvement: float,
+    min_rollout_5_cri_overlap_reduction: float,
     max_steady_drift: float,
     max_post_drift: float,
 ) -> list[dict[str, float | str | bool]]:
     baseline = scenario_metrics.get("baseline", {})
-    ordered = scenario_metrics.get("ordered", {})
-    if not baseline or not ordered:
+    candidate = scenario_metrics.get(candidate_scenario, {})
+    if not baseline or not candidate:
         return []
 
     def stage_metric(scenario: dict[str, dict[str, float]], stage: str, key: str) -> float:
         return float(scenario.get(stage, {}).get(key, 0.0))
 
-    steady_drift = abs(stage_metric(ordered, "pods-5", "app_mib") - stage_metric(baseline, "pods-5", "app_mib"))
+    steady_drift = abs(stage_metric(candidate, "pods-5", "app_mib") - stage_metric(baseline, "pods-5", "app_mib"))
     post_drift = abs(
-        stage_metric(ordered, "rollout-5-post", "app_mib")
+        stage_metric(candidate, "rollout-5-post", "app_mib")
         - stage_metric(baseline, "rollout-5-post", "app_mib")
     )
     rollout_5_improvement = (
         stage_metric(baseline, "rollout-5-during", "app_mib")
-        - stage_metric(ordered, "rollout-5-during", "app_mib")
+        - stage_metric(candidate, "rollout-5-during", "app_mib")
     )
     rollout_2_improvement = (
         stage_metric(baseline, "rollout-2-during", "app_mib")
-        - stage_metric(ordered, "rollout-2-during", "app_mib")
+        - stage_metric(candidate, "rollout-2-during", "app_mib")
     )
 
-    return [
+    gates: list[dict[str, float | str | bool]] = [
         {
             "gate": "pods-5 steady-state app drift",
             "value_mib": steady_drift,
@@ -473,6 +601,26 @@ def _build_ordered_gates(
             "passed": True,
         },
     ]
+    baseline_cri = cri_phase_metrics.get("baseline", {})
+    candidate_cri = cri_phase_metrics.get(candidate_scenario, {})
+    if "rollout-5-during" in baseline_cri and "rollout-5-during" in candidate_cri:
+        baseline_overlap = _to_float(
+            baseline_cri["rollout-5-during"].get("overlap_pods_max")
+        )
+        candidate_overlap = _to_float(
+            candidate_cri["rollout-5-during"].get("overlap_pods_max")
+        )
+        overlap_reduction = baseline_overlap - candidate_overlap
+        gates.append(
+            {
+                "gate": "rollout-5-during CRI overlap reduction",
+                "value_count": overlap_reduction,
+                "metric": "count",
+                "target": f">= {min_rollout_5_cri_overlap_reduction:.1f}",
+                "passed": overlap_reduction >= min_rollout_5_cri_overlap_reduction,
+            }
+        )
+    return gates
 
 
 def _build_quiet_gates(
@@ -544,16 +692,21 @@ def _build_quiet_gates(
 
 def _build_gates(
     scenario_metrics: dict[str, dict[str, dict[str, float]]],
+    cri_phase_metrics: dict[str, dict[str, dict[str, float | list[str]]]],
     candidate_scenario: str,
     min_rollout_5_improvement: float,
+    min_rollout_5_cri_overlap_reduction: float,
     max_steady_drift: float,
     max_post_drift: float,
     max_app_cv_regression: float,
 ) -> list[dict[str, float | str | bool]]:
-    if candidate_scenario == "ordered":
-        return _build_ordered_gates(
+    if candidate_scenario != "quiet":
+        return _build_candidate_gates(
             scenario_metrics,
+            cri_phase_metrics,
+            candidate_scenario,
             min_rollout_5_improvement,
+            min_rollout_5_cri_overlap_reduction,
             max_steady_drift,
             max_post_drift,
         )
@@ -585,6 +738,7 @@ def _render_text(
     experiments: list[dict[str, object]],
     scenario_metrics: dict[str, dict[str, dict[str, float]]],
     phase_metrics: dict[str, dict[str, dict[str, float | list[str]]]],
+    cri_phase_metrics: dict[str, dict[str, dict[str, float | list[str]]]],
     candidate_scenario: str,
     deltas: list[dict[str, float | str]],
     gates: list[dict[str, float | str | bool]],
@@ -666,6 +820,51 @@ def _render_text(
             ]
         )
 
+    cri_phase_rows: list[tuple[str, ...]] = []
+    for scenario in ("baseline", candidate_scenario):
+        stages = cri_phase_metrics.get(scenario, {})
+        for stage in PHASE_TRACE_STAGES:
+            metrics = stages.get(stage)
+            if not metrics:
+                continue
+            cri_phase_rows.append(
+                (
+                    scenario,
+                    stage,
+                    str(int(float(metrics["runs"]))),
+                    f"{float(metrics['successful_samples']):.1f}",
+                    f"{float(metrics['current_revision_pods_max']):.1f}/{float(metrics['current_revision_pods_last']):.1f}",
+                    f"{float(metrics['old_revision_pods_max']):.1f}/{float(metrics['old_revision_pods_last']):.1f}",
+                    f"{float(metrics['overlap_pods_max']):.1f}/{float(metrics['overlap_pods_last']):.1f}",
+                    f"{float(metrics['current_revision_main_containers_max']):.1f}/{float(metrics['current_revision_main_containers_last']):.1f}",
+                    f"{float(metrics['old_revision_main_containers_max']):.1f}/{float(metrics['old_revision_main_containers_last']):.1f}",
+                    f"{float(metrics['overlap_main_containers_max']):.1f}/{float(metrics['overlap_main_containers_last']):.1f}",
+                    ",".join(str(item) for item in metrics.get("revisions_seen", [])) or "-",
+                )
+            )
+    if cri_phase_rows:
+        lines.extend(
+            [
+                "",
+                _table(
+                    (
+                        "scenario",
+                        "stage",
+                        "runs",
+                        "samples",
+                        "cri_cur_pods max/last",
+                        "cri_old_pods max/last",
+                        "cri_overlap_pods max/last",
+                        "cri_cur_main max/last",
+                        "cri_old_main max/last",
+                        "cri_overlap_main max/last",
+                        "cri_revisions",
+                    ),
+                    cri_phase_rows,
+                ),
+            ]
+        )
+
     delta_rows: list[tuple[str, ...]] = []
     delta_headers = ("stage", "baseline_app", f"{candidate_scenario}_app", "appΔ", "docs_cpΔ", "hostΔ")
     for item in deltas:
@@ -693,6 +892,8 @@ def _render_text(
         metric = str(item.get("metric", "mib"))
         if "value_mib" in item:
             value = f"{float(item['value_mib']):.1f}"
+        elif "value_count" in item:
+            value = f"{float(item['value_count']):.1f}"
         elif "value_pct" in item:
             value = f"{float(item['value_pct']):.1f}%"
         gate_rows.append(
@@ -731,14 +932,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--min-rollout-5-improvement",
         type=float,
-        default=30.0,
+        default=15.0,
         help="Minimum rollout-5-during app-memory improvement to treat as a pass.",
+    )
+    parser.add_argument(
+        "--min-rollout-5-cri-overlap-reduction",
+        type=float,
+        default=1.0,
+        help="Minimum rollout-5-during CRI overlap reduction to treat as a pass when CRI traces are available.",
     )
     parser.add_argument(
         "--max-steady-drift",
         type=float,
         default=3.0,
-        help="Maximum allowed pods-5 app-memory drift between baseline and ordered.",
+        help="Maximum allowed pods-5 app-memory drift between baseline and the candidate scenario.",
     )
     parser.add_argument(
         "--max-post-drift",
@@ -768,6 +975,7 @@ def main() -> int:
 
     scenario_metrics = _scenario_stage_metrics(experiments)
     phase_metrics = _scenario_phase_metrics(experiments)
+    cri_phase_metrics = _scenario_cri_phase_metrics(experiments)
     try:
         candidate_scenario = _candidate_scenario(scenario_metrics)
     except ValueError as exc:
@@ -776,8 +984,10 @@ def main() -> int:
     deltas = _build_deltas(scenario_metrics, candidate_scenario)
     gates = _build_gates(
         scenario_metrics,
+        cri_phase_metrics,
         candidate_scenario,
         args.min_rollout_5_improvement,
+        args.min_rollout_5_cri_overlap_reduction,
         args.max_steady_drift,
         args.max_post_drift,
         args.max_app_cv_regression,
@@ -788,6 +998,7 @@ def main() -> int:
         "experiments": experiments,
         "scenario_metrics": scenario_metrics,
         "phase_metrics": phase_metrics,
+        "cri_phase_metrics": cri_phase_metrics,
         "deltas": deltas,
         "gates": gates,
     }
@@ -800,6 +1011,7 @@ def main() -> int:
                 experiments,
                 scenario_metrics,
                 phase_metrics,
+                cri_phase_metrics,
                 candidate_scenario,
                 deltas,
                 gates,

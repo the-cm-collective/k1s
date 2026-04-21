@@ -355,6 +355,26 @@ class AgentHandler(BaseHTTPRequestHandler):
                 self._commit_mutation(scope, envelope)
                 _json_response(self, 200, {"removed": removed})
                 return
+            if self.path == "/v1/remove_replicas":
+                scope = self._fence_scope("runtime")
+                status, envelope, _decision = self._begin_mutation(payload, scope)
+                if status == "reject":
+                    return
+                if status == "duplicate":
+                    _json_response(self, 200, {"removed": 0, "ok": True, "duplicate": True})
+                    return
+                remove = getattr(self.runtime, "remove_replicas", None)
+                removed = 0
+                if callable(remove):
+                    removed = int(
+                        remove(
+                            payload.get("app", ""),
+                            [str(item) for item in (payload.get("replica_ids") or []) if item],
+                        )
+                    )
+                self._commit_mutation(scope, envelope)
+                _json_response(self, 200, {"removed": removed})
+                return
             if self.path == "/v1/exec":
                 pod_name = payload.get("pod_name") or payload.get("replica_id", "")
                 rc = self.runtime.exec(

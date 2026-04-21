@@ -36,6 +36,8 @@ ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 DURATION="${DURATION:-30}"
 bench_runtime_handler="runc"
 bench_rollout_strategy="${BENCH_CRI_ROLLOUT_STRATEGY:-ordered}"
+bench_rollout_max_surge="${BENCH_CRI_ROLLOUT_MAX_SURGE:-}"
+bench_rollout_max_unavailable="${BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE:-}"
 bench_steady_quiet="${BENCH_CRI_STEADY_QUIET:-1}"
 
 : "${BENCH_READY_STABLE_POLLS:=3}"
@@ -219,6 +221,14 @@ case "$bench_steady_quiet" in
     exit 2
     ;;
 esac
+if [[ -n "$bench_rollout_max_surge" && ! "$bench_rollout_max_surge" =~ ^[0-9]+$ ]]; then
+  log "invalid BENCH_CRI_ROLLOUT_MAX_SURGE='${bench_rollout_max_surge}' (expected integer)"
+  exit 2
+fi
+if [[ -n "$bench_rollout_max_unavailable" && ! "$bench_rollout_max_unavailable" =~ ^[0-9]+$ ]]; then
+  log "invalid BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE='${bench_rollout_max_unavailable}' (expected integer)"
+  exit 2
+fi
 
 sudo_env_base=(
   "HOME=/root"
@@ -814,14 +824,28 @@ bench_runtime_manifest="${BENCH_APPLY_DIR}/runtime-class/${bench_app_name}-${ben
   "$BENCH_PRIMARY_MANIFEST" \
   "$bench_runtime_manifest" \
   --runtime-class "$bench_runtime_handler" >/dev/null
-bench_rollout_manifest="${BENCH_APPLY_DIR}/rollout/${bench_app_name}-${bench_runtime_handler}-${bench_rollout_strategy}.yaml"
+bench_rollout_suffix="${bench_rollout_strategy}"
+if [[ -n "$bench_rollout_max_surge" ]]; then
+  bench_rollout_suffix="${bench_rollout_suffix}-ms${bench_rollout_max_surge}"
+fi
+if [[ -n "$bench_rollout_max_unavailable" ]]; then
+  bench_rollout_suffix="${bench_rollout_suffix}-mu${bench_rollout_max_unavailable}"
+fi
+bench_rollout_manifest="${BENCH_APPLY_DIR}/rollout/${bench_app_name}-${bench_runtime_handler}-${bench_rollout_suffix}.yaml"
+rollout_args=(--strategy "$bench_rollout_strategy")
+if [[ -n "$bench_rollout_max_surge" ]]; then
+  rollout_args+=(--max-surge "$bench_rollout_max_surge")
+fi
+if [[ -n "$bench_rollout_max_unavailable" ]]; then
+  rollout_args+=(--max-unavailable "$bench_rollout_max_unavailable")
+fi
 "$python_bin" scripts/bench/pin_rollout_policy.py \
   "$bench_runtime_manifest" \
   "$bench_rollout_manifest" \
-  --strategy "$bench_rollout_strategy" >/dev/null
+  "${rollout_args[@]}" >/dev/null
 bench_runtime_manifest="$bench_rollout_manifest"
 log "using bench-local manifest override: ${bench_runtime_manifest}"
-log "published CRI profile: strategy=${bench_rollout_strategy} steady_quiet=${bench_steady_quiet}"
+log "published CRI profile: strategy=${bench_rollout_strategy} max_surge=${bench_rollout_max_surge:-default} max_unavailable=${bench_rollout_max_unavailable:-default} steady_quiet=${bench_steady_quiet}"
 
 cri_wait_pod_ids_gone() {
   local -a ids=("$@")

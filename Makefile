@@ -581,6 +581,10 @@ bench-rollout-tuning-experiment:
 bench-cri-rollout-candidate:
 	@./scripts/bench/run_cri_rollout_candidate.sh
 
+.PHONY: bench-lane-quiet-candidate
+bench-lane-quiet-candidate:
+	@./scripts/bench/run_lane_quiet_candidate.sh
+
 .PHONY: bench-mem-e2e-k3s-sudo
 # End-to-end K3s (with sudo for snapshots to capture accurate PSS)
 bench-mem-e2e-k3s-sudo:

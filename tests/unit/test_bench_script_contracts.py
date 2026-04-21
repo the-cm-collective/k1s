@@ -455,7 +455,7 @@ def test_run_cri_refresh_pins_workloads_to_runc_and_rejects_kata_snapshots() -> 
     assert 'BENCH_PRE_STEADY_SNAPSHOT_CMD="$steady_hook_cmd"' in text
     assert 'BENCH_PRE_DURING_SNAPSHOT_CMD="$phase_trace_cmd"' in text
     assert 'BENCH_PRE_POST_SNAPSHOT_CMD="$steady_hook_cmd"' in text
-    assert 'published CRI profile: strategy=${bench_rollout_strategy} steady_quiet=${bench_steady_quiet}' in text
+    assert 'published CRI profile: strategy=${bench_rollout_strategy} max_surge=${bench_rollout_max_surge:-default} max_unavailable=${bench_rollout_max_unavailable:-default} steady_quiet=${bench_steady_quiet}' in text
     assert "first_requested_replica()" in text
     assert 'first_steady_replica="$(first_requested_replica "$REPLICAS")"' in text
     assert 'verify_snapshot_runtime_handler "${LABEL_CRI}-pods-${first_steady_replica}"' in text
@@ -572,6 +572,10 @@ def test_pin_rollout_policy_helper_exists_for_experiment_manifest_overrides() ->
     assert 'ALLOWED_STRATEGIES = {"ordered", "parallel"}' in text
     assert "choices=sorted(ALLOWED_STRATEGIES)" in text
     assert 'rollout["strategy"] = args.strategy' in text
+    assert "--max-surge" in text
+    assert "--max-unavailable" in text
+    assert 'rollout["maxSurge"] = int(args.max_surge)' in text
+    assert 'rollout["maxUnavailable"] = int(args.max_unavailable)' in text
     assert 'kind not in {"app", "deployment"}' in text
 
 
@@ -605,6 +609,8 @@ def test_rollout_tuning_experiment_runner_stays_off_the_publish_path() -> None:
     assert '*"+exp+"*' in text
     assert "BENCH_EXPERIMENT_STEADY_QUIET=${BENCH_EXPERIMENT_STEADY_QUIET:-0}" in text
     assert "BENCH_EXPERIMENT_STEADY_QUIET    enable steady quiet hooks (default: 0)" in text
+    assert "BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE" in text
+    assert "BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE" in text
     assert "build_phase_trace_cmd()" in text
     assert (
         '--preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_SNAPSHOT_DURATION,BENCH_SNAPSHOT_CAPTURE_TIMING,BENCH_BACKEND,BENCH_APP_NAME'
@@ -615,6 +621,8 @@ def test_rollout_tuning_experiment_runner_stays_off_the_publish_path() -> None:
     assert '"AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-$backend}"' in text
     assert 'BENCH_SPECS_SRC="$ROOT_DIR"' in text
     assert 'BENCH_EXPERIMENT_OUTPUT_ROOT="$experiment_root"' in text
+    assert 'BENCH_EXPERIMENT_SCENARIO="${BENCH_EXPERIMENT_SCENARIO:-}"' not in text
+    assert 'scenario=${BENCH_EXPERIMENT_SCENARIO:-}' in text
     assert 'BENCH_PRE_DURING_SNAPSHOT_CMD="$phase_cmd"' in text
     assert 'scripts/bench/mem_combine.py --outdir "$experiment_combined_dir"' in text
     assert (
@@ -631,12 +639,21 @@ def test_cri_rollout_candidate_wrapper_uses_grouped_experiment_outputs() -> None
     make_text = MAKEFILE.read_text(encoding="utf-8")
 
     assert 'CONTROL_STRATEGY="${CONTROL_STRATEGY:-parallel}"' in text
+    assert 'CONTROL_MAX_SURGE="${CONTROL_MAX_SURGE:-1}"' in text
+    assert 'CONTROL_MAX_UNAVAILABLE="${CONTROL_MAX_UNAVAILABLE:-0}"' in text
+    assert 'CANDIDATE_SCENARIO="${CANDIDATE_SCENARIO:-candidate}"' in text
+    assert 'CANDIDATE_STRATEGY="${CANDIDATE_STRATEGY:-parallel}"' in text
+    assert 'CANDIDATE_MAX_SURGE="${CANDIDATE_MAX_SURGE:-0}"' in text
+    assert 'CANDIDATE_MAX_UNAVAILABLE="${CANDIDATE_MAX_UNAVAILABLE:-1}"' in text
     assert 'GROUP_ROOT="${GROUP_ROOT:-state/bench-experiments/${GROUP_ID}}"' in text
     assert 'LABEL_BASE_PREFIX="$(ensure_label_base "${LABEL_BASE_PREFIX:-}")"' in text
     assert 'BENCH_EXPERIMENT_OUTPUT_ROOT="$exp_dir"' in text
     assert 'BENCH_EXPERIMENT_STEADY_QUIET="$CONTROL_STEADY_QUIET"' not in text
     assert 'BENCH_EXPERIMENT_STEADY_QUIET="$steady_quiet"' in text
+    assert 'BENCH_EXPERIMENT_SCENARIO="$scenario"' in text
     assert 'BENCH_EXPERIMENT_ROLLOUT_STRATEGY="$rollout_strategy"' in text
+    assert 'BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE="$rollout_max_surge"' in text
+    assert 'BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE="$rollout_max_unavailable"' in text
     assert 'python scripts/bench/summarize_rollout_candidate.py "$GROUP_ROOT"' in text
     assert "baseline-r1" not in text
     assert "bench-cri-rollout-candidate:" in make_text
@@ -667,18 +684,24 @@ def test_rollout_candidate_summary_helper_reports_promotion_gates() -> None:
     text = SUMMARIZE_ROLLOUT_CANDIDATE.read_text(encoding="utf-8")
     phase_text = CAPTURE_ROLLOUT_PHASE.read_text(encoding="utf-8")
 
-    assert 'default=30.0' in text
+    assert 'default=15.0' in text
+    assert 'default=1.0' in text
     assert 'default=3.0' in text
     assert 'default=5.0' in text
     assert "PHASE_TRACE_STAGES" in text
     assert '"phase_metrics": phase_metrics' in text
     assert '"rollout-5-during app improvement"' in text
+    assert '"rollout-5-during CRI overlap reduction"' in text
     assert '"pods-5 steady-state app drift"' in text
     assert '"rollout-5-post app drift"' in text
     assert 'CV_REGRESSION_STAGES = ("pods-5", "rollout-2-post", "rollout-5-post")' in text
     assert 'f"{stage} app CV regression"' in text
     assert 'candidate group must include baseline and exactly one candidate scenario' in text
+    assert 'candidate group must not mix ordered and quiet candidate scenarios' not in text
     assert 'sys.executable, "-m", "ae.cli", "status", app, "--json"' in phase_text
+    assert '["crictl", "pods", "-o", "json"]' in phase_text
+    assert '["crictl", "ps", "-a", "-o", "json"]' in phase_text
+    assert '"cri_phase_metrics": cri_phase_metrics' in text
     assert 'Path("snapshots") / label / "phase-trace.json"' in phase_text
 
 

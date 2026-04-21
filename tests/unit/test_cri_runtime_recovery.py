@@ -192,6 +192,24 @@ def test_cri_runtime_detects_container_in_starting_state_remove_error() -> None:
     assert runtime._is_container_in_starting_state_remove_error(other) is False
 
 
+def test_cri_runtime_detects_container_already_in_removing_state_remove_error() -> None:
+    if grpc is None:
+        pytest.skip("grpc unavailable")
+    runtime = CRIRuntime()
+
+    removing = _FakeGrpcError(
+        grpc.StatusCode.UNKNOWN,
+        (
+            'failed to set removing state for container "abc": '
+            "container is already in removing state"
+        ),
+    )
+    other = _FakeGrpcError(grpc.StatusCode.UNKNOWN, "transport unavailable")
+
+    assert runtime._is_container_already_in_removing_state_remove_error(removing) is True
+    assert runtime._is_container_already_in_removing_state_remove_error(other) is False
+
+
 def test_cri_runtime_detects_reserved_container_name_error_and_extracts_id() -> None:
     if grpc is None:
         pytest.skip("grpc unavailable")
@@ -1337,6 +1355,75 @@ def test_ensure_main_container_retries_remove_when_container_is_still_starting(
     assert created_attempts == [1]
     assert sidecars == ["default/demo-rev1-0"]
     assert clock.sleeps == [0.2, 0.2, 0.5]
+
+
+def test_ensure_main_container_waits_for_remove_when_already_removing(monkeypatch) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    pod = SimpleNamespace(id="pod-1", labels={"ae.pod_name": "default/demo-rev1-0"})
+    container = SimpleNamespace(id="ctr-1")
+    clock = _FakeClock()
+    statuses = iter(
+        [
+            SimpleNamespace(state="exited", labels={}),
+            None,
+        ]
+    )
+    runtime_calls: list[tuple[str, str]] = []
+    created_attempts: list[int] = []
+    sidecars: list[str] = []
+
+    monkeypatch.setattr(cri_runtime_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", clock.sleep)
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(runtime, "_find_container", lambda *_args, **_kwargs: container)
+    monkeypatch.setattr(runtime, "_container_status", lambda _container_id: next(statuses))
+    monkeypatch.setattr(runtime, "_container_state_name", lambda status: str(status.state))
+    monkeypatch.setattr(
+        runtime,
+        "_is_container_running",
+        lambda status: str(getattr(status, "state", "")) == "running",
+    )
+    monkeypatch.setattr(runtime, "_wait_for_container_absent", lambda *_args, **_kwargs: None)
+
+    def _runtime_call(method, req):
+        container_id = str(getattr(req, "container_id", "?"))
+        runtime_calls.append((method, container_id))
+        if method == "RemoveContainer":
+            raise _FakeGrpcError(
+                grpc.StatusCode.UNKNOWN,
+                (
+                    f'failed to set removing state for container "{container_id}": '
+                    "container is already in removing state"
+                ),
+            )
+        return None
+
+    monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
+    monkeypatch.setattr(
+        runtime,
+        "_create_main_container",
+        lambda *_args, **kwargs: created_attempts.append(int(kwargs.get("attempt", 0))),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_sidecars",
+        lambda *_args, **_kwargs: sidecars.append("default/demo-rev1-0"),
+    )
+
+    changed = runtime._ensure_main_container(
+        manifest,
+        pod,
+        1,
+        is_job=False,
+        job_backoff_limit=None,
+    )
+
+    assert changed is True
+    assert runtime_calls == [("RemoveContainer", "ctr-1")]
+    assert created_attempts == [1]
+    assert sidecars == ["default/demo-rev1-0"]
+    assert clock.sleeps == [0.5]
 
 
 def test_stop_and_remove_pod_uses_blocking_sandbox_cleanup(monkeypatch) -> None:

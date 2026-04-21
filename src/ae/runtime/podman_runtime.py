@@ -816,6 +816,20 @@ class PodmanRuntime(RuntimeAdapter):
                 removed += 1
         return removed
 
+    def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:
+        targets = {str(replica_id) for replica_id in replica_ids if replica_id}
+        if not targets:
+            return 0
+        removed = 0
+        for c in self._list_app_containers(app_name):
+            labs = (c.get("Config") or {}).get("Labels") or {}
+            replica_id = labs.get(self.POD_LABEL) or labs.get(self.LEGACY_REPLICA_LABEL)
+            if replica_id not in targets:
+                continue
+            self._stop_and_remove(c.get("Id", ""))
+            removed += 1
+        return removed
+
     # Init containers --------------------------------------------------
     def run_init_containers(self, manifest):  # type: ignore[override]
         """Run initContainers sequentially with optional timeouts.

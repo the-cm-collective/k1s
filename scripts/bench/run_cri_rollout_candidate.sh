@@ -40,9 +40,14 @@ ROLL_REPLICAS="${ROLL_REPLICAS:-2,5}"
 DURATION="${DURATION:-30}"
 CONTROL_STEADY_QUIET="${CONTROL_STEADY_QUIET:-0}"
 CONTROL_STRATEGY="${CONTROL_STRATEGY:-parallel}"
-ORDERED_STEADY_QUIET="${ORDERED_STEADY_QUIET:-1}"
-ORDERED_STRATEGY="${ORDERED_STRATEGY:-ordered}"
-GROUP_ID="${GROUP_ID:-cri-ordered-candidate-$(date +%Y%m%d-%H%M%S)}"
+CONTROL_MAX_SURGE="${CONTROL_MAX_SURGE:-1}"
+CONTROL_MAX_UNAVAILABLE="${CONTROL_MAX_UNAVAILABLE:-0}"
+CANDIDATE_SCENARIO="${CANDIDATE_SCENARIO:-candidate}"
+CANDIDATE_STEADY_QUIET="${CANDIDATE_STEADY_QUIET:-1}"
+CANDIDATE_STRATEGY="${CANDIDATE_STRATEGY:-parallel}"
+CANDIDATE_MAX_SURGE="${CANDIDATE_MAX_SURGE:-0}"
+CANDIDATE_MAX_UNAVAILABLE="${CANDIDATE_MAX_UNAVAILABLE:-1}"
+GROUP_ID="${GROUP_ID:-cri-rollout-candidate-$(date +%Y%m%d-%H%M%S)}"
 GROUP_ROOT="${GROUP_ROOT:-state/bench-experiments/${GROUP_ID}}"
 LABEL_BASE_PREFIX="$(ensure_label_base "${LABEL_BASE_PREFIX:-}")"
 
@@ -72,6 +77,8 @@ run_experiment() {
   local run_id="$2"
   local steady_quiet="$3"
   local rollout_strategy="$4"
+  local rollout_max_surge="$5"
+  local rollout_max_unavailable="$6"
   local exp_dir="${GROUP_ROOT}/${scenario}-r${run_id}"
   local label_base="${LABEL_BASE_PREFIX}-${scenario}-r${run_id}"
   local experiment_id="${GROUP_ID}-${scenario}-r${run_id}"
@@ -87,8 +94,11 @@ run_experiment() {
       PATH="$PATH" \
       PYTHONPATH="$PYTHONPATH" \
       BENCH_EXPERIMENT_OUTPUT_ROOT="$exp_dir" \
+      BENCH_EXPERIMENT_SCENARIO="$scenario" \
       BENCH_EXPERIMENT_STEADY_QUIET="$steady_quiet" \
       BENCH_EXPERIMENT_ROLLOUT_STRATEGY="$rollout_strategy" \
+      BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE="$rollout_max_surge" \
+      BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE="$rollout_max_unavailable" \
       APP="$APP" \
       APP_NAME="$APP_NAME" \
       REPLICAS="$REPLICAS" \
@@ -119,11 +129,12 @@ run_experiment() {
 log "group_id=${GROUP_ID} group_root=${GROUP_ROOT}"
 log "label_base_prefix=${LABEL_BASE_PREFIX}"
 log "runs=${RUNS_RAW}"
-log "control_strategy=${CONTROL_STRATEGY} ordered_strategy=${ORDERED_STRATEGY}"
+log "control_policy=strategy=${CONTROL_STRATEGY} max_surge=${CONTROL_MAX_SURGE} max_unavailable=${CONTROL_MAX_UNAVAILABLE}"
+log "${CANDIDATE_SCENARIO}_policy=strategy=${CANDIDATE_STRATEGY} max_surge=${CANDIDATE_MAX_SURGE} max_unavailable=${CANDIDATE_MAX_UNAVAILABLE}"
 
 for run in "${runs[@]}"; do
-  run_experiment baseline "$run" "$CONTROL_STEADY_QUIET" "$CONTROL_STRATEGY"
-  run_experiment ordered "$run" "$ORDERED_STEADY_QUIET" "$ORDERED_STRATEGY"
+  run_experiment baseline "$run" "$CONTROL_STEADY_QUIET" "$CONTROL_STRATEGY" "$CONTROL_MAX_SURGE" "$CONTROL_MAX_UNAVAILABLE"
+  run_experiment "$CANDIDATE_SCENARIO" "$run" "$CANDIDATE_STEADY_QUIET" "$CANDIDATE_STRATEGY" "$CANDIDATE_MAX_SURGE" "$CANDIDATE_MAX_UNAVAILABLE"
 done
 
 if have sudo; then
@@ -142,8 +153,13 @@ label_base_prefix=${LABEL_BASE_PREFIX}
 runs=${RUNS_RAW}
 control_steady_quiet=${CONTROL_STEADY_QUIET}
 control_strategy=${CONTROL_STRATEGY}
-ordered_steady_quiet=${ORDERED_STEADY_QUIET}
-ordered_strategy=${ORDERED_STRATEGY}
+control_max_surge=${CONTROL_MAX_SURGE}
+control_max_unavailable=${CONTROL_MAX_UNAVAILABLE}
+candidate_scenario=${CANDIDATE_SCENARIO}
+candidate_steady_quiet=${CANDIDATE_STEADY_QUIET}
+candidate_strategy=${CANDIDATE_STRATEGY}
+candidate_max_surge=${CANDIDATE_MAX_SURGE}
+candidate_max_unavailable=${CANDIDATE_MAX_UNAVAILABLE}
 candidate_report=${GROUP_ROOT}/reports/candidate.txt
 candidate_json=${GROUP_ROOT}/reports/candidate.json
 log_file=${log_file}

@@ -233,6 +233,22 @@ class CRIRuntime(RuntimeAdapter):
                 removed += 1
         return removed
 
+    def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:
+        self._ensure_clients()
+        targets = {str(replica_id) for replica_id in replica_ids if replica_id}
+        if not targets:
+            return 0
+        removed = 0
+        for pod in self._list_pods(app_name):
+            labels = self._pod_labels(pod)
+            replica_id = labels.get(self.REPLICA_LABEL) or self._pod_name(pod)
+            if replica_id not in targets:
+                continue
+            with contextlib.suppress(Exception):
+                self._stop_and_remove_pod(None, pod)
+                removed += 1
+        return removed
+
     def list_containers_info(self) -> list[dict]:
         self._ensure_clients()
         out: list[dict] = []
@@ -1621,6 +1637,25 @@ class CRIRuntime(RuntimeAdapter):
         details = self._grpc_error_details(exc).lower()
         return "container is in starting state" in details and "can't be removed" in details
 
+    def _is_container_already_in_removing_state_remove_error(self, exc: Exception) -> bool:
+        if grpc is None or not isinstance(exc, grpc.RpcError):
+            return False
+        try:
+            code = exc.code()
+        except Exception:
+            return False
+        if code not in {
+            grpc.StatusCode.UNKNOWN,
+            grpc.StatusCode.ALREADY_EXISTS,
+            grpc.StatusCode.FAILED_PRECONDITION,
+        }:
+            return False
+        details = self._grpc_error_details(exc).lower()
+        return (
+            "failed to set removing state for container" in details
+            and "already in removing state" in details
+        )
+
     def _pod_cleanup_timeout(self, manifest: AppManifest | None) -> int:
         timeout = 10
         if manifest is not None:
@@ -1751,6 +1786,34 @@ class CRIRuntime(RuntimeAdapter):
                 time.sleep(self.SANDBOX_CLEANUP_SETTLE_SECONDS)
                 return False
             except Exception as exc:
+                if self._is_container_already_in_removing_state_remove_error(exc):
+                    last_exc = exc
+                    LOGGER.warning(
+                        "CRI main container already removing for replica %s (container_id=%s); "
+                        "waiting for removal to complete before recreate: %s",
+                        replica_id or "?",
+                        container_id,
+                        exc,
+                    )
+                    self._wait_for_container_absent(
+                        str(container_id),
+                        timeout=min(
+                            max(0.0, deadline - time.monotonic()),
+                            float(self.CONTAINER_RECYCLE_SETTLE_TIMEOUT_SECONDS),
+                        ),
+                    )
+                    current_status = None
+                    with contextlib.suppress(Exception):
+                        current_status = self._container_status(str(container_id))
+                    if current_status is None:
+                        time.sleep(self.SANDBOX_CLEANUP_SETTLE_SECONDS)
+                        return False
+                    if self._is_container_running(current_status):
+                        return True
+                    if time.monotonic() >= deadline:
+                        raise last_exc
+                    time.sleep(0.2)
+                    continue
                 if not self._is_container_in_starting_state_remove_error(exc):
                     raise
                 last_exc = exc
