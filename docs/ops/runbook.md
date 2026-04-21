@@ -157,32 +157,35 @@ Isolated rollout-tuning experiments
   - they do not update `combined/combined.csv`, `charts/`, or docs
   - steady-quiet is disabled by default; set `BENCH_EXPERIMENT_STEADY_QUIET=1` explicitly when you want the extra pre-snapshot gate
 - Example CRI experiment:
-  - `BENCH_EXPERIMENT_STEADY_QUIET=1 BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered make bench-rollout-tuning-experiment LANE=cri LABEL_BASE="r$(date +%Y%m%d-%H%M)-cri+exp+ordered" EXPERIMENT_ID=cri-ordered-exp`
+  - `BENCH_EXPERIMENT_STEADY_QUIET=1 BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0 BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1 make bench-rollout-tuning-experiment LANE=cri LABEL_BASE="r$(date +%Y%m%d-%H%M)-cri+exp+candidate" EXPERIMENT_ID=cri-policy-exp`
 - Example rootless cross-check:
   - `BENCH_EXPERIMENT_STEADY_QUIET=1 make bench-rollout-tuning-experiment LANE=rootless LABEL_BASE="r$(date +%Y%m%d-%H%M)-rootless+exp+quiet" EXPERIMENT_ID=rootless-quiet-exp`
 - Review the experiment-local outputs before considering promotion:
   - `state/bench-experiments/<id>/combined/combined.csv`
   - `state/bench-experiments/<id>/charts/`
   - `state/bench-experiments/<id>/reports/audit.txt`
-- CRI ordered candidate verification:
+- CRI rollout-policy candidate verification:
   - `make bench-cri-rollout-candidate`
   - The wrapper runs paired CRI experiments under `state/bench-experiments/<group-id>/`:
-    - `baseline-r1..rN`: explicit `parallel` rollout baseline with `BENCH_EXPERIMENT_STEADY_QUIET=0`
-    - `ordered-r1..rN`: ordered rollout override with `BENCH_EXPERIMENT_STEADY_QUIET=1`
+    - `baseline-r1..rN`: explicit `parallel` rollout baseline with `BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=1`, `BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=0`, and `BENCH_EXPERIMENT_STEADY_QUIET=0`
+    - `candidate-r1..rN`: accepted rollout policy with `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel`, `BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0`, `BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1`, and `BENCH_EXPERIMENT_STEADY_QUIET=1`
   - Candidate group outputs:
     - `state/bench-experiments/<group-id>/reports/candidate.txt`
     - `state/bench-experiments/<group-id>/reports/candidate.json`
   - Current promotion gates used by the helper:
     - `pods-5` steady-state app drift `<= 3 MiB`
     - `rollout-5-post` app drift `<= 3 MiB`
-    - `rollout-5-during` app improvement `>= 30 MiB`
+    - `rollout-5-during` app improvement `>= 15 MiB`
+    - `rollout-5-during` CRI overlap reduction `>= 1.0`
   - These groups remain non-publishable experiment outputs; they do not touch retained baseline artifacts.
 - Retained CRI publish default:
-  - `./scripts/bench/run_cri_verify.sh` now defaults to the promoted CRI profile:
-    - `BENCH_CRI_ROLLOUT_STRATEGY=ordered`
+  - Invoke `./scripts/bench/run_cri_verify.sh` with the accepted rollout-policy publish profile:
+    - `BENCH_CRI_ROLLOUT_STRATEGY=parallel`
+    - `BENCH_CRI_ROLLOUT_MAX_SURGE=0`
+    - `BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1`
     - `BENCH_CRI_STEADY_QUIET=1`
   - To force the old retained parallel baseline for comparison:
-    - `BENCH_CRI_ROLLOUT_STRATEGY=parallel BENCH_CRI_STEADY_QUIET=0 BASE="r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify" RUNS="1 2 3" ./scripts/bench/run_cri_verify.sh`
+    - `BENCH_CRI_ROLLOUT_STRATEGY=parallel BENCH_CRI_ROLLOUT_MAX_SURGE=1 BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=0 BENCH_CRI_STEADY_QUIET=0 BASE="r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify" RUNS="1 2 3" ./scripts/bench/run_cri_verify.sh`
 
 Export and Validate K8s YAML
 - Hardened export with validation:

@@ -262,6 +262,10 @@ ROLL_REPLICAS="2,5" \
 make bench-mem-e2e-baselines-sudo
 
 BASE="${STAMP}+cri-runc-verify" \
+BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_ROLLOUT_MAX_SURGE=0 \
+BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1 \
+BENCH_CRI_STEADY_QUIET=1 \
 APP="specs/examples/echo.yaml" \
 APP_NAME="echo" \
 DURATION=30 \
@@ -279,8 +283,10 @@ make bench-retained-rebuild PROFILE=final STAMP="$STAMP" DELETE_DROPPED=1
 Acceptance checks
 - All baseline scenarios complete: `k1s rootless`, `k1s rootful`, `k1nd`, and `k3d`.
 - CRI verify completes three clean runs: `run1`, `run2`, and `run3`.
-- CRI verify uses the promoted retained profile by default:
-  - `BENCH_CRI_ROLLOUT_STRATEGY=ordered`
+- CRI verify is invoked with the accepted rollout-policy publish profile:
+  - `BENCH_CRI_ROLLOUT_STRATEGY=parallel`
+  - `BENCH_CRI_ROLLOUT_MAX_SURGE=0`
+  - `BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1`
   - `BENCH_CRI_STEADY_QUIET=1`
 - Baseline and CRI families publish `10` stages each:
   - `idle`

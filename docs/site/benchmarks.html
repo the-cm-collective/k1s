@@ -936,13 +936,15 @@ make bench-mem-agg LABEL=pods-5</code></pre>
   LANE=cri \
   LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-cri+exp+baseline&quot; \
   EXPERIMENT_ID=&quot;cri-baseline-exp&quot;</code></pre>
-<p>CRI, steady-quiet hook plus ordered rollout override:</p>
+<p>CRI, steady-quiet hook plus accepted rollout-policy override:</p>
 <pre><code>BENCH_EXPERIMENT_STEADY_QUIET=1 \
-BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered \
+BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel \
+BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0 \
+BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1 \
 make bench-rollout-tuning-experiment \
   LANE=cri \
-  LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-cri+exp+ordered&quot; \
-  EXPERIMENT_ID=&quot;cri-ordered-exp&quot;</code></pre>
+  LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-cri+exp+candidate&quot; \
+  EXPERIMENT_ID=&quot;cri-policy-exp&quot;</code></pre>
 <p>Cross-check the same logic on other k1s-family lanes:</p>
 <pre><code>BENCH_EXPERIMENT_STEADY_QUIET=1 \
 make bench-rollout-tuning-experiment \
@@ -959,7 +961,9 @@ make bench-rollout-tuning-experiment \
 <p>Relevant experiment env vars</p>
 <ul>
 <li><code>BENCH_EXPERIMENT_STEADY_QUIET=1</code> enables backend-aware steady-state checks before <code>pods-*</code> and <code>rollout-*-post</code> snapshots. Leave it unset for control runs; the default is <code>0</code>.</li>
-<li><code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered|parallel</code> rewrites only the bench-local manifest copy used by the experiment.</li>
+<li><code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered|parallel</code> rewrites the bench-local manifest copy used by the experiment.</li>
+<li><code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=&lt;n&gt;</code> caps extra replicas above desired during rollout.</li>
+<li><code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=&lt;n&gt;</code> allows bounded old-replica removal before replacement is fully ready.</li>
 <li><code>EXPERIMENT_STEADY_TIMEOUT</code>, <code>EXPERIMENT_STEADY_DELAY</code>, and <code>EXPERIMENT_STEADY_POLLS</code> tune the steady-state wait helper.</li>
 </ul>
 <p>Outputs</p>
@@ -971,19 +975,20 @@ make bench-rollout-tuning-experiment \
 <li><code>state/bench-experiments/&lt;id&gt;/reports/summary.txt</code></li>
 </ul>
 <p>The experiment harness uses the same generic k1s matrix/rollout scripts as the baseline lanes. Only the optional pre-snapshot hooks and bench-local manifest overrides change, so viability checks stay close to the published benchmark behavior.</p>
-<p>CRI ordered candidate workflow</p>
-<p>The CRI retained rerun path now defaults to the promoted profile:</p>
+<p>CRI rollout-policy candidate workflow</p>
+<p>For the accepted CRI rollout-policy rerun, invoke <code>scripts/bench/run_cri_verify.sh</code> with the promoted policy explicitly:</p>
 <ul>
-<li><code>BENCH_CRI_ROLLOUT_STRATEGY=ordered</code></li>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_SURGE=0</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1</code></li>
 <li><code>BENCH_CRI_STEADY_QUIET=1</code></li>
 </ul>
-<p>That is the profile used by <code>scripts/bench/run_cri_verify.sh</code> and future retained CRI publishes.</p>
-<p>If you need to compare the promoted CRI profile against the old parallel baseline again, use the paired candidate wrapper instead of re-running ad hoc control/ordered commands:</p>
+<p>Use the paired candidate wrapper when you want to compare the accepted policy against the old retained baseline again:</p>
 <pre><code>make bench-cri-rollout-candidate</code></pre>
 <p>The wrapper creates a group under <code>state/bench-experiments/&lt;group-id&gt;/</code> and runs:</p>
 <ul>
-<li><code>baseline-r1..rN</code> with <code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel</code> and <code>BENCH_EXPERIMENT_STEADY_QUIET=0</code></li>
-<li><code>ordered-r1..rN</code> with <code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered</code> and <code>BENCH_EXPERIMENT_STEADY_QUIET=1</code></li>
+<li><code>baseline-r1..rN</code> with <code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=1</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=0</code>, and <code>BENCH_EXPERIMENT_STEADY_QUIET=0</code></li>
+<li><code>candidate-r1..rN</code> with <code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1</code>, and <code>BENCH_EXPERIMENT_STEADY_QUIET=1</code></li>
 </ul>
 <p>After the runs complete it writes:</p>
 <ul>
@@ -994,11 +999,15 @@ make bench-rollout-tuning-experiment \
 <ul>
 <li><code>pods-5</code> app drift <code>&lt;= 3 MiB</code></li>
 <li><code>rollout-5-post</code> app drift <code>&lt;= 3 MiB</code></li>
-<li><code>rollout-5-during</code> app improvement <code>&gt;= 30 MiB</code></li>
+<li><code>rollout-5-during</code> app improvement <code>&gt;= 15 MiB</code></li>
+<li><code>rollout-5-during</code> CRI overlap reduction <code>&gt;= 1.0</code></li>
+<li><code>rollout-2-during</code> app improvement informational only</li>
 </ul>
 <p>These candidate groups still live on the experiment path. They are for promotion decisions, not for direct publication into retained benchmark artifacts.</p>
 <p>To force the old retained CRI baseline for an explicit comparison run:</p>
 <pre><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_ROLLOUT_MAX_SURGE=1 \
+BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=0 \
 BENCH_CRI_STEADY_QUIET=0 \
 BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify&quot; \
 RUNS=&quot;1 2 3&quot; \
@@ -1019,6 +1028,10 @@ RUNS=&quot;1 2 3&quot; \
 sudo pkill -f &quot;python .*ae\\.controller.*state/bench-cri/specs&quot; || true
 
 export BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-wrapper-check&quot;
+BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_ROLLOUT_MAX_SURGE=0 \
+BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1 \
+BENCH_CRI_STEADY_QUIET=1 \
 RUNS=&quot;1&quot; ./scripts/bench/run_cri_verify.sh
 grep -c &quot;^${BASE}-run1+cri+crun+containerd-&quot; combined/combined.csv</code></pre>
 <p>Important: set <code>BASE=...</code> / <code>RUNS=...</code> before the script name (or <code>export</code> them). <code>./scripts/bench/run_cri_verify.sh BASE=...</code> passes positional args and does not override the wrapper environment.</p>
@@ -1246,7 +1259,7 @@ sudo sysctl --system</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-19 09:51:27</span>
+        <span>Built 2026-04-21 09:42:00</span>
       </div>
     </footer>
     <script>

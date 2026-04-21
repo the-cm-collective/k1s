@@ -195,14 +195,16 @@ make bench-rollout-tuning-experiment \
   EXPERIMENT_ID="cri-baseline-exp"
 ```
 
-CRI, steady-quiet hook plus ordered rollout override:
+CRI, steady-quiet hook plus accepted rollout-policy override:
 ```bash
 BENCH_EXPERIMENT_STEADY_QUIET=1 \
-BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered \
+BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel \
+BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0 \
+BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1 \
 make bench-rollout-tuning-experiment \
   LANE=cri \
-  LABEL_BASE="r$(date +%Y%m%d-%H%M)-cri+exp+ordered" \
-  EXPERIMENT_ID="cri-ordered-exp"
+  LABEL_BASE="r$(date +%Y%m%d-%H%M)-cri+exp+candidate" \
+  EXPERIMENT_ID="cri-policy-exp"
 ```
 
 Cross-check the same logic on other k1s-family lanes:
@@ -222,7 +224,9 @@ Available lanes
 
 Relevant experiment env vars
 - `BENCH_EXPERIMENT_STEADY_QUIET=1` enables backend-aware steady-state checks before `pods-*` and `rollout-*-post` snapshots. Leave it unset for control runs; the default is `0`.
-- `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered|parallel` rewrites only the bench-local manifest copy used by the experiment.
+- `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered|parallel` rewrites the bench-local manifest copy used by the experiment.
+- `BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=<n>` caps extra replicas above desired during rollout.
+- `BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=<n>` allows bounded old-replica removal before replacement is fully ready.
 - `EXPERIMENT_STEADY_TIMEOUT`, `EXPERIMENT_STEADY_DELAY`, and `EXPERIMENT_STEADY_POLLS` tune the steady-state wait helper.
 
 Outputs
@@ -234,23 +238,25 @@ Outputs
 
 The experiment harness uses the same generic k1s matrix/rollout scripts as the baseline lanes. Only the optional pre-snapshot hooks and bench-local manifest overrides change, so viability checks stay close to the published benchmark behavior.
 
-CRI ordered candidate workflow
+CRI rollout-policy candidate workflow
 
-The CRI retained rerun path now defaults to the promoted profile:
-- `BENCH_CRI_ROLLOUT_STRATEGY=ordered`
+For the accepted CRI rollout-policy rerun, invoke `scripts/bench/run_cri_verify.sh`
+with the promoted policy explicitly:
+- `BENCH_CRI_ROLLOUT_STRATEGY=parallel`
+- `BENCH_CRI_ROLLOUT_MAX_SURGE=0`
+- `BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1`
 - `BENCH_CRI_STEADY_QUIET=1`
 
-That is the profile used by `scripts/bench/run_cri_verify.sh` and future retained CRI publishes.
-
-If you need to compare the promoted CRI profile against the old parallel baseline again, use the paired candidate wrapper instead of re-running ad hoc control/ordered commands:
+Use the paired candidate wrapper when you want to compare the accepted policy
+against the old retained baseline again:
 
 ```bash
 make bench-cri-rollout-candidate
 ```
 
 The wrapper creates a group under `state/bench-experiments/<group-id>/` and runs:
-- `baseline-r1..rN` with `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel` and `BENCH_EXPERIMENT_STEADY_QUIET=0`
-- `ordered-r1..rN` with `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered` and `BENCH_EXPERIMENT_STEADY_QUIET=1`
+- `baseline-r1..rN` with `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel`, `BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=1`, `BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=0`, and `BENCH_EXPERIMENT_STEADY_QUIET=0`
+- `candidate-r1..rN` with `BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel`, `BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0`, `BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1`, and `BENCH_EXPERIMENT_STEADY_QUIET=1`
 
 After the runs complete it writes:
 - `reports/candidate.txt`
@@ -259,7 +265,9 @@ After the runs complete it writes:
 The candidate summary reports scenario means for the key rollout stages and evaluates these CRI promotion gates by default:
 - `pods-5` app drift `<= 3 MiB`
 - `rollout-5-post` app drift `<= 3 MiB`
-- `rollout-5-during` app improvement `>= 30 MiB`
+- `rollout-5-during` app improvement `>= 15 MiB`
+- `rollout-5-during` CRI overlap reduction `>= 1.0`
+- `rollout-2-during` app improvement informational only
 
 These candidate groups still live on the experiment path. They are for promotion decisions, not for direct publication into retained benchmark artifacts.
 
@@ -267,6 +275,8 @@ To force the old retained CRI baseline for an explicit comparison run:
 
 ```bash
 BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_ROLLOUT_MAX_SURGE=1 \
+BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=0 \
 BENCH_CRI_STEADY_QUIET=0 \
 BASE="r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify" \
 RUNS="1 2 3" \
@@ -290,6 +300,10 @@ Recommended smoke lane:
 sudo pkill -f "python .*ae\\.controller.*state/bench-cri/specs" || true
 
 export BASE="r$(date +%Y%m%d-%H%M)-cri-runc-wrapper-check"
+BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_ROLLOUT_MAX_SURGE=0 \
+BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1 \
+BENCH_CRI_STEADY_QUIET=1 \
 RUNS="1" ./scripts/bench/run_cri_verify.sh
 grep -c "^${BASE}-run1+cri+crun+containerd-" combined/combined.csv
 ```

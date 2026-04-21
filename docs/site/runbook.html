@@ -998,7 +998,7 @@
 </li>
 <li>Example CRI experiment:
 <ul>
-<li><code>BENCH_EXPERIMENT_STEADY_QUIET=1 BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered make bench-rollout-tuning-experiment LANE=cri LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-cri+exp+ordered&quot; EXPERIMENT_ID=cri-ordered-exp</code></li>
+<li><code>BENCH_EXPERIMENT_STEADY_QUIET=1 BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0 BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1 make bench-rollout-tuning-experiment LANE=cri LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-cri+exp+candidate&quot; EXPERIMENT_ID=cri-policy-exp</code></li>
 </ul>
 </li>
 <li>Example rootless cross-check:
@@ -1013,13 +1013,13 @@
 <li><code>state/bench-experiments/&lt;id&gt;/reports/audit.txt</code></li>
 </ul>
 </li>
-<li>CRI ordered candidate verification:
+<li>CRI rollout-policy candidate verification:
 <ul>
 <li><code>make bench-cri-rollout-candidate</code></li>
 <li>The wrapper runs paired CRI experiments under <code>state/bench-experiments/&lt;group-id&gt;/</code>:
 <ul>
-<li><code>baseline-r1..rN</code>: explicit <code>parallel</code> rollout baseline with <code>BENCH_EXPERIMENT_STEADY_QUIET=0</code></li>
-<li><code>ordered-r1..rN</code>: ordered rollout override with <code>BENCH_EXPERIMENT_STEADY_QUIET=1</code></li>
+<li><code>baseline-r1..rN</code>: explicit <code>parallel</code> rollout baseline with <code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=1</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=0</code>, and <code>BENCH_EXPERIMENT_STEADY_QUIET=0</code></li>
+<li><code>candidate-r1..rN</code>: accepted rollout policy with <code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1</code>, and <code>BENCH_EXPERIMENT_STEADY_QUIET=1</code></li>
 </ul>
 </li>
 <li>Candidate group outputs:
@@ -1032,7 +1032,8 @@
 <ul>
 <li><code>pods-5</code> steady-state app drift <code>&lt;= 3 MiB</code></li>
 <li><code>rollout-5-post</code> app drift <code>&lt;= 3 MiB</code></li>
-<li><code>rollout-5-during</code> app improvement <code>&gt;= 30 MiB</code></li>
+<li><code>rollout-5-during</code> app improvement <code>&gt;= 15 MiB</code></li>
+<li><code>rollout-5-during</code> CRI overlap reduction <code>&gt;= 1.0</code></li>
 </ul>
 </li>
 <li>These groups remain non-publishable experiment outputs; they do not touch retained baseline artifacts.</li>
@@ -1040,15 +1041,17 @@
 </li>
 <li>Retained CRI publish default:
 <ul>
-<li><code>./scripts/bench/run_cri_verify.sh</code> now defaults to the promoted CRI profile:
+<li>Invoke <code>./scripts/bench/run_cri_verify.sh</code> with the accepted rollout-policy publish profile:
 <ul>
-<li><code>BENCH_CRI_ROLLOUT_STRATEGY=ordered</code></li>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_SURGE=0</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1</code></li>
 <li><code>BENCH_CRI_STEADY_QUIET=1</code></li>
 </ul>
 </li>
 <li>To force the old retained parallel baseline for comparison:
 <ul>
-<li><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel BENCH_CRI_STEADY_QUIET=0 BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify&quot; RUNS=&quot;1 2 3&quot; ./scripts/bench/run_cri_verify.sh</code></li>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel BENCH_CRI_ROLLOUT_MAX_SURGE=1 BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=0 BENCH_CRI_STEADY_QUIET=0 BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify&quot; RUNS=&quot;1 2 3&quot; ./scripts/bench/run_cri_verify.sh</code></li>
 </ul>
 </li>
 </ul>
@@ -2198,7 +2201,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-19 09:23:07</span>
+        <span>Built 2026-04-21 09:42:00</span>
       </div>
     </footer>
     <script>

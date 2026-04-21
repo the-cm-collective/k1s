@@ -984,6 +984,10 @@ ROLL_REPLICAS=&quot;2,5&quot; \
 make bench-mem-e2e-baselines-sudo
 
 BASE=&quot;${STAMP}+cri-runc-verify&quot; \
+BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_ROLLOUT_MAX_SURGE=0 \
+BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1 \
+BENCH_CRI_STEADY_QUIET=1 \
 APP=&quot;specs/examples/echo.yaml&quot; \
 APP_NAME=&quot;echo&quot; \
 DURATION=30 \
@@ -1000,9 +1004,11 @@ make bench-retained-rebuild PROFILE=final STAMP=&quot;$STAMP&quot; DELETE_DROPPE
 <ul>
 <li>All baseline scenarios complete: <code>k1s rootless</code>, <code>k1s rootful</code>, <code>k1nd</code>, and <code>k3d</code>.</li>
 <li>CRI verify completes three clean runs: <code>run1</code>, <code>run2</code>, and <code>run3</code>.</li>
-<li>CRI verify uses the promoted retained profile by default:
+<li>CRI verify is invoked with the accepted rollout-policy publish profile:
 <ul>
-<li><code>BENCH_CRI_ROLLOUT_STRATEGY=ordered</code></li>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_SURGE=0</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1</code></li>
 <li><code>BENCH_CRI_STEADY_QUIET=1</code></li>
 </ul>
 </li>
@@ -1091,7 +1097,7 @@ RUNS=&quot;1 2 3&quot; \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-20 08:00:13</span>
+        <span>Built 2026-04-21 09:42:00</span>
       </div>
     </footer>
     <script>
