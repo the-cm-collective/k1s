@@ -357,6 +357,20 @@ run_rollout_snapshot() {
   fi
 }
 
+set_rollout_hook_env() {
+  local stage="$1"
+  local replicas="$2"
+  local label="$3"
+  local capture_timing="${4:-}"
+  export BENCH_SNAPSHOT_LABEL="$label"
+  export BENCH_SNAPSHOT_STAGE="$stage"
+  export BENCH_SNAPSHOT_REPLICAS="$replicas"
+  export BENCH_SNAPSHOT_DURATION="$duration"
+  export BENCH_SNAPSHOT_CAPTURE_TIMING="$capture_timing"
+  export BENCH_BACKEND="${AE_RUNTIME_BACKEND:-podman}"
+  export BENCH_APP_NAME="$app_name"
+}
+
 start_rollout_snapshot() {
   local pid_var="$1"
   local label="$2"
@@ -373,6 +387,30 @@ start_rollout_snapshot() {
   printf -v "$pid_var" '%s' "$!"
 }
 
+start_rollout_hook() {
+  local pid_var="$1"
+  local stage="$2"
+  local replicas="$3"
+  local label="$4"
+  local capture_timing="${5:-}"
+  local cmd="${6:-}"
+  if [[ -z "$cmd" ]]; then
+    printf -v "$pid_var" '%s' ""
+    return 0
+  fi
+  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label}"/* >/dev/null 2>&1; then
+    echo "[rollout] skip existing hook ${label}" >&2
+    printf -v "$pid_var" '%s' ""
+    return 0
+  fi
+  info "hook stage=${stage} replicas=${replicas} label=${label}"
+  (
+    set_rollout_hook_env "$stage" "$replicas" "$label" "$capture_timing"
+    bash -lc "$cmd"
+  ) &
+  printf -v "$pid_var" '%s' "$!"
+}
+
 wait_rollout_snapshot() {
   local pid="${1:-}"
   local label="$2"
@@ -385,20 +423,29 @@ wait_rollout_snapshot() {
   fi
 }
 
+wait_rollout_hook() {
+  local pid="${1:-}"
+  local label="$2"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+  if ! wait "$pid"; then
+    echo "[rollout] hook failed: ${label}" >&2
+    return 1
+  fi
+}
+
 run_rollout_hook() {
   local stage="$1"
   local replicas="$2"
   local label="$3"
   local cmd="${4:-}"
+  local capture_timing="${5:-}"
   if [[ -z "$cmd" ]]; then
     return 0
   fi
   info "hook stage=${stage} replicas=${replicas} label=${label}"
-  export BENCH_SNAPSHOT_LABEL="$label"
-  export BENCH_SNAPSHOT_STAGE="$stage"
-  export BENCH_SNAPSHOT_REPLICAS="$replicas"
-  export BENCH_BACKEND="${AE_RUNTIME_BACKEND:-podman}"
-  export BENCH_APP_NAME="$app_name"
+  set_rollout_hook_env "$stage" "$replicas" "$label" "$capture_timing"
   bash -lc "$cmd"
 }
 
@@ -632,19 +679,23 @@ PY
   local during_warm_label="${label_suite}-rollout-${replicas}-during-warm"
   local during_warm_pid
   local during_pid
-  run_rollout_hook "rollout-${replicas}-during-warm" "$replicas" "$during_warm_label" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"
+  local during_warm_hook_pid
+  local during_hook_pid
+  start_rollout_hook during_warm_hook_pid "rollout-${replicas}-during-warm" "$replicas" "$during_warm_label" "$during_warm_capture_timing" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"
   start_rollout_snapshot during_warm_pid "$during_warm_label" "$during_warm_capture_timing" "DURING-WARM"
-  run_rollout_hook "rollout-${replicas}-during" "$replicas" "$during_label" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"
+  start_rollout_hook during_hook_pid "rollout-${replicas}-during" "$replicas" "$during_label" "$during_capture_timing" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"
   start_rollout_snapshot during_pid "$during_label" "$during_capture_timing" "DURING"
   wait_rollout_snapshot "$during_pid" "$during_label"
   wait_rollout_snapshot "$during_warm_pid" "$during_warm_label"
+  wait_rollout_hook "$during_hook_pid" "$during_label"
+  wait_rollout_hook "$during_warm_hook_pid" "$during_warm_label"
 
   echo "[rollout] wait ready post-rollout" >&2
   wait_ready "$app_name" "$replicas"
   settle_current_revision "$app_name" "$replicas"
 
   echo "[rollout] snapshot POST rollout" >&2
-  run_rollout_hook "rollout-${replicas}-post" "$replicas" "${label_suite}-rollout-${replicas}-post" "${BENCH_PRE_POST_SNAPSHOT_CMD:-}"
+  run_rollout_hook "rollout-${replicas}-post" "$replicas" "${label_suite}-rollout-${replicas}-post" "${BENCH_PRE_POST_SNAPSHOT_CMD:-}" "$post_capture_timing"
   run_rollout_snapshot "${label_suite}-rollout-${replicas}-post" "$post_capture_timing"
 }
 

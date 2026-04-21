@@ -112,31 +112,58 @@ def _phase_trace(
     old_live: int,
     overlap_live: int,
     revision_status: str = "progressing",
+    window_max: dict[str, object] | None = None,
+    window_last: dict[str, object] | None = None,
+    sample_count: int | None = None,
 ) -> dict[str, object]:
-    return {
+    status = {
+        "app_name": "default/echo",
+        "current_revision_live_replicas": current_live,
+        "current_revision_ready_replicas": min(current_live, ready),
+        "desired_replicas": desired,
+        "image": "localhost/demo-blue:latest",
+        "live_replicas": live,
+        "old_revision_live_replicas": old_live,
+        "old_revision_ready_replicas": min(old_live, ready),
+        "overlap_live_replicas": overlap_live,
+        "overlap_ready_replicas": min(overlap_live, ready),
+        "ready_replicas": ready,
+        "revision": 7,
+        "revision_status": revision_status,
+    }
+    trace = {
         "app": "echo",
         "backend": "cri",
         "captured_at": "2026-04-20T15:00:00+00:00",
         "label": label,
         "schema_version": 1,
         "stage": stage,
-        "status": {
-            "app_name": "default/echo",
-            "current_revision_live_replicas": current_live,
-            "current_revision_ready_replicas": min(current_live, ready),
-            "desired_replicas": desired,
-            "image": "localhost/demo-blue:latest",
-            "live_replicas": live,
-            "old_revision_live_replicas": old_live,
-            "old_revision_ready_replicas": min(old_live, ready),
-            "overlap_live_replicas": overlap_live,
-            "overlap_ready_replicas": min(overlap_live, ready),
-            "ready_replicas": ready,
-            "revision": 7,
-            "revision_status": revision_status,
-        },
+        "status": status,
         "target_replicas": desired,
     }
+    if window_max is not None or window_last is not None or sample_count is not None:
+        max_status = dict(status)
+        max_status.update(window_max or {})
+        last_status = dict(status)
+        last_status.update(window_last or {})
+        trace["status"] = last_status
+        trace["status_window"] = {
+            "duration_seconds": 30.0,
+            "interval_seconds": 1.0,
+            "sample_count": int(sample_count or 1),
+            "successful_samples": int(sample_count or 1),
+            "failed_samples": 0,
+            "max": max_status,
+            "last": last_status,
+            "revision_statuses": sorted(
+                {
+                    str(max_status.get("revision_status") or "").strip(),
+                    str(last_status.get("revision_status") or "").strip(),
+                }
+                - {""}
+            ),
+        }
+    return trace
 
 
 def test_summarize_rollout_candidate_reports_expected_deltas_and_gates(tmp_path: Path) -> None:
@@ -443,6 +470,104 @@ def test_summarize_rollout_candidate_reports_phase_overlap_metrics(tmp_path: Pat
     payload = json.loads(proc.stdout)
     baseline_phase = payload["phase_metrics"]["baseline"]["rollout-5-during"]
     ordered_phase = payload["phase_metrics"]["ordered"]["rollout-5-during"]
-    assert baseline_phase["overlap_live_replicas"] == pytest.approx(4.0, abs=0.01)
-    assert ordered_phase["overlap_live_replicas"] == pytest.approx(2.5, abs=0.01)
-    assert ordered_phase["current_revision_live_replicas"] == pytest.approx(2.5, abs=0.01)
+    assert baseline_phase["overlap_live_replicas_max"] == pytest.approx(4.0, abs=0.01)
+    assert baseline_phase["overlap_live_replicas_last"] == pytest.approx(4.0, abs=0.01)
+    assert ordered_phase["overlap_live_replicas_max"] == pytest.approx(2.5, abs=0.01)
+    assert ordered_phase["current_revision_live_replicas_max"] == pytest.approx(2.5, abs=0.01)
+
+
+def test_summarize_rollout_candidate_prefers_phase_window_max_and_last_metrics(tmp_path: Path) -> None:
+    group_dir = tmp_path / "candidate-phase-window"
+    baseline_label = "r20260420-cri+exp+candidate-baseline-r1"
+    ordered_label = "r20260420-cri+exp+candidate-ordered-r1"
+
+    _write_experiment(
+        group_dir,
+        "baseline-r1",
+        baseline_label,
+        "baseline",
+        0,
+        [
+            _row(f"{baseline_label}-rollout-5-during", 120.0, 84.0, 800.0),
+            _row(f"{baseline_label}-rollout-5-post", 71.8, 83.0, 790.0),
+        ],
+        phase_traces={
+            "rollout-5-during": _phase_trace(
+                label=f"{baseline_label}-rollout-5-during",
+                stage="rollout-5-during",
+                desired=5,
+                ready=1,
+                live=1,
+                current_live=1,
+                old_live=0,
+                overlap_live=0,
+                window_max={
+                    "live_replicas": 5,
+                    "current_revision_live_replicas": 2,
+                    "old_revision_live_replicas": 3,
+                    "overlap_live_replicas": 3,
+                },
+                window_last={
+                    "live_replicas": 1,
+                    "current_revision_live_replicas": 1,
+                    "old_revision_live_replicas": 0,
+                    "overlap_live_replicas": 0,
+                },
+                sample_count=30,
+            ),
+        },
+    )
+    _write_experiment(
+        group_dir,
+        "ordered-r1",
+        ordered_label,
+        "ordered",
+        1,
+        [
+            _row(f"{ordered_label}-rollout-5-during", 100.0, 84.0, 799.0),
+            _row(f"{ordered_label}-rollout-5-post", 71.8, 83.1, 790.0),
+        ],
+        phase_traces={
+            "rollout-5-during": _phase_trace(
+                label=f"{ordered_label}-rollout-5-during",
+                stage="rollout-5-during",
+                desired=5,
+                ready=1,
+                live=1,
+                current_live=1,
+                old_live=0,
+                overlap_live=0,
+                window_max={
+                    "live_replicas": 4,
+                    "current_revision_live_replicas": 3,
+                    "old_revision_live_replicas": 1,
+                    "overlap_live_replicas": 1,
+                },
+                window_last={
+                    "live_replicas": 1,
+                    "current_revision_live_replicas": 1,
+                    "old_revision_live_replicas": 0,
+                    "overlap_live_replicas": 0,
+                },
+                sample_count=30,
+            ),
+        },
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), str(group_dir), "--json"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    baseline_phase = payload["phase_metrics"]["baseline"]["rollout-5-during"]
+    ordered_phase = payload["phase_metrics"]["ordered"]["rollout-5-during"]
+    assert baseline_phase["successful_samples"] == pytest.approx(30.0, abs=0.01)
+    assert baseline_phase["overlap_live_replicas_max"] == pytest.approx(3.0, abs=0.01)
+    assert baseline_phase["overlap_live_replicas_last"] == pytest.approx(0.0, abs=0.01)
+    assert ordered_phase["current_revision_live_replicas_max"] == pytest.approx(3.0, abs=0.01)
+    assert ordered_phase["current_revision_live_replicas_last"] == pytest.approx(1.0, abs=0.01)

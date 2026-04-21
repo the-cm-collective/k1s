@@ -242,6 +242,46 @@ def _trace_status_value(trace: dict[str, object], key: str) -> float:
     return _to_float(status.get(key))
 
 
+def _trace_window_status(trace: dict[str, object], bucket: str) -> dict[str, object]:
+    window = trace.get("status_window")
+    if isinstance(window, dict):
+        bucket_value = window.get(bucket)
+        if isinstance(bucket_value, dict):
+            return bucket_value
+    status = trace.get("status")
+    if isinstance(status, dict):
+        return status
+    return {}
+
+
+def _trace_window_value(trace: dict[str, object], bucket: str, key: str) -> float:
+    return _to_float(_trace_window_status(trace, bucket).get(key))
+
+
+def _trace_window_count(trace: dict[str, object], key: str) -> float:
+    window = trace.get("status_window")
+    if isinstance(window, dict):
+        return _to_float(window.get(key))
+    status = trace.get("status")
+    return 1.0 if isinstance(status, dict) else 0.0
+
+
+def _trace_revision_statuses(trace: dict[str, object]) -> list[str]:
+    window = trace.get("status_window")
+    if isinstance(window, dict):
+        raw = window.get("revision_statuses")
+        if isinstance(raw, list):
+            cleaned = sorted({str(item).strip() for item in raw if str(item).strip()})
+            if cleaned:
+                return cleaned
+    status = trace.get("status")
+    if isinstance(status, dict):
+        current = str(status.get("revision_status") or "").strip()
+        if current:
+            return [current]
+    return []
+
+
 def _scenario_phase_metrics(
     experiments: list[dict[str, object]],
 ) -> dict[str, dict[str, dict[str, float | list[str]]]]:
@@ -261,33 +301,65 @@ def _scenario_phase_metrics(
         for stage, traces in stage_traces.items():
             revision_statuses = sorted(
                 {
-                    str((trace.get("status") or {}).get("revision_status") or "").strip()
+                    item
                     for trace in traces
-                    if isinstance(trace.get("status"), dict)
-                    and str((trace.get("status") or {}).get("revision_status") or "").strip()
+                    for item in _trace_revision_statuses(trace)
                 }
             )
             aggregated[scenario][stage] = {
                 "runs": float(len(traces)),
-                "ready_replicas": _mean([_trace_status_value(trace, "ready_replicas") for trace in traces]),
-                "live_replicas": _mean([_trace_status_value(trace, "live_replicas") for trace in traces]),
-                "current_revision_ready_replicas": _mean(
-                    [_trace_status_value(trace, "current_revision_ready_replicas") for trace in traces]
+                "sample_count": _mean([_trace_window_count(trace, "sample_count") for trace in traces]),
+                "successful_samples": _mean(
+                    [_trace_window_count(trace, "successful_samples") for trace in traces]
                 ),
-                "current_revision_live_replicas": _mean(
-                    [_trace_status_value(trace, "current_revision_live_replicas") for trace in traces]
+                "failed_samples": _mean([_trace_window_count(trace, "failed_samples") for trace in traces]),
+                "ready_replicas_max": _mean(
+                    [_trace_window_value(trace, "max", "ready_replicas") for trace in traces]
                 ),
-                "old_revision_ready_replicas": _mean(
-                    [_trace_status_value(trace, "old_revision_ready_replicas") for trace in traces]
+                "ready_replicas_last": _mean(
+                    [_trace_window_value(trace, "last", "ready_replicas") for trace in traces]
                 ),
-                "old_revision_live_replicas": _mean(
-                    [_trace_status_value(trace, "old_revision_live_replicas") for trace in traces]
+                "live_replicas_max": _mean(
+                    [_trace_window_value(trace, "max", "live_replicas") for trace in traces]
                 ),
-                "overlap_ready_replicas": _mean(
-                    [_trace_status_value(trace, "overlap_ready_replicas") for trace in traces]
+                "live_replicas_last": _mean(
+                    [_trace_window_value(trace, "last", "live_replicas") for trace in traces]
                 ),
-                "overlap_live_replicas": _mean(
-                    [_trace_status_value(trace, "overlap_live_replicas") for trace in traces]
+                "current_revision_ready_replicas_max": _mean(
+                    [_trace_window_value(trace, "max", "current_revision_ready_replicas") for trace in traces]
+                ),
+                "current_revision_ready_replicas_last": _mean(
+                    [_trace_window_value(trace, "last", "current_revision_ready_replicas") for trace in traces]
+                ),
+                "current_revision_live_replicas_max": _mean(
+                    [_trace_window_value(trace, "max", "current_revision_live_replicas") for trace in traces]
+                ),
+                "current_revision_live_replicas_last": _mean(
+                    [_trace_window_value(trace, "last", "current_revision_live_replicas") for trace in traces]
+                ),
+                "old_revision_ready_replicas_max": _mean(
+                    [_trace_window_value(trace, "max", "old_revision_ready_replicas") for trace in traces]
+                ),
+                "old_revision_ready_replicas_last": _mean(
+                    [_trace_window_value(trace, "last", "old_revision_ready_replicas") for trace in traces]
+                ),
+                "old_revision_live_replicas_max": _mean(
+                    [_trace_window_value(trace, "max", "old_revision_live_replicas") for trace in traces]
+                ),
+                "old_revision_live_replicas_last": _mean(
+                    [_trace_window_value(trace, "last", "old_revision_live_replicas") for trace in traces]
+                ),
+                "overlap_ready_replicas_max": _mean(
+                    [_trace_window_value(trace, "max", "overlap_ready_replicas") for trace in traces]
+                ),
+                "overlap_ready_replicas_last": _mean(
+                    [_trace_window_value(trace, "last", "overlap_ready_replicas") for trace in traces]
+                ),
+                "overlap_live_replicas_max": _mean(
+                    [_trace_window_value(trace, "max", "overlap_live_replicas") for trace in traces]
+                ),
+                "overlap_live_replicas_last": _mean(
+                    [_trace_window_value(trace, "last", "overlap_live_replicas") for trace in traces]
                 ),
                 "revision_statuses": revision_statuses,
             }
@@ -565,10 +637,11 @@ def _render_text(
                     scenario,
                     stage,
                     str(int(float(metrics["runs"]))),
-                    f"{float(metrics['live_replicas']):.1f}",
-                    f"{float(metrics['current_revision_live_replicas']):.1f}",
-                    f"{float(metrics['old_revision_live_replicas']):.1f}",
-                    f"{float(metrics['overlap_live_replicas']):.1f}",
+                    f"{float(metrics['successful_samples']):.1f}",
+                    f"{float(metrics['live_replicas_max']):.1f}/{float(metrics['live_replicas_last']):.1f}",
+                    f"{float(metrics['current_revision_live_replicas_max']):.1f}/{float(metrics['current_revision_live_replicas_last']):.1f}",
+                    f"{float(metrics['old_revision_live_replicas_max']):.1f}/{float(metrics['old_revision_live_replicas_last']):.1f}",
+                    f"{float(metrics['overlap_live_replicas_max']):.1f}/{float(metrics['overlap_live_replicas_last']):.1f}",
                     ",".join(str(item) for item in metrics.get("revision_statuses", [])) or "-",
                 )
             )
@@ -581,10 +654,11 @@ def _render_text(
                         "scenario",
                         "stage",
                         "runs",
-                        "live",
-                        "cur_live",
-                        "old_live",
-                        "overlap_live",
+                        "samples",
+                        "live max/last",
+                        "cur_live max/last",
+                        "old_live max/last",
+                        "overlap max/last",
                         "rev_status",
                     ),
                     phase_rows,

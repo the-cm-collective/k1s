@@ -170,9 +170,13 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
     )
     assert 'post_capture_timing="${BENCH_ROLLOUT_POST_CAPTURE_TIMING:-warm}"' in run_rollout_text
     assert "run_rollout_hook()" in run_rollout_text
+    assert "start_rollout_hook()" in run_rollout_text
+    assert "wait_rollout_hook()" in run_rollout_text
     assert "BENCH_PRE_DURING_SNAPSHOT_CMD" in run_rollout_text
     assert "BENCH_PRE_POST_SNAPSHOT_CMD" in run_rollout_text
     assert 'BENCH_SNAPSHOT_STAGE="$stage"' in run_rollout_text
+    assert 'BENCH_SNAPSHOT_DURATION="$duration"' in run_rollout_text
+    assert 'BENCH_SNAPSHOT_CAPTURE_TIMING="$capture_timing"' in run_rollout_text
     assert 'BENCH_BACKEND="${AE_RUNTIME_BACKEND:-podman}"' in run_rollout_text
     assert 'BENCH_APP_NAME="$app_name"' in run_rollout_text
     assert '--capture-timing "$capture_timing"' in run_rollout_text
@@ -189,11 +193,11 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
         in run_rollout_text
     )
     assert (
-        'run_rollout_hook "rollout-${replicas}-during-warm" "$replicas" "$during_warm_label" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"'
+        'start_rollout_hook during_warm_hook_pid "rollout-${replicas}-during-warm" "$replicas" "$during_warm_label" "$during_warm_capture_timing" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"'
         in run_rollout_text
     )
     assert (
-        'run_rollout_hook "rollout-${replicas}-during" "$replicas" "$during_label" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"'
+        'start_rollout_hook during_hook_pid "rollout-${replicas}-during" "$replicas" "$during_label" "$during_capture_timing" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"'
         in run_rollout_text
     )
     assert (
@@ -441,7 +445,7 @@ def test_run_cri_refresh_pins_workloads_to_runc_and_rejects_kata_snapshots() -> 
     assert "build_steady_cmd()" in text
     assert "build_phase_trace_cmd()" in text
     assert (
-        '--preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_BACKEND,BENCH_APP_NAME'
+        '--preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_SNAPSHOT_DURATION,BENCH_SNAPSHOT_CAPTURE_TIMING,BENCH_BACKEND,BENCH_APP_NAME'
         in text
     )
     assert '"AE_SPECS_DIR=${AE_SPECS_DIR:-specs}"' in text
@@ -603,7 +607,7 @@ def test_rollout_tuning_experiment_runner_stays_off_the_publish_path() -> None:
     assert "BENCH_EXPERIMENT_STEADY_QUIET    enable steady quiet hooks (default: 0)" in text
     assert "build_phase_trace_cmd()" in text
     assert (
-        '--preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_BACKEND,BENCH_APP_NAME'
+        '--preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_SNAPSHOT_DURATION,BENCH_SNAPSHOT_CAPTURE_TIMING,BENCH_BACKEND,BENCH_APP_NAME'
         in text
     )
     assert '"AE_SPECS_DIR=${AE_SPECS_DIR:-specs}"' in text

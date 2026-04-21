@@ -2120,6 +2120,7 @@ class CRIRuntime(RuntimeAdapter):
     ) -> dict[str, Any]:
         poll_interval = 0.2
         logged_wait = False
+        last_reserved_pod_cleanup_attempt = time.monotonic() if reserved_pod_id else 0.0
         while True:
             snapshot = self._reserved_name_recovery_snapshot(
                 replica_id,
@@ -2145,6 +2146,31 @@ class CRIRuntime(RuntimeAdapter):
                 return snapshot
             now = time.monotonic()
             remaining = max(0.0, float(recovery_deadline) - now)
+            if snapshot["reserved_pod_present"] and reserved_pod_id:
+                retry_interval = max(1.0, float(self.SANDBOX_CLEANUP_SETTLE_SECONDS))
+                if (
+                    last_reserved_pod_cleanup_attempt <= 0.0
+                    or (now - last_reserved_pod_cleanup_attempt) >= retry_interval
+                ):
+                    last_reserved_pod_cleanup_attempt = now
+                    try:
+                        self._remove_pod_sandbox(
+                            str(reserved_pod_id),
+                            replica_id=None,
+                            timeout=min(max(5.0, remaining), 10.0),
+                            wait_for_name_release=False,
+                        )
+                        continue
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "%s retry cleanup still blocked for replica %s (pod_id=%s) "
+                            "deadline_remaining=%.1fs: %s",
+                            reason,
+                            replica_id,
+                            reserved_pod_id,
+                            remaining,
+                            exc,
+                        )
             if remaining <= 0.0:
                 LOGGER.error(
                     "%s timed out for replica %s after %s; blocked_on_sandbox=%s "
