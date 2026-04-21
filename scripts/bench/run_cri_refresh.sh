@@ -290,6 +290,38 @@ build_steady_cmd() {
   printf '%q ' "${cmd[@]}"
 }
 
+build_phase_trace_cmd() {
+  local app="$1"
+  local -a cmd=(
+    sudo
+    -n
+    --preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_BACKEND,BENCH_APP_NAME
+    env
+    "PATH=${PATH}"
+    "PYTHONPATH=${py_path}"
+    "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+    "NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}"
+    "NIX_LD=${NIX_LD:-}"
+    "AE_SPECS_DIR=${AE_SPECS_DIR:-specs}"
+    "AE_STATE_DB=${AE_STATE_DB:-state/controller.db}"
+    "AE_CADDY_DIR=${AE_CADDY_DIR:-state/caddy}"
+    "AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS:-1}"
+    "AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-cri}"
+    "AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}"
+    "AE_CRI_ENDPOINT=${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
+    "AE_CRI_SANDBOX_IMAGE=${AE_CRI_SANDBOX_IMAGE:-}"
+    "AE_PODMAN_BIN=${AE_PODMAN_BIN:-podman}"
+    "AE_DISABLE_INGRESS=${AE_DISABLE_INGRESS:-}"
+    "$python_bin"
+    scripts/bench/capture_rollout_phase.py
+    --backend
+    cri
+    --app
+    "$app"
+  )
+  printf '%q ' "${cmd[@]}"
+}
+
 delete_bench_app() {
   local app="$1"
   local reason="${2:-state reset}"
@@ -1252,6 +1284,7 @@ steady_hook_cmd=""
 if [[ "$bench_steady_quiet" == "1" ]]; then
   steady_hook_cmd="$(build_steady_cmd "$bench_app_name")"
 fi
+phase_trace_cmd="$(build_phase_trace_cmd "$bench_app_name")"
 
 AE_ENGINE_STRICT=1 \
 BENCH_IDLE_VALIDATE_ZERO_APP="$BENCH_IDLE_VALIDATE_ZERO_APP" \
@@ -1304,6 +1337,7 @@ for rep in $rollout_replicas_list; do
   LABEL_SUITE_ROLL="$LABEL_CRI" \
   APP="$bench_runtime_manifest" APP_NAME="$bench_app_name" \
   ROLL_REPLICAS="$rep" DURATION="$DURATION" AE_COLLECT_ENGINE=cri \
+  BENCH_PRE_DURING_SNAPSHOT_CMD="$phase_trace_cmd" \
   BENCH_PRE_POST_SNAPSHOT_CMD="$steady_hook_cmd" \
   ./scripts/bench/run_rollout_k1s.sh \
     --label-suite "$LABEL_CRI" \

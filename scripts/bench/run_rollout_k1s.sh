@@ -632,7 +632,9 @@ PY
   local during_warm_label="${label_suite}-rollout-${replicas}-during-warm"
   local during_warm_pid
   local during_pid
+  run_rollout_hook "rollout-${replicas}-during-warm" "$replicas" "$during_warm_label" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"
   start_rollout_snapshot during_warm_pid "$during_warm_label" "$during_warm_capture_timing" "DURING-WARM"
+  run_rollout_hook "rollout-${replicas}-during" "$replicas" "$during_label" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"
   start_rollout_snapshot during_pid "$during_label" "$during_capture_timing" "DURING"
   wait_rollout_snapshot "$during_pid" "$during_label"
   wait_rollout_snapshot "$during_warm_pid" "$during_warm_label"

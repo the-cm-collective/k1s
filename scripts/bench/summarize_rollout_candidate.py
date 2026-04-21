@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 from collections import defaultdict
+from math import sqrt
 from pathlib import Path
 
 
@@ -24,6 +25,17 @@ STAGES = (
 SUMMARY_STAGE_ORDER = (
     "pods-5",
     "rollout-2-during",
+    "rollout-2-post",
+    "rollout-5-during",
+    "rollout-5-during-warm",
+    "rollout-5-post",
+)
+
+SCENARIO_ORDER = ("baseline", "ordered", "quiet")
+CV_REGRESSION_STAGES = ("pods-5", "rollout-2-post", "rollout-5-post")
+PHASE_TRACE_STAGES = (
+    "rollout-2-during",
+    "rollout-2-during-warm",
     "rollout-2-post",
     "rollout-5-during",
     "rollout-5-during-warm",
@@ -84,6 +96,16 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
+def _cv_pct(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    mean = _mean(values)
+    if abs(mean) < 1e-9:
+        return 0.0
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return (sqrt(variance) / abs(mean)) * 100.0
+
+
 def _aggregate_rows(rows: list[dict[str, str]]) -> dict[str, float]:
     return {
         "rows": float(len(rows)),
@@ -96,7 +118,16 @@ def _aggregate_rows(rows: list[dict[str, str]]) -> dict[str, float]:
     }
 
 
-def _load_experiment_rows(experiment_dir: Path) -> tuple[dict[str, str], dict[str, dict[str, float]]]:
+def _load_phase_trace(path: Path) -> dict[str, object] | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _load_experiment_rows(
+    experiment_dir: Path,
+) -> tuple[dict[str, str], dict[str, dict[str, float]], dict[str, dict[str, object]]]:
     summary_path = experiment_dir / "reports" / "summary.txt"
     csv_path = experiment_dir / "combined" / "combined.csv"
     summary = _parse_summary(summary_path)
@@ -119,12 +150,34 @@ def _load_experiment_rows(experiment_dir: Path) -> tuple[dict[str, str], dict[st
     if not grouped:
         raise ValueError(f"no benchmark rows for label {label_prefix} in {csv_path}")
 
-    return summary, {stage: _aggregate_rows(rows) for stage, rows in grouped.items()}
+    stage_metrics = {stage: _aggregate_rows(rows) for stage, rows in grouped.items()}
+    phase_traces: dict[str, dict[str, object]] = {}
+    snapshot_root = experiment_dir / "snapshots"
+    for stage in grouped:
+        trace_path = snapshot_root / f"{label_prefix}-{stage}" / "phase-trace.json"
+        if not trace_path.exists():
+            continue
+        trace = _load_phase_trace(trace_path)
+        if trace:
+            phase_traces[stage] = trace
+
+    return summary, stage_metrics, phase_traces
 
 
-def _scenario_name(summary: dict[str, str]) -> str:
+def _scenario_name(experiment_dir: Path, summary: dict[str, str]) -> str:
+    dir_prefix = experiment_dir.name.split("-r", 1)[0]
+    if dir_prefix in SCENARIO_ORDER:
+        return dir_prefix
+
     strategy = summary.get("rollout_strategy", "baseline")
-    return "ordered" if strategy == "ordered" else "baseline"
+    if strategy == "ordered":
+        return "ordered"
+
+    steady_quiet = str(summary.get("steady_quiet", "0")).strip().lower()
+    if steady_quiet in {"1", "true", "yes", "y"}:
+        return "quiet"
+
+    return "baseline"
 
 
 def _discover_experiments(group_dir: Path) -> list[dict[str, object]]:
@@ -134,13 +187,14 @@ def _discover_experiments(group_dir: Path) -> list[dict[str, object]]:
         csv_path = child / "combined" / "combined.csv"
         if not summary_path.exists() or not csv_path.exists():
             continue
-        summary, stages = _load_experiment_rows(child)
+        summary, stages, phase_traces = _load_experiment_rows(child)
         experiments.append(
             {
                 "dir": str(child),
                 "summary": summary,
-                "scenario": _scenario_name(summary),
+                "scenario": _scenario_name(child, summary),
                 "stages": stages,
+                "phase_traces": phase_traces,
             }
         )
     return experiments
@@ -163,46 +217,133 @@ def _scenario_stage_metrics(
     for scenario, stage_rows in by_scenario_stage.items():
         aggregated[scenario] = {}
         for stage, rows in stage_rows.items():
+            app_values = [float(row["app_mib"]) for row in rows]
+            docs_cp_values = [float(row["docs_cp_mib"]) for row in rows]
+            host_values = [float(row["host_mib"]) for row in rows]
+            memavail_values = [float(row["memavail_delta_mib"]) for row in rows]
             aggregated[scenario][stage] = {
                 "runs": float(len(rows)),
-                "app_mib": _mean([float(row["app_mib"]) for row in rows]),
-                "docs_cp_mib": _mean([float(row["docs_cp_mib"]) for row in rows]),
-                "host_mib": _mean([float(row["host_mib"]) for row in rows]),
-                "memavail_delta_mib": _mean([float(row["memavail_delta_mib"]) for row in rows]),
+                "app_mib": _mean(app_values),
+                "app_cv_pct": _cv_pct(app_values),
+                "docs_cp_mib": _mean(docs_cp_values),
+                "docs_cp_cv_pct": _cv_pct(docs_cp_values),
+                "host_mib": _mean(host_values),
+                "host_cv_pct": _cv_pct(host_values),
+                "memavail_delta_mib": _mean(memavail_values),
+                "memavail_delta_cv_pct": _cv_pct(memavail_values),
             }
     return aggregated
 
 
+def _trace_status_value(trace: dict[str, object], key: str) -> float:
+    status = trace.get("status")
+    if not isinstance(status, dict):
+        return 0.0
+    return _to_float(status.get(key))
+
+
+def _scenario_phase_metrics(
+    experiments: list[dict[str, object]],
+) -> dict[str, dict[str, dict[str, float | list[str]]]]:
+    by_scenario_stage: dict[str, dict[str, list[dict[str, object]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for experiment in experiments:
+        scenario = str(experiment["scenario"])
+        traces = experiment.get("phase_traces")
+        assert isinstance(traces, dict)
+        for stage, trace in traces.items():
+            by_scenario_stage[scenario][stage].append(trace)
+
+    aggregated: dict[str, dict[str, dict[str, float | list[str]]]] = {}
+    for scenario, stage_traces in by_scenario_stage.items():
+        aggregated[scenario] = {}
+        for stage, traces in stage_traces.items():
+            revision_statuses = sorted(
+                {
+                    str((trace.get("status") or {}).get("revision_status") or "").strip()
+                    for trace in traces
+                    if isinstance(trace.get("status"), dict)
+                    and str((trace.get("status") or {}).get("revision_status") or "").strip()
+                }
+            )
+            aggregated[scenario][stage] = {
+                "runs": float(len(traces)),
+                "ready_replicas": _mean([_trace_status_value(trace, "ready_replicas") for trace in traces]),
+                "live_replicas": _mean([_trace_status_value(trace, "live_replicas") for trace in traces]),
+                "current_revision_ready_replicas": _mean(
+                    [_trace_status_value(trace, "current_revision_ready_replicas") for trace in traces]
+                ),
+                "current_revision_live_replicas": _mean(
+                    [_trace_status_value(trace, "current_revision_live_replicas") for trace in traces]
+                ),
+                "old_revision_ready_replicas": _mean(
+                    [_trace_status_value(trace, "old_revision_ready_replicas") for trace in traces]
+                ),
+                "old_revision_live_replicas": _mean(
+                    [_trace_status_value(trace, "old_revision_live_replicas") for trace in traces]
+                ),
+                "overlap_ready_replicas": _mean(
+                    [_trace_status_value(trace, "overlap_ready_replicas") for trace in traces]
+                ),
+                "overlap_live_replicas": _mean(
+                    [_trace_status_value(trace, "overlap_live_replicas") for trace in traces]
+                ),
+                "revision_statuses": revision_statuses,
+            }
+    return aggregated
+
+
+def _candidate_scenario(scenario_metrics: dict[str, dict[str, dict[str, float]]]) -> str:
+    has_baseline = "baseline" in scenario_metrics
+    has_ordered = "ordered" in scenario_metrics
+    has_quiet = "quiet" in scenario_metrics
+
+    if not has_baseline:
+        raise ValueError("candidate group must include baseline and exactly one candidate scenario")
+    if has_ordered and has_quiet:
+        raise ValueError("candidate group must not mix ordered and quiet candidate scenarios")
+    if has_ordered:
+        return "ordered"
+    if has_quiet:
+        return "quiet"
+    raise ValueError("candidate group must include baseline and exactly one candidate scenario")
+
+
 def _build_deltas(
     scenario_metrics: dict[str, dict[str, dict[str, float]]],
+    candidate_scenario: str,
 ) -> list[dict[str, float | str]]:
     baseline = scenario_metrics.get("baseline", {})
-    ordered = scenario_metrics.get("ordered", {})
+    candidate = scenario_metrics.get(candidate_scenario, {})
     deltas: list[dict[str, float | str]] = []
     for stage in SUMMARY_STAGE_ORDER:
-        if stage not in baseline or stage not in ordered:
+        if stage not in baseline or stage not in candidate:
             continue
         base_metrics = baseline[stage]
-        ordered_metrics = ordered[stage]
-        deltas.append(
-            {
-                "stage": stage,
-                "baseline_app_mib": base_metrics["app_mib"],
-                "ordered_app_mib": ordered_metrics["app_mib"],
-                "app_delta_mib": ordered_metrics["app_mib"] - base_metrics["app_mib"],
-                "app_improvement_mib": base_metrics["app_mib"] - ordered_metrics["app_mib"],
-                "baseline_docs_cp_mib": base_metrics["docs_cp_mib"],
-                "ordered_docs_cp_mib": ordered_metrics["docs_cp_mib"],
-                "docs_cp_delta_mib": ordered_metrics["docs_cp_mib"] - base_metrics["docs_cp_mib"],
-                "baseline_host_mib": base_metrics["host_mib"],
-                "ordered_host_mib": ordered_metrics["host_mib"],
-                "host_delta_mib": ordered_metrics["host_mib"] - base_metrics["host_mib"],
-            }
-        )
+        candidate_metrics = candidate[stage]
+        item: dict[str, float | str] = {
+            "stage": stage,
+            "candidate_scenario": candidate_scenario,
+            "baseline_app_mib": base_metrics["app_mib"],
+            "candidate_app_mib": candidate_metrics["app_mib"],
+            "app_delta_mib": candidate_metrics["app_mib"] - base_metrics["app_mib"],
+            "app_improvement_mib": base_metrics["app_mib"] - candidate_metrics["app_mib"],
+            "baseline_docs_cp_mib": base_metrics["docs_cp_mib"],
+            "candidate_docs_cp_mib": candidate_metrics["docs_cp_mib"],
+            "docs_cp_delta_mib": candidate_metrics["docs_cp_mib"] - base_metrics["docs_cp_mib"],
+            "baseline_host_mib": base_metrics["host_mib"],
+            "candidate_host_mib": candidate_metrics["host_mib"],
+            "host_delta_mib": candidate_metrics["host_mib"] - base_metrics["host_mib"],
+        }
+        item[f"{candidate_scenario}_app_mib"] = candidate_metrics["app_mib"]
+        item[f"{candidate_scenario}_docs_cp_mib"] = candidate_metrics["docs_cp_mib"]
+        item[f"{candidate_scenario}_host_mib"] = candidate_metrics["host_mib"]
+        deltas.append(item)
     return deltas
 
 
-def _build_gates(
+def _build_ordered_gates(
     scenario_metrics: dict[str, dict[str, dict[str, float]]],
     min_rollout_5_improvement: float,
     max_steady_drift: float,
@@ -234,28 +375,122 @@ def _build_gates(
         {
             "gate": "pods-5 steady-state app drift",
             "value_mib": steady_drift,
+            "metric": "mib",
             "target": f"<= {max_steady_drift:.1f}",
             "passed": steady_drift <= max_steady_drift,
         },
         {
             "gate": "rollout-5-post app drift",
             "value_mib": post_drift,
+            "metric": "mib",
             "target": f"<= {max_post_drift:.1f}",
             "passed": post_drift <= max_post_drift,
         },
         {
             "gate": "rollout-5-during app improvement",
             "value_mib": rollout_5_improvement,
+            "metric": "mib",
             "target": f">= {min_rollout_5_improvement:.1f}",
             "passed": rollout_5_improvement >= min_rollout_5_improvement,
         },
         {
             "gate": "rollout-2-during app improvement",
             "value_mib": rollout_2_improvement,
+            "metric": "mib",
             "target": "informational",
             "passed": True,
         },
     ]
+
+
+def _build_quiet_gates(
+    scenario_metrics: dict[str, dict[str, dict[str, float]]],
+    max_steady_drift: float,
+    max_post_drift: float,
+    max_app_cv_regression: float,
+) -> list[dict[str, float | str | bool]]:
+    baseline = scenario_metrics.get("baseline", {})
+    quiet = scenario_metrics.get("quiet", {})
+    if not baseline or not quiet:
+        return []
+
+    def stage_metric(scenario: dict[str, dict[str, float]], stage: str, key: str) -> float:
+        return float(scenario.get(stage, {}).get(key, 0.0))
+
+    gates: list[dict[str, float | str | bool]] = [
+        {
+            "gate": "pods-5 steady-state app drift",
+            "value_mib": abs(stage_metric(quiet, "pods-5", "app_mib") - stage_metric(baseline, "pods-5", "app_mib")),
+            "metric": "mib",
+            "target": f"<= {max_steady_drift:.1f}",
+        },
+        {
+            "gate": "rollout-5-post app drift",
+            "value_mib": abs(
+                stage_metric(quiet, "rollout-5-post", "app_mib")
+                - stage_metric(baseline, "rollout-5-post", "app_mib")
+            ),
+            "metric": "mib",
+            "target": f"<= {max_post_drift:.1f}",
+        },
+    ]
+    for gate in gates:
+        gate["passed"] = float(gate["value_mib"]) <= (
+            max_steady_drift if gate["gate"] == "pods-5 steady-state app drift" else max_post_drift
+        )
+
+    for stage in CV_REGRESSION_STAGES:
+        regression = max(
+            0.0,
+            stage_metric(quiet, stage, "app_cv_pct") - stage_metric(baseline, stage, "app_cv_pct"),
+        )
+        gates.append(
+            {
+                "gate": f"{stage} app CV regression",
+                "value_pct": regression,
+                "metric": "pct",
+                "target": f"<= {max_app_cv_regression:.1f}%",
+                "passed": regression <= max_app_cv_regression,
+            }
+        )
+
+    gates.append(
+        {
+            "gate": "memΔ informational only",
+            "value_pct": max(
+                0.0,
+                stage_metric(quiet, "rollout-5-post", "memavail_delta_cv_pct")
+                - stage_metric(baseline, "rollout-5-post", "memavail_delta_cv_pct"),
+            ),
+            "metric": "pct",
+            "target": "informational",
+            "passed": True,
+        }
+    )
+    return gates
+
+
+def _build_gates(
+    scenario_metrics: dict[str, dict[str, dict[str, float]]],
+    candidate_scenario: str,
+    min_rollout_5_improvement: float,
+    max_steady_drift: float,
+    max_post_drift: float,
+    max_app_cv_regression: float,
+) -> list[dict[str, float | str | bool]]:
+    if candidate_scenario == "ordered":
+        return _build_ordered_gates(
+            scenario_metrics,
+            min_rollout_5_improvement,
+            max_steady_drift,
+            max_post_drift,
+        )
+    return _build_quiet_gates(
+        scenario_metrics,
+        max_steady_drift,
+        max_post_drift,
+        max_app_cv_regression,
+    )
 
 
 def _table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> str:
@@ -277,6 +512,8 @@ def _render_text(
     group_dir: Path,
     experiments: list[dict[str, object]],
     scenario_metrics: dict[str, dict[str, dict[str, float]]],
+    phase_metrics: dict[str, dict[str, dict[str, float | list[str]]]],
+    candidate_scenario: str,
     deltas: list[dict[str, float | str]],
     gates: list[dict[str, float | str | bool]],
 ) -> str:
@@ -286,7 +523,7 @@ def _render_text(
     ]
 
     scenario_rows: list[tuple[str, ...]] = []
-    for scenario in ("baseline", "ordered"):
+    for scenario in ("baseline", candidate_scenario):
         stages = scenario_metrics.get(scenario, {})
         for stage in SUMMARY_STAGE_ORDER:
             metrics = stages.get(stage)
@@ -298,7 +535,9 @@ def _render_text(
                     stage,
                     str(int(metrics["runs"])),
                     f"{metrics['app_mib']:.1f}",
+                    f"{metrics['app_cv_pct']:.1f}",
                     f"{metrics['docs_cp_mib']:.1f}",
+                    f"{metrics['docs_cp_cv_pct']:.1f}",
                     f"{metrics['host_mib']:.1f}",
                     f"{metrics['memavail_delta_mib']:.1f}",
                 )
@@ -308,43 +547,88 @@ def _render_text(
             [
                 "",
                 _table(
-                    ("scenario", "stage", "runs", "app", "docs_cp", "host", "memΔ"),
+                    ("scenario", "stage", "runs", "app", "app_cv%", "docs_cp", "docs_cp_cv%", "host", "memΔ"),
                     scenario_rows,
                 ),
             ]
         )
 
-    delta_rows = [
-        (
-            str(item["stage"]),
-            f"{float(item['baseline_app_mib']):.1f}",
-            f"{float(item['ordered_app_mib']):.1f}",
-            f"{float(item['app_improvement_mib']):.1f}",
-            f"{float(item['docs_cp_delta_mib']):.1f}",
-            f"{float(item['host_delta_mib']):.1f}",
-        )
-        for item in deltas
-    ]
-    if delta_rows:
+    phase_rows: list[tuple[str, ...]] = []
+    for scenario in ("baseline", candidate_scenario):
+        stages = phase_metrics.get(scenario, {})
+        for stage in PHASE_TRACE_STAGES:
+            metrics = stages.get(stage)
+            if not metrics:
+                continue
+            phase_rows.append(
+                (
+                    scenario,
+                    stage,
+                    str(int(float(metrics["runs"]))),
+                    f"{float(metrics['live_replicas']):.1f}",
+                    f"{float(metrics['current_revision_live_replicas']):.1f}",
+                    f"{float(metrics['old_revision_live_replicas']):.1f}",
+                    f"{float(metrics['overlap_live_replicas']):.1f}",
+                    ",".join(str(item) for item in metrics.get("revision_statuses", [])) or "-",
+                )
+            )
+    if phase_rows:
         lines.extend(
             [
                 "",
                 _table(
-                    ("stage", "baseline_app", "ordered_app", "app_gain", "docs_cpΔ", "hostΔ"),
-                    delta_rows,
+                    (
+                        "scenario",
+                        "stage",
+                        "runs",
+                        "live",
+                        "cur_live",
+                        "old_live",
+                        "overlap_live",
+                        "rev_status",
+                    ),
+                    phase_rows,
                 ),
             ]
         )
 
-    gate_rows = [
-        (
-            str(item["gate"]),
-            f"{float(item['value_mib']):.1f}",
-            str(item["target"]),
-            "yes" if bool(item["passed"]) else "no",
+    delta_rows: list[tuple[str, ...]] = []
+    delta_headers = ("stage", "baseline_app", f"{candidate_scenario}_app", "appΔ", "docs_cpΔ", "hostΔ")
+    for item in deltas:
+        delta_rows.append(
+            (
+                str(item["stage"]),
+                f"{float(item['baseline_app_mib']):.1f}",
+                f"{float(item['candidate_app_mib']):.1f}",
+                f"{float(item['app_delta_mib']):.1f}",
+                f"{float(item['docs_cp_delta_mib']):.1f}",
+                f"{float(item['host_delta_mib']):.1f}",
+            )
         )
-        for item in gates
-    ]
+    if delta_rows:
+        lines.extend(
+            [
+                "",
+                _table(delta_headers, delta_rows),
+            ]
+        )
+
+    gate_rows = []
+    for item in gates:
+        value = ""
+        metric = str(item.get("metric", "mib"))
+        if "value_mib" in item:
+            value = f"{float(item['value_mib']):.1f}"
+        elif "value_pct" in item:
+            value = f"{float(item['value_pct']):.1f}%"
+        gate_rows.append(
+            (
+                str(item["gate"]),
+                value,
+                str(item["target"]),
+                "yes" if bool(item["passed"]) else "no",
+            )
+        )
     if gate_rows:
         lines.extend(
             [
@@ -358,7 +642,7 @@ def _render_text(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Summarize grouped CRI rollout candidate experiments under one output root."
+        description="Summarize grouped rollout candidate experiments under one output root."
     )
     parser.add_argument(
         "group_dir",
@@ -386,7 +670,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-post-drift",
         type=float,
         default=3.0,
-        help="Maximum allowed rollout-5-post app-memory drift between baseline and ordered.",
+        help="Maximum allowed rollout-5-post app-memory drift between baseline and the candidate scenario.",
+    )
+    parser.add_argument(
+        "--max-app-cv-regression",
+        type=float,
+        default=5.0,
+        help="Maximum allowed app-memory CV regression for quiet candidate stages.",
     )
     return parser
 
@@ -403,27 +693,45 @@ def main() -> int:
         parser.error(f"no experiment subdirectories found in {args.group_dir}")
 
     scenario_metrics = _scenario_stage_metrics(experiments)
-    if "baseline" not in scenario_metrics or "ordered" not in scenario_metrics:
-        parser.error("candidate group must include both baseline and ordered experiment runs")
+    phase_metrics = _scenario_phase_metrics(experiments)
+    try:
+        candidate_scenario = _candidate_scenario(scenario_metrics)
+    except ValueError as exc:
+        parser.error(str(exc))
 
-    deltas = _build_deltas(scenario_metrics)
+    deltas = _build_deltas(scenario_metrics, candidate_scenario)
     gates = _build_gates(
         scenario_metrics,
+        candidate_scenario,
         args.min_rollout_5_improvement,
         args.max_steady_drift,
         args.max_post_drift,
+        args.max_app_cv_regression,
     )
     payload = {
         "group_dir": str(args.group_dir),
+        "candidate_scenario": candidate_scenario,
         "experiments": experiments,
         "scenario_metrics": scenario_metrics,
+        "phase_metrics": phase_metrics,
         "deltas": deltas,
         "gates": gates,
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print(_render_text(args.group_dir, experiments, scenario_metrics, deltas, gates), end="")
+        print(
+            _render_text(
+                args.group_dir,
+                experiments,
+                scenario_metrics,
+                phase_metrics,
+                candidate_scenario,
+                deltas,
+                gates,
+            ),
+            end="",
+        )
     return 0
 
 

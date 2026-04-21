@@ -1379,6 +1379,48 @@ def test_remove_pod_sandbox_raises_when_cleanup_leaves_pod_visible(monkeypatch) 
         runtime._remove_pod_sandbox("pod-1", replica_id="default/demo-rev1-0", timeout=1)
 
 
+def test_wait_for_pod_sandbox_absent_retries_after_list_pods_error(monkeypatch) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    clock = _FakeClock()
+    pod = SimpleNamespace(id="pod-1", labels={runtime.REPLICA_LABEL: "default/demo-rev1-0"})
+    responses = iter([RuntimeError("transient list failure"), [pod], []])
+
+    monkeypatch.setattr(cri_runtime_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", clock.sleep)
+
+    def list_pods():
+        current = next(responses)
+        if isinstance(current, Exception):
+            raise current
+        return current
+
+    monkeypatch.setattr(runtime, "_list_pods", list_pods)
+
+    assert runtime._wait_for_pod_sandbox_absent("pod-1", timeout=1) is True
+    assert clock.sleeps == [0.2, 0.2]
+
+
+def test_wait_for_pod_sandbox_name_available_retries_after_list_pods_error(monkeypatch) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    clock = _FakeClock()
+    pod = SimpleNamespace(id="pod-1", labels={runtime.REPLICA_LABEL: "default/demo-rev1-0"})
+    responses = iter([RuntimeError("transient list failure"), [pod], []])
+
+    monkeypatch.setattr(cri_runtime_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cri_runtime_module.time, "sleep", clock.sleep)
+
+    def list_pods():
+        current = next(responses)
+        if isinstance(current, Exception):
+            raise current
+        return current
+
+    monkeypatch.setattr(runtime, "_list_pods", list_pods)
+
+    assert runtime._wait_for_pod_sandbox_name_available("default/demo-rev1-0", timeout=1) is True
+    assert clock.sleeps == [0.2, 0.2]
+
+
 def test_cleanup_replica_pod_sandboxes_raises_when_name_stays_reserved(monkeypatch) -> None:
     runtime = CRIRuntime(node_id="hub-1")
     clock = _FakeClock()

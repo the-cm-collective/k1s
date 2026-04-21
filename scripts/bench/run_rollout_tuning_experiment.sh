@@ -253,7 +253,47 @@ build_steady_cmd() {
     --require-app-present
   )
   if [[ "$use_sudo" == "1" ]]; then
-    cmd=(sudo "${cmd[@]}")
+    cmd=(
+      sudo
+      --preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_BACKEND,BENCH_APP_NAME
+      "${cmd[@]}"
+    )
+  fi
+  printf '%q ' "${cmd[@]}"
+}
+
+build_phase_trace_cmd() {
+  local backend="$1"
+  local app="$2"
+  local use_sudo="$3"
+  local -a cmd=(
+    env
+    "PATH=${PATH}"
+    "PYTHONPATH=${py_path}"
+    "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+    "NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}"
+    "NIX_LD=${NIX_LD:-}"
+    "AE_SPECS_DIR=${AE_SPECS_DIR:-specs}"
+    "AE_STATE_DB=${AE_STATE_DB:-state/controller.db}"
+    "AE_CADDY_DIR=${AE_CADDY_DIR:-state/caddy}"
+    "AE_ALLOW_PLAINTEXT_SECRETS=${AE_ALLOW_PLAINTEXT_SECRETS:-1}"
+    "AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-$backend}"
+    "AE_OCI_RUNTIME=${AE_OCI_RUNTIME:-}"
+    "AE_CRI_ENDPOINT=${AE_CRI_ENDPOINT:-}"
+    "AE_CRI_SANDBOX_IMAGE=${AE_CRI_SANDBOX_IMAGE:-}"
+    "AE_PODMAN_BIN=${AE_PODMAN_BIN:-podman}"
+    "AE_DISABLE_INGRESS=${AE_DISABLE_INGRESS:-}"
+    "$python_bin"
+    scripts/bench/capture_rollout_phase.py
+    --backend "$backend"
+    --app "$app"
+  )
+  if [[ "$use_sudo" == "1" ]]; then
+    cmd=(
+      sudo
+      --preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_BACKEND,BENCH_APP_NAME
+      "${cmd[@]}"
+    )
   fi
   printf '%q ' "${cmd[@]}"
 }
@@ -357,9 +397,11 @@ run_podman_lane() {
   source "$prepared_env"
 
   local hook_cmd=""
+  local phase_cmd=""
   if [[ "$BENCH_EXPERIMENT_STEADY_QUIET" == "1" ]]; then
     hook_cmd="$(build_steady_cmd podman "$BENCH_PRIMARY_APP" "$use_sudo")"
   fi
+  phase_cmd="$(build_phase_trace_cmd podman "$BENCH_PRIMARY_APP" "$use_sudo")"
 
   start_caddy_only || true
   build_demo_images_podman "$use_sudo" || true
@@ -384,6 +426,7 @@ run_podman_lane() {
     AE_CADDY_DIR="${AE_CADDY_DIR:-state/caddy}"
     BENCH_WAIT_RUNTIME="${BENCH_WAIT_RUNTIME:-0}"
     BENCH_PRE_STEADY_SNAPSHOT_CMD="$hook_cmd"
+    BENCH_PRE_DURING_SNAPSHOT_CMD="$phase_cmd"
     BENCH_PRE_POST_SNAPSHOT_CMD="$hook_cmd"
   )
 
@@ -427,9 +470,11 @@ run_k1nd_lane() {
   app_base=$(basename "$bench_manifest")
   local container_manifest="/apply/${app_base}"
   local hook_cmd=""
+  local phase_cmd
   if [[ "$BENCH_EXPERIMENT_STEADY_QUIET" == "1" ]]; then
     hook_cmd="$(build_steady_cmd docker "$APP_NAME" 0)"
   fi
+  phase_cmd="$(build_phase_trace_cmd docker "$APP_NAME" 0)"
 
   scripts/bench/k1nd_sanitize.sh pre
   export K1ND_MANIFEST="$bench_manifest"
@@ -452,6 +497,7 @@ run_k1nd_lane() {
     SKIP_GUARDS=1 \
     WAIT_READY_TRIES="$WAIT_READY_TRIES" \
     BENCH_PRE_STEADY_SNAPSHOT_CMD="$hook_cmd" \
+    BENCH_PRE_DURING_SNAPSHOT_CMD="$phase_cmd" \
     BENCH_PRE_POST_SNAPSHOT_CMD="$hook_cmd" \
     ./scripts/bench/run_matrix.sh \
       --label-suite "$label_base" \
@@ -475,6 +521,7 @@ run_k1nd_lane() {
     SKIP_GUARDS=1 \
     WAIT_READY_TRIES="$WAIT_READY_TRIES" \
     BENCH_PRE_STEADY_SNAPSHOT_CMD="$hook_cmd" \
+    BENCH_PRE_DURING_SNAPSHOT_CMD="$phase_cmd" \
     BENCH_PRE_POST_SNAPSHOT_CMD="$hook_cmd" \
     ./scripts/bench/run_rollout_k1s.sh \
       --label-suite "$label_base" \

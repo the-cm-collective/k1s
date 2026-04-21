@@ -17,7 +17,9 @@ RUN_CRI_REFRESH = ROOT / "scripts" / "bench" / "run_cri_refresh.sh"
 RUN_CRI_VERIFY = ROOT / "scripts" / "bench" / "run_cri_verify.sh"
 RUN_CRI_ROLLOUT_PROBE = ROOT / "scripts" / "bench" / "run_cri_rollout_probe.sh"
 RUN_CRI_ROLLOUT_CANDIDATE = ROOT / "scripts" / "bench" / "run_cri_rollout_candidate.sh"
+RUN_LANE_QUIET_CANDIDATE = ROOT / "scripts" / "bench" / "run_lane_quiet_candidate.sh"
 AUDIT_CP_METRICS = ROOT / "scripts" / "bench" / "audit_cp_metrics.py"
+CAPTURE_ROLLOUT_PHASE = ROOT / "scripts" / "bench" / "capture_rollout_phase.py"
 SUMMARIZE_ROLLOUT_CANDIDATE = ROOT / "scripts" / "bench" / "summarize_rollout_candidate.py"
 PIN_RUNTIME_CLASS = ROOT / "scripts" / "bench" / "pin_runtime_class.py"
 PIN_ROLLOUT_POLICY = ROOT / "scripts" / "bench" / "pin_rollout_policy.py"
@@ -168,6 +170,7 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
     )
     assert 'post_capture_timing="${BENCH_ROLLOUT_POST_CAPTURE_TIMING:-warm}"' in run_rollout_text
     assert "run_rollout_hook()" in run_rollout_text
+    assert "BENCH_PRE_DURING_SNAPSHOT_CMD" in run_rollout_text
     assert "BENCH_PRE_POST_SNAPSHOT_CMD" in run_rollout_text
     assert 'BENCH_SNAPSHOT_STAGE="$stage"' in run_rollout_text
     assert 'BENCH_BACKEND="${AE_RUNTIME_BACKEND:-podman}"' in run_rollout_text
@@ -183,6 +186,14 @@ def test_benchmark_runners_fail_on_apply_scale_or_wait_errors() -> None:
     )
     assert (
         'start_rollout_snapshot during_warm_pid "$during_warm_label" "$during_warm_capture_timing" "DURING-WARM"'
+        in run_rollout_text
+    )
+    assert (
+        'run_rollout_hook "rollout-${replicas}-during-warm" "$replicas" "$during_warm_label" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"'
+        in run_rollout_text
+    )
+    assert (
+        'run_rollout_hook "rollout-${replicas}-during" "$replicas" "$during_label" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"'
         in run_rollout_text
     )
     assert (
@@ -428,7 +439,17 @@ def test_run_cri_refresh_pins_workloads_to_runc_and_rejects_kata_snapshots() -> 
     assert "scripts/bench/pin_runtime_class.py" in text
     assert "scripts/bench/pin_rollout_policy.py" in text
     assert "build_steady_cmd()" in text
+    assert "build_phase_trace_cmd()" in text
+    assert (
+        '--preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_BACKEND,BENCH_APP_NAME'
+        in text
+    )
+    assert '"AE_SPECS_DIR=${AE_SPECS_DIR:-specs}"' in text
+    assert '"AE_STATE_DB=${AE_STATE_DB:-state/controller.db}"' in text
+    assert '"AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-cri}"' in text
+    assert '"AE_CRI_ENDPOINT=${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"' in text
     assert 'BENCH_PRE_STEADY_SNAPSHOT_CMD="$steady_hook_cmd"' in text
+    assert 'BENCH_PRE_DURING_SNAPSHOT_CMD="$phase_trace_cmd"' in text
     assert 'BENCH_PRE_POST_SNAPSHOT_CMD="$steady_hook_cmd"' in text
     assert 'published CRI profile: strategy=${bench_rollout_strategy} steady_quiet=${bench_steady_quiet}' in text
     assert "first_requested_replica()" in text
@@ -580,8 +601,17 @@ def test_rollout_tuning_experiment_runner_stays_off_the_publish_path() -> None:
     assert '*"+exp+"*' in text
     assert "BENCH_EXPERIMENT_STEADY_QUIET=${BENCH_EXPERIMENT_STEADY_QUIET:-0}" in text
     assert "BENCH_EXPERIMENT_STEADY_QUIET    enable steady quiet hooks (default: 0)" in text
+    assert "build_phase_trace_cmd()" in text
+    assert (
+        '--preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_BACKEND,BENCH_APP_NAME'
+        in text
+    )
+    assert '"AE_SPECS_DIR=${AE_SPECS_DIR:-specs}"' in text
+    assert '"AE_STATE_DB=${AE_STATE_DB:-state/controller.db}"' in text
+    assert '"AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-$backend}"' in text
     assert 'BENCH_SPECS_SRC="$ROOT_DIR"' in text
     assert 'BENCH_EXPERIMENT_OUTPUT_ROOT="$experiment_root"' in text
+    assert 'BENCH_PRE_DURING_SNAPSHOT_CMD="$phase_cmd"' in text
     assert 'scripts/bench/mem_combine.py --outdir "$experiment_combined_dir"' in text
     assert (
         'scripts/bench/plot_overhead.py "$experiment_combined_dir/combined.csv" "$experiment_charts_dir"'
@@ -608,15 +638,44 @@ def test_cri_rollout_candidate_wrapper_uses_grouped_experiment_outputs() -> None
     assert "bench-cri-rollout-candidate:" in make_text
 
 
+def test_lane_quiet_candidate_wrapper_uses_grouped_experiment_outputs() -> None:
+    text = RUN_LANE_QUIET_CANDIDATE.read_text(encoding="utf-8")
+    make_text = MAKEFILE.read_text(encoding="utf-8")
+
+    assert 'LANE="${LANE:-}"' in text
+    assert "rootless|rootful|k1nd" in text
+    assert 'CONTROL_READY_STABLE_POLLS="${CONTROL_READY_STABLE_POLLS:-2}"' in text
+    assert 'CONTROL_SETTLE_DELAY="${CONTROL_SETTLE_DELAY:-2}"' in text
+    assert 'QUIET_READY_STABLE_POLLS="${QUIET_READY_STABLE_POLLS:-3}"' in text
+    assert 'QUIET_SETTLE_DELAY="${QUIET_SETTLE_DELAY:-5}"' in text
+    assert 'GROUP_ROOT="${GROUP_ROOT:-state/bench-experiments/${GROUP_ID}}"' in text
+    assert 'LABEL_BASE_PREFIX="$(ensure_label_base "$LANE" "${LABEL_BASE_PREFIX:-}")"' in text
+    assert 'BENCH_EXPERIMENT_OUTPUT_ROOT="$exp_dir"' in text
+    assert 'BENCH_EXPERIMENT_STEADY_QUIET="$steady_quiet"' in text
+    assert 'BENCH_READY_STABLE_POLLS="$ready_stable_polls"' in text
+    assert 'BENCH_SETTLE_DELAY="$settle_delay"' in text
+    assert 'BENCH_EXPERIMENT_ROLLOUT_STRATEGY=' not in text
+    assert 'python scripts/bench/summarize_rollout_candidate.py "$GROUP_ROOT"' in text
+    assert "bench-lane-quiet-candidate:" in make_text
+
+
 def test_rollout_candidate_summary_helper_reports_promotion_gates() -> None:
     text = SUMMARIZE_ROLLOUT_CANDIDATE.read_text(encoding="utf-8")
+    phase_text = CAPTURE_ROLLOUT_PHASE.read_text(encoding="utf-8")
 
     assert 'default=30.0' in text
     assert 'default=3.0' in text
+    assert 'default=5.0' in text
+    assert "PHASE_TRACE_STAGES" in text
+    assert '"phase_metrics": phase_metrics' in text
     assert '"rollout-5-during app improvement"' in text
     assert '"pods-5 steady-state app drift"' in text
     assert '"rollout-5-post app drift"' in text
-    assert 'candidate group must include both baseline and ordered experiment runs' in text
+    assert 'CV_REGRESSION_STAGES = ("pods-5", "rollout-2-post", "rollout-5-post")' in text
+    assert 'f"{stage} app CV regression"' in text
+    assert 'candidate group must include baseline and exactly one candidate scenario' in text
+    assert 'sys.executable, "-m", "ae.cli", "status", app, "--json"' in phase_text
+    assert 'Path("snapshots") / label / "phase-trace.json"' in phase_text
 
 
 def test_mem_snapshot_supports_immediate_capture_timing() -> None:

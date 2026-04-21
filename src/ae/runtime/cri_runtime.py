@@ -1643,13 +1643,16 @@ class CRIRuntime(RuntimeAdapter):
     def _wait_for_pod_sandbox_absent(self, pod_id: str, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + max(0.0, float(timeout))
         while True:
-            present = False
-            with contextlib.suppress(Exception):
+            present = True
+            try:
+                present = False
                 for pod in self._list_pods():
                     current_id = getattr(pod, "id", None) or getattr(pod, "pod_sandbox_id", None)
                     if str(current_id or "") == str(pod_id):
                         present = True
                         break
+            except Exception:
+                present = True
             if not present:
                 return True
             if time.monotonic() >= deadline:
@@ -1663,12 +1666,15 @@ class CRIRuntime(RuntimeAdapter):
             return True
         deadline = time.monotonic() + max(0.0, float(timeout))
         while True:
-            present = False
-            with contextlib.suppress(Exception):
+            present = True
+            try:
+                present = False
                 for pod in self._list_pods():
                     if self._pod_matches_replica(pod, replica_id):
                         present = True
                         break
+            except Exception:
+                present = True
             if not present:
                 return True
             if time.monotonic() >= deadline:
