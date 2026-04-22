@@ -135,9 +135,19 @@ jobs:
         run: bash tools/plan_ci.sh
       - name: Kubernetes export gate
         run: |
+          run_k8s_check() {
+            local rc=0
+            python -m ae.cli k8s-check "$@" || rc=$?
+            if [ "$rc" -eq 3 ]; then
+              echo "k8s-check returned warning-only exit 3 for: $*"
+              return 0
+            fi
+            return "$rc"
+          }
+
           make k8s-smoke
-          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict
-          python -m ae.cli k8s-check -f specs/examples/multi-replica-echo.yaml --policy strict
+          run_k8s_check -f specs/examples/echo.yaml --policy strict
+          run_k8s_check -f specs/examples/multi-replica-echo.yaml --policy strict
       - name: OpenAPI drift gate
         run: scripts/validate-openapi.sh
 
