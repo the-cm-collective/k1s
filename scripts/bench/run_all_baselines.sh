@@ -35,6 +35,10 @@ WAIT_READY_TRIES=${WAIT_READY_TRIES:-300}
 ROLL_REPLICAS=${ROLL_REPLICAS:-2,5}
 BENCH_SPECS_MINIMAL=${BENCH_SPECS_MINIMAL:-1}
 BENCH_SPECS_EMPTY=${BENCH_SPECS_EMPTY:-1}
+BENCH_BASELINE_STEADY_QUIET=${BENCH_BASELINE_STEADY_QUIET:-1}
+BASELINE_STEADY_TIMEOUT=${BASELINE_STEADY_TIMEOUT:-60}
+BASELINE_STEADY_DELAY=${BASELINE_STEADY_DELAY:-2}
+BASELINE_STEADY_POLLS=${BASELINE_STEADY_POLLS:-3}
 
 # Optional: disable specific suites
 # - Set DISABLE_K1ND=1 (or SKIP_K1ND=1) to skip the k1nd baseline stage.
@@ -189,6 +193,40 @@ print()
 PY
 }
 
+build_steady_cmd() {
+  local backend="$1"
+  local app="$2"
+  local use_sudo="$3"
+  local python_bin="${PYTHON_BIN:-python}"
+  local py_path="${PYTHONPATH:-$ROOT_DIR/src}"
+  local -a cmd=(
+    env
+    "PATH=${PATH}"
+    "PYTHONPATH=${py_path}"
+    "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+    "NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}"
+    "NIX_LD=${NIX_LD:-}"
+    "AE_PODMAN_BIN=${AE_PODMAN_BIN:-podman}"
+    "AE_CRI_ENDPOINT=${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
+    "$python_bin"
+    scripts/bench/wait_rollout_steady.py
+    --backend "$backend"
+    --app "$app"
+    --timeout "$BASELINE_STEADY_TIMEOUT"
+    --delay "$BASELINE_STEADY_DELAY"
+    --stable-polls "$BASELINE_STEADY_POLLS"
+    --require-app-present
+  )
+  if [[ "$use_sudo" == "1" ]]; then
+    cmd=(
+      sudo
+      --preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_SNAPSHOT_DURATION,BENCH_SNAPSHOT_CAPTURE_TIMING,BENCH_BACKEND,BENCH_APP_NAME
+      "${cmd[@]}"
+    )
+  fi
+  printf '%q ' "${cmd[@]}"
+}
+
 # -------- Preflights --------
 have python || { echo "python is required" >&2; exit 2; }
 have make   || { echo "make is required" >&2; exit 2; }
@@ -298,6 +336,11 @@ run_isolated_k1s_suite() {
   # shellcheck disable=SC1090
   source "$env_file"
 
+  local hook_cmd=""
+  if [[ "$BENCH_BASELINE_STEADY_QUIET" == "1" ]]; then
+    hook_cmd="$(build_steady_cmd podman "$BENCH_PRIMARY_APP" "$podman_sudo")"
+  fi
+
   if AE_ENGINE_STRICT=1 \
     AE_COLLECT_PODMAN_SUDO="$podman_sudo" \
     BENCH_CONTROLLER_SUDO="$BENCH_CONTROLLER_SUDO" \
@@ -312,6 +355,8 @@ run_isolated_k1s_suite() {
     AE_STATE_DB="$AE_STATE_DB" \
     AE_CADDY_DIR="$AE_CADDY_DIR" \
     BENCH_WAIT_RUNTIME="$BENCH_WAIT_RUNTIME" \
+    BENCH_PRE_STEADY_SNAPSHOT_CMD="$hook_cmd" \
+    BENCH_PRE_POST_SNAPSHOT_CMD="$hook_cmd" \
     make "$make_target"; then
     :
   else

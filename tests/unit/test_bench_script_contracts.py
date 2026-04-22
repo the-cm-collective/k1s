@@ -61,6 +61,15 @@ def test_run_all_baselines_keeps_rootless_and_rootful_podman_collection_split() 
     assert 'APP="$BENCH_PRIMARY_MANIFEST"' in text
     assert 'APP_NAME="$BENCH_PRIMARY_APP"' in text
     assert 'BENCH_WAIT_RUNTIME="$BENCH_WAIT_RUNTIME"' in text
+    assert 'BENCH_BASELINE_STEADY_QUIET=${BENCH_BASELINE_STEADY_QUIET:-1}' in text
+    assert 'BASELINE_STEADY_TIMEOUT=${BASELINE_STEADY_TIMEOUT:-60}' in text
+    assert 'BASELINE_STEADY_DELAY=${BASELINE_STEADY_DELAY:-2}' in text
+    assert 'BASELINE_STEADY_POLLS=${BASELINE_STEADY_POLLS:-3}' in text
+    assert "build_steady_cmd()" in text
+    assert 'hook_cmd="$(build_steady_cmd podman "$BENCH_PRIMARY_APP" "$podman_sudo")"' in text
+    assert 'BENCH_PRE_STEADY_SNAPSHOT_CMD="$hook_cmd"' in text
+    assert 'BENCH_PRE_POST_SNAPSHOT_CMD="$hook_cmd"' in text
+    assert 'scripts/bench/wait_rollout_steady.py' in text
     assert "DISABLE_DEV_MIN=${DISABLE_DEV_MIN:-0}" in text
     assert "ctrl_key = 'k3s_control_plane_pss_kb' if sc == 'k3d' else 'controller_pss_kb'" in text
     assert "Ctrl/CP = AE controller PSS for k1s/k1nd, k3s control-plane PSS for k3d" in text
