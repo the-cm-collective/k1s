@@ -19,12 +19,14 @@ RUN_CRI_ROLLOUT_PROBE = ROOT / "scripts" / "bench" / "run_cri_rollout_probe.sh"
 RUN_CRI_ROLLOUT_CANDIDATE = ROOT / "scripts" / "bench" / "run_cri_rollout_candidate.sh"
 RUN_LANE_QUIET_CANDIDATE = ROOT / "scripts" / "bench" / "run_lane_quiet_candidate.sh"
 AUDIT_CP_METRICS = ROOT / "scripts" / "bench" / "audit_cp_metrics.py"
+AUDIT_RUNTIME_ATTRIBUTION = ROOT / "scripts" / "bench" / "audit_runtime_attribution.py"
 CAPTURE_ROLLOUT_PHASE = ROOT / "scripts" / "bench" / "capture_rollout_phase.py"
 SUMMARIZE_ROLLOUT_CANDIDATE = ROOT / "scripts" / "bench" / "summarize_rollout_candidate.py"
 PIN_RUNTIME_CLASS = ROOT / "scripts" / "bench" / "pin_runtime_class.py"
 PIN_ROLLOUT_POLICY = ROOT / "scripts" / "bench" / "pin_rollout_policy.py"
 WAIT_ROLLOUT_STEADY = ROOT / "scripts" / "bench" / "wait_rollout_steady.py"
 MEM_COMBINE = ROOT / "scripts" / "bench" / "mem_combine.py"
+MEM_AGGREGATE = ROOT / "scripts" / "bench" / "mem_aggregate.py"
 RUN_ROLLOUT_TUNING_EXPERIMENT = ROOT / "scripts" / "bench" / "run_rollout_tuning_experiment.sh"
 MEM_SNAPSHOT = ROOT / "scripts" / "bench" / "mem_snapshot.sh"
 K1ND_COMPOSE = ROOT / "ops" / "bench" / "k1nd-compose.yaml"
@@ -716,4 +718,33 @@ def test_mem_snapshot_supports_immediate_capture_timing() -> None:
     assert "cri_ps.json" in text
     assert "cri_pods.json" in text
     assert "cri_info.json" in text
+    assert "host_system_cgroups.csv" in text
+    assert "containerd-shim" in text
+    assert "passt" in text
+    assert "slirp4netns" in text
+    assert 'grep -v "containerd-shim"' not in text
     assert 'if [[ "$capture_timing" == "warm" ]]; then' in text
+
+
+def test_mem_aggregate_exports_host_system_top_breakdown() -> None:
+    text = MEM_AGGREGATE.read_text(encoding="utf-8")
+
+    assert "HOST_SYSTEM_TOP_LIMIT = 10" in text
+    assert "RUNTIME_PROCESS_TOP_LIMIT = 10" in text
+    assert "host_system_cgroups.csv" in text
+    assert '"host_system_cgroups_top": _top_host_system_cgroups(host_system_rows)' in text
+    assert '"runtime_process_groups": runtime_process_groups' in text
+    assert '"runtime_process_top": runtime_process_top' in text
+    assert '"passt"' in text
+    assert '"slirp4netns"' in text
+
+
+def test_audit_runtime_attribution_reads_runtime_group_and_host_top_fields() -> None:
+    text = AUDIT_RUNTIME_ATTRIBUTION.read_text(encoding="utf-8")
+
+    assert 'runtime_process_groups' in text
+    assert 'host_system_cgroups_top' in text
+    assert 'containerd_shim' in text
+    assert 'passt' in text
+    assert 'slirp4netns' in text
+    assert 'top_host_services' in text

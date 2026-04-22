@@ -224,11 +224,12 @@ log_step "ps snapshots captured"
 
 capture_process_and_container_state() {
   # Process target patterns
-  # Use args-aware scan to capture controller accurately and avoid shims
+  # Use args-aware scan to capture controller accurately and include runtime shims
   case "${mode}" in
     k1s)
-      # match: python -m ae.controller, caddy, docker/containerd, and podman/conmon (but NOT containerd-shim)
-      proc_pat='ae\.controller|\bcaddy\b|\bdockerd\b|\bcontainerd\b|\bpodman\b|\bconmon\b'
+      # match: python -m ae.controller, caddy, docker/containerd, containerd-shim,
+      # and rootless Podman helpers (podman/conmon/passt/slirp4netns)
+      proc_pat='ae\.controller|\bcaddy\b|\bdockerd\b|\bcontainerd\b|\bcontainerd-shim\b|\bpodman\b|\bconmon\b|\bpasst(\.[A-Za-z0-9_-]+)?\b|\bpasta\b|\bslirp4netns\b'
       scan_file="${outdir}/raw/ps_scan_before.txt"
       ;;
     k3s)
@@ -241,8 +242,8 @@ capture_process_and_container_state() {
       ;;
   esac
 
-  # Capture smaps_rollup + status for matching processes (exclude containerd-shim)
-  matches=$(grep -E "${proc_pat}" "${scan_file}" 2>/dev/null | grep -v "containerd-shim" || true)
+  # Capture smaps_rollup + status for matching processes
+  matches=$(grep -E "${proc_pat}" "${scan_file}" 2>/dev/null || true)
   awk '{print $1" "$3}' <<< "$matches" | while read -r pid comm; do
     [[ -z "${pid}" ]] && continue
     if [[ -r "/proc/${pid}/smaps_rollup" ]]; then
@@ -253,6 +254,81 @@ capture_process_and_container_state() {
     fi
   done
   log_step "process smaps/status captured"
+
+  if command -v python >/dev/null 2>&1; then
+    python - "${outdir}/raw/host_system_cgroups.csv" << 'PY' 2>>"${outdir}/status.log" || true
+import csv
+import os
+import sys
+from pathlib import Path
+
+out_path = Path(sys.argv[1])
+
+
+def detect_cgv2() -> bool:
+    return Path("/sys/fs/cgroup/cgroup.controllers").exists()
+
+
+def dir_is_leaf(path: Path) -> bool:
+    try:
+        for child in path.iterdir():
+            if not child.is_dir():
+                continue
+            if (child / "cgroup.procs").exists() or (child / "cgroup.events").exists():
+                return False
+    except Exception:
+        return True
+    return True
+
+
+def safe_read_int(path: Path) -> int:
+    try:
+        return int(path.read_text().strip())
+    except Exception:
+        return 0
+
+
+def collect_rows(root: Path, base: Path, slice_kind: str, memory_file: str) -> list[tuple[str, int, str]]:
+    rows: list[tuple[str, int, str]] = []
+    if not root.exists():
+        return rows
+    candidates = [root]
+    try:
+        candidates.extend(sorted(root.rglob("*")))
+    except Exception:
+        pass
+    for candidate in candidates:
+        try:
+            if not candidate.is_dir():
+                continue
+        except Exception:
+            continue
+        mem_path = candidate / memory_file
+        if not mem_path.exists() or not dir_is_leaf(candidate):
+            continue
+        rel = "/" + str(candidate.relative_to(base))
+        rows.append((rel, safe_read_int(mem_path), slice_kind))
+    return rows
+
+
+rows: list[tuple[str, int, str]]
+if detect_cgv2():
+    base = Path("/sys/fs/cgroup")
+    rows = collect_rows(base / "system.slice", base, "system.slice", "memory.current")
+    rows.extend(collect_rows(base / "init.scope", base, "init.scope", "memory.current"))
+else:
+    base = Path("/sys/fs/cgroup/memory")
+    rows = collect_rows(base / "system.slice", base, "system.slice", "memory.usage_in_bytes")
+    rows.extend(collect_rows(base / "init.scope", base, "init.scope", "memory.usage_in_bytes"))
+
+rows.sort(key=lambda item: (-item[1], item[0]))
+with out_path.open("w", newline="", encoding="utf-8") as handle:
+    writer = csv.writer(handle)
+    writer.writerow(("path", "bytes", "slice_kind"))
+    writer.writerows(rows)
+PY
+  fi
+  log_step "host system cgroups captured"
 
   ## Containers (collect only from the selected engine to avoid contamination)
   {

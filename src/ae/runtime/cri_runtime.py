@@ -1537,11 +1537,18 @@ class CRIRuntime(RuntimeAdapter):
         except Exception:
             return False
         details = self._grpc_error_details(exc).lower()
+        if (
+            "failed to create shim task" in details
+            and "namespace path: lstat /proc/" in details
+            and "no such file or directory" in details
+        ):
+            return True
         if "sandbox" not in details:
             return False
         stale_markers = (
             "sandbox container task",
             "failed to find sandbox id",
+            "can't find shim for sandbox",
             "no running task found",
             "podsandbox not found",
             "pod sandbox not found",

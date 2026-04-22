@@ -147,12 +147,30 @@ def test_cri_runtime_detects_stale_pod_sandbox_error() -> None:
         grpc.StatusCode.UNKNOWN,
         'sandbox container "pod-1" is not running',
     )
+    stale_missing_shim = _FakeGrpcError(
+        grpc.StatusCode.UNKNOWN,
+        (
+            'failed to create containerd task: failed to start shim: '
+            "can't find shim for sandbox pod-1: not found"
+        ),
+    )
+    stale_missing_namespace = _FakeGrpcError(
+        grpc.StatusCode.UNKNOWN,
+        (
+            "failed to create containerd task: failed to create shim task: "
+            "oci runtime create failed: runc create failed: "
+            "unable to create new parent process: "
+            "namespace path: lstat /proc/512221/ns/ipc: no such file or directory"
+        ),
+    )
     other = _FakeGrpcError(grpc.StatusCode.UNAVAILABLE, "transport unavailable")
 
     assert runtime._is_stale_pod_sandbox_error(stale) is True
     assert runtime._is_stale_pod_sandbox_error(stale_create) is True
     assert runtime._is_stale_pod_sandbox_error(stale_create_generic) is True
     assert runtime._is_stale_pod_sandbox_error(stale_not_running) is True
+    assert runtime._is_stale_pod_sandbox_error(stale_missing_shim) is True
+    assert runtime._is_stale_pod_sandbox_error(stale_missing_namespace) is True
     assert runtime._is_stale_pod_sandbox_error(other) is False
 
 
@@ -389,6 +407,37 @@ def test_create_main_container_maps_generic_missing_sandbox_create_error_to_reco
     monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
 
     with pytest.raises(_StalePodSandboxError, match='sandbox "pod-1" not found'):
+        runtime._create_main_container(manifest, "pod-1", "default/demo-rev1-0", 1)
+
+
+def test_create_main_container_maps_missing_namespace_create_error_to_recoverable_pod_error(
+    monkeypatch,
+) -> None:
+    if grpc is None:
+        pytest.skip("grpc unavailable")
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(runtime, "_container_config", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runtime, "_pod_status", lambda _pod_id: None)
+
+    def _runtime_call(method, _req):
+        if method == "CreateContainer":
+            raise _FakeGrpcError(
+                grpc.StatusCode.UNKNOWN,
+                (
+                    "failed to create containerd task: failed to create shim task: "
+                    "OCI runtime create failed: runc create failed: "
+                    "unable to create new parent process: "
+                    "namespace path: lstat /proc/512221/ns/ipc: no such file or directory"
+                ),
+            )
+        raise AssertionError(f"unexpected runtime call: {method}")
+
+    monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
+
+    with pytest.raises(_StalePodSandboxError, match="namespace path: lstat /proc/512221/ns/ipc"):
         runtime._create_main_container(manifest, "pod-1", "default/demo-rev1-0", 1)
 
 

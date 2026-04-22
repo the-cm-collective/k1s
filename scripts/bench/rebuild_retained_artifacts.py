@@ -96,11 +96,23 @@ def load_summary(dirpath: Path) -> dict[str, Any]:
         return {}
 
 
+def combined_control_plane_pss_kb(mode: str, overhead: dict[str, Any]) -> int:
+    try:
+        if str(mode).lower() == "k3s":
+            k3s_cp = int(overhead.get("pss_kb_k3s_control_plane", 0) or 0)
+            if k3s_cp > 0:
+                return k3s_cp
+        return int(overhead.get("pss_kb_control_plane", 0) or 0)
+    except Exception:
+        return 0
+
+
 def summary_to_row(snap: Path, summary: dict[str, Any]) -> dict[str, Any]:
     meta = summary.get("meta", {})
     mem_available = summary.get("mem_available", {}) or {}
     overhead = summary.get("overhead", {}) or {}
     containers = summary.get("containers", {}) or {}
+    mode = meta.get("mode", "")
     delta = mem_available.get("delta_bytes", 0)
     if not delta:
         before = int(mem_available.get("before_bytes", 0) or 0)
@@ -108,12 +120,12 @@ def summary_to_row(snap: Path, summary: dict[str, Any]) -> dict[str, Any]:
         delta = after - before
     return {
         "label": meta.get("label", snap.parent.name),
-        "mode": meta.get("mode", ""),
+        "mode": mode,
         "backend": meta.get("backend", ""),
         "oci_runtime": meta.get("oci_runtime", ""),
         "timestamp": meta.get("timestamp", ""),
         "process_pss_kb": summary.get("process_totals_kb", {}).get("pss_kb", 0),
-        "control_plane_pss_kb": overhead.get("pss_kb_control_plane", 0),
+        "control_plane_pss_kb": combined_control_plane_pss_kb(mode, overhead),
         "overhead_pss_kb_total": overhead.get(
             "pss_kb_total_overhead", overhead.get("pss_kb_control_plane", 0)
         ),
