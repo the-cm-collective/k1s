@@ -294,7 +294,10 @@ run_check_as_target_user() {
   if [[ -n "${AE_TLS_DIR:-}" ]]; then
     cmd+=("AE_TLS_DIR=${AE_TLS_DIR}")
   fi
-  cmd+=(bash "$SELF_SCRIPT" --profile "$profile" --check)
+  cmd+=(
+    bash "$SELF_SCRIPT" --profile "$profile" --check
+    --target-uid "$target_uid" --target-gid "$target_gid"
+  )
   "${cmd[@]}"
 }
 

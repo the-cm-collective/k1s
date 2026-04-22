@@ -709,10 +709,10 @@ exec "${args[@]:$idx}"
     env["K1S_ROOT_DIR_OVERRIDE"] = str(tmp_path)
     env["PATH"] = f"{tmp_path}:{env['PATH']}"
     env["FAKE_ID_MODE"] = "root"
-    env["FAKE_TARGET_UID"] = str(os.getuid())
-    env["FAKE_TARGET_GID"] = str(os.getgid())
-    env["SUDO_UID"] = str(os.getuid())
-    env["SUDO_GID"] = str(os.getgid())
+    env["FAKE_TARGET_UID"] = "1001"
+    env["FAKE_TARGET_GID"] = "1001"
+    env["SUDO_UID"] = "1001"
+    env["SUDO_GID"] = "1001"
 
     proc = subprocess.run(
         ["bash", str(PROFILE_STATE_OWNERSHIP_SCRIPT), "--profile", "k1s-core", "--repair"],
