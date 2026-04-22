@@ -2349,9 +2349,9 @@ def build_one(
             [
                 f'<link rel="stylesheet" href="static/labs.css?v={ver}"/>',
                 f"<script>window.DOCS_API_BASE='{html.escape(API_BASE)}';</script>",
-                # Optional: inject a demo Labs token so the playground can prefill
+                # Never embed a labs token in public docs unless explicitly opted in.
                 (
-                    f"<script>window.DOCS_LABS_TOKEN='{html.escape(os.getenv('DOCS_LABS_TOKEN', ''))}';</script>"
+                    f"<script>window.DOCS_LABS_TOKEN='{html.escape(os.getenv('DOCS_LABS_TOKEN', '') if os.getenv('DOCS_EMBED_LABS_TOKEN', '').strip().lower() in {'1', 'true', 'yes', 'on'} else '')}';</script>"
                 ),
                 '<script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>',
                 '<script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>',

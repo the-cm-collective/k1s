@@ -2269,6 +2269,9 @@ run_ha_core_preflight() {
 
 
 build_docs_with_labs_token() {
+  if [[ "${DOCS_EMBED_LABS_TOKEN:-0}" != "1" ]]; then
+    return 0
+  fi
   if [[ "${AE_LABS:-0}" != "1" ]]; then
     return 0
   fi
