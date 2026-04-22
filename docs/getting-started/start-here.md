@@ -40,7 +40,7 @@ This single page gets a new contributor or user from a fresh clone to a running 
 
 <p><strong>Command note:</strong> use <a href="validated-procedures.html">Validated Procedures</a> for the current copy/paste command readouts. This page keeps the onboarding flow and stable context.</p>
 
-Note: k1s is pre-1.0 and still evolving. v0.1.3 expands operational validation (deep+perf ingress lanes, repeatability and fault-injection gates, security baseline and active auth probes, and release-time live OpenAPI gates), but production promotion still requires environment-specific security review and rollout validation.
+Note: k1s is pre-1.0 and still evolving. The current line expands HA validation, stricter benchmark procedures, and operator runbook coverage, but production promotion still requires environment-specific security review and rollout validation.
 
 Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.
 
@@ -286,7 +286,7 @@ Benchmarks (memory + runtime tooling)
 - `make bench-mem-e2e-baselines`: run baseline suite matrix.
 - `make bench-mem-e2e-baselines-sudo`: baseline suite with sudo.
 - `make bench-mem-docs`: combine + plot + rebuild docs.
-- `make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1`: rebuild published artifacts from the retained set plus the frozen `20260203` reference import.
+- `make bench-retained-rebuild PROFILE=final STAMP=<fresh-stamp> DELETE_DROPPED=1`: rebuild published artifacts from one validated rerun stamp plus the frozen `20260203` reference import.
 - `make bench-fix-perms`: normalize artifact permissions.
 - `make bench-mem-backfill`: backfill missing summary.json + rebuild docs.
 - `make bench-engines-clear`: stop/remove all containers (dangerous).
@@ -301,7 +301,7 @@ Benchmarks (memory + runtime tooling)
 
 Benchmark note
 - Use [Validated Procedures](validated-procedures.html#full-benchmark-rerun) for the current full rerun sequence.
-- Use [Memory Overhead Benchmarks](benchmarks.html#retained-artifact-rebuild) for retained-artifact rebuild and interim review guidance.
+- Use [Memory Overhead Benchmarks](benchmarks.html#retained-artifact-rebuild) for retained-artifact rebuild and authoritative rerun guidance.
 
 Images and containers
 - `make image-docker`: build controller image with Dockerfile.

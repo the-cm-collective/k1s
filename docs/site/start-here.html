@@ -760,7 +760,7 @@
     <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Demo</h2>       <p>Provision the seeded demo profile, docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable mode and start the controller, then continue with the sample apply/status/log checks below.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
 <p>This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.</p>
 <p><strong>Command note:</strong> use <a href="validated-procedures.html">Validated Procedures</a> for the current copy/paste command readouts. This page keeps the onboarding flow and stable context.</p>
-<p>Note: k1s is pre-1.0 and still evolving. v0.1.3 expands operational validation (deep+perf ingress lanes, repeatability and fault-injection gates, security baseline and active auth probes, and release-time live OpenAPI gates), but production promotion still requires environment-specific security review and rollout validation.</p>
+<p>Note: k1s is pre-1.0 and still evolving. The current line expands HA validation, stricter benchmark procedures, and operator runbook coverage, but production promotion still requires environment-specific security review and rollout validation.</p>
 <p>Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.</p>
 <p>Project philosophy: <code>TENETS.md</code> captures the core project stance, and <code>docs/design/project-philosophy.md</code> plus <code>docs/design/cognitive-welfare-and-continuity.md</code> define the precautionary position for later cognitive-substrate work.</p>
 <h2 id="prerequisites">Prerequisites</h2>
@@ -976,7 +976,7 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make bench-mem-e2e-baselines</code>: run baseline suite matrix.</li>
 <li><code>make bench-mem-e2e-baselines-sudo</code>: baseline suite with sudo.</li>
 <li><code>make bench-mem-docs</code>: combine + plot + rebuild docs.</li>
-<li><code>make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1</code>: rebuild published artifacts from the retained set plus the frozen <code>20260203</code> reference import.</li>
+<li><code>make bench-retained-rebuild PROFILE=final STAMP=&lt;fresh-stamp&gt; DELETE_DROPPED=1</code>: rebuild published artifacts from one validated rerun stamp plus the frozen <code>20260203</code> reference import.</li>
 <li><code>make bench-fix-perms</code>: normalize artifact permissions.</li>
 <li><code>make bench-mem-backfill</code>: backfill missing summary.json + rebuild docs.</li>
 <li><code>make bench-engines-clear</code>: stop/remove all containers (dangerous).</li>
@@ -992,7 +992,7 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <p>Benchmark note</p>
 <ul>
 <li>Use <a href="validated-procedures.html#full-benchmark-rerun">Validated Procedures</a> for the current full rerun sequence.</li>
-<li>Use <a href="benchmarks.html#retained-artifact-rebuild">Memory Overhead Benchmarks</a> for retained-artifact rebuild and interim review guidance.</li>
+<li>Use <a href="benchmarks.html#retained-artifact-rebuild">Memory Overhead Benchmarks</a> for retained-artifact rebuild and authoritative rerun guidance.</li>
 </ul>
 <p>Images and containers</p>
 <ul>
@@ -1118,7 +1118,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-17 17:35:12</span>
+        <span>Built 2026-04-22 07:16:54</span>
       </div>
     </footer>
     <script>

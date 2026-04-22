@@ -1,4 +1,4 @@
-# Known-Good Validation Snapshot (2026-04-17)
+# Known-Good Validation Snapshot (2026-04-22)
 
 This page tracks the latest validated operator workflows. It is a status index, not the full procedure source of truth.
 
@@ -35,9 +35,17 @@ Current dashboard expectations
 
 Current benchmark expectations
 - The authoritative benchmark artifacts are `combined/combined.csv` and `combined/combined.json`.
-- Published benchmark artifacts now follow the retained-set model:
-  - frozen `r20260203-legacy*` reference import
-  - validated current families only (`interim-20260417`) or one fresh rerun stamp (`final`)
+- The current published retained set was rebuilt with:
+  - `make bench-retained-rebuild PROFILE=final STAMP=r20260421-223436-authoritative2 DELETE_DROPPED=1`
+- The retained publish set contains `110` rows:
+  - `40` frozen `r20260203-legacy*` rows
+  - `70` current rows from `r20260421-223436-authoritative2*`
+- Published current families normalize to OCI-tagged names:
+  - `r20260421-223436-authoritative2+podman+crun+rootless+cg2`
+  - `r20260421-223436-authoritative2+podman+crun+priv+cg2`
+  - `r20260421-223436-authoritative2+docker+runc+k1nd`
+  - `r20260421-223436-authoritative2+k3d+runc`
+  - `r20260421-223436-authoritative2+cri-runc-verify-run{1,2,3}+cri+containerd`
 - Rollout reporting is dual-published:
   - `rollout-*-during`
   - `rollout-*-during-warm`

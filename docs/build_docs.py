@@ -1836,7 +1836,7 @@ def build_one(
 
                 parts: list[str] = [
                     "<hr/>",
-                    "<h2>Latest Benchmarks (Auto)</h2>",
+                    "<h2 id='latest-benchmarks-auto'>Latest Benchmarks (Auto)</h2>",
                     "<p>Summarized from <code>combined/combined.csv</code> at build time."
                     + (" (k1s only)" if latest_filter in ("k1s", "k1s-only", "k1s_only") else "")
                     + "</p>",
@@ -2023,7 +2023,7 @@ def build_one(
                     parts.append(
                         "<style>table.mini td, table.mini th { border:1px solid var(--border); padding:6px; }</style>"
                     )
-                    parts.append("<h2>Latest Comparison Matrix</h2>")
+                    parts.append("<h2 id='latest-comparison-matrix'>Latest Comparison Matrix</h2>")
                     # Overall winner band (normalized across stages x metrics; lower is better)
                     try:
 
@@ -2337,7 +2337,7 @@ def build_one(
                                 + f" are older than {hrs_label}; regenerate charts if this is unexpected."
                                 + "</div>"
                             )
-                        parts.append("<h2>Charts</h2>" + warn + "".join(inline_blocks))
+                        parts.append("<h2 id='charts'>Charts</h2>" + warn + "".join(inline_blocks))
                 html_body += "\n" + "\n".join(parts)
     except Exception:
         # Non-fatal: keep page renderable if injection fails

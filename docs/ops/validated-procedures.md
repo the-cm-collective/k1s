@@ -12,11 +12,11 @@ Latest validation snapshot
 | Simple dashboard user test | `make demo` | docs + dashboard load on `:8443`, simple layout visible | 2026-04-14 |
 | Advanced dashboard user test | `make lab-vm-ha-attached-node-up` | docs + dashboard load on `:10443`, HA section visible | 2026-04-14 |
 | HA stage 1/2 validation | `make lab-vm-ha-validation` | `stage1`, `retained`, `stage2`, `stage2-live` green | 2026-04-14 |
-| Benchmark retained rebuild | `make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1` | `combined/combined.csv` has `89` retained rows (`40` frozen legacy + `49` current) | 2026-04-17 |
-| Full benchmark rerun | split baseline + CRI flow | fresh `STAMP` contributes `70` rows; retained publish set has `110` rows after rebuild | 2026-04-17 |
+| Benchmark retained rebuild | `make bench-retained-rebuild PROFILE=final STAMP=r20260421-223436-authoritative2 DELETE_DROPPED=1` | `combined/combined.csv` has `110` retained rows (`40` frozen legacy + `70` current) | 2026-04-22 |
+| Full benchmark rerun | split baseline + CRI flow | fresh `STAMP` contributes `70` rows; retained publish set has `110` rows after rebuild | 2026-04-22 |
 
-Release policy for the 2026-04-15 tag
-- Treat Debian and NixOS as pooled cross-host verification inputs for this tag; do not claim that each host independently passed the full release matrix.
+Current pre-tag release verification baseline
+- Treat Debian and NixOS as pooled cross-host verification inputs for the current pre-tag pass; do not claim that each host independently passed the full release matrix.
 - Standardize release verification on `AE_USE_REGISTRY_CACHE=0` on both hosts.
 - Require the common baseline on both hosts:
 
@@ -33,12 +33,12 @@ make profile-smoke
 make ha-closeout-e2e
 ```
 
-- Authoritative host-owned lanes for this tag:
+- Authoritative host-owned lanes for the current pre-tag pass:
   - Debian: `make e2e`
   - Debian: `make strict-cri-smoke`
   - NixOS: `make lab-vm-ha-validation`
   - NixOS: full benchmark rerun from this page
-- Starting with the next release, require both hosts to pass the full release matrix independently.
+- Target posture for the next release: both hosts pass the full release matrix independently.
 
 ## Simple Dashboard User Test
 
@@ -182,9 +182,34 @@ make lab-vm-ha-attached-node-purge
 make lab-vm-ha-attached-node-reset
 ```
 
-## Interim Retained Benchmark Review
+## Current Retained Benchmark Publish Set
 
-Use this when you want the current published artifacts to contain only the frozen `20260203` reference set plus the validated April 17, 2026 families from this session.
+Use this to rebuild the currently published retained benchmark artifacts from the latest validated authoritative rerun.
+
+```bash
+cd /path/to/k1s
+export PATH="$PWD/.venv/bin:$PATH"
+
+make bench-retained-rebuild PROFILE=final STAMP=r20260421-223436-authoritative2 DELETE_DROPPED=1
+```
+
+Acceptance checks
+- `combined/combined.csv` contains `110` rows total:
+  - `40` frozen `r20260203-legacy*` rows
+  - `70` retained current rows from `r20260421-223436-authoritative2*`
+- The current retained families normalize to:
+  - `r20260421-223436-authoritative2+podman+crun+rootless+cg2`
+  - `r20260421-223436-authoritative2+podman+crun+priv+cg2`
+  - `r20260421-223436-authoritative2+docker+runc+k1nd`
+  - `r20260421-223436-authoritative2+k3d+runc`
+  - `r20260421-223436-authoritative2+cri-runc-verify-run1+cri+containerd`
+  - `r20260421-223436-authoritative2+cri-runc-verify-run2+cri+containerd`
+  - `r20260421-223436-authoritative2+cri-runc-verify-run3+cri+containerd`
+- `combined/combined.csv` and `combined/combined.json` remain the authoritative artifacts.
+
+## Historical Interim Benchmark Review (2026-04-17)
+
+Use this only when you need to reconstruct the older April 17, 2026 retained review set.
 
 ```bash
 cd /path/to/k1s
@@ -216,7 +241,7 @@ cd /path/to/k1s
 export PATH="$PWD/.venv/bin:$PATH"
 export PYTHONPATH="${PYTHONPATH:-src}"
 export AE_USE_REGISTRY_CACHE=0
-STAMP="r$(date +%Y%m%d)-fullretest"
+STAMP="r$(date +%Y%m%d-%H%M%S)-authoritative"
 
 sudo -v
 sudo systemctl daemon-reload
@@ -225,6 +250,17 @@ ss -lx | rg 'docker(.sock|-k3d.sock)' || true
 ls -l /run/docker.sock /run/docker-k3d.sock
 k3d cluster list
 AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh
+
+pytest tests/unit/test_bench_script_contracts.py \
+       tests/unit/test_audit_runtime_attribution.py \
+       tests/unit/test_mem_aggregate_podman.py \
+       tests/unit/test_rebuild_retained_artifacts.py -q
+
+bash -n scripts/bench/run_all_baselines.sh
+bash -n scripts/bench/run_rollout_tuning_experiment.sh
+python -m py_compile \
+  scripts/bench/audit_runtime_attribution.py \
+  scripts/bench/mem_aggregate.py
 
 scripts/bench/k1nd_single.sh down || true
 make bench-k3s-down K3S_NAME=bench || true
@@ -247,8 +283,15 @@ rm -rf \
 make bench-state-clean
 sudo make bench-engines-clear CONFIRM=1
 
+# The `LBL_*` values and `snapshots/${STAMP}+...` cleanup globs below target the
+# raw on-disk snapshot directories. The retained publish step later normalizes
+# those families to the OCI-tagged public names listed in Acceptance checks.
 DISABLE_DEV_MIN=0 \
 ALLOW_SUDO=1 \
+BENCH_BASELINE_STEADY_QUIET=1 \
+BASELINE_STEADY_TIMEOUT=180 \
+BASELINE_STEADY_DELAY=2 \
+BASELINE_STEADY_POLLS=3 \
 LBL_K1S_ROOTLESS="${STAMP}+podman+rootless+cg2" \
 LBL_K1S_ROOTFUL="${STAMP}+podman+priv+cg2" \
 LBL_K1ND="${STAMP}+docker+k1nd" \
@@ -288,6 +331,11 @@ Acceptance checks
   - `BENCH_CRI_ROLLOUT_MAX_SURGE=0`
   - `BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1`
   - `BENCH_CRI_STEADY_QUIET=1`
+- Baseline publish flow is invoked with the accepted steady-state profile:
+  - `BENCH_BASELINE_STEADY_QUIET=1`
+  - `BASELINE_STEADY_TIMEOUT=180`
+  - `BASELINE_STEADY_DELAY=2`
+  - `BASELINE_STEADY_POLLS=3`
 - Baseline and CRI families publish `10` stages each:
   - `idle`
   - `pods-1`
@@ -299,10 +347,19 @@ Acceptance checks
   - `rollout-5-during`
   - `rollout-5-during-warm`
   - `rollout-5-post`
+- Published baseline families normalize to OCI-tagged names:
+  - `${STAMP}+podman+crun+rootless+cg2`
+  - `${STAMP}+podman+crun+priv+cg2`
+  - `${STAMP}+docker+runc+k1nd`
+  - `${STAMP}+k3d+runc`
+- Published CRI families remain:
+  - `${STAMP}+cri-runc-verify-run1+cri+containerd`
+  - `${STAMP}+cri-runc-verify-run2+cri+containerd`
+  - `${STAMP}+cri-runc-verify-run3+cri+containerd`
 - `combined/combined.csv` contains `70` rows for the fresh stamp:
 
 ```bash
-STAMP="r$(date +%Y%m%d)-fullretest" python - <<'PY'
+STAMP="r$(date +%Y%m%d-%H%M%S)-authoritative" python - <<'PY'
 import csv
 import os
 from pathlib import Path
@@ -338,14 +395,14 @@ PY
 ```bash
 BASE="${STAMP}+cri-runc-verify"
 for run in 1 2 3; do
-  grep -c "^${BASE}-run${run}+cri+crun+containerd-" combined/combined.csv
+  grep -c "^${BASE}-run${run}+cri+containerd-" combined/combined.csv
 done
 ```
 
 - Optional rollback/comparison rerun for the old CRI parallel baseline:
 
 ```bash
-STAMP="r$(date +%Y%m%d)-fullretest"
+STAMP="r$(date +%Y%m%d-%H%M%S)-compare"
 BENCH_CRI_ROLLOUT_STRATEGY=parallel \
 BENCH_CRI_STEADY_QUIET=0 \
 BASE="${STAMP}+cri-runc-parallel-verify" \

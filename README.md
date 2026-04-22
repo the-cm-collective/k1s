@@ -14,20 +14,19 @@ Project principles and non-goals: `TENETS.md`. Cognitive-substrate philosophy an
 
 ## Status & Production Use
 
-k1s is pre-1.0 and still evolving. v0.1.3 expands validation coverage and operational testing, but this is still an actively changing release line.
+k1s is pre-1.0 and still evolving. The current release line expands HA validation, benchmark repeatability, and operator tooling, but this is still an actively changing release line.
 
 Production guidance:
 - Recommended now: labs, staging, and controlled production pilots with explicit operator ownership.
 - Not yet recommended: broad multi-tenant or compliance-critical environments that require full Kubernetes semantics.
 - Always run environment-specific security review, failure drills, and rollout validation before promotion.
 
-## v0.1.3 Release Highlights
+## Current Release-Line Highlights
 
-- Expanded ingress validation lanes, including deep+perf and strict edge-local proof: `docs/guides/ingress-capability-test-sequence.md`
-- Repeatability and fault-injection gates for operational patterns: `docs/guides/ingress-capability-test-sequence.md`
-- Security baseline and active auth probes in the lane flow: `docs/guides/ingress-capability-test-sequence.md`, `docs/ops/runbook.md`
-- Deep+perf parity benchmark process for k1s vs k3s: `docs/ops/perf-parity-k1s-vs-k3s.md`
-- Release-time live OpenAPI gating: `.github/workflows/release.yml`, `docs/ops/branch-protection.md`
+- High-availability control-plane support across controller authority, shared mutation fencing/CAS, and HA-safe API-shim reads: `docs/roadmap/high-availability-control-plane.md`, `docs/ops/ha-cluster-bring-up.md`
+- HA operator tooling and validation automation for retained, live-helper, and drill lanes: `docs/ops/validated-procedures.md`, `docs/ops/ha-closeout.md`
+- Hardened benchmark reruns and retained publishing for rootless, rootful, k1nd, k3d, and CRI lanes: `docs/benchmarks/memory.md`, `docs/ops/validated-procedures.md`
+- Stronger local environment/bootstrap helpers, including `env-doctor`, controller env export helpers, and repo-local Nix shells: `scripts/dev/env_doctor.sh`, `scripts/ae-env.sh`, `flake.nix`
 
 ## Documentation
 
@@ -47,6 +46,7 @@ Production guidance:
 - Ingress and TLS reference: `docs/reference/ingress.md`
 - Ingress deep validation lanes: `docs/guides/ingress-capability-test-sequence.md`
 - Operations runbook: `docs/ops/runbook.md`
+- Benchmarks and validated procedures: `docs/benchmarks/memory.md`, `docs/ops/validated-procedures.md`
 - Demo modes and examples: `docs/guides/demos-examples.md`
 - End-to-end walkthrough: `docs/guides/e2e.md`
 - CI examples: `docs/ops/ci-gh-actions.md`
@@ -313,6 +313,7 @@ Benchmarks (memory + runtime tooling):
 - `make bench-mem-e2e-baselines`: run baseline suite matrix.
 - `make bench-mem-e2e-baselines-sudo`: baseline suite with sudo.
 - `make bench-mem-docs`: combine + plot + rebuild docs.
+- `make bench-retained-rebuild PROFILE=final STAMP=<fresh-stamp> DELETE_DROPPED=1`: rebuild retained benchmark artifacts from one validated rerun stamp plus the frozen legacy reference.
 - `make bench-fix-perms`: normalize artifact permissions.
 - `make bench-mem-backfill`: backfill missing summary.json + rebuild docs.
 - `make bench-engines-clear`: stop/remove all containers (dangerous).
@@ -320,7 +321,7 @@ Benchmarks (memory + runtime tooling):
 - `make dev-state-clean`: wipe full `state/` (requires `CONFIRM=1`).
 - `make bench-mem-backfill-oci`: add OCI runtime metadata and recompute charts.
 - `make bench-mem-backfill-oci-latest`: backfill OCI metadata for latest label only.
-- `make bench-mem-finalize-sudo`: finalize benchmarks and normalize perms (sudo).
+- `make bench-mem-finalize-sudo`: legacy finalize helper for mixed-ownership cleanup; retained publishing should use `bench-retained-rebuild`.
 - `make bench-mem-e2e-k3s`: full k3s e2e (matrix + rollout + charts).
 - `make bench-mem-idle-k1s`: idle baseline snapshot for k1s.
 - `make bench-mem-idle-k3s`: idle baseline snapshot for k3s.

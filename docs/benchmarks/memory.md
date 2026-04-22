@@ -22,6 +22,39 @@ Outputs
 - `combined/combined.{json,csv}`: merged rollups across labels (for charts and reports).
 - `charts/*.png`: control‑plane/system charts and per‑pod overhead plots.
 
+Current published benchmark set
+- Current published authoritative stamp: `r20260421-223436-authoritative2`
+- Current retained publish set keeps `110` rows: `40` frozen legacy rows and `70` current rows from the authoritative rerun.
+- Current published family names normalize to OCI-tagged forms:
+  - `r20260421-223436-authoritative2+podman+crun+rootless+cg2`
+  - `r20260421-223436-authoritative2+podman+crun+priv+cg2`
+  - `r20260421-223436-authoritative2+docker+runc+k1nd`
+  - `r20260421-223436-authoritative2+k3d+runc`
+  - `r20260421-223436-authoritative2+cri-runc-verify-run{1,2,3}+cri+containerd`
+- Use [Validated Procedures](validated-procedures.html#full-benchmark-rerun) for the exact copy/paste rerun sequence and [Retained Artifact Rebuild](#retained-artifact-rebuild) for the publish model.
+
+Jump to: [Latest benchmarks](#latest-benchmarks-auto) · [Comparison matrix](#latest-comparison-matrix) · [Charts](#charts) · [Validated rerun](#validated-full-clean-rerun)
+
+Interpreting results
+- Process PSS approximates unique+fair‑share memory for control‑plane processes.
+- Container `memory.current` shows cgroup‑resident memory per container (includes cache); we split into app vs non‑app containers.
+- Host system cgroups reflects only OS services under `system.slice` and `init.scope` (excludes user/container trees), summed over leaf cgroups to avoid double counting.
+- Per‑pod app footprint (rough) ≈ app_container_bytes / pod_count.
+- MemAvailable Δ validates totals at the kernel level: `delta = MemAvailable(before) − MemAvailable(after)` for the snapshot window. Small negatives are clamped to 0.
+
+Limitations
+- cgroup paths vary across distros; the snapshotter falls back gracefully.
+- If Docker is unavailable, container-level stats are skipped; process PSS is still reported.
+- USS is approximated from `Private_*` in `smaps_rollup`.
+
+Caveats
+- k3s (via k3d) enables Traefik by default; the provided Ingress uses class `traefik`. Keep ingress turned on in k1s for apples-to-apples, or disable both.
+- The echo image `ealen/echo-server:0.7.0` serves `/` on port 80 and has a lightweight memory footprint suitable for baseline comparisons.
+- If you prefer your demo image, push it to a registry and update `specs/examples/k3s-echo.yaml` accordingly.
+
+<details>
+<summary><strong>Quick Commands and Setup Workflows</strong></summary>
+
 Quick start
 1) Take a snapshot (k1s):
 ```
@@ -58,23 +91,6 @@ Tips for consistency
 
 OCI runtime note
 - Using Podman (`AE_RUNTIME_BACKEND=podman`) typically reduces idle control‑plane footprint on long‑lived hosts compared to Docker. Keep the runtime consistent across runs when comparing results.
-
-Interpreting results
-- Process PSS approximates unique+fair‑share memory for control‑plane processes.
-- Container `memory.current` shows cgroup‑resident memory per container (includes cache); we split into app vs non‑app containers.
-- Host system cgroups reflects only OS services under `system.slice` and `init.scope` (excludes user/container trees), summed over leaf cgroups to avoid double counting.
-- Per‑pod app footprint (rough) ≈ app_container_bytes / pod_count.
-- MemAvailable Δ validates totals at the kernel level: `delta = MemAvailable(before) − MemAvailable(after)` for the snapshot window. Small negatives are clamped to 0.
-
-Limitations
-- cgroup paths vary across distros; the snapshotter falls back gracefully.
-- If Docker is unavailable, container-level stats are skipped; process PSS is still reported.
-- USS is approximated from `Private_*` in `smaps_rollup`.
-
-Caveats
-- k3s (via k3d) enables Traefik by default; the provided Ingress uses class `traefik`. Keep ingress turned on in k1s for apples-to-apples, or disable both.
-- The echo image `ealen/echo-server:0.7.0` serves `/` on port 80 and has a lightweight memory footprint suitable for baseline comparisons.
-- If you prefer your demo image, push it to a registry and update `specs/examples/k3s-echo.yaml` accordingly.
 
 Automate a small matrix (k1s)
 - Run idle + scale-out snapshots in one go (requires controller running and echo example available):
@@ -125,6 +141,7 @@ Backfill OCI runtime into past snapshots
 make bench-mem-backfill-oci LABEL=r20251110+podman+rootless+cg2* REBUILD_DOCS=1
 ```
 - Detects the OCI runtime per-snapshot by reading `raw/podman_inspect.json` (`.OCIRuntime`) or `raw/docker_inspect.json` (`HostConfig.Runtime`), then writes it to `meta.json` and injects `+<oci>+` into the label (e.g., `+crun+`) without renaming folders.
+- `LABEL=...` matches the on-disk snapshot directories, so older reruns may still use the raw pre-OCI family shape here even though the rebuilt published labels normalize to `+podman+crun+...`, `+docker+runc+...`, or `+k3d+runc`.
 - Then recombines and regenerates charts. Add `OCI=runc` to force an override if needed. Use `GLOB='snapshots/r2025*/*'` to target explicit paths.
 
 Backfill just the latest label
@@ -156,9 +173,14 @@ End-to-end (k3s one-liner; cluster must be up)
 make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5
 ```
 
+</details>
+
 ## Validated Full Clean Rerun
 
 Use [Validated Procedures](validated-procedures.html#full-benchmark-rerun) for the exact full clean rerun command block and acceptance checks. That page is the published copy/paste source of truth for the validated split baseline + CRI flow.
+
+<details>
+<summary><strong>Show validated rerun procedure notes</strong></summary>
 
 Current rollout stage model
 - Baseline lanes (`rootless`, `rootful`, `k1nd`, `k3d`) publish `10` stages per family:
@@ -175,9 +197,14 @@ Current rollout stage model
 - CRI verify publishes the same `10` stages per run.
 - `during-warm` is additive diagnostic data and stays out of ranking weight; the docs/chart builders keep using the legacy stage set for rollup weighting.
 
+</details>
+
 ## Isolated Rollout Tuning Experiments
 
 Use the experiment runner when you want to test rollout quieting or strategy changes without touching the published benchmark path.
+
+<details>
+<summary><strong>Show experiment-only workflows</strong></summary>
 
 Experiment guarantees
 - Labels must contain `+exp+`.
@@ -305,35 +332,86 @@ BENCH_CRI_ROLLOUT_MAX_SURGE=0 \
 BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1 \
 BENCH_CRI_STEADY_QUIET=1 \
 RUNS="1" ./scripts/bench/run_cri_verify.sh
-grep -c "^${BASE}-run1+cri+crun+containerd-" combined/combined.csv
+grep -c "^${BASE}-run1+cri+containerd-" combined/combined.csv
 ```
 
 Important: set `BASE=...` / `RUNS=...` before the script name (or `export`
 them). `./scripts/bench/run_cri_verify.sh BASE=...` passes positional args and
 does not override the wrapper environment.
 
+</details>
+
 ## Retained Artifact Rebuild
 
 Published benchmark artifacts now come from an explicit retained set, not from every snapshot left under `snapshots/`.
+
+Current canonical retained rebuild
+- Current published authoritative stamp: `r20260421-223436-authoritative2`
+- Rebuild the current published set with:
+
+```bash
+make bench-retained-rebuild PROFILE=final STAMP=r20260421-223436-authoritative2 DELETE_DROPPED=1
+```
+
+- The rebuilt retained set contains `110` rows:
+  - `40` frozen legacy rows
+  - `40` fresh baseline rows
+  - `30` fresh CRI rows
+- The current published families normalize to:
+  - `r20260421-223436-authoritative2+podman+crun+rootless+cg2`
+  - `r20260421-223436-authoritative2+podman+crun+priv+cg2`
+  - `r20260421-223436-authoritative2+docker+runc+k1nd`
+  - `r20260421-223436-authoritative2+k3d+runc`
+  - `r20260421-223436-authoritative2+cri-runc-verify-run{1,2,3}+cri+containerd`
+
+<details>
+<summary><strong>Show fresh rerun publish flow and historical retained rebuilds</strong></summary>
 
 Retained publish model
 - Frozen reference import: `scripts/bench/data/legacy_20260203_frozen.csv`
 - Interim review profile: April 17, 2026 validated families only
 - Final publish profile: frozen `20260203` reference plus one fresh full-pass stamp
 
-Use the helper directly:
+Fresh rerun publish flow
 
 ```bash
-python scripts/bench/rebuild_retained_artifacts.py --profile interim-20260417 --delete-dropped
+python scripts/bench/rebuild_retained_artifacts.py --profile final --stamp "$STAMP" --delete-dropped
 ```
 
 Or via `make`:
 
 ```bash
+make bench-retained-rebuild PROFILE=final STAMP="$STAMP" DELETE_DROPPED=1
+```
+
+Fresh rerun expectations
+- Run the full baseline + CRI sequence with a fresh `STAMP`
+- The rebuilt retained set contains `110` rows:
+  - `40` frozen legacy rows
+  - `40` fresh baseline rows
+  - `30` fresh CRI rows
+- Published baseline families normalize to OCI-tagged names:
+  - `${STAMP}+podman+crun+rootless+cg2`
+  - `${STAMP}+podman+crun+priv+cg2`
+  - `${STAMP}+docker+runc+k1nd`
+  - `${STAMP}+k3d+runc`
+- Published CRI families remain:
+  - `${STAMP}+cri-runc-verify-run1+cri+containerd`
+  - `${STAMP}+cri-runc-verify-run2+cri+containerd`
+  - `${STAMP}+cri-runc-verify-run3+cri+containerd`
+
+Historical interim review (2026-04-17)
+- Use this only when you need to reconstruct the older April 17 retained review set.
+
+```bash
+python scripts/bench/rebuild_retained_artifacts.py --profile interim-20260417 --delete-dropped
+```
+
+```bash
 make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1
 ```
 
-Interim retained set
+Historical interim retained set
 - `r20260417-cri-runc-baseline-clean5-run1+cri+containerd`
 - `r20260417-cri-runc-baseline-clean5-run2+cri+containerd`
 - `r20260417-cri-runc-baseline-clean5-run3+cri+containerd`
@@ -343,25 +421,14 @@ Interim retained set
 - `r20260417-overlap-smoke-k1nd`
 - `r20260417-overlap-smoke-k3d`
 
-Interim rebuild expectations
+Historical interim rebuild expectations
 - `combined/combined.csv` contains `89` rows:
   - `40` frozen legacy rows
   - `24` retained `clean5` CRI rows
   - `25` retained overlap-smoke rows
 - superseded April 13/15 reruns and the CRI rollout-probe families are absent from the rebuilt artifacts
 
-Final publish expectations
-- Run the full baseline + CRI sequence with a fresh `STAMP`
-- then rebuild with:
-
-```bash
-python scripts/bench/rebuild_retained_artifacts.py --profile final --stamp "$STAMP" --delete-dropped
-```
-
-- final `combined/combined.csv` contains `110` rows:
-  - `40` frozen legacy rows
-  - `40` fresh baseline rows
-  - `30` fresh CRI rows
+</details>
 
 Result interpretation
 - Treat `combined/combined.csv` and `combined/combined.json` as the authoritative artifacts.
@@ -376,6 +443,9 @@ Result interpretation
 
 The helper scripts `scripts/bench/bench_env_prep.sh` and `scripts/bench/bench_env_teardown.sh` power both `make bench-mem-e2e-all` and `make bench-mem-e2e-minimal`:
 
+<details>
+<summary><strong>Show bench sandbox prep and teardown details</strong></summary>
+
 - Prep copies `specs/` into `state/bench-env/specs/`, removes every Deployment manifest except the allowlist, and leaves shared configs/secrets intact so relative `configRefs` still work.
 - A dedicated controller (log + pid under `state/bench-env/`) watches only that sandbox, so background demos or labs can’t steal ports or replicas.
 - The scripts set `AE_SPECS_DIR`, `AE_STATE_DB`, `AE_CADDY_DIR`, and the primary manifest/app name in an env file; each benchmark stage sources it before calling `run_matrix.sh`/`run_rollout_k1s.sh`.
@@ -383,16 +453,23 @@ The helper scripts `scripts/bench/bench_env_prep.sh` and `scripts/bench/bench_en
 - If rootful Podman containers with the `ae.app` label are still running, prep lists them and asks whether to remove them (set `BENCH_AUTOCLEAN_PODMAN=1` to auto-approve in CI, or `=0` to refuse). This prevents stray demos from holding ports like 18080.
 - Ingress writes are disabled by default for benches (`BENCH_DISABLE_INGRESS=1`). Set `BENCH_DISABLE_INGRESS=0` if a scenario actually needs Caddy updates; otherwise the sandbox exports `AE_DISABLE_INGRESS=1` and skips writing to `ops/dev/caddy/*`, avoiding permission chatter.
 
+</details>
+
 ## Convenience Targets
+
+<details>
+<summary><strong>Show convenience targets</strong></summary>
 
 - `make bench-mem-e2e-all` is still useful for a quick all-baselines sweep.
 - `make bench-mem-e2e-minimal` is the fast rootful-only sanity lane while iterating on manifests or Podman tuning.
-- `make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1` is the canonical retained-artifact rebuild for the April 17 validated interim set.
+- `make bench-retained-rebuild PROFILE=final STAMP=r20260421-223436-authoritative2 DELETE_DROPPED=1` rebuilds the current published retained set.
 - For release-grade reruns, prefer the validated full clean sequence above because it includes:
   - explicit pre-teardown
   - baseline + CRI split
   - retained-artifact rebuild against the frozen `20260203` reference import
-  - the k3d socket and CRI rollout fixes validated on 2026-04-17
+  - the baseline steady-state and CRI rollout fixes validated in the 2026-04-21/22 authoritative run
+
+</details>
 
 <details>
 <summary><strong>Troubleshooting: Rootful Podman readiness timeouts (host ports hang)</strong></summary>
