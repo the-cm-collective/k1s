@@ -14,19 +14,34 @@ permissions:
   contents: read
 
 jobs:
+  server-guard:
+    if: ${{ github.server_url != 'https://github.com' || env.ACT == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm supported actions host
+        run: echo "Running ci-docs on ${GITHUB_SERVER_URL:-unknown}"
+
   docs-verify:
+    needs: server-guard
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Trust Gitea cert for checkout
         run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v3
         with:

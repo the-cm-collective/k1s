@@ -14,6 +14,8 @@ Runner compatibility follows ADR 0008:
 - `actions/setup-python@v4`
 - repo-local shell helpers in `scripts/ci/lib.sh`
 
+The workflow files are intended to execute on the local Gitea Actions stack and under local `act` only. They now include an explicit server guard so an accidentally enabled GitHub mirror will keep the jobs skipped instead of running them there.
+
 PRs intentionally use a lean blocking gate. Heavy runtime and E2E lanes run outside the default PR path because they are slower, more environment-sensitive, and more appropriate for scheduled/manual validation.
 
 Representative commands behind the workflows:

@@ -26,7 +26,16 @@ permissions:
   contents: read
 
 jobs:
+  server-guard:
+    if: ${{ github.server_url != 'https://github.com' || env.ACT == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm supported actions host
+        run: echo "Running nightly-apishim on ${GITHUB_SERVER_URL:-unknown}"
+
   shim-smoke:
+    needs: server-guard
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'shim-smoke' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -37,13 +46,19 @@ jobs:
     steps:
       - name: Trust Gitea cert for checkout
         run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v3
       - name: Bootstrap local act venv
@@ -99,6 +114,7 @@ jobs:
           fi
 
   helm-smoke:
+    needs: server-guard
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'helm-smoke' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -110,13 +126,19 @@ jobs:
     steps:
       - name: Trust Gitea cert for checkout
         run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v3
       - name: Bootstrap local act venv
@@ -181,6 +203,7 @@ jobs:
           fi
 
   exec-streaming:
+    needs: server-guard
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'exec' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -191,13 +214,19 @@ jobs:
     steps:
       - name: Trust Gitea cert for checkout
         run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v3
       - name: Bootstrap local act venv
@@ -336,6 +365,7 @@ jobs:
           fi
 
   portforward:
+    needs: server-guard
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'portforward' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -346,13 +376,19 @@ jobs:
     steps:
       - name: Trust Gitea cert for checkout
         run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v3
       - name: Bootstrap local act venv
@@ -462,19 +498,26 @@ jobs:
           if [ -f /tmp/echo-server.pid ]; then kill "$(cat /tmp/echo-server.pid)" 2>/dev/null || true; fi
 
   ssa-rbac:
+    needs: server-guard
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'ssa-rbac' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Trust Gitea cert for checkout
         run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v3
       - name: Bootstrap local act venv
@@ -607,6 +650,7 @@ jobs:
           fi
 
   spdy-matrix:
+    needs: server-guard
     if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'spdy') && (github.event_name != 'workflow_dispatch' || github.event.inputs.runtime == matrix.runtime) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -622,13 +666,19 @@ jobs:
     steps:
       - name: Trust Gitea cert for checkout
         run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v3
       - name: Bootstrap local act venv
@@ -669,6 +719,7 @@ jobs:
           cat /tmp/k1s-ctrl-spdy.log || true
 
   live-openapi:
+    needs: server-guard
     if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'live-openapi') && (github.event_name != 'workflow_dispatch' || github.event.inputs.runtime == matrix.runtime) && (github.event_name != 'workflow_dispatch' || github.event.inputs.target == matrix.target) }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -702,13 +753,19 @@ jobs:
           fi
       - name: Trust Gitea cert for checkout
         run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v3
       - name: Bootstrap local act venv

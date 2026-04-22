@@ -40,11 +40,31 @@ ci_prepare_user_bin() {
   ci_append_path "$HOME/.local/bin"
 }
 
+ci_is_supported_actions_server() {
+  if [[ "${ACT:-}" == "true" ]]; then
+    return 0
+  fi
+  [[ "${GITHUB_SERVER_URL:-}" != "https://github.com" ]]
+}
+
+ci_require_supported_actions_server() {
+  if ci_is_supported_actions_server; then
+    return 0
+  fi
+  echo "This workflow is intended for Gitea Actions or local act only; refusing to run on ${GITHUB_SERVER_URL:-unknown}." >&2
+  return 1
+}
+
 ci_maybe_trust_gitea() {
+  if [[ "${ACT:-}" == "true" && "${GITEA_ACTIONS:-}" != "true" ]]; then
+    return 0
+  fi
+  ci_require_supported_actions_server
   local host="${GITEA_HOST:-https://gitea.core.home.arpa/}"
   if [[ -n "${GITEA_CA_B64:-}" ]]; then
     local cert_path="${RUNNER_TEMP:-/tmp}/gitea-ca.crt"
     echo "$GITEA_CA_B64" | base64 -d >"$cert_path"
+    git config --global "http.\"${host}\".sslVerify" true
     git config --global "http.\"${host}\".sslCAInfo" "$cert_path"
     ci_export_env GIT_SSL_CAINFO "$cert_path"
     ci_clear_env GIT_SSL_NO_VERIFY
