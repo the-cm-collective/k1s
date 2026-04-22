@@ -37,6 +37,9 @@ def test_podman_inspect_labels_classification(tmp_path: Path) -> None:
     summary = MA.aggregate(snap)
     assert summary["containers"]["app_mem_bytes"] == 1048576
     assert summary["containers"]["system_mem_bytes"] == 2097152
+    assert summary["containers"]["app_container_count"] == 1
+    assert summary["containers"]["system_container_count"] == 1
+    assert summary["containers"]["total_container_count"] == 2
 
 
 def test_host_system_cgroups_csv_drives_summary_top_breakdown(tmp_path: Path) -> None:
@@ -122,6 +125,64 @@ def test_runtime_attribution_for_cri_lane_filters_foreign_runtime_and_counts_shi
         "dockerd": 0,
         "other_runtime": 0,
     }
+    assert summary["overhead"]["runtime_process_group_stats"] == {
+        "containerd": {
+            "count": 1,
+            "pss_kb": 1024,
+            "pss_mib": 1.0,
+            "mean_pss_kb": 1024,
+            "mean_pss_mib": 1.0,
+        },
+        "containerd_shim": {
+            "count": 1,
+            "pss_kb": 2048,
+            "pss_mib": 2.0,
+            "mean_pss_kb": 2048,
+            "mean_pss_mib": 2.0,
+        },
+        "conmon": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+        "podman": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+        "passt": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+        "slirp4netns": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+        "dockerd": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+        "other_runtime": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+    }
     assert summary["overhead"]["runtime_process_top"] == [
         {
             "pid": 102,
@@ -184,6 +245,64 @@ def test_runtime_attribution_for_podman_lane_classifies_passt_separately(tmp_pat
         "slirp4netns": 0,
         "dockerd": 0,
         "other_runtime": 0,
+    }
+    assert summary["overhead"]["runtime_process_group_stats"] == {
+        "containerd": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+        "containerd_shim": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+        "conmon": {
+            "count": 1,
+            "pss_kb": 512,
+            "pss_mib": 0.5,
+            "mean_pss_kb": 512,
+            "mean_pss_mib": 0.5,
+        },
+        "podman": {
+            "count": 1,
+            "pss_kb": 1024,
+            "pss_mib": 1.0,
+            "mean_pss_kb": 1024,
+            "mean_pss_mib": 1.0,
+        },
+        "passt": {
+            "count": 1,
+            "pss_kb": 2048,
+            "pss_mib": 2.0,
+            "mean_pss_kb": 2048,
+            "mean_pss_mib": 2.0,
+        },
+        "slirp4netns": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+        "dockerd": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
+        "other_runtime": {
+            "count": 0,
+            "pss_kb": 0,
+            "pss_mib": 0.0,
+            "mean_pss_kb": 0,
+            "mean_pss_mib": 0.0,
+        },
     }
     assert summary["overhead"]["runtime_process_top"] == [
         {

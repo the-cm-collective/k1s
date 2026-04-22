@@ -343,8 +343,19 @@ def _runtime_group_key(comm: str, cmdline: str | None = None) -> str | None:
 
 
 def _runtime_process_groups(procs: List[ProcRollup], mode: str, meta: Dict[str, object]) -> Dict[str, int]:
+    stats = _runtime_process_group_stats(procs, mode, meta)
+    return {key: int(group.get("pss_kb", 0) or 0) for key, group in stats.items()}
+
+
+def _runtime_process_group_stats(
+    procs: List[ProcRollup],
+    mode: str,
+    meta: Dict[str, object],
+) -> Dict[str, Dict[str, object]]:
     allowed_groups = _runtime_lane_groups(mode, meta)
-    totals = {key: 0 for key in RUNTIME_PROCESS_GROUP_KEYS}
+    totals: Dict[str, Dict[str, object]] = {
+        key: {"count": 0, "pss_kb": 0} for key in RUNTIME_PROCESS_GROUP_KEYS
+    }
     for pr in procs:
         group = _runtime_group_key(pr.comm or "", pr.cmdline)
         if group is None:
@@ -354,8 +365,21 @@ def _runtime_process_groups(procs: List[ProcRollup], mode: str, meta: Dict[str, 
                 continue
         elif group not in allowed_groups:
             continue
-        totals[group] += int(pr.pss_kb or 0)
-    return totals
+        totals[group]["count"] = int(totals[group]["count"]) + 1
+        totals[group]["pss_kb"] = int(totals[group]["pss_kb"]) + int(pr.pss_kb or 0)
+    stats: Dict[str, Dict[str, object]] = {}
+    for key, group in totals.items():
+        count = int(group["count"] or 0)
+        pss_kb = int(group["pss_kb"] or 0)
+        mean_pss_kb = int(round(pss_kb / count)) if count > 0 else 0
+        stats[key] = {
+            "count": count,
+            "pss_kb": pss_kb,
+            "pss_mib": round(pss_kb / 1024.0, 2),
+            "mean_pss_kb": mean_pss_kb,
+            "mean_pss_mib": round(mean_pss_kb / 1024.0, 2),
+        }
+    return stats
 
 
 def _runtime_process_top(
@@ -549,6 +573,7 @@ def aggregate(snapshot_dir: Path) -> Dict:
     # Containers
     containers = _read_containers_csv(raw)
     app_bytes = system_bytes = 0
+    app_container_count = system_container_count = 0
     # Track seen cgroup leaves to avoid double-counting when multiple containers
     # share the same cgroup (common with rootless engines without full delegation).
     seen_app_cg: set[str] = set()
@@ -603,12 +628,14 @@ def aggregate(snapshot_dir: Path) -> Dict:
                         is_app = True
             # Deduplicate by cgroup path when present; fall back to naive sum
             if is_app:
+                app_container_count += 1
                 if cg_path:
                     if cg_path in seen_app_cg:
                         continue
                     seen_app_cg.add(cg_path)
                 app_bytes += mem
             else:
+                system_container_count += 1
                 if cg_path:
                     if cg_path in seen_sys_cg:
                         continue
@@ -628,7 +655,10 @@ def aggregate(snapshot_dir: Path) -> Dict:
 
     host_system_rows = _host_system_cgroups_rows(raw)
     host_system_bytes = _sum_host_system_cgroups_bytes(host_system_rows)
-    runtime_process_groups = _runtime_process_groups(procs, mode, meta)
+    runtime_process_group_stats = _runtime_process_group_stats(procs, mode, meta)
+    runtime_process_groups = {
+        key: int(group.get("pss_kb", 0) or 0) for key, group in runtime_process_group_stats.items()
+    }
     runtime_process_top = _runtime_process_top(procs, mode, meta)
     mem_avail_before = _read_free_available(raw / "free_before.txt")
     mem_avail_after = _read_free_available(raw / "free_after.txt")
@@ -675,6 +705,9 @@ def aggregate(snapshot_dir: Path) -> Dict:
             "app_mem_bytes": app_bytes,
             "system_mem_bytes": system_bytes,
             "total_mem_bytes": app_bytes + system_bytes,
+            "app_container_count": int(app_container_count),
+            "system_container_count": int(system_container_count),
+            "total_container_count": int(app_container_count + system_container_count),
         },
         "overhead": {
             # Historical field (misleading name): retained for backward compatibility
@@ -692,6 +725,7 @@ def aggregate(snapshot_dir: Path) -> Dict:
             "host_system_cgroups_top": _top_host_system_cgroups(host_system_rows),
             # Additive runtime attribution for internal benchmark analysis.
             "runtime_process_groups": runtime_process_groups,
+            "runtime_process_group_stats": runtime_process_group_stats,
             "runtime_process_top": runtime_process_top,
         },
         "mem_available": {

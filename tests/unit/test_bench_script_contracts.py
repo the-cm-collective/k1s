@@ -609,8 +609,13 @@ def test_rollout_tuning_experiment_runner_stays_off_the_publish_path() -> None:
 
     assert "state/bench-experiments/" in text
     assert '*"+exp+"*' in text
-    assert "BENCH_EXPERIMENT_STEADY_QUIET=${BENCH_EXPERIMENT_STEADY_QUIET:-0}" in text
-    assert "BENCH_EXPERIMENT_STEADY_QUIET    enable steady quiet hooks (default: 0)" in text
+    assert "BENCH_EXPERIMENT_STEADY_QUIET=${BENCH_EXPERIMENT_STEADY_QUIET:-}" in text
+    assert "BENCH_EXPERIMENT_STEADY_QUIET    enable steady quiet hooks" in text
+    assert "default: 1 for cri/rootless/rootful, 0 for k1nd" in text
+    assert 'if [[ -z "$BENCH_EXPERIMENT_STEADY_QUIET" ]]; then' in text
+    assert 'cri|rootless|rootful)' in text
+    assert 'BENCH_EXPERIMENT_STEADY_QUIET=1' in text
+    assert 'BENCH_EXPERIMENT_STEADY_QUIET=0' in text
     assert "BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE" in text
     assert "BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE" in text
     assert "build_phase_trace_cmd()" in text
@@ -734,7 +739,9 @@ def test_mem_aggregate_exports_host_system_top_breakdown() -> None:
     assert "host_system_cgroups.csv" in text
     assert '"host_system_cgroups_top": _top_host_system_cgroups(host_system_rows)' in text
     assert '"runtime_process_groups": runtime_process_groups' in text
+    assert '"runtime_process_group_stats": runtime_process_group_stats' in text
     assert '"runtime_process_top": runtime_process_top' in text
+    assert '"app_container_count": int(app_container_count)' in text
     assert '"passt"' in text
     assert '"slirp4netns"' in text
 
@@ -747,4 +754,10 @@ def test_audit_runtime_attribution_reads_runtime_group_and_host_top_fields() -> 
     assert 'containerd_shim' in text
     assert 'passt' in text
     assert 'slirp4netns' in text
+    assert 'runtime_group_counts' in text
+    assert 'runtime_group_mean_mib' in text
+    assert 'containerd_shim_mean_mib' in text
+    assert 'containerd_shim_baseline_mib' in text
+    assert 'containerd_shim_excess_mib' in text
+    assert 'containerd_shim_excess_count' in text
     assert 'top_host_services' in text

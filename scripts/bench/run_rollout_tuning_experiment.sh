@@ -29,7 +29,8 @@ Environment:
                                    optional rollout maxSurge override
   BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE
                                    optional rollout maxUnavailable override
-  BENCH_EXPERIMENT_STEADY_QUIET    enable steady quiet hooks (default: 0)
+  BENCH_EXPERIMENT_STEADY_QUIET    enable steady quiet hooks
+                                   default: 1 for cri/rootless/rootful, 0 for k1nd
   EXPERIMENT_STEADY_TIMEOUT        quiet helper timeout seconds (default: 20)
   EXPERIMENT_STEADY_DELAY          quiet helper delay seconds (default: 2)
   EXPERIMENT_STEADY_POLLS          quiet helper stable polls (default: 3)
@@ -63,7 +64,7 @@ REPLICAS=${REPLICAS:-1,5,10}
 ROLL_REPLICAS=${ROLL_REPLICAS:-2,5}
 DURATION=${DURATION:-30}
 WAIT_READY_TRIES=${WAIT_READY_TRIES:-300}
-BENCH_EXPERIMENT_STEADY_QUIET=${BENCH_EXPERIMENT_STEADY_QUIET:-0}
+BENCH_EXPERIMENT_STEADY_QUIET=${BENCH_EXPERIMENT_STEADY_QUIET:-}
 BENCH_EXPERIMENT_ROLLOUT_STRATEGY=${BENCH_EXPERIMENT_ROLLOUT_STRATEGY:-}
 BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=${BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE:-}
 BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=${BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE:-}
@@ -78,6 +79,17 @@ py_path="${PYTHONPATH:-$ROOT_DIR/src}"
 
 require_lane
 have "$python_bin" || { echo "[bench-exp] missing python" >&2; exit 2; }
+
+if [[ -z "$BENCH_EXPERIMENT_STEADY_QUIET" ]]; then
+  case "$lane" in
+    cri|rootless|rootful)
+      BENCH_EXPERIMENT_STEADY_QUIET=1
+      ;;
+    *)
+      BENCH_EXPERIMENT_STEADY_QUIET=0
+      ;;
+  esac
+fi
 
 ensure_exp_label() {
   local raw="$1"
