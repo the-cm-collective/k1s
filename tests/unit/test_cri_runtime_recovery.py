@@ -1300,6 +1300,13 @@ def test_ensure_main_container_recovers_from_reserved_container_name(monkeypatch
         "_remove_pod_sandbox",
         lambda pod_id, **_kwargs: removed.append(str(pod_id)),
     )
+    monkeypatch.setattr(
+        runtime,
+        "_cleanup_replica_pod_sandboxes",
+        lambda _replica_id, *, extra_pod_ids=None, **_kwargs: removed.extend(
+            [] if extra_pod_ids is None else [str(pod_id) for pod_id in extra_pod_ids]
+        ),
+    )
 
     def _run_pod(
         _manifest,
