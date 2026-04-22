@@ -1,6 +1,10 @@
-# API Shim Compatibility Matrix (2026-02-14)
+# API Shim Compatibility Matrix
 
 Legend: ✅ supported; ⚠️ partial/limited; 🚧 planned.
+
+For a human-readable landing page and browser-friendly schema links, see [API Shim](api-shim.html).
+
+For staged implementation work and open gaps, see [API Shim Roadmap](apishim-roadmap.html).
 
 ## Core resources
 - Namespaces, ConfigMaps, Secrets, ServiceAccounts: ✅ CRUD, watch, managedFields apply/patch.

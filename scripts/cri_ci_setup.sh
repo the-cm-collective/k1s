@@ -7,8 +7,9 @@ if [[ "${ACT:-}" == "true" ]]; then
 fi
 
 endpoint="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
-cni_version="${AE_CNI_VERSION:-1.0.0}"
+cni_version="${AE_CNI_VERSION:-0.4.0}"
 cni_force="${AE_CNI_FORCE:-1}"
+crictl_version="${CRICTL_VERSION:-v1.30.0}"
 
 run_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -18,14 +19,59 @@ run_root() {
   fi
 }
 
+crictl_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *)
+      echo "unsupported arch for crictl install: $(uname -m)" >&2
+      return 1
+      ;;
+  esac
+}
+
+install_crictl_binary() {
+  local arch url tmp
+  arch="$(crictl_arch)"
+  url="https://github.com/kubernetes-sigs/cri-tools/releases/download/${crictl_version}/crictl-${crictl_version}-linux-${arch}.tar.gz"
+  tmp="$(mktemp -d)"
+
+  if command -v curl >/dev/null 2>&1; then
+    run_root curl -fsSL "$url" -o "$tmp/crictl.tar.gz"
+  elif command -v wget >/dev/null 2>&1; then
+    run_root wget -qO "$tmp/crictl.tar.gz" "$url"
+  else
+    echo "neither curl nor wget found; cannot install crictl release" >&2
+    return 1
+  fi
+
+  run_root tar -C /usr/local/bin -xzf "$tmp/crictl.tar.gz"
+  run_root chmod +x /usr/local/bin/crictl
+  rm -rf "$tmp"
+}
+
 echo "Installing containerd, CNI plugins, and crictl (via cri-tools)..."
-run_root apt-get update
-run_root apt-get install -y containerd containernetworking-plugins cri-tools iptables
+run_root env DEBIAN_FRONTEND=noninteractive apt-get update
+run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y containerd containernetworking-plugins iptables
+
+if ! command -v crictl >/dev/null 2>&1; then
+  if ! run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y cri-tools; then
+    echo "cri-tools package not found; installing crictl ${crictl_version} binary release..."
+    install_crictl_binary
+  fi
+fi
 
 echo "Ensuring containerd config exists..."
 run_root mkdir -p /etc/containerd
 if [[ ! -f /etc/containerd/config.toml ]]; then
-  run_root containerd config default | run_root tee /etc/containerd/config.toml >/dev/null
+  run_root sh -c 'containerd config default > /etc/containerd/config.toml'
+fi
+
+if ! run_root containerd --config /etc/containerd/config.toml config dump >/dev/null 2>&1; then
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  echo "Detected invalid containerd config; regenerating default (backup suffix: ${ts})..."
+  run_root cp /etc/containerd/config.toml "/etc/containerd/config.toml.bak.${ts}" || true
+  run_root sh -c 'containerd config default > /etc/containerd/config.toml'
 fi
 
 echo "Configuring crictl endpoint..."

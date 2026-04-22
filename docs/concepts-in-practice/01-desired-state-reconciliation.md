@@ -36,12 +36,12 @@ sequenceDiagram
 ```
 
 ### Design
-In k1s, the controller imports specs, computes a spec hash to detect changes, creates a revision, and drives the runtime to match that revision. Events are emitted at each stage (ApplyStarted, ApplyCompleted) so operators can see the loop's decisions. This design separates the "what" (spec) from the "how" (runtime adapter), and makes the controller robust to restarts because revisions are persisted.
+In k1s, the controller imports specs, computes a spec hash to detect changes, creates a revision, and drives the runtime to match that revision. Events are emitted at each stage (ApplyStarted, ApplyCompleted) so operators can see the loop's decisions. This design separates the "what" (spec) from the "how" (runtime adapter), and makes the controller robust to restarts because revisions are persisted in the state backend (SQLite default; Postgres/etcd durable lanes supported).
 
 ```mermaid
 flowchart TB
   Specs[specs/ directory] --> Controller[Controller loop]
-  Controller --> State[SQLite state store]
+  Controller --> State[State store lanes]
   Controller --> Runtime[Runtime adapter]
   Runtime --> Containers[Running containers]
   Controller --> Events[Events + metrics]

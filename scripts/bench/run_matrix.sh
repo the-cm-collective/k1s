@@ -54,6 +54,9 @@ sudo_env_base=(
 sudo_env_clean=(
   "-i"
   "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+  "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+  "NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}"
+  "NIX_LD=${NIX_LD:-}"
 )
 sudo_env_snapshot=(
   "${sudo_env_base[@]}"
@@ -318,9 +321,14 @@ wait_ready() {
   fi
   local tries=${WAIT_READY_TRIES:-$default_tries}
   local delay=${WAIT_READY_DELAY:-2}
+  local stable_polls=${BENCH_READY_STABLE_POLLS:-2}
+  local stable_hits=0
   info "[matrix] wait_ready name=$name target=$want tries=$tries delay=${delay}s"
   local use_runtime_wait="${BENCH_WAIT_RUNTIME:-0}"
   local backend="${AE_RUNTIME_BACKEND:-podman}"
+  if (( stable_polls < 1 )); then
+    stable_polls=1
+  fi
   while (( tries-- > 0 )); do
     if [[ "$use_runtime_wait" == "1" ]]; then
       local count=0
@@ -340,52 +348,115 @@ wait_ready() {
         use_runtime_wait="0"
       fi
       if [[ "$use_runtime_wait" == "1" && "$count" -ge "$want" ]]; then
-        return 0
+        stable_hits=$((stable_hits + 1))
+        if (( stable_hits >= stable_polls )); then
+          return 0
+        fi
+      else
+        stable_hits=0
       fi
       sleep "$delay"
       continue
     fi
     local js
     if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
-    local ready desired
+    local ready desired live revision_status
     ready=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("ready_replicas",0))') || ready=0
     desired=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("desired_replicas",0))') || desired=0
-    if [[ "$ready" == "$want" && "$desired" == "$want" ]]; then return 0; fi
+    live=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("live_replicas",0))') || live=0
+    revision_status=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("revision_status",""))') || revision_status=""
+    if [[ "$ready" == "$want" && "$desired" == "$want" && "$live" == "$want" && "$revision_status" == "ready" ]]; then
+      stable_hits=$((stable_hits + 1))
+      if (( stable_hits >= stable_polls )); then
+        return 0
+      fi
+    else
+      stable_hits=0
+    fi
     sleep "$delay"
   done
   echo "timeout waiting for $name ready=$want" >&2
   return 1
 }
 
+settle_current_revision() {
+  local name="$1"; local want="$2"
+  local settle_delay=${BENCH_SETTLE_DELAY:-2}
+  info "settle current revision name=$name target=$want"
+  ae scale "$name" --replicas "$want" >/dev/null
+  wait_ready "$name" "$want"
+  if (( settle_delay > 0 )); then
+    info "settle delay name=$name target=$want sleep=${settle_delay}s"
+    sleep "$settle_delay"
+  fi
+}
+
+validate_idle_snapshot() {
+  local snapshot_path="$1"
+  local name="$2"
+  if [[ "${BENCH_IDLE_VALIDATE_ZERO_APP:-0}" != "1" ]]; then
+    return 0
+  fi
+  if [[ -z "$snapshot_path" ]]; then
+    echo "[matrix] idle snapshot validation requested but snapshot path was empty" >&2
+    return 1
+  fi
+  info "validate idle snapshot path=${snapshot_path} app=${name}"
+  "$python_bin" scripts/bench/check_idle_snapshot.py "$snapshot_path" --app-name "$name"
+}
+
+run_pre_snapshot_hook() {
+  local stage="$1"
+  local replicas="$2"
+  local label="$3"
+  local cmd="${4:-}"
+  if [[ -z "$cmd" ]]; then
+    return 0
+  fi
+  info "pre-snapshot hook stage=${stage} replicas=${replicas} label=${label}"
+  export BENCH_SNAPSHOT_LABEL="$label"
+  export BENCH_SNAPSHOT_STAGE="$stage"
+  export BENCH_SNAPSHOT_REPLICAS="$replicas"
+  export BENCH_BACKEND="${AE_RUNTIME_BACKEND:-podman}"
+  export BENCH_APP_NAME="$app_name"
+  bash -lc "$cmd"
+}
+
 # Idle snapshot (skippable)
 if [[ "${SKIP_IDLE:-0}" != "1" ]]; then
   info "idle snapshot"
+  idle_snapshot_path=""
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
+      idle_snapshot_path="$(sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration")"
     else
-      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+      idle_snapshot_path="$(sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true)"
     fi
   else
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration"
+      idle_snapshot_path="$(scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration")"
     else
-      scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true
+      idle_snapshot_path="$(scripts/bench/mem_snapshot.sh --mode "$mode" --label "${label_suite}-idle" --duration "$duration" || true)"
     fi
   fi
+  if [[ -n "$idle_snapshot_path" ]]; then
+    echo "$idle_snapshot_path"
+  fi
+  validate_idle_snapshot "$idle_snapshot_path" "$app_name"
 fi
 
 # Ensure app applied
 info "apply manifest: $manifest"
-ae apply -f "$manifest" || true
+ae apply -f "$manifest"
 
 IFS=',' read -r -a reps <<< "$replicas_csv"
 for n in "${reps[@]}"; do
   n=${n// /}
   [[ -z "$n" ]] && continue
   info "scale $app_name to $n"
-  ae scale "$app_name" --replicas "$n" || true
-  wait_ready "$app_name" "$n" || true
+  ae scale "$app_name" --replicas "$n"
+  wait_ready "$app_name" "$n"
+  settle_current_revision "$app_name" "$n"
   # Optional: prune older revisions to avoid multi-revision accumulation in snapshots
   if [[ "${PRUNE_OLD:-0}" == "1" ]]; then
     if command -v ./scripts/bench/prune_old_revisions.sh >/dev/null 2>&1; then
@@ -401,6 +472,7 @@ for n in "${reps[@]}"; do
     info "skip existing snapshot label=${label_suite}-pods-${n}"
     continue
   fi
+  run_pre_snapshot_hook "pods-${n}" "$n" "${label_suite}-pods-${n}" "${BENCH_PRE_STEADY_SNAPSHOT_CMD:-}"
   info "snapshot label=${label_suite}-pods-${n}"
   if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
     if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then

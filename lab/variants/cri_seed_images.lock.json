@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "seed_version": "2026-04-06-v4",
+  "platform": "linux/amd64",
+  "images": {
+    "core": [
+      "docker.io/library/registry:2",
+      "registry.k8s.io/pause:3.9",
+      "quay.io/coreos/etcd:v3.5.13",
+      "docker.io/library/nats:2.10",
+      "docker.io/library/postgres:16",
+      "docker.io/envoyproxy/envoy:v1.29-latest",
+      "docker.io/rapiz1/rathole:v0.5.0",
+      "docker.io/library/caddy:2.8",
+      "docker.io/library/demo-shell:latest",
+      "localhost:5001/k1s-apishim:dev"
+    ],
+    "edge": [
+      "docker.io/library/registry:2",
+      "registry.k8s.io/pause:3.9",
+      "docker.io/library/nats:2.10",
+      "docker.io/rapiz1/rathole:v0.5.0",
+      "docker.io/library/demo-shell:latest"
+    ]
+  }
+}

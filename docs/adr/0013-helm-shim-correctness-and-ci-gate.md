@@ -27,6 +27,6 @@ Owners: apishim/ci/docs
 ## References
 - `scripts/helm_shim_demo.sh`
 - `scripts/ci/helm-shim-smoke.sh`
-- `.github/workflows/helm-shim-smoke.yml`
+- `.github/workflows/nightly-apishim.yml`
 - `docs/guides/helm-shim.md`
 - `docs/reference/apishim-compatibility-matrix.md`

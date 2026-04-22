@@ -1,21 +1,23 @@
 # k1s Overview
 
-k1s is a small, multi‑node application engine that now supports a controller + worker agents, Service VIPs over an overlay network, and a Kubernetes‑compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.
+k1s is a small, multi‑node application engine with a controller + worker agents, Service VIPs over an overlay network, first-class NATS/JetStream control-plane transport, and a Kubernetes-compatible API shim. You can declare apps in YAML, run them on one or more hosts (Podman preferred; Docker supported), and expose them through Caddy or your own proxy while keeping resource usage low.
 
 Status: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.
 
 - Goal: predictable rollouts and Kubernetes‑style ergonomics on 1–4 nodes without a heavyweight control plane.
 - Non‑goal: full upstream conformance or cloud‑provider controllers; we target a curated “compatibility” subset instead.
 
-## Current State (Feb 2026)
+## Current State
 
 - Multi‑node: controller manages registered nodes with heartbeats, cordon/drain, and a minimal scheduler that respects `nodeSelector`, taints/tolerations, topology spread, and storage pinning. Agents expose runtime exec/logs/probes over mTLS; Service VIPs ride a WireGuard/VXLAN overlay with HAProxy provider. HostPorts are still supported for single‑node edge cases.
+- Control-plane transport: the controller can reach agents through `direct`, `nats-core`, or `nats-js` transport lanes depending on profile and topology. `nats-js` is the durable hub path for `k1s-core`/`k1s-edge-core`, while `nats-core` remains available for lightweight `work.pull` pairings (`k1s-core-edge`/`k1s-edge`).
 - Networking/Ingress: Service CIDR + overlay provider (`AE_SERVICE_PROVIDER=overlay`) with ClusterIP allocation, EndpointSlice projection, and Caddy templates that prefer Service VIPs. Bridge provider remains for single‑node or no‑overlay labs.
-- State: SQLite by default; Postgres supported for shim HA and multi‑node durability (`AE_STATE_DSN` / `AE_APISHIM_DSN`).
+- State: SQLite remains the lightweight local default, etcd is the durable authority lane for strict CRI and HA paths, and external state-store wiring remains available where deployments need externalized persistence.
 - Runtime backends: Podman (default), Docker fallback, and CRI/containerd for CRI-native nodes (recommended via `make k1s-core-cri` and related `k1s-*-cri` profile targets).
 - API surface: native HTTP API plus the Kubernetes API shim (`AE_APISHIM_ENABLE=1 python -m ae.apishim serve`) covering Deployments/Services/Ingress/HPA/RBAC with SSA/patch support; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated as Deployment-like apps (see `docs/reference/apishim-compatibility-matrix.md`).
-- Tooling: `k1s` kubectl‑style wrapper, `ae nodes` for inventory/cordon, `ae plan` for placement hints, `export-k8s` and `k8s-report` for parity/compliance, dashboard at `/dashboard` (direct on `:9108`, or `https://dash.home.arpa:8443/dashboard` in demos), and `/nodes` + enriched `/metrics` for node/service visibility.
-- Footprint: recent Feb 2026 idle benchmarks continue to show ~85-90 MiB PSS for controller+API on Podman+crun rootless, and ~170-180 MiB PSS for k1nd (Docker + Caddy). See `docs/benchmarks/memory.md` for the latest numbers.
+- Inference fabric: experimental `InferenceCell` and `InferenceCellSet` controllers provide a controller-owned lane for distributed inference placement, reservation, and session orchestration across named members and sites. The formal roadmap targets AI Max+ 395-first execution cells behind a provider-facing HA edge, with an exact public hardware baseline and cluster-prep guide documented separately.
+- Tooling: `k1s` kubectl‑style wrapper, `ae nodes` for inventory/cordon, `ae plan` for placement hints, `export-k8s` and `k8s-report` for parity/compliance, the local simple dashboard for demo/dev flows, the retained HA advanced dashboard surface for HA validation, and `/nodes` + enriched `/metrics` for node/service visibility. Use [Demos & Examples](examples.html) and [Validated Procedures](validated-procedures.html) for the current user-test flows and verified command readouts.
+- Benchmarks and validated readouts: current footprint numbers live in [Benchmarks](benchmarks.html), and the exact verified operator/user-test command sequences live in [Validated Procedures](validated-procedures.html).
 
 ## Features (High‑Level)
 
@@ -31,6 +33,7 @@ Status: k1s is under very active development and has not reached a fully stable 
 - Observability: Prometheus metrics with node/service gauges, events, `/nodes`, `/system`, dashboard.
 - CLIs: `ae` (native), `k1s` (kubectl‑like wrapper), `ae nodes` for inventory, `ae plan` for placement, `ae tls` helpers.
 - Kubernetes API shim: `ae.apishim serve` with RBAC/SSA/patch, OpenAPI v2/v3, port-forward for pods/services, compatibility matrix.
+- Inference fabric: `ae cell`, `ae cellset`, and `ae fabric` for distributed inference execution and session inspection.
 - K8s helpers: `export-k8s`, `k8s-check`, and `k8s-report` for parity/compliance.
 
 ### Architecture at a Glance (Diagram)
@@ -38,18 +41,18 @@ Status: k1s is under very active development and has not reached a fully stable 
 ```mermaid
 flowchart LR
   A[Specs/*.yaml] -->|load| C[Controller]
+  CLI[ae / k1s CLI] -->|apply / inspect| C
   C -->|schedule| SCH[Scheduler]
-  SCH -->|place| N1[Node Agent]
-  SCH -->|place| N2[Node Agent]
-  C -->|write| S[(SQLite/Postgres)]
-  C -->|service VIPs| SV[Service Controller]
-  SV -->|overlay endpoints| O[Overlay/HAProxy]
-  C -->|render+reload| I[Caddy Ingress]
-  N1 -->|ensure/exec/logs| R1[(Runtime)]
-  N2 -->|ensure/exec/logs| R2[(Runtime)]
-  C -->|expose| API[HTTP API + API Shim]
-  CLI[ae / k1s CLI] -->|apply/rollback| C
-  CLI -->|kubectl/helm| API
+  SCH --> T["Transport<br/>direct, nats-core, nats-js"]
+  T --> N[Node Agents]
+  N --> R[(Runtime)]
+  C --> ST["State Store<br/>SQLite, etcd, external store"]
+  C --> SV[Service Controller]
+  SV --> O[Overlay / Provider Path]
+  C --> API[HTTP API]
+  C --> SHIM[API Shim]
+  K[kubectl / helm] --> SHIM
+  C --> I[Optional Ingress]
 ```
 
 ## Requirements
@@ -131,8 +134,13 @@ Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/de
 
 ## Further Reading
 
-- Runbook: `docs/ops/runbook.md`
-- End-to-End Guide: `docs/guides/e2e.md`
-- HTTP API: `docs/reference/http-api.md`
-- Kubernetes API shim + compatibility matrix: `docs/wip/conformance.md`, `docs/reference/apishim-compatibility-matrix.md`
-- Architecture (detailed): `docs/reference/architecture.md`
+- Project philosophy and cognitive safeguards: [Project Philosophy](project-philosophy.html), [Cognitive Welfare and Continuity](cognitive-welfare-and-continuity.html)
+- Runbook and HA ops: [HA Cluster Bring-Up](ha-cluster-bring-up.html), [Operations Runbook](runbook.html), [VM Variant Runbook](vm-variant-runbook.html), [HA Closeout](ha-closeout.html)
+- End-to-End Guide: [E2E Guide](e2e.html)
+- Runtime Profiles: [Runtime Profiles](runtime-profiles.html)
+- Multi-node + ingress mode validation: [Multi-Node Lab](multinode-lab.html), [Ingress Capability Test Sequence](ingress-capability-test-sequence.html)
+- HTTP API: [HTTP API](http-api.html)
+- Kubernetes API shim + compatibility matrix: [API Shim Roadmap](apishim-roadmap.html), [API Shim Compatibility Matrix](apishim-compatibility-matrix.html)
+- Inference fabric current state: [Inference Fabric](inference-fabric.html)
+- Fabric design and phase path: [HA Control Plane Roadmap](high-availability-control-plane.html), [Fabric Deployment Topology](fabric-deployment-topology.html), [Fabric Control Plane](fabric-control-plane.html), [Distributed Compute Fabric Roadmap](distributed-compute-fabric.html)
+- Architecture (detailed): [Architecture](architecture.html)

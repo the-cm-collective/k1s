@@ -1,0 +1,254 @@
+name: ci-core
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev, feat/**]
+
+concurrency:
+  group: ci-core-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  server-guard:
+    if: ${{ github.server_url != 'https://github.com' || env.ACT == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm supported actions host
+        run: echo "Running ci-core on ${GITHUB_SERVER_URL:-unknown}"
+
+  changes:
+    needs: server-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      docs_changed: ${{ steps.classify.outputs.docs_changed }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Classify changed files
+        id: classify
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: bash scripts/ci/classify_changes.sh
+
+  unit-and-lint:
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install project
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+      - name: Ruff advisory
+        run: |
+          echo "Repo-wide Ruff enforcement is deferred while existing lint debt is reduced."
+          echo "The previous CI did not block on Ruff, and the current test tree is not clean enough"
+          echo "for repo-wide E/F/I/UP/B/C4/SIM/ARG/S rules to be a required gate yet."
+      - name: Unit tests
+        env:
+          AE_RUNTIME_BACKEND: stub
+          NO_PROXY: "127.0.0.1,localhost"
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+        run: pytest --maxfail=1 --disable-warnings -q
+
+  planner-and-k8s-export:
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install project
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+      - name: Planner gate
+        env:
+          AE_RUNTIME_BACKEND: stub
+        run: bash tools/plan_ci.sh
+      - name: Kubernetes export gate
+        run: |
+          run_k8s_check() {
+            local rc=0
+            python -m ae.cli k8s-check "$@" || rc=$?
+            if [ "$rc" -eq 3 ]; then
+              echo "k8s-check returned warning-only exit 3 for: $*"
+              return 0
+            fi
+            return "$rc"
+          }
+
+          make k8s-smoke
+          run_k8s_check -f specs/examples/echo.yaml --policy strict
+          run_k8s_check -f specs/examples/multi-replica-echo.yaml --policy strict
+      - name: OpenAPI drift gate
+        run: scripts/validate-openapi.sh
+
+  versioning:
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+      - name: Validate versioning
+        run: python scripts/check_versioning.py
+
+  release-image-smoke:
+    needs: changes
+    if: ${{ needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_configure_docker_env
+      - name: Build OCI release images smoke
+        env:
+          RELEASE_REF_NAME: ci-smoke
+          RELEASE_REVISION: ${{ github.sha }}
+          RELEASE_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: scripts/release/build_oci_artifacts.sh /tmp/release-images

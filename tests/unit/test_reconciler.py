@@ -53,6 +53,31 @@ class StubRuntime(RuntimeAdapter):
             ],
         )
 
+    def list_containers_info(self) -> list[dict]:
+        return []
+
+
+class StubDockerIngressRuntime(StubRuntime):
+    def __init__(self) -> None:
+        super().__init__()
+        self._network_name = "dev_default"
+
+    def list_containers_info(self) -> list[dict]:
+        return [
+            {
+                "name": "ae-demo-rev1-0",
+                "labels": {
+                    "ae.app": "demo",
+                    "ae.pod_name": "demo-rev1-0",
+                    "ae.revision": "1",
+                },
+                "host_ports": [32000],
+                "port_map": {8080: 32000},
+                "pod_ip": None,
+                "running": True,
+            }
+        ]
+
 
 class FailingLivenessRuntime(RuntimeAdapter):
     """Runtime that creates a replica without a reachable endpoint.
@@ -169,6 +194,80 @@ class StubIngressService:
         self.reload_count += 1
 
 
+class CallbackCaptureHealthManager:
+    def __init__(self) -> None:
+        self.exec_cb = None
+        self.portforward_cb = None
+        self.event_cb = None
+
+    def set_exec_callback(self, fn):  # type: ignore[no-untyped-def]
+        self.exec_cb = fn
+
+    def set_portforward_callback(self, fn):  # type: ignore[no-untyped-def]
+        self.portforward_cb = fn
+
+    def set_event_callback(self, fn):  # type: ignore[no-untyped-def]
+        self.event_cb = fn
+
+
+class RolloutOverlapRuntime(RuntimeAdapter):
+    def ensure_app(self, manifest: AppManifest, revision: int, **_kwargs) -> RuntimeResult:  # type: ignore[override]
+        return RuntimeResult(
+            revision=revision,
+            created=2,
+            updated=0,
+            removed=0,
+            pod_states=[
+                PodState(
+                    pod_name=f"{manifest.metadata.name}-rev{revision}-0",
+                    ready=True,
+                    status="running",
+                    revision=revision,
+                ),
+                PodState(
+                    pod_name=f"{manifest.metadata.name}-rev{revision}-1",
+                    ready=True,
+                    status="running",
+                    revision=revision,
+                ),
+                PodState(
+                    pod_name=f"{manifest.metadata.name}-rev{max(revision - 1, 0)}-0",
+                    ready=True,
+                    status="running",
+                    revision=max(revision - 1, 0),
+                ),
+            ],
+        )
+
+
+class StubHealthManager:
+    def set_exec_callback(self, _fn) -> None:  # noqa: ANN001
+        return None
+
+    def set_portforward_callback(self, _fn) -> None:  # noqa: ANN001
+        return None
+
+    def set_event_callback(self, _fn) -> None:  # noqa: ANN001
+        return None
+
+    def evaluate(self, manifest: AppManifest, result: RuntimeResult) -> HealthReport:
+        pods = [
+            PodHealth(
+                pod_name=state.pod_name,
+                ready=True,
+                live=True,
+                readiness_message="ok",
+                liveness_message="ok",
+            )
+            for state in result.pod_states
+        ]
+        return HealthReport(
+            ready_replicas=len(pods),
+            live_replicas=len(pods),
+            pods=pods,
+        )
+
+
 def test_reconciler_updates_state(tmp_path: Path) -> None:
     runtime = StubRuntime()
     state = SQLiteStateStore(tmp_path / "state.db")
@@ -200,6 +299,39 @@ def test_reconciler_updates_state(tmp_path: Path) -> None:
     assert any(event.event_type == "ApplyCompleted" for event in events)
 
 
+def test_reconciler_records_rollout_overlap_counts(tmp_path: Path) -> None:
+    state = SQLiteStateStore(tmp_path / "state.db")
+    reconciler = Reconciler(
+        runtime=RolloutOverlapRuntime(),
+        state_store=state,
+        health_manager=StubHealthManager(),
+    )
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(image="alpine:3.20", replicas=2),
+    )
+
+    report = reconciler.reconcile(manifest)
+    status = state.get_status("demo")
+
+    assert status is not None
+    assert report.current_revision_ready_replicas == 2
+    assert report.current_revision_live_replicas == 2
+    assert report.old_revision_ready_replicas == 1
+    assert report.old_revision_live_replicas == 1
+    assert report.overlap_ready_replicas == 1
+    assert report.overlap_live_replicas == 1
+    assert status.current_revision_ready_replicas == 2
+    assert status.current_revision_live_replicas == 2
+    assert status.old_revision_ready_replicas == 1
+    assert status.old_revision_live_replicas == 1
+    assert status.overlap_ready_replicas == 1
+    assert status.overlap_live_replicas == 1
+
+
 def test_reconciler_with_ingress(tmp_path: Path) -> None:
     runtime = StubRuntime()
     state = SQLiteStateStore(tmp_path / "state.db")
@@ -226,6 +358,68 @@ def test_reconciler_with_ingress(tmp_path: Path) -> None:
     assert status.revision >= 1
     events = state.list_events("demo", limit=5)
     assert any(event.event_type == "IngressConfigured" for event in events)
+
+
+def test_reconciler_with_docker_network_ingress_prefers_container_dns(tmp_path: Path) -> None:
+    runtime = StubDockerIngressRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+    ingress_service = StubIngressService()
+    reconciler = Reconciler(runtime=runtime, state_store=state, ingress_service=ingress_service)
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            ports=[{"name": "http", "containerPort": 8080}],  # type: ignore[list-item]
+            ingress=IngressSpec(host="demo.local", path="/"),
+        ),
+    )
+
+    reconciler.reconcile(manifest)
+
+    assert ingress_service.applied == [("demo", "ae-demo-rev1-0:8080")]
+    assert ingress_service.reload_count == 1
+
+
+def test_reconciler_registers_portforward_callback(tmp_path: Path) -> None:
+    runtime = StubRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+    health = CallbackCaptureHealthManager()
+
+    Reconciler(runtime=runtime, state_store=state, health_manager=health)
+
+    assert callable(health.exec_cb)
+    assert callable(health.portforward_cb)
+    assert callable(health.event_cb)
+
+
+def test_reconciler_portforward_prefers_cached_remote_runtime(tmp_path: Path) -> None:
+    runtime = StubRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+    reconciler = Reconciler(runtime=runtime, state_store=state)
+    sentinel = object()
+    captured: list[tuple[str | None, str | None, str | None, int]] = []
+
+    class _RemoteRuntime:
+        def port_forward_socket(
+            self,
+            *,
+            pod_id: str | None,
+            pod_name: str | None,
+            namespace: str | None,
+            port: int,
+        ):
+            captured.append((pod_id, pod_name, namespace, port))
+            return sentinel
+
+    reconciler._runtime_cache[("http://192.168.155.20:9111", "hub-1")] = _RemoteRuntime()  # type: ignore[assignment]
+
+    sock = reconciler._portforward_across_runtimes("ha-web-smoke-rev1-0", "default", 8080)
+
+    assert sock is sentinel
+    assert captured == [(None, "ha-web-smoke-rev1-0", "default", 8080)]
 
 
 def test_select_upstreams_prefers_service_vip(tmp_path: Path) -> None:

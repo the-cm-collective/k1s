@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -693,24 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
       <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -722,7 +758,7 @@
     </button>
     <div class="container">
     <h1 id="kubernetes-compliance">Kubernetes Compliance</h1>
-<p>This page summarizes our current Kubernetes spec compliance for exported manifests.</p>
+<p>This page summarizes our current Kubernetes portability and compliance status for exported manifests and the shim-backed validation lanes we run against them. It is not an upstream Kubernetes conformance claim.</p>
 <p>How it works</p>
 <ul>
 <li>We export K8s YAML from representative Deployment manifests using <code>ae export-k8s</code> (preset: web-hardened).</li>
@@ -733,7 +769,8 @@
 <ul>
 <li>Generate a fresh report and write it where the docs server picks it up:
 <ul>
-<li><code>python -m ae.cli k8s-report --run-dry-run -o docs/site/k8s_status.json</code></li>
+<li><code>python -m ae.cli k8s-report --run-dry-run --kubeconfig ~/.kube/config -o docs/site/k8s_status.json</code></li>
+<li>Prefer <code>--kubeconfig</code> over an ambient context. <code>k8s-report</code> now fails fast if <code>kubectl</code> cannot reach the selected API target for server-side checks.</li>
 </ul>
 </li>
 <li>Rebuild docs to embed the status in this page:
@@ -746,13 +783,13 @@
 <ul>
 <li>If you have kubectl and a cluster (Kind or k3s via k3d):
 <ul>
-<li><code>python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup -o docs/site/k8s_status.json</code></li>
+<li><code>python -m ae.cli k8s-report --run-dry-run --apply-online --cleanup --kubeconfig ~/.kube/config -o docs/site/k8s_status.json</code></li>
 </ul>
 </li>
 <li>This adds server-side dry-run and applies the exported YAML to the cluster, waiting for the Deployment rollout; results are included in the score.</li>
 </ul>
 <p>The compliance status and per-sample details render below when a report is present.</p>
-<h2 id="current-coverage-summary-2026-02-14">Current Coverage Summary (2026-02-14)</h2>
+<h2 id="current-coverage-summary">Current Coverage Summary</h2>
 <ul>
 <li>Workloads: Deployment full support; StatefulSet/DaemonSet/Job/CronJob are stored with best-effort status but emulated as Deployment-like apps (no real completion, scheduling, or per-node placement).</li>
 <li>Pod/Container: env/envFrom; readiness/liveness/startup probes; lifecycle hooks; resources requests/limits; securityContext (runAs*/fsGroup/readOnlyRootFilesystem/cap drop/seccomp/AppArmor); terminationGracePeriodSeconds; priorityClassName.</li>
@@ -828,17 +865,17 @@
 <li>[x] Support <code>envFrom</code> for ConfigMap/Secret; exporter maps to envFrom.</li>
 <li>[x] Support <code>imagePullSecrets</code> and <code>imagePullPolicy</code> in spec/exporter.</li>
 <li>[x] Allow PDB percentage values and validate exclusivity with integers.</li>
-<li>[ ] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).</li>
-<li>[ ] Model Config/Secret volume mounts and mountPaths; exporter emits volumes/volumeMounts.</li>
+<li>[x] Add HPA scaleUp/scaleDown behavior knobs (stabilizationWindow, policies).</li>
+<li>[x] Model Config/Secret volume mounts and mountPaths; exporter emits volumes/volumeMounts.</li>
 <li>[ ] PVC <code>storageClassName</code> and <code>accessModes</code> selection flags; document defaults.</li>
 <li>[ ] Service healthCheckNodePort and advanced Ingress annotations (behind explicit flag).</li>
 <li>[ ] RBAC: broaden exporter coverage for ClusterRole/ClusterRoleBinding presets.</li>
 </ul>
 <hr/>
 <h2>K8s Compliance Status</h2>
-<p><strong>Score:</strong> 57.1/100 &nbsp; <strong>Grade:</strong> failing &nbsp; <strong>Samples:</strong> 3</p>
+<p><strong>Score:</strong> 100.0/100 &nbsp; <strong>Grade:</strong> excellent &nbsp; <strong>Samples:</strong> 3</p>
 <details><summary>Per-sample details</summary>
-<ul><li>echo.yaml: score=57.1 validate=ok kubeconform=skip dry-run=fail policyErrors=0</li><li>multi-replica-echo.yaml: score=57.1 validate=ok kubeconform=skip dry-run=fail policyErrors=0</li><li>echo-hpa.yaml: score=57.1 validate=ok kubeconform=skip dry-run=fail policyErrors=0</li></ul></details>
+<ul><li>echo.yaml: score=100.0 validate=ok kubeconform=ok dry-run=ok policyErrors=0</li><li>multi-replica-echo.yaml: score=100.0 validate=ok kubeconform=ok dry-run=ok policyErrors=0</li><li>echo-hpa.yaml: score=100.0 validate=ok kubeconform=ok dry-run=ok policyErrors=0</li></ul></details>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -846,7 +883,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-13 19:11:07</span>
+        <span>Built 2026-04-17 10:02:07</span>
       </div>
     </footer>
     <script>

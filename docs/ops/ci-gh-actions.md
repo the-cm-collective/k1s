@@ -1,65 +1,46 @@
-GitHub Actions: Kubernetes YAML checks
+GitHub/Gitea Actions: CI layout
 
-This workflow runs exporter smoke checks, portability checks, and kubeconform schema validation in CI.
+The repository now uses five canonical workflows:
 
+- `ci-core.yml`: blocking pull request and branch gate for unit tests, planner validation, Kubernetes export checks, OpenAPI drift validation, versioning checks, and OCI release-image smoke builds. The workflow always reports branch-protection checks, but skips the heavy jobs when a change set is docs-only.
+- `ci-docs.yml`: docs gate for `README`, `docs/**`, docs build helpers, and docs tests. The workflow always reports its check, but only runs `make docs-verify` when docs-surface files changed.
+- `nightly-apishim.yml`: manual/nightly API-shim coverage for shim smoke, Helm, RBAC/SSA, exec, port-forward, SPDY, and live OpenAPI checks.
+- `nightly-runtime.yml`: manual/nightly runtime and end-to-end coverage for Podman, CRI, kind/k3s conformance, multinode, service port-forward, `/plan`, core/edge, and HA closeout lanes.
+- `release.yml`: tag-only artifact pipeline for wheels, OCI role-image archives (`k1s-core`, `k1s-core-node`, `k1s-edge-core`, `k1s-edge-node`), OpenAPI snapshots, and the API-shim compatibility matrix.
+
+Runner compatibility follows ADR 0008:
+
+- `actions/checkout@v3`
+- `actions/setup-python@v4`
+- repo-local shell helpers in `scripts/ci/lib.sh`
+
+The workflow files are intended to execute on the local Gitea Actions stack and under local `act` only. They now include an explicit server guard so an accidentally enabled GitHub mirror will keep the jobs skipped instead of running them there.
+
+PRs intentionally use a lean blocking gate. Heavy runtime and E2E lanes run outside the default PR path because they are slower, more environment-sensitive, and more appropriate for scheduled/manual validation.
+
+Representative commands behind the workflows:
+
+```bash
+pytest --maxfail=1 --disable-warnings -q
+tools/plan_ci.sh
+make k8s-smoke
+scripts/validate-openapi.sh
+python scripts/check_versioning.py
+make docs-verify
 ```
 
-CRI integration workflow (containerd)
+`ruff check` is intentionally not a blocking repo-wide CI gate yet. The current repository still carries substantial pre-existing Ruff debt in tests and helper scripts, so the blocking path stays aligned with the existing passing baseline instead of introducing a mass cleanup requirement into unrelated PRs.
 
-The CRI workflow provisions containerd + CNI + crictl on the runner and executes CRI smoke + lifecycle tests:
+Representative manual/nightly commands:
 
-```
-name: cri-ci
-on:
-  workflow_dispatch:
-  pull_request:
-  push:
-    branches: [ main ]
-
-jobs:
-  cri-integration:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-      - name: CRI setup (containerd + CNI + crictl)
-        run: sudo -E ./scripts/cri_ci_setup.sh
-      - name: CRI integration tests
-        run: |
-          sudo -E env AE_RUNTIME_BACKEND=cri AE_CRI_IT=1 AE_CRI_SMOKE_PULL=1 \
-            AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
-            AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9 \
-            .venv/bin/python -m pytest \
-              tests/integration/test_cri_smoke.py \
-              tests/integration/test_cri_runtime_integration.py -q
-```
-name: k8s-yaml-checks
-on:
-  pull_request:
-  push:
-    branches: [ main ]
-
-jobs:
-  k8s-export-validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install project (dev)
-        run: |
-          python -m pip install -U pip
-          python -m pip install -e .[dev]
-      - name: Install kubeconform
-        run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz \
-            | tar -xz kubeconform
-          sudo mv kubeconform /usr/local/bin/
-      - name: Export examples and validate structure
-        run: |
-          make k8s-smoke || true
-      - name: Run portability checks + kubeconform
-        run: |
-          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict --kubeconform --emit --fail-on-warn
+```bash
+sudo -E ./scripts/cri_ci_setup.sh
+bash scripts/ci/k8s-conformance.sh
+bash scripts/ci/k3s-conformance.sh
+pytest tests/integration/test_multinode_agent_flow.py \
+  tests/integration/test_overlay_vip.py \
+  tests/integration/test_apishim_persistence.py -q
+bash scripts/e2e/plan_validate.sh
+python scripts/e2e_k1s_core_edge.py
+make ha-closeout-e2e
 ```

@@ -50,6 +50,17 @@ def _json(handler: BaseHTTPRequestHandler, status: int, body: dict) -> None:
 def _serialize_nodes(store: SQLiteStateStore) -> list[dict]:
     items = []
     for node, status in store.list_nodes():
+        labels = node.labels or {}
+        gpu_count = None
+        for key in ("gpu.count", "nvidia.gpu.count", "gpu_count"):
+            raw = labels.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                gpu_count = int(raw)
+            except Exception:
+                gpu_count = None
+            break
         items.append(
             {
                 "node_id": node.node_id,
@@ -59,7 +70,9 @@ def _serialize_nodes(store: SQLiteStateStore) -> list[dict]:
                 "pod_cidr": node.pod_cidr,
                 "wg_pubkey": node.wg_pubkey,
                 "rp_pubkey": getattr(node, "rp_pubkey", None),
-                "labels": node.labels,
+                "labels": labels,
+                "gpu_count": gpu_count,
+                "gpu_models": labels.get("gpu.models"),
                 "taints": node.taints,
                 "cordoned": bool(getattr(node, "cordoned", False)),
                 "status": status.status if status else None,
@@ -305,6 +318,7 @@ def _build_overlay_payload(store: SQLiteStateStore, node_id: str) -> dict | None
     nodes = list(store.list_nodes())
     wg_role_present = any(_wg_role(rec.labels) for rec, _ in nodes)
     use_wg_role = wg_role_present and _wg_role(labels) is not None
+
     def _overlay_node(labels_in: dict | None) -> bool:
         if not use_wg_role:
             return True
@@ -312,7 +326,9 @@ def _build_overlay_payload(store: SQLiteStateStore, node_id: str) -> dict | None
 
     site_id = _node_site(node.node_id, labels)
     hub_site = (os.getenv("AE_OVERLAY_HUB_SITE") or os.getenv("AE_SITE_ID") or "").strip() or None
-    is_hub = _wg_role(labels) == "hub" if use_wg_role else _node_is_hub(node.node_id, labels, hub_site)
+    is_hub = (
+        _wg_role(labels) == "hub" if use_wg_role else _node_is_hub(node.node_id, labels, hub_site)
+    )
     keepalive = None
     try:
         keepalive = int(os.getenv("AE_OVERLAY_PERSISTENT_KEEPALIVE", "25") or 25)
@@ -330,7 +346,9 @@ def _build_overlay_payload(store: SQLiteStateStore, node_id: str) -> dict | None
             "errors": ["node missing wg_role; overlay peers filtered by wg_role labels"],
         }
     all_cidrs = [
-        rec.pod_cidr for rec, _ in nodes if getattr(rec, "pod_cidr", None) and _overlay_node(rec.labels)
+        rec.pod_cidr
+        for rec, _ in nodes
+        if getattr(rec, "pod_cidr", None) and _overlay_node(rec.labels)
     ]
     local_cidr = node.pod_cidr
     peers: list[dict] = []
@@ -342,7 +360,11 @@ def _build_overlay_payload(store: SQLiteStateStore, node_id: str) -> dict | None
             continue
         rec_labels = rec.labels or {}
         rec_site = _node_site(rec.node_id, rec_labels)
-        rec_is_hub = _wg_role(rec_labels) == "hub" if use_wg_role else _node_is_hub(rec.node_id, rec_labels, hub_site)
+        rec_is_hub = (
+            _wg_role(rec_labels) == "hub"
+            if use_wg_role
+            else _node_is_hub(rec.node_id, rec_labels, hub_site)
+        )
         if is_hub and rec_is_hub:
             continue
         if not is_hub and not rec_is_hub:

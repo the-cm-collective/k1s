@@ -3,328 +3,206 @@ name: release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  shim-smoke:
+  server-guard:
+    if: ${{ github.server_url != 'https://github.com' || env.ACT == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm supported actions host
+        run: echo "Running release on ${GITHUB_SERVER_URL:-unknown}"
+
+  validate-release:
+    needs: server-guard
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Trust Gitea cert (or disable verify)
-        id: trust-gitea
+      - name: Trust Gitea cert for checkout
         run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
           if [ -n "${GITEA_CA_B64:-}" ]; then
             echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
             git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
-            echo "git_ssl_cainfo=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_OUTPUT"
-            echo "git_ssl_no_verify=" >> "$GITHUB_OUTPUT"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
             git config --global http."https://gitea.core.home.arpa/".sslVerify false
             echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
-            echo "git_ssl_cainfo=" >> "$GITHUB_OUTPUT"
-            echo "git_ssl_no_verify=true" >> "$GITHUB_OUTPUT"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v4
-        env:
-          GIT_SSL_NO_VERIFY: ${{ steps.trust-gitea.outputs.git_ssl_no_verify }}
-          GIT_SSL_CAINFO: ${{ steps.trust-gitea.outputs.git_ssl_cainfo }}
-      - name: Create venv (local act)
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
         if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
         run: |
-          python -m venv .venv
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-          . .venv/bin/activate
-          python -m pip install -U pip
-      - name: Configure Docker client (insecure TLS fallback)
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
         run: |
-          if [ -S /var/run/docker.sock ]; then
-            echo "DOCKER_HOST=unix:///var/run/docker.sock" >> "$GITHUB_ENV"
-            echo "DOCKER_TLS_VERIFY=0" >> "$GITHUB_ENV"
-            echo "DOCKER_CERT_PATH=" >> "$GITHUB_ENV"
-            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
-          elif [ -d /certs/client ]; then
-            echo "DOCKER_HOST=tcp://docker:2376" >> "$GITHUB_ENV"
-            echo "DOCKER_TLS_VERIFY=0" >> "$GITHUB_ENV"
-            echo "DOCKER_CERT_PATH=/certs/client" >> "$GITHUB_ENV"
-            echo "DOCKER_TLS_CERTDIR=" >> "$GITHUB_ENV"
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install project
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+      - name: Validate release metadata
+        run: python scripts/check_versioning.py --require-changelog
+      - name: Validate OpenAPI snapshots
+        run: scripts/validate-openapi.sh
+
+  build-wheel:
+    runs-on: ubuntu-latest
+    needs: validate-release
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
           fi
-      - uses: actions/setup-python@v5
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
         if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.12'
-      - name: Install deps
+          python-version: "3.12"
+      - name: Install build tooling
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
-      - name: Install kubectl
-        run: |
-          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
-          chmod +x /usr/local/bin/kubectl
-      - name: Install helm
-        run: |
-          curl -L https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz -o /tmp/helm.tgz
-          tar -xzf /tmp/helm.tgz -C /tmp
-          mv /tmp/linux-amd64/helm /usr/local/bin/helm
-          chmod +x /usr/local/bin/helm
-      - name: Start apishim (stub runtime)
-        env:
-          AE_APISHIM_ENABLE: "1"
-          AE_APISHIM_ALLOW_ANON: "1"
-          AE_RUNTIME_BACKEND: "stub"
-          PYTHONPATH: "src"
-          NO_PROXY: "127.0.0.1,localhost"
-          HTTP_PROXY: ""
-          HTTPS_PROXY: ""
-        run: |
-          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --allow-anonymous >/tmp/apishim-helm.log 2>&1 &
-          echo $! >/tmp/apishim.pid
-          sleep 3
-      - name: Run helm shim smoke (stub runtime)
-        env:
-          APISHIM_SERVER: "http://127.0.0.1:8445"
-          RUNTIME: stub
-          PYTHONPATH: src
-          NO_PROXY: "127.0.0.1,localhost"
-          HTTP_PROXY: ""
-          HTTPS_PROXY: ""
-        run: |
-          bash scripts/helm_shim_demo.sh
-      - name: Show shim logs on failure
-        if: failure()
-        run: |
-          find /tmp -name "shim.log" -print -exec cat {} \;
-          echo "=== apishim ===" && cat /tmp/apishim-helm.log || true
-      - name: Stop shim
-        if: always()
-        run: |
-          if [ -f /tmp/apishim.pid ]; then kill $(cat /tmp/apishim.pid) 2>/dev/null || true; fi
-
-  live-openapi:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: shim-smoke
-    env:
-      APISHIM_LIVE_USE_PG: "0"
-      APISHIM_LIVE_ARTIFACT_DIR: /tmp/apishim-live
-      APISHIM_LIVE_RUNTIME: stub
-      APISHIM_LIVE_TOKEN: release-token
-      APISHIM_LIVE_NAMESPACE: apishim-live
-    steps:
-      - uses: actions/setup-python@v5
-        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
-        with:
-          python-version: '3.12'
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
-      - name: Install kubectl
-        run: |
-          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
-          chmod +x /usr/local/bin/kubectl
-      - name: Install helm
-        run: |
-          curl -L https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz -o /tmp/helm.tgz
-          tar -xzf /tmp/helm.tgz -C /tmp
-          mv /tmp/linux-amd64/helm /usr/local/bin/helm
-          chmod +x /usr/local/bin/helm
-      - name: Run live OpenAPI gate
-        run: bash scripts/ci/apishim-live-openapi.sh
-      - name: Upload live OpenAPI artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: apishim-live-openapi
-          path: /tmp/apishim-live
-      - name: Show logs on failure
-        if: failure()
-        run: |
-          find /tmp -name "shim.log" -print -exec cat {} \; || true
-
-  live-openapi:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: shim-smoke
-    services:
-      postgres:
-        image: postgres:15
-        ports: ["5432:5432"]
-        env:
-          POSTGRES_PASSWORD: shim
-          POSTGRES_USER: shim
-          POSTGRES_DB: shim
-        options: >-
-          --health-cmd "pg_isready -U shim -d shim" --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      AE_APISHIM_DSN: postgresql://shim:shim@localhost:5432/shim
-      AE_STATE_DSN: postgresql://shim:shim@localhost:5432/shim
-      APISHIM_LIVE_ARTIFACT_DIR: /tmp/apishim-live
-      APISHIM_LIVE_RUNTIME: stub
-      APISHIM_LIVE_TOKEN: release-token
-      APISHIM_LIVE_NAMESPACE: apishim-live
-    steps:
-      - uses: actions/setup-python@v5
-        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
-        with:
-          python-version: '3.12'
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
-      - name: Install kubectl
-        run: |
-          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
-          chmod +x /usr/local/bin/kubectl
-      - name: Install helm
-        run: |
-          curl -L https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz -o /tmp/helm.tgz
-          tar -xzf /tmp/helm.tgz -C /tmp
-          mv /tmp/linux-amd64/helm /usr/local/bin/helm
-          chmod +x /usr/local/bin/helm
-      - name: Run live OpenAPI gate
-        run: bash scripts/ci/apishim-live-openapi.sh
-      - name: Upload live OpenAPI artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: apishim-live-openapi
-          path: /tmp/apishim-live
-      - name: Show logs on failure
-        if: failure()
-        run: |
-          find /tmp -name "shim.log" -print -exec cat {} \; || true
-
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-python@v5
-        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
-        with:
-          python-version: '3.11'
-      - name: Install build
-        run: python -m pip install --upgrade pip build
+          python -m pip install --upgrade pip build
       - name: Build wheels
         run: python -m build -w
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
         with:
           name: wheels
           path: dist/*.whl
 
-  openapi:
+  build-oci-images:
     runs-on: ubuntu-latest
-    needs: [shim-smoke, live-openapi]
+    needs: validate-release
     steps:
-      - uses: actions/setup-python@v5
-        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_configure_docker_env
+      - name: Build OCI release images
+        env:
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_REVISION: ${{ github.sha }}
+          RELEASE_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: scripts/release/build_oci_artifacts.sh /tmp/release-images
+      - name: Upload k1s-core image
+        uses: actions/upload-artifact@v3
         with:
-          python-version: '3.12'
-      - name: Install deps
+          name: k1s-core-image
+          path: /tmp/release-images/k1s-core-${{ github.ref_name }}-linux-amd64.oci.tar
+      - name: Upload k1s-core-node image
+        uses: actions/upload-artifact@v3
+        with:
+          name: k1s-core-node-image
+          path: /tmp/release-images/k1s-core-node-${{ github.ref_name }}-linux-amd64.oci.tar
+      - name: Upload k1s-edge-core image
+        uses: actions/upload-artifact@v3
+        with:
+          name: k1s-edge-core-image
+          path: /tmp/release-images/k1s-edge-core-${{ github.ref_name }}-linux-amd64.oci.tar
+      - name: Upload k1s-edge-node image
+        uses: actions/upload-artifact@v3
+        with:
+          name: k1s-edge-node-image
+          path: /tmp/release-images/k1s-edge-node-${{ github.ref_name }}-linux-amd64.oci.tar
+      - name: Upload OCI image metadata
+        uses: actions/upload-artifact@v3
+        with:
+          name: oci-image-metadata
+          path: |
+            /tmp/release-images/SHA256SUMS
+            /tmp/release-images/manifest.json
+
+  package-openapi-artifacts:
+    runs-on: ubuntu-latest
+    needs: validate-release
+    steps:
+      - name: Trust Gitea cert for checkout
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
-      - name: Install kubectl
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Stage release artifacts
         run: |
-          curl -L https://dl.k8s.io/release/v1.30.3/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
-          chmod +x /usr/local/bin/kubectl
-      - name: Generate apishim TLS cert
-        run: |
-          openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
-            -keyout /tmp/apishim-tls.key -out /tmp/apishim-tls.crt \
-            -subj "/CN=127.0.0.1" -days 1 >/dev/null 2>&1
-          echo "AE_APISHIM_TLS_CERT=/tmp/apishim-tls.crt" >> "$GITHUB_ENV"
-          echo "AE_APISHIM_TLS_KEY=/tmp/apishim-tls.key" >> "$GITHUB_ENV"
-      - name: Start apishim (stub) and export OpenAPI
-        env:
-          AE_APISHIM_ENABLE: "1"
-          AE_APISHIM_TOKEN: "release-token"
-          AE_RUNTIME_BACKEND: "stub"
-          PYTHONPATH: "src"
-        run: |
-          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token "$AE_APISHIM_TOKEN" --tls >/tmp/apishim-openapi.log 2>&1 &
-          echo $! >/tmp/apishim-openapi.pid
-          sleep 3
-          mkdir -p /tmp/openapi
-          curl -kfsS -H "Authorization: Bearer $AE_APISHIM_TOKEN" https://127.0.0.1:8445/openapi/v2 -o /tmp/openapi/openapi-v2.json
-          curl -kfsS -H "Authorization: Bearer $AE_APISHIM_TOKEN" https://127.0.0.1:8445/openapi/v3 -o /tmp/openapi/openapi-v3.json
-      - name: Validate sample fixtures against live OpenAPI
-        env:
-          PYTHONPATH: src
-        run: |
-          set -euo pipefail
-          python scripts/validate-openapi-fixtures.py --spec /tmp/openapi/openapi-v2.json | tee /tmp/openapi/fixture-validate.log
-      - name: Spot-check kubectl get/watch
-        env:
-          TOKEN: "release-token"
-        run: |
-          set -euo pipefail
-          K="kubectl --server=https://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify"
-          $K apply -f specs/examples/echo-k8s.yaml
-          $K get deployment echo -n demo -o yaml > /tmp/openapi/deployment.yaml
-          $K get service echo -n demo -o yaml > /tmp/openapi/service.yaml
-          $K get hpa echo -n demo -o yaml > /tmp/openapi/hpa.yaml
-          # quick watch to ensure streaming path stays healthy
-          $K get deployment -n demo --watch --timeout=5s -o name > /tmp/openapi/watch.txt || true
-      - name: Upload OpenAPI artifacts
-        uses: actions/upload-artifact@v4
+          mkdir -p /tmp/release-artifacts/openapi
+          cp docs/openapi/openapi-v2.json /tmp/release-artifacts/openapi/
+          cp docs/openapi/openapi-v3.json /tmp/release-artifacts/openapi/
+          cp docs/reference/apishim-compatibility-matrix.md /tmp/release-artifacts/
+      - name: Upload OpenAPI schemas
+        uses: actions/upload-artifact@v3
         with:
           name: openapi-schemas
-          path: /tmp/openapi/*
-      - name: Release notes snippet
-        run: |
-          cat <<'EOF' >> $GITHUB_STEP_SUMMARY
-          ## Release note attachments
-          - Compatibility matrix: artifact **apishim-compatibility-matrix**
-          - OpenAPI schemas: artifact **openapi-schemas** (contains openapi-v3.json primary + openapi-v2.json mirror)
-          - Live gate: artifact **apishim-live-openapi** (fixtures + live /openapi/v3 snapshot)
-          - OpenAPI endpoints: `/openapi/v3` (primary) and `/openapi/v2` (compatibility)
-          EOF
-      - name: Stop shim
-        if: always()
-        run: |
-          if [ -f /tmp/apishim-openapi.pid ]; then kill $(cat /tmp/apishim-openapi.pid) 2>/dev/null || true; fi
-
-  container:
-    runs-on: ubuntu-latest
-    env:
-      REGISTRY: reg.microk8s.core.home.arpa:32000
-      IMAGE_NAME: ae/controller
-      CACHE_TAG: buildcache-release
-    steps:
-      - name: Set up Buildx (insecure registry)
-        uses: docker/setup-buildx-action@v3
-        with:
-          config-inline: |
-            [registry."reg.microk8s.core.home.arpa:32000"]
-              http = true
-              insecure = true
-      - name: Build controller image (registry cache)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ops/images/controller.Dockerfile
-          load: true
-          tags: ae/controller:${{ github.ref_name }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CACHE_TAG }}
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CACHE_TAG }},mode=max
-      - name: Save image tar
-        run: docker save ae/controller:${{ github.ref_name }} -o controller.tar
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: controller-image
-          path: controller.tar
+          path: /tmp/release-artifacts/openapi/*
       - name: Upload compatibility matrix
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: apishim-compatibility-matrix
-          path: docs/apishim-compatibility-matrix.md
-      # --- Optional: publish to GHCR (uncomment when ready) ---
-      # - name: Login to GHCR
-      #   if: startsWith(github.ref, 'refs/tags/v')
-      #   run: |
-      #     echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-      # - name: Tag and push
-      #   if: startsWith(github.ref, 'refs/tags/v')
-      #   run: |
-      #     docker tag ae/controller:${{ github.ref_name }} ghcr.io/${{ github.repository }}/controller:${{ github.ref_name }}
-      #     docker push ghcr.io/${{ github.repository }}/controller:${{ github.ref_name }}
+          path: /tmp/release-artifacts/apishim-compatibility-matrix.md

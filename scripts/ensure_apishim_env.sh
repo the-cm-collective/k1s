@@ -141,26 +141,67 @@ log "Wrote $ENV_FILE (tokens generated or sourced securely)."
 
 CERT_FILE="${APISHIM_CERT_FILE:-$ROOT_DIR/state/profiles/labs/apishim.crt}"
 KEY_FILE="${APISHIM_KEY_FILE:-$ROOT_DIR/state/profiles/labs/apishim.key}"
+CA_FILE="${APISHIM_CA_FILE:-$(dirname "$CERT_FILE")/apishim.ca.crt}"
+CA_KEY_FILE="${APISHIM_CA_KEY_FILE:-$(dirname "$KEY_FILE")/apishim.ca.key}"
 if command -v openssl >/dev/null 2>&1; then
+  san="${APISHIM_CERT_SANS:-DNS:apishim,DNS:localhost,IP:127.0.0.1,IP:::1}"
   need_regen=0
-  if [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]]; then
+  if [[ -s "$CERT_FILE" && -s "$KEY_FILE" && -s "$CA_FILE" && -s "$CA_KEY_FILE" ]]; then
     cert_text="$(openssl x509 -in "$CERT_FILE" -noout -text 2>/dev/null || true)"
+    ca_text="$(openssl x509 -in "$CA_FILE" -noout -text 2>/dev/null || true)"
     if ! grep -q "Subject Alternative Name" <<<"$cert_text"; then
       need_regen=1
-    elif ! grep -q "DNS:localhost" <<<"$cert_text"; then
+    elif grep -q "CA:TRUE" <<<"$cert_text"; then
       need_regen=1
-    elif ! grep -q "IP Address:127.0.0.1" <<<"$cert_text"; then
+    elif ! grep -q "CA:FALSE" <<<"$cert_text"; then
       need_regen=1
+    elif ! grep -q "CA:TRUE" <<<"$ca_text"; then
+      need_regen=1
+    else
+      IFS=',' read -r -a san_entries <<<"$san"
+      for san_entry in "${san_entries[@]}"; do
+        san_entry="${san_entry#"${san_entry%%[![:space:]]*}"}"
+        san_entry="${san_entry%"${san_entry##*[![:space:]]}"}"
+        [[ -n "$san_entry" ]] || continue
+        cert_pattern="$san_entry"
+        if [[ "$san_entry" == IP:* ]]; then
+          cert_pattern="IP Address:${san_entry#IP:}"
+        fi
+        if ! grep -q "$cert_pattern" <<<"$cert_text"; then
+          need_regen=1
+          break
+        fi
+      done
     fi
+  else
+    need_regen=1
   fi
-  if [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" || $need_regen -eq 1 ]]; then
+  if [[ $need_regen -eq 1 ]]; then
     mkdir -p "$(dirname "$CERT_FILE")"
+    mkdir -p "$(dirname "$CA_FILE")"
     subj="/CN=apishim"
-    san="${APISHIM_CERT_SANS:-DNS:apishim,DNS:localhost,IP:127.0.0.1,IP:::1}"
+    tmp_dir="$(mktemp -d)"
+    trap 'rm -rf "$tmp_dir"' EXIT
+    csr_file="$tmp_dir/apishim.csr"
+    ext_file="$tmp_dir/apishim.ext"
     openssl req -x509 -newkey rsa:2048 -sha256 -days 3 -nodes \
-      -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "$subj" -addext "subjectAltName=${san}" >/dev/null 2>&1
-    chmod 600 "$KEY_FILE" "$CERT_FILE"
-    log "Wrote $CERT_FILE and $KEY_FILE (self-signed, dev only)."
+      -keyout "$CA_KEY_FILE" -out "$CA_FILE" -subj "/CN=apishim-dev-ca" \
+      -addext "basicConstraints=critical,CA:TRUE" \
+      -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" >/dev/null 2>&1
+    cat >"$ext_file" <<EOF
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=${san}
+EOF
+    openssl req -newkey rsa:2048 -nodes -sha256 -keyout "$KEY_FILE" -out "$csr_file" -subj "$subj" >/dev/null 2>&1
+    openssl x509 -req -in "$csr_file" -CA "$CA_FILE" -CAkey "$CA_KEY_FILE" \
+      -CAcreateserial -out "$CERT_FILE" -days 3 -sha256 -extfile "$ext_file" >/dev/null 2>&1
+    rm -f "$CA_FILE.srl"
+    rm -rf "$tmp_dir"
+    trap - EXIT
+    chmod 600 "$KEY_FILE" "$CERT_FILE" "$CA_KEY_FILE" "$CA_FILE"
+    log "Wrote $CERT_FILE, $KEY_FILE, $CA_FILE, and $CA_KEY_FILE (dev CA + signed server cert)."
   fi
 else
   log "openssl not found; skipping apishim TLS cert generation."

@@ -36,6 +36,22 @@ def _normalize_nats_url(raw: str) -> str:
     return f"nats://{raw}"
 
 
+def ha_mode_enabled(env: Mapping[str, str] | None = None) -> bool:
+    use_env = env if env is not None else os.environ
+    return str(use_env.get("AE_HA_MODE", "0") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def desired_js_replicas(env: Mapping[str, str] | None = None) -> int:
+    use_env = env if env is not None else os.environ
+    default = 3 if ha_mode_enabled(use_env) else 1
+    return max(1, _env_int(use_env, "AE_JS_REPLICAS", default))
+
+
 def _parse_nats_endpoint(raw: str) -> tuple[str, int]:
     url = _normalize_nats_url(raw.strip())
     parsed = urlparse(url)

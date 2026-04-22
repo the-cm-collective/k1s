@@ -1,0 +1,632 @@
+name: nightly-runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "all|podman|cri|k8s|multinode|svc-portforward|core-edge|plan|ha"
+        required: false
+        default: "all"
+  schedule:
+    - cron: "30 5 * * *"
+
+concurrency:
+  group: nightly-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  server-guard:
+    if: ${{ github.server_url != 'https://github.com' || env.ACT == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm supported actions host
+        run: echo "Running nightly-runtime on ${GITHUB_SERVER_URL:-unknown}"
+
+  podman-compat:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'podman' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install podman and project
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_podman
+          ci_install_project ".[dev]"
+      - name: Podman compatibility checks
+        env:
+          AE_RUNTIME_BACKEND: podman
+        run: |
+          podman info >/dev/null 2>&1 || true
+          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict
+          python -m ae.cli export-k8s -f specs/examples/echo.yaml --validate >/dev/null
+          python -m ae.cli plan -f specs/examples/echo.yaml --json >/dev/null
+          python -m ae.cli export-k8s -f specs/examples/echo.yaml --workload statefulset --validate >/dev/null
+
+  cri-smoke:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'cri' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+      - name: Install project
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+      - name: CRI setup
+        run: sudo -E ./scripts/cri_ci_setup.sh
+      - name: CRI integration tests
+        env:
+          AE_RUNTIME_BACKEND: cri
+          AE_CRI_IT: "1"
+          AE_CRI_SMOKE_PULL: "1"
+          AE_CRI_ENDPOINT: unix:///run/containerd/containerd.sock
+          AE_CRI_SANDBOX_IMAGE: registry.k8s.io/pause:3.9
+        run: |
+          sudo -E python -m pytest \
+            tests/integration/test_cri_smoke.py \
+            tests/integration/test_cri_runtime_integration.py -q
+
+  k8s-kind:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'k8s' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+          ci_configure_docker_env
+      - name: Install project and kind tooling
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_kind
+          ci_install_kubectl
+      - name: Run kind conformance
+        env:
+          PYTHONPATH: src
+        run: |
+          bash scripts/ci/k8s-conformance.sh
+          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict
+          python -m ae.cli k8s-check -f specs/examples/multi-replica-echo.yaml --policy strict
+
+  k8s-k3s:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'k8s' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install project and k3d tooling
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_k3d
+          ci_install_kubectl
+      - name: Run k3s conformance
+        env:
+          PYTHONPATH: src
+        run: |
+          bash scripts/ci/k3s-conformance.sh
+          python -m ae.cli k8s-check -f specs/examples/echo-hpa.yaml --policy strict --assume-hpa cpu-util
+
+  multinode:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'multinode' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+          ci_configure_docker_env
+      - name: Install project
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+      - name: Run multinode integration tests
+        run: pytest tests/integration/test_multinode_agent_flow.py tests/integration/test_overlay_vip.py tests/integration/test_apishim_persistence.py -q
+      - name: Run host-based two-node smoke
+        env:
+          AE_TOKEN: ci-token
+        run: |
+          set -euo pipefail
+          AE_ENABLE_SERVICE_PROXY=0 \
+          AE_AGENT_API_PORT=9110 \
+          AE_AGENT_API_TOKEN="$AE_TOKEN" \
+          AE_STATE_DB=/tmp/ae-controller.db \
+          python -m ae.controller --loop --specs specs/examples --metrics-port 9108 >/tmp/controller.log 2>&1 &
+          ctrl_pid=$!
+          sleep 2
+          AE_CONTROLLER_URL=http://127.0.0.1:9110 AE_AGENT_TOKEN="$AE_TOKEN" AE_NODE_ID=node-a AE_NODE_LABELS=role=worker AE_AGENT_ENDPOINT=http://127.0.0.1:19109 python -m ae.node --runtime-backend docker --host 127.0.0.1 --port 19109 >/tmp/agent-a.log 2>&1 &
+          a_pid=$!
+          AE_CONTROLLER_URL=http://127.0.0.1:9110 AE_AGENT_TOKEN="$AE_TOKEN" AE_NODE_ID=node-b AE_NODE_LABELS=role=worker AE_AGENT_ENDPOINT=http://127.0.0.1:19110 python -m ae.node --runtime-backend docker --host 127.0.0.1 --port 19110 >/tmp/agent-b.log 2>&1 &
+          b_pid=$!
+          trap 'kill "$a_pid" "$b_pid" "$ctrl_pid" 2>/dev/null || true' EXIT
+          sleep 5
+          python -m ae.cli apply -f specs/examples/echo-multinode.yaml
+          python -m ae.cli status echo-mn --watch 120 --timeout 180
+          python -m ae.cli events echo-mn | tail -n 20
+
+  multinode-svc-portforward:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'svc-portforward' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install project and kubectl
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_kubectl
+      - name: Generate apishim TLS cert
+        run: |
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+            -keyout /tmp/apishim-tls.key -out /tmp/apishim-tls.crt \
+            -subj "/CN=127.0.0.1" -days 1 >/dev/null 2>&1
+          echo "AE_APISHIM_TLS_CERT=/tmp/apishim-tls.crt" >> "$GITHUB_ENV"
+          echo "AE_APISHIM_TLS_KEY=/tmp/apishim-tls.key" >> "$GITHUB_ENV"
+      - name: Start loopback backends
+        run: |
+          cat > /tmp/backend.py <<'PY'
+          import http.server, socketserver, sys
+          bind_ip, port, body = sys.argv[1], int(sys.argv[2]), sys.argv[3].encode()
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header("Content-Type", "text/plain")
+                  self.end_headers()
+                  self.wfile.write(body)
+              def log_message(self, *_args):
+                  return
+          with socketserver.TCPServer((bind_ip, port), Handler) as httpd:
+              httpd.serve_forever()
+          PY
+          python /tmp/backend.py 127.0.0.2 18080 A >/tmp/backend-a.log 2>&1 &
+          echo $! >/tmp/backend-a.pid
+          python /tmp/backend.py 127.0.0.3 18080 B >/tmp/backend-b.log 2>&1 &
+          echo $! >/tmp/backend-b.pid
+          sleep 1
+      - name: Seed state DB
+        env:
+          AE_STATE_DB: /tmp/ctrl.db
+        run: |
+          python - <<'PY'
+          from ae.controller.state import SQLiteStateStore, ServiceEndpoint
+          store = SQLiteStateStore("/tmp/ctrl.db")
+          store.upsert_service("default--echo-svc", "10.96.0.50", {"8080": {"port": 8080, "targetPort": 18080, "protocol": "TCP"}})
+          store.upsert_service_endpoints("default--echo-svc", [
+              ServiceEndpoint(app_name="default--echo-svc", port=8080, ip="127.0.0.2", target_port=18080, ready=True),
+              ServiceEndpoint(app_name="default--echo-svc", port=8080, ip="127.0.0.3", target_port=18080, ready=True),
+          ])
+          PY
+      - name: Start apishim
+        env:
+          AE_APISHIM_ENABLE: "1"
+          AE_APISHIM_TOKEN: "ci-token"
+          AE_APISHIM_DB: /tmp/apishim.db
+          AE_STATE_DB: /tmp/ctrl.db
+          AE_APISHIM_RUNTIME: stub
+          PYTHONPATH: src
+        run: |
+          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token "$AE_APISHIM_TOKEN" --tls >/tmp/apishim.log 2>&1 &
+          echo $! >/tmp/apishim.pid
+          sleep 3
+      - name: Service port-forward checks
+        env:
+          TOKEN: "ci-token"
+        run: |
+          cat <<'YAML' >/tmp/echo-svc.yaml
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: echo-svc
+            namespace: default
+          spec:
+            selector:
+              app: echo-svc
+            ports:
+              - port: 8080
+                targetPort: 18080
+                protocol: TCP
+          YAML
+          K="kubectl --server=https://127.0.0.1:8445 --token=$TOKEN --insecure-skip-tls-verify"
+          $K --validate=false apply -f /tmp/echo-svc.yaml
+          test "$($K get svc echo-svc -o jsonpath='{.spec.clusterIP}')" = "10.96.0.50"
+          cat <<'YAML' >/tmp/echo-ing.yaml
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: echo
+            namespace: default
+          spec:
+            defaultBackend:
+              service:
+                name: echo-svc
+                port:
+                  number: 8080
+          YAML
+          $K apply -f /tmp/echo-ing.yaml
+          test "$($K get ingress echo -o jsonpath='{.status.loadBalancer.ingress[0].ip}')" = "10.96.0.50"
+          hit() {
+            $K port-forward svc/echo-svc 18081:8080 >/tmp/pf.log 2>&1 &
+            pf_pid=$!
+            sleep 2
+            body="$(curl -fsS http://127.0.0.1:18081)"
+            kill "$pf_pid" >/dev/null 2>&1 || true
+            echo "$body"
+          }
+          first="$(hit)"
+          second="$(hit)"
+          test "$first" != "$second"
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== apishim ===" && cat /tmp/apishim.log || true
+          echo "=== pf ===" && cat /tmp/pf.log || true
+          echo "=== backend-a ===" && cat /tmp/backend-a.log || true
+          echo "=== backend-b ===" && cat /tmp/backend-b.log || true
+      - name: Cleanup
+        if: always()
+        run: |
+          for pidfile in /tmp/apishim.pid /tmp/backend-a.pid /tmp/backend-b.pid; do
+            if [ -f "$pidfile" ]; then
+              kill "$(cat "$pidfile")" 2>/dev/null || true
+            fi
+          done
+          rm -f /tmp/ctrl.db /tmp/apishim.db
+
+  core-edge:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'core-edge' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      DOCKER_BUILDKIT: "1"
+      K1S_E2E_DIR: /tmp/e2e-core-edge
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_configure_docker_env
+      - name: Install project
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+      - name: Run core-edge E2E
+        run: python scripts/e2e_k1s_core_edge.py
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/e2e-core-edge
+          echo "== docker compose ps ==" >/tmp/e2e-core-edge/compose-ps.txt || true
+          docker compose -f /tmp/e2e-core-edge/compose.yaml ps >>/tmp/e2e-core-edge/compose-ps.txt || true
+          docker compose -f /tmp/e2e-core-edge/compose.yaml logs --no-color >/tmp/e2e-core-edge/compose-logs.txt || true
+      - name: Upload artifacts
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-core-edge-artifacts
+          path: /tmp/e2e-core-edge
+
+  plan-e2e:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'plan' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AE_RUNTIME_BACKEND: docker
+      DOCKER_BUILDKIT: "1"
+      API_PORT: "9108"
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_configure_docker_env
+      - name: Install system deps and project
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_age_sops
+          ci_install_project ".[dev]"
+      - name: Run /plan E2E validation
+        run: bash ./scripts/e2e/plan_validate.sh
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-plan-artifacts
+          path: artifacts
+          if-no-files-found: ignore
+
+  ha-closeout:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'ha' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_configure_docker_env
+      - name: Install project
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+      - name: Run HA closeout lane
+        run: make ha-closeout-e2e

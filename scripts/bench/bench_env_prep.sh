@@ -26,6 +26,7 @@ bench_probe_loopback="${BENCH_PROBE_LOOPBACK:-${AE_PROBE_LOOPBACK_FALLBACK:-127.
 bench_no_proxy="${BENCH_NO_PROXY:-${NO_PROXY:-127.0.0.1,localhost}}"
 bench_probe_verbose="${BENCH_PROBE_VERBOSE:-${AE_PROBE_VERBOSE:-1}}"
 bench_wait_runtime="${BENCH_WAIT_RUNTIME:-${BENCH_SPECS_EMPTY:-1}}"
+bench_podman_endpoint_prefer_direct_default="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +44,11 @@ while [[ $# -gt 0 ]]; do
       echo "[bench-env] unknown arg: $1" >&2; exit 2;;
   esac
 done
+
+if [[ "$controller_mode" == "sudo" ]]; then
+  bench_podman_endpoint_prefer_direct_default="1"
+fi
+bench_podman_endpoint_prefer_direct="${BENCH_PODMAN_ENDPOINT_PREFER_DIRECT:-${AE_PODMAN_ENDPOINT_PREFER_DIRECT:-$bench_podman_endpoint_prefer_direct_default}}"
 
 if [[ ${#manifests[@]} -eq 0 ]]; then
   manifests+=("specs/examples/echo.yaml")
@@ -333,6 +339,9 @@ if [[ "$controller_mode" == "sudo" ]]; then
   fi
   sudo env -i \
     PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" \
+    LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+    NIX_LD_LIBRARY_PATH="${NIX_LD_LIBRARY_PATH:-}" \
+    NIX_LD="${NIX_LD:-}" \
     PYTHON_BIN="$python_bin" \
     AE_PODMAN_BIN="$podman_bin" \
     PYTHONPATH="${PYTHONPATH:-$repo_root/src}" \
@@ -352,6 +361,7 @@ if [[ "$controller_mode" == "sudo" ]]; then
     no_proxy="$bench_no_proxy" \
     AE_PROBE_LOOPBACK_FALLBACK="$bench_probe_loopback" \
     AE_PROBE_VERBOSE="$bench_probe_verbose" \
+    AE_PODMAN_ENDPOINT_PREFER_DIRECT="$bench_podman_endpoint_prefer_direct" \
     BENCH_REPO_ROOT="$repo_root" \
     AE_SPECS_DIR="$spec_dir" \
     AE_STATE_DB="$state_db" \
@@ -424,6 +434,7 @@ export AE_DISABLE_INGRESS="${BENCH_DISABLE_INGRESS}"
 export AE_REGISTER_LOCAL_NODE="${bench_register_local_node}"
 export AE_PROBE_LOOPBACK_FALLBACK="${bench_probe_loopback}"
 export AE_PROBE_VERBOSE="${bench_probe_verbose}"
+export AE_PODMAN_ENDPOINT_PREFER_DIRECT="${bench_podman_endpoint_prefer_direct}"
 export BENCH_WAIT_RUNTIME="${bench_wait_runtime}"
 export NO_PROXY="${bench_no_proxy}"
 export no_proxy="${bench_no_proxy}"

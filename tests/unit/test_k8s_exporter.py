@@ -680,6 +680,7 @@ def test_pod_small_pass_throughs() -> None:
                     "share_process_namespace": True,
                     "host_network": True,
                     "node_selector": {"disktype": "ssd", "zone": "us-east-1a"},
+                    "runtime_class_name": "nvidia",
                 }
             )
         }
@@ -691,6 +692,7 @@ def test_pod_small_pass_throughs() -> None:
     assert pod.get("shareProcessNamespace") is True
     assert pod.get("hostNetwork") is True
     assert pod.get("nodeSelector") == {"disktype": "ssd", "zone": "us-east-1a"}
+    assert pod.get("runtimeClassName") == "nvidia"
     # setHostnameAsFQDN
     man2 = man.model_copy(
         update={"spec": man.spec.model_copy(update={"set_hostname_as_fqdn": True})}
@@ -722,6 +724,7 @@ def test_statefulset_carries_startup_probe_and_pull_secrets() -> None:
                     "health": man.spec.health.model_copy(update={"startup": startup2}),
                     "image_pull_policy": "Always",
                     "image_pull_secrets": ["private-reg"],
+                    "runtime_class_name": "nvidia",
                 }
             )
         }
@@ -733,6 +736,7 @@ def test_statefulset_carries_startup_probe_and_pull_secrets() -> None:
     assert c.get("startupProbe") and c.get("imagePullPolicy") == "Always"
     pod = sts["spec"]["template"]["spec"]
     assert pod.get("imagePullSecrets") == [{"name": "private-reg"}]
+    assert pod.get("runtimeClassName") == "nvidia"
 
 
 def test_nodeport_range_validation_raises() -> None:

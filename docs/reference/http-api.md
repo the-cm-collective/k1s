@@ -1,117 +1,41 @@
-# HTTP API Reference
+# HTTP API
 
-The controller exposes an HTTP API when started with `--metrics-port PORT`.
-By default, endpoints are read-only. Mutating endpoints can be enabled for dev/testing.
+The controller exposes a controller-native HTTP API when started with `--metrics-port PORT`. Use this surface for controller status, operational reads, and opt-in mutations. For Kubernetes-compatible discovery and `kubectl` / Helm flows, see [API Shim](api-shim.html).
 
-Base URL: `http://<host>:<port>`
+## Base URL
+- Local demo and docs flows usually expose `http://127.0.0.1:9108`.
+- Caddy and published control-plane surfaces usually expose `https://api.home.arpa:<port>`.
+- Browser-friendly controller schema surfaces are published at [Swagger](/swagger), [ReDoc](/redoc), and [OpenAPI JSON](/openapi.json).
 
-- GET `/metrics`
-  - Content-Type: `text/plain; version=0.0.4`
-  - Prometheus text format gauges:
-    - Apps/replicas: `ae_apps_total`, `ae_apps_ready`, `ae_apps_progressing`, `ae_apps_degraded`, `ae_replicas_total`, `ae_replicas_ready`, `ae_replicas_live`
-    - Nodes: `ae_nodes_total`, `ae_nodes_ready`, `ae_nodes_stale`
-    - Services: `ae_services_total` plus per-service labels (ClusterIP, provider)
-    - Shim/backends: `apishim_*` metrics (watchers, queue depth, backend) when the API shim is enabled
+## Public surfaces
+- `GET /metrics` exposes Prometheus metrics.
+- `GET /openapi.json`, `GET /docs`, `GET /swagger`, and `GET /redoc` stay public so the controller schema and browser UIs remain reachable even when bearer tokens are configured.
+- `GET /dashboard` and `GET /dashboard.js` are public when the simple dashboard is enabled. The dashboard shell is public, but the JSON and log endpoints it calls still follow the token rules below.
+- Auxiliary public JSON surfaces include `GET /ui/features` and `GET /__ae/version`.
 
-- GET `/status`
-  - Content-Type: `application/json`
-  - 200 OK: `{ "items": [ ... ], "next": "cursor" | null }`
-  - Query params: `limit`, `cursor`, `app`, `wildcard`
-  - Example item:
-    ```json
-    {
-      "app_name": "echo",
-      "desired_replicas": 1,
-      "ready_replicas": 1,
-      "live_replicas": 1,
-      "revision": 3,
-      "revision_status": "ready",
-      "image": "alpine:3.20",
-      "ingress_host": "echo.localtest.me",
-      "ingress_path": "/"
-    }
-    ```
+## Protected read surfaces
+- `GET /health`
+- `GET /status` and `GET /status/<app>`
+- `GET /manifest/<app>`, `GET /events/<app>`, and `GET /history/<app>`
+- `GET /nodes` and `GET /system`
+- `GET /logs/<app>` and `GET /logs/<app>/stream`
+- `GET /tls/verify`
+- When any controller token is configured, these read surfaces require at least `AE_API_READ_TOKEN` and may also honor per-app scope filters such as `AE_API_READ_SCOPE`.
 
-- GET `/status/<app>`
-  - 200 OK: JSON object (same shape as items in `/status`)
-  - 404 Not Found: when no status exists
+## Dev and mutation surfaces
+- `POST /plan` and `POST /dashboard/plan` are read-only planner endpoints used by the dashboard and labs UI. They require READ access when tokens are configured.
+- `POST /k8s/preview` is a dev-only exporter preview and stays disabled unless `AE_API_DEV_EXPORT=1`.
+- `POST /scale/<app>` requires scale or admin access plus `AE_API_MUTATIONS=1`.
+- `POST /delete/<app>`, `POST /rollout/pause/<app>`, `POST /rollout/resume/<app>`, `POST /apply`, and `POST /exec/<app>` require admin access plus `AE_API_MUTATIONS=1`.
 
-- GET `/nodes`
-  - 200 OK: `{ "nodes": [ { node_id, name, backend, endpoint, labels, taints, pod_cidr, cordoned, status, seen_at, stale }, ... ], "count": N, "stale_after_seconds": 40 }`
-  - Requires READ token when auth is configured.
+## Auth model
+- Public docs and schema surfaces remain reachable without a bearer token.
+- Operational reads are open by default, but become bearer-protected once any of `AE_API_READ_TOKEN`, `AE_API_SCALER_TOKEN`, or `AE_API_ADMIN_TOKEN` is configured.
+- Optional scope filters: `AE_API_READ_SCOPE`, `AE_API_SCALER_SCOPE`, and `AE_API_ADMIN_SCOPE`.
+- Optional expiry controls: `AE_API_*_TOKEN_EXPIRES`.
+- See [API Auth](api-auth.html) for token generation, TTL handling, controller mutation gating, and shim auth modes.
 
-- GET `/events/<app>?limit=N`
-  - 200 OK: JSON array of recent events for `<app>` (limit only; cursor is not implemented)
-  - Example item:
-    ```json
-    {
-      "app_name": "echo",
-      "revision": 3,
-      "event_type": "ApplyCompleted",
-      "message": "Revision 3 status ready",
-      "created_at": "2025-10-23T12:34:56+00:00"
-    }
-    ```
-
-- GET `/system` and `/dashboard`
-  - Aggregate snapshot for the dashboard UI including nodes, services, storage volumes, and token/mutation flags.
-
-Notes
-- Read-only by default; mutations require `AE_API_MUTATIONS=1` plus tokens.
-- `/plan` is a read-only POST endpoint used by the dashboard/labs UI; `/k8s/preview` requires `AE_API_DEV_EXPORT=1`.
-- The API shares the controller’s SQLite/Postgres store; results are eventually consistent with reconcile intervals.
-- When any token is set, all GETs require at least the READ token.
-
-Extras
-- GET `/openapi.json` — OpenAPI 3 document for controller endpoints.
-- GET `/docs` — Lightweight HTML that lists available paths by fetching `/openapi.json`.
-- When apishim is enabled, `/openapi/v3` and `/openapi/v2` expose the Kubernetes shim spec.
-
-Mutations (opt-in; dev only)
-
-- Enable by setting `AE_API_MUTATIONS=1` on the controller process.
-- Mutations require bearer tokens when auth is configured: `AE_API_SCALER_TOKEN` (scale) and `AE_API_ADMIN_TOKEN` (admin). Send `Authorization: Bearer <token>`.
-
-- POST `/scale/<app>`
-  - Body: `{ "replicas": <int> }`
-  - 200 OK: `{ app, replicas, revision, status, created, updated, removed }`
-
-- POST `/delete/<app>?purge=1`
-  - 200 OK: `{ app, removed, purged }`
-  - Deletes runtime containers and ingress; `purge=1` also deletes events and revisions for the app.
-
-- POST `/rollout/pause/<app>` and `/rollout/resume/<app>` (admin)
-- POST `/apply` (admin; JSON Deployment manifest)
-- POST `/exec/<app>` (admin; remote exec payload)
-
-
-AuthN/AuthZ (optional)
-
-- Set tokens in the controller environment to enable role-based access:
-  - `AE_API_READ_TOKEN` — read-only access
-  - `AE_API_SCALER_TOKEN` — can scale
-  - `AE_API_ADMIN_TOKEN` — can delete
-- When any token is configured, GETs require at least the READ token.
-- Mutations require tokens and `AE_API_MUTATIONS=1`.
-- Optional scoping: `AE_API_ADMIN_SCOPE` / `AE_API_SCALER_SCOPE` / `AE_API_READ_SCOPE` (comma‑separated glob patterns).
-- Optional expiry: `AE_API_*_TOKEN_EXPIRES` (UTC ISO8601).
-
-Endpoints
-- GET `/health` — Controller health summary (uptime, last reconcile, app/replica counts)
-- GET `/metrics` — Prometheus metrics
-- GET `/status` — Paginated list of app statuses
-  - Query: `limit`, `cursor`, `app`, `wildcard` (glob)
-  - Response: `{ items: [...], next: "cursor" | null }`
-- GET `/status/<app>` — JSON status object
-- GET `/manifest/<app>` — Latest stored manifest for an app
-- GET `/events/<app>?limit=N` — Recent events array
-- GET `/history/<app>?limit=N` — Probe history (readiness/liveness)
-- GET `/nodes` — Node inventory and staleness info
-- GET `/system` and `/dashboard` — Dashboard snapshot
-- POST `/plan` — Read-only planner (requires READ token when configured)
-- POST `/scale/<app>` — Body: `{ "replicas": <int> }` (requires scaler/admin)
-- POST `/delete/<app>?purge=1` — Delete app (requires admin)
-- POST `/rollout/pause/<app>` and `/rollout/resume/<app>` — Pause/resume rollouts (admin)
-- Logs: GET `/logs/<app>?container=&tail=&since=&follow=` (requires READ when tokens are configured)
-  - When `follow=1`, streams plain text lines; otherwise JSON: `{ lines: [...] }`
-  - SSE stream: GET `/logs/<app>/stream`
+## Related surfaces
+- Controller-native schema: [Swagger](/swagger), [ReDoc](/redoc), and [OpenAPI JSON](/openapi.json)
+- Kubernetes-compatible schema: [API Shim](api-shim.html), [API Shim Swagger](/swagger/apishim), [API Shim ReDoc](/redoc/apishim), and [OpenAPI v3](/openapi/v3)
+- `/openapi/v3` intentionally returns raw JSON. Use Swagger or ReDoc when you want a browser-oriented shim view.

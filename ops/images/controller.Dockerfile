@@ -12,7 +12,7 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy project
-COPY pyproject.toml README.md /app/
+COPY pyproject.toml README.md requirements.in /app/
 COPY src /app/src
 
 # Install package

@@ -69,7 +69,7 @@
       body.apps-collapsed #apps { border-right:0; padding-right:0; }
       .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
       .scrollbar-hide::-webkit-scrollbar { width:0; height:0; }
-      .hidden { display:none; }
+      .hidden { display:none !important; }
       #apps-list { display:block; overflow-y:auto; height: calc(100vh - (var(--header-h, 60px)) - 12px); padding:6px 6px 12px; }
       body.apps-collapsed #apps-list { display:none; }
       .ns-header { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#94a3b8; display:flex; align-items:center; gap:6px; margin:8px 6px 4px; }
@@ -122,6 +122,16 @@
       .banner { margin-top:8px; padding:6px 10px; border-radius:6px; font-size:12px; border:1px solid transparent; }
       .banner.warn { background:#fef3c733; color:#b45309; border-color:#f59e0b; }
       .banner.err { background:#fee2e233; color:#b91c1c; border-color:#ef4444; }
+      .ha-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+      .ha-subcard { border:1px solid rgba(148,163,184,0.2); border-radius:8px; padding:8px 10px; background:rgba(15,23,42,0.32); }
+      .ha-subcard strong { display:block; margin-bottom:6px; }
+      .ha-row { display:flex; justify-content:space-between; gap:8px; font-size:12px; line-height:1.4; padding:2px 0; }
+      .ha-row strong { font-weight:600; opacity:0.88; }
+      .ha-stack { display:flex; flex-direction:column; gap:8px; }
+      .ha-chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:rgba(15,23,42,0.45); border:1px solid rgba(148,163,184,0.24); }
+      .ha-site { border-top:1px solid rgba(148,163,184,0.16); padding-top:8px; margin-top:8px; }
+      .ha-site:first-child { border-top:none; padding-top:0; margin-top:0; }
+      .ha-meta { font-size:11px; color:#94a3b8; }
       /* Ensure flex children can shrink and let inner boxes scroll */
       .row.stretch > .card { min-width: 0; }
       .detail-card { flex: 0 0 320px; }
@@ -167,7 +177,8 @@
       h2 { font-size:14px; margin: 14px 4px 6px; opacity:0.9; }
       .divider { border-top:1px solid #8884; margin:16px 0; }
       footer.site-footer { margin: 0 12px 12px; border-top:1px solid #8884; padding-top:10px; opacity:.85; }
-      .hover-card { position:absolute; display:none; max-width:280px; font-size:12px; line-height:1.35; background:rgba(255,255,255,0.95); color:inherit; border:1px solid #888; border-radius:6px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,0.1); pointer-events:none; z-index: 1000; }
+      .hover-card { position:absolute; display:none; max-width:min(340px, calc(100% - 24px)); font-size:12px; line-height:1.35; background:rgba(255,255,255,0.95); color:inherit; border:1px solid #888; border-radius:6px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,0.1); pointer-events:none; z-index: 1000; overflow-wrap:anywhere; word-break:break-word; }
+      .hover-card code { white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
       @media (prefers-color-scheme: dark) { .hover-card { background:rgba(17,17,17,0.9); border-color:#555; } }
       .graph-surface {
         position:relative;
@@ -375,6 +386,33 @@
           <strong>System</strong>
           <div class="row" id="sys-counters" style="gap:10px; margin-top:6px; flex-wrap:wrap; justify-content:center;"></div>
         </div>
+        <div id="ha-section" class="card hidden" style="margin-top:12px;">
+          <div class="row" style="align-items:center; justify-content:space-between;">
+            <strong>HA Control Plane</strong>
+            <span id="ha-status-pill" class="pill"></span>
+          </div>
+          <div id="ha-issues-banner" class="banner hidden" role="status" aria-live="polite"></div>
+          <div id="ha-summary" class="row hidden" style="gap:10px; margin-top:8px; flex-wrap:wrap; justify-content:center;"></div>
+          <div id="ha-disabled-note" class="ha-meta hidden" style="margin-top:12px;"></div>
+          <div id="ha-grid" class="ha-grid hidden" style="margin-top:12px;">
+            <div class="ha-subcard">
+              <strong>Authority</strong>
+              <div id="ha-authority" class="ha-stack"></div>
+            </div>
+            <div class="ha-subcard">
+              <strong>Etcd</strong>
+              <div id="ha-etcd" class="ha-stack"></div>
+            </div>
+            <div class="ha-subcard">
+              <strong>Transport</strong>
+              <div id="ha-transport" class="ha-stack"></div>
+            </div>
+            <div class="ha-subcard">
+              <strong>Edge Sites</strong>
+              <div id="ha-edge-sites" class="ha-stack"></div>
+            </div>
+          </div>
+        </div>
         <div class="card" style="margin-top:12px;">
           <strong>Probe History</strong>
           <div id="probe-history" class="scrollcap scrollbar-hide" style="max-height:220px;"
@@ -425,6 +463,44 @@
                     stroke-width: 1.2;
                     pointer-events:none;
                   }
+                  .authority-member-pip .ha-pip-hit {
+                    fill: transparent;
+                    stroke: none;
+                    pointer-events: all;
+                  }
+                  .authority-member-pip .ha-pip-body {
+                    stroke-width:1.6;
+                  }
+                  .authority-member-pip .ha-pip-ring {
+                    fill:none;
+                    stroke:transparent;
+                    stroke-width:1.4;
+                  }
+                  .authority-member-pip.role-leader .ha-pip-body {
+                    fill:#22c55e;
+                    stroke:#dcfce7;
+                    filter: drop-shadow(0 0 5px rgba(34,197,94,0.45));
+                  }
+                  .authority-member-pip.role-standby .ha-pip-body {
+                    fill:#38bdf8;
+                    stroke:#dbeafe;
+                    filter: drop-shadow(0 0 4px rgba(56,189,248,0.35));
+                  }
+                  .authority-member-pip.role-unknown .ha-pip-body {
+                    fill:#64748b;
+                    stroke:#cbd5e1;
+                  }
+                  .authority-member-pip.local .ha-pip-ring {
+                    stroke:rgba(255,255,255,0.95);
+                    stroke-width:1.8;
+                  }
+                  .authority-member-pip.freshness-stale .ha-pip-ring {
+                    stroke:rgba(245,158,11,0.9);
+                    stroke-dasharray:2.2 1.4;
+                  }
+                  .authority-member-pip.freshness-unknown .ha-pip-ring {
+                    stroke:rgba(148,163,184,0.92);
+                  }
                   .site-panel { }
                   .site-panel.stale {
                     stroke:#f59e0b;
@@ -448,6 +524,26 @@
                   }
                   .node.node.stale .hex-inner { stroke: rgba(245,158,11,0.75); }
                   .node.node.stale .hex-label { fill: #fde68a; }
+                  .node.node.leader .hex-outer, .node.system.leader .hex-outer {
+                    stroke:#22c55e;
+                    stroke-width:6;
+                    filter: drop-shadow(0 0 10px rgba(34,197,94,0.45));
+                  }
+                  .node.node.leader .hex-inner, .node.system.leader .hex-inner {
+                    stroke: rgba(187,247,208,0.85);
+                  }
+                  .node.node.leader .hex-label, .node.system.leader .hex-label {
+                    fill:#dcfce7;
+                  }
+                  .node.node.standby .hex-outer, .node.system.standby .hex-outer {
+                    stroke:#38bdf8;
+                    stroke-width:6;
+                    stroke-dasharray:10 6;
+                    filter: drop-shadow(0 0 10px rgba(56,189,248,0.35));
+                  }
+                  .node.node.standby .hex-inner, .node.system.standby .hex-inner {
+                    stroke: rgba(125,211,252,0.75);
+                  }
                   .link { stroke:rgba(148,163,184,0.55); stroke-width:1.4; fill:none; marker-end:url(#arrow); }
                   .link.flow { stroke-dasharray:6 6; }
                   .link.trace { stroke:rgba(245,197,66,0.9); stroke-width:1.6; stroke-dasharray:4 6; marker-end:none; filter: drop-shadow(0 0 4px rgba(245,197,66,0.35)); }
@@ -471,6 +567,7 @@
               <g id="panels"></g>
               <g id="links"></g>
               <g id="nodes"></g>
+              <g id="overlays"></g>
               <g id="labels"></g>
             </svg>
             <div id="graph-legend" style="position:absolute; right:8px; top:8px; background:rgba(17,24,39,0.82); color:#e5e7eb; padding:6px 8px; border-radius:6px; border:1px solid #334155; backdrop-filter: blur(2px); font-size:12px; z-index:2;">
@@ -480,6 +577,7 @@
                 <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0b1220" stroke="#60a5fa" stroke-width="1.6"/></svg> Site</span>
                 <span><svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0b1220" stroke="#fbbf24" stroke-width="1.6"/></svg> Node (gateway)</span>
                 <span id="legend-namespace" title="Namespace: default" style="--ns-color:#3b82f6;"><svg width="16" height="16" viewBox="0 0 24 24"><path id="legend-namespace-hex" d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" fill="#0f172a" stroke="var(--ns-color)" stroke-width="1.6"/></svg> Namespace (current)</span>
+                <span id="legend-ha-members" class="hidden" title="HA control-plane members"><svg width="30" height="14" viewBox="0 0 30 14"><circle cx="7" cy="7" r="4.5" fill="#22c55e" stroke="#dcfce7" stroke-width="1.2"/><circle cx="15" cy="7" r="4.5" fill="#38bdf8" stroke="#dbeafe" stroke-width="1.2"/><circle cx="23" cy="7" r="4.5" fill="#38bdf8" stroke="#dbeafe" stroke-width="1.2"/><circle cx="23" cy="7" r="6.1" fill="none" stroke="#f8fafc" stroke-width="1.2"/></svg> HA members</span>
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#dcfce7" stroke="#16a34a"/></svg> Pod ready</span>
                 <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#fef3c7" stroke="#f59e0b"/></svg> Pod pending</span>
                 <span><svg width="30" height="8"><path d="M1 4 L22 4" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 6"/><polygon points="22,1 29,4 22,7" fill="#9ca3af"/></svg> Flow</span>
@@ -625,6 +723,7 @@ Connection: close
     </script>
     <script>
       var labsToken = __LABS_TOKEN__;
+      var dashboardToken = __DASHBOARD_TOKEN__;
       var apishimBase = __APISHIM_BASE__;
       var elApps = document.getElementById('apps');
       var elAppsList = document.getElementById('apps-list');
@@ -642,6 +741,7 @@ Connection: close
       var lastStatuses = [];
       var currentDetail = null;
       var graphHover = null;
+      var graphHoverOwner = null;
       var graphPathMode = (localStorage.getItem('graph_path_mode') || 'orth'); // 'orth' or 'straight'
       var graphNamespaceCollapse = (localStorage.getItem('graph_namespace_collapse') || '0') === '1';
       var graphNodeScaleMode = (localStorage.getItem('graph_node_scale') || 'compact'); // 'compact' or 'comfortable'
@@ -693,9 +793,63 @@ Connection: close
       var saveBtn = document.getElementById('save-token');
       var clearBtn = document.getElementById('clear-token');
       var authBanner = document.getElementById('auth-banner');
-      try { tokInput.value = localStorage.getItem('ae_token') || ''; } catch(e) {}
-      saveBtn.addEventListener('click', function(){ try { localStorage.setItem('ae_token', tokInput.value||''); } catch(e){}; window.location.reload(); });
-      clearBtn.addEventListener('click', function(){ try { localStorage.removeItem('ae_token'); } catch(e){}; window.location.reload(); });
+      var dashboardInteractiveToolsEnabled = true;
+      function bootstrapTokenDisabled(){
+        try { return (localStorage.getItem('ae_token_disable_bootstrap') || '') === '1'; } catch(e) { return false; }
+      }
+      function storedAuthToken(){
+        try { return localStorage.getItem('ae_token') || ''; } catch(e) { return ''; }
+      }
+      function bootstrapDashboardToken(){
+        if (bootstrapTokenDisabled()) return '';
+        return dashboardToken || labsToken || '';
+      }
+      try { tokInput.value = storedAuthToken() || bootstrapDashboardToken() || ''; } catch(e) {}
+      saveBtn.addEventListener('click', function(){
+        try {
+          if (tokInput.value) {
+            localStorage.setItem('ae_token', tokInput.value || '');
+            localStorage.removeItem('ae_token_disable_bootstrap');
+          } else {
+            localStorage.removeItem('ae_token');
+            localStorage.setItem('ae_token_disable_bootstrap', '1');
+          }
+        } catch(e){}
+        window.location.reload();
+      });
+      clearBtn.addEventListener('click', function(){
+        try {
+          localStorage.removeItem('ae_token');
+          localStorage.setItem('ae_token_disable_bootstrap', '1');
+        } catch(e){}
+        window.location.reload();
+      });
+
+      function setDashboardInteractiveToolsEnabled(enabled){
+        dashboardInteractiveToolsEnabled = enabled !== false;
+        ['btn-shell', 'btn-portforward'].forEach(function(id){
+          try {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.disabled = !dashboardInteractiveToolsEnabled;
+            el.classList.toggle('hidden', !dashboardInteractiveToolsEnabled);
+          } catch(e){}
+        });
+        if (!dashboardInteractiveToolsEnabled) {
+          try { closeShellModal(); } catch(e){}
+          try { closePfModal(); } catch(e){}
+        }
+      }
+
+      function loadDashboardFeatures(){
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r){ return r.ok ? r.json() : null; })
+          .then(function(features){
+            if (!features) return;
+            setDashboardInteractiveToolsEnabled(features.dashboard_interactive_tools !== false);
+          })
+          .catch(function(){});
+      }
 
       // UI prefs: hide healthy pills / compact counters
       var hideHealthy = false, compactCounters = false;
@@ -921,9 +1075,8 @@ Connection: close
       }
 
       function activeToken(){
-        var tok = '';
-        try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
-        if (!tok && labsToken) tok = labsToken;
+        var tok = storedAuthToken();
+        if (!tok) tok = bootstrapDashboardToken();
         return tok;
       }
 
@@ -943,11 +1096,7 @@ Connection: close
       }
 
       function sseToken(){
-        var tok = labsToken || '';
-        if (!tok) {
-          try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
-        }
-        return tok;
+        return activeToken();
       }
 
       if (window.htmx) {
@@ -992,11 +1141,7 @@ Connection: close
       }
 
       function shimAuthToken(){
-        var tok = labsToken || '';
-        if (!tok) {
-          try { tok = localStorage.getItem('ae_token') || ''; } catch(e) { tok = ''; }
-        }
-        return tok;
+        return labsToken || activeToken() || '';
       }
 
       function mintShimToken(role, scope){
@@ -1298,6 +1443,324 @@ Connection: close
       function escapeHtml(s){
         s = (s === null || s === undefined) ? '' : String(s);
         return s.replace(/[&<>]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]); });
+      }
+
+      function formatNumberCompact(value){
+        if (value === null || value === undefined || value === '') return '-';
+        var num = Number(value);
+        if (!isFinite(num)) return String(value);
+        if (Math.abs(num) >= 1000) return String(Math.round(num));
+        if (Math.round(num) === num) return String(num);
+        if (Math.abs(num) >= 10) return num.toFixed(1);
+        return num.toFixed(2).replace(/\.?0+$/, '');
+      }
+
+      function formatAgeShort(age){
+        if (age === null || age === undefined || age === '') return '-';
+        var val = Number(age);
+        if (!isFinite(val)) return '-';
+        if (val < 1) return val.toFixed(2) + 's';
+        if (val < 60) return formatNumberCompact(val) + 's';
+        if (val < 3600) return Math.round(val / 60) + 'm';
+        if (val < 86400) return Math.round(val / 3600) + 'h';
+        return Math.round(val / 86400) + 'd';
+      }
+
+      function renderHaRows(rows){
+        return (rows || []).map(function(row){
+          return '<div class="ha-row"><strong>' + escapeHtml(row.k) + '</strong><span>' + escapeHtml(row.v) + '</span></div>';
+        }).join('');
+      }
+
+      function authorityMembersFromSnapshot(authority){
+        var list = Array.isArray(authority && authority.members) ? authority.members : [];
+        return list.map(function(member){
+          if (!member) return null;
+          var controllerId = String(member.controller_id || '').trim();
+          if (!controllerId) return null;
+          var isLeader = !!member.is_leader || String(member.role || '').toLowerCase() === 'leader';
+          var role = isLeader ? 'leader' : 'standby';
+          var heartbeatAge = (member.last_heartbeat_age_s == null) ? null : Number(member.last_heartbeat_age_s);
+          if (heartbeatAge != null && !isFinite(heartbeatAge)) heartbeatAge = null;
+          var freshness = String(member.freshness || '').trim().toLowerCase();
+          if (freshness !== 'fresh' && freshness !== 'stale' && freshness !== 'unknown') {
+            freshness = (heartbeatAge == null) ? 'unknown' : 'fresh';
+          }
+          return {
+            controller_id: controllerId,
+            advertise_addr: String(member.advertise_addr || '').trim(),
+            version: String(member.version || '').trim(),
+            is_leader: isLeader,
+            is_local: !!member.is_local,
+            role: role,
+            last_heartbeat_at: String(member.last_heartbeat_at || '').trim(),
+            last_heartbeat_age_s: heartbeatAge,
+            freshness: freshness,
+            stale_after_seconds: (member.stale_after_seconds == null) ? null : Number(member.stale_after_seconds)
+          };
+        }).filter(Boolean);
+      }
+
+      function authorityMemberPillClass(member){
+        return (member && member.is_leader) ? 'ok' : 'warn';
+      }
+
+      function authorityMemberFreshness(member){
+        var freshness = String(member && member.freshness || '').toLowerCase();
+        if (freshness === 'stale' || freshness === 'unknown') return freshness;
+        return 'fresh';
+      }
+
+      function authorityMemberFreshnessPillClass(member){
+        var freshness = authorityMemberFreshness(member);
+        if (freshness === 'stale') return 'warn';
+        if (freshness === 'unknown') return '';
+        return 'ok';
+      }
+
+      function authorityMemberHeartbeatAgeText(member){
+        if (!member || member.last_heartbeat_age_s == null) return 'unknown';
+        return formatAgeShort(member.last_heartbeat_age_s) + ' ago';
+      }
+
+      function renderAuthorityMemberList(members){
+        return (members || []).map(function(member){
+          var badges = [
+            '<span class="pill ' + authorityMemberPillClass(member) + '">' + escapeHtml(member.role) + '</span>'
+          ];
+          if (member.is_local) badges.push('<span class="pill">local</span>');
+          badges.push('<span class="pill ' + authorityMemberFreshnessPillClass(member) + '">' + escapeHtml(authorityMemberFreshness(member)) + '</span>');
+          var meta = [];
+          if (member.advertise_addr) meta.push('advertise=' + member.advertise_addr);
+          if (member.version) meta.push('version=' + member.version);
+          meta.push('heartbeat age=' + authorityMemberHeartbeatAgeText(member));
+          return (
+            '<div class="ha-site">' +
+              '<div><strong>' + escapeHtml(member.controller_id) + '</strong> ' + badges.join(' ') + '</div>' +
+              (meta.length ? ('<div class="ha-meta">' + escapeHtml(meta.join(' · ')) + '</div>') : '') +
+            '</div>'
+          );
+        }).join('');
+      }
+
+      function formatAuthorityMemberHover(member){
+        if (!member) return null;
+        var lines = [];
+        lines.push('<div><strong>' + escapeHtml(member.controller_id || 'controller') + '</strong></div>');
+        lines.push('<div>role: <code>' + escapeHtml(member.role || (member.is_leader ? 'leader' : 'standby')) + '</code>' + (member.is_local ? ' · local' : '') + '</div>');
+        lines.push('<div>freshness: <code>' + escapeHtml(authorityMemberFreshness(member)) + '</code></div>');
+        lines.push('<div>heartbeat age: <code>' + escapeHtml(authorityMemberHeartbeatAgeText(member)) + '</code></div>');
+        if (member.last_heartbeat_at) {
+          lines.push('<div>last heartbeat: <code>' + escapeHtml(member.last_heartbeat_at) + '</code></div>');
+        }
+        if (member.advertise_addr) {
+          lines.push('<div>advertise: <code>' + escapeHtml(member.advertise_addr) + '</code></div>');
+        }
+        if (member.version) {
+          lines.push('<div>version: <code>' + escapeHtml(member.version) + '</code></div>');
+        }
+        return {
+          title: 'HA Member',
+          body: lines.join('')
+        };
+      }
+
+      function pillClassForSeverity(severity){
+        var sev = String(severity || '').toLowerCase();
+        if (sev === 'error' || sev === 'err' || sev === 'bad') return 'bad';
+        if (sev === 'warn' || sev === 'warning') return 'warn';
+        return 'ok';
+      }
+
+      function renderHaDashboard(sys){
+        var sectionEl = document.getElementById('ha-section');
+        var statusEl = document.getElementById('ha-status-pill');
+        var bannerEl = document.getElementById('ha-issues-banner');
+        var summaryEl = document.getElementById('ha-summary');
+        var noteEl = document.getElementById('ha-disabled-note');
+        var gridEl = document.getElementById('ha-grid');
+        var authorityEl = document.getElementById('ha-authority');
+        var etcdEl = document.getElementById('ha-etcd');
+        var transportEl = document.getElementById('ha-transport');
+        var sitesEl = document.getElementById('ha-edge-sites');
+        if (!sectionEl || !statusEl || !bannerEl || !summaryEl || !noteEl || !gridEl || !authorityEl || !etcdEl || !transportEl || !sitesEl) return;
+
+        var dashboardLayoutMode = String((((sys && sys.dashboard) ? sys.dashboard.layout_mode : '') || '')).toLowerCase();
+        if (dashboardLayoutMode !== 'site') {
+          sectionEl.classList.add('hidden');
+          statusEl.textContent = '-';
+          statusEl.className = 'pill';
+          bannerEl.className = 'banner hidden';
+          bannerEl.textContent = '';
+          summaryEl.innerHTML = '';
+          summaryEl.classList.add('hidden');
+          noteEl.textContent = '';
+          noteEl.classList.add('hidden');
+          gridEl.classList.add('hidden');
+          authorityEl.innerHTML = '';
+          etcdEl.innerHTML = '';
+          transportEl.innerHTML = '';
+          sitesEl.innerHTML = '';
+          return;
+        }
+
+        var ha = (sys && sys.ha) ? sys.ha : null;
+        if (!ha) {
+          sectionEl.classList.add('hidden');
+          statusEl.textContent = '-';
+          statusEl.className = 'pill';
+          bannerEl.className = 'banner hidden';
+          bannerEl.textContent = '';
+          summaryEl.innerHTML = '';
+          summaryEl.classList.add('hidden');
+          noteEl.textContent = '';
+          noteEl.classList.add('hidden');
+          gridEl.classList.add('hidden');
+          authorityEl.innerHTML = '';
+          etcdEl.innerHTML = '';
+          transportEl.innerHTML = '';
+          sitesEl.innerHTML = '';
+          return;
+        }
+        sectionEl.classList.remove('hidden');
+
+        var authority = ha.authority || {};
+        var authorityMembers = authorityMembersFromSnapshot(authority);
+        var etcd = ha.etcd || {};
+        var transport = ha.transport || {};
+        var jetstream = transport.jetstream || {};
+        var gateway = transport.gateway || {};
+        var routes = transport.routes || {};
+        var fence = transport.fence || {};
+        var hpa = ha.hpa || {};
+        var siteSummary = transport.site_summary || {};
+        var siteRows = Array.isArray(transport.sites) ? transport.sites : [];
+        var issues = Array.isArray(ha.issues) ? ha.issues : [];
+        var localRole = !ha.enabled ? 'disabled' : (authority.is_leader ? 'leader' : (authority.healthy ? 'standby' : 'degraded'));
+        statusEl.textContent = localRole;
+        statusEl.className = 'pill ' + (localRole === 'leader' ? 'ok' : (localRole === 'standby' ? 'warn' : (localRole === 'disabled' ? '' : 'bad')));
+
+        if (issues.length) {
+          var bannerClass = issues.some(function(issue){ return String(issue.severity || '').toLowerCase() === 'error'; }) ? 'banner err' : 'banner warn';
+          bannerEl.className = bannerClass;
+          bannerEl.innerHTML = issues.map(function(issue){
+            return '<span class="ha-chip ' + pillClassForSeverity(issue.severity) + '">' + escapeHtml(issue.code || 'issue') + '</span> ' + escapeHtml(issue.message || '');
+          }).join(' &nbsp; ');
+        } else {
+          bannerEl.className = 'banner hidden';
+          bannerEl.textContent = '';
+        }
+
+        if (!ha.enabled) {
+          summaryEl.innerHTML = '';
+          summaryEl.classList.add('hidden');
+          noteEl.textContent = 'HA disabled for this profile. Use make k1s-ha-core to view authority, etcd, transport, and edge site health.';
+          noteEl.classList.remove('hidden');
+          gridEl.classList.add('hidden');
+          authorityEl.innerHTML = '';
+          etcdEl.innerHTML = '';
+          transportEl.innerHTML = '';
+          sitesEl.innerHTML = '';
+          return;
+        }
+
+        summaryEl.classList.remove('hidden');
+        noteEl.textContent = '';
+        noteEl.classList.add('hidden');
+        gridEl.classList.remove('hidden');
+
+        var build = ha.controller_build || {};
+        var lastProbeAge = 'disabled';
+        if (etcd.probes_enabled) {
+          lastProbeAge = etcd.last_probe_ts ? (formatAgeShort((Date.now() / 1000) - Number(etcd.last_probe_ts || 0)) + ' ago') : 'pending';
+        }
+        var summary = [
+          {k:'HA Mode', v: ha.enabled ? 'enabled' : 'disabled'},
+          {k:'Authority', v: authority.healthy ? (authority.is_leader ? 'leader' : 'standby') : 'degraded'},
+          {k:'Leader', v: authority.leader_id || '-'},
+          {k:'Epoch', v: String(authority.controller_epoch != null ? authority.controller_epoch : '-')},
+          {k:'Build', v: (build.version || '-') + (build.sha ? (' @ ' + String(build.sha).slice(0, 7)) : '')},
+          {k:'Etcd', v: etcd.probes_enabled ? (String(etcd.healthy_endpoints || 0) + ' / ' + String((etcd.healthy_endpoints || 0) + (etcd.unhealthy_endpoints || 0))) : String((etcd.configured_endpoints || []).length) + ' cfg'},
+          {k:'JS Pending', v: formatNumberCompact(jetstream.pending)},
+          {k:'Replay Backlog', v: formatNumberCompact(gateway.result_replay_backlog)},
+          {k:'Route Ack', v: formatAgeShort(routes.max_ack_age_s)},
+          {k:'Fence Stale', v: formatNumberCompact(fence.stale_total)},
+          {k:'HPA Snapshot', v: formatAgeShort(hpa.snapshot_age_seconds)},
+        ];
+        summaryEl.innerHTML = summary.map(function(item){
+          return '<div class="pill" style="background:#0001">' + escapeHtml(item.k) + ': <strong>' + escapeHtml(item.v) + '</strong></div>';
+        }).join('');
+
+        authorityEl.innerHTML = renderHaRows([
+          {k:'Mode', v: ha.enabled ? 'HA enabled' : 'HA disabled'},
+          {k:'Controller', v: authority.controller_id || '-'},
+          {k:'Local Role', v: localRole},
+          {k:'Leader', v: authority.leader_id || '-'},
+          {k:'Advertise', v: authority.leader_advertise_addr || '-'},
+          {k:'Epoch', v: String(authority.controller_epoch != null ? authority.controller_epoch : '-')},
+          {k:'Members', v: String(authority.member_count != null ? authority.member_count : authorityMembers.length)},
+          {k:'Build', v: (build.version || '-') + (build.date ? (' (' + build.date + ')') : '')},
+        ]) + (authorityMembers.length ? renderAuthorityMemberList(authorityMembers) : '');
+
+        var etcdRows = [
+          {k:'Configured', v: String((etcd.configured_endpoints || []).length)},
+          {k:'Maintenance Runs', v: formatNumberCompact(etcd.maintenance_runs_total)},
+          {k:'Triggered', v: formatNumberCompact(etcd.maintenance_triggered_total)},
+          {k:'Last Probe', v: lastProbeAge},
+        ];
+        if (etcd.probes_enabled) {
+          etcdRows.push({k:'Healthy', v: String(etcd.healthy_endpoints || 0)});
+          etcdRows.push({k:'Unhealthy', v: String(etcd.unhealthy_endpoints || 0)});
+        }
+        var etcdMembers = Array.isArray(etcd.members) ? etcd.members : [];
+        var etcdDetail = etcdMembers.map(function(member){
+          return '<div class="ha-site"><div><strong>' + escapeHtml(member.name || member.endpoint || 'endpoint') + '</strong> <span class="pill ' + ((member.healthy) ? 'ok' : 'bad') + '">' + (member.healthy ? 'healthy' : 'down') + '</span></div><div class="ha-meta">' + escapeHtml(member.detail || '') + '</div></div>';
+        }).join('');
+        etcdEl.innerHTML = renderHaRows(etcdRows) + (etcdDetail || '');
+
+        var hubMonitors = transport.hub_monitors || {};
+        var edgeMonitors = transport.edge_monitors || {};
+        var transportBody = renderHaRows([
+          {k:'Backend', v: transport.backend || '-'},
+          {k:'JS Domain', v: transport.js_domain || '-'},
+          {k:'Outbox OK', v: formatNumberCompact((transport.outbox || {}).ok_total)},
+          {k:'Outbox Fail', v: formatNumberCompact((transport.outbox || {}).fail_total)},
+          {k:'JS Consumers', v: String(jetstream.consumer_count != null ? jetstream.consumer_count : '-')},
+          {k:'JS Ack Pending', v: formatNumberCompact(jetstream.ack_pending)},
+          {k:'Replay Backlog', v: formatNumberCompact(gateway.result_replay_backlog)},
+          {k:'Pending Sites', v: formatNumberCompact(routes.pending_sites)},
+          {k:'Max Ack Age', v: formatAgeShort(routes.max_ack_age_s)},
+          {k:'Fence Duplicate', v: formatNumberCompact(fence.duplicate_total)},
+        ]);
+        var transportNotes = [];
+        if (hubMonitors && (hubMonitors.nodes || hubMonitors.issues || hubMonitors.errors)) {
+          transportNotes.push('<div class="ha-site"><div><strong>Hub Monitors</strong></div><div class="ha-meta">nodes=' + escapeHtml(String((hubMonitors.nodes || []).length || 0)) + ', issues=' + escapeHtml(String((hubMonitors.issues || []).length || 0)) + ', errors=' + escapeHtml(String((hubMonitors.errors || []).length || 0)) + '</div></div>');
+        }
+        if (edgeMonitors && (edgeMonitors.sites || edgeMonitors.errors)) {
+          transportNotes.push('<div class="ha-site"><div><strong>Edge Monitors</strong></div><div class="ha-meta">sites=' + escapeHtml(String((edgeMonitors.sites || []).length || 0)) + ', errors=' + escapeHtml(String((edgeMonitors.errors || []).length || 0)) + '</div></div>');
+        }
+        transportEl.innerHTML = transportBody + transportNotes.join('');
+
+        if (!siteRows.length) {
+          sitesEl.innerHTML = '<div class="ha-meta">No site telemetry</div>';
+          return;
+        }
+        sitesEl.innerHTML = siteRows.map(function(site){
+          var gateways = Array.isArray(site.gateways) ? site.gateways : [];
+          var gatewayBuilds = gateways.map(function(gw){
+            var label = String(gw.node_id || 'gateway');
+            if (gw.version) label += ' @ ' + String(gw.version);
+            return label;
+          }).join(', ');
+          return '' +
+            '<div class="ha-site">' +
+              '<div><strong>' + escapeHtml(site.site_id || 'site') + '</strong> ' +
+                '<span class="pill ' + (site.stale ? 'warn' : 'ok') + '">' + (site.stale ? 'stale' : 'fresh') + '</span>' +
+              '</div>' +
+              '<div class="ha-meta">last seen ' + escapeHtml(formatAgeShort(site.last_seen_age_s)) + ', replay backlog ' + escapeHtml(formatNumberCompact(site.result_replay_backlog)) + ', route pending ' + escapeHtml(formatNumberCompact(site.publish_pending)) + ', ack age ' + escapeHtml(formatAgeShort(site.ack_age_s)) + '</div>' +
+              '<div class="ha-meta">gateways: ' + escapeHtml(String(site.gateway_count || gateways.length || 0)) + (gatewayBuilds ? (' | ' + escapeHtml(gatewayBuilds)) : '') + '</div>' +
+            '</div>';
+        }).join('');
       }
 
       function splitArgs(cmd){
@@ -1713,6 +2176,7 @@ Connection: close
       }
 
       function openShellModal(){
+        if (!dashboardInteractiveToolsEnabled) return;
         if (!shellModal) return;
         var sel = document.getElementById('shell-pod');
         fillReplicaSelect(sel);
@@ -2033,6 +2497,7 @@ Connection: close
       }
 
       function openPfModal(){
+        if (!dashboardInteractiveToolsEnabled) return;
         if (!pfModal) return;
         var sel = document.getElementById('pf-pod');
         fillReplicaSelect(sel);
@@ -2061,6 +2526,7 @@ Connection: close
       try { document.getElementById('pf-view-source').addEventListener('click', function(){ setPfView('source'); }); } catch(e){}
       try { document.getElementById('pf-view-preview').addEventListener('click', function(){ setPfView('preview'); }); } catch(e){}
       window.addEventListener('resize', function(){ if (shellModal && !shellModal.classList.contains('hidden')) { fitShellNow(); } });
+      loadDashboardFeatures();
 
       function updateLogsHTMX(){
         var el = document.getElementById('logs');
@@ -2356,6 +2822,7 @@ Connection: close
         return fetchJSON('/system').then(function(sys){
           lastSystem = sys;
           renderCounters(sys);
+          renderHaDashboard(sys);
           var sbody = document.querySelector('#tbl-services tbody');
           if(sbody){ sbody.innerHTML = (sys.services||[]).map(function(s){
             return '<tr><td>'+escapeHtml(s.app||'')+'</td><td>'+(s.port!=null?escapeHtml(String(s.port)):'-')+'</td><td>'+(s.target_port!=null?escapeHtml(String(s.target_port)):'-')+'</td><td>'+(s.replicas!=null?escapeHtml(String(s.replicas)):'-')+'</td></tr>';
@@ -2538,6 +3005,7 @@ Connection: close
         var svg = document.getElementById('sys-graph');
         if(!svg) return;
         graphHover = graphHover || document.getElementById('graph-hover');
+        graphHoverOwner = null;
         if (graphHover) { graphHover.style.display='none'; }
         var wrapEl = document.getElementById('graph-wrap');
         var W = svg.clientWidth || (wrapEl ? wrapEl.clientWidth : 1000) || 1000;
@@ -2560,6 +3028,42 @@ Connection: close
         var labelMeasureCtx = null;
         var transport = (sys && sys.transport) ? sys.transport : {};
         var siteDetails = (transport && transport.sites_detail) ? transport.sites_detail : {};
+        var ha = (sys && sys.ha) ? sys.ha : {};
+        var haAuthority = (ha && ha.authority) ? ha.authority : {};
+        var haAuthorityMembers = authorityMembersFromSnapshot(haAuthority);
+        var haTransport = (ha && ha.transport) ? ha.transport : {};
+        var siteRows = Array.isArray(haTransport.sites) ? haTransport.sites : [];
+        var siteRowById = {};
+        var gatewayInfoByKey = {};
+        var leaderId = String((haAuthority && (haAuthority.leader_id || '')) || '');
+        var localControllerRole = (!ha || !ha.enabled) ? 'disabled' : (haAuthority.is_leader ? 'leader' : (haAuthority.healthy ? 'standby' : 'degraded'));
+        siteRows.forEach(function(siteRow){
+          var siteId = String((siteRow && siteRow.site_id) || '');
+          if (!siteId) return;
+          siteRowById[siteId] = siteRow;
+          var gateways = Array.isArray(siteRow.gateways) ? siteRow.gateways : [];
+          gateways.forEach(function(gateway){
+            var nodeId = String((gateway && gateway.node_id) || '');
+            if (!nodeId) return;
+            gatewayInfoByKey[siteId + '|' + nodeId] = gateway;
+          });
+        });
+
+        function nodeMatchesLeader(nodeRec, siteId){
+          var wanted = String(leaderId || '').trim().toLowerCase();
+          if (!wanted) return false;
+          var labels = (nodeRec && nodeRec.labels) ? nodeRec.labels : {};
+          var candidates = [
+            nodeRec && (nodeRec.id || nodeRec.node_id),
+            nodeRec && nodeRec.name,
+            shortNodeName(nodeRec, siteId),
+            labels['ae.controller_id'],
+            labels['controller_id']
+          ];
+          return candidates.some(function(value){
+            return String(value || '').trim().toLowerCase() === wanted;
+          });
+        }
 
         function measureLabelText(text){
           if (!labelMeasureCtx) {
@@ -2584,6 +3088,34 @@ Connection: close
         function addNode(id, label, type, x, y, meta){
           var n={id:id,label:label,type:type,x:x,y:y,meta:meta||{}};
           nodes.push(n); nodeById[id]=n; return n;
+        }
+        function authorityMemberPipOffsets(count){
+          var total = Math.max(0, Math.min(3, Number(count || 0)));
+          var positions = [];
+          if (!total) return positions;
+          var edgeA = {x: 0, y: -56};
+          var edgeB = {x: 48.497, y: -28};
+          var tangent = {x: edgeB.x - edgeA.x, y: edgeB.y - edgeA.y};
+          var edgeLen = Math.sqrt((tangent.x * tangent.x) + (tangent.y * tangent.y)) || 1;
+          var outward = {x: tangent.y / edgeLen, y: -tangent.x / edgeLen};
+          var edgeInsetStart = 0.48;
+          var edgeInsetEnd = 0.98;
+          var normalInset = 7.5;
+          function at(t){
+            var clamped = Math.max(0, Math.min(1, t));
+            return {
+              x: edgeA.x + (tangent.x * clamped) + (outward.x * normalInset),
+              y: edgeA.y + (tangent.y * clamped) + (outward.y * normalInset)
+            };
+          }
+          if (total === 1) {
+            return [at((edgeInsetStart + edgeInsetEnd) / 2)];
+          }
+          for (var i = 0; i < total; i++) {
+            var ratio = i / Math.max(1, total - 1);
+            positions.push(at(edgeInsetStart + ((edgeInsetEnd - edgeInsetStart) * ratio)));
+          }
+          return positions;
         }
         function addLabel(id, text, x, y, color, textColor, anchor, size){
           labelNodes.push({id:id, text:text, x:x, y:y, color:color, textColor:textColor, anchor:anchor, size:size});
@@ -2830,7 +3362,15 @@ Connection: close
         var sysOffsets = clusterOffsets(4);
         sysLabels.forEach(function(label, idx){
           var off = sysOffsets[idx] || {x:0,y:0};
-          addNode(sysIds[idx], label, 'system', systemCenter.x + off.x, systemCenter.y + off.y, {system:sysIds[idx], coreHub:false});
+          var isControllerNode = sysIds[idx] === 'controller';
+          addNode(sysIds[idx], label, 'system', systemCenter.x + off.x, systemCenter.y + off.y, {
+            system:sysIds[idx],
+            coreHub:false,
+            leader: isControllerNode && localControllerRole === 'leader',
+            standby: isControllerNode && localControllerRole === 'standby',
+            authority: isControllerNode ? haAuthority : null,
+            member_pips: isControllerNode ? haAuthorityMembers : []
+          });
         });
         var sysLabelX = systemCenter.x;
         var sysLabelY = systemCenter.y - hexH * 0.5 - labelGap - labelLift;
@@ -2840,7 +3380,9 @@ Connection: close
         }
 
         var appNodes = [];
-        var useSiteLayout = false;
+        var dashboardLayoutMode = String((((sys && sys.dashboard) ? sys.dashboard.layout_mode : '') || '')).toLowerCase();
+        var useSiteLayout = dashboardLayoutMode === 'site';
+        var haLegendEl = document.getElementById('legend-ha-members');
         var siteMap = {};
         var coreNodes = [];
         var podsByNode = {};
@@ -2848,45 +3390,24 @@ Connection: close
         var appStatusByName = {};
         var appNodesByName = {};
 
-        if (sys && sys.nodes && sys.nodes.length) {
-          var hasSiteNodes = false;
-          var hasNonController = false;
-          var hasCoreProfile = false;
+        if (haLegendEl) haLegendEl.classList.toggle('hidden', !useSiteLayout);
+
+        if (useSiteLayout && sys && sys.nodes && sys.nodes.length) {
           sys.nodes.forEach(function(n){
             var labels = n.labels || {};
             var role = n.role || labels.role || '';
             var profile = n.profile || labels.profile || '';
             var siteId = siteIdFromNode(n);
             var isController = String(role || '').toLowerCase() === 'controller';
-            if (siteId) hasSiteNodes = true;
-            if (!isController) hasNonController = true;
-            if (String(profile || '').toLowerCase() === 'k1s-core') hasCoreProfile = true;
-          });
-          useSiteLayout = hasSiteNodes || hasNonController || hasCoreProfile;
-          if (useSiteLayout) {
-            sys.nodes.forEach(function(n){
-              var labels = n.labels || {};
-              var role = n.role || labels.role || '';
-              var profile = n.profile || labels.profile || '';
-              var siteId = siteIdFromNode(n);
-              var isController = String(role || '').toLowerCase() === 'controller';
-              var isCoreProfile = String(profile || '').toLowerCase() === 'k1s-core';
-              if (isController || (isCoreProfile && !siteId)) {
-                coreNodes.push(n);
-                return;
-              }
-              if (!siteId) return;
-              if (!siteMap[siteId]) siteMap[siteId] = [];
-              siteMap[siteId].push(n);
-            });
-          }
-        }
-        if (!useSiteLayout) {
-          try {
-            if (siteDetails && Object.keys(siteDetails).length) {
-              useSiteLayout = true;
+            var isCoreProfile = String(profile || '').toLowerCase() === 'k1s-core';
+            if (isController || (isCoreProfile && !siteId)) {
+              coreNodes.push(n);
+              return;
             }
-          } catch(e){}
+            if (!siteId) return;
+            if (!siteMap[siteId]) siteMap[siteId] = [];
+            siteMap[siteId].push(n);
+          });
         }
         if (useSiteLayout) {
           try {
@@ -3081,9 +3602,13 @@ Connection: close
             }
             var nodeId = nodeRec.id || nodeRec.node_id || shortNodeName(nodeRec, siteId);
             var nodeLabel = shortNodeName(nodeRec, siteId) || nodeId || 'node';
-            if (String(role || '').toLowerCase() === 'controller' && !labels.site) {
+            if (String(role || '').toLowerCase() === 'controller' && !labels.site && suppressNode) {
               nodeLabel = 'core';
             }
+            var siteRow = siteRowById[String(siteId || '')] || null;
+            var gatewayInfo = gatewayInfoByKey[String(siteId || '') + '|' + String(nodeId || '')] || null;
+            var isLeaderController = String(role || '').toLowerCase() === 'controller' && nodeMatchesLeader(nodeRec, siteId);
+            var isStandbyController = String(role || '').toLowerCase() === 'controller' && !!leaderId && !isLeaderController;
             var traceAnchorId = suppressNode ? 'runtime' : ('node:' + nodeId);
             var entries = [];
             var links = [];
@@ -3108,7 +3633,19 @@ Connection: close
                   profile: profile,
                   status: nodeRec.status,
                   backend: nodeRec.backend,
-                  labels: labels
+                  labels: labels,
+                  leader: isLeaderController,
+                  standby: isStandbyController,
+                  leader_id: leaderId || null,
+                  gateway_last_seen_age_s: gatewayInfo ? gatewayInfo.last_seen_age_s : null,
+                  gateway_build: gatewayInfo ? {
+                    version: gatewayInfo.version,
+                    sha: gatewayInfo.sha,
+                    date: gatewayInfo.date
+                  } : null,
+                  replay_backlog: siteRow ? siteRow.result_replay_backlog : null,
+                  route_pending: siteRow ? siteRow.publish_pending : null,
+                  ack_age_s: siteRow ? siteRow.ack_age_s : null
                 }
               });
             }
@@ -3436,7 +3973,7 @@ Connection: close
               var group = buildNodeGroup(
                 nodeRec,
                 siteIdFromNode(nodeRec) || 'core-hub',
-                {suppressNode: true, hideEmpty: true}
+                {suppressNode: false, hideEmpty: false}
               );
               if (group) coreGroups.push(group);
             });
@@ -3574,6 +4111,7 @@ Connection: close
             var baseY = siteLayout.y + siteLayout.padY + siteHeader;
             var siteColor = namespaceColors(siteId).color;
             var detail = (siteDetails && siteDetails[siteId]) ? siteDetails[siteId] : null;
+            var siteRow = siteRowById[siteId] || null;
             var siteStale = detail && detail.stale;
             var lastSeen = detail && detail.last_seen_age_s != null ? Number(detail.last_seen_age_s) : null;
             var lastSeenText = formatAge(lastSeen);
@@ -3611,6 +4149,11 @@ Connection: close
                 nodes: siteLayout.nodes,
                 stale: !!siteStale,
                 last_seen_age_s: lastSeen,
+                gateway_count: siteRow ? siteRow.gateway_count : siteLayout.nodes.length,
+                result_replay_backlog: siteRow ? siteRow.result_replay_backlog : null,
+                publish_pending: siteRow ? siteRow.publish_pending : null,
+                ack_age_s: siteRow ? siteRow.ack_age_s : null,
+                gateways: siteRow ? siteRow.gateways : null,
                 subtitle: siteStale ? ('stale' + (lastSeenText ? (' · ' + lastSeenText) : '')) : ''
               }
             );
@@ -4023,11 +4566,13 @@ Connection: close
         var gPanels = svg.querySelector('#panels');
         var gNodes = svg.querySelector('#nodes');
         var gLinks = svg.querySelector('#links');
+        var gOverlays = svg.querySelector('#overlays');
         var gLabels = svg.querySelector('#labels');
-        if(!gPanels||!gNodes||!gLinks||!gLabels) return;
+        if(!gPanels||!gNodes||!gLinks||!gOverlays||!gLabels) return;
         gPanels.innerHTML = '';
         gNodes.innerHTML = '';
         gLinks.innerHTML = '';
+        gOverlays.innerHTML = '';
         gLabels.innerHTML = '';
 
         function pointInRect(x, y, r){
@@ -4784,12 +5329,73 @@ Connection: close
           };
         }
 
+        function drawAuthorityMemberPips(n, localScale){
+          if (!gOverlays || !n || n.type !== 'system' || !n.meta || n.meta.system !== 'controller') return;
+          var authorityMembers = Array.isArray(n.meta.member_pips) ? n.meta.member_pips.slice(0, 3) : [];
+          if (!authorityMembers.length) return;
+          var pipOffsets = authorityMemberPipOffsets(authorityMembers.length);
+          authorityMembers.forEach(function(member, memberIdx){
+            var pos = pipOffsets[memberIdx];
+            if (!pos) return;
+            var pipGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+            var pipRole = String(member.role || (member.is_leader ? 'leader' : 'standby')).toLowerCase();
+            if (pipRole !== 'leader' && pipRole !== 'standby') pipRole = 'unknown';
+            var pipClass = 'authority-member-pip role-' + pipRole;
+            if (member.is_local) pipClass += ' local';
+            pipClass += ' freshness-' + authorityMemberFreshness(member);
+            pipGroup.setAttribute('class', pipClass);
+            pipGroup.setAttribute(
+              'transform',
+              'translate(' + (n.x + (pos.x * localScale)) + ' ' + (n.y + (pos.y * localScale)) + ')'
+            );
+            pipGroup.style.cursor = 'pointer';
+
+            var hit = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            hit.setAttribute('class', 'ha-pip-hit');
+            hit.setAttribute('cx', '0');
+            hit.setAttribute('cy', '0');
+            hit.setAttribute('r', String(8.5 * localScale));
+            pipGroup.appendChild(hit);
+
+            var ring = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            ring.setAttribute('class', 'ha-pip-ring');
+            ring.setAttribute('cx', '0');
+            ring.setAttribute('cy', '0');
+            ring.setAttribute('r', String(7 * localScale));
+            pipGroup.appendChild(ring);
+
+            var body = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            body.setAttribute('class', 'ha-pip-body');
+            body.setAttribute('cx', '0');
+            body.setAttribute('cy', '0');
+            body.setAttribute('r', String(5.1 * localScale));
+            pipGroup.appendChild(body);
+
+            pipGroup.addEventListener('mouseenter', function(ev){
+              ev.stopPropagation();
+              showAuthorityMemberHoverCard(member, ev);
+            });
+            pipGroup.addEventListener('mousemove', function(ev){
+              ev.stopPropagation();
+              showAuthorityMemberHoverCard(member, ev);
+            });
+            pipGroup.addEventListener('mouseleave', function(ev){
+              ev.stopPropagation();
+              hideHoverCard(graphAuthorityMemberHoverOwner(member));
+            });
+
+            gOverlays.appendChild(pipGroup);
+          });
+        }
+
         function drawHexNode(n){
           var g = document.createElementNS('http://www.w3.org/2000/svg','g');
           var extraClass = '';
           if ((n.type === 'site' || n.type === 'node') && n.meta && n.meta.stale) {
             extraClass = ' stale';
           }
+          if (n.meta && n.meta.leader) extraClass += ' leader';
+          else if (n.meta && n.meta.standby) extraClass += ' standby';
           g.setAttribute('class','node hex-node ' + n.type + extraClass);
           g.setAttribute('transform','translate(' + n.x + ' ' + n.y + ')');
           if (n.meta && n.meta.node_id) {
@@ -4930,6 +5536,8 @@ Connection: close
               if (roleVal && profileVal && roleVal !== profileVal) roleText = roleVal + ' · ' + profileVal;
               else if (roleVal) roleText = roleVal;
               else if (profileVal) roleText = profileVal;
+              if (n.meta && n.meta.leader) roleText = roleText ? (roleText + ' · leader') : 'leader';
+              else if (n.meta && n.meta.standby) roleText = roleText ? (roleText + ' · standby') : 'standby';
             } catch(e){ roleText = ''; }
             if (roleText) {
               var sub = document.createElementNS('http://www.w3.org/2000/svg','text');
@@ -4957,6 +5565,9 @@ Connection: close
             gInner.appendChild(subLabel);
           }
           gNodes.appendChild(g);
+          if (n.type === 'system' && n.meta && n.meta.system === 'controller') {
+            drawAuthorityMemberPips(n, localScale);
+          }
 
           var labelMax = hexW * 1.2 * scaleFactor;
           var labelInfo = fitTextToWidth(text, n.label, labelMax);
@@ -4973,58 +5584,15 @@ Connection: close
             lab.setAttribute('stroke-width','1.1');
             gInner.insertBefore(lab, text);
           } catch(e){}
-          var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-          if((n.meta && n.meta.app) || n.id.indexOf('app:')===0){
-            var ainfo = n.meta || {};
-            var info = [];
-            info.push('App: ' + (ainfo.app||n.label));
-            if (ainfo.ns) info.push('Namespace: ' + ainfo.ns);
-            if (ainfo.ready!=null || ainfo.desired!=null){
-              info.push('Pods: ' + (ainfo.ready||0) + '/' + (ainfo.desired||0));
-            }
-            if(ainfo.rev!=null) info.push('Revision: ' + ainfo.rev + ' (' + (ainfo.status||'-') + ')');
-            title.textContent = info.join(String.fromCharCode(10));
-          } else if (n.type === 'node') {
-            var ninfo = n.meta || {};
-            var lines = [];
-            lines.push('Node: ' + (ninfo.node_id || n.label || 'node'));
-            if (ninfo.site_id) lines.push('Site: ' + ninfo.site_id);
-            if (ninfo.role) lines.push('Role: ' + ninfo.role);
-            if (ninfo.profile) lines.push('Profile: ' + ninfo.profile);
-            if (ninfo.status) lines.push('Status: ' + ninfo.status);
-            if (ninfo.backend) lines.push('Backend: ' + ninfo.backend);
-            title.textContent = lines.join(String.fromCharCode(10));
-          } else if (n.type === 'site') {
-            var sinfo = n.meta || {};
-            var sLines = [];
-            sLines.push('Site: ' + (sinfo.site_id || n.label || 'site'));
-            if (sinfo.nodes && sinfo.nodes.length != null) {
-              sLines.push('Nodes: ' + String(sinfo.nodes.length));
-            }
-            if (sinfo.stale) {
-              sLines.push('Status: stale');
-            }
-            if (sinfo.last_seen_age_s != null) {
-              try {
-                sLines.push('Last seen: ' + formatAge(sinfo.last_seen_age_s));
-              } catch(e){}
-            }
-            title.textContent = sLines.join(String.fromCharCode(10));
-          } else {
-            title.textContent = labelInfo.full || String(n.label||'');
-          }
-          g.appendChild(title);
 
           if (n.type === 'app' && n.meta && n.meta.app) {
             g.addEventListener('mouseenter', function(){ setGraphHoverApp(n.meta.app); });
             g.addEventListener('mouseleave', function(){ clearGraphHoverApp(n.meta.app); });
           }
 
-          if(n.type==='system' && (n.id==='ingress' || n.id==='controller' || n.id==='runtime')){
-            g.addEventListener('mouseenter', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mousemove', function(ev){ showHoverCard(n.id, ev); });
-            g.addEventListener('mouseleave', function(){ hideHoverCard(); });
-          }
+          g.addEventListener('mouseenter', function(ev){ showGraphNodeHoverCard(n, ev); });
+          g.addEventListener('mousemove', function(ev){ showGraphNodeHoverCard(n, ev); });
+          g.addEventListener('mouseleave', function(){ hideHoverCard(graphNodeHoverOwner(n)); });
         }
 
         function drawPodNode(n){
@@ -5054,24 +5622,13 @@ Connection: close
             t.textContent = countText;
             g.appendChild(t);
           }
-          var title = document.createElementNS('http://www.w3.org/2000/svg','title');
-          var parts = [];
-          if(n.meta && n.meta.app) parts.push('App: '+n.meta.app);
-          if(n.meta && n.meta.ns) parts.push('Namespace: '+n.meta.ns);
-          if(n.meta && n.meta.node_id) parts.push('Node: '+n.meta.node_id);
-          if(isAggregate && n.meta){
-            parts.push('Pods: ' + String(n.meta.ready || 0) + '/' + String(n.meta.desired || n.meta.count || 0));
-          } else if(n.meta && n.meta.pod_name) {
-            parts.push('Pod: '+n.meta.pod_name);
-          }
-          parts.push('State: ' + (n.meta && n.meta.state ? n.meta.state : n.label));
-          if(n.meta && n.meta.status) parts.push('Status: '+n.meta.status);
-          title.textContent = parts.join(String.fromCharCode(10));
-          g.appendChild(title);
           if (n.meta && n.meta.app) {
             g.addEventListener('mouseenter', function(){ setGraphHoverApp(n.meta.app); });
             g.addEventListener('mouseleave', function(){ clearGraphHoverApp(n.meta.app); });
           }
+          g.addEventListener('mouseenter', function(ev){ showGraphNodeHoverCard(n, ev); });
+          g.addEventListener('mousemove', function(ev){ showGraphNodeHoverCard(n, ev); });
+          g.addEventListener('mouseleave', function(){ hideHoverCard(graphNodeHoverOwner(n)); });
           gNodes.appendChild(g);
         }
 
@@ -5158,6 +5715,13 @@ Connection: close
         labelNodes.forEach(drawLabel);
 
         var sysHelp = {
+          dns: {
+            title:'DNS',
+            body:[
+              'Resolves service and ingress names for the local control plane.',
+              'Provides the lookup path the core hub uses while routing internal traffic.'
+            ].join('<br>')
+          },
           ingress: {
             title:'Ingress (Caddy)',
             body:[
@@ -5169,13 +5733,40 @@ Connection: close
           },
           controller: {
             title:'Controller',
-            body:[
-              'Reconciliation loop for registered apps (imported from specs/).',
+            body:(function(){
+              var lines = [
+              'Reconciliation loop for registered apps from controller desired state.',
               'Computes desired state and converges containers and ingress.',
               'Single-node rollout: maxUnavailable=0, maxSurge=1 (zero-downtime).',
               'Records events, exposes /status, /events, /metrics, and serves the dashboard.',
               'Cleans up old revisions after switching traffic.'
-            ].join('<br>')
+              ];
+              if (ha && ha.enabled) {
+                lines.splice(1, 0, 'HA uses shared etcd-backed controller state; local specs import is disabled.');
+                lines.unshift('Local role: <code>' + escapeHtml(localControllerRole) + '</code>');
+                if (haAuthority.leader_id) lines.unshift('Leader: <code>' + escapeHtml(haAuthority.leader_id) + '</code>');
+                lines.push('Epoch: <code>' + escapeHtml(String(haAuthority.controller_epoch != null ? haAuthority.controller_epoch : '-')) + '</code>');
+                if (haAuthorityMembers.length) {
+                  lines.push('<strong>Members</strong>');
+                  haAuthorityMembers.forEach(function(member){
+                    var memberLine = '<code>' + escapeHtml(member.controller_id) + '</code> · ' + escapeHtml(member.role);
+                    if (member.is_local) memberLine += ' · local';
+                    memberLine += ' · freshness=' + escapeHtml(authorityMemberFreshness(member));
+                    memberLine += ' · heartbeat age=' + escapeHtml(authorityMemberHeartbeatAgeText(member));
+                    if (member.advertise_addr) {
+                      memberLine += ' · <code>' + escapeHtml(member.advertise_addr) + '</code>';
+                    }
+                    if (member.version) {
+                      memberLine += ' · <code>' + escapeHtml(member.version) + '</code>';
+                    }
+                    lines.push(memberLine);
+                  });
+                }
+              } else {
+                lines.splice(1, 0, 'Local specs import feeds the registry in single-node and dev flows.');
+              }
+              return lines.join('<br>');
+            })()
           },
           runtime: {
             title:'Runtime (Docker)',
@@ -5187,6 +5778,197 @@ Connection: close
             ].join('<br>')
           }
         };
+
+        function formatHoverLines(lines){
+          return (lines || []).filter(function(line){
+            return line != null && line !== '';
+          }).map(function(line){
+            return '<div>' + line + '</div>';
+          }).join('');
+        }
+
+        function graphNodeHoverOwner(n){
+          return 'graph-node:' + String((n && n.type) || 'node') + ':' + String((n && n.id) || '');
+        }
+
+        function graphOverlayHoverOwner(ol){
+          return 'overlay:' + String((ol && ol.from) || '') + '>' + String((ol && ol.to) || '');
+        }
+
+        function graphAuthorityMemberHoverOwner(member){
+          return 'ha-member:' + String((member && member.controller_id) || '');
+        }
+
+        function formatGraphNodeHover(n){
+          if (!n) return null;
+          var meta = n.meta || {};
+          if (n.type === 'system') {
+            var systemInfo = sysHelp[n.id];
+            if (systemInfo) return systemInfo;
+            return {
+              title: escapeHtml(String(n.label || 'System')),
+              body: ''
+            };
+          }
+          if (n.type === 'host') {
+            return {
+              title: 'Host',
+              body: formatHoverLines([
+                'name: <code>' + escapeHtml(String(n.label || meta.title || 'host')) + '</code>'
+              ])
+            };
+          }
+          if (n.type === 'pod') {
+            var podLines = [];
+            if (meta.app) podLines.push('app: <code>' + escapeHtml(String(meta.app)) + '</code>');
+            if (meta.ns) podLines.push('namespace: <code>' + escapeHtml(String(meta.ns)) + '</code>');
+            if (meta.node_id) podLines.push('node: <code>' + escapeHtml(String(meta.node_id)) + '</code>');
+            if (meta.count != null) {
+              podLines.push('pods: <code>' + escapeHtml(String(meta.ready || 0)) + '/' + escapeHtml(String(meta.desired || meta.count || 0)) + '</code>');
+            } else if (meta.pod_name) {
+              podLines.push('name: <code>' + escapeHtml(String(meta.pod_name)) + '</code>');
+            }
+            podLines.push('state: <code>' + escapeHtml(String(meta.state || n.label || 'unknown')) + '</code>');
+            if (meta.status) podLines.push('status: <code>' + escapeHtml(String(meta.status)) + '</code>');
+            return {
+              title: meta.count != null ? 'Pods' : 'Pod',
+              body: formatHoverLines(podLines)
+            };
+          }
+          if (n.type === 'app' || n.id.indexOf('app:') === 0) {
+            var appLines = [];
+            var appName = String(meta.app || n.label || 'app');
+            if (meta.ns) appLines.push('namespace: <code>' + escapeHtml(String(meta.ns)) + '</code>');
+            if (meta.ready != null || meta.desired != null) {
+              appLines.push('pods: <code>' + escapeHtml(String(meta.ready || 0)) + '/' + escapeHtml(String(meta.desired || 0)) + '</code>');
+            }
+            if (meta.rev != null) {
+              appLines.push('revision: <code>' + escapeHtml(String(meta.rev)) + '</code> (' + escapeHtml(String(meta.status || '-')) + ')');
+            } else if (meta.status) {
+              appLines.push('status: <code>' + escapeHtml(String(meta.status)) + '</code>');
+            }
+            return {
+              title: 'App: ' + escapeHtml(appName),
+              body: formatHoverLines(appLines)
+            };
+          }
+          if (n.type === 'node') {
+            var nodeLines = [];
+            nodeLines.push('site: <code>' + escapeHtml(String(meta.site_id || '-')) + '</code>');
+            if (meta.role) nodeLines.push('role: <code>' + escapeHtml(String(meta.role)) + '</code>');
+            if (meta.leader) nodeLines.push('authority: <code>leader</code>');
+            else if (meta.standby) nodeLines.push('authority: <code>standby</code>');
+            if (meta.profile) nodeLines.push('profile: <code>' + escapeHtml(String(meta.profile)) + '</code>');
+            if (meta.status) nodeLines.push('status: <code>' + escapeHtml(String(meta.status)) + '</code>');
+            if (meta.backend) nodeLines.push('backend: <code>' + escapeHtml(String(meta.backend)) + '</code>');
+            if (meta.gateway_last_seen_age_s != null) nodeLines.push('gateway seen: ' + escapeHtml(formatAge(meta.gateway_last_seen_age_s)));
+            if (meta.gateway_build && meta.gateway_build.version) {
+              var buildText = String(meta.gateway_build.version || '');
+              if (meta.gateway_build.sha) buildText += ' @ ' + String(meta.gateway_build.sha).slice(0, 7);
+              nodeLines.push('gateway build: <code>' + escapeHtml(buildText) + '</code>');
+            }
+            if (meta.replay_backlog != null) nodeLines.push('replay backlog: <code>' + escapeHtml(formatNumberCompact(meta.replay_backlog)) + '</code>');
+            if (meta.route_pending != null) nodeLines.push('route pending: <code>' + escapeHtml(formatNumberCompact(meta.route_pending)) + '</code>');
+            if (meta.ack_age_s != null) nodeLines.push('ack age: ' + escapeHtml(formatAge(meta.ack_age_s)));
+            return {
+              title: 'Node: ' + escapeHtml(String(meta.node_id || n.label || 'node')),
+              body: formatHoverLines(nodeLines)
+            };
+          }
+          if (n.type === 'site') {
+            var siteLines = [];
+            if (meta.nodes && meta.nodes.length != null) {
+              siteLines.push('nodes: <code>' + escapeHtml(String(meta.nodes.length)) + '</code>');
+            }
+            if (meta.gateway_count != null) siteLines.push('gateways: <code>' + escapeHtml(String(meta.gateway_count)) + '</code>');
+            if (meta.stale) siteLines.push('status: <code>stale</code>');
+            if (meta.last_seen_age_s != null) {
+              try {
+                siteLines.push('last seen: ' + escapeHtml(formatAge(meta.last_seen_age_s)));
+              } catch(e){}
+            }
+            if (meta.result_replay_backlog != null) siteLines.push('replay backlog: <code>' + escapeHtml(formatNumberCompact(meta.result_replay_backlog)) + '</code>');
+            if (meta.publish_pending != null) siteLines.push('route pending: <code>' + escapeHtml(formatNumberCompact(meta.publish_pending)) + '</code>');
+            if (meta.ack_age_s != null) siteLines.push('ack age: ' + escapeHtml(formatAge(meta.ack_age_s)));
+            return {
+              title: 'Site: ' + escapeHtml(String(meta.site_id || n.label || 'site')),
+              body: formatHoverLines(siteLines)
+            };
+          }
+          if (n.type === 'namespace') {
+            var nsLines = [];
+            var countMatch = String(n.label || '').match(/\((\d+)\)\s*$/);
+            if (countMatch && countMatch[1]) {
+              nsLines.push('apps: <code>' + escapeHtml(String(countMatch[1])) + '</code>');
+            }
+            return {
+              title: 'Namespace: ' + escapeHtml(String(meta.ns || n.label || 'namespace')),
+              body: formatHoverLines(nsLines)
+            };
+          }
+          return {
+            title: escapeHtml(String(n.label || 'Node')),
+            body: ''
+          };
+        }
+
+        function formatHoverCardHtml(info){
+          if (!info) return '';
+          var html = '<div style="font-weight:600; margin-bottom:4px;">' + String(info.title || '') + '</div>';
+          if (info.body) html += '<div>' + info.body + '</div>';
+          return html;
+        }
+
+        function hoverCardPosition(evt, cardWidth, cardHeight){
+          var wrap = document.getElementById('graph-wrap');
+          if (!wrap || !evt) return {x: 10, y: 10};
+          var rect = wrap.getBoundingClientRect();
+          var inset = 8;
+          var gap = 10;
+          var wrapWidth = Math.max(0, wrap.clientWidth || rect.width || 0);
+          var wrapHeight = Math.max(0, wrap.clientHeight || rect.height || 0);
+          var width = Math.max(0, Number(cardWidth || 0));
+          var height = Math.max(0, Number(cardHeight || 0));
+          var x = (evt.clientX - rect.left) + gap;
+          var y = (evt.clientY - rect.top) + gap;
+          if (x + width > wrapWidth - inset) {
+            x = (evt.clientX - rect.left) - gap - width;
+          }
+          if (y + height > wrapHeight - inset) {
+            y = (evt.clientY - rect.top) - gap - height;
+          }
+          var maxX = Math.max(inset, wrapWidth - inset - width);
+          var maxY = Math.max(inset, wrapHeight - inset - height);
+          return {
+            x: Math.min(Math.max(inset, x), maxX),
+            y: Math.min(Math.max(inset, y), maxY)
+          };
+        }
+
+        function showGraphHoverInfo(owner, info, evt){
+          if (!graphHover || !info || !owner) return;
+          if (
+            graphHoverOwner &&
+            graphHoverOwner !== owner &&
+            graphHoverOwner.indexOf('ha-member:') === 0
+          ) {
+            return;
+          }
+          graphHoverOwner = owner;
+          graphHover.innerHTML = formatHoverCardHtml(info);
+          graphHover.style.left = '0px';
+          graphHover.style.top = '0px';
+          graphHover.style.visibility = 'hidden';
+          graphHover.style.display = 'block';
+          var pos = hoverCardPosition(evt, graphHover.offsetWidth, graphHover.offsetHeight);
+          graphHover.style.left = pos.x + 'px';
+          graphHover.style.top = pos.y + 'px';
+          graphHover.style.visibility = 'visible';
+        }
+
+        function showGraphNodeHoverCard(n, evt){
+          showGraphHoverInfo(graphNodeHoverOwner(n), formatGraphNodeHover(n), evt);
+        }
 
         function formatOverlayLink(ol){
           if (!ol) return null;
@@ -5212,33 +5994,30 @@ Connection: close
         }
 
         function showHoverCard(kind, evt){
-          if (!graphHover) return;
-          var wrap = document.getElementById('graph-wrap');
-          var rect = wrap.getBoundingClientRect();
-          var x = (evt.clientX - rect.left) + 10;
-          var y = (evt.clientY - rect.top) + 10;
           var info = sysHelp[kind];
           if (!info) return;
-          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
-          graphHover.style.left = x + 'px';
-          graphHover.style.top = y + 'px';
-          graphHover.style.display = 'block';
+          showGraphHoverInfo('system:' + String(kind || ''), info, evt);
         }
 
         function showOverlayHoverCard(ol, evt){
-          if (!graphHover) return;
           var info = formatOverlayLink(ol);
           if (!info) return;
-          var wrap = document.getElementById('graph-wrap');
-          var rect = wrap.getBoundingClientRect();
-          var x = (evt.clientX - rect.left) + 10;
-          var y = (evt.clientY - rect.top) + 10;
-          graphHover.innerHTML = '<div style="font-weight:600; margin-bottom:4px;">'+info.title+'</div><div>'+info.body+'</div>';
-          graphHover.style.left = x + 'px';
-          graphHover.style.top = y + 'px';
-          graphHover.style.display = 'block';
+          showGraphHoverInfo(graphOverlayHoverOwner(ol), info, evt);
         }
-        function hideHoverCard(){ if (graphHover) graphHover.style.display='none'; }
+
+        function showAuthorityMemberHoverCard(member, evt){
+          var info = formatAuthorityMemberHover(member);
+          if (!info) return;
+          showGraphHoverInfo(graphAuthorityMemberHoverOwner(member), info, evt);
+        }
+        function hideHoverCard(owner){
+          if (owner && graphHoverOwner !== owner) return;
+          graphHoverOwner = null;
+          if (graphHover) {
+            graphHover.style.display='none';
+            graphHover.style.visibility='hidden';
+          }
+        }
 
         // Highlight selection
         try {

@@ -1,0 +1,33 @@
+apiVersion: ae.dev/v1alpha1
+kind: InferenceCell
+metadata:
+  name: cell-bc-pp2-mp
+  namespace: default
+spec:
+  model:
+    modelId: llama-3.1-8b
+    localPath: /models/llama-3.1-8b
+  parallelism:
+    tp: 1
+    pp: 2
+  executor:
+    type: mp
+    fallbackMode: none
+    runtimeClassName: nvidia
+  fabric:
+    mode: lan_direct
+    policyMode: strict_ports
+    ttlSeconds: 300
+  members:
+    - siteId: edge-b
+      nodeId: edge-b--gpu-1
+      gpuCount: 1
+    - siteId: edge-c
+      nodeId: edge-c--gpu-1
+      gpuCount: 1
+  linkMetrics:
+    - fromSite: edge-b
+      toSite: edge-c
+      rttP95Ms: 2.0
+      jitterP95Ms: 0.2
+      lossPct: 0.0

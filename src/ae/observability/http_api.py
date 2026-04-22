@@ -27,6 +27,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ae import build_info as AE_BUILD_INFO
+from ae.controller.authority import AuthorityConfig, NotLeaderError
+from ae.controller.state import RegistryConflictError
 from ae.controller.state import SQLiteStateStore
 from ae.observability.metrics import MetricsService
 from ae.resources import loader as resource_loader
@@ -58,10 +61,24 @@ _APP_CANARY_STEPS: dict[str, int] = {}
 _OUTBOX_PUBLISH_OK: int = 0
 _OUTBOX_PUBLISH_FAIL: int = 0
 _SITE_LAST_SEEN: dict[str, float] = {}
+_SITE_GATEWAY_LAST_SEEN: dict[tuple[str, str], float] = {}
+_SITE_GATEWAY_BUILD_INFO: dict[tuple[str, str], tuple[str, str, str]] = {}
 _JS_STREAM_STATS: dict[str, dict[str, float]] = {}
 _JS_CONSUMER_STATS: dict[tuple[str, str], dict[str, object]] = {}
 _GATEWAY_WORK_METRICS: dict[str, dict[str, float]] = {}
 _ROUTE_BUNDLE_METRICS: dict[str, dict[str, float]] = {}
+_HA_FENCE_METRICS: dict[str, dict[str, float]] = {}
+_HPA_ACTIVITY_METRICS: dict[str, float] = {
+    "reconcile_total": 0.0,
+    "scale_total": 0.0,
+    "metrics_stale_total": 0.0,
+    "metrics_missing_total": 0.0,
+    "snapshot_age_seconds": 0.0,
+}
+_HEARTBEAT_WRITES_TOTAL: float = 0.0
+_HEARTBEAT_NODE_REWRITES_TOTAL: float = 0.0
+_ETCD_MAINTENANCE_RUNS_TOTAL: float = 0.0
+_ETCD_MAINTENANCE_TRIGGERED_TOTAL: float = 0.0
 
 
 def _read_env_file_var(path: str, key: str) -> str:
@@ -108,6 +125,7 @@ def _resolve_apishim_verify() -> bool | str:
         os.getenv("AE_APISHIM_CA_BUNDLE")
         or os.getenv("AE_APISHIM_CA")
         or os.getenv("AE_APISHIM_TLS_CA")
+        or os.getenv("AE_APISHIM_TLS_CA_CERT")
         or ""
     ).strip()
     if override:
@@ -117,29 +135,73 @@ def _resolve_apishim_verify() -> bool | str:
                 return str(path)
         except Exception:
             pass
-    cert_hint = (os.getenv("AE_APISHIM_TLS_CERT") or "").strip()
-    if cert_hint:
-        try:
-            path = Path(cert_hint)
-            if path.exists():
-                return str(path)
-        except Exception:
-            pass
     try:
         env_file = _resolve_apishim_env_file()
         if env_file:
-            candidate = Path(env_file).parent / "apishim.crt"
+            candidate = Path(env_file).parent / "apishim.ca.crt"
             if candidate.exists():
                 return str(candidate)
     except Exception:
         pass
-    for path in ("state/profiles/labs/apishim.crt", "state/certs/combined-dev-ca.pem"):
+    for path in ("state/profiles/labs/apishim.ca.crt", "state/certs/combined-dev-ca.pem"):
         try:
             if Path(path).exists():
                 return path
         except Exception:
             continue
     return False
+
+
+def _resolve_apishim_server(*, env_file: str = "", default_port: int | None = None) -> str:
+    for key in ("AE_APISHIM_SERVER", "AE_LABS_HELM_SERVER"):
+        value = str(os.getenv(key, "") or "").strip()
+        if value:
+            return value.rstrip("/")
+    if env_file:
+        for key in ("AE_APISHIM_SERVER", "AE_LABS_HELM_SERVER"):
+            value = _read_env_file_var(env_file, key)
+            if value:
+                return value.rstrip("/")
+    try:
+        port = int(default_port or 8455)
+    except Exception:
+        port = 8455
+    return f"https://127.0.0.1:{port}"
+
+
+def _resolve_apishim_admin_token(*, env_file: str = "") -> str:
+    for key in ("AE_APISHIM_TOKEN", "AE_LABS_HELM_TOKEN"):
+        value = str(os.getenv(key, "") or "").strip()
+        if value:
+            return value
+    if env_file:
+        for key in ("AE_APISHIM_TOKEN", "AE_LABS_HELM_TOKEN"):
+            value = _read_env_file_var(env_file, key)
+            if value:
+                return value
+    return str(_HELM_DEMO_STATE.get("token") or "").strip()
+
+
+def _resolve_apishim_store_config(*, env_file: str = "") -> tuple[str, str]:
+    dsn = str(os.getenv("AE_APISHIM_DSN", "") or "").strip()
+    if not dsn and env_file:
+        dsn = _read_env_file_var(env_file, "AE_APISHIM_DSN")
+    db_path = str(os.getenv("AE_APISHIM_DB", "") or "").strip()
+    if not db_path and env_file:
+        db_path = _read_env_file_var(env_file, "AE_APISHIM_DB")
+    if not db_path and env_file:
+        try:
+            db_path = str(Path(env_file).with_suffix(".db"))
+        except Exception:
+            db_path = ""
+    if not db_path:
+        db_path = "state/apishim.db"
+    return dsn, db_path
+
+
+def _describe_apishim_target(group: str, version: str, resource: str) -> str:
+    prefix = f"{group}/{version}" if group else version
+    return f"{prefix}/{resource}"
 
 
 def record_outbox_publish(success: bool) -> None:
@@ -150,10 +212,35 @@ def record_outbox_publish(success: bool) -> None:
         _OUTBOX_PUBLISH_FAIL += 1
 
 
-def record_site_seen(site_id: str) -> None:
+def record_site_seen(site_id: str, *, node_id: str | None = None) -> None:
     if not site_id:
         return
-    _SITE_LAST_SEEN[site_id] = time.time()
+    now = time.time()
+    _SITE_LAST_SEEN[site_id] = now
+    node_name = str(node_id or "").strip()
+    if node_name:
+        _SITE_GATEWAY_LAST_SEEN[(site_id, node_name)] = now
+
+
+def record_gateway_identity(
+    site_id: str,
+    node_id: str | None,
+    *,
+    version: str | None,
+    sha: str | None,
+    date: str | None,
+) -> None:
+    if not site_id:
+        return
+    node_name = str(node_id or "").strip()
+    if not node_name:
+        return
+    _SITE_GATEWAY_LAST_SEEN[(site_id, node_name)] = time.time()
+    _SITE_GATEWAY_BUILD_INFO[(site_id, node_name)] = (
+        str(version or "").strip() or "unknown",
+        str(sha or "").strip() or "unknown",
+        str(date or "").strip() or "unknown",
+    )
 
 
 def record_gateway_metrics(
@@ -162,27 +249,42 @@ def record_gateway_metrics(
     work_stale_total: float | int | None,
     work_nak_total: float | int | None,
     lease_retry_total: float | int | None,
+    result_replay_total: float | int | None = None,
+    result_replay_fail_total: float | int | None = None,
+    result_replay_backlog: float | int | None = None,
 ) -> None:
     if not site_id:
         return
     stale_val = float(work_stale_total or 0.0)
     nak_val = float(work_nak_total or 0.0)
     retry_val = float(lease_retry_total or 0.0)
+    replay_val = float(result_replay_total or 0.0)
+    replay_fail_val = float(result_replay_fail_total or 0.0)
+    replay_backlog_val = float(result_replay_backlog or 0.0)
     _GATEWAY_WORK_METRICS[site_id] = {
         "work_stale_total": stale_val,
         "work_nak_total": nak_val,
         "lease_retry_total": retry_val,
+        "result_replay_total": replay_val,
+        "result_replay_fail_total": replay_fail_val,
+        "result_replay_backlog": replay_backlog_val,
     }
 
 
-def record_route_bundle_apply(
-    site_id: str, *, ok: bool, latency_seconds: float | None
-) -> None:
+def record_route_bundle_apply(site_id: str, *, ok: bool, latency_seconds: float | None) -> None:
     if not site_id:
         return
     metrics = _ROUTE_BUNDLE_METRICS.setdefault(
         site_id,
-        {"apply_ok_total": 0.0, "apply_fail_total": 0.0, "last_latency_s": 0.0},
+        {
+            "apply_ok_total": 0.0,
+            "apply_fail_total": 0.0,
+            "last_latency_s": 0.0,
+            "publish_ok_total": 0.0,
+            "publish_fail_total": 0.0,
+            "pending": 0.0,
+            "ack_age_s": 0.0,
+        },
     )
     if ok:
         metrics["apply_ok_total"] = metrics.get("apply_ok_total", 0.0) + 1.0
@@ -190,6 +292,120 @@ def record_route_bundle_apply(
         metrics["apply_fail_total"] = metrics.get("apply_fail_total", 0.0) + 1.0
     if latency_seconds is not None:
         metrics["last_latency_s"] = float(latency_seconds)
+
+
+def record_route_bundle_publish_state(
+    site_id: str,
+    *,
+    pending: bool | None = None,
+    ack_age_seconds: float | None = None,
+    publish_ok: bool | int | float = False,
+    publish_fail: bool | int | float = False,
+) -> None:
+    if not site_id:
+        return
+    metrics = _ROUTE_BUNDLE_METRICS.setdefault(
+        site_id,
+        {
+            "apply_ok_total": 0.0,
+            "apply_fail_total": 0.0,
+            "last_latency_s": 0.0,
+            "publish_ok_total": 0.0,
+            "publish_fail_total": 0.0,
+            "pending": 0.0,
+            "ack_age_s": 0.0,
+        },
+    )
+    if pending is not None:
+        metrics["pending"] = 1.0 if pending else 0.0
+    if ack_age_seconds is not None:
+        metrics["ack_age_s"] = float(ack_age_seconds)
+    if publish_ok:
+        metrics["publish_ok_total"] = metrics.get("publish_ok_total", 0.0) + float(
+            1.0 if isinstance(publish_ok, bool) else publish_ok
+        )
+    if publish_fail:
+        metrics["publish_fail_total"] = metrics.get("publish_fail_total", 0.0) + float(
+            1.0 if isinstance(publish_fail, bool) else publish_fail
+        )
+
+
+def record_ha_fence_event(
+    surface: str,
+    *,
+    stale: bool | int | float = False,
+    duplicate: bool | int | float = False,
+    epoch_advanced: bool | int | float = False,
+) -> None:
+    if not surface:
+        return
+    metrics = _HA_FENCE_METRICS.setdefault(
+        surface,
+        {
+            "stale_total": 0.0,
+            "duplicate_total": 0.0,
+            "epoch_advance_total": 0.0,
+        },
+    )
+
+    def _add(field: str, value: bool | int | float) -> None:
+        if isinstance(value, bool):
+            amount = 1.0 if value else 0.0
+        else:
+            try:
+                amount = float(value)
+            except Exception:
+                amount = 0.0
+        if amount > 0:
+            metrics[field] = metrics.get(field, 0.0) + amount
+
+    _add("stale_total", stale)
+    _add("duplicate_total", duplicate)
+    _add("epoch_advance_total", epoch_advanced)
+
+
+def record_hpa_activity(
+    *,
+    reconcile: bool | int | float = False,
+    scale: bool | int | float = False,
+    metrics_stale: bool | int | float = False,
+    metrics_missing: bool | int | float = False,
+    snapshot_age_seconds: float | None = None,
+) -> None:
+    def _add(field: str, value: bool | int | float) -> None:
+        if isinstance(value, bool):
+            amount = 1.0 if value else 0.0
+        else:
+            try:
+                amount = float(value)
+            except Exception:
+                amount = 0.0
+        if amount > 0:
+            _HPA_ACTIVITY_METRICS[field] = _HPA_ACTIVITY_METRICS.get(field, 0.0) + amount
+
+    _add("reconcile_total", reconcile)
+    _add("scale_total", scale)
+    _add("metrics_stale_total", metrics_stale)
+    _add("metrics_missing_total", metrics_missing)
+    if snapshot_age_seconds is not None:
+        try:
+            _HPA_ACTIVITY_METRICS["snapshot_age_seconds"] = max(0.0, float(snapshot_age_seconds))
+        except Exception:
+            pass
+
+
+def record_heartbeat_write(*, node_rewrite: bool) -> None:
+    global _HEARTBEAT_WRITES_TOTAL, _HEARTBEAT_NODE_REWRITES_TOTAL
+    _HEARTBEAT_WRITES_TOTAL += 1.0
+    if node_rewrite:
+        _HEARTBEAT_NODE_REWRITES_TOTAL += 1.0
+
+
+def record_etcd_maintenance_run(*, triggered: bool) -> None:
+    global _ETCD_MAINTENANCE_RUNS_TOTAL, _ETCD_MAINTENANCE_TRIGGERED_TOTAL
+    _ETCD_MAINTENANCE_RUNS_TOTAL += 1.0
+    if triggered:
+        _ETCD_MAINTENANCE_TRIGGERED_TOTAL += 1.0
 
 
 def record_js_stream_stats(
@@ -227,6 +443,8 @@ def record_js_consumer_stats(
         "redelivered": float(redelivered),
         "waiting": float(waiting),
     }
+
+
 _HELM_DEMO_LOCK = threading.RLock()
 _HELM_DEMO_STATE: dict[str, object] = {
     "proc": None,
@@ -736,6 +954,766 @@ def record_probe_backoff(app: str, pod_name: str, probe_type: str, seconds: int)
         pass
 
 
+def _truthy_flag(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _split_csv(raw: object) -> list[str]:
+    return [item.strip() for item in str(raw or "").split(",") if item.strip()]
+
+
+def _as_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _as_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _as_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            dt = (
+                datetime.fromisoformat(raw[:-1] + "+00:00")
+                if raw.endswith("Z")
+                else datetime.fromisoformat(raw)
+            )
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _as_iso8601(value: object) -> str | None:
+    dt = _as_datetime(value)
+    if dt is None:
+        return None
+    return dt.isoformat()
+
+
+def _authority_presence_stale_after_seconds() -> float:
+    try:
+        return float(AuthorityConfig.from_env().presence_stale_after_seconds)
+    except Exception:
+        return 10.0
+
+
+def _transport_site_join_key(site_id: object) -> str:
+    return str(site_id or "").strip()
+
+
+def _build_transport_snapshot() -> dict[str, object]:
+    transport: dict[str, object] = {}
+    backend = (os.getenv("AE_TRANSPORT_BACKEND") or "http").strip() or "http"
+    transport["backend"] = backend
+    js_domain = (os.getenv("AE_JS_DOMAIN") or "").strip()
+    if js_domain:
+        transport["js_domain"] = js_domain
+    transport["outbox"] = {
+        "ok_total": int(_OUTBOX_PUBLISH_OK),
+        "fail_total": int(_OUTBOX_PUBLISH_FAIL),
+    }
+
+    try:
+        grace = int(os.getenv("AE_SITE_NOTREADY_AFTER", "90") or 90)
+    except Exception:
+        grace = 90
+    now_ts = time.time()
+    site_details: dict[str, dict[str, object]] = {}
+    gateway_nodes_by_site: dict[str, list[dict[str, object]]] = {}
+    for site_id, last_ts in sorted(_SITE_LAST_SEEN.items()):
+        age = _as_float(now_ts - float(last_ts))
+        if age is None:
+            continue
+        site_key = _transport_site_join_key(site_id)
+        site_details[site_key] = {
+            "last_seen_age_s": age,
+            "stale": age > grace,
+        }
+    for site_id, node_id in sorted(set(_SITE_GATEWAY_LAST_SEEN) | set(_SITE_GATEWAY_BUILD_INFO)):
+        site_key = _transport_site_join_key(site_id)
+        node_key = str(node_id or "").strip()
+        if not site_key or not node_key:
+            continue
+        last_seen_ts = _SITE_GATEWAY_LAST_SEEN.get((site_id, node_id))
+        last_seen_age = None
+        if last_seen_ts is not None:
+            try:
+                last_seen_age = max(0.0, now_ts - float(last_seen_ts))
+            except Exception:
+                last_seen_age = None
+        version, sha, date = _SITE_GATEWAY_BUILD_INFO.get(
+            (site_id, node_id),
+            ("unknown", "unknown", "unknown"),
+        )
+        gateway_nodes_by_site.setdefault(site_key, []).append(
+            {
+                "node_id": node_key,
+                "last_seen_age_s": last_seen_age,
+                "stale": bool(last_seen_age is not None and last_seen_age > grace),
+                "version": str(version or ""),
+                "sha": str(sha or ""),
+                "date": str(date or ""),
+            }
+        )
+    seen = len(site_details)
+    stale = sum(1 for detail in site_details.values() if detail.get("stale"))
+    last_seen_age = None
+    for detail in site_details.values():
+        age = _as_float(detail.get("last_seen_age_s"))
+        if age is None:
+            continue
+        if last_seen_age is None or age < last_seen_age:
+            last_seen_age = age
+    transport["sites"] = {
+        "seen": int(seen),
+        "stale": int(stale),
+        "fresh": int(max(0, seen - stale)),
+        "last_seen_age_s": last_seen_age,
+    }
+    if site_details:
+        transport["sites_detail"] = site_details
+
+    js_summary: dict[str, object] | None = None
+    if _JS_STREAM_STATS or _JS_CONSUMER_STATS:
+        js_pending = 0.0
+        js_ack_pending = 0.0
+        js_redelivered = 0.0
+        js_waiting = 0.0
+        consumers_detail: list[dict[str, object]] = []
+        for (stream, consumer), stats in sorted(_JS_CONSUMER_STATS.items()):
+            pending = float(stats.get("pending", 0.0) or 0.0)
+            ack_pending = float(stats.get("ack_pending", 0.0) or 0.0)
+            redelivered = float(stats.get("redelivered", 0.0) or 0.0)
+            waiting = float(stats.get("waiting", 0.0) or 0.0)
+            js_pending += pending
+            js_ack_pending += ack_pending
+            js_redelivered += redelivered
+            js_waiting += waiting
+            consumers_detail.append(
+                {
+                    "stream": stream,
+                    "consumer": consumer,
+                    "site_id": str(stats.get("site_id", "") or ""),
+                    "pending": pending,
+                    "ack_pending": ack_pending,
+                    "redelivered": redelivered,
+                    "waiting": waiting,
+                }
+            )
+        js_summary = {
+            "streams": int(len(_JS_STREAM_STATS)),
+            "consumers": int(len(_JS_CONSUMER_STATS)),
+            "pending": js_pending,
+            "ack_pending": js_ack_pending,
+            "redelivered": js_redelivered,
+            "waiting": js_waiting,
+        }
+        if consumers_detail:
+            js_summary["consumers_detail"] = consumers_detail
+        stream_detail: list[dict[str, object]] = []
+        for stream, stats in sorted(_JS_STREAM_STATS.items()):
+            stream_detail.append(
+                {
+                    "stream": stream,
+                    "bytes_used": float(stats.get("bytes_used", 0.0) or 0.0),
+                    "messages": float(stats.get("messages", 0.0) or 0.0),
+                    "max_bytes": float(stats.get("max_bytes", 0.0) or 0.0),
+                }
+            )
+        if stream_detail:
+            js_summary["streams_detail"] = stream_detail
+        transport["js"] = js_summary
+
+    gateway_summary: dict[str, object] | None = None
+    gateway_details: list[dict[str, object]] = []
+    if _GATEWAY_WORK_METRICS:
+        gw_nak = 0.0
+        gw_stale = 0.0
+        gw_retries = 0.0
+        gw_replay = 0.0
+        gw_replay_fail = 0.0
+        gw_replay_backlog = 0.0
+        for site_id, stats in sorted(_GATEWAY_WORK_METRICS.items()):
+            site_key = _transport_site_join_key(site_id)
+            detail = {
+                "site_id": site_key,
+                "work_nak_total": float(stats.get("work_nak_total", 0.0) or 0.0),
+                "work_stale_total": float(stats.get("work_stale_total", 0.0) or 0.0),
+                "lease_retry_total": float(stats.get("lease_retry_total", 0.0) or 0.0),
+                "result_replay_total": float(stats.get("result_replay_total", 0.0) or 0.0),
+                "result_replay_fail_total": float(
+                    stats.get("result_replay_fail_total", 0.0) or 0.0
+                ),
+                "result_replay_backlog": float(stats.get("result_replay_backlog", 0.0) or 0.0),
+            }
+            gw_nak += float(detail["work_nak_total"])
+            gw_stale += float(detail["work_stale_total"])
+            gw_retries += float(detail["lease_retry_total"])
+            gw_replay += float(detail["result_replay_total"])
+            gw_replay_fail += float(detail["result_replay_fail_total"])
+            gw_replay_backlog += float(detail["result_replay_backlog"])
+            gateway_details.append(detail)
+        gateway_summary = {
+            "work_nak_total": gw_nak,
+            "work_stale_total": gw_stale,
+            "lease_retry_total": gw_retries,
+            "result_replay_total": gw_replay,
+            "result_replay_fail_total": gw_replay_fail,
+            "result_replay_backlog": gw_replay_backlog,
+            "sites": int(len(gateway_details)),
+        }
+        if gateway_details:
+            gateway_summary["sites_detail"] = gateway_details
+        transport["gateway"] = gateway_summary
+
+    route_summary: dict[str, object] | None = None
+    route_details: list[dict[str, object]] = []
+    if _ROUTE_BUNDLE_METRICS:
+        ok_total = 0.0
+        fail_total = 0.0
+        publish_ok_total = 0.0
+        publish_fail_total = 0.0
+        pending_sites = 0.0
+        max_ack_age = None
+        last_latency = None
+        for site_id, stats in sorted(_ROUTE_BUNDLE_METRICS.items()):
+            detail = {
+                "site_id": _transport_site_join_key(site_id),
+                "bundle_ok_total": float(stats.get("apply_ok_total", 0.0) or 0.0),
+                "bundle_fail_total": float(stats.get("apply_fail_total", 0.0) or 0.0),
+                "publish_ok_total": float(stats.get("publish_ok_total", 0.0) or 0.0),
+                "publish_fail_total": float(stats.get("publish_fail_total", 0.0) or 0.0),
+                "pending": float(stats.get("pending", 0.0) or 0.0),
+                "ack_age_s": _as_float(stats.get("ack_age_s")),
+                "last_latency_s": _as_float(stats.get("last_latency_s")),
+            }
+            ok_total += float(detail["bundle_ok_total"])
+            fail_total += float(detail["bundle_fail_total"])
+            publish_ok_total += float(detail["publish_ok_total"])
+            publish_fail_total += float(detail["publish_fail_total"])
+            pending_sites += float(detail["pending"])
+            ack_age = _as_float(detail["ack_age_s"])
+            if ack_age is not None and (max_ack_age is None or ack_age > max_ack_age):
+                max_ack_age = ack_age
+            latency = _as_float(detail["last_latency_s"])
+            if latency is not None and (last_latency is None or latency > last_latency):
+                last_latency = latency
+            route_details.append(detail)
+        route_summary = {
+            "bundle_ok_total": ok_total,
+            "bundle_fail_total": fail_total,
+            "publish_ok_total": publish_ok_total,
+            "publish_fail_total": publish_fail_total,
+            "pending_sites": pending_sites,
+            "max_ack_age_s": max_ack_age,
+            "last_latency_s": last_latency,
+            "sites": int(len(route_details)),
+        }
+        if route_details:
+            route_summary["sites_detail"] = route_details
+        transport["routes"] = route_summary
+
+    fence_summary: dict[str, object] | None = None
+    fence_details: list[dict[str, object]] = []
+    if _HA_FENCE_METRICS:
+        stale_total = 0.0
+        duplicate_total = 0.0
+        epoch_advance_total = 0.0
+        for surface, stats in sorted(_HA_FENCE_METRICS.items()):
+            detail = {
+                "surface": surface,
+                "stale_total": float(stats.get("stale_total", 0.0) or 0.0),
+                "duplicate_total": float(stats.get("duplicate_total", 0.0) or 0.0),
+                "epoch_advance_total": float(stats.get("epoch_advance_total", 0.0) or 0.0),
+            }
+            stale_total += float(detail["stale_total"])
+            duplicate_total += float(detail["duplicate_total"])
+            epoch_advance_total += float(detail["epoch_advance_total"])
+            fence_details.append(detail)
+        fence_summary = {
+            "stale_total": stale_total,
+            "duplicate_total": duplicate_total,
+            "epoch_advance_total": epoch_advance_total,
+            "surfaces": int(len(fence_details)),
+        }
+        if fence_details:
+            fence_summary["surfaces_detail"] = fence_details
+        transport["ha_fence"] = fence_summary
+
+    site_rows: list[dict[str, object]] = []
+    site_ids = sorted(
+        set(site_details)
+        | {detail["site_id"] for detail in gateway_details}
+        | {detail["site_id"] for detail in route_details}
+        | set(gateway_nodes_by_site)
+    )
+    gateway_by_site = {detail["site_id"]: detail for detail in gateway_details}
+    route_by_site = {detail["site_id"]: detail for detail in route_details}
+    for site_id in site_ids:
+        site_detail = site_details.get(site_id, {})
+        gateway_detail = gateway_by_site.get(site_id, {})
+        route_detail = route_by_site.get(site_id, {})
+        site_rows.append(
+            {
+                "site_id": site_id,
+                "last_seen_age_s": _as_float(site_detail.get("last_seen_age_s")),
+                "stale": bool(site_detail.get("stale", False)),
+                "gateway_count": len(gateway_nodes_by_site.get(site_id, [])),
+                "result_replay_backlog": float(
+                    gateway_detail.get("result_replay_backlog", 0.0) or 0.0
+                ),
+                "work_nak_total": float(gateway_detail.get("work_nak_total", 0.0) or 0.0),
+                "publish_pending": float(route_detail.get("pending", 0.0) or 0.0),
+                "ack_age_s": _as_float(route_detail.get("ack_age_s")),
+                "gateways": gateway_nodes_by_site.get(site_id, []),
+            }
+        )
+    if site_rows:
+        transport["site_rows"] = site_rows
+
+    return transport
+
+
+def _build_authority_snapshot(
+    authority_snapshot: object | None,
+    authority_members: list[object] | None = None,
+) -> dict[str, object]:
+    enabled = (
+        bool(getattr(authority_snapshot, "enabled", False))
+        if authority_snapshot is not None
+        else _truthy_flag(os.getenv("AE_HA_MODE"))
+    )
+    controller_id = None
+    if authority_snapshot is not None:
+        controller_id = str(getattr(authority_snapshot, "controller_id", "") or "").strip() or None
+    if controller_id is None:
+        controller_id = str(os.getenv("AE_CONTROLLER_ID") or "").strip() or None
+    is_leader = (
+        bool(getattr(authority_snapshot, "is_leader", False))
+        if authority_snapshot is not None
+        else False
+    )
+    leader_info = (
+        getattr(authority_snapshot, "leader_info", None) if authority_snapshot is not None else None
+    )
+    leader_id = (
+        str(getattr(leader_info, "controller_id", "") or "").strip() or None
+        if leader_info is not None
+        else None
+    )
+    advertise_addr = (
+        str(getattr(leader_info, "advertise_addr", "") or "").strip() or None
+        if leader_info is not None
+        else None
+    )
+    controller_epoch = (
+        _as_int(getattr(authority_snapshot, "controller_epoch", 0))
+        if authority_snapshot is not None
+        else 0
+    )
+    if is_leader:
+        if leader_id is None:
+            leader_id = controller_id
+        if advertise_addr is None:
+            advertise_addr = str(os.getenv("AE_CONTROLLER_ADVERTISE_ADDR") or "").strip() or None
+    healthy = (not enabled) or is_leader or leader_id is not None
+    stale_after_seconds = _authority_presence_stale_after_seconds()
+    now_ts = time.time()
+    members: list[dict[str, object]] = []
+    for member in list(authority_members or []):
+        get = member.get if isinstance(member, dict) else lambda key: getattr(member, key, None)
+        member_id = str(get("controller_id") or "").strip()
+        if not member_id:
+            continue
+        member_is_leader = bool(get("is_leader")) or (
+            leader_id is not None and member_id == str(leader_id)
+        )
+        role = str(get("role") or ("leader" if member_is_leader else "standby")).strip().lower()
+        if role not in {"leader", "standby"}:
+            role = "leader" if member_is_leader else "standby"
+        heartbeat_at = _as_iso8601(get("heartbeat_at") or get("last_heartbeat_at"))
+        heartbeat_dt = _as_datetime(heartbeat_at)
+        heartbeat_age_s = None
+        freshness = "unknown"
+        if heartbeat_dt is not None:
+            heartbeat_age_s = max(0.0, now_ts - heartbeat_dt.timestamp())
+            freshness = "stale" if heartbeat_age_s > stale_after_seconds else "fresh"
+        members.append(
+            {
+                "controller_id": member_id,
+                "advertise_addr": str(get("advertise_addr") or "").strip() or None,
+                "version": str(get("version") or "").strip() or None,
+                "is_leader": bool(member_is_leader),
+                "is_local": bool(get("is_local"))
+                or (controller_id is not None and member_id == str(controller_id)),
+                "role": role,
+                "last_heartbeat_at": heartbeat_at,
+                "last_heartbeat_age_s": heartbeat_age_s,
+                "freshness": freshness,
+                "stale_after_seconds": stale_after_seconds,
+            }
+        )
+    members.sort(
+        key=lambda member: (
+            0 if member["is_leader"] else 1,
+            0 if member["is_local"] else 1,
+            str(member["controller_id"]),
+        )
+    )
+    return {
+        "healthy": bool(healthy),
+        "is_leader": bool(is_leader),
+        "controller_id": controller_id,
+        "leader_id": leader_id,
+        "leader_advertise_addr": advertise_addr,
+        "controller_epoch": int(controller_epoch),
+        "member_count": len(members),
+        "members": members,
+    }
+
+
+def _build_ha_snapshot(
+    *,
+    extra: dict[str, object],
+    authority_snapshot: object | None,
+    authority_members: list[object] | None,
+    transport: dict[str, object],
+) -> dict[str, object]:
+    authority = _build_authority_snapshot(authority_snapshot, authority_members)
+    build = AE_BUILD_INFO()
+    probe_snapshot = extra.get("ha_probes") if isinstance(extra.get("ha_probes"), dict) else {}
+    probe_snapshot = dict(probe_snapshot or {})
+    etcd_probe = probe_snapshot.get("etcd") if isinstance(probe_snapshot.get("etcd"), dict) else {}
+    etcd_probe = dict(etcd_probe or {})
+
+    js_summary = dict(transport.get("js") or {})
+    gateway_summary = dict(transport.get("gateway") or {})
+    route_summary = dict(transport.get("routes") or {})
+    fence_summary = dict(transport.get("ha_fence") or {})
+    site_summary = dict(transport.get("sites") or {})
+    site_rows = list(transport.get("site_rows") or [])
+
+    jetstream = {
+        "stream_count": _as_int(js_summary.get("streams")),
+        "consumer_count": _as_int(js_summary.get("consumers")),
+        "pending": float(js_summary.get("pending", 0.0) or 0.0),
+        "ack_pending": float(js_summary.get("ack_pending", 0.0) or 0.0),
+        "redelivered": float(js_summary.get("redelivered", 0.0) or 0.0),
+        "waiting": float(js_summary.get("waiting", 0.0) or 0.0),
+        "consumers": list(js_summary.get("consumers_detail") or []),
+        "streams": list(js_summary.get("streams_detail") or []),
+    }
+    gateway = {
+        "site_count": _as_int(gateway_summary.get("sites")),
+        "work_nak_total": float(gateway_summary.get("work_nak_total", 0.0) or 0.0),
+        "work_stale_total": float(gateway_summary.get("work_stale_total", 0.0) or 0.0),
+        "lease_retry_total": float(gateway_summary.get("lease_retry_total", 0.0) or 0.0),
+        "result_replay_total": float(gateway_summary.get("result_replay_total", 0.0) or 0.0),
+        "result_replay_fail_total": float(
+            gateway_summary.get("result_replay_fail_total", 0.0) or 0.0
+        ),
+        "result_replay_backlog": float(gateway_summary.get("result_replay_backlog", 0.0) or 0.0),
+        "sites": list(gateway_summary.get("sites_detail") or []),
+    }
+    routes = {
+        "site_count": _as_int(route_summary.get("sites")),
+        "bundle_ok_total": float(route_summary.get("bundle_ok_total", 0.0) or 0.0),
+        "bundle_fail_total": float(route_summary.get("bundle_fail_total", 0.0) or 0.0),
+        "publish_ok_total": float(route_summary.get("publish_ok_total", 0.0) or 0.0),
+        "publish_fail_total": float(route_summary.get("publish_fail_total", 0.0) or 0.0),
+        "pending_sites": float(route_summary.get("pending_sites", 0.0) or 0.0),
+        "max_ack_age_s": _as_float(route_summary.get("max_ack_age_s")),
+        "last_latency_s": _as_float(route_summary.get("last_latency_s")),
+        "sites": list(route_summary.get("sites_detail") or []),
+    }
+    fence = {
+        "surface_count": _as_int(fence_summary.get("surfaces")),
+        "stale_total": float(fence_summary.get("stale_total", 0.0) or 0.0),
+        "duplicate_total": float(fence_summary.get("duplicate_total", 0.0) or 0.0),
+        "epoch_advance_total": float(fence_summary.get("epoch_advance_total", 0.0) or 0.0),
+        "surfaces": list(fence_summary.get("surfaces_detail") or []),
+    }
+
+    etcd_members = list(etcd_probe.get("members") or [])
+    etcd = {
+        "configured_endpoints": _split_csv(os.getenv("AE_ETCD_ENDPOINTS")),
+        "maintenance_runs_total": float(_ETCD_MAINTENANCE_RUNS_TOTAL),
+        "maintenance_triggered_total": float(_ETCD_MAINTENANCE_TRIGGERED_TOTAL),
+        "healthy_endpoints": _as_int(etcd_probe.get("healthy_endpoints")),
+        "unhealthy_endpoints": _as_int(etcd_probe.get("unhealthy_endpoints")),
+        "members": etcd_members,
+        "last_probe_ts": _as_float(probe_snapshot.get("last_probe_ts")),
+        "probes_enabled": bool(probe_snapshot.get("enabled")),
+    }
+
+    hpa = {
+        "reconcile_total": float(_HPA_ACTIVITY_METRICS.get("reconcile_total", 0.0) or 0.0),
+        "scale_total": float(_HPA_ACTIVITY_METRICS.get("scale_total", 0.0) or 0.0),
+        "metrics_stale_total": float(_HPA_ACTIVITY_METRICS.get("metrics_stale_total", 0.0) or 0.0),
+        "metrics_missing_total": float(
+            _HPA_ACTIVITY_METRICS.get("metrics_missing_total", 0.0) or 0.0
+        ),
+        "snapshot_age_seconds": float(
+            _HPA_ACTIVITY_METRICS.get("snapshot_age_seconds", 0.0) or 0.0
+        ),
+    }
+
+    transport_snapshot = {
+        "backend": transport.get("backend"),
+        "js_domain": transport.get("js_domain"),
+        "outbox": dict(transport.get("outbox") or {}),
+        "site_summary": site_summary,
+        "sites": site_rows,
+        "jetstream": jetstream,
+        "gateway": gateway,
+        "routes": routes,
+        "fence": fence,
+    }
+    if isinstance(probe_snapshot.get("hubs"), dict):
+        transport_snapshot["hub_monitors"] = dict(probe_snapshot["hubs"])
+    if isinstance(probe_snapshot.get("edges"), dict):
+        transport_snapshot["edge_monitors"] = dict(probe_snapshot["edges"])
+
+    issues: list[dict[str, str]] = []
+    enabled = bool(authority_snapshot is not None and getattr(authority_snapshot, "enabled", False))
+    if authority_snapshot is None:
+        enabled = _truthy_flag(os.getenv("AE_HA_MODE"))
+    if enabled and not bool(authority.get("healthy")):
+        issues.append(
+            {
+                "code": "authority_unhealthy",
+                "severity": "error",
+                "message": "controller authority cannot resolve a leader",
+            }
+        )
+    if bool(etcd.get("probes_enabled")) and _as_int(etcd.get("unhealthy_endpoints")) > 0:
+        issues.append(
+            {
+                "code": "etcd_probe_degraded",
+                "severity": "error" if _as_int(etcd.get("healthy_endpoints")) == 0 else "warn",
+                "message": f"etcd probes report {_as_int(etcd.get('unhealthy_endpoints'))} unhealthy endpoint(s)",
+            }
+        )
+    if _as_int(site_summary.get("stale")) > 0:
+        issues.append(
+            {
+                "code": "stale_sites",
+                "severity": "warn",
+                "message": f"{_as_int(site_summary.get('stale'))} edge site(s) are stale",
+            }
+        )
+    if float(gateway.get("result_replay_backlog", 0.0) or 0.0) > 0:
+        issues.append(
+            {
+                "code": "gateway_replay_backlog",
+                "severity": "warn",
+                "message": "gateway replay backlog is non-zero",
+            }
+        )
+    if float(routes.get("pending_sites", 0.0) or 0.0) > 0:
+        issues.append(
+            {
+                "code": "route_publish_pending",
+                "severity": "warn",
+                "message": "route bundle acknowledgements are still pending",
+            }
+        )
+    if (
+        float(fence.get("stale_total", 0.0) or 0.0) > 0
+        or float(fence.get("duplicate_total", 0.0) or 0.0) > 0
+    ):
+        issues.append(
+            {
+                "code": "ha_fence_activity",
+                "severity": "warn",
+                "message": "HA fence counters report stale or duplicate mutation activity",
+            }
+        )
+    if (
+        float(hpa.get("metrics_stale_total", 0.0) or 0.0) > 0
+        or float(hpa.get("metrics_missing_total", 0.0) or 0.0) > 0
+    ):
+        issues.append(
+            {
+                "code": "hpa_metrics_quality",
+                "severity": "warn",
+                "message": "HPA metrics snapshots have been stale or missing",
+            }
+        )
+    hub_monitors = (
+        transport_snapshot.get("hub_monitors")
+        if isinstance(transport_snapshot.get("hub_monitors"), dict)
+        else {}
+    )
+    if hub_monitors and (hub_monitors.get("issues") or hub_monitors.get("errors")):
+        issues.append(
+            {
+                "code": "hub_transport_probe",
+                "severity": "warn",
+                "message": "hub NATS/JetStream monitor probes report cluster drift or fetch failures",
+            }
+        )
+    edge_monitors = (
+        transport_snapshot.get("edge_monitors")
+        if isinstance(transport_snapshot.get("edge_monitors"), dict)
+        else {}
+    )
+    if edge_monitors and edge_monitors.get("errors"):
+        issues.append(
+            {
+                "code": "edge_transport_probe",
+                "severity": "warn",
+                "message": "edge monitor probes report fetch failures",
+            }
+        )
+
+    return {
+        "enabled": bool(enabled),
+        "authority": authority,
+        "controller_build": {
+            "version": str(build.get("version") or "unknown"),
+            "sha": str(build.get("sha") or "unknown"),
+            "date": str(build.get("date") or "unknown"),
+        },
+        "etcd": etcd,
+        "transport": transport_snapshot,
+        "hpa": hpa,
+        "issues": issues,
+    }
+
+
+_SITE_LAYOUT_PROFILES = {
+    "core",
+    "edge",
+    "k1s-core",
+    "k1s-edge",
+    "k1s-ha-core",
+}
+
+
+def _dashboard_node_site_id(node: object) -> str:
+    if not isinstance(node, dict):
+        return ""
+    site_id = str(node.get("site_id") or "").strip()
+    if site_id:
+        return site_id
+    labels = node.get("labels")
+    if isinstance(labels, dict):
+        site_id = str(labels.get("site") or "").strip()
+        if site_id:
+            return site_id
+    node_id = str(node.get("id") or "").strip()
+    if "--" in node_id:
+        return str(node_id.split("--", 1)[0] or "").strip()
+    return ""
+
+
+def _dashboard_node_value(node: object, key: str) -> str:
+    if not isinstance(node, dict):
+        return ""
+    value = str(node.get(key) or "").strip()
+    if value:
+        return value
+    labels = node.get("labels")
+    if isinstance(labels, dict):
+        return str(labels.get(key) or "").strip()
+    return ""
+
+
+def _dashboard_layout_mode(payload: dict[str, object], ha: dict[str, object]) -> str:
+    if bool(ha.get("enabled")) or _truthy_flag(os.getenv("AE_HA_MODE")):
+        return "site"
+
+    nodes = payload.get("nodes")
+    if isinstance(nodes, list) and nodes:
+        for node in nodes:
+            role = _dashboard_node_value(node, "role").lower()
+            profile = _dashboard_node_value(node, "profile").lower()
+            if _dashboard_node_site_id(node):
+                return "site"
+            if role and role != "controller":
+                return "site"
+            if profile in _SITE_LAYOUT_PROFILES:
+                return "site"
+        return "simple"
+
+    labels: dict[str, str] = {}
+    for item in _split_csv(os.getenv("AE_NODE_LABELS")):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            labels[key] = value
+
+    role = str(labels.get("role") or "").strip().lower()
+    profile = str(os.getenv("AE_NODE_PROFILE") or labels.get("profile") or "").strip().lower()
+    if str(labels.get("site") or "").strip():
+        return "site"
+    if role and role != "controller":
+        return "site"
+    if profile in _SITE_LAYOUT_PROFILES:
+        return "site"
+    return "simple"
+
+
+def _dashboard_bootstrap_token() -> str:
+    """Return a read-capable token for simple local demo/dev dashboards.
+
+    The dashboard page itself is public in local demo/dev flows, but its data
+    fetches still hit bearer-protected read endpoints. Seed a token only for
+    simple local profiles so the page renders out of the box without exposing
+    tokens in HA/core/site-aware lanes.
+    """
+
+    if _truthy_flag(os.getenv("AE_HA_MODE")):
+        return ""
+
+    if str(os.getenv("AE_SITE_ID") or "").strip():
+        return ""
+
+    profile = str(
+        os.getenv("AE_NODE_PROFILE") or os.getenv("AE_PROFILE") or ""
+    ).strip().lower()
+    if profile in _SITE_LAYOUT_PROFILES:
+        return ""
+
+    transport = str(os.getenv("AE_TRANSPORT_BACKEND") or "").strip().lower()
+    simple_local = False
+    if _truthy_flag(os.getenv("AE_DEMO_MODE")):
+        simple_local = True
+    elif _truthy_flag(os.getenv("AE_LABS")) and transport in {"", "http"}:
+        simple_local = True
+
+    if not simple_local:
+        return ""
+
+    return str(
+        os.getenv("AE_API_READ_TOKEN")
+        or os.getenv("AE_API_SCALER_TOKEN")
+        or os.getenv("AE_API_ADMIN_TOKEN")
+        or ""
+    ).strip()
+
+
 class _ApiHandler(http.server.BaseHTTPRequestHandler):
     store: SQLiteStateStore  # injected
     metrics: MetricsService  # injected
@@ -745,6 +1723,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     apply_fn = None  # type: ignore[var-annotated]
     # Optional system info provider injected by controller
     system_info_fn = None  # type: ignore[var-annotated]
+    authority_info_fn = None  # type: ignore[var-annotated]
+    authority_members_fn = None  # type: ignore[var-annotated]
     plan_fn = None  # type: ignore[var-annotated]
     rollout_pause_fn = None  # type: ignore[var-annotated]
     rollout_resume_fn = None  # type: ignore[var-annotated]
@@ -785,8 +1765,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _dashboard_enabled(self) -> bool:
         return self._flag_enabled("AE_DASHBOARD", True)
 
+    def _controlplane_readonly_enabled(self) -> bool:
+        return self._flag_enabled(
+            "AE_CONTROLPLANE_PUBLIC_ENABLE",
+            False,
+        ) and self._flag_enabled("AE_CONTROLPLANE_AUTH_ENABLE", False)
+
     def _playground_enabled(self) -> bool:
-        return self._flag_enabled("AE_PLAYGROUND", True)
+        if self._controlplane_readonly_enabled():
+            return False
+        try:
+            raw = os.getenv("AE_PLAYGROUND")
+        except Exception:
+            raw = None
+        if raw is None or str(raw).strip() == "":
+            return not self._flag_enabled("AE_HA_MODE", False)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
     def _labs_token_valid(self) -> bool:
         if not self._labs_enabled():
@@ -830,11 +1824,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     def _call_apply(self, payload: dict, source: str | None = None, labels: dict | None = None):
         if self.apply_fn is None:
             raise RuntimeError("apply not available")
+        app = ""
         try:
             from ae.controller.spec import app_key
 
             meta = payload.get("metadata") if isinstance(payload, dict) else {}
-            app = ""
             if isinstance(meta, dict):
                 app = app_key(str(meta.get("name") or ""), meta.get("namespace"))
             if not app:
@@ -869,7 +1863,22 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         try:
             return self.apply_fn(payload, source=source, labels=labels)  # type: ignore[misc]
         except TypeError:
-            return self.apply_fn(payload)  # type: ignore[misc]
+            try:
+                return self.apply_fn(payload)  # type: ignore[misc]
+            except Exception:
+                logger.exception(
+                    "apply handler failed source=%s app=%s via legacy fallback",
+                    source or "unknown",
+                    app or "<unknown>",
+                )
+                raise
+        except Exception:
+            logger.exception(
+                "apply handler failed source=%s app=%s",
+                source or "unknown",
+                app or "<unknown>",
+            )
+            raise
 
     def _maybe_cors(self) -> None:
         if not self._labs_enabled():
@@ -915,10 +1924,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         by default and mutations remain gated by AE_API_MUTATIONS.
         """
         import os
+        import urllib.parse as _up
 
         # Extract presented token
         auth = self.headers.get("Authorization", "")
         token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else ""
+        if not token and getattr(self, "command", "").upper() == "GET":
+            _p, _, q = self.path.partition("?")
+            if q:
+                params = _up.parse_qs(q)
+                token = str((params.get("token") or [""])[0] or "").strip()
 
         # Configured tokens
         admin = os.getenv("AE_API_ADMIN_TOKEN")
@@ -1149,6 +2164,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         # Public UI feature flags (non-sensitive)
         if path_only == "/ui/features":
             self._handle_ui_features()
+            return
+        if path_only in ("/__ae/version", "/__ae/version/"):
+            self._handle_version_info()
             return
         # Metrics allowed without auth
         if path_only.startswith("/metrics"):
@@ -1469,7 +2487,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     default_ttl = 600
                 try:
-                    max_ttl = int(os.getenv("AE_APISHIM_SESSION_TTL_MAX", str(default_ttl)) or default_ttl)
+                    max_ttl = int(
+                        os.getenv("AE_APISHIM_SESSION_TTL_MAX", str(default_ttl)) or default_ttl
+                    )
                 except Exception:
                     max_ttl = default_ttl
                 ttl = ttl_req if ttl_req > 0 else default_ttl
@@ -1484,7 +2504,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
 
                 payload_b64 = _b64url(payload_raw)
-                sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+                sig = hmac.new(
+                    secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
+                ).digest()
                 sig_b64 = _b64url(sig)
                 token = f"sess1.{payload_b64}.{sig_b64}"
                 self._json_ok(
@@ -1563,6 +2585,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 report = self._call_apply(payload, source="api")
                 self._json_ok(report)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -1588,6 +2622,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 report = self.scale_fn(app, replicas)  # type: ignore[misc]
                 self._json_ok(report)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover - defensive
                 self._json_error(500, str(exc))
             return
@@ -1612,6 +2658,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 result = self.delete_fn(app, purge)  # type: ignore[misc]
                 self._json_ok(result)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -1627,6 +2685,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 out = self.rollout_pause_fn(app)  # type: ignore[misc]
                 self._json_ok(out)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -1642,6 +2712,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     return
                 out = self.rollout_resume_fn(app)  # type: ignore[misc]
                 self._json_ok(out)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
@@ -2119,6 +3201,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 removed_apps: list[dict[str, object]] = []
+                helm_prefixes: set[str] = set()
                 for app in candidates:
                     try:
                         res = self.delete_fn(app, True)  # type: ignore[misc]
@@ -2139,6 +3222,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     ns = str(_HELM_DEMO_STATE.get("namespace") or "demo-helm")
                     if ns:
                         prefixes.add(f"{ns}--")
+                    helm_prefixes = set(prefixes)
                     if prefixes:
                         names: set[str] = set()
                         try:
@@ -2179,9 +3263,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 # Also remove shim objects in the helm demo namespace so the adapter
-                # doesn't reapply them after reset. Prefer the running shim API so
-                # deletes publish watch events; fall back to direct DB cleanup only
-                # if the shim server is unreachable.
+                # doesn't reapply them after reset. Prefer the shim API so deletes
+                # publish watch events, but verify the namespace is actually empty
+                # and fall back to direct store cleanup for any survivors.
                 try:
                     ns = str(_HELM_DEMO_STATE.get("namespace") or "demo-helm")
                     if ns:
@@ -2198,41 +3282,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             ("networking.k8s.io", "v1", "ingresses"),
                             ("autoscaling", "v2", "horizontalpodautoscalers"),
                         ]
-                        removed_shim = 0
-                        shim_reachable = False
-                        shim_base = ""
                         env_file = _resolve_apishim_env_file()
+                        shim_base = _resolve_apishim_server(
+                            env_file=env_file,
+                            default_port=int(_HELM_DEMO_STATE.get("port") or 8455),
+                        )
+                        token = _resolve_apishim_admin_token(env_file=env_file)
+                        dsn, db_path = _resolve_apishim_store_config(env_file=env_file)
+                        removed_via_api = 0
+                        removed_via_store = 0
+                        shim_reachable = False
+                        survivor_names: list[str] = []
                         try:
-                            import os as _os
-
                             import requests as _req
 
-                            base = str(_os.getenv("AE_LABS_HELM_SERVER", "") or "").strip()
-                            if not base and env_file:
-                                base = _read_env_file_var(env_file, "AE_LABS_HELM_SERVER")
-                            if not base:
-                                port = int(_HELM_DEMO_STATE.get("port") or 8455)
-                                base = f"https://127.0.0.1:{port}"
-                            base = base.rstrip("/")
-                            shim_base = base
-                            token = (
-                                str(_os.getenv("AE_LABS_HELM_TOKEN") or "").strip()
-                                or str(_os.getenv("AE_APISHIM_TOKEN") or "").strip()
-                                or str(_HELM_DEMO_STATE.get("token") or "").strip()
-                            )
-                            if not token and env_file:
-                                token = (
-                                    _read_env_file_var(env_file, "AE_LABS_HELM_TOKEN")
-                                    or _read_env_file_var(env_file, "AE_APISHIM_TOKEN")
-                                )
                             headers = {"Authorization": f"Bearer {token}"} if token else {}
                             verify = _resolve_apishim_verify()
-                            if token:
+                            if token and shim_base:
                                 try:
                                     probe = _req.get(
-                                        f"{base}/version", headers=headers, timeout=2, verify=verify
+                                        f"{shim_base}/version",
+                                        headers=headers,
+                                        timeout=2,
+                                        verify=verify,
                                     )
-                                    shim_reachable = probe.status_code < 500
+                                    shim_reachable = probe.status_code < 400
                                 except Exception:
                                     shim_reachable = False
                             else:
@@ -2245,9 +3319,11 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                 )
                                 for grp, ver, res in targets:
                                     if grp:
-                                        list_url = f"{base}/apis/{grp}/{ver}/namespaces/{ns}/{res}"
+                                        list_url = (
+                                            f"{shim_base}/apis/{grp}/{ver}/namespaces/{ns}/{res}"
+                                        )
                                     else:
-                                        list_url = f"{base}/api/{ver}/namespaces/{ns}/{res}"
+                                        list_url = f"{shim_base}/api/{ver}/namespaces/{ns}/{res}"
                                     try:
                                         resp = _req.get(
                                             list_url, headers=headers, timeout=3, verify=verify
@@ -2276,20 +3352,20 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                                                     verify=verify,
                                                 )
                                                 if dresp.status_code < 300:
-                                                    removed_shim += 1
+                                                    removed_via_api += 1
                                             except Exception:
                                                 continue
                                     except Exception:
                                         continue
                         except Exception:
                             shim_reachable = False
-                        if shim_reachable and removed_shim:
+                        if shim_reachable and removed_via_api:
                             logger.info(
                                 "labs reset removed %s shim objects via shim API in namespace %s",
-                                removed_shim,
+                                removed_via_api,
                                 ns,
                             )
-                        if shim_reachable and not removed_shim:
+                        if shim_reachable and not removed_via_api:
                             logger.info(
                                 "labs reset shim API reachable at %s; no shim objects removed for namespace %s",
                                 shim_base or "<unknown>",
@@ -2297,52 +3373,120 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             )
                         if not shim_reachable:
                             logger.info(
-                                "labs reset shim API unavailable; falling back to direct DB cleanup for namespace %s",
+                                "labs reset shim API unavailable at %s; falling back to direct store cleanup for namespace %s",
+                                shim_base or "<unknown>",
                                 ns,
                             )
-                            import os as _os
-                            from pathlib import Path as _Path
+                        from ae.apishim.store import ObjectStore as _ObjectStore
 
-                            from ae.apishim.store import ObjectStore as _ObjectStore
-
-                            dsn = _os.getenv("AE_APISHIM_DSN")
-                            db_path = _os.getenv("AE_APISHIM_DB", "").strip()
-                            if not db_path and env_file:
-                                db_path = _read_env_file_var(env_file, "AE_APISHIM_DB")
-                            if not db_path and env_file:
+                        store = (
+                            _ObjectStore(dsn=dsn)
+                            if dsn
+                            else _ObjectStore(db_path=Path(db_path))
+                        )
+                        try:
+                            survivors: list[tuple[str, str, str, str]] = []
+                            for grp, ver, res in targets:
                                 try:
-                                    db_path = str(_Path(env_file).with_suffix(".db"))
+                                    items = store.list(grp, ver, res, ns)
                                 except Exception:
-                                    db_path = ""
-                            if not db_path:
-                                db_path = "state/apishim.db"
-                            store = (
-                                _ObjectStore(dsn=dsn)
-                                if dsn
-                                else _ObjectStore(db_path=_Path(db_path))
-                            )
-                            try:
+                                    continue
+                                for obj in items:
+                                    survivors.append((grp, ver, res, obj.name))
+                            survivor_names = [
+                                f"{_describe_apishim_target(grp, ver, res)}:{name}"
+                                for grp, ver, res, name in survivors
+                            ]
+                            if survivor_names:
+                                logger.info(
+                                    "labs reset found surviving shim objects in namespace %s after API cleanup: %s",
+                                    ns,
+                                    ", ".join(sorted(survivor_names)),
+                                )
+                                for grp, ver, res, name in survivors:
+                                    try:
+                                        if store.delete(grp, ver, res, ns, name):
+                                            removed_via_store += 1
+                                    except Exception:
+                                        continue
+                                survivors = []
                                 for grp, ver, res in targets:
                                     try:
                                         items = store.list(grp, ver, res, ns)
                                     except Exception:
                                         continue
                                     for obj in items:
-                                        if store.delete(grp, ver, res, ns, obj.name):
-                                            removed_shim += 1
-                            finally:
-                                close = getattr(store, "close", None)
-                                if callable(close):
+                                        survivors.append((grp, ver, res, obj.name))
+                                survivor_names = [
+                                    f"{_describe_apishim_target(grp, ver, res)}:{name}"
+                                    for grp, ver, res, name in survivors
+                                ]
+                        finally:
+                            close = getattr(store, "close", None)
+                            if callable(close):
+                                try:
+                                    close()
+                                except Exception:
+                                    pass
+                        if removed_via_store:
+                            logger.info(
+                                "labs reset removed %s shim objects via direct store cleanup for namespace %s",
+                                removed_via_store,
+                                ns,
+                            )
+                        if survivor_names:
+                            logger.warning(
+                                "labs reset left shim survivors in namespace %s after fallback cleanup: %s",
+                                ns,
+                                ", ".join(sorted(survivor_names)),
+                            )
+                except Exception:
+                    pass
+                # Reset can race with the shim adapter queue: delete controller apps
+                # again until no helm-demo mirrors remain after shim cleanup.
+                try:
+                    if helm_prefixes:
+                        deadline = time.time() + 5.0
+                        empty_polls = 0
+                        while time.time() < deadline:
+                            names: set[str] = set()
+                            try:
+                                names.update([s.app_name for s in self.store.list_status()])
+                            except Exception:
+                                pass
+                            try:
+                                names.update(self.store.list_registered_app_names())
+                            except Exception:
+                                pass
+                            lingering = sorted(
+                                {n for n in names if any(n.startswith(p) for p in helm_prefixes)}
+                            )
+                            if not lingering:
+                                empty_polls += 1
+                                if empty_polls >= 2:
+                                    break
+                                time.sleep(0.25)
+                                continue
+                            empty_polls = 0
+                            logger.info(
+                                "labs reset purging lingering helm demo apps after shim cleanup: %s",
+                                ", ".join(lingering),
+                            )
+                            for app in lingering:
+                                try:
+                                    _labs_block_app(app)
+                                except Exception:
+                                    pass
+                                try:
+                                    res = self.delete_fn(app, True)  # type: ignore[misc]
+                                    removed_apps.append(res)
                                     try:
-                                        close()
+                                        _LABS_APPS.discard(app)
                                     except Exception:
                                         pass
-                            if removed_shim:
-                                logger.info(
-                                    "labs reset removed %s shim objects in namespace %s",
-                                    removed_shim,
-                                    ns,
-                                )
+                                except Exception:
+                                    continue
+                            time.sleep(0.25)
                 except Exception:
                     pass
                 self._json_ok({"removed": removed_apps})
@@ -2688,6 +3832,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "live": s.live_replicas,
                         "revision": s.revision,
                         "status": s.revision_status,
+                        "current_revision_ready_replicas": s.current_revision_ready_replicas,
+                        "current_revision_live_replicas": s.current_revision_live_replicas,
+                        "old_revision_ready_replicas": s.old_revision_ready_replicas,
+                        "old_revision_live_replicas": s.old_revision_live_replicas,
+                        "overlap_ready_replicas": s.overlap_ready_replicas,
+                        "overlap_live_replicas": s.overlap_live_replicas,
                         "ingress_host": s.ingress_host,
                         "ingress_path": s.ingress_path,
                     }
@@ -2827,6 +3977,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_metrics(self) -> None:
         snap = self.metrics.snapshot()
+        build = AE_BUILD_INFO()
+        version = _prom_escape_label_value(str(build.get("version") or "unknown"))
+        sha = _prom_escape_label_value(str(build.get("sha") or "unknown"))
+        date = _prom_escape_label_value(str(build.get("date") or "unknown"))
         lines = [
             "# HELP ae_apps_total Total apps recorded",
             "# TYPE ae_apps_total gauge",
@@ -2888,6 +4042,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# HELP ae_overlay_configured Overlay/VIP dataplane enabled (1=yes)",
             "# TYPE ae_overlay_configured gauge",
             f"ae_overlay_configured {1 if os.getenv('AE_SERVICE_PROVIDER', '').lower() == 'overlay' and os.getenv('AE_ENABLE_SERVICE_PROXY', '0') == '1' else 0}",
+            "# HELP ae_controller_build_info Controller build metadata",
+            "# TYPE ae_controller_build_info gauge",
+            f'ae_controller_build_info{{version="{version}",sha="{sha}",date="{date}"}} 1',
         ]
         storage_used = getattr(snap, "storage_used_bytes", {}) or {}
         storage_quota = getattr(snap, "storage_quota_bytes", {}) or {}
@@ -2912,6 +4069,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "# TYPE ae_app_ready_replicas gauge",
             "# HELP ae_app_live_replicas Live replicas per app",
             "# TYPE ae_app_live_replicas gauge",
+            "# HELP ae_app_current_revision_ready_replicas Ready replicas for the current revision",
+            "# TYPE ae_app_current_revision_ready_replicas gauge",
+            "# HELP ae_app_current_revision_live_replicas Live replicas for the current revision",
+            "# TYPE ae_app_current_revision_live_replicas gauge",
+            "# HELP ae_app_old_revision_ready_replicas Ready replicas for older revisions",
+            "# TYPE ae_app_old_revision_ready_replicas gauge",
+            "# HELP ae_app_old_revision_live_replicas Live replicas for older revisions",
+            "# TYPE ae_app_old_revision_live_replicas gauge",
+            "# HELP ae_app_overlap_ready_replicas Ready replicas above desired during overlap",
+            "# TYPE ae_app_overlap_ready_replicas gauge",
+            "# HELP ae_app_overlap_live_replicas Live replicas above desired during overlap",
+            "# TYPE ae_app_overlap_live_replicas gauge",
             "# HELP ae_app_status One-hot app status by label {status=ready|progressing|degraded}",
             "# TYPE ae_app_status gauge",
             # Backwards/compat aliases to match earlier docs snippets
@@ -3010,6 +4179,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 lines.append(f'ae_app_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
                 lines.append(f'ae_app_ready_replicas{{app="{app}"}} {s0.ready_replicas}')
                 lines.append(f'ae_app_live_replicas{{app="{app}"}} {s0.live_replicas}')
+                lines.append(
+                    f'ae_app_current_revision_ready_replicas{{app="{app}"}} {s0.current_revision_ready_replicas}'
+                )
+                lines.append(
+                    f'ae_app_current_revision_live_replicas{{app="{app}"}} {s0.current_revision_live_replicas}'
+                )
+                lines.append(
+                    f'ae_app_old_revision_ready_replicas{{app="{app}"}} {s0.old_revision_ready_replicas}'
+                )
+                lines.append(
+                    f'ae_app_old_revision_live_replicas{{app="{app}"}} {s0.old_revision_live_replicas}'
+                )
+                lines.append(
+                    f'ae_app_overlap_ready_replicas{{app="{app}"}} {s0.overlap_ready_replicas}'
+                )
+                lines.append(
+                    f'ae_app_overlap_live_replicas{{app="{app}"}} {s0.overlap_live_replicas}'
+                )
                 # Aliases used by playground docs examples
                 lines.append(f'ae_desired_replicas{{app="{app}"}} {s0.desired_replicas}')
                 lines.append(f'ae_ready_replicas{{app="{app}"}} {s0.ready_replicas}')
@@ -3039,9 +4226,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 ns, _dep = split_app_key(s0.app_name)
                 for r in reps:
                     val = 1 if r.ready else 0
-                    lines.append(
-                        f'ae_pod_ready{{app="{s0.app_name}",pod="{r.pod_name}"}} {val}'
-                    )
+                    lines.append(f'ae_pod_ready{{app="{s0.app_name}",pod="{r.pod_name}"}} {val}')
                     lines.append(
                         f'ae_replica_ready{{app="{s0.app_name}",replica="{r.pod_name}"}} {val}'
                     )
@@ -3078,7 +4263,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 cordoned = bool(getattr(node, "cordoned", False))
                 labels = f'node="{node.node_id}",name="{node.name or ""}",cordoned="{str(cordoned).lower()}"'
                 lines.append(f'ae_node_status{{{labels},status="{st}"}} 1')
-                lines.append(f'ae_node_stale{{{labels}}} {"1" if stale else "0"}')
+                lines.append(f"ae_node_stale{{{labels}}} {'1' if stale else '0'}")
                 if last_age is not None:
                     lines.append(f"ae_node_last_seen_seconds{{{labels}}} {last_age}")
         except Exception:
@@ -3100,6 +4285,84 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 labels = f'site="{site_id}"'
                 lines.append(f"ae_site_last_seen_seconds{{{labels}}} {last_age}")
                 lines.append(f"ae_site_stale{{{labels}}} {stale}")
+            if _SITE_GATEWAY_LAST_SEEN:
+                lines.append(
+                    "# HELP ae_site_gateway_last_seen_seconds Age of the latest gateway status sample per site and node"
+                )
+                lines.append("# TYPE ae_site_gateway_last_seen_seconds gauge")
+                for (site_id, node_id), last_ts in sorted(_SITE_GATEWAY_LAST_SEEN.items()):
+                    try:
+                        last_age = now.timestamp() - float(last_ts)
+                    except Exception:
+                        continue
+                    labels = f'site="{site_id}",node="{node_id}"'
+                    lines.append(f"ae_site_gateway_last_seen_seconds{{{labels}}} {last_age}")
+            if _SITE_GATEWAY_BUILD_INFO:
+                lines.append(
+                    "# HELP ae_site_gateway_build_info Gateway build metadata observed via site telemetry"
+                )
+                lines.append("# TYPE ae_site_gateway_build_info gauge")
+                for (site_id, node_id), (version, sha, date) in sorted(
+                    _SITE_GATEWAY_BUILD_INFO.items()
+                ):
+                    labels = f'site="{site_id}",node="{node_id}",version="{version}",sha="{sha}",date="{date}"'
+                    lines.append(f"ae_site_gateway_build_info{{{labels}}} 1")
+        except Exception:
+            pass
+        # Controller authority metrics
+        try:
+            authority_fn = getattr(self, "authority_info_fn", None)
+            if authority_fn is not None:
+                snapshot = authority_fn()
+                enabled = (
+                    bool(getattr(snapshot, "enabled", False)) if snapshot is not None else False
+                )
+                is_leader = (
+                    bool(getattr(snapshot, "is_leader", False)) if snapshot is not None else False
+                )
+                leader_info = (
+                    getattr(snapshot, "leader_info", None) if snapshot is not None else None
+                )
+                epoch = 0
+                if snapshot is not None:
+                    try:
+                        epoch = int(getattr(snapshot, "controller_epoch", 0) or 0)
+                    except Exception:
+                        epoch = 0
+                authority_healthy = (
+                    1 if (not enabled or is_leader or leader_info is not None) else 0
+                )
+                lines.append(
+                    "# HELP ae_controller_is_leader Whether this controller currently owns mutation authority"
+                )
+                lines.append("# TYPE ae_controller_is_leader gauge")
+                lines.append(f"ae_controller_is_leader {1 if is_leader else 0}")
+                lines.append("# HELP ae_controller_epoch Current controller authority epoch")
+                lines.append("# TYPE ae_controller_epoch gauge")
+                lines.append(f"ae_controller_epoch {epoch}")
+                lines.append(
+                    "# HELP ae_controller_authority_healthy Whether controller authority can resolve a valid leader"
+                )
+                lines.append("# TYPE ae_controller_authority_healthy gauge")
+                lines.append(f"ae_controller_authority_healthy {authority_healthy}")
+        except Exception:
+            pass
+        # Etcd maintenance + heartbeat churn metrics
+        try:
+            lines += [
+                "# HELP ae_heartbeat_writes_total Node heartbeat status writes to state",
+                "# TYPE ae_heartbeat_writes_total counter",
+                f"ae_heartbeat_writes_total {_HEARTBEAT_WRITES_TOTAL}",
+                "# HELP ae_heartbeat_node_rewrites_total Node metadata rewrites during heartbeat refresh",
+                "# TYPE ae_heartbeat_node_rewrites_total counter",
+                f"ae_heartbeat_node_rewrites_total {_HEARTBEAT_NODE_REWRITES_TOTAL}",
+                "# HELP ae_etcd_maintenance_runs_total Etcd watchdog runs executed by controller",
+                "# TYPE ae_etcd_maintenance_runs_total counter",
+                f"ae_etcd_maintenance_runs_total {_ETCD_MAINTENANCE_RUNS_TOTAL}",
+                "# HELP ae_etcd_maintenance_triggered_total Etcd watchdog runs that triggered compact/defrag",
+                "# TYPE ae_etcd_maintenance_triggered_total counter",
+                f"ae_etcd_maintenance_triggered_total {_ETCD_MAINTENANCE_TRIGGERED_TOTAL}",
+            ]
         except Exception:
             pass
         # Route bundle apply metrics
@@ -3112,6 +4375,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     "# TYPE ae_route_bundle_apply_fail_total counter",
                     "# HELP ae_route_bundle_apply_latency_seconds Last route bundle apply latency",
                     "# TYPE ae_route_bundle_apply_latency_seconds gauge",
+                    "# HELP ae_route_bundle_publish_ok_total Route bundle publishes that succeeded",
+                    "# TYPE ae_route_bundle_publish_ok_total counter",
+                    "# HELP ae_route_bundle_publish_fail_total Route bundle publishes that failed",
+                    "# TYPE ae_route_bundle_publish_fail_total counter",
+                    "# HELP ae_route_bundle_pending Route bundle sites still awaiting acknowledgement",
+                    "# TYPE ae_route_bundle_pending gauge",
+                    "# HELP ae_route_bundle_ack_age_seconds Age of the oldest outstanding route bundle publish",
+                    "# TYPE ae_route_bundle_ack_age_seconds gauge",
                 ]
                 for site_id, metrics in sorted(_ROUTE_BUNDLE_METRICS.items()):
                     labels = f'site="{site_id}"'
@@ -3123,6 +4394,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     )
                     lines.append(
                         f"ae_route_bundle_apply_latency_seconds{{{labels}}} {metrics.get('last_latency_s', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_publish_ok_total{{{labels}}} {metrics.get('publish_ok_total', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_publish_fail_total{{{labels}}} {metrics.get('publish_fail_total', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_pending{{{labels}}} {metrics.get('pending', 0.0)}"
+                    )
+                    lines.append(
+                        f"ae_route_bundle_ack_age_seconds{{{labels}}} {metrics.get('ack_age_s', 0.0)}"
                     )
         except Exception:
             pass
@@ -3301,14 +4584,79 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             lines.append("# TYPE ae_gateway_work_nak_total counter")
             lines.append("# HELP ae_gateway_lease_retry_total Gateway lease acquire retries")
             lines.append("# TYPE ae_gateway_lease_retry_total counter")
+            lines.append("# HELP ae_gateway_result_replay_total Gateway result replays delivered")
+            lines.append("# TYPE ae_gateway_result_replay_total counter")
+            lines.append(
+                "# HELP ae_gateway_result_replay_fail_total Gateway result replay attempts that failed"
+            )
+            lines.append("# TYPE ae_gateway_result_replay_fail_total counter")
+            lines.append(
+                "# HELP ae_gateway_result_replay_backlog Gateway buffered results awaiting controller delivery"
+            )
+            lines.append("# TYPE ae_gateway_result_replay_backlog gauge")
             for site_id, stats in _GATEWAY_WORK_METRICS.items():
                 labels = f'site="{site_id}"'
                 stale = float(stats.get("work_stale_total", 0.0) or 0.0)
                 nacked = float(stats.get("work_nak_total", 0.0) or 0.0)
                 retries = float(stats.get("lease_retry_total", 0.0) or 0.0)
+                replay = float(stats.get("result_replay_total", 0.0) or 0.0)
+                replay_fail = float(stats.get("result_replay_fail_total", 0.0) or 0.0)
+                replay_backlog = float(stats.get("result_replay_backlog", 0.0) or 0.0)
                 lines.append(f"ae_gateway_work_stale_total{{{labels}}} {stale}")
                 lines.append(f"ae_gateway_work_nak_total{{{labels}}} {nacked}")
                 lines.append(f"ae_gateway_lease_retry_total{{{labels}}} {retries}")
+                lines.append(f"ae_gateway_result_replay_total{{{labels}}} {replay}")
+                lines.append(f"ae_gateway_result_replay_fail_total{{{labels}}} {replay_fail}")
+                lines.append(f"ae_gateway_result_replay_backlog{{{labels}}} {replay_backlog}")
+        if _HA_FENCE_METRICS:
+            lines.append("# HELP ae_ha_fence_stale_total HA fence stale-envelope rejects")
+            lines.append("# TYPE ae_ha_fence_stale_total counter")
+            lines.append("# HELP ae_ha_fence_duplicate_total HA fence duplicate-operation no-ops")
+            lines.append("# TYPE ae_ha_fence_duplicate_total counter")
+            lines.append("# HELP ae_ha_fence_epoch_advance_total HA fence scope epoch advances")
+            lines.append("# TYPE ae_ha_fence_epoch_advance_total counter")
+            for surface, stats in sorted(_HA_FENCE_METRICS.items()):
+                labels = f'surface="{surface}"'
+                lines.append(
+                    f"ae_ha_fence_stale_total{{{labels}}} {float(stats.get('stale_total', 0.0) or 0.0)}"
+                )
+                lines.append(
+                    f"ae_ha_fence_duplicate_total{{{labels}}} {float(stats.get('duplicate_total', 0.0) or 0.0)}"
+                )
+                lines.append(
+                    f"ae_ha_fence_epoch_advance_total{{{labels}}} {float(stats.get('epoch_advance_total', 0.0) or 0.0)}"
+                )
+        lines.append("# HELP ae_hpa_reconcile_total HPA authority reconcile attempts")
+        lines.append("# TYPE ae_hpa_reconcile_total counter")
+        lines.append(
+            f"ae_hpa_reconcile_total {float(_HPA_ACTIVITY_METRICS.get('reconcile_total', 0.0) or 0.0)}"
+        )
+        lines.append("# HELP ae_hpa_scale_total HPA authority scale actions")
+        lines.append("# TYPE ae_hpa_scale_total counter")
+        lines.append(
+            f"ae_hpa_scale_total {float(_HPA_ACTIVITY_METRICS.get('scale_total', 0.0) or 0.0)}"
+        )
+        lines.append(
+            "# HELP ae_hpa_metrics_stale_total HPA reconciles skipped due to stale metrics"
+        )
+        lines.append("# TYPE ae_hpa_metrics_stale_total counter")
+        lines.append(
+            f"ae_hpa_metrics_stale_total {float(_HPA_ACTIVITY_METRICS.get('metrics_stale_total', 0.0) or 0.0)}"
+        )
+        lines.append(
+            "# HELP ae_hpa_metrics_missing_total HPA reconciles skipped due to missing metrics or requests"
+        )
+        lines.append("# TYPE ae_hpa_metrics_missing_total counter")
+        lines.append(
+            f"ae_hpa_metrics_missing_total {float(_HPA_ACTIVITY_METRICS.get('metrics_missing_total', 0.0) or 0.0)}"
+        )
+        lines.append(
+            "# HELP ae_hpa_snapshot_age_seconds Age of the latest workload metrics snapshot used by HPA"
+        )
+        lines.append("# TYPE ae_hpa_snapshot_age_seconds gauge")
+        lines.append(
+            f"ae_hpa_snapshot_age_seconds {float(_HPA_ACTIVITY_METRICS.get('snapshot_age_seconds', 0.0) or 0.0)}"
+        )
         if _JS_STREAM_STATS:
             lines.append("# HELP ae_js_stream_bytes JetStream stream bytes in use")
             lines.append("# TYPE ae_js_stream_bytes gauge")
@@ -3399,6 +4747,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 extra = dict(fn())  # type: ignore[misc]
             except Exception:
                 extra = {}
+        raw_probe_snapshot = extra.pop("ha_probes", None)
+        if isinstance(raw_probe_snapshot, dict):
+            extra["ha_probes"] = raw_probe_snapshot
 
         # Crashloop flags snapshot (apps with active TTL)
         try:
@@ -3408,127 +4759,53 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             crash = {app: (float(until) > now) for app, until in list(_APP_CRASHLOOP_UNTIL.items())}
         except Exception:
             crash = {}
-        # Transport snapshot (best-effort, derived from in-process counters)
-        transport: dict = {}
-        try:
-            backend = (os.getenv("AE_TRANSPORT_BACKEND") or "http").strip() or "http"
-            transport["backend"] = backend
-            js_domain = (os.getenv("AE_JS_DOMAIN") or "").strip()
-            if js_domain:
-                transport["js_domain"] = js_domain
-            transport["outbox"] = {
-                "ok_total": int(_OUTBOX_PUBLISH_OK),
-                "fail_total": int(_OUTBOX_PUBLISH_FAIL),
-            }
-            # Site telemetry summary
+        authority_snapshot = None
+        authority_fn = getattr(self, "authority_info_fn", None)
+        if authority_fn is not None:
             try:
-                grace = int(os.getenv("AE_SITE_NOTREADY_AFTER", "90") or 90)
+                authority_snapshot = authority_fn()
             except Exception:
-                grace = 90
-            now_ts = time.time()
-            seen = len(_SITE_LAST_SEEN)
-            stale = 0
-            last_seen_age = None
-            site_details: dict[str, dict[str, float | bool]] = {}
-            for last_ts in list(_SITE_LAST_SEEN.values()):
-                try:
-                    age = float(now_ts) - float(last_ts)
-                except Exception:
-                    continue
-                if last_seen_age is None or age < last_seen_age:
-                    last_seen_age = age
-                if age > grace:
-                    stale += 1
-            for site_id, last_ts in list(_SITE_LAST_SEEN.items()):
-                try:
-                    age = float(now_ts) - float(last_ts)
-                except Exception:
-                    continue
-                site_details[str(site_id)] = {
-                    "last_seen_age_s": age,
-                    "stale": age > grace,
-                }
-            transport["sites"] = {
-                "seen": int(seen),
-                "stale": int(stale),
-                "fresh": int(max(0, seen - stale)),
-                "last_seen_age_s": last_seen_age,
-            }
-            if site_details:
-                transport["sites_detail"] = site_details
-            # JetStream summary (if any stats are present)
-            if _JS_STREAM_STATS or _JS_CONSUMER_STATS:
-                js_pending = 0.0
-                js_ack_pending = 0.0
-                js_redelivered = 0.0
-                js_waiting = 0.0
-                for stats in _JS_CONSUMER_STATS.values():
-                    js_pending += float(stats.get("pending", 0.0) or 0.0)
-                    js_ack_pending += float(stats.get("ack_pending", 0.0) or 0.0)
-                    js_redelivered += float(stats.get("redelivered", 0.0) or 0.0)
-                    js_waiting += float(stats.get("waiting", 0.0) or 0.0)
-                transport["js"] = {
-                    "streams": int(len(_JS_STREAM_STATS)),
-                    "consumers": int(len(_JS_CONSUMER_STATS)),
-                    "pending": js_pending,
-                    "ack_pending": js_ack_pending,
-                    "redelivered": js_redelivered,
-                    "waiting": js_waiting,
-                }
-            # Gateway work summary (NAKs, stale work)
-            if _GATEWAY_WORK_METRICS:
-                gw_nak = 0.0
-                gw_stale = 0.0
-                gw_retries = 0.0
-                for stats in _GATEWAY_WORK_METRICS.values():
-                    gw_nak += float(stats.get("work_nak_total", 0.0) or 0.0)
-                    gw_stale += float(stats.get("work_stale_total", 0.0) or 0.0)
-                    gw_retries += float(stats.get("lease_retry_total", 0.0) or 0.0)
-                transport["gateway"] = {
-                    "work_nak_total": gw_nak,
-                    "work_stale_total": gw_stale,
-                    "lease_retry_total": gw_retries,
-                    "sites": int(len(_GATEWAY_WORK_METRICS)),
-                }
-            # Route bundle apply summary
-            if _ROUTE_BUNDLE_METRICS:
-                ok_total = 0.0
-                fail_total = 0.0
-                last_latency = None
-                for stats in _ROUTE_BUNDLE_METRICS.values():
-                    ok_total += float(stats.get("apply_ok_total", 0.0) or 0.0)
-                    fail_total += float(stats.get("apply_fail_total", 0.0) or 0.0)
-                    latency = stats.get("last_latency_s")
-                    if latency is None:
-                        continue
-                    try:
-                        lat_val = float(latency)
-                    except Exception:
-                        continue
-                    if last_latency is None or lat_val > last_latency:
-                        last_latency = lat_val
-                transport["routes"] = {
-                    "bundle_ok_total": ok_total,
-                    "bundle_fail_total": fail_total,
-                    "last_latency_s": last_latency,
-                    "sites": int(len(_ROUTE_BUNDLE_METRICS)),
-                }
+                authority_snapshot = None
+        authority_members = None
+        authority_members_fn = getattr(self, "authority_members_fn", None)
+        if authority_members_fn is not None:
+            try:
+                authority_members = list(authority_members_fn())
+            except Exception:
+                authority_members = None
+        try:
+            transport = _build_transport_snapshot()
         except Exception:
             transport = {}
 
         payload = {"controller": ctrl, "rbac": rbac, "crashloop": crash, **(extra or {})}
-        if transport:
-            payload["transport"] = transport
+        payload["transport"] = transport
+        payload["ha"] = _build_ha_snapshot(
+            extra=payload,
+            authority_snapshot=authority_snapshot,
+            authority_members=authority_members,
+            transport=transport,
+        )
+        payload["dashboard"] = {
+            "layout_mode": _dashboard_layout_mode(payload, payload["ha"]),
+        }
+        payload.pop("ha_probes", None)
         self._json_ok(payload)
 
     def _handle_ui_features(self) -> None:
+        controlplane_readonly = self._controlplane_readonly_enabled()
         payload = {
             "dashboard": bool(self._dashboard_enabled()),
             "playground": bool(self._playground_enabled()),
+            "dashboard_interactive_tools": bool(
+                self._flag_enabled("AE_DASHBOARD_INTERACTIVE_TOOLS", True)
+            ),
         }
         self._json_ok(payload)
 
-    def _handle_swagger(self, *, spec_url: str = "/openapi.json", title: str = "k1s Swagger UI") -> None:
+    def _handle_swagger(
+        self, *, spec_url: str = "/openapi.json", title: str = "k1s Swagger UI"
+    ) -> None:
         spec_literal = json.dumps(spec_url)
         labs_token = ""
         try:
@@ -3596,7 +4873,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         )
         doc = {
             "openapi": "3.0.0",
-            "info": {"title": "k1s Controller API", "version": "0.1.3.dev0"},
+            "info": {"title": "k1s Controller API", "version": "0.1.4"},
             "components": {
                 "securitySchemes": {
                     "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
@@ -3615,6 +4892,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                             "revision": {"type": "integer"},
                             "revision_status": {"type": "string"},
                             "image": {"type": "string"},
+                            "current_revision_ready_replicas": {"type": "integer"},
+                            "current_revision_live_replicas": {"type": "integer"},
+                            "old_revision_ready_replicas": {"type": "integer"},
+                            "old_revision_live_replicas": {"type": "integer"},
+                            "overlap_ready_replicas": {"type": "integer"},
+                            "overlap_live_replicas": {"type": "integer"},
                             "ingress_host": {"type": "string", "nullable": True},
                             "ingress_path": {"type": "string", "nullable": True},
                         },
@@ -3945,6 +5228,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 "image": s.image,
                 "ingress_host": s.ingress_host,
                 "ingress_path": s.ingress_path,
+                "current_revision_ready_replicas": s.current_revision_ready_replicas,
+                "current_revision_live_replicas": s.current_revision_live_replicas,
+                "old_revision_ready_replicas": s.old_revision_ready_replicas,
+                "old_revision_live_replicas": s.old_revision_live_replicas,
+                "overlap_ready_replicas": s.overlap_ready_replicas,
+                "overlap_live_replicas": s.overlap_live_replicas,
             }
             # Best-effort rollout summary for list view
             try:
@@ -4035,6 +5324,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "image": s.image,
             "ingress_host": s.ingress_host,
             "ingress_path": s.ingress_path,
+            "current_revision_ready_replicas": s.current_revision_ready_replicas,
+            "current_revision_live_replicas": s.current_revision_live_replicas,
+            "old_revision_ready_replicas": s.old_revision_ready_replicas,
+            "old_revision_live_replicas": s.old_revision_live_replicas,
+            "overlap_ready_replicas": s.overlap_ready_replicas,
+            "overlap_live_replicas": s.overlap_live_replicas,
         }
         # If details requested, include manifest and replica summaries
         want_details = str(params.get("details", ["0"])[0]).lower() in {"1", "true", "yes"}
@@ -4115,8 +5410,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_version_info(self) -> None:
+        payload = dict(AE_BUILD_INFO())
+        payload["component"] = "controller"
+        self._json_ok(payload)
+
     def _json_error(self, code: int, message: str) -> None:
-        payload = json.dumps({"error": message}).encode("utf-8")
+        self._json_error_obj(code, {"error": message})
+
+    def _json_error_obj(self, code: int, obj: dict) -> None:
+        payload = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -4206,10 +5509,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             ).strip()
         except Exception:
             apishim_base = ""
+        dashboard_token = ""
+        try:
+            dashboard_token = _dashboard_bootstrap_token()
+        except Exception:
+            dashboard_token = ""
         html = resource_loader.render_text(
             "observability",
             "dashboard.html",
             LABS_TOKEN=json.dumps(labs_token),
+            DASHBOARD_TOKEN=json.dumps(dashboard_token),
             APISHIM_BASE=json.dumps(apishim_base),
         )
         payload = html.encode("utf-8")
@@ -4473,6 +5782,8 @@ def start_http_api(
     exec_fn=None,
     logs_fn=None,
     system_info_fn=None,
+    authority_info_fn=None,
+    authority_members_fn=None,
     plan_fn=None,
     rollout_pause_fn=None,
     rollout_resume_fn=None,
@@ -4493,6 +5804,12 @@ def start_http_api(
     handler_cls.logs_fn = staticmethod(logs_fn) if logs_fn is not None else None
     handler_cls.system_info_fn = (
         staticmethod(system_info_fn) if system_info_fn is not None else None
+    )
+    handler_cls.authority_info_fn = (
+        staticmethod(authority_info_fn) if authority_info_fn is not None else None
+    )
+    handler_cls.authority_members_fn = (
+        staticmethod(authority_members_fn) if authority_members_fn is not None else None
     )
     handler_cls.plan_fn = staticmethod(plan_fn) if plan_fn is not None else None
     handler_cls.rollout_pause_fn = (
@@ -4520,6 +5837,10 @@ def start_http_api(
     thread = threading.Thread(target=httpd.serve_forever, name="ae-http-api", daemon=True)
     thread.start()
     return httpd, assigned, thread
+
+
+def _prom_escape_label_value(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 # ruff: noqa: E501,S603,S607,S110,S112,SIM105,SIM108,SIM118,SIM210,S104,UP017,UP038,E741,B023,C401,UP035,E402,UP034

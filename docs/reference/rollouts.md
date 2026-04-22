@@ -52,7 +52,7 @@ Apply a two-step ordered rollout for `echo`:
 ```
 ./scripts/init_demo.sh --demo-rollout -y -d
 # or
-make demo ARGS="--demo-rollout -y -d"
+make demo-legacy ARGS="--demo-rollout -y -d"
 ```
 
 This applies `specs/examples/echo.yaml` then `specs/examples/echo-rollout.yaml`

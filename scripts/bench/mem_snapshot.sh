@@ -12,6 +12,7 @@ set -euo pipefail
 mode="k1s"
 label="manual"
 duration=30
+capture_timing="warm"
 outroot="snapshots"
 
 podman_bin="${AE_PODMAN_BIN:-podman}"
@@ -38,10 +39,16 @@ while [[ $# -gt 0 ]]; do
     --mode) mode="$2"; shift 2;;
     --label) label="$2"; shift 2;;
     --duration) duration="$2"; shift 2;;
+    --capture-timing) capture_timing="$2"; shift 2;;
     --outdir) outroot="$2"; shift 2;;
     *) echo "unknown arg: $1"; exit 2;;
   esac
 done
+
+if [[ "$capture_timing" != "warm" && "$capture_timing" != "immediate" ]]; then
+  echo "invalid --capture-timing: $capture_timing" >&2
+  exit 2
+fi
 
 ts=$(date +%Y%m%d-%H%M%S)
 outdir="${outroot}/${label}/${ts}"
@@ -195,6 +202,7 @@ log_step "write meta and preflight"
   echo "  \"label\": \"${label}\"," 
   echo "  \"mode\": \"${mode}\"," 
   echo "  \"duration_sec\": ${duration},"
+  echo "  \"capture_timing\": \"${capture_timing}\"," 
   echo "  \"timestamp\": \"${ts}\"," 
   echo "  \"uname\": \"$(uname -a | sed 's/\"/\\\"/g')\"," 
   echo "  \"backend\": \"$(detect_backend)\"," 
@@ -214,58 +222,162 @@ ps -eo pid,ppid,comm,rss --sort -rss > "${outdir}/raw/ps_before.txt" 2>>"${outdi
 ps -eo pid,ppid,comm,args --sort -rss > "${outdir}/raw/ps_scan_before.txt" 2>>"${outdir}/status.log" || log_err "ps_scan_before failed"
 log_step "ps snapshots captured"
 
-# Streaming vmstat during warm window (non-fatal)
-vmcount=$(( duration > 5 ? duration : 5 ))
-vmstat 1 "${vmcount}" > "${outdir}/raw/vmstat.txt" 2>>"${outdir}/status.log" || log_err "vmstat failed"
+capture_process_and_container_state() {
+  # Process target patterns
+  # Use args-aware scan to capture controller accurately and include runtime shims
+  case "${mode}" in
+    k1s)
+      # match: python -m ae.controller, caddy, docker/containerd, containerd-shim,
+      # and rootless Podman helpers (podman/conmon/passt/slirp4netns)
+      proc_pat='ae\.controller|\bcaddy\b|\bdockerd\b|\bcontainerd\b|\bcontainerd-shim\b|\bpodman\b|\bconmon\b|\bpasst(\.[A-Za-z0-9_-]+)?\b|\bpasta\b|\bslirp4netns\b'
+      scan_file="${outdir}/raw/ps_scan_before.txt"
+      ;;
+    k3s)
+      proc_pat='\bk3s\b|\bcontainerd\b|\bcoredns\b|\btraefik\b'
+      scan_file="${outdir}/raw/ps_scan_before.txt"
+      ;;
+    *)
+      proc_pat='.'
+      scan_file="${outdir}/raw/ps_scan_before.txt"
+      ;;
+  esac
 
-# Process target patterns
-# Use args-aware scan to capture controller accurately and avoid shims
-case "${mode}" in
-  k1s)
-    # match: python -m ae.controller, caddy, docker/containerd, and podman/conmon (but NOT containerd-shim)
-    proc_pat='ae\.controller|\bcaddy\b|\bdockerd\b|\bcontainerd\b|\bpodman\b|\bconmon\b'
-    scan_file="${outdir}/raw/ps_scan_before.txt"
-    ;;
-  k3s)
-    proc_pat='\bk3s\b|\bcontainerd\b|\bcoredns\b|\btraefik\b'
-    scan_file="${outdir}/raw/ps_scan_before.txt"
-    ;;
-  *)
-    proc_pat='.'
-    scan_file="${outdir}/raw/ps_scan_before.txt"
-    ;;
-esac
+  # Capture smaps_rollup + status for matching processes
+  matches=$(grep -E "${proc_pat}" "${scan_file}" 2>/dev/null || true)
+  awk '{print $1" "$3}' <<< "$matches" | while read -r pid comm; do
+    [[ -z "${pid}" ]] && continue
+    if [[ -r "/proc/${pid}/smaps_rollup" ]]; then
+      cp "/proc/${pid}/smaps_rollup" "${outdir}/raw/smaps_${pid}_${comm//\//_}.txt" 2>/dev/null || true
+    fi
+    if [[ -r "/proc/${pid}/status" ]]; then
+      cp "/proc/${pid}/status" "${outdir}/raw/status_${pid}_${comm//\//_}.txt" 2>/dev/null || true
+    fi
+  done
+  log_step "process smaps/status captured"
 
-# Capture smaps_rollup + status for matching processes (exclude containerd-shim)
-matches=$(grep -E "${proc_pat}" "${scan_file}" 2>/dev/null | grep -v "containerd-shim" || true)
-awk '{print $1" "$3}' <<< "$matches" | while read -r pid comm; do
-  [[ -z "${pid}" ]] && continue
-  if [[ -r "/proc/${pid}/smaps_rollup" ]]; then
-    cp "/proc/${pid}/smaps_rollup" "${outdir}/raw/smaps_${pid}_${comm//\//_}.txt" 2>/dev/null || true
+  if command -v python >/dev/null 2>&1; then
+    python - "${outdir}/raw/host_system_cgroups.csv" << 'PY' 2>>"${outdir}/status.log" || true
+import csv
+import os
+import sys
+from pathlib import Path
+
+out_path = Path(sys.argv[1])
+
+
+def detect_cgv2() -> bool:
+    return Path("/sys/fs/cgroup/cgroup.controllers").exists()
+
+
+def dir_is_leaf(path: Path) -> bool:
+    try:
+        for child in path.iterdir():
+            if not child.is_dir():
+                continue
+            if (child / "cgroup.procs").exists() or (child / "cgroup.events").exists():
+                return False
+    except Exception:
+        return True
+    return True
+
+
+def safe_read_int(path: Path) -> int:
+    try:
+        return int(path.read_text().strip())
+    except Exception:
+        return 0
+
+
+def collect_rows(root: Path, base: Path, slice_kind: str, memory_file: str) -> list[tuple[str, int, str]]:
+    rows: list[tuple[str, int, str]] = []
+    if not root.exists():
+        return rows
+    candidates = [root]
+    try:
+        candidates.extend(sorted(root.rglob("*")))
+    except Exception:
+        pass
+    for candidate in candidates:
+        try:
+            if not candidate.is_dir():
+                continue
+        except Exception:
+            continue
+        mem_path = candidate / memory_file
+        if not mem_path.exists() or not dir_is_leaf(candidate):
+            continue
+        rel = "/" + str(candidate.relative_to(base))
+        rows.append((rel, safe_read_int(mem_path), slice_kind))
+    return rows
+
+
+rows: list[tuple[str, int, str]]
+if detect_cgv2():
+    base = Path("/sys/fs/cgroup")
+    rows = collect_rows(base / "system.slice", base, "system.slice", "memory.current")
+    rows.extend(collect_rows(base / "init.scope", base, "init.scope", "memory.current"))
+else:
+    base = Path("/sys/fs/cgroup/memory")
+    rows = collect_rows(base / "system.slice", base, "system.slice", "memory.usage_in_bytes")
+    rows.extend(collect_rows(base / "init.scope", base, "init.scope", "memory.usage_in_bytes"))
+
+rows.sort(key=lambda item: (-item[1], item[0]))
+with out_path.open("w", newline="", encoding="utf-8") as handle:
+    writer = csv.writer(handle)
+    writer.writerow(("path", "bytes", "slice_kind"))
+    writer.writerows(rows)
+PY
   fi
-  if [[ -r "/proc/${pid}/status" ]]; then
-    cp "/proc/${pid}/status" "${outdir}/raw/status_${pid}_${comm//\//_}.txt" 2>/dev/null || true
-  fi
-done
-log_step "process smaps/status captured"
+  log_step "host system cgroups captured"
 
-## Containers (collect only from the selected engine to avoid contamination)
-{
-  # Include cg_path for downstream de-duplication in aggregation
-  echo "container_id,name,pid,mem_current_bytes,cg_path"
-} > "${outdir}/raw/containers_mem.csv"
+  ## Containers (collect only from the selected engine to avoid contamination)
+  {
+    # Include cg_path for downstream de-duplication in aggregation
+    echo "container_id,name,pid,mem_current_bytes,cg_path"
+  } > "${outdir}/raw/containers_mem.csv"
 
-# CRI (only when selected)
-if [[ "$collect_engine" == "cri" ]]; then
-  crictl_bin="${AE_CRICTL_BIN:-crictl}"
-  if command -v "$crictl_bin" >/dev/null 2>&1; then
-    python - "$outdir" "$crictl_bin" "${AE_CRI_ENDPOINT:-}" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
+  # CRI (only when selected)
+  if [[ "$collect_engine" == "cri" ]]; then
+    crictl_bin="${AE_CRICTL_BIN:-crictl}"
+    if command -v "$crictl_bin" >/dev/null 2>&1; then
+      cri_ps_json="${outdir}/raw/cri_ps.json"
+      cri_ps_stderr="${outdir}/raw/cri_ps.stderr"
+      cri_pods_json="${outdir}/raw/cri_pods.json"
+      cri_pods_stderr="${outdir}/raw/cri_pods.stderr"
+      cri_info_json="${outdir}/raw/cri_info.json"
+      cri_info_stderr="${outdir}/raw/cri_info.stderr"
+      cri_cmd=("$crictl_bin")
+      if [[ -n "${AE_CRI_ENDPOINT:-}" ]]; then
+        cri_cmd+=("--runtime-endpoint" "${AE_CRI_ENDPOINT}")
+      fi
+      "${cri_cmd[@]}" info -o json >"${cri_info_json}" 2>"${cri_info_stderr}" || true
+      "${cri_cmd[@]}" ps -a -o json >"${cri_ps_json}" 2>"${cri_ps_stderr}" || true
+      "${cri_cmd[@]}" pods -o json >"${cri_pods_json}" 2>"${cri_pods_stderr}" || true
+      python - "$cri_ps_json" "$cri_pods_json" << 'PY' >> "${outdir}/status.log" 2>>"${outdir}/status.log" || true
+import json, sys
+
+def count(path: str, keys: tuple[str, ...]) -> int:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return -1
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return -1
+
+print(f"CRI debug ps_count={count(sys.argv[1], ('containers', 'items'))} pods_count={count(sys.argv[2], ('items',))}")
+PY
+      python - "$outdir" "$crictl_bin" "${AE_CRI_ENDPOINT:-}" "${cri_ps_json}" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, subprocess, sys
 from typing import Optional
 
 root = sys.argv[1]
 crictl = sys.argv[2]
 endpoint = sys.argv[3] if len(sys.argv) > 3 else ""
+ps_json_path = sys.argv[4] if len(sys.argv) > 4 else ""
 
 def run(args: list[str]) -> str:
     cmd = [crictl]
@@ -324,11 +436,19 @@ def read_mem_bytes_and_path(pid: str, cg_path: str = ""):
         return read_mem_for_cg(cg), cg
     return -1, ""
 
-ps_raw = run(["ps", "-a", "-o", "json"])
-try:
-    ps_data = json.loads(ps_raw or "{}")
-except Exception:
-    ps_data = {}
+ps_data = {}
+if ps_json_path:
+    try:
+        with open(ps_json_path, "r", encoding="utf-8") as fh:
+            ps_data = json.load(fh)
+    except Exception:
+        ps_data = {}
+if not ps_data:
+    ps_raw = run(["ps", "-a", "-o", "json"])
+    try:
+        ps_data = json.loads(ps_raw or "{}")
+    except Exception:
+        ps_data = {}
 
 containers = ps_data.get("containers") or ps_data.get("items") or []
 inspect_out = []
@@ -371,20 +491,20 @@ for item in containers:
 with open(os.path.join(root, "raw", "cri_inspect.json"), "w", encoding="utf-8") as fh:
     json.dump(inspect_out, fh)
 PY
-  else
-    echo "[mem-snapshot] crictl not found (engine_filter=cri); container metrics skipped." >&2
+    else
+      echo "[mem-snapshot] crictl not found (engine_filter=cri); container metrics skipped." >&2
+    fi
   fi
-fi
-log_step "cri containers collected (if selected)"
+  log_step "cri containers collected (if selected)"
 
-# Podman (only when selected)
-if [[ "$collect_engine" == "podman" || "$collect_engine" == "both" ]] && podman_available; then
-  podman_cmd ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
-  ids=$(podman_cmd ps -aq 2>/dev/null || true)
-  if [[ -n "${ids}" ]]; then
-    podman_cmd inspect --format json $ids > "${outdir}/raw/podman_inspect.json" 2>/dev/null || true
-  fi
-  python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
+  # Podman (only when selected)
+  if [[ "$collect_engine" == "podman" || "$collect_engine" == "both" ]] && podman_available; then
+    podman_cmd ps -a --format json > "${outdir}/raw/podman_ps.json" 2>/dev/null || true
+    ids=$(podman_cmd ps -aq 2>/dev/null || true)
+    if [[ -n "${ids}" ]]; then
+      podman_cmd inspect --format json $ids > "${outdir}/raw/podman_inspect.json" 2>/dev/null || true
+    fi
+    python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, sys
 from typing import Optional
 
@@ -445,21 +565,21 @@ for c in data:
     mem, cg = read_mem_bytes_and_path(pid) if pid and pid != '0' else (-1, '')
     print(f"{cid},{name},{pid},{mem},{cg}")
 PY
-fi
-log_step "podman containers collected (if selected)"
-
-# Docker (only when selected)
-if [[ "$collect_engine" == "docker" || "$collect_engine" == "both" ]] && command -v docker >/dev/null 2>&1; then
-  docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' > "${outdir}/raw/docker_ps.txt" || true
-  if docker ps -aq >/dev/null 2>&1; then
-    ids=$(docker ps -aq)
-    if [[ -n "${ids}" ]]; then
-      docker inspect ${ids} > "${outdir}/raw/docker_inspect.json" || true
-    fi
   fi
-  # Try to capture per-container cgroup memory via the main process PID
-  if [[ -f "${outdir}/raw/docker_inspect.json" ]]; then
-    python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
+  log_step "podman containers collected (if selected)"
+
+  # Docker (only when selected)
+  if [[ "$collect_engine" == "docker" || "$collect_engine" == "both" ]] && command -v docker >/dev/null 2>&1; then
+    docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' > "${outdir}/raw/docker_ps.txt" || true
+    if docker ps -aq >/dev/null 2>&1; then
+      ids=$(docker ps -aq)
+      if [[ -n "${ids}" ]]; then
+        docker inspect ${ids} > "${outdir}/raw/docker_inspect.json" || true
+      fi
+    fi
+    # Try to capture per-container cgroup memory via the main process PID
+    if [[ -f "${outdir}/raw/docker_inspect.json" ]]; then
+      python - "$outdir" << 'PY' 2>>"${outdir}/status.log" >> "${outdir}/raw/containers_mem.csv" || true
 import json, os, sys
 from typing import Optional
 
@@ -517,13 +637,13 @@ for c in data:
     mem, cg = read_mem_bytes_and_path(pid) if pid and pid!='0' else (-1, '')
     print(f"{cid},{name},{pid},{mem},{cg}")
 PY
+    fi
   fi
-fi
-log_step "docker containers collected (if selected)"
+  log_step "docker containers collected (if selected)"
 
-# k1nd extras: collect control-plane PSS from inside dev containers (when running in docker)
-if [[ "$mode" == "k1s" ]] && command -v docker >/dev/null 2>&1; then
-  {
+  # k1nd extras: collect control-plane PSS from inside dev containers (when running in docker)
+  if [[ "$mode" == "k1s" ]] && command -v docker >/dev/null 2>&1; then
+    {
     k1nd_controller_name="${AE_K1ND_CONTROLLER_CONTAINER:-dev-controller-1}"
     k1nd_apishim_name="${AE_K1ND_APISHIM_CONTAINER:-dev-apishim-1}"
     k1nd_ingress_name="${AE_K1ND_INGRESS_CONTAINER:-dev-caddy-1}"
@@ -633,36 +753,55 @@ echo "$total"
 EOF
       echo "[mem-snapshot] k1nd extras: controller=${controller_pss} apishim=${apishim_pss} ingress=${ingress_pss}" >&2
     fi
-  } 2>>"${outdir}/status.log"
-fi
+    } 2>>"${outdir}/status.log"
+  fi
 
-# Guard rail: fail fast if we expected containers but captured none.
-require_containers="${AE_REQUIRE_CONTAINERS:-}"
-if [[ -z "${require_containers}" ]]; then
-  label_lc="${label,,}"
-  if [[ "${AE_ALLOW_EMPTY_CONTAINERS:-0}" == "1" ]]; then
-    require_containers=0
-  elif [[ "${label_lc}" == *"idle"* ]]; then
-    require_containers=0
-  else
-    require_containers=1
+  # Guard rail: fail fast if we expected containers but captured none.
+  require_containers="${AE_REQUIRE_CONTAINERS:-}"
+  if [[ -z "${require_containers}" ]]; then
+    label_lc="${label,,}"
+    if [[ "${AE_ALLOW_EMPTY_CONTAINERS:-0}" == "1" ]]; then
+      require_containers=0
+    elif [[ "${label_lc}" == *"idle"* ]]; then
+      require_containers=0
+    else
+      require_containers=1
+    fi
   fi
-fi
-if [[ "${require_containers}" == "1" ]]; then
-  row_count=0
-  if [[ -f "${outdir}/raw/containers_mem.csv" ]]; then
-    row_count=$(tail -n +2 "${outdir}/raw/containers_mem.csv" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t')
+  if [[ "${require_containers}" == "1" ]]; then
+    row_count=0
+    if [[ -f "${outdir}/raw/containers_mem.csv" ]]; then
+      row_count=$(tail -n +2 "${outdir}/raw/containers_mem.csv" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t')
+    fi
+    if [[ "${row_count}" == "0" ]]; then
+      if [[ "$collect_engine" == "cri" ]]; then
+        log_err "no containers captured (AE_REQUIRE_CONTAINERS=1); see raw/cri_ps.json raw/cri_pods.json raw/cri_info.json"
+      fi
+      log_err "no containers captured (AE_REQUIRE_CONTAINERS=1); failing snapshot"
+      exit 4
+    fi
   fi
-  if [[ "${row_count}" == "0" ]]; then
-    log_err "no containers captured (AE_REQUIRE_CONTAINERS=1); failing snapshot"
-    exit 4
-  fi
-fi
 
-# k3s extras: collect control-plane PSS and app cgroup bytes from inside k3d node containers
-if [[ "$mode" == "k3s" ]] && command -v docker >/dev/null 2>&1; then
-  {
+  # k3s extras: collect control-plane PSS and app cgroup bytes from inside k3d node containers
+  if [[ "$mode" == "k3s" ]] && command -v docker >/dev/null 2>&1; then
+    {
     echo "[mem-snapshot] k3s extras: probing k3d node containers via docker exec" >&2
+    k3s_pod_uid_patterns=""
+    if [[ -n "${AE_K3S_POD_UIDS:-}" ]]; then
+      IFS=',' read -r -a k3s_pod_uids <<< "${AE_K3S_POD_UIDS}"
+      for uid in "${k3s_pod_uids[@]}"; do
+        uid="${uid// /}"
+        [[ -z "$uid" ]] && continue
+        if [[ -n "$k3s_pod_uid_patterns" ]]; then
+          k3s_pod_uid_patterns+=","
+        fi
+        k3s_pod_uid_patterns+="${uid}"
+        uid_pat="${uid//-/_}"
+        if [[ "$uid_pat" != "$uid" ]]; then
+          k3s_pod_uid_patterns+=",${uid_pat}"
+        fi
+      done
+    fi
     # Discover k3d server/agent containers
     mapfile -t k3d_nodes < <(docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | awk '{ if ($2 ~ /k3d-.*-(server|agent)-[0-9]+$/) print $1" "$2 }')
     if (( ${#k3d_nodes[@]} > 0 )); then
@@ -689,13 +828,27 @@ else
 fi' 2>/dev/null || echo 0)
         cp_kb=${cp_kb:-0}
         total_cp_pss_kb=$(( total_cp_pss_kb + ${cp_kb:-0} ))
-        # App cgroups: sum memory.current for leaf cgroups under kubepods{,.slice}
-        app_b=$(docker exec "$cid" sh -c '
+        # App cgroups: sum memory.current for leaf cgroups matching current app pod UIDs only.
+        app_b=$(docker exec -e AE_K3S_POD_UID_PATTERNS="$k3s_pod_uid_patterns" "$cid" sh -c '
+if [ -z "${AE_K3S_POD_UID_PATTERNS:-}" ]; then
+  echo 0
+  exit 0
+fi
+oldifs="$IFS"
+IFS=","
+set -- $AE_K3S_POD_UID_PATTERNS
+IFS="$oldifs"
 for base in /sys/fs/cgroup/kubepods.slice /sys/fs/cgroup/kubepods; do
   if [ -d "$base" ]; then
-    # leaf heuristic: directory has memory.current and no immediate child directory
     find "$base" -type d 2>/dev/null | while read d; do
       [ -f "$d/memory.current" ] || continue
+      match=0
+      for pat in "$@"; do
+        case "$d" in
+          *"$pat"*) match=1; break ;;
+        esac
+      done
+      [ "$match" -eq 1 ] || continue
       if find "$d" -mindepth 1 -maxdepth 1 -type d | read _; then
         :
       else
@@ -717,9 +870,17 @@ echo 0
           tmp_total=0
           for entry2 in "${k3d_nodes[@]}"; do
             cid2="${entry2%% *}"
-            app2=$(docker exec "$cid2" sh -c '
+            app2=$(docker exec -e AE_K3S_POD_UID_PATTERNS="$k3s_pod_uid_patterns" "$cid2" sh -c '
+if [ -z "${AE_K3S_POD_UID_PATTERNS:-}" ]; then
+  echo 0
+  exit 0
+fi
+oldifs="$IFS"
+IFS=","
+set -- $AE_K3S_POD_UID_PATTERNS
+IFS="$oldifs"
 base=/sys/fs/cgroup/kubepods; [ -d "$base" ] || base=/sys/fs/cgroup/kubepods.slice;
-find "$base" -type d 2>/dev/null | while read d; do [ -f "$d/memory.current" ] || continue; if find "$d" -mindepth 1 -maxdepth 1 -type d | read _; then :; else cat "$d/memory.current"; fi; done | awk "{s+=\$1} END{print s+0}"
+find "$base" -type d 2>/dev/null | while read d; do [ -f "$d/memory.current" ] || continue; match=0; for pat in "$@"; do case "$d" in *"$pat"*) match=1; break ;; esac; done; [ "$match" -eq 1 ] || continue; if find "$d" -mindepth 1 -maxdepth 1 -type d | read _; then :; else cat "$d/memory.current"; fi; done | awk "{s+=\$1} END{print s+0}"
 ' 2>/dev/null || echo 0)
             tmp_total=$(( tmp_total + ${app2:-0} ))
           done
@@ -735,7 +896,20 @@ find "$base" -type d 2>/dev/null | while read d; do [ -f "$d/memory.current" ] |
     else
       echo "[mem-snapshot] k3s extras: no k3d node containers detected; skipping inner metrics" >&2
     fi
-  } 2>>"${outdir}/status.log"
+    } 2>>"${outdir}/status.log"
+  fi
+}
+
+if [[ "$capture_timing" == "immediate" ]]; then
+  capture_process_and_container_state
+fi
+
+# Streaming vmstat during warm window (non-fatal)
+vmcount=$(( duration > 5 ? duration : 5 ))
+vmstat 1 "${vmcount}" > "${outdir}/raw/vmstat.txt" 2>>"${outdir}/status.log" || log_err "vmstat failed"
+
+if [[ "$capture_timing" == "warm" ]]; then
+  capture_process_and_container_state
 fi
 
 if [[ "$collect_engine" == "podman" ]] && ! podman_available; then

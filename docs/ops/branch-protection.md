@@ -1,20 +1,18 @@
-# Branch Protection Checklist (apishim-live-openapi)
+# Branch Protection Checklist
 
-Use this checklist to ensure the live OpenAPI gate is required on `main`.
+Use this checklist to ensure the lean blocking gates are required on `main`.
 
 ## Required checks
 1. Open repository settings → Branch protection → `main`.
 2. Enable “Require status checks to pass before merging.”
 3. Add these required checks:
-   - `apishim-live-openapi / live-openapi (target=local, runtime=stub)`
-   - `apishim-live-openapi / live-openapi (target=local, runtime=docker)`
-4. Optional (only if external kubeconfig/kind is configured and always available):
-   - `apishim-live-openapi / live-openapi (target=external, runtime=stub)`
-5. Optional (only if a CRI-capable runner is always available):
-   - `cri-ci / cri-integration`
-6. Save the rule and verify a new PR shows the required checks.
+   - `ci-core / unit-and-lint`
+   - `ci-core / planner-and-k8s-export`
+   - `ci-core / versioning`
+   - `ci-docs / docs-verify`
+4. Save the rule and verify a new PR shows the required checks.
 
 Notes:
-- Do not require the external check unless `APISHIM_LIVE_KUBECONFIG_B64` or `APISHIM_KIND_CLUSTER`
-  is set for the repo/org; skipped checks cannot satisfy required status rules.
-- The release tag workflow also runs the live gate; it should fail if the gate fails.
+- `ci-core` always reports the required checks, but skips the heavy jobs automatically on docs-only changes.
+- `ci-docs` always reports the `docs-verify` check, but only runs `make docs-verify` when README/docs surfaces changed.
+- Nightly/manual workflows such as `nightly-apishim.yml` and `nightly-runtime.yml` should not be marked required unless the repo has stable dedicated runners for those lanes.

@@ -41,6 +41,9 @@ def detect_api_base() -> str:
     env = os.getenv("DOCS_API_BASE")
     if env:
         return env.rstrip("/")
+    if _truthy_env("AE_CONTROLPLANE_PUBLIC_ENABLE"):
+        tls_port = os.getenv("AE_EDGE_INGRESS_TLS_PORT", "10443").strip() or "10443"
+        return f"https://docs.home.arpa:{tls_port}"
     try:
         hosts = Path("/etc/hosts").read_text(encoding="utf-8", errors="ignore")
         if "api.home.arpa" in hosts:
@@ -57,6 +60,9 @@ def detect_dashboard_url() -> str:
     env = os.getenv("DOCS_DASHBOARD_URL")
     if env:
         return env.strip()
+    if _truthy_env("AE_CONTROLPLANE_PUBLIC_ENABLE"):
+        tls_port = os.getenv("AE_EDGE_INGRESS_TLS_PORT", "10443").strip() or "10443"
+        return f"https://dash.home.arpa:{tls_port}/dashboard"
     try:
         hosts = Path("/etc/hosts").read_text(encoding="utf-8", errors="ignore")
         if "dash.home.arpa" in hosts:
@@ -90,15 +96,11 @@ RSS_FEED_TITLE = "k1s Repo Activity"
 SOURCE_REPO_URL = os.getenv(
     "DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
 ).strip()
-SOURCE_REPO_LABEL = os.getenv(
-    "DOCS_SOURCE_REPO_LABEL", "Upstream Repository (CODEBERG)"
-).strip()
+SOURCE_REPO_LABEL = os.getenv("DOCS_SOURCE_REPO_LABEL", "Upstream Repository (CODEBERG)").strip()
 COLLAB_REPO_URL = os.getenv(
     "DOCS_COLLAB_REPO_URL", "https://github.com/the-cm-collective/k1s"
 ).strip()
-COLLAB_REPO_LABEL = os.getenv(
-    "DOCS_COLLAB_REPO_LABEL", "Issues & PRs / SPONSORS (GitHub)"
-).strip()
+COLLAB_REPO_LABEL = os.getenv("DOCS_COLLAB_REPO_LABEL", "Issues & PRs / SPONSORS (GitHub)").strip()
 
 INTERACTIVE_HREF_TOKENS = (
     "/swagger",
@@ -109,25 +111,61 @@ INTERACTIVE_HREF_TOKENS = (
     "/playground",
 )
 
-NAV_LINKS = [
-    ("Start Here", "start-here.html", False, False),
-    ("Overview", "overview.html", False, False),
-    ("Demos", "examples.html", False, False),
-    ("Architecture", "architecture.html", False, False),
-    ("CRI containerd", "cri-containerd.html", False, False),
-    ("Multi-Node", "multinode-lab.html", False, False),
-    ("HTTP API", "http-api.html", False, False),
-    ("API Shim", "apishim-compatibility-matrix.html", False, False),
-    ("OpenAPI v3", "/openapi/v3", True, True),
-    ("Ingress", "ingress.html", False, False),
-    ("API Auth", "api-auth.html", False, False),
-    ("Concepts", "concepts.html", False, False),
-    ("Benchmarks", "benchmarks.html", False, False),
-    ("Swagger", "/swagger", True, True),
-    ("ReDoc", "/redoc", True, True),
-    ("Dashboard", DASHBOARD_URL, True, True),
-    ("Playground", "playground.html", True, False),
-    ("Concepts in Practice", "concepts-in-practice.html", False, False),
+NAV_GROUPS = [
+    (
+        "Learn",
+        [
+            ("Start Here", "start-here.html", False, False),
+            ("Overview", "overview.html", False, False),
+            ("Demos", "examples.html", False, False),
+            ("Concepts", "concepts.html", False, False),
+            ("Concepts in Practice", "concepts-in-practice.html", False, False),
+        ],
+    ),
+    (
+        "Design",
+        [
+            ("Architecture", "architecture.html", False, False),
+            ("Philosophy", "project-philosophy.html", False, False),
+            ("Inference Fabric", "inference-fabric.html", False, False),
+            ("Roadmap", "distributed-compute-fabric.html", False, False),
+        ],
+    ),
+    (
+        "Operate",
+        [
+            ("Ops Runbook", "runbook.html", False, False),
+            ("HA Bring-Up", "ha-cluster-bring-up.html", False, False),
+            ("VM Variants", "vm-variant-runbook.html", False, False),
+            ("Benchmarks", "benchmarks.html", False, False),
+        ],
+    ),
+    (
+        "Guides",
+        [
+            ("CRI containerd", "cri-containerd.html", False, False),
+            ("Multi-Node", "multinode-lab.html", False, False),
+            ("Ingress", "ingress.html", False, False),
+            ("Ingress Validation", "ingress-capability-test-sequence.html", False, False),
+        ],
+    ),
+    (
+        "API",
+        [
+            ("HTTP API", "http-api.html", False, False),
+            ("API Shim", "api-shim.html", False, False),
+            ("API Auth", "api-auth.html", False, False),
+            ("Swagger", "/swagger", True, True),
+            ("ReDoc", "/redoc", True, True),
+        ],
+    ),
+    (
+        "Live",
+        [
+            ("Dashboard", DASHBOARD_URL, True, True),
+            ("Playground", "playground.html", True, False),
+        ],
+    ),
 ]
 
 STATIC_SWAGGER_LABEL = "Swagger (Static)"
@@ -159,6 +197,15 @@ def render_nav(
             return href
         return f"{href_prefix}{href}"
 
+    def render_nav_link(label: str, href: str, external: bool) -> str:
+        attrs = []
+        if external:
+            attrs.append('target="_blank"')
+            attrs.append('rel="noopener"')
+        attr_str = " " + " ".join(attrs) if attrs else ""
+        href = normalize_href(href)
+        return f'      <a href="{href}"{attr_str}>{label}</a>'
+
     parts = []
     brand_href = normalize_href("index.html")
     brand_logo_src = normalize_href("static/k1s-logo-circle.svg")
@@ -168,26 +215,22 @@ def render_nav(
         "<span>k1s docs</span>"
         "</a>"
     )
-    injected_static = False
-    for label, href, interactive, external in NAV_LINKS:
-        if interactive and not include_interactive:
+    for group_label, group_links in NAV_GROUPS:
+        rendered_links: list[str] = []
+        for label, href, interactive, external in group_links:
+            if interactive and not include_interactive:
+                continue
+            rendered_links.append(render_nav_link(label, href, external))
+            if include_static_swagger and group_label == "API" and label == "HTTP API":
+                rendered_links.append(
+                    render_nav_link(STATIC_SWAGGER_LABEL, STATIC_SWAGGER_HREF, False)
+                )
+        if not rendered_links:
             continue
-        attrs = []
-        if external:
-            attrs.append('target="_blank"')
-            attrs.append('rel="noopener"')
-        attr_str = " " + " ".join(attrs) if attrs else ""
-        href = normalize_href(href)
-        parts.append(f'      <a href="{href}"{attr_str}>{label}</a>')
-        if include_static_swagger and label == "HTTP API":
-            parts.append(
-                f'      <a href="{normalize_href(STATIC_SWAGGER_HREF)}">{STATIC_SWAGGER_LABEL}</a>'
-            )
-            injected_static = True
-    if include_static_swagger and not injected_static:
         parts.append(
-            f'      <a href="{normalize_href(STATIC_SWAGGER_HREF)}">{STATIC_SWAGGER_LABEL}</a>'
+            f'      <span class="nav-group-label" aria-hidden="true">{group_label}</span>'
         )
+        parts.extend(rendered_links)
     return "\n".join(parts)
 
 
@@ -345,7 +388,11 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "List app statuses (paginated)",
                     "parameters": [
-                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}},
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "schema": {"type": "integer", "default": 50},
+                        },
                         {"name": "cursor", "in": "query", "schema": {"type": "string"}},
                         {"name": "app", "in": "query", "schema": {"type": "string"}},
                         {"name": "wildcard", "in": "query", "schema": {"type": "string"}},
@@ -358,9 +405,17 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "Get a single app status",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
-                    "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}},
+                    "responses": {
+                        "200": {"description": "OK"},
+                        "404": {"description": "Not Found"},
+                    },
                     "security": [{"bearerAuth": []}],
                 }
             },
@@ -368,9 +423,17 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "Get the latest stored manifest for an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
-                    "responses": {"200": {"description": "OK"}, "404": {"description": "Not Found"}},
+                    "responses": {
+                        "200": {"description": "OK"},
+                        "404": {"description": "Not Found"},
+                    },
                     "security": [{"bearerAuth": []}],
                 }
             },
@@ -378,8 +441,17 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "List app events (paginated)",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
-                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "schema": {"type": "integer", "default": 20},
+                        },
                         {"name": "cursor", "in": "query", "schema": {"type": "string"}},
                     ],
                     "responses": {"200": {"description": "OK"}},
@@ -390,7 +462,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "post": {
                     "summary": "Scale an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
                     "responses": {"200": {"description": "OK"}},
                     "security": [{"bearerAuth": []}],
@@ -400,7 +477,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "post": {
                     "summary": "Delete an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
                         {"name": "purge", "in": "query", "schema": {"type": "boolean"}},
                     ],
                     "responses": {"200": {"description": "OK"}},
@@ -411,7 +493,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "Tail application logs",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
                         {"name": "container", "in": "query", "schema": {"type": "string"}},
                         {"name": "tail", "in": "query", "schema": {"type": "integer"}},
                         {"name": "since", "in": "query", "schema": {"type": "integer"}},
@@ -433,7 +520,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "get": {
                     "summary": "Verify tlsSecretName resolvability under AE_TLS_DIR",
                     "parameters": [
-                        {"name": "name", "in": "query", "required": True, "schema": {"type": "string"}},
+                        {
+                            "name": "name",
+                            "in": "query",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
                         {"name": "root", "in": "query", "schema": {"type": "string"}},
                     ],
                     "responses": {"200": {"description": "OK"}},
@@ -444,7 +536,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "post": {
                     "summary": "Pause rollout for an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
                     "responses": {"200": {"description": "OK"}},
                     "security": [{"bearerAuth": []}],
@@ -454,7 +551,12 @@ def build_controller_openapi_doc() -> dict[str, object]:
                 "post": {
                     "summary": "Resume rollout for an app",
                     "parameters": [
-                        {"name": "app", "in": "path", "required": True, "schema": {"type": "string"}}
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
                     ],
                     "responses": {"200": {"description": "OK"}},
                     "security": [{"bearerAuth": []}],
@@ -632,6 +734,25 @@ TEMPLATE = """<!doctype html>
         box-shadow: 0 6px 16px rgba(0,0,0,0.16);
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
+      }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
       }
       nav a:hover {
         background: var(--k1s-surface);
@@ -1038,6 +1159,11 @@ TEMPLATE = """<!doctype html>
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -1062,7 +1188,7 @@ TEMPLATE = """<!doctype html>
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -1606,7 +1732,7 @@ def build_one(
     api_mode_widget: str,
     api_mode_script: str,
 ) -> None:
-    allow_raw = md_path.name in {"playground.md", "start-here.md", "memory.md"} or (
+    allow_raw = md_path.name in {"playground.md", "start-here.md", "memory.md", "project-philosophy.md"} or (
         md_path.name == "index.md" and md_path.parent.name == "concepts-in-practice"
     )
     html_body = md_to_html(
@@ -1710,7 +1836,7 @@ def build_one(
 
                 parts: list[str] = [
                     "<hr/>",
-                    "<h2>Latest Benchmarks (Auto)</h2>",
+                    "<h2 id='latest-benchmarks-auto'>Latest Benchmarks (Auto)</h2>",
                     "<p>Summarized from <code>combined/combined.csv</code> at build time."
                     + (" (k1s only)" if latest_filter in ("k1s", "k1s-only", "k1s_only") else "")
                     + "</p>",
@@ -1813,7 +1939,7 @@ def build_one(
                         m = re.search(r"-pods-(\d+)$", l)
                         if m:
                             return f"pods-{m.group(1)}"
-                        m = re.search(r"-rollout-(\d+)-(during|post)$", l)
+                        m = re.search(r"-rollout-(\d+)-(during(?:-warm)?|post)$", l)
                         if m:
                             return f"rollout-{m.group(1)}-{m.group(2)}"
                         return "other"
@@ -1886,7 +2012,7 @@ def build_one(
                                     v = row_vals[c]
                                     style = color_for(vals, v) if len(vals) > 1 else ""
                                     html_parts.append(
-                                        f"<td style='text-align:right;{style}'>" f"{v:.1f}</td>"
+                                        f"<td style='text-align:right;{style}'>{v:.1f}</td>"
                                     )
                                 else:
                                     html_parts.append("<td style='opacity:.5'>—</td>")
@@ -1897,7 +2023,7 @@ def build_one(
                     parts.append(
                         "<style>table.mini td, table.mini th { border:1px solid var(--border); padding:6px; }</style>"
                     )
-                    parts.append("<h2>Latest Comparison Matrix</h2>")
+                    parts.append("<h2 id='latest-comparison-matrix'>Latest Comparison Matrix</h2>")
                     # Overall winner band (normalized across stages x metrics; lower is better)
                     try:
 
@@ -1957,7 +2083,8 @@ def build_one(
                             ("MemAvail Δ", lambda r: _mad_backfill_local(r)),
                         ]
                         totals: dict[str, tuple[float, int]] = {c: (0.0, 0) for c in col_order}
-                        for st in stages:
+                        ranking_stages = [st for st in stages if not st.endswith("-during-warm")]
+                        for st in ranking_stages:
                             for _mt, ex in metric_extractors:
                                 vals_per_col: dict[str, float] = {}
                                 for c in col_order:
@@ -1993,9 +2120,7 @@ def build_one(
                             for (_adj, _avg, c, n, coverage) in ranking
                             if (max_n and (coverage >= coverage_min))
                         ]
-                        coverage_map = {
-                            c: coverage for (_adj, _avg, c, _n, coverage) in ranking
-                        }
+                        coverage_map = {c: coverage for (_adj, _avg, c, _n, coverage) in ranking}
                         low_coverage = {
                             c for c in col_order if coverage_map.get(c, 0.0) < coverage_min
                         }
@@ -2111,6 +2236,10 @@ def build_one(
                             "control_plane_pss_k1s_rootful.png",
                             "Control‑plane PSS — Timeline (k1s rootful)",
                         ),
+                        (
+                            "control_plane_pss_k1s_cri.png",
+                            "Control‑plane PSS — Timeline (k1s cri)",
+                        ),
                         ("control_plane_pss_k1nd.png", "Control‑plane PSS — Timeline (k1nd)"),
                         ("system_cgroups_k3d.png", "System Cgroups — Timeline (k3s)"),
                         (
@@ -2120,6 +2249,10 @@ def build_one(
                         (
                             "system_cgroups_k1s_rootful.png",
                             "System Cgroups — Timeline (k1s rootful)",
+                        ),
+                        (
+                            "system_cgroups_k1s_cri.png",
+                            "System Cgroups — Timeline (k1s cri)",
                         ),
                         ("system_cgroups_k1nd.png", "System Cgroups — Timeline (k1nd)"),
                         ("per_pod_overhead.png", "Per‑Pod Overhead (MiB)"),
@@ -2204,7 +2337,7 @@ def build_one(
                                 + f" are older than {hrs_label}; regenerate charts if this is unexpected."
                                 + "</div>"
                             )
-                        parts.append("<h2>Charts</h2>" + warn + "".join(inline_blocks))
+                        parts.append("<h2 id='charts'>Charts</h2>" + warn + "".join(inline_blocks))
                 html_body += "\n" + "\n".join(parts)
     except Exception:
         # Non-fatal: keep page renderable if injection fails
@@ -2216,9 +2349,9 @@ def build_one(
             [
                 f'<link rel="stylesheet" href="static/labs.css?v={ver}"/>',
                 f"<script>window.DOCS_API_BASE='{html.escape(API_BASE)}';</script>",
-                # Optional: inject a demo Labs token so the playground can prefill
+                # Never embed a labs token in public docs unless explicitly opted in.
                 (
-                    f"<script>window.DOCS_LABS_TOKEN='{html.escape(os.getenv('DOCS_LABS_TOKEN', ''))}';</script>"
+                    f"<script>window.DOCS_LABS_TOKEN='{html.escape(os.getenv('DOCS_LABS_TOKEN', '') if os.getenv('DOCS_EMBED_LABS_TOKEN', '').strip().lower() in {'1', 'true', 'yes', 'on'} else '')}';</script>"
                 ),
                 '<script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>',
                 '<script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>',
@@ -2442,7 +2575,9 @@ def main() -> None:
                         existing.unlink()
             static_out.mkdir(parents=True, exist_ok=True)
             for p in static_src.iterdir():
-                if p.name == "swagger-ui" and (not EXPORT_NON_INTERACTIVE or not vendor_swagger_assets):
+                if p.name == "swagger-ui" and (
+                    not EXPORT_NON_INTERACTIVE or not vendor_swagger_assets
+                ):
                     continue
                 if p.is_dir():
                     shutil.copytree(p, static_out / p.name)
@@ -2470,7 +2605,7 @@ def main() -> None:
         ("Start Here", "start-here.html", False, False),
         ("Overview", "overview.html", False, False),
         ("Live Hive Dashboard", "/dashboard", True, True),
-        ("Interactive Lab Playground", "playground.html", True, False),
+        ("Validated Procedures", "validated-procedures.html", False, False),
     ]
     if include_static_swagger:
         index_quick_links.append((STATIC_SWAGGER_LABEL, STATIC_SWAGGER_HREF, False, False))
@@ -2479,6 +2614,7 @@ def main() -> None:
 
     networking_links = [
         ("HTTP API", "http-api.html", False, False),
+        ("API Shim", "api-shim.html", False, False),
         ("API Shim Compatibility", "apishim-compatibility-matrix.html", False, False),
         ("Ingress", "ingress.html", False, False),
         ("API Auth", "api-auth.html", False, False),
@@ -2495,6 +2631,9 @@ def main() -> None:
                 ("Overview", "overview.html", False, False),
                 ("Demos & Examples", "examples.html", False, False),
                 ("Architecture", "architecture.html", False, False),
+                ("Project Philosophy", "project-philosophy.html", False, False),
+                ("Inference Fabric", "inference-fabric.html", False, False),
+                ("Roadmap", "distributed-compute-fabric.html", False, False),
             ],
         },
         {
@@ -2528,6 +2667,7 @@ def main() -> None:
             "links": [
                 ("Observability", "observability.html", False, False),
                 ("Benchmarks", "benchmarks.html", False, False),
+                ("Validated Procedures", "validated-procedures.html", False, False),
                 ("End-to-End Guide", "e2e.html", False, False),
                 ("K8s Compliance Status", "k8s-compliance.html", False, False),
             ],
@@ -2561,8 +2701,8 @@ def main() -> None:
             "\n".join(
                 [
                     '  <div class="hero-card hero-card--section">',
-                    f'    <h2>{html.escape(section["title"])}</h2>',
-                    f'    <p>{html.escape(section["desc"])}</p>',
+                    f"    <h2>{html.escape(section['title'])}</h2>",
+                    f"    <p>{html.escape(section['desc'])}</p>",
                     '    <div class="hero-links hero-links--dense">',
                     "      " + "\n      ".join(link_bits),
                     "    </div>",

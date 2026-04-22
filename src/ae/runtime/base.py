@@ -16,6 +16,7 @@ class PodState:
     ready: bool
     status: str = "running"
     pod_name: str = ""
+    revision: int | None = None
     endpoint: str | None = None
     started_at: datetime | None = None
     exit_code: int | None = None
@@ -70,6 +71,18 @@ class RuntimeResult:
         return self.pod_states
 
 
+@dataclass(slots=True)
+class WorkloadMetricSample:
+    """Per-node workload metrics summary for autoscaling."""
+
+    app_name: str
+    node_id: str
+    collected_at: datetime
+    cpu_cores: float | None = None
+    memory_bytes: int = 0
+    pod_count: int = 0
+
+
 class RuntimeAdapter(Protocol):
     """Adapter that drives container runtime operations."""
 
@@ -108,6 +121,14 @@ class RuntimeAdapter(Protocol):
     def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
         """Remove containers of older revisions for a given app, keeping the specified revision."""
 
+    def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:
+        """Remove specific replicas for a given app.
+
+        Replica IDs are the pod/replica labels used by the runtimes, for example
+        ``echo-rev7-0``. Implementations should ignore unknown replica IDs and
+        return the number of replicas they actually removed.
+        """
+
     def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:
         """Ensure named storage volumes exist for the app.
 
@@ -132,6 +153,10 @@ class RuntimeAdapter(Protocol):
 
         Returns a list of dicts with at least: { name, labels, host_ports: [int] }.
         """
+        return []
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        """Return per-node workload metrics summaries for autoscaling."""
         return []
 
     def exec(self, pod_name: str, command: list[str], *, timeout: int | None = None) -> int:
@@ -170,3 +195,14 @@ class RuntimeAdapter(Protocol):
         """Optionally return exit code for a completed exec session."""
         _ = exec_id
         return 0
+
+    def port_forward_socket(
+        self,
+        *,
+        pod_id: str | None,
+        pod_name: str | None,
+        namespace: str | None,
+        port: int,
+    ):  # pragma: no cover
+        """Optionally open a raw port-forward socket to a pod port."""
+        ...

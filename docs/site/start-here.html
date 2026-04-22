@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -693,24 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
       <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -721,27 +757,57 @@
       </svg>
     </button>
     <div class="container">
-    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Labs</h2>       <p>Provision docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable, start the controller, then apply echo.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
+    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Onboarding</span>     </div>     <h1>Start Here: k1s Onboarding</h1>     <p class="hero-tagline">From fresh clone to running demo in minutes. k1s keeps the control plane light, the UI live, and the YAML close to Kubernetes.</p>     <div class="hero-links hero-links--local">       <a class="hero-link" href="https://docs.home.arpa:8443/">Docs (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9109/">Docs (local)</a>       <a class="hero-link" href="https://dash.home.arpa:8443/dashboard">Dashboard (TLS)</a>       <a class="hero-link" href="http://127.0.0.1:9108/dashboard">Dashboard (local)</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Zero-to-Demo</h2>       <p>Provision the seeded demo profile, docs, API, dashboard, and sample apps in one shot.</p>       <pre><code>make demo</code></pre>     </div>     <div class="hero-card">       <h2>Manual Quickstart</h2>       <p>Install editable mode and start the controller, then continue with the sample apply/status/log checks below.</p>       <pre><code>make install</code></pre>       <pre><code>make loop</code></pre>     </div>     <div class="hero-card">       <h2>Key CLI Checks</h2>       <ul>         <li><code>make apply-sample</code></li>         <li><code>make status-sample</code></li>         <li><code>make logs-sample</code></li>       </ul>     </div>   </div> </div>
 <p>This single page gets a new contributor or user from a fresh clone to a running demo, with pointers to the most useful docs and commands.</p>
-<p>Note: k1s is under very active development and has not reached a fully stable release. Do not use it in production without thorough security vetting and testing for your environment.</p>
+<p><strong>Command note:</strong> use <a href="validated-procedures.html">Validated Procedures</a> for the current copy/paste command readouts. This page keeps the onboarding flow and stable context.</p>
+<p>Note: k1s is pre-1.0 and still evolving. The current line expands HA validation, stricter benchmark procedures, and operator runbook coverage, but production promotion still requires environment-specific security review and rollout validation.</p>
 <p>Terminology: k1s Deployments are Deployment-like workloads; pods are the execution unit, and replicas are the desired pod count (same as Kubernetes); Service VIPs map to Services/ClusterIP.</p>
+<p>Project philosophy: <code>TENETS.md</code> captures the core project stance, and <code>docs/design/project-philosophy.md</code> plus <code>docs/design/cognitive-welfare-and-continuity.md</code> define the precautionary position for later cognitive-substrate work.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <ul>
 <li>Python 3.11+</li>
 <li>Podman (preferred) or Docker installed and running</li>
-<li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> (see <code>docs/ops/runbook.md</code>)</li>
+<li>Optional (CRI/containerd): containerd + CNI + <code>crictl</code> (see <a href="runbook.html">Operations Runbook</a>)</li>
 <li>Optional (for ingress/docs via Caddy and Prometheus): <code>docker compose</code> or <code>podman compose</code></li>
+<li>Optional (NixOS/additive dev shell): <code>nix</code> + <code>direnv</code> for the repo-local flake path</li>
 <li>Optional (for multi-node lab): two Linux hosts/VMs with WireGuard tools and rootful networking</li>
 </ul>
-<h2 id="option-a-zero-to-labs-automated">Option A — Zero‑to‑Labs (automated)</h2>
-<p>This script provisions a local demo stack, serves docs, starts the controller API, and applies sample workloads (Deployments).</p>
-<p>1) Run the demo initializer (adds hosts; Ctrl‑C safe):</p>
-<pre><code>./scripts/init_demo.sh --demo-standard -y -d
-# or
-make demo ARGS=&quot;--demo-standard -y -d&quot;</code></pre>
+<h2 id="optional-nixos-repo-local-shell">Optional NixOS / Repo-Local Shell</h2>
+<p>This path is additive. The existing Debian/Ubuntu flow stays the same.</p>
+<p>1) Enter the shell:</p>
+<pre><code>direnv allow
+# or:
+nix develop</code></pre>
+<p>2) Bootstrap the editable Python environment:</p>
+<pre><code>python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .[dev]</code></pre>
+<p>3) Inspect host vs shell requirements:</p>
+<pre><code>make env-doctor</code></pre>
+<p>4) Use the CRI-oriented shell when needed:</p>
+<pre><code>nix develop .#cri</code></pre>
+<p>Notes</p>
 <ul>
-<li>Script reference: <code>scripts/init_demo.sh:1</code></li>
-<li>Flags map: <code>docs/guides/demos-examples.md:1</code></li>
+<li>The flake fills in userland tools such as <code>podman-compose</code>, lint/test tooling, and CRI clients.</li>
+<li>Host runtimes remain host-managed: Podman/Docker runtime and containerd.</li>
+<li><code>make dev-local</code> can manage local demo DNS/TLS state directly on Debian/RHEL and through the NixOS bridge helper on NixOS.</li>
+<li><code>make env-doctor</code> reports whether the NixOS bridge is installed/imported and how the demo domains currently resolve.</li>
+<li>One-time NixOS bridge bootstrap:
+<ul>
+<li><code>sudo install -D -m 0644 ops/nixos/k1s-local-dev-bridge.nix /etc/nixos/nixos/modules/k1s-local-dev-bridge.nix</code></li>
+<li>add <code>./nixos/modules/k1s-local-dev-bridge.nix</code> to your host imports</li>
+<li><code>sudo nixos-rebuild switch --impure --flake /etc/nixos#$(hostname -s)</code></li>
+</ul>
+</li>
+</ul>
+<h2 id="option-a-zero-to-demo-automated">Option A — Zero‑to‑Demo (automated)</h2>
+<p>This path runs the current seeded <code>dev-min</code> profile, serves docs, starts the controller API/dashboard, registers a local node, and stages the blue/green sample workloads.</p>
+<p>1) Start the seeded demo target:</p>
+<pre><code>make demo</code></pre>
+<ul>
+<li>Current wrapper: <code>Makefile</code></li>
+<li>Profile implementation: <code>scripts/dev/run_profile.sh</code></li>
+<li>Legacy flag-driven demo modes still live in <code>scripts/init_demo.sh</code></li>
 </ul>
 <p>2) Open endpoints:</p>
 <ul>
@@ -749,6 +815,7 @@ make demo ARGS=&quot;--demo-standard -y -d&quot;</code></pre>
 <li>Dashboard: https://dash.home.arpa:8443/dashboard or http://127.0.0.1:9108/dashboard</li>
 <li>API (Swagger/ReDoc): https://api.home.arpa:8443/swagger and https://api.home.arpa:8443/redoc</li>
 <li>Sample apps: https://blue.home.arpa:8443/ and https://green.home.arpa:8443/</li>
+<li>Dashboard note: <code>make demo</code> uses the simple dashboard layout. The shared <code>System Graph</code> remains visible, but the <code>HA Control Plane</code> card and <code>HA Members</code> legend key stay hidden.</li>
 </ul>
 <p>3) Inspect via CLI while the demo runs:</p>
 <pre><code>python -m ae.cli status --wide
@@ -759,8 +826,8 @@ python -m ae.cli logs blue --tail 50</code></pre>
 make demo-down</code></pre>
 <p>Tips</p>
 <ul>
-<li>Need only docs + API? Use <code>./scripts/init_demo.sh --docs-only -y -d</code> or <code>make demo ARGS=&quot;--docs-only -y -d&quot;</code>.</li>
-<li>Prefer Make: <code>make demo ARGS=&quot;--demo-standard -y -d&quot;</code> and <code>make demo-down</code> (see <code>Makefile:1</code>).</li>
+<li>Need a specific legacy <code>init_demo.sh</code> mode? Use <code>./scripts/init_demo.sh ...</code> directly or <code>make demo-legacy ARGS=&quot;--docs-only -y -d&quot;</code>.</li>
+<li>Prefer the current default demo wrapper when you just want the seeded blue/green path: <code>make demo</code> and <code>make demo-down</code>.</li>
 <li>Want to try multi-node? Follow Option C, then apply <code>specs/examples/echo-multinode.yaml</code>.</li>
 <li>Podman registry cache: configure an insecure local registry to avoid HTTPS pull errors and Docker Hub rate limits, or disable the cache.</li>
 </ul>
@@ -784,7 +851,7 @@ python -m pip install -e .[watch]</code></pre>
 <p>2) Start ingress/docs fixtures (optional but recommended):</p>
 <pre><code>docker compose -f ops/dev/docker-compose.yaml up -d</code></pre>
 <ul>
-<li>Compose file: <code>ops/dev/docker-compose.yaml:1</code></li>
+<li>Compose file: <code>ops/dev/docker-compose.yaml</code></li>
 </ul>
 <p>3) Run the controller with API + file watch:</p>
 <pre><code>python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch</code></pre>
@@ -825,6 +892,8 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make watch</code>: install file-watching extras (<code>pip -e .[watch]</code>).</li>
 <li><code>make test</code>: run unit tests (<code>pytest -q</code>).</li>
 <li><code>make lint</code>: run <code>ruff check</code> + <code>mypy src/ae</code>.</li>
+<li><code>make env-doctor</code>: report shell tools, compose availability, host sockets/services, and local DNS/TLS bridge status.</li>
+<li><code>make dev-local-clean</code>: remove helper-managed local DNS/TLS state.</li>
 <li><code>make wheel</code>: build a wheel into <code>dist/</code>.</li>
 </ul>
 <p>Local dev and samples</p>
@@ -854,17 +923,18 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make docs-export</code>: build non-interactive HTML into <code>docs/export</code> (override with <code>DOCS_OUT_DIR=</code>).</li>
 <li><code>make docs-wiki-export</code>: export wiki-friendly HTML into <code>docs/wiki</code> (override with <code>WIKI_OUT=</code>).</li>
 <li><code>make docs-watch</code>: rebuild docs when <code>combined/combined.csv</code> changes.</li>
-<li><code>make labs-up</code> / <code>make labs-down</code>: docs + playground via compose (controller runs on host).</li>
-<li><code>make labs-aio-up</code> / <code>make labs-aio-down</code>: all-in-one labs stack (controller + apishim + docs).</li>
+<li><code>make labs-up</code> / <code>make labs-down</code>: host-controller <code>dev-etcd</code> wrapper (CLI/API only; no docs/Caddy).</li>
+<li><code>make labs-aio-up</code> / <code>make labs-aio-down</code>: host-controller <code>dev-etcd</code> wrapper with Caddy/TLS and the dev-local helper defaults.</li>
 <li><code>make labs-k3d-up</code> / <code>make labs-k3d-down</code>: bring up/down local k3d cluster for labs.</li>
-<li><code>make labs-apishim-env</code>: print apishim tokens from <code>state/profiles/labs/apishim.env</code>.</li>
+<li><code>make labs-apishim-env</code>: print apishim tokens from the active <code>dev-etcd</code> profile (<code>state/profiles/dev-etcd/apishim.env</code> unless <code>PROFILE_DIR=</code> overrides it).</li>
 <li><code>make apishim-smoke</code>: quick API shim health check on port 8445.</li>
 <li><code>make shim-helm-demo</code>: run the helm shim demo helper.</li>
 </ul>
 <p>Demo workflows</p>
 <ul>
-<li><code>make demo</code>: run the playground labs demo (<code>--labs --labs-token</code>; podman backend, plaintext secrets allowed).</li>
+<li><code>make demo</code>: run the current seeded demo profile (blue/green sample apps + docs/api/dashboard).</li>
 <li>Demo note: <code>AE_REGISTER_LOCAL_NODE=1</code> is set by default in demos/labs so the controller registers a local node for scheduling; unset to require explicit node registration.</li>
+<li><code>make demo-legacy</code>: flag-driven <code>init_demo.sh</code> wrapper for legacy demo modes via <code>ARGS=&quot;...&quot;</code>.</li>
 <li><code>make demo-help</code>: show demo script help.</li>
 <li><code>make demo-down</code>: tear down demo stacks.</li>
 <li><code>make reg-cache-reset</code>: clear local registry cache used by demos.</li>
@@ -906,6 +976,7 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make bench-mem-e2e-baselines</code>: run baseline suite matrix.</li>
 <li><code>make bench-mem-e2e-baselines-sudo</code>: baseline suite with sudo.</li>
 <li><code>make bench-mem-docs</code>: combine + plot + rebuild docs.</li>
+<li><code>make bench-retained-rebuild PROFILE=final STAMP=&lt;fresh-stamp&gt; DELETE_DROPPED=1</code>: rebuild published artifacts from one validated rerun stamp plus the frozen <code>20260203</code> reference import.</li>
 <li><code>make bench-fix-perms</code>: normalize artifact permissions.</li>
 <li><code>make bench-mem-backfill</code>: backfill missing summary.json + rebuild docs.</li>
 <li><code>make bench-engines-clear</code>: stop/remove all containers (dangerous).</li>
@@ -913,10 +984,15 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make dev-state-clean</code>: wipe full <code>state/</code> (requires <code>CONFIRM=1</code>).</li>
 <li><code>make bench-mem-backfill-oci</code>: add OCI runtime metadata and recompute charts.</li>
 <li><code>make bench-mem-backfill-oci-latest</code>: backfill OCI metadata for latest label only.</li>
-<li><code>make bench-mem-finalize-sudo</code>: finalize benchmarks and normalize perms (sudo).</li>
+<li><code>make bench-mem-finalize-sudo</code>: legacy finalize helper for mixed-ownership cleanup; retained publishing should use <code>bench-retained-rebuild</code>.</li>
 <li><code>make bench-mem-e2e-k3s</code>: full k3s e2e (matrix + rollout + charts).</li>
 <li><code>make bench-mem-idle-k1s</code>: idle baseline snapshot for k1s.</li>
 <li><code>make bench-mem-idle-k3s</code>: idle baseline snapshot for k3s.</li>
+</ul>
+<p>Benchmark note</p>
+<ul>
+<li>Use <a href="validated-procedures.html#full-benchmark-rerun">Validated Procedures</a> for the current full rerun sequence.</li>
+<li>Use <a href="benchmarks.html#retained-artifact-rebuild">Memory Overhead Benchmarks</a> for retained-artifact rebuild and authoritative rerun guidance.</li>
 </ul>
 <p>Images and containers</p>
 <ul>
@@ -926,20 +1002,28 @@ kubectl --server=http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN get pods</code>
 <li><code>make docker-build-controller</code>: build controller image (ops/images/controller.Dockerfile).</li>
 <li><code>make docker-run-controller</code>: run controller container with specs/state mounts.</li>
 </ul>
-<h2 id="option-c-multi-node-lab-controller-worker">Option C — Multi-node Lab (controller + worker)</h2>
-<p>Use this when you want to validate the overlay Service VIP path and scheduler on two hosts.</p>
-<p>1) Controller (host A):</p>
-<pre><code>AE_ENABLE_SERVICE_PROXY=1 AE_SERVICE_PROVIDER=overlay \
-AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=changeme \
-python -m ae.controller --loop --specs specs/ --metrics-port 9108</code></pre>
-<p>2) Worker agent (host B):</p>
-<pre><code>AE_CONTROLLER_URL=http://&lt;controller-host&gt;:9110 AE_AGENT_TOKEN=changeme \
-AE_NODE_ID=worker-1 python -m ae.node --runtime-backend podman --port 9109 --ensure-pod-net</code></pre>
-<p>3) Apply and observe:</p>
-<pre><code>python -m ae.cli apply -f specs/examples/echo-multinode.yaml
-ae nodes list
-ae status echo-mn --watch</code></pre>
-<p>Full walkthrough and WireGuard tips: <code>docs/guides/multinode-lab.md</code> or <code>ops/dev/multinode-lab.sh -h</code>.</p>
+<h2 id="option-c-multi-node-lab-core-edge-gateways">Option C — Multi-node Lab (core + edge gateways)</h2>
+<p>Use this when you need the current canonical multi-node process (strict CRI, ingress mode validation, and security gates).</p>
+<p>1) Start strict CRI profile entrypoints:</p>
+<pre><code>make k1s-core-cri
+make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224
+make k1s-edge-core-cri
+make k1s-edge-node</code></pre>
+<p>2) Run canonical ingress mode validation:</p>
+<pre><code>scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog
+CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/run_ingress_lanes.sh --lanes core-proxy --yes
+scripts/dev/run_ingress_lanes.sh --lanes core-to-edge-public --yes
+EDGE_LOCAL_LISTENER_URL=&quot;https://lb-distribution-edge-local.home.arpa/&quot; \
+  scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes</code></pre>
+<p>3) Run security gates:</p>
+<pre><code>scripts/dev/security_baseline_check.sh --fail-on high
+scripts/dev/security_active_tests.sh --fail-on high</code></pre>
+<p>Full walkthrough and mode-specific startup commands:</p>
+<ul>
+<li><code>docs/guides/multinode-lab.md</code></li>
+<li><code>docs/guides/ingress-capability-test-sequence.md</code></li>
+<li><code>docs/reference/cri-containerd.md</code></li>
+</ul>
 <h2 id="using-the-ae-cli-greatest-hits">Using the <code>ae</code> CLI (greatest hits)</h2>
 <ul>
 <li>Apply/inspect lifecycle:</li>
@@ -990,32 +1074,36 @@ ae tls kubesecret --name mycert --namespace demo -o mycert-secret.yaml</code></p
 <pre><code>python -m ae.cli api tokens --generate --ttl-hours 24 -o .env.api
 source .env.api
 ae --server http://&lt;controller-ip&gt;:9108 --token $AE_API_READ_TOKEN status</code></pre>
-<p>Tip: <code>ae auth remote -o .env.api</code> also emits shim tokens + <code>AE_API_MUTATIONS=1</code>, and <code>ae auth local -o .env.local</code> reuses tokens from <code>state/*.env</code> when running demos/labs. Details: <code>README.md:67</code> and token management in <code>docs/ops/runbook.md:1</code>.</p>
+<p>Tip: <code>ae auth remote -o .env.api</code> also emits shim tokens + <code>AE_API_MUTATIONS=1</code>, and <code>ae auth local -o .env.local</code> reuses tokens from <code>state/*.env</code> when running demos/labs. Details: <code>README.md</code> and token management in <a href="runbook.html">Operations Runbook</a>.</p>
 <h2 id="documentation-map-most-useful-first">Documentation Map (most useful first)</h2>
 <ul>
-<li>High‑level overview: <code>docs/getting-started/overview.md:1</code></li>
-<li>Operations runbook: <code>docs/ops/runbook.md:1</code></li>
-<li>HTTP API reference: <code>docs/reference/http-api.md:1</code></li>
-<li>Kubernetes API shim compatibility: <code>docs/reference/apishim-compatibility-matrix.md:1</code></li>
-<li>Ingress & TLS: <code>docs/reference/ingress.md:1</code></li>
-<li>Demos & examples: <code>docs/guides/demos-examples.md:1</code></li>
-<li>Architecture deep dive: <code>docs/reference/architecture.md:1</code></li>
+<li>High‑level overview: <a href="overview.html">Overview</a></li>
+<li>Operations runbook: <a href="runbook.html">Operations Runbook</a></li>
+<li>HA cluster bootstrap and evidence lanes: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a>, <a href="ha-closeout.html">HA Closeout</a>, <a href="vm-variant-runbook.html">VM Variant Runbook</a></li>
+<li>Copy/paste validated command readouts: <a href="validated-procedures.html">Validated Procedures</a></li>
+<li>Benchmark rerun procedure and acceptance checks: <a href="benchmarks.html">Memory Overhead Benchmarks</a></li>
+<li>Demo/dashboard mode expectations: <a href="examples.html">Demos & Examples</a></li>
+<li>HTTP API reference: <a href="http-api.html">HTTP API</a></li>
+<li>Kubernetes API shim compatibility: <a href="apishim-compatibility-matrix.html">API Shim Compatibility Matrix</a></li>
+<li>Ingress & TLS: <a href="ingress.html">Ingress</a></li>
+<li>Demos & examples: <a href="examples.html">Demos & Examples</a></li>
+<li>Architecture deep dive: <a href="architecture.html">Architecture</a></li>
 </ul>
 <h2 id="where-things-live-in-the-repo">Where things live in the repo</h2>
 <ul>
-<li>Controller daemon entry: <code>src/ae/controller/__main__.py:1</code></li>
-<li>CLIs: <code>src/ae/cli/__main__.py:1</code>, <code>src/ae/kctl/__main__.py:1</code></li>
+<li>Controller daemon entry: <code>src/ae/controller/__main__.py</code></li>
+<li>CLIs: <code>src/ae/cli/__main__.py</code>, <code>src/ae/kctl/__main__.py</code></li>
 <li>Ingress (Caddy): <code>src/ae/ingress/</code>, site fragments under <code>ops/dev/caddy/sites/</code></li>
 <li>Runtimes: <code>src/ae/runtime/</code> (Podman default, Docker optional)</li>
 <li>Observability/API: <code>src/ae/observability/</code></li>
 <li>Specs & samples: <code>specs/</code>, <code>specs/examples/</code></li>
-<li>Dev stack compose: <code>ops/dev/docker-compose.yaml:1</code></li>
+<li>Dev stack compose: <code>ops/dev/docker-compose.yaml</code></li>
 </ul>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
 <li>If Caddy HTTPS ports 8443/8888 are busy, the demo auto‑picks free ports and prints them.</li>
 <li>Dashboard via Caddy is <code>https://dash.home.arpa:8443/dashboard</code>; use <code>http://127.0.0.1:9108/dashboard</code> if you’re skipping Caddy.</li>
-<li>To rebuild docs locally: <code>make docs</code> (builder at <code>docs/build_docs.py:1</code>).</li>
+<li>To rebuild docs locally: <code>make docs</code> (builder at <code>docs/build_docs.py</code>).</li>
 <li>Teardown demo: <code>./scripts/init_demo.sh --down -y</code> or <code>make demo-down</code>.</li>
 <li>Reset demo state: <code>./scripts/init_demo.sh --reset</code> or <code>make demo-reset</code>.</li>
 </ul>
@@ -1030,7 +1118,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-13 19:11:07</span>
+        <span>Built 2026-04-22 07:16:54</span>
       </div>
     </footer>
     <script>

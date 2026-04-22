@@ -32,10 +32,18 @@ K3S_MANIFEST=${K3S_MANIFEST:-specs/examples/k3s-echo.yaml}
 REPLICAS=${REPLICAS:-1,5,10}
 DURATION=${DURATION:-30}
 WAIT_READY_TRIES=${WAIT_READY_TRIES:-300}
+ROLL_REPLICAS=${ROLL_REPLICAS:-2,5}
+BENCH_SPECS_MINIMAL=${BENCH_SPECS_MINIMAL:-1}
+BENCH_SPECS_EMPTY=${BENCH_SPECS_EMPTY:-1}
+BENCH_BASELINE_STEADY_QUIET=${BENCH_BASELINE_STEADY_QUIET:-1}
+BASELINE_STEADY_TIMEOUT=${BASELINE_STEADY_TIMEOUT:-60}
+BASELINE_STEADY_DELAY=${BASELINE_STEADY_DELAY:-2}
+BASELINE_STEADY_POLLS=${BASELINE_STEADY_POLLS:-3}
 
 # Optional: disable specific suites
 # - Set DISABLE_K1ND=1 (or SKIP_K1ND=1) to skip the k1nd baseline stage.
 DISABLE_K1ND=${DISABLE_K1ND:-${SKIP_K1ND:-0}}
+DISABLE_DEV_MIN=${DISABLE_DEV_MIN:-0}
 
 # -------- Helpers --------
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*" >&2; }
@@ -166,21 +174,57 @@ def to_mib(val, kib=False):
     return v/1024.0 if kib else v/1048576.0
 
 print('\nSummary (latest per scenario/stage)')
-print('Scenario  Stage    CtrlPSS  Runtime  Ingress  AppCG  HostCG  MemAvailΔ')
+print('Scenario  Stage    Ctrl/CP  Runtime  Ingress  AppCG  HostCG  MemAvailΔ')
 print('(MiB)     (MiB)    (MiB)    (MiB)    (MiB)    (MiB)')
 for sc in scenarios:
     for st in stages:
         r = latest.get((sc,st))
         if not r: continue
-        ctrl = to_mib(r.get('controller_pss_kb','0'), kib=True)
+        ctrl_key = 'k3s_control_plane_pss_kb' if sc == 'k3d' else 'controller_pss_kb'
+        ctrl = to_mib(r.get(ctrl_key,'0'), kib=True)
         run  = to_mib(r.get('runtime_pss_kb','0'), kib=True)
         ingr = to_mib(r.get('ingress_pss_kb','0'), kib=True)
         app  = to_mib(r.get('app_mem_bytes','0'))
         host = to_mib(r.get('host_system_cgroups_bytes','0'))
         dmem = to_mib(r.get('mem_available_delta_bytes','0'))
         print(f"{sc:<8} {st:<7} {ctrl:7.1f} {run:8.1f} {ingr:8.1f} {app:7.1f} {host:7.1f} {dmem:9.1f}")
+print('Ctrl/CP = AE controller PSS for k1s/k1nd, k3s control-plane PSS for k3d')
 print()
 PY
+}
+
+build_steady_cmd() {
+  local backend="$1"
+  local app="$2"
+  local use_sudo="$3"
+  local python_bin="${PYTHON_BIN:-python}"
+  local py_path="${PYTHONPATH:-$ROOT_DIR/src}"
+  local -a cmd=(
+    env
+    "PATH=${PATH}"
+    "PYTHONPATH=${py_path}"
+    "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+    "NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}"
+    "NIX_LD=${NIX_LD:-}"
+    "AE_PODMAN_BIN=${AE_PODMAN_BIN:-podman}"
+    "AE_CRI_ENDPOINT=${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
+    "$python_bin"
+    scripts/bench/wait_rollout_steady.py
+    --backend "$backend"
+    --app "$app"
+    --timeout "$BASELINE_STEADY_TIMEOUT"
+    --delay "$BASELINE_STEADY_DELAY"
+    --stable-polls "$BASELINE_STEADY_POLLS"
+    --require-app-present
+  )
+  if [[ "$use_sudo" == "1" ]]; then
+    cmd=(
+      sudo
+      --preserve-env=BENCH_SNAPSHOT_LABEL,BENCH_SNAPSHOT_STAGE,BENCH_SNAPSHOT_REPLICAS,BENCH_SNAPSHOT_DURATION,BENCH_SNAPSHOT_CAPTURE_TIMING,BENCH_BACKEND,BENCH_APP_NAME
+      "${cmd[@]}"
+    )
+  fi
+  printf '%q ' "${cmd[@]}"
 }
 
 # -------- Preflights --------
@@ -264,14 +308,73 @@ stop_caddy_only() {
   $DOCK rm -f caddy-bench >/dev/null 2>&1 || true
 }
 
+run_isolated_k1s_suite() {
+  local suite_name="$1"
+  local metrics_port="$2"
+  local make_target="$3"
+  local label="$4"
+  local podman_sudo="$5"
+  local env_file="state/bench-baselines/${suite_name}/env.sh"
+  local prep_args=(
+    --manifest "$APP"
+    --metrics-port "$metrics_port"
+    --env-file "$env_file"
+  )
+  local rc=0
+
+  if [[ "$make_target" == "bench-mem-e2e-k1s-sudo" ]]; then
+    prep_args+=(--sudo-controller)
+  fi
+
+  env_file="$(
+    BENCH_SPECS_MINIMAL="$BENCH_SPECS_MINIMAL" \
+    BENCH_SPECS_EMPTY="$BENCH_SPECS_EMPTY" \
+    BENCH_AUTOCLEAN_PODMAN="${BENCH_AUTOCLEAN_PODMAN:-1}" \
+    ./scripts/bench/bench_env_prep.sh "${prep_args[@]}"
+  )"
+
+  # shellcheck disable=SC1090
+  source "$env_file"
+
+  local hook_cmd=""
+  if [[ "$BENCH_BASELINE_STEADY_QUIET" == "1" ]]; then
+    hook_cmd="$(build_steady_cmd podman "$BENCH_PRIMARY_APP" "$podman_sudo")"
+  fi
+
+  if AE_ENGINE_STRICT=1 \
+    AE_COLLECT_PODMAN_SUDO="$podman_sudo" \
+    BENCH_CONTROLLER_SUDO="$BENCH_CONTROLLER_SUDO" \
+    WAIT_READY_TRIES="$WAIT_READY_TRIES" \
+    LABEL_SUITE="$label" \
+    APP="$BENCH_PRIMARY_MANIFEST" \
+    APP_NAME="$BENCH_PRIMARY_APP" \
+    REPLICAS="$REPLICAS" \
+    ROLL_REPLICAS="$ROLL_REPLICAS" \
+    DURATION="$DURATION" \
+    AE_SPECS_DIR="$AE_SPECS_DIR" \
+    AE_STATE_DB="$AE_STATE_DB" \
+    AE_CADDY_DIR="$AE_CADDY_DIR" \
+    BENCH_WAIT_RUNTIME="$BENCH_WAIT_RUNTIME" \
+    BENCH_PRE_STEADY_SNAPSHOT_CMD="$hook_cmd" \
+    BENCH_PRE_POST_SNAPSHOT_CMD="$hook_cmd" \
+    make "$make_target"; then
+    :
+  else
+    rc=$?
+  fi
+
+  ./scripts/bench/bench_env_teardown.sh --env "$env_file" || true
+  return "$rc"
+}
+
 # -------- Suite: k1s rootless --------
 log "suite: k1s rootless"
 engines_clear_all
 start_caddy_only || true
 build_demo_images_podman 0 || true
-PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 AE_COLLECT_PODMAN_SUDO=1 \
-  WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s \
-  LABEL_SUITE="$LBL_K1S_ROOTLESS" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
+# Rootless snapshots must inspect the user's podman namespace, not rootful podman.
+PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 \
+  run_isolated_k1s_suite rootless 9210 bench-mem-e2e-k1s "$LBL_K1S_ROOTLESS" 0
 fix_perms
 stop_caddy_only || true
 
@@ -281,9 +384,8 @@ engines_clear_all
 if [[ "$USE_SUDO" == "1" ]]; then
   start_caddy_only || true
   build_demo_images_podman 1 || true
-  sudo env PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_COLLECT_PODMAN_SUDO=1 AE_ALLOW_PLAINTEXT_SECRETS=1 AE_ENGINE_STRICT=1 \
-    WAIT_READY_TRIES="$WAIT_READY_TRIES" make bench-mem-e2e-k1s-sudo \
-    LABEL_SUITE="$LBL_K1S_ROOTFUL" APP="$APP" APP_NAME="$APP_NAME" REPLICAS="$REPLICAS" DURATION="$DURATION"
+  PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_COLLECT_ENGINE=podman AE_ALLOW_PLAINTEXT_SECRETS=1 \
+    run_isolated_k1s_suite rootful 9211 bench-mem-e2e-k1s-sudo "$LBL_K1S_ROOTFUL" 1
   fix_perms
   stop_caddy_only || true
 else

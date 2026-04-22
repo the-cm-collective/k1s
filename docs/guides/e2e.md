@@ -26,7 +26,7 @@ Podman Quickstart (recommended)
 CRI Quickstart (containerd)
 - Ensure containerd + CNI + `crictl` are installed (see `docs/ops/runbook.md`).
 - Initialize CNI configs if missing:
-  - `./scripts/cni_init.sh` (or `AE_CNI_FORCE=1 AE_CNI_VERSION=1.0.0 ./scripts/cni_init.sh`)
+  - `./scripts/cni_init.sh` (or `AE_CNI_FORCE=1 AE_CNI_VERSION=0.4.0 ./scripts/cni_init.sh`)
 - Start strict CRI profile lanes (recommended):
   - `make k1s-core-cri`
   - Optional edge pairings: `make k1s-edge-cri` / `make k1s-edge-core-cri`
@@ -36,7 +36,23 @@ CRI Quickstart (containerd)
   - `export AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9`
 - Run CRI preflight/smoke (optional):
   - `./scripts/cri_preflight.sh`
-  - `./scripts/cri_smoke.sh`
+  - `./scripts/cri_smoke.sh`  # verifies image pull plus PodSandbox networking
+
+CRI Multi-node Ingress + Security Validation (recommended for release confidence)
+- Run the canonical mode-isolated ingress lanes after strict CRI stack startup:
+  - `scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog`
+  - `CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/run_ingress_lanes.sh --lanes core-proxy --yes`
+  - `scripts/dev/validate_ingress_env.sh --lane core-to-edge-public --watchdog`
+  - `scripts/dev/run_ingress_lanes.sh --lanes core-to-edge-public --yes`
+  - `scripts/dev/validate_ingress_env.sh --lane edge-local --watchdog`
+  - `EDGE_LOCAL_LISTENER_URL="https://lb-distribution-edge-local.home.arpa/" scripts/dev/run_ingress_lanes.sh --lanes edge-local --yes`
+- Run security gates after lane completion:
+  - `scripts/dev/security_baseline_check.sh --fail-on high`
+  - `scripts/dev/security_active_tests.sh --fail-on high`
+- References:
+  - `docs/guides/ingress-capability-test-sequence.md`
+  - `docs/guides/multinode-lab.md`
+  - `docs/reference/cri-containerd.md`
 
 Start Controller
 - Polling loop with metrics and watch (if watchdog installed):
@@ -137,7 +153,8 @@ Conventions
 - Stop fixtures: `docker compose -f ops/dev/docker-compose.yaml down`
 
 CI Conformance (reference)
-- GitHub workflow `.github/workflows/k8s-conformance.yaml` bootstraps Kind and k3s, exports hardened samples, `kubectl apply --dry-run=server`, and validates with `kubeconform -strict`.
+- Blocking CI uses `.github/workflows/ci-core.yml` for planner validation, exporter smoke checks, and OpenAPI drift validation.
+- Nightly/manual runtime coverage lives in `.github/workflows/nightly-runtime.yml`, which runs the kind and k3s conformance lanes plus the heavier multinode and end-to-end suites.
 
 Where to next
 - Runbook: `docs/ops/runbook.md`

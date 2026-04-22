@@ -7,27 +7,37 @@ import argparse
 import logging
 import os
 import shutil
-from collections.abc import Callable
-from datetime import UTC, datetime
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
+from ae._utc import UTC
 from ae.config.manager import ConfigManager
 from ae.controller.health import HealthManager
+from ae.controller.inference_cell import InferenceCellController, InferenceCellSetController
 from ae.controller.reconciler import Reconciler, ReconcileReport
 from ae.controller.spec import (
     AppManifest,
+    InferenceCellManifest,
+    InferenceCellSetManifest,
     app_key,
     app_key_for_manifest,
     format_app_ref,
+    load_any_manifest,
     normalize_namespace,
     parse_app_ref,
     split_app_key,
 )
-from ae.controller.state import AppStatus, SQLiteStateStore, state_store_from_env
+from ae.controller.state import (
+    AppStatus,
+    RegistryConflictError,
+    SQLiteStateStore,
+    state_store_from_env,
+)
 from ae.ingress import CaddyIngressManager, IngressService
 from ae.k8s.check import k8s_portability_issues
 from ae.k8s.exporter import ExportOptions, export_k8s_yaml
@@ -46,8 +56,40 @@ from ae.runtime import (
 from ae.secrets import SecretManager
 
 
+class CLIArgumentParser(argparse.ArgumentParser):
+    def parse_args(
+        self,
+        args: Sequence[str] | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> argparse.Namespace:
+        parsed, extras = super().parse_known_args(args, namespace)
+        extras = self._consume_exec_shell_separator(parsed, extras)
+        if extras:
+            self.error("unrecognized arguments: %s" % " ".join(extras))
+        return parsed
+
+    @staticmethod
+    def _consume_exec_shell_separator(
+        parsed: argparse.Namespace, extras: list[str]
+    ) -> list[str]:
+        if getattr(parsed, "command", None) not in {"exec", "shell"} or "--" not in extras:
+            return extras
+        separator_index = extras.index("--")
+        leading = extras[:separator_index]
+        trailing = extras[separator_index + 1 :]
+        if any(token.startswith("-") and token != "-" for token in leading):
+            return extras
+        cmd = list(getattr(parsed, "cmd", []) or [])
+        parsed.cmd = cmd + leading + trailing
+        return []
+
+
+def _ha_mode_enabled() -> bool:
+    return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = CLIArgumentParser(
         prog="ae", description="Minimal workload engine CLI (Deployment manifests)"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -320,6 +362,50 @@ def build_parser() -> argparse.ArgumentParser:
     _add_namespace_arg(events_parser)
     events_parser.add_argument("name", help="Workload name")
     events_parser.add_argument("--limit", type=int, default=20)
+
+    cell_parser = subparsers.add_parser("cell", help="Manage InferenceCell resources")
+    cell_sub = cell_parser.add_subparsers(dest="cell_cmd", required=True)
+    cell_apply = cell_sub.add_parser("apply", help="Apply and reconcile an InferenceCell manifest")
+    _add_namespace_arg(cell_apply)
+    cell_apply.add_argument(
+        "-f", "--file", type=Path, required=True, help="Path to InferenceCell manifest"
+    )
+    cell_status = cell_sub.add_parser("status", help="Show InferenceCell status")
+    _add_namespace_arg(cell_status)
+    cell_status.add_argument("name", nargs="?", help="Cell name (omit to list all)")
+    cell_status.add_argument("--json", action="store_true", help="Emit JSON output")
+    cell_events = cell_sub.add_parser("events", help="Show InferenceCell events")
+    _add_namespace_arg(cell_events)
+    cell_events.add_argument("name", help="Cell name")
+    cell_events.add_argument("--limit", type=int, default=20)
+    cell_delete = cell_sub.add_parser("delete", help="Delete an InferenceCell and release leases")
+    _add_namespace_arg(cell_delete)
+    cell_delete.add_argument("name", help="Cell name")
+
+    cellset_parser = subparsers.add_parser("cellset", help="Manage InferenceCellSet resources")
+    cellset_sub = cellset_parser.add_subparsers(dest="cellset_cmd", required=True)
+    cellset_apply = cellset_sub.add_parser(
+        "apply", help="Apply and reconcile an InferenceCellSet manifest"
+    )
+    _add_namespace_arg(cellset_apply)
+    cellset_apply.add_argument(
+        "-f", "--file", type=Path, required=True, help="Path to InferenceCellSet manifest"
+    )
+    cellset_scale = cellset_sub.add_parser("scale", help="Scale an existing InferenceCellSet")
+    _add_namespace_arg(cellset_scale)
+    cellset_scale.add_argument("name", help="CellSet name")
+    cellset_scale.add_argument("--replicas", type=int, required=True, help="Desired replica count")
+    cellset_status = cellset_sub.add_parser("status", help="Show InferenceCellSet status")
+    _add_namespace_arg(cellset_status)
+    cellset_status.add_argument("name", nargs="?", help="CellSet name (omit to list all)")
+    cellset_status.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    fabric_parser = subparsers.add_parser("fabric", help="Inspect fabric sessions")
+    fabric_sub = fabric_parser.add_subparsers(dest="fabric_cmd", required=True)
+    fabric_sessions = fabric_sub.add_parser("sessions", help="List active fabric sessions")
+    _add_namespace_arg(fabric_sessions)
+    fabric_sessions.add_argument("--cell", default=None, help="Filter by cell name")
+    fabric_sessions.add_argument("--json", action="store_true", help="Emit JSON output")
 
     services_parser = subparsers.add_parser(
         "services", help="List Services (cluster IPs/endpoints)"
@@ -712,6 +798,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Attempt kubectl server-side dry-run if available",
     )
     kr.add_argument("--kubectl-bin", default=os.getenv("KUBECTL_BIN", "kubectl"))
+    kr.add_argument(
+        "--kubeconfig",
+        type=Path,
+        default=None,
+        help="Use this kubeconfig for kubectl dry-run/apply checks instead of the ambient context",
+    )
     kr.add_argument("--kubeconform-bin", default=os.getenv("KUBECONFORM_BIN", "kubeconform"))
     kr.add_argument(
         "--apply-online",
@@ -795,7 +887,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--controller-env",
         type=Path,
         default=None,
-        help="Path to controller env file (default: state/env.sh)",
+        help="Path to controller env file (default: inferred profile controller.env or state/env.sh)",
     )
     auth_local.add_argument(
         "--dev-env",
@@ -1450,6 +1542,9 @@ def main(argv: list[str] | None = None) -> int:
         "registry": handle_registry,
         "metrics": lambda ns: handle_metrics(ns, store),
         "events": lambda ns: handle_events(ns, store, args),
+        "cell": lambda ns: handle_cell(ns, store, args),
+        "cellset": lambda ns: handle_cellset(ns, store, args),
+        "fabric": lambda ns: handle_fabric(ns, store, args),
         "history": lambda ns: handle_history(ns, store, args),
         "services": lambda ns: handle_services(ns, store),
         "delete": lambda ns: handle_delete(ns, store, runtime, ingress_service, args),
@@ -1671,10 +1766,16 @@ def handle_apply(
                     raise ValueError("expected a single Deployment manifest document")
                 payload = docs[0]
             resp = _http_post_json(base, "/apply", payload, tok)
-            print(
-                f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
-                f"ops=+{resp.get('created')}/~{resp.get('updated')}/-{resp.get('removed')}"
-            )
+            if str(resp.get("status", "")).lower() == "accepted":
+                print(
+                    f"applied desired state for {resp.get('app')} "
+                    f"resourceVersion={resp.get('resourceVersion')}"
+                )
+            else:
+                print(
+                    f"applied {resp.get('app')} rev={resp.get('revision')}({resp.get('status')}) "
+                    f"ops=+{resp.get('created')}/~{resp.get('updated')}/-{resp.get('removed')}"
+                )
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"remote apply failed: {exc}")
@@ -1710,7 +1811,21 @@ def handle_apply(
         existing = store.get_registered_entry(app_key_for_manifest(manifest))
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(manifest.metadata, "labels", None)
-        store.register_app(manifest, source=src, labels=lbls)
+        rv = store.register_app(
+            manifest,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"Applied desired state for {_display_app_name(app_key_for_manifest(manifest))}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"apply conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(manifest)
@@ -1945,6 +2060,19 @@ def handle_delete(
             print(f"remote delete failed: {exc}")
             return 1
     name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
+    if _ha_mode_enabled():
+        print("local delete is not supported in HA mode; target a controller API with --server")
+        return 2
+    existing = store.get_registered_entry(name)
+    try:
+        if existing is not None:
+            store.delete_registered_app(
+                name,
+                expected_resource_version=existing.resource_version,
+            )
+    except RegistryConflictError as exc:
+        print(f"delete conflict: {exc}")
+        return 1
     removed = runtime.remove_app(name)
     if ingress_service:
         try:
@@ -1970,10 +2098,6 @@ def handle_delete(
                         pass
         except Exception:
             pass
-    try:
-        store.delete_registered_app(name)
-    except Exception:
-        pass
     store.delete_app_state(name, purge_history=bool(args.purge))
     print(
         f"deleted {_display_app_name(name)}: removed={removed} containers{' (purged history)' if args.purge else ''}"
@@ -1995,9 +2119,15 @@ def handle_scale(
             resp = _http_post_json(
                 base, f"/scale/{app_name}", {"replicas": int(args.replicas)}, tok
             )
-            print(
-                f"scaled {_display_app_name(app_name)} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
-            )
+            if str(resp.get("status", "")).lower() == "accepted":
+                print(
+                    f"scaled desired state for {_display_app_name(app_name)} to replicas={resp.get('replicas')} "
+                    f"resourceVersion={resp.get('resourceVersion')}"
+                )
+            else:
+                print(
+                    f"scaled {_display_app_name(app_name)} to replicas={resp.get('replicas')} rev={resp.get('revision')}({resp.get('status')}) "
+                )
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"remote scale failed: {exc}")
@@ -2014,7 +2144,21 @@ def handle_scale(
         existing = store.get_registered_entry(name)
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(new_manifest.metadata, "labels", None)
-        store.register_app(new_manifest, source=src, labels=lbls)
+        rv = store.register_app(
+            new_manifest,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"scaled desired state for {_display_app_name(name)} to replicas={args.replicas}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"scale conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(new_manifest)
@@ -2141,6 +2285,7 @@ def handle_backup(args: argparse.Namespace) -> int:
 def handle_k8s_report(args: argparse.Namespace) -> int:
     import json
     import shutil
+    import subprocess as sp
     import tempfile
     from datetime import datetime
 
@@ -2171,6 +2316,48 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
     kubectl_bin = (
         shutil.which(args.kubectl_bin) if (args.run_dry_run or args.apply_online) else None
     )
+    kubectl_env = os.environ.copy()
+    kube_target = "the current kubectl context"
+    if getattr(args, "kubeconfig", None):
+        kubeconfig_path = Path(args.kubeconfig)
+        if not kubeconfig_path.exists():
+            print(f"k8s-report: kubeconfig not found: {kubeconfig_path}")
+            return 1
+        kubectl_env["KUBECONFIG"] = str(kubeconfig_path)
+        kube_target = f"kubeconfig {kubeconfig_path}"
+    elif os.getenv("KUBECONFIG"):
+        kube_target = f"KUBECONFIG={os.getenv('KUBECONFIG')}"
+
+    if args.run_dry_run or args.apply_online:
+        if not kubectl_bin:
+            print(
+                "k8s-report: kubectl is required for --run-dry-run/--apply-online but was not found on PATH."
+            )
+            print(
+                "k8s-report: install kubectl or omit --run-dry-run/--apply-online for offline-only scoring."
+            )
+            return 1
+        try:
+            probe = sp.run(
+                [kubectl_bin, "--request-timeout=15s", "get", "--raw", "/openapi/v2"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=kubectl_env,
+            )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
+        except Exception as exc:  # noqa: BLE001
+            print(f"k8s-report: unable to probe a Kubernetes API via {kube_target}: {exc}")
+            print(
+                "k8s-report: pass --kubeconfig <path> or set KUBECONFIG to a reachable cluster, or omit --run-dry-run/--apply-online for offline-only scoring."
+            )
+            return 1
+        if probe.returncode != 0:
+            detail = (probe.stderr or probe.stdout).strip() or "unknown error"
+            print(f"k8s-report: unable to reach a Kubernetes API via {kube_target}: {detail}")
+            print(
+                "k8s-report: pass --kubeconfig <path> or set KUBECONFIG to a reachable cluster, or omit --run-dry-run/--apply-online for offline-only scoring."
+            )
+            return 1
 
     results: list[dict] = []
     checks_total = 0
@@ -2217,7 +2404,6 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
             with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
                 tmp.write(yaml_text)
                 tmp.flush()
-                import subprocess as sp
 
                 try:
                     proc = sp.run(
@@ -2240,7 +2426,6 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
             with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
                 tmp.write(yaml_text)
                 tmp.flush()
-                import subprocess as sp
 
                 try:
                     proc = sp.run(
@@ -2256,6 +2441,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
+                        env=kubectl_env,
                     )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     dr_res["ok"] = proc.returncode == 0
                     dr_res["output"] = (proc.stdout or proc.stderr).strip()
@@ -2281,13 +2467,12 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
         if kubectl_bin and args.apply_online:
             online["ran"] = True
             # Ensure namespace exists
-            import subprocess as sp
-
             try:
                 sp.run(
                     [kubectl_bin, "create", "namespace", str(args.namespace)],
                     capture_output=True,
                     text=True,
+                    env=kubectl_env,
                 )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
             except Exception:
                 pass
@@ -2300,6 +2485,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
+                        env=kubectl_env,
                     )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     # Try to find the Deployment name(s) from parsed docs
                     dep_name = manifest.metadata.name
@@ -2317,6 +2503,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                         capture_output=True,
                         text=True,
                         check=False,
+                        env=kubectl_env,
                     )  # noqa: S603,S607 - kubectl binary vetted; shell disabled
                     online["ok"] = ap.returncode == 0 and rs.returncode == 0
                     online["details"] = {
@@ -2343,6 +2530,7 @@ def handle_k8s_report(args: argparse.Namespace) -> int:
                                 ],
                                 capture_output=True,
                                 text=True,
+                                env=kubectl_env,
                             )
                         except Exception:
                             pass
@@ -2449,6 +2637,13 @@ def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
             print(f"invalid --target json: {exc}")
             return 2
     payload.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    if not payload.get("controller_id") or not payload.get("controller_epoch"):
+        from ae.ha.fencing import resolve_controller_identity, work_operation
+
+        identity = resolve_controller_identity(None)
+        payload.setdefault("controller_id", identity.controller_id)
+        payload.setdefault("controller_epoch", identity.controller_epoch)
+        payload.setdefault("operation_id", work_operation(work_id, attempt))
     desired_generation = payload.get("desired_generation")
     try:
         desired_generation = int(desired_generation) if desired_generation is not None else None
@@ -2459,6 +2654,13 @@ def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
         attempt=attempt,
         site_id=site_id,
         state="Pending",
+        controller_id=str(payload.get("controller_id") or "") or None,
+        controller_epoch=(
+            int(payload.get("controller_epoch"))
+            if payload.get("controller_epoch") is not None
+            else None
+        ),
+        operation_id=str(payload.get("operation_id") or "") or None,
         desired_generation=desired_generation,
     )
     if ns.mode == "queue":
@@ -2898,6 +3100,11 @@ def handle_status(
                 if args.wide:
                     path += "?details=1"
                 data = _http_get_json(base, path, tok)
+                if args.json:
+                    import json
+
+                    print(json.dumps(data, indent=2))
+                    return 0
                 print(
                     ", ".join(
                         [
@@ -2946,6 +3153,11 @@ def handle_status(
                     for s0 in items
                     if split_app_key(str((s0 or {}).get("app_name", "")))[0] == ns_filter
                 ]
+            if args.json:
+                import json
+
+                print(json.dumps(items, indent=2))
+                return 0
             for s0 in items:
                 line = ", ".join(
                     [
@@ -3097,6 +3309,12 @@ def handle_status(
                 "image": s.image,
                 "ingress_host": s.ingress_host,
                 "ingress_path": s.ingress_path,
+                "current_revision_ready_replicas": s.current_revision_ready_replicas,
+                "current_revision_live_replicas": s.current_revision_live_replicas,
+                "old_revision_ready_replicas": s.old_revision_ready_replicas,
+                "old_revision_live_replicas": s.old_revision_live_replicas,
+                "overlap_ready_replicas": s.overlap_ready_replicas,
+                "overlap_live_replicas": s.overlap_live_replicas,
             }
             return d
 
@@ -3127,7 +3345,21 @@ def handle_rollout(
         existing = store.get_registered_entry(app)
         src = existing.source if existing else "cli"
         lbls = existing.labels if existing else getattr(updated.metadata, "labels", None)
-        store.register_app(updated, source=src, labels=lbls)
+        rv = store.register_app(
+            updated,
+            source=src,
+            labels=lbls,
+            expected_resource_version=(existing.resource_version if existing else None),
+        )
+        if _ha_mode_enabled():
+            print(
+                f"rollout {args.rollout_cmd} desired state for {_display_app_name(app)}: "
+                f"resourceVersion={rv}"
+            )
+            return 0
+    except RegistryConflictError as exc:
+        print(f"rollout conflict: {exc}")
+        return 1
     except Exception:
         pass
     report = reconciler.reconcile(updated)
@@ -3276,6 +3508,35 @@ def _preferred_profile_apishim_env(profile_dir: Path) -> Path | None:
     return None
 
 
+def _profile_private_apishim_env(apishim_env: Path | None) -> Path | None:
+    if apishim_env is None:
+        return None
+    try:
+        candidate = apishim_env.expanduser()
+        if candidate.parent.parent.name != "profiles":
+            return None
+        if candidate.name == "apishim.env":
+            return candidate
+        sibling = candidate.with_name("apishim.env")
+        if sibling == candidate:
+            return candidate
+        return sibling
+    except Exception:
+        return None
+
+
+def _profile_controller_env(apishim_env: Path | None) -> Path | None:
+    if apishim_env is None:
+        return None
+    try:
+        candidate = apishim_env.expanduser().parent
+        if candidate.parent.name != "profiles":
+            return None
+        return candidate / "controller.env"
+    except Exception:
+        return None
+
+
 def _profile_state_db_from_env(apishim_env: Path | None) -> Path | None:
     if not apishim_env:
         return None
@@ -3420,11 +3681,8 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
     if args.auth_cmd == "local":
         import sys
 
-        controller_env = Path(
-            args.controller_env
-            if args.controller_env
-            else os.getenv("CONTROLLER_ENV_FILE", "state/env.sh")
-        )
+        explicit_controller_env = args.controller_env or os.getenv("CONTROLLER_ENV_FILE")
+        controller_env = Path(explicit_controller_env if explicit_controller_env else "state/env.sh")
         dev_env = Path(args.dev_env if args.dev_env else os.getenv("DEV_ENV_FILE", "state/dev.env"))
         apishim_pid = Path(
             args.apishim_pid
@@ -3459,6 +3717,11 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
         apishim_env = _detect_apishim_env(
             args.apishim_env if args.apishim_env else None, controller_env, proc_env
         )
+        if not explicit_controller_env:
+            inferred_controller_env = _profile_controller_env(apishim_env)
+            if inferred_controller_env and inferred_controller_env.is_file():
+                controller_env = inferred_controller_env
+        private_apishim_env = _profile_private_apishim_env(apishim_env)
         profile_state_db_path = _profile_state_db_from_env(apishim_env)
         profile_state_db = None
         if profile_state_db_path:
@@ -3521,20 +3784,40 @@ def handle_auth(args: argparse.Namespace, global_args: argparse.Namespace | None
         admin_token = pick(
             proc_env.get("AE_API_ADMIN_TOKEN"),
             _read_env_file_var(apishim_env, "AE_API_ADMIN_TOKEN"),
+            (
+                _read_env_file_var(private_apishim_env, "AE_API_ADMIN_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_API_ADMIN_TOKEN"),
             os.getenv("AE_API_ADMIN_TOKEN"),
         )
         labs_token = pick(
             proc_env.get("AE_LABS_TOKEN"),
             _read_env_file_var(apishim_env, "AE_LABS_TOKEN"),
+            (
+                _read_env_file_var(private_apishim_env, "AE_LABS_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_LABS_TOKEN"),
             os.getenv("AE_LABS_TOKEN"),
         )
         scaler_token = pick(
+            (
+                _read_env_file_var(private_apishim_env, "AE_API_SCALER_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_API_SCALER_TOKEN"),
             os.getenv("AE_API_SCALER_TOKEN"),
         )
         read_token = pick(
+            (
+                _read_env_file_var(private_apishim_env, "AE_API_READ_TOKEN")
+                if private_apishim_env and private_apishim_env != apishim_env
+                else None
+            ),
             _read_env_file_var(controller_env, "AE_API_READ_TOKEN"),
             os.getenv("AE_API_READ_TOKEN"),
         )
@@ -3972,18 +4255,18 @@ def _resolve_pod_via_apishim(
             continue
         labels = meta.get("labels") if isinstance(meta.get("labels"), dict) else {}
         label_app = str(labels.get("app") or labels.get("app.kubernetes.io/name") or "")
-        if not (
-            name == short_name
-            or name.startswith(prefix)
-            or label_app == short_name
-        ):
+        if not (name == short_name or name.startswith(prefix) or label_app == short_name):
             continue
         phase = str(status.get("phase") or "")
         running = 1 if phase.lower() == "running" else 0
         ready = 0
         container_statuses = status.get("containerStatuses")
         if isinstance(container_statuses, list) and container_statuses:
-            ready = 1 if all(bool(cs.get("ready")) for cs in container_statuses if isinstance(cs, dict)) else 0
+            ready = (
+                1
+                if all(bool(cs.get("ready")) for cs in container_statuses if isinstance(cs, dict))
+                else 0
+            )
         candidates.append((ready, running, name))
 
     if not candidates:
@@ -4823,7 +5106,9 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                 store, app_name, getattr(args, "container", None)
             )
             if pod_name is None:
-                lookup_token = explicit_token or _os.getenv("AE_APISHIM_READ_TOKEN") or generic_token
+                lookup_token = (
+                    explicit_token or _os.getenv("AE_APISHIM_READ_TOKEN") or generic_token
+                )
                 pod_name = _resolve_pod_via_apishim(apishim_base, ns, app_name, lookup_token)
             if pod_name is None:
                 pod_name = app_name
@@ -5239,6 +5524,12 @@ def _status_to_json(status: AppStatus, store: SQLiteStateStore, *, include_detai
         "image": status.image,
         "ingress_host": status.ingress_host,
         "ingress_path": status.ingress_path,
+        "current_revision_ready_replicas": status.current_revision_ready_replicas,
+        "current_revision_live_replicas": status.current_revision_live_replicas,
+        "old_revision_ready_replicas": status.old_revision_ready_replicas,
+        "old_revision_live_replicas": status.old_revision_live_replicas,
+        "overlap_ready_replicas": status.overlap_ready_replicas,
+        "overlap_live_replicas": status.overlap_live_replicas,
     }
     if include_details:
         try:
@@ -5303,7 +5594,7 @@ def _parse_rfc3339_to_epoch(value: str | None) -> int | None:
             s = s[:-1] + "+00:00"
         dt = _dt.datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_dt.UTC)
+            dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp())
     except Exception:
         return None
@@ -5431,6 +5722,277 @@ def handle_events(
     for event in events:
         timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
         print(f"{timestamp} rev={event.revision} {event.event_type}: {event.message}")
+    return 0
+
+
+def handle_cell(
+    args: argparse.Namespace, store: SQLiteStateStore, _global_args: argparse.Namespace
+) -> int:
+    ctrl = InferenceCellController(store)
+    ns = normalize_namespace(getattr(args, "namespace", None))
+    if args.cell_cmd == "apply":
+        try:
+            doc = load_any_manifest(args.file)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}")
+            return 2
+        if not isinstance(doc, InferenceCellManifest):
+            print("error: manifest kind must be InferenceCell for `ae cell apply`")
+            return 2
+        if ns:
+            payload = doc.model_dump(by_alias=True)
+            payload.setdefault("metadata", {})
+            payload["metadata"]["namespace"] = ns
+            doc = InferenceCellManifest.model_validate(payload)
+        rec = ctrl.reconcile_manifest(doc, source=f"cli:{args.file}")
+        active_executor = str((rec.allocations or {}).get("active_executor") or rec.executor_type)
+        print(
+            f"cell {_display_app_name(rec.cell_key)} phase={rec.phase} "
+            f"tp={rec.tp} pp={rec.pp} executor={active_executor}"
+        )
+        api_ep = (rec.allocations or {}).get("api_endpoint")
+        if api_ep:
+            print(f"api_endpoint: {api_ep}")
+        if rec.last_error:
+            print(f"last_error: {rec.last_error}")
+        return 0 if rec.phase == "READY" else 1
+
+    if args.cell_cmd == "status":
+        if getattr(args, "name", None):
+            rec = store.get_inference_cell(args.name, namespace=ns)
+            if rec is None:
+                print("cell not found")
+                return 1
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(
+                    _json.dumps(
+                        {
+                            "cell_key": rec.cell_key,
+                            "phase": rec.phase,
+                            "tp": rec.tp,
+                            "pp": rec.pp,
+                            "executor": rec.executor_type,
+                            "active_executor": (rec.allocations or {}).get("active_executor"),
+                            "ray_scope": rec.ray_scope,
+                            "restarts": rec.restarts,
+                            "last_error": rec.last_error,
+                            "allocations": rec.allocations,
+                            "admission": rec.admission,
+                            "conditions": rec.conditions,
+                            "updated_at": rec.updated_at.isoformat(),
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            print(
+                f"{_display_app_name(rec.cell_key)}: phase={rec.phase} tp={rec.tp} pp={rec.pp} "
+                f"executor={(rec.allocations or {}).get('active_executor') or rec.executor_type} "
+                f"restarts={rec.restarts}"
+            )
+            if rec.last_error:
+                print(f"last_error={rec.last_error}")
+            for name, item in sorted((rec.conditions or {}).items()):
+                status = bool(item.get("status"))
+                msg = str(item.get("message") or "")
+                print(f"condition {name}: {'true' if status else 'false'} {msg}".rstrip())
+            return 0
+        rows = store.list_inference_cells(namespace=ns)
+        if not rows:
+            print("no inference cells")
+            return 0
+        if getattr(args, "json", False):
+            import json as _json
+
+            print(
+                _json.dumps(
+                    [
+                        {
+                            "cell_key": row.cell_key,
+                            "phase": row.phase,
+                            "tp": row.tp,
+                            "pp": row.pp,
+                            "executor": row.executor_type,
+                            "restarts": row.restarts,
+                            "last_error": row.last_error,
+                            "updated_at": row.updated_at.isoformat(),
+                        }
+                        for row in rows
+                    ],
+                    indent=2,
+                )
+            )
+            return 0
+        for row in rows:
+            print(
+                f"{_display_app_name(row.cell_key)}: phase={row.phase} tp={row.tp} pp={row.pp} "
+                f"executor={row.executor_type} restarts={row.restarts}"
+            )
+        return 0
+
+    if args.cell_cmd == "events":
+        events = store.list_inference_cell_events(args.name, namespace=ns, limit=args.limit)
+        if not events:
+            print("no events")
+            return 0
+        for event in events:
+            ts = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"{ts} {event.event_type}: {event.message}")
+        return 0
+
+    if args.cell_cmd == "delete":
+        ctrl.delete_cell(args.name, namespace=ns)
+        print(f"deleted cell {args.name}")
+        return 0
+
+    print(f"unsupported cell command: {args.cell_cmd}")
+    return 2
+
+
+def handle_cellset(
+    args: argparse.Namespace, store: SQLiteStateStore, _global_args: argparse.Namespace
+) -> int:
+    ctrl = InferenceCellSetController(store)
+    ns = normalize_namespace(getattr(args, "namespace", None))
+    if args.cellset_cmd == "apply":
+        try:
+            doc = load_any_manifest(args.file)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}")
+            return 2
+        if not isinstance(doc, InferenceCellSetManifest):
+            print("error: manifest kind must be InferenceCellSet for `ae cellset apply`")
+            return 2
+        if ns:
+            payload = doc.model_dump(by_alias=True)
+            payload.setdefault("metadata", {})
+            payload["metadata"]["namespace"] = ns
+            doc = InferenceCellSetManifest.model_validate(payload)
+        rec = ctrl.reconcile_manifest(doc, source=f"cli:{args.file}")
+        print(
+            f"cellset {_display_app_name(rec.set_key)} desired={rec.desired} "
+            f"current={rec.current} ready={rec.ready}"
+        )
+        return 0 if rec.ready == rec.desired else 1
+
+    if args.cellset_cmd == "scale":
+        rec = ctrl.scale(args.name, args.replicas, namespace=ns)
+        if rec is None:
+            print("cellset not found")
+            return 1
+        print(
+            f"scaled cellset {_display_app_name(rec.set_key)} to desired={rec.desired} "
+            f"(current={rec.current} ready={rec.ready})"
+        )
+        return 0 if rec.ready == rec.desired else 1
+
+    if args.cellset_cmd == "status":
+        if getattr(args, "name", None):
+            rec = store.get_inference_cellset(args.name, namespace=ns)
+            if rec is None:
+                print("cellset not found")
+                return 1
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(
+                    _json.dumps(
+                        {
+                            "set_key": rec.set_key,
+                            "desired": rec.desired,
+                            "current": rec.current,
+                            "ready": rec.ready,
+                            "last_error": rec.last_error,
+                            "updated_at": rec.updated_at.isoformat(),
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            print(
+                f"{_display_app_name(rec.set_key)}: desired={rec.desired} "
+                f"current={rec.current} ready={rec.ready}"
+            )
+            return 0
+        rows = store.list_inference_cellsets(namespace=ns)
+        if not rows:
+            print("no inference cellsets")
+            return 0
+        if getattr(args, "json", False):
+            import json as _json
+
+            print(
+                _json.dumps(
+                    [
+                        {
+                            "set_key": row.set_key,
+                            "desired": row.desired,
+                            "current": row.current,
+                            "ready": row.ready,
+                            "updated_at": row.updated_at.isoformat(),
+                        }
+                        for row in rows
+                    ],
+                    indent=2,
+                )
+            )
+            return 0
+        for row in rows:
+            print(
+                f"{_display_app_name(row.set_key)}: desired={row.desired} "
+                f"current={row.current} ready={row.ready}"
+            )
+        return 0
+
+    print(f"unsupported cellset command: {args.cellset_cmd}")
+    return 2
+
+
+def handle_fabric(
+    args: argparse.Namespace, store: SQLiteStateStore, _global_args: argparse.Namespace
+) -> int:
+    if args.fabric_cmd != "sessions":
+        print(f"unsupported fabric command: {args.fabric_cmd}")
+        return 2
+    ns = normalize_namespace(getattr(args, "namespace", None))
+    rows = store.list_fabric_sessions(cell_name=getattr(args, "cell", None), namespace=ns)
+    if ns and not getattr(args, "cell", None):
+        rows = [row for row in rows if split_app_key(row.cell_key)[0] == ns]
+    if getattr(args, "json", False):
+        import json as _json
+
+        print(
+            _json.dumps(
+                [
+                    {
+                        "session_id": row.session_id,
+                        "cell_key": row.cell_key,
+                        "policy_mode": row.policy_mode,
+                        "status": row.status,
+                        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                        "members": row.members,
+                        "allowed_rules": row.allowed_rules,
+                        "created_at": row.created_at.isoformat(),
+                        "updated_at": row.updated_at.isoformat(),
+                    }
+                    for row in rows
+                ],
+                indent=2,
+            )
+        )
+        return 0
+    if not rows:
+        print("no fabric sessions")
+        return 0
+    for row in rows:
+        exp = row.expires_at.isoformat() if row.expires_at else "-"
+        members = len(list(row.members or []))
+        print(
+            f"{row.session_id} cell={_display_app_name(row.cell_key)} "
+            f"policy={row.policy_mode} status={row.status} members={members} expires_at={exp}"
+        )
     return 0
 
 

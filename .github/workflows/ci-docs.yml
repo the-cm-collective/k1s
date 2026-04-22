@@ -1,0 +1,83 @@
+name: ci-docs
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev, feat/**]
+
+concurrency:
+  group: ci-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  server-guard:
+    if: ${{ github.server_url != 'https://github.com' || env.ACT == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm supported actions host
+        run: echo "Running ci-docs on ${GITHUB_SERVER_URL:-unknown}"
+
+  docs-verify:
+    needs: server-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Detect docs changes
+        id: changes
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: bash scripts/ci/classify_changes.sh
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install project
+        if: ${{ steps.changes.outputs.docs_changed == 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+      - name: Docs verify
+        if: ${{ steps.changes.outputs.docs_changed == 'true' }}
+        run: make docs-verify
+      - name: Docs unchanged
+        if: ${{ steps.changes.outputs.docs_changed != 'true' }}
+        run: echo "No docs-surface changes detected; docs gate is a no-op."

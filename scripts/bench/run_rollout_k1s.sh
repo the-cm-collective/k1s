@@ -41,6 +41,13 @@ sudo_env_base=(
   "CONTAINER_HOST="
   "PODMAN_HOST="
 )
+sudo_env_clean=(
+  "-i"
+  "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+  "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+  "NIX_LD_LIBRARY_PATH=${NIX_LD_LIBRARY_PATH:-}"
+  "NIX_LD=${NIX_LD:-}"
+)
 sudo_env_snapshot=(
   "${sudo_env_base[@]}"
   "AE_RUNTIME_BACKEND=${AE_RUNTIME_BACKEND:-podman}"
@@ -111,10 +118,24 @@ PY
   ae() { docker exec "$AE_CLI_CONTAINER" python -m ae.cli "$@"; }
 elif [[ "${BENCH_CONTROLLER_SUDO:-0}" == "1" ]] && command -v sudo >/dev/null 2>&1; then
   ae() {
-    sudo env "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@";
+    sudo env "${sudo_env_clean[@]}" "${sudo_env_cli[@]}" "$python_bin" -m ae.cli "$@";
   }
 else
   ae() { "$python_bin" -m ae.cli "$@"; }
+fi
+
+host_manifest="$manifest"
+container_apply_dir="/apply"
+host_apply_dir="${K1ND_APPLY_DIR:-state/bench-k1nd-apply}"
+if [[ "$IN_CONTAINER" == "1" ]]; then
+  if [[ ! -f "$host_manifest" && -n "${K1ND_MANIFEST:-}" && -f "${K1ND_MANIFEST:-}" ]]; then
+    host_manifest="$K1ND_MANIFEST"
+  fi
+  mkdir -p "$host_apply_dir"
+fi
+if [[ ! -f "$host_manifest" ]]; then
+  echo "[rollout] manifest not found on host: $host_manifest" >&2
+  exit 2
 fi
 
 info() { echo "[rollout] $*" >&2; }
@@ -314,21 +335,193 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "[rollout] docker not found; snapshots will skip container cgroup metrics." >&2
 fi
 
+during_capture_timing="${BENCH_ROLLOUT_DURING_CAPTURE_TIMING:-immediate}"
+during_warm_capture_timing="${BENCH_ROLLOUT_DURING_WARM_CAPTURE_TIMING:-warm}"
+post_capture_timing="${BENCH_ROLLOUT_POST_CAPTURE_TIMING:-warm}"
+
+run_rollout_snapshot() {
+  local label="$1"
+  local capture_timing="$2"
+  if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "$label" --duration "$duration" --capture-timing "$capture_timing"
+    else
+      sudo env "${sudo_env_clean[@]}" "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "$label" --duration "$duration" --capture-timing "$capture_timing" || true
+    fi
+  else
+    if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "$label" --duration "$duration" --capture-timing "$capture_timing"
+    else
+      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "$label" --duration "$duration" --capture-timing "$capture_timing" || true
+    fi
+  fi
+}
+
+set_rollout_hook_env() {
+  local stage="$1"
+  local replicas="$2"
+  local label="$3"
+  local capture_timing="${4:-}"
+  export BENCH_SNAPSHOT_LABEL="$label"
+  export BENCH_SNAPSHOT_STAGE="$stage"
+  export BENCH_SNAPSHOT_REPLICAS="$replicas"
+  export BENCH_SNAPSHOT_DURATION="$duration"
+  export BENCH_SNAPSHOT_CAPTURE_TIMING="$capture_timing"
+  export BENCH_BACKEND="${AE_RUNTIME_BACKEND:-podman}"
+  export BENCH_APP_NAME="$app_name"
+}
+
+start_rollout_snapshot() {
+  local pid_var="$1"
+  local label="$2"
+  local capture_timing="$3"
+  local phase="$4"
+  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label}"/* >/dev/null 2>&1; then
+    echo "[rollout] skip existing ${phase} snapshot ${label}" >&2
+    printf -v "$pid_var" '%s' ""
+    return 0
+  fi
+  (
+    run_rollout_snapshot "$label" "$capture_timing" >/dev/null
+  ) &
+  printf -v "$pid_var" '%s' "$!"
+}
+
+start_rollout_hook() {
+  local pid_var="$1"
+  local stage="$2"
+  local replicas="$3"
+  local label="$4"
+  local capture_timing="${5:-}"
+  local cmd="${6:-}"
+  if [[ -z "$cmd" ]]; then
+    printf -v "$pid_var" '%s' ""
+    return 0
+  fi
+  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label}"/* >/dev/null 2>&1; then
+    echo "[rollout] skip existing hook ${label}" >&2
+    printf -v "$pid_var" '%s' ""
+    return 0
+  fi
+  info "hook stage=${stage} replicas=${replicas} label=${label}"
+  (
+    set_rollout_hook_env "$stage" "$replicas" "$label" "$capture_timing"
+    bash -lc "$cmd"
+  ) &
+  printf -v "$pid_var" '%s' "$!"
+}
+
+wait_rollout_snapshot() {
+  local pid="${1:-}"
+  local label="$2"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+  if ! wait "$pid"; then
+    echo "[rollout] snapshot failed: ${label}" >&2
+    return 1
+  fi
+}
+
+wait_rollout_hook() {
+  local pid="${1:-}"
+  local label="$2"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+  if ! wait "$pid"; then
+    echo "[rollout] hook failed: ${label}" >&2
+    return 1
+  fi
+}
+
+run_rollout_hook() {
+  local stage="$1"
+  local replicas="$2"
+  local label="$3"
+  local cmd="${4:-}"
+  local capture_timing="${5:-}"
+  if [[ -z "$cmd" ]]; then
+    return 0
+  fi
+  info "hook stage=${stage} replicas=${replicas} label=${label}"
+  set_rollout_hook_env "$stage" "$replicas" "$label" "$capture_timing"
+  bash -lc "$cmd"
+}
+
 wait_ready() {
   local name="$1"; local want="$2"; local tries=${WAIT_READY_TRIES:-120}
   local delay=${WAIT_READY_DELAY:-2}
+  local stable_polls=${BENCH_READY_STABLE_POLLS:-2}
+  local stable_hits=0
+  local use_runtime_wait="${BENCH_WAIT_RUNTIME:-0}"
+  local backend="${AE_RUNTIME_BACKEND:-podman}"
   info "[rollout] wait_ready name=$name target=$want tries=$tries delay=${delay}s"
+  if (( stable_polls < 1 )); then
+    stable_polls=1
+  fi
   while (( tries-- > 0 )); do
-    local js
-    if ! js=$(ae status "$name" --json 2>/dev/null); then sleep 2; continue; fi
-    local ready desired
-    ready=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("ready_replicas",0))') || ready=0
-    desired=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("desired_replicas",0))') || desired=0
-    if [[ "$ready" == "$want" && "$desired" == "$want" ]]; then return 0; fi
+    local js status_ok=0 ready desired live revision_status
+    if js=$(ae status "$name" --json 2>/dev/null); then
+      ready=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("ready_replicas",0))') || ready=0
+      desired=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("desired_replicas",0))') || desired=0
+      live=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("live_replicas",0))') || live=0
+      revision_status=$(echo "$js" | python -c 'import sys,json; j=json.load(sys.stdin); print(j.get("revision_status",""))') || revision_status=""
+      status_ok=1
+    else
+      ready=0
+      desired=0
+      live=0
+      revision_status=""
+    fi
+    if [[ "$ready" == "$want" && "$desired" == "$want" && "$live" == "$want" && "$revision_status" == "ready" ]]; then
+      stable_hits=$((stable_hits + 1))
+      if (( stable_hits >= stable_polls )); then
+        return 0
+      fi
+    else
+      stable_hits=0
+    fi
+    if [[ "$use_runtime_wait" == "1" && "$status_ok" == "0" ]]; then
+      local count=0
+      if [[ "$backend" == "podman" || "$backend" == "oci" ]]; then
+        if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+          count=$(sudo env "${sudo_env_base[@]}" "${AE_PODMAN_BIN:-podman}" ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        else
+          count=$("${AE_PODMAN_BIN:-podman}" ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        fi
+      elif [[ "$backend" == "docker" ]]; then
+        if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
+          count=$(sudo env "${sudo_env_base[@]}" docker ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        else
+          count=$(docker ps --filter "label=ae.app=${name}" --format "{{.ID}}" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' \t') || count=0
+        fi
+      fi
+      if [[ "$count" -ge "$want" ]]; then
+        stable_hits=$((stable_hits + 1))
+        if (( stable_hits >= stable_polls )); then
+          return 0
+        fi
+      else
+        stable_hits=0
+      fi
+    fi
     sleep "$delay"
   done
   echo "timeout waiting for $name ready=$want" >&2
   return 1
+}
+
+settle_current_revision() {
+  local name="$1"; local want="$2"
+  local settle_delay=${BENCH_SETTLE_DELAY:-2}
+  info "[rollout] settle current revision name=$name target=$want"
+  ae scale "$name" --replicas "$want" >/dev/null
+  wait_ready "$name" "$want"
+  if (( settle_delay > 0 )); then
+    info "[rollout] settle delay name=$name target=$want sleep=${settle_delay}s"
+    sleep "$settle_delay"
+  fi
 }
 
 current_image() {
@@ -414,12 +607,15 @@ run_rollout_once() {
   echo "[rollout] scale ${app_name} to ${replicas} and wait ready" >&2
   # Apply a manifest with replicas set to avoid single-replica host port publishing collisions
   local startman
+  local host_startman
   if [[ "$IN_CONTAINER" == "1" ]]; then
-    startman="state/rollout-start-${app_name}-${replicas}.yaml"
+    host_startman="${host_apply_dir}/rollout-start-${app_name}-${replicas}.yaml"
+    startman="${container_apply_dir}/rollout-start-${app_name}-${replicas}.yaml"
   else
-    startman=$(mktemp)
+    host_startman=$(mktemp)
+    startman="$host_startman"
   fi
-  python - "$manifest" "$startman" "$replicas" <<-'PY'
+  python - "$host_manifest" "$host_startman" "$replicas" <<-'PY'
 import sys, re
 src, dst, replicas = sys.argv[1:4]
 try:
@@ -452,9 +648,10 @@ if replicas is not None and not did_rep:
     out=out2
 open(dst,'w',encoding='utf-8').write("\n".join(out)+"\n")
 PY
-  ae apply -f "$startman" || true
-  ae scale "$app_name" --replicas "$replicas" || true
-  wait_ready "$app_name" "$replicas" || true
+  ae apply -f "$startman"
+  ae scale "$app_name" --replicas "$replicas"
+  wait_ready "$app_name" "$replicas"
+  settle_current_revision "$app_name" "$replicas"
 
   local base_img
   local target_img
@@ -464,58 +661,42 @@ PY
   if [[ "$base_img" == *demo-green* || -z "$base_img" ]]; then target_img="$rollout_blue_image"; fi
 
   local tmpman
+  local host_tmpman
   if [[ "$IN_CONTAINER" == "1" ]]; then
-    tmpman="state/rollout-${app_name}-${replicas}.yaml"
+    host_tmpman="${host_apply_dir}/rollout-${app_name}-${replicas}.yaml"
+    tmpman="${container_apply_dir}/rollout-${app_name}-${replicas}.yaml"
   else
-    tmpman=$(mktemp)
+    host_tmpman=$(mktemp)
+    tmpman="$host_tmpman"
   fi
-  switch_image "$manifest" "$tmpman" "$target_img" "$replicas"
+  switch_image "$host_manifest" "$host_tmpman" "$target_img" "$replicas"
 
   echo "[rollout] apply new image: ${target_img}" >&2
-  ae apply -f "$tmpman" || true
+  ae apply -f "$tmpman"
 
   echo "[rollout] snapshot DURING rollout" >&2
-  # Skip if existing and SKIP_EXISTING=1
-  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-during"/* >/dev/null 2>&1; then
-    echo "[rollout] skip existing DURING snapshot ${label_suite}-rollout-${replicas}-during" >&2
-  else
-    if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
-      else
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
-      fi
-    else
-      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration"
-      else
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-during" --duration "$duration" || true
-      fi
-    fi
-  fi
+  local during_label="${label_suite}-rollout-${replicas}-during"
+  local during_warm_label="${label_suite}-rollout-${replicas}-during-warm"
+  local during_warm_pid
+  local during_pid
+  local during_warm_hook_pid
+  local during_hook_pid
+  start_rollout_hook during_warm_hook_pid "rollout-${replicas}-during-warm" "$replicas" "$during_warm_label" "$during_warm_capture_timing" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"
+  start_rollout_snapshot during_warm_pid "$during_warm_label" "$during_warm_capture_timing" "DURING-WARM"
+  start_rollout_hook during_hook_pid "rollout-${replicas}-during" "$replicas" "$during_label" "$during_capture_timing" "${BENCH_PRE_DURING_SNAPSHOT_CMD:-}"
+  start_rollout_snapshot during_pid "$during_label" "$during_capture_timing" "DURING"
+  wait_rollout_snapshot "$during_pid" "$during_label"
+  wait_rollout_snapshot "$during_warm_pid" "$during_warm_label"
+  wait_rollout_hook "$during_hook_pid" "$during_label"
+  wait_rollout_hook "$during_warm_hook_pid" "$during_warm_label"
 
   echo "[rollout] wait ready post-rollout" >&2
-  wait_ready "$app_name" "$replicas" || true
+  wait_ready "$app_name" "$replicas"
+  settle_current_revision "$app_name" "$replicas"
 
   echo "[rollout] snapshot POST rollout" >&2
-  # Skip if existing and SKIP_EXISTING=1
-  if [[ "${SKIP_EXISTING:-0}" == "1" ]] && ls -1 "snapshots/${label_suite}-rollout-${replicas}-post"/* >/dev/null 2>&1; then
-    echo "[rollout] skip existing POST snapshot ${label_suite}-rollout-${replicas}-post" >&2
-  else
-    if (( use_sudo )) && command -v sudo >/dev/null 2>&1; then
-      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
-      else
-      sudo env "${sudo_env_snapshot[@]}" AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
-      fi
-    else
-      if [[ "${AE_ENGINE_STRICT:-0}" == "1" ]]; then
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration"
-      else
-      AE_REQUIRE_CONTAINERS=1 scripts/bench/mem_snapshot.sh --mode k1s --label "${label_suite}-rollout-${replicas}-post" --duration "$duration" || true
-      fi
-    fi
-  fi
+  run_rollout_hook "rollout-${replicas}-post" "$replicas" "${label_suite}-rollout-${replicas}-post" "${BENCH_PRE_POST_SNAPSHOT_CMD:-}" "$post_capture_timing"
+  run_rollout_snapshot "${label_suite}-rollout-${replicas}-post" "$post_capture_timing"
 }
 
 for replicas in "${rollout_replicas[@]}"; do

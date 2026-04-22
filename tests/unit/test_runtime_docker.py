@@ -203,6 +203,48 @@ def test_docker_runtime_removes_extra_replicas():
     assert "demo-rev0-1" not in client.containers_by_replica
 
 
+def test_docker_runtime_retries_transient_notfound_when_listing_final_containers():
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = make_manifest(replica_count=1)
+    original_list = client.containers.list
+    calls = {"count": 0}
+
+    def flaky_list(*args, **kwargs):  # noqa: ANN002,ANN003
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise NotFound("container disappeared during list")
+        return original_list(*args, **kwargs)
+
+    client.containers.list = flaky_list  # type: ignore[method-assign]
+
+    result = runtime.ensure_app(manifest, revision=1)
+
+    assert result.created == 1
+    assert len(result.pod_states) == 1
+    assert calls["count"] == 3
+
+
+def test_docker_runtime_skips_disappeared_container_during_final_state_build():
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = make_manifest(replica_count=1)
+    original_build_state = runtime._build_state
+    calls = {"count": 0}
+
+    def flaky_build_state(manifest_arg, container):  # noqa: ANN001
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise NotFound("container disappeared during inspect")
+        return original_build_state(manifest_arg, container)
+
+    with mock.patch.object(runtime, "_build_state", side_effect=flaky_build_state):
+        result = runtime.ensure_app(manifest, revision=1)
+
+    assert result.created == 1
+    assert result.pod_states == []
+
+
 def test_docker_runtime_skips_pull_when_image_local():
     client = FakeDockerClient()
     client.images._local["demo-blue:latest"] = "demo-blue:latest"

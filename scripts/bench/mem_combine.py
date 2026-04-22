@@ -4,10 +4,11 @@
 Combine multiple snapshot summaries into a single CSV/JSON for charting.
 
 Usage:
-  scripts/bench/mem_combine.py snapshots/<label_pattern>
+  scripts/bench/mem_combine.py [--outdir DIR] snapshots/<label_pattern>
 
 Examples:
   scripts/bench/mem_combine.py snapshots/baseline-*
+  scripts/bench/mem_combine.py --outdir state/bench-experiments/demo/combined snapshots/demo-*
 """
 
 from __future__ import annotations
@@ -21,6 +22,26 @@ from pathlib import Path
 from typing import List, Dict
 
 
+def _parse_args(argv: List[str]) -> tuple[Path, list[str]]:
+    args = list(argv[1:])
+    outdir = Path("combined")
+    globs: list[str] = []
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--outdir":
+            if idx + 1 >= len(args):
+                raise ValueError("--outdir requires a path")
+            outdir = Path(args[idx + 1])
+            idx += 2
+            continue
+        globs.append(arg)
+        idx += 1
+    if not globs:
+        raise ValueError("usage: scripts/bench/mem_combine.py [--outdir DIR] <snapshots/glob>")
+    return outdir, globs
+
+
 def load_summary(dirpath: Path) -> Dict:
     try:
         return json.loads((dirpath / "summary.json").read_text())
@@ -28,12 +49,25 @@ def load_summary(dirpath: Path) -> Dict:
         return {}
 
 
+def _combined_control_plane_pss_kb(mode: str, overhead: Dict) -> int:
+    try:
+        if str(mode).lower() == "k3s":
+            k3s_cp = int(overhead.get("pss_kb_k3s_control_plane", 0) or 0)
+            if k3s_cp > 0:
+                return k3s_cp
+        return int(overhead.get("pss_kb_control_plane", 0) or 0)
+    except Exception:
+        return 0
+
+
 def main(argv: List[str]) -> int:
-    if len(argv) < 2:
-        print("usage: scripts/bench/mem_combine.py <snapshots/glob>")
+    try:
+        outdir, input_globs = _parse_args(argv)
+    except ValueError as exc:
+        print(str(exc))
         return 2
     paths: List[Path] = []
-    for arg in argv[1:]:
+    for arg in input_globs:
         for p in glob.glob(arg):
             # Accept either snapshot directories or parent label directories
             pth = Path(p)
@@ -51,31 +85,29 @@ def main(argv: List[str]) -> int:
         if not s:
             continue
         meta = s.get("meta", {})
+        overhead = s.get("overhead", {}) or {}
+        mode = meta.get("mode", "")
         rows.append(
             {
                 "label": meta.get("label", ""),
-                "mode": meta.get("mode", ""),
+                "mode": mode,
                 "backend": meta.get("backend", ""),
                 "oci_runtime": meta.get("oci_runtime", ""),
                 "timestamp": meta.get("timestamp", ""),
                 "process_pss_kb": s.get("process_totals_kb", {}).get("pss_kb", 0),
-                # Historical, misleading name kept for compatibility; charts/docs will prefer new fields below
-                "control_plane_pss_kb": s.get("overhead", {}).get("pss_kb_control_plane", 0),
+                # Historical export field, normalized for k3s to publish the actual k3s control-plane PSS.
+                "control_plane_pss_kb": _combined_control_plane_pss_kb(mode, overhead),
                 # New structured fields
-                "overhead_pss_kb_total": s.get("overhead", {}).get(
-                    "pss_kb_total_overhead", s.get("overhead", {}).get("pss_kb_control_plane", 0)
+                "overhead_pss_kb_total": overhead.get(
+                    "pss_kb_total_overhead", overhead.get("pss_kb_control_plane", 0)
                 ),
-                "controller_pss_kb": s.get("overhead", {}).get("pss_kb_controller", 0),
-                "ingress_pss_kb": s.get("overhead", {}).get("pss_kb_ingress", 0),
-                "runtime_pss_kb": s.get("overhead", {}).get("pss_kb_runtime", 0),
-                "k3s_control_plane_pss_kb": s.get("overhead", {}).get(
-                    "pss_kb_k3s_control_plane", 0
-                ),
+                "controller_pss_kb": overhead.get("pss_kb_controller", 0),
+                "ingress_pss_kb": overhead.get("pss_kb_ingress", 0),
+                "runtime_pss_kb": overhead.get("pss_kb_runtime", 0),
+                "k3s_control_plane_pss_kb": overhead.get("pss_kb_k3s_control_plane", 0),
                 "app_mem_bytes": s.get("containers", {}).get("app_mem_bytes", 0),
                 "system_mem_bytes": s.get("containers", {}).get("system_mem_bytes", 0),
-                "host_system_cgroups_bytes": s.get("overhead", {}).get(
-                    "host_system_cgroups_bytes", 0
-                ),
+                "host_system_cgroups_bytes": overhead.get("host_system_cgroups_bytes", 0),
                 "mem_available_before_bytes": (s.get("mem_available", {}) or {}).get(
                     "before_bytes", 0
                 ),
@@ -104,8 +136,6 @@ def main(argv: List[str]) -> int:
     except Exception:
         pass
 
-    # Write combined outputs next to the first directory's parent
-    outdir = Path("combined")
     outdir.mkdir(parents=True, exist_ok=True)
     (outdir / "combined.json").write_text(json.dumps(rows, indent=2))
     with (outdir / "combined.csv").open("w", newline="", encoding="utf-8") as fh:

@@ -1,130 +1,99 @@
 # k1s Concepts
 
-This guide explains core concepts used throughout k1s.
+This page is the glossary and mental-model guide for the core nouns and control loops used throughout k1s. Use [Overview](overview.html) for the current architecture snapshot and [Concepts in Practice](concepts-in-practice.html) for chapterized walkthroughs.
 
-## Terminology map (k1s -> Kubernetes)
+## Terminology Map (k1s -> Kubernetes)
 
 | k1s term | Kubernetes term | Notes |
 | --- | --- | --- |
 | Deployment | Deployment (workload) | k1s native workload manifest (`kind: Deployment`). |
-| Pod | Pod | One container instance for a Deployment revision. |
-| Revision | ReplicaSet / Deployment revision | Immutable snapshot of desired state. |
-| Service VIP | Service / ClusterIP | Stable virtual IP for service routing. |
-| Spec / manifest | Manifest | YAML resource definition. |
+| Pod | Pod | One running container instance for a revision. |
+| Revision | Deployment revision / ReplicaSet snapshot | Immutable desired-state snapshot. |
+| Service VIP | Service / ClusterIP | Stable service address used for L4 routing. |
+| Spec / manifest | Manifest | YAML resource definition for desired state. |
+| HTTP API | Controller-native API | Operational status, metrics, planner, and mutation surface. |
+| API shim | Kubernetes-compatible API | Discovery and object surface for `kubectl`, Helm, and compatibility clients. |
 
-## Deployment (k1s workload)
+## Deployment
 
-The primary unit of deployment. Defined by a `Deployment` manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.
+The primary workload unit in k1s is a `Deployment` manifest. It captures the desired image, replica count, ports, health checks, config and secret projection, rollout preferences, scheduling hints, and optional service or ingress exposure.
 
 ## Pod
 
-An individual container instance belonging to an app revision. Pod names follow the pattern `<app>-rev<revision>-<index>` (e.g., `echo-rev3-0`).
+A pod is one running container instance for a deployment revision. Pod names follow the `<app>-rev<revision>-<index>` pattern and give the controller a stable way to track readiness, liveness, logs, and rollout progress.
 
 ## Node
 
-A registered worker (or the controller host) that can run pods. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via `ae nodes`.
+A node is a worker that can host pods. Nodes advertise labels, taints, runtime capability, and heartbeat freshness. The scheduler uses that inventory to decide placement, and operators manage node availability with `ae nodes`.
 
-## Service VIP (Service/ClusterIP)
+## Service VIP
 
-A stable virtual IP allocated from the Service CIDR and fronted by the overlay provider. Ingress prefers VIPs when ready endpoints exist; hostPorts remain for single-node edge cases.
+A Service VIP is the stable service address allocated from the service CIDR and backed by the current overlay or provider path. It gives the system a node-agnostic L4 target for service routing, health-based upstream switching, and multi-node ingress.
 
-## Revision (Deployment revision)
+## Revision
 
-An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.
-
-- Stored in SQLite with its normalized JSON and status.
-- Used for rollbacks: `ae rollback <app> [--to <rev>]`.
+A revision is an immutable snapshot of desired workload state derived from the manifest spec hash. Revision metadata lives in controller state: SQLite is the local default, while shared-authority HA and strict-CRI lanes use the durable control-plane state path. Rollbacks target a stored revision rather than reconstructing state from live containers.
 
 ## Reconcile
 
-The controller compares the desired state from specs to the observed state (SQLite/Postgres + node inventory + runtimes) and performs the operations needed to converge.
+Reconcile is the control loop that compares desired state with observed state and performs the operations needed to converge:
 
-- Schedules replicas onto Ready nodes that match `nodeSelector`/tolerations/topology spread. Storage pinning keeps retained volumes on a single node.
-- Creates or updates containers via the node agent runtime (pulling images as needed); falls back to the local runtime when no nodes are eligible.
-- Removes containers from older revisions after the new revision is live.
-- Allocates Service VIPs and updates ingress to healthy upstreams once readiness passes.
+- schedule replicas onto eligible nodes
+- create or update runtime containers
+- pin retained storage to the correct node
+- allocate Service VIPs
+- update exposure paths once readiness gates pass
 
-## Health
+This is the core controller pattern that maps most directly to Kubernetes controller behavior.
 
-- Readiness: Determines whether a pod should receive traffic (2xx HTTP implies success).
-- Liveness: Indicates the pod is still alive (defaults to true if not specified).
-- Initial delay: Allows the app to boot before probes start.
-- Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around pod start/stop.
+## Health and Status
 
-## Status
+- Readiness decides whether a pod should receive traffic.
+- Liveness decides whether the runtime should treat the pod as still alive.
+- Startup probes delay readiness and liveness evaluation until boot is complete.
+- Aggregate app status rolls up these signals into states such as `ready`, `progressing`, or `degraded`.
 
-Per‑app aggregate status is one of:
-
-- ready: all desired replicas are ready
-- progressing: desired count is live but not yet all ready
-- degraded: otherwise (e.g., live replicas below desired or readiness fails)
-
-CLI examples:
-
-```
-ae status myapp --wide --events
-```
+Health is pod-level; status is the controller’s higher-level summary of the app as a whole.
 
 ## Events
 
-Lightweight audit trail for changes and noteworthy events:
-
-- ApplyStarted, ApplyCompleted
-- IngressConfigured, IngressRemoved
-- NodeRegistered, NodeCordon, NodeUncordon
-- ServiceVIPAllocated, ServiceVIPRemoved
-- Readiness/rollout failures when health gates trip
-
-Inspect with:
-
-```
-ae events myapp --limit 20
-```
+Events are the lightweight audit trail for desired-state changes and notable runtime transitions. They record things like apply completion, ingress changes, node cordon actions, Service VIP allocation, and rollout or probe failures.
 
 ## Rollouts
 
-Rolling replace with `maxUnavailable=0, maxSurge=1` semantics across one or more nodes:
+A rollout is the controlled transition from one revision to the next. k1s starts new pods, waits for readiness, switches service and ingress traffic, and only then removes the older revision. Rollbacks reuse a previously stored revision, so rollout history is part of the control-plane model rather than a best-effort log.
 
-1. Start a new pod for the next revision.
-2. Wait for readiness.
-3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled).
-4. Stop and remove old revision containers.
+## Resources, Volumes, and Placement
 
-Pause/resume and canary:
-- Pause/resume: `ae rollout pause|resume <app>` halts or resumes rollout progression.
-- Canary: set `spec.rollout.strategy: canary` and `spec.rollout.weight` (optional `auto` ramp) to bias routing.
+CPU and memory requests or limits describe runtime expectations. Volumes describe host-path or retained named storage. Placement hints such as selectors, tolerations, and topology spread tell the scheduler where replicas are allowed to run. Retained storage is single-node by default, so storage locality is part of placement, not just runtime mounting.
 
-Rollback uses the recorded manifest for the target revision:
+## Ingress and Exposure
 
-```
-ae rollback myapp --to 3
-```
+Service exposure in k1s has two layers:
 
-## Resources & Volumes
+- Service VIPs provide stable L4 routing for app traffic.
+- Ingress provides the L7 entry path on top of those services.
 
-- CPU/memory limits map to engine flags (Docker nano_cpus; Podman/Docker `--cpus`, memory quantities → bytes).
-- Volumes map to hostPath → bind mount (ro/rw). `spec.storage` creates named engine volumes per app.
-- Storage volumes are bound to the node that first creates them; scheduler pins retained volumes to that node.
+Current ingress modes split by topology:
 
-## Ingress
+- core ingress modes use Envoy as the primary ingress surface on the core side
+- edge-local renders gateway-local Caddy from route bundles on the edge side
+- docs, API, and dashboard TLS hostnames are adjacent control-plane surfaces, not the same thing as app ingress modes
 
-For apps with `spec.ingress`, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, loopback upstreams are rewritten to the host alias: `host.docker.internal` (Docker) or `host.containers.internal` (Podman).
+Use [Ingress](ingress.html) for the current architecture and [Ingress Validation](ingress-capability-test-sequence.html) for the command-heavy validation sequence.
 
-In multi-node runs, ingress prefers Service VIPs supplied by the overlay provider so upstream selection is node-agnostic.
+## API Surfaces
 
-## HTTP API
+k1s exposes two distinct API layers:
 
-Read‑only status/metrics/events published at:
+- [HTTP API](http-api.html): the controller-native operational surface for status, metrics, planner calls, dashboard data, and opt-in mutations
+- [API Shim](api-shim.html): the Kubernetes-compatible discovery and object surface for `kubectl`, Helm, and compatibility-oriented tooling
 
-- `/metrics`, `/health`, `/status`, `/status/<app>`, `/events/<app>`
-- `/history/<app>` for probe history, `/manifest/<app>` for latest stored manifest
-- `/nodes` for node inventory + heartbeat staleness
-- `/system` + `/dashboard` for a quick UI snapshot
-- `/openapi.json` and a tiny docs page at `/docs`
+Auth and mutation gating are separate concerns from the route catalog. Use [API Auth](api-auth.html) for token roles, scopes, expiry, controller mutation gating, and shim auth modes.
 
-Note: when any token is configured, reads require the READ token.
+## Further Reading
 
-Kubernetes API shim (optional):
-
-- `AE_APISHIM_ENABLE=1 python -m ae.apishim serve --token <bearer>` exposes `/api`, `/apis`, `/openapi/v2|v3` with SSA/patch and port-forward (HTTP by default; add `--tls` for HTTPS).
-- Works with kubectl/helm for Deployments/Services/Ingress/HPA/RBAC; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated (see `docs/reference/apishim-compatibility-matrix.md`).
+- [Overview](overview.html)
+- [Start Here](start-here.html)
+- [Concepts in Practice](concepts-in-practice.html)
+- [Architecture](architecture.html)

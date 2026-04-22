@@ -56,6 +56,13 @@ def test_exec_namespace_flag_after_name(monkeypatch, tmp_path):
     assert captured["command"] == ["sh"]
 
 
+def test_exec_separator_preserves_dash_args():
+    parser = cli.build_parser()
+    args = parser.parse_args(["exec", "green", "-n", "demo", "--", "sh", "-c", "echo hi"])
+    assert args.namespace == "demo"
+    assert args.cmd == ["sh", "-c", "echo hi"]
+
+
 def test_shell_defaults_to_sh(monkeypatch, tmp_path):
     parser = cli.build_parser()
     args = parser.parse_args(["shell", "green", "-n", "demo"])
@@ -77,6 +84,13 @@ def test_shell_defaults_to_sh(monkeypatch, tmp_path):
     assert rc == 0
     assert captured["namespace"] == "demo"
     assert captured["command"] == ["sh"]
+
+
+def test_shell_separator_preserves_dash_args():
+    parser = cli.build_parser()
+    args = parser.parse_args(["shell", "green", "-n", "demo", "--", "sh", "-c", "echo hi"])
+    assert args.namespace == "demo"
+    assert args.cmd == ["sh", "-c", "echo hi"]
 
 
 def test_apply_namespace_override(monkeypatch, tmp_path, capsys):

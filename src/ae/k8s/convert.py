@@ -328,6 +328,9 @@ def manifest_from_k8s_workload(
         security=security,
         health=health,
         pvc_mounts=pvc_mounts,
+        serviceAccountName=(
+            tpl.get("serviceAccountName") or tpl.get("serviceAccount") or None
+        ),
     )
     if service_spec is not None:
         app_spec = app_spec.model_copy(update={"service": service_spec})

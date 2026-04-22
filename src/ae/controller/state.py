@@ -19,9 +19,19 @@ except Exception:  # pragma: no cover - optional dependency
     psycopg = None  # type: ignore
 
 from ae.controller.health import HealthReport
-from ae.controller.spec import AppManifest, app_key_for_manifest
+from ae.controller.spec import (
+    DEFAULT_NAMESPACE,
+    AppManifest,
+    InferenceCellManifest,
+    InferenceCellSetManifest,
+    app_key,
+    app_key_for_manifest,
+)
+from ae.ha.fencing import parse_envelope, work_operation
 from ae.resources import loader as resource_loader
 from ae.runtime import RuntimeResult
+
+_UNSET = object()
 
 
 @dataclass(slots=True)
@@ -40,6 +50,12 @@ class AppStatus:
     removed: int
     ingress_host: str | None = None
     ingress_path: str | None = None
+    current_revision_ready_replicas: int = 0
+    current_revision_live_replicas: int = 0
+    old_revision_ready_replicas: int = 0
+    old_revision_live_replicas: int = 0
+    overlap_ready_replicas: int = 0
+    overlap_live_replicas: int = 0
 
 
 @dataclass(slots=True)
@@ -52,6 +68,53 @@ class RegistryEntry:
     source: str
     labels: dict
     updated_at: datetime
+    resource_version: int = 0
+
+
+@dataclass(slots=True)
+class AuthorityObjectEntry:
+    """Shared-authority shim object persisted outside the legacy apishim DB."""
+
+    group: str
+    version: str
+    resource: str
+    namespace: str | None
+    name: str
+    kind: str
+    metadata: dict
+    spec: dict
+    status: dict
+    updated_at: datetime
+    resource_version: int = 0
+
+
+@dataclass(slots=True)
+class WorkloadMetricsSnapshot:
+    """Aggregated workload metrics used by the HA HPA controller."""
+
+    app_name: str
+    controller_id: str
+    controller_epoch: int
+    collected_at: datetime
+    cpu_utilization: float | None
+    memory_utilization: float | None
+    memory_bytes: int
+    pod_count: int
+    node_count: int
+    updated_at: datetime
+
+
+class RegistryConflictError(RuntimeError):
+    """Raised when a registry CAS write sees a stale resource version."""
+
+    def __init__(self, app_name: str, *, expected: int, actual: int) -> None:
+        self.app_name = str(app_name)
+        self.expected = int(expected)
+        self.actual = int(actual)
+        super().__init__(
+            f"registry resourceVersion conflict for {self.app_name}: "
+            f"expected={self.expected} actual={self.actual}"
+        )
 
 
 @dataclass(slots=True)
@@ -199,7 +262,11 @@ class WorkOutboxEntry:
     attempt: int
     site_id: str
     payload: dict
+    publish_subject: str
+    publish_msg_id: str
     publish_attempts: int
+    last_publish_at: datetime | None = None
+    last_publish_error: str | None = None
 
 
 @dataclass(slots=True)
@@ -208,6 +275,9 @@ class WorkLedgerEntry:
     attempt: int
     site_id: str
     state: str
+    controller_id: str | None
+    controller_epoch: int | None
+    operation_id: str | None
     desired_generation: int | None
     assigned_node_id: str | None
     observed_generation: int | None
@@ -294,6 +364,69 @@ class RevisionInfo:
     created_at: datetime | None = None
 
 
+@dataclass(slots=True)
+class InferenceCellRecord:
+    """Stored InferenceCell desired+observed state."""
+
+    cell_key: str
+    namespace: str
+    cell_id: str
+    manifest: InferenceCellManifest
+    phase: str
+    tp: int
+    pp: int
+    executor_type: str
+    ray_scope: str
+    allocations: dict
+    admission: dict
+    conditions: dict
+    restarts: int
+    last_error: str | None
+    source: str
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class InferenceCellEvent:
+    """Event emitted for inference cell reconciliation."""
+
+    cell_key: str
+    event_type: str
+    message: str
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class InferenceCellSetRecord:
+    """Stored InferenceCellSet template and rollout status."""
+
+    set_key: str
+    namespace: str
+    name: str
+    manifest: InferenceCellSetManifest
+    desired: int
+    current: int
+    ready: int
+    last_error: str | None
+    source: str
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class FabricSessionRecord:
+    """Persisted per-cell fabric session metadata."""
+
+    session_id: str
+    cell_key: str
+    policy_mode: str
+    members: list[dict]
+    allowed_rules: list[dict]
+    status: str
+    expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class SQLiteStateStore:
     """Minimal state store; sqlite by default, Postgres via AE_STATE_DSN or dsn=."""
 
@@ -323,6 +456,18 @@ class SQLiteStateStore:
                 self._ensure_column(conn, "pod_status", "updated_at", "TEXT")
             except Exception:
                 pass
+            for column in (
+                "current_revision_ready_replicas",
+                "current_revision_live_replicas",
+                "old_revision_ready_replicas",
+                "old_revision_live_replicas",
+                "overlap_ready_replicas",
+                "overlap_live_replicas",
+            ):
+                try:
+                    self._ensure_column(conn, "app_status", column, "INTEGER NOT NULL DEFAULT 0")
+                except Exception:
+                    pass
             try:
                 self._ensure_column(conn, "nodes", "rp_pubkey", "TEXT")
             except Exception:
@@ -341,6 +486,12 @@ class SQLiteStateStore:
                     "created",
                     "updated",
                     "removed",
+                    "current_revision_ready_replicas",
+                    "current_revision_live_replicas",
+                    "old_revision_ready_replicas",
+                    "old_revision_live_replicas",
+                    "overlap_ready_replicas",
+                    "overlap_live_replicas",
                     "ingress_host",
                     "ingress_path",
                 ],
@@ -356,11 +507,11 @@ class SQLiteStateStore:
                     "status",
                     "readiness_message",
                     "liveness_message",
-                "exit_code",
-                "finished_at",
-                "updated_at",
-            ],
-        )
+                    "exit_code",
+                    "finished_at",
+                    "updated_at",
+                ],
+            )
             if needs_reset:
                 conn.execute("DROP TABLE IF EXISTS probe_history")
                 conn.execute("DROP TABLE IF EXISTS pod_status")
@@ -462,15 +613,49 @@ class SQLiteStateStore:
                 if self.backend == "sqlite"
                 else "SERIAL PRIMARY KEY"
             )
+            conn.execute(resource_loader.load_text("sql", "controller", "create_app_status.sql"))
+            conn.execute(resource_loader.load_text("sql", "controller", "create_app_registry.sql"))
             conn.execute(
-                resource_loader.load_text("sql", "controller", "create_app_status.sql")
+                """
+                CREATE TABLE IF NOT EXISTS authority_objects (
+                  grp TEXT NOT NULL,
+                  ver TEXT NOT NULL,
+                  resource TEXT NOT NULL,
+                  namespace TEXT NOT NULL,
+                  name TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  metadata_json TEXT NOT NULL,
+                  spec_json TEXT NOT NULL,
+                  status_json TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  resource_version INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY (grp, ver, resource, namespace, name)
+                )
+                """
             )
             conn.execute(
-                resource_loader.load_text("sql", "controller", "create_app_registry.sql")
+                """
+                CREATE INDEX IF NOT EXISTS idx_authority_objects_gvr
+                ON authority_objects (grp, ver, resource, namespace, name)
+                """
             )
             conn.execute(
-                resource_loader.load_text("sql", "controller", "create_pod_status.sql")
+                """
+                CREATE TABLE IF NOT EXISTS workload_metrics_snapshots (
+                  app_name TEXT PRIMARY KEY,
+                  controller_id TEXT NOT NULL,
+                  controller_epoch INTEGER NOT NULL,
+                  collected_at TEXT NOT NULL,
+                  cpu_utilization REAL,
+                  memory_utilization REAL,
+                  memory_bytes INTEGER NOT NULL,
+                  pod_count INTEGER NOT NULL,
+                  node_count INTEGER NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
             )
+            conn.execute(resource_loader.load_text("sql", "controller", "create_pod_status.sql"))
             conn.execute(
                 resource_loader.render_text(
                     "sql",
@@ -479,12 +664,8 @@ class SQLiteStateStore:
                     AUTO_INC=auto_inc,
                 )
             )
-            conn.execute(
-                resource_loader.load_text("sql", "controller", "create_pod_nodes.sql")
-            )
-            conn.execute(
-                resource_loader.load_text("sql", "controller", "create_app_revisions.sql")
-            )
+            conn.execute(resource_loader.load_text("sql", "controller", "create_pod_nodes.sql"))
+            conn.execute(resource_loader.load_text("sql", "controller", "create_app_revisions.sql"))
             conn.execute(
                 resource_loader.render_text(
                     "sql",
@@ -496,30 +677,20 @@ class SQLiteStateStore:
             conn.execute(
                 resource_loader.load_text("sql", "controller", "create_rollout_canary.sql")
             )
+            conn.execute(resource_loader.load_text("sql", "controller", "create_services.sql"))
             conn.execute(
-                resource_loader.load_text("sql", "controller", "create_services.sql")
+                resource_loader.load_text("sql", "controller", "create_service_endpoints.sql")
             )
+            conn.execute(resource_loader.load_text("sql", "controller", "create_nodes.sql"))
             conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "create_service_endpoints.sql"
-                )
-            )
-            conn.execute(
-                resource_loader.load_text("sql", "controller", "create_nodes.sql")
-            )
-            conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "create_node_heartbeats.sql"
-                )
+                resource_loader.load_text("sql", "controller", "create_node_heartbeats.sql")
             )
             self._execute_script(
                 conn,
                 resource_loader.load_text("sql", "controller", "create_node_leases.sql"),
             )
             conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "create_volume_attachments.sql"
-                )
+                resource_loader.load_text("sql", "controller", "create_volume_attachments.sql")
             )
             self._execute_script(
                 conn,
@@ -535,25 +706,154 @@ class SQLiteStateStore:
             )
             self._execute_script(
                 conn,
-                resource_loader.load_text(
-                    "sql", "controller", "create_site_ingress_endpoints.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "create_site_ingress_endpoints.sql"),
             )
             self._execute_script(
                 conn,
-                resource_loader.load_text(
-                    "sql", "controller", "create_edge_ingress_routes.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "create_edge_ingress_routes.sql"),
             )
             self._execute_script(
                 conn,
-                resource_loader.load_text(
-                    "sql", "controller", "create_edge_ingress_policies.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "create_edge_ingress_policies.sql"),
+            )
+            self._ensure_column(
+                conn,
+                "app_registry",
+                "resource_version",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            conn.execute(
+                "UPDATE app_registry SET resource_version = 1 WHERE COALESCE(resource_version, 0) < 1"
             )
             self._ensure_column(conn, "edge_ingress_routes", "status_json", "TEXT")
             self._ensure_column(conn, "edge_ingress_policies", "status_json", "TEXT")
             self._ensure_column(conn, "pod_status", "endpoint", "TEXT")
+            self._ensure_column(conn, "work_ledger", "controller_id", "TEXT")
+            self._ensure_column(conn, "work_ledger", "controller_epoch", "INTEGER")
+            self._ensure_column(conn, "work_ledger", "operation_id", "TEXT")
+            self._ensure_column(conn, "work_outbox", "publish_subject", "TEXT")
+            self._ensure_column(conn, "work_outbox", "publish_msg_id", "TEXT")
+            self._ensure_column(conn, "work_outbox", "last_publish_error", "TEXT")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inference_cells (
+                  cell_key TEXT PRIMARY KEY,
+                  namespace TEXT NOT NULL,
+                  cell_id TEXT NOT NULL,
+                  spec_json TEXT NOT NULL,
+                  model_id TEXT,
+                  tp INTEGER NOT NULL,
+                  pp INTEGER NOT NULL,
+                  executor_type TEXT NOT NULL,
+                  ray_scope TEXT NOT NULL,
+                  phase TEXT NOT NULL,
+                  allocations_json TEXT NOT NULL,
+                  admission_json TEXT NOT NULL,
+                  conditions_json TEXT NOT NULL,
+                  restarts INTEGER NOT NULL DEFAULT 0,
+                  last_error TEXT,
+                  source TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inference_cells_namespace ON inference_cells(namespace)"
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS inference_cell_events (
+                  id {auto_inc},
+                  cell_key TEXT NOT NULL,
+                  event_type TEXT NOT NULL,
+                  message TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inference_cell_events_key ON inference_cell_events(cell_key)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inference_cell_sets (
+                  set_key TEXT PRIMARY KEY,
+                  namespace TEXT NOT NULL,
+                  name TEXT NOT NULL,
+                  spec_json TEXT NOT NULL,
+                  desired INTEGER NOT NULL DEFAULT 0,
+                  current INTEGER NOT NULL DEFAULT 0,
+                  ready INTEGER NOT NULL DEFAULT 0,
+                  last_error TEXT,
+                  source TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inference_cell_sets_namespace ON inference_cell_sets(namespace)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inference_fabric_sessions (
+                  session_id TEXT PRIMARY KEY,
+                  cell_key TEXT NOT NULL,
+                  policy_mode TEXT NOT NULL,
+                  members_json TEXT NOT NULL,
+                  allowed_rules_json TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  expires_at TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inference_fabric_sessions_cell ON inference_fabric_sessions(cell_key)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inference_gpu_leases (
+                  node_id TEXT NOT NULL,
+                  gpu_index INTEGER NOT NULL,
+                  lease_id TEXT NOT NULL,
+                  cell_key TEXT NOT NULL,
+                  expires_at TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  PRIMARY KEY (node_id, gpu_index)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inference_gpu_leases_lease ON inference_gpu_leases(lease_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inference_port_leases (
+                  node_id TEXT NOT NULL,
+                  port INTEGER NOT NULL,
+                  lease_id TEXT NOT NULL,
+                  cell_key TEXT NOT NULL,
+                  expires_at TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  PRIMARY KEY (node_id, port)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inference_port_leases_lease ON inference_port_leases(lease_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inference_node_locks (
+                  node_id TEXT PRIMARY KEY,
+                  lease_id TEXT NOT NULL,
+                  cell_key TEXT NOT NULL,
+                  expires_at TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
 
     def _execute_script(self, conn, sql: str) -> None:
@@ -573,9 +873,7 @@ class SQLiteStateStore:
                 return
             return
         try:
-            conn.execute(
-                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
-            )
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}")
         except Exception:
             return
 
@@ -600,7 +898,6 @@ class SQLiteStateStore:
         # For Postgres we skip strict schema match; rely on CREATE IF NOT EXISTS.
         return True
 
-
     def record_snapshot(
         self,
         manifest: AppManifest,
@@ -608,6 +905,13 @@ class SQLiteStateStore:
         health_report: HealthReport,
         revision: int,
         revision_status: str,
+        *,
+        current_revision_ready_replicas: int = 0,
+        current_revision_live_replicas: int = 0,
+        old_revision_ready_replicas: int = 0,
+        old_revision_live_replicas: int = 0,
+        overlap_ready_replicas: int = 0,
+        overlap_live_replicas: int = 0,
     ) -> None:
         state_by_id = {state.pod_name: state for state in runtime_result.pod_states}
         app_name = app_key_for_manifest(manifest)
@@ -626,6 +930,12 @@ class SQLiteStateStore:
                     runtime_result.created,
                     runtime_result.updated,
                     runtime_result.removed,
+                    int(current_revision_ready_replicas),
+                    int(current_revision_live_replicas),
+                    int(old_revision_ready_replicas),
+                    int(old_revision_live_replicas),
+                    int(overlap_ready_replicas),
+                    int(overlap_live_replicas),
                     manifest.spec.ingress.host if manifest.spec.ingress else None,
                     manifest.spec.ingress.path if manifest.spec.ingress else None,
                 ),
@@ -662,16 +972,12 @@ class SQLiteStateStore:
                 )
             if rows:
                 conn.executemany(
-                    resource_loader.load_text(
-                        "sql", "controller", "insert_pod_status.sql"
-                    ),
+                    resource_loader.load_text("sql", "controller", "insert_pod_status.sql"),
                     rows,
                 )
 
             try:
-                ttl_seconds = int(
-                    os.getenv("AE_POD_STATUS_TTL_SECONDS", "30") or "30"
-                )
+                ttl_seconds = int(os.getenv("AE_POD_STATUS_TTL_SECONDS", "30") or "30")
             except Exception:
                 ttl_seconds = 30
             if ttl_seconds > 0:
@@ -681,9 +987,7 @@ class SQLiteStateStore:
                     (app_name, cutoff.isoformat()),
                 )
             try:
-                node_ttl_seconds = int(
-                    os.getenv("AE_POD_NODE_TTL_SECONDS", "300") or "300"
-                )
+                node_ttl_seconds = int(os.getenv("AE_POD_NODE_TTL_SECONDS", "300") or "300")
             except Exception:
                 node_ttl_seconds = 300
             if node_ttl_seconds > 0:
@@ -708,9 +1012,7 @@ class SQLiteStateStore:
             ]
             if history_rows:
                 conn.executemany(
-                    resource_loader.load_text(
-                        "sql", "controller", "insert_probe_history.sql"
-                    ),
+                    resource_loader.load_text("sql", "controller", "insert_probe_history.sql"),
                     history_rows,
                 )
                 for pod in health_report.pods:
@@ -736,15 +1038,11 @@ class SQLiteStateStore:
                 )
             if node_rows:
                 conn.executemany(
-                    resource_loader.load_text(
-                        "sql", "controller", "insert_pod_nodes_upsert.sql"
-                    ),
+                    resource_loader.load_text("sql", "controller", "insert_pod_nodes_upsert.sql"),
                     node_rows,
                 )
             conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "update_app_revisions_status.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "update_app_revisions_status.sql"),
                 (revision_status, manifest.spec.image, app_name, revision),
             )
             conn.commit()
@@ -752,9 +1050,7 @@ class SQLiteStateStore:
     def get_status(self, app_name: str) -> AppStatus | None:
         with self._connect() as conn:
             row = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_app_status_by_name.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_app_status_by_name.sql"),
                 (app_name,),
             ).fetchone()
             if row is None:
@@ -770,8 +1066,14 @@ class SQLiteStateStore:
                 created=row[7],
                 updated=row[8],
                 removed=row[9],
-                ingress_host=row[10],
-                ingress_path=row[11],
+                current_revision_ready_replicas=row[10],
+                current_revision_live_replicas=row[11],
+                old_revision_ready_replicas=row[12],
+                old_revision_live_replicas=row[13],
+                overlap_ready_replicas=row[14],
+                overlap_live_replicas=row[15],
+                ingress_host=row[16],
+                ingress_path=row[17],
             )
 
     def list_status(self) -> list[AppStatus]:
@@ -791,8 +1093,14 @@ class SQLiteStateStore:
                 created=row[7],
                 updated=row[8],
                 removed=row[9],
-                ingress_host=row[10],
-                ingress_path=row[11],
+                current_revision_ready_replicas=row[10],
+                current_revision_live_replicas=row[11],
+                old_revision_ready_replicas=row[12],
+                old_revision_live_replicas=row[13],
+                overlap_ready_replicas=row[14],
+                overlap_live_replicas=row[15],
+                ingress_host=row[16],
+                ingress_path=row[17],
             )
             for row in rows
         ]
@@ -800,9 +1108,7 @@ class SQLiteStateStore:
     def list_pods(self, app_name: str) -> list[PodStatus]:
         with self._connect() as conn:
             rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_pod_status_by_app.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_pod_status_by_app.sql"),
                 (app_name,),
             ).fetchall()
         items: list[PodStatus] = []
@@ -831,9 +1137,7 @@ class SQLiteStateStore:
     def list_pod_nodes(self, app_name: str) -> list[tuple[str, str]]:
         with self._connect() as conn:
             rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_pod_nodes_with_status.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_pod_nodes_with_status.sql"),
                 (app_name, app_name),
             ).fetchall()
         return [(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in rows]
@@ -845,9 +1149,7 @@ class SQLiteStateStore:
             conn.execute("DELETE FROM pod_nodes WHERE app_name = ?", (app_name,))
             if placements:
                 conn.executemany(
-                    resource_loader.load_text(
-                        "sql", "controller", "insert_pod_nodes.sql"
-                    ),
+                    resource_loader.load_text("sql", "controller", "insert_pod_nodes.sql"),
                     [(app_name, rid, nid, ts) for rid, nid in placements],
                 )
             conn.commit()
@@ -855,9 +1157,7 @@ class SQLiteStateStore:
     def get_probe_history(self, app_name: str, limit: int) -> list[ProbeHistoryEntry]:
         with self._connect() as conn:
             rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_probe_history_by_app.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_probe_history_by_app.sql"),
                 (app_name, limit),
             ).fetchall()
         entries: list[ProbeHistoryEntry] = []
@@ -917,41 +1217,44 @@ class SQLiteStateStore:
         *,
         source: str | None = None,
         labels: dict | None = None,
-    ) -> None:
+        expected_resource_version: int | None = None,
+    ) -> int:
         spec_json = json.dumps(manifest.model_dump(by_alias=True), sort_keys=True)
         spec_hash = self._manifest_hash(manifest)
         updated_at = datetime.now(timezone.utc).isoformat()
         app_name = app_key_for_manifest(manifest)
         existing_source = None
         existing_labels: dict | None = None
-        if source is None or labels is None:
-            try:
-                with self._connect() as conn:
-                    row = conn.execute(
-                        "SELECT source, labels FROM app_registry WHERE app_name = ?",
-                        (app_name,),
-                    ).fetchone()
-                if row is not None:
-                    existing_source = row[0]
-                    try:
-                        existing_labels = json.loads(row[1] or "{}")
-                        if not isinstance(existing_labels, dict):
-                            existing_labels = {}
-                    except Exception:
-                        existing_labels = {}
-            except Exception:
-                existing_source = None
-                existing_labels = None
-        labels_json = json.dumps(
-            labels if labels is not None else (existing_labels or {}),
-            sort_keys=True,
-        )
-        source_val = str(source or existing_source or "unknown")
+        current_rv = 0
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT source, labels, resource_version FROM app_registry WHERE app_name = ?",
+                (app_name,),
+            ).fetchone()
+            if row is not None:
+                existing_source = row[0]
+                current_rv = int(row[2] or 0)
+                try:
+                    existing_labels = json.loads(row[1] or "{}")
+                    if not isinstance(existing_labels, dict):
+                        existing_labels = {}
+                except Exception:
+                    existing_labels = {}
+            if expected_resource_version is not None:
+                if current_rv != int(expected_resource_version):
+                    raise RegistryConflictError(
+                        app_name,
+                        expected=int(expected_resource_version),
+                        actual=current_rv,
+                    )
+            labels_json = json.dumps(
+                labels if labels is not None else (existing_labels or {}),
+                sort_keys=True,
+            )
+            source_val = str(source or existing_source or "unknown")
+            next_resource_version = max(1, current_rv + 1)
             conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "insert_app_registry_upsert.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "insert_app_registry_upsert.sql"),
                 (
                     app_name,
                     spec_hash,
@@ -959,16 +1262,16 @@ class SQLiteStateStore:
                     source_val,
                     labels_json,
                     updated_at,
+                    next_resource_version,
                 ),
             )
             conn.commit()
+        return next_resource_version
 
     def list_registered_apps(self) -> list[RegistryEntry]:
         with self._connect() as conn:
             rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_app_registry_all.sql"
-                )
+                resource_loader.load_text("sql", "controller", "select_app_registry_all.sql")
             ).fetchall()
         entries: list[RegistryEntry] = []
         for row in rows:
@@ -985,9 +1288,7 @@ class SQLiteStateStore:
     def get_registered_entry(self, app_name: str) -> RegistryEntry | None:
         with self._connect() as conn:
             row = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_app_registry_by_name.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_app_registry_by_name.sql"),
                 (app_name,),
             ).fetchone()
         if row is None:
@@ -1007,10 +1308,30 @@ class SQLiteStateStore:
         except Exception:
             return None
 
-    def delete_registered_app(self, app_name: str) -> None:
+    def delete_registered_app(
+        self,
+        app_name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        deleted = False
         with self._connect() as conn:
+            if expected_resource_version is not None:
+                row = conn.execute(
+                    "SELECT resource_version FROM app_registry WHERE app_name = ?",
+                    (app_name,),
+                ).fetchone()
+                current_rv = int(row[0] or 0) if row is not None else 0
+                if current_rv != int(expected_resource_version):
+                    raise RegistryConflictError(
+                        app_name,
+                        expected=int(expected_resource_version),
+                        actual=current_rv,
+                    )
             conn.execute("DELETE FROM app_registry WHERE app_name = ?", (app_name,))
+            deleted = bool(getattr(conn, "total_changes", 0))
             conn.commit()
+        return deleted
 
     def _registry_entry_from_row(self, row) -> RegistryEntry | None:
         try:
@@ -1034,6 +1355,352 @@ class SQLiteStateStore:
             source=row[3],
             labels=labels,
             updated_at=updated,
+            resource_version=int(row[6] or 0),
+        )
+
+    @staticmethod
+    def _authority_object_conflict_key(
+        group: str, version: str, resource: str, namespace: str | None, name: str
+    ) -> str:
+        return "/".join(
+            [
+                group or "core",
+                version,
+                resource,
+                namespace or "_cluster",
+                name,
+            ]
+        )
+
+    def register_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        kind: str,
+        metadata: dict | None = None,
+        spec: dict | None = None,
+        status: dict | None = None,
+        expected_resource_version: int | None = None,
+    ) -> int:
+        metadata_json = json.dumps(metadata or {}, sort_keys=True)
+        spec_json = json.dumps(spec or {}, sort_keys=True)
+        status_json = json.dumps(status or {}, sort_keys=True)
+        updated_at = datetime.now(timezone.utc).isoformat()
+        ns_key = str(namespace or "")
+        current_rv = 0
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT resource_version
+                  FROM authority_objects
+                 WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                """,
+                (group, version, resource, ns_key, name),
+            ).fetchone()
+            if row is not None:
+                current_rv = int(row[0] or 0)
+            if expected_resource_version is not None and current_rv != int(expected_resource_version):
+                raise RegistryConflictError(
+                    self._authority_object_conflict_key(group, version, resource, namespace, name),
+                    expected=int(expected_resource_version),
+                    actual=current_rv,
+                )
+            next_resource_version = max(1, current_rv + 1)
+            conn.execute(
+                """
+                INSERT INTO authority_objects (
+                  grp,
+                  ver,
+                  resource,
+                  namespace,
+                  name,
+                  kind,
+                  metadata_json,
+                  spec_json,
+                  status_json,
+                  updated_at,
+                  resource_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(grp, ver, resource, namespace, name) DO UPDATE SET
+                  kind = excluded.kind,
+                  metadata_json = excluded.metadata_json,
+                  spec_json = excluded.spec_json,
+                  status_json = excluded.status_json,
+                  updated_at = excluded.updated_at,
+                  resource_version = excluded.resource_version
+                """,
+                (
+                    group,
+                    version,
+                    resource,
+                    ns_key,
+                    name,
+                    kind,
+                    metadata_json,
+                    spec_json,
+                    status_json,
+                    updated_at,
+                    next_resource_version,
+                ),
+            )
+            conn.commit()
+        return next_resource_version
+
+    def list_authority_objects(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None = None,
+    ) -> list[AuthorityObjectEntry]:
+        params: list[object] = [group, version, resource]
+        query = (
+            """
+            SELECT grp, ver, resource, namespace, name, kind,
+                   metadata_json, spec_json, status_json, updated_at, resource_version
+              FROM authority_objects
+             WHERE grp = ? AND ver = ? AND resource = ?
+            """
+        )
+        if namespace is not None:
+            query += " AND namespace = ?"
+            params.append(str(namespace))
+        query += " ORDER BY namespace, name"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[AuthorityObjectEntry] = []
+        for row in rows:
+            entry = self._authority_object_from_row(row)
+            if entry is not None:
+                out.append(entry)
+        return out
+
+    def get_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+    ) -> AuthorityObjectEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT grp, ver, resource, namespace, name, kind,
+                       metadata_json, spec_json, status_json, updated_at, resource_version
+                  FROM authority_objects
+                 WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                """,
+                (group, version, resource, str(namespace or ""), name),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._authority_object_from_row(row)
+
+    def delete_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        ns_key = str(namespace or "")
+        deleted = False
+        with self._connect() as conn:
+            if expected_resource_version is not None:
+                row = conn.execute(
+                    """
+                    SELECT resource_version
+                      FROM authority_objects
+                     WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                    """,
+                    (group, version, resource, ns_key, name),
+                ).fetchone()
+                current_rv = int(row[0] or 0) if row is not None else 0
+                if current_rv != int(expected_resource_version):
+                    raise RegistryConflictError(
+                        self._authority_object_conflict_key(group, version, resource, namespace, name),
+                        expected=int(expected_resource_version),
+                        actual=current_rv,
+                    )
+            conn.execute(
+                """
+                DELETE FROM authority_objects
+                 WHERE grp = ? AND ver = ? AND resource = ? AND namespace = ? AND name = ?
+                """,
+                (group, version, resource, ns_key, name),
+            )
+            deleted = bool(getattr(conn, "total_changes", 0))
+            conn.commit()
+        return deleted
+
+    def _authority_object_from_row(self, row) -> AuthorityObjectEntry | None:
+        try:
+            metadata = json.loads(row[6] or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+        try:
+            spec = json.loads(row[7] or "{}")
+            if not isinstance(spec, dict):
+                spec = {}
+        except Exception:
+            spec = {}
+        try:
+            status = json.loads(row[8] or "{}")
+            if not isinstance(status, dict):
+                status = {}
+        except Exception:
+            status = {}
+        try:
+            updated = datetime.fromisoformat(row[9]) if row[9] else datetime.now(timezone.utc)
+        except Exception:
+            updated = datetime.now(timezone.utc)
+        return AuthorityObjectEntry(
+            group=str(row[0] or ""),
+            version=str(row[1] or ""),
+            resource=str(row[2] or ""),
+            namespace=(str(row[3]) if row[3] not in {None, ""} else None),
+            name=str(row[4] or ""),
+            kind=str(row[5] or ""),
+            metadata=metadata,
+            spec=spec,
+            status=status,
+            updated_at=updated,
+            resource_version=int(row[10] or 0),
+        )
+
+    def upsert_workload_metrics_snapshot(
+        self,
+        app_name: str,
+        *,
+        controller_id: str,
+        controller_epoch: int,
+        collected_at: datetime,
+        cpu_utilization: float | None,
+        memory_utilization: float | None,
+        memory_bytes: int,
+        pod_count: int,
+        node_count: int,
+    ) -> None:
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO workload_metrics_snapshots (
+                  app_name,
+                  controller_id,
+                  controller_epoch,
+                  collected_at,
+                  cpu_utilization,
+                  memory_utilization,
+                  memory_bytes,
+                  pod_count,
+                  node_count,
+                  updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(app_name) DO UPDATE SET
+                  controller_id = excluded.controller_id,
+                  controller_epoch = excluded.controller_epoch,
+                  collected_at = excluded.collected_at,
+                  cpu_utilization = excluded.cpu_utilization,
+                  memory_utilization = excluded.memory_utilization,
+                  memory_bytes = excluded.memory_bytes,
+                  pod_count = excluded.pod_count,
+                  node_count = excluded.node_count,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    str(app_name),
+                    str(controller_id),
+                    int(controller_epoch),
+                    collected_at.astimezone(timezone.utc).isoformat(),
+                    float(cpu_utilization) if cpu_utilization is not None else None,
+                    float(memory_utilization) if memory_utilization is not None else None,
+                    int(memory_bytes),
+                    int(pod_count),
+                    int(node_count),
+                    updated_at,
+                ),
+            )
+            conn.commit()
+
+    def get_workload_metrics_snapshot(self, app_name: str) -> WorkloadMetricsSnapshot | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT app_name, controller_id, controller_epoch, collected_at,
+                       cpu_utilization, memory_utilization, memory_bytes,
+                       pod_count, node_count, updated_at
+                  FROM workload_metrics_snapshots
+                 WHERE app_name = ?
+                """,
+                (str(app_name),),
+            ).fetchone()
+        return self._workload_metrics_snapshot_from_row(row)
+
+    def list_workload_metrics_snapshots(self) -> list[WorkloadMetricsSnapshot]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT app_name, controller_id, controller_epoch, collected_at,
+                       cpu_utilization, memory_utilization, memory_bytes,
+                       pod_count, node_count, updated_at
+                  FROM workload_metrics_snapshots
+                 ORDER BY app_name
+                """
+            ).fetchall()
+        out: list[WorkloadMetricsSnapshot] = []
+        for row in rows:
+            entry = self._workload_metrics_snapshot_from_row(row)
+            if entry is not None:
+                out.append(entry)
+        return out
+
+    def delete_workload_metrics_snapshot(self, app_name: str) -> bool:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM workload_metrics_snapshots WHERE app_name = ?",
+                (str(app_name),),
+            )
+            deleted = bool(getattr(conn, "total_changes", 0))
+            conn.commit()
+        return deleted
+
+    def _workload_metrics_snapshot_from_row(self, row) -> WorkloadMetricsSnapshot | None:
+        if row is None:
+            return None
+        try:
+            collected_at = (
+                datetime.fromisoformat(row[3]) if row[3] else datetime.fromtimestamp(0, timezone.utc)
+            )
+        except Exception:
+            collected_at = datetime.fromtimestamp(0, timezone.utc)
+        try:
+            updated_at = (
+                datetime.fromisoformat(row[9]) if row[9] else datetime.fromtimestamp(0, timezone.utc)
+            )
+        except Exception:
+            updated_at = datetime.fromtimestamp(0, timezone.utc)
+        return WorkloadMetricsSnapshot(
+            app_name=str(row[0] or ""),
+            controller_id=str(row[1] or ""),
+            controller_epoch=int(row[2] or 0),
+            collected_at=collected_at,
+            cpu_utilization=float(row[4]) if row[4] is not None else None,
+            memory_utilization=float(row[5]) if row[5] is not None else None,
+            memory_bytes=int(row[6] or 0),
+            pod_count=int(row[7] or 0),
+            node_count=int(row[8] or 0),
+            updated_at=updated_at,
         )
 
     def _get_latest_revision(self, app_name: str) -> Optional[RevisionInfo]:
@@ -1059,9 +1726,7 @@ class SQLiteStateStore:
     def get_revision_manifest(self, app_name: str, revision: int) -> AppManifest:
         with self._connect() as conn:
             row = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_revision_spec_json.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_revision_spec_json.sql"),
                 (app_name, revision),
             ).fetchone()
         if row is None:
@@ -1071,9 +1736,7 @@ class SQLiteStateStore:
     def list_revisions(self, app_name: str, limit: int = 10) -> list[RevisionInfo]:
         with self._connect() as conn:
             rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_revisions_by_app.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_revisions_by_app.sql"),
                 (app_name, limit),
             ).fetchall()
         result: list[RevisionInfo] = []
@@ -1105,9 +1768,7 @@ class SQLiteStateStore:
     def list_events(self, app_name: str, limit: int = 20) -> list[AppEvent]:
         with self._connect() as conn:
             rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_app_events_by_app.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_app_events_by_app.sql"),
                 (app_name, limit),
             ).fetchall()
         events: list[AppEvent] = []
@@ -1133,9 +1794,7 @@ class SQLiteStateStore:
                 (app_name,),
             ).fetchone()[0]
             rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_app_events_paginated.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_app_events_paginated.sql"),
                 (app_name, limit, offset),
             ).fetchall()
         events: list[AppEvent] = []
@@ -1151,6 +1810,695 @@ class SQLiteStateStore:
                 )
             )
         return events, total
+
+    # --- Inference cells ---
+    def _inference_key(self, name: str, namespace: str | None) -> str:
+        ns = str(namespace or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+        return app_key(name, ns)
+
+    def _parse_iso_datetime(self, value: str | None) -> datetime:
+        if value:
+            try:
+                return datetime.fromisoformat(value)
+            except Exception:
+                pass
+        return datetime.now(timezone.utc)
+
+    def register_inference_cell(
+        self,
+        manifest: InferenceCellManifest,
+        *,
+        source: str | None = None,
+    ) -> None:
+        namespace = manifest.metadata.namespace or DEFAULT_NAMESPACE
+        cell_id = manifest.metadata.name
+        cell_key = self._inference_key(cell_id, namespace)
+        spec_json = json.dumps(manifest.model_dump(by_alias=True), sort_keys=True)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT phase, allocations_json, admission_json, conditions_json, restarts, last_error
+                FROM inference_cells
+                WHERE cell_key = ?
+                """,
+                (cell_key,),
+            ).fetchone()
+            if row is None:
+                phase = "PENDING"
+                allocations_json = "{}"
+                admission_json = "{}"
+                conditions_json = "{}"
+                restarts = 0
+                last_error = None
+            else:
+                phase = str(row[0] or "PENDING")
+                allocations_json = str(row[1] or "{}")
+                admission_json = str(row[2] or "{}")
+                conditions_json = str(row[3] or "{}")
+                restarts = int(row[4] or 0)
+                last_error = row[5]
+            conn.execute(
+                """
+                INSERT INTO inference_cells (
+                  cell_key, namespace, cell_id, spec_json, model_id, tp, pp,
+                  executor_type, ray_scope, phase, allocations_json, admission_json,
+                  conditions_json, restarts, last_error, source, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cell_key) DO UPDATE SET
+                  namespace = excluded.namespace,
+                  cell_id = excluded.cell_id,
+                  spec_json = excluded.spec_json,
+                  model_id = excluded.model_id,
+                  tp = excluded.tp,
+                  pp = excluded.pp,
+                  executor_type = excluded.executor_type,
+                  ray_scope = excluded.ray_scope,
+                  phase = excluded.phase,
+                  allocations_json = excluded.allocations_json,
+                  admission_json = excluded.admission_json,
+                  conditions_json = excluded.conditions_json,
+                  restarts = excluded.restarts,
+                  last_error = excluded.last_error,
+                  source = excluded.source,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    cell_key,
+                    namespace,
+                    cell_id,
+                    spec_json,
+                    manifest.spec.model.model_id,
+                    int(manifest.spec.parallelism.tp),
+                    int(manifest.spec.parallelism.pp),
+                    manifest.spec.executor.type,
+                    manifest.spec.executor.ray_scope,
+                    phase,
+                    allocations_json,
+                    admission_json,
+                    conditions_json,
+                    restarts,
+                    last_error,
+                    str(source or "unknown"),
+                    now_iso,
+                ),
+            )
+            conn.commit()
+
+    def _cell_record_from_row(self, row) -> InferenceCellRecord | None:
+        try:
+            manifest = InferenceCellManifest.model_validate_json(row[3])
+        except Exception:
+            return None
+        try:
+            allocations = json.loads(row[9] or "{}")
+            if not isinstance(allocations, dict):
+                allocations = {}
+        except Exception:
+            allocations = {}
+        try:
+            admission = json.loads(row[10] or "{}")
+            if not isinstance(admission, dict):
+                admission = {}
+        except Exception:
+            admission = {}
+        try:
+            conditions = json.loads(row[11] or "{}")
+            if not isinstance(conditions, dict):
+                conditions = {}
+        except Exception:
+            conditions = {}
+        return InferenceCellRecord(
+            cell_key=row[0],
+            namespace=row[1],
+            cell_id=row[2],
+            manifest=manifest,
+            phase=row[8],
+            tp=int(row[5]),
+            pp=int(row[6]),
+            executor_type=row[7],
+            ray_scope=manifest.spec.executor.ray_scope,
+            allocations=allocations,
+            admission=admission,
+            conditions=conditions,
+            restarts=int(row[12] or 0),
+            last_error=row[13],
+            source=row[14],
+            updated_at=self._parse_iso_datetime(row[15]),
+        )
+
+    def get_inference_cell(
+        self,
+        name: str,
+        namespace: str | None = None,
+    ) -> InferenceCellRecord | None:
+        cell_key = self._inference_key(name, namespace)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT cell_key, namespace, cell_id, spec_json, model_id, tp, pp,
+                       executor_type, phase, allocations_json, admission_json, conditions_json,
+                       restarts, last_error, source, updated_at
+                FROM inference_cells
+                WHERE cell_key = ?
+                """,
+                (cell_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._cell_record_from_row(row)
+
+    def list_inference_cells(self, namespace: str | None = None) -> list[InferenceCellRecord]:
+        rows = []
+        with self._connect() as conn:
+            if namespace:
+                rows = conn.execute(
+                    """
+                    SELECT cell_key, namespace, cell_id, spec_json, model_id, tp, pp,
+                           executor_type, phase, allocations_json, admission_json, conditions_json,
+                           restarts, last_error, source, updated_at
+                    FROM inference_cells
+                    WHERE namespace = ?
+                    ORDER BY cell_id
+                    """,
+                    (str(namespace or DEFAULT_NAMESPACE),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT cell_key, namespace, cell_id, spec_json, model_id, tp, pp,
+                           executor_type, phase, allocations_json, admission_json, conditions_json,
+                           restarts, last_error, source, updated_at
+                    FROM inference_cells
+                    ORDER BY namespace, cell_id
+                    """
+                ).fetchall()
+        records: list[InferenceCellRecord] = []
+        for row in rows:
+            rec = self._cell_record_from_row(row)
+            if rec is not None:
+                records.append(rec)
+        return records
+
+    def update_inference_cell_status(
+        self,
+        name: str,
+        namespace: str | None = None,
+        *,
+        phase: str | None = None,
+        allocations: dict | None = None,
+        admission: dict | None = None,
+        conditions: dict | None = None,
+        restarts: int | None = None,
+        last_error: str | None | object = _UNSET,
+    ) -> bool:
+        cell_key = self._inference_key(name, namespace)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT phase, allocations_json, admission_json, conditions_json, restarts, last_error
+                FROM inference_cells WHERE cell_key = ?
+                """,
+                (cell_key,),
+            ).fetchone()
+            if row is None:
+                return False
+            next_phase = phase or str(row[0] or "PENDING")
+            next_alloc = json.dumps(
+                allocations if allocations is not None else json.loads(row[1] or "{}"),
+                sort_keys=True,
+            )
+            next_adm = json.dumps(
+                admission if admission is not None else json.loads(row[2] or "{}"), sort_keys=True
+            )
+            next_cond = json.dumps(
+                conditions if conditions is not None else json.loads(row[3] or "{}"), sort_keys=True
+            )
+            next_restarts = int(restarts if restarts is not None else int(row[4] or 0))
+            if last_error is _UNSET:
+                next_error = row[5]
+            else:
+                next_error = last_error
+            conn.execute(
+                """
+                UPDATE inference_cells
+                SET phase = ?, allocations_json = ?, admission_json = ?, conditions_json = ?,
+                    restarts = ?, last_error = ?, updated_at = ?
+                WHERE cell_key = ?
+                """,
+                (
+                    next_phase,
+                    next_alloc,
+                    next_adm,
+                    next_cond,
+                    next_restarts,
+                    next_error,
+                    now_iso,
+                    cell_key,
+                ),
+            )
+            conn.commit()
+        return True
+
+    def delete_inference_cell(self, name: str, namespace: str | None = None) -> None:
+        cell_key = self._inference_key(name, namespace)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM inference_cells WHERE cell_key = ?", (cell_key,))
+            conn.execute("DELETE FROM inference_cell_events WHERE cell_key = ?", (cell_key,))
+            conn.execute("DELETE FROM inference_fabric_sessions WHERE cell_key = ?", (cell_key,))
+            conn.execute("DELETE FROM inference_gpu_leases WHERE cell_key = ?", (cell_key,))
+            conn.execute("DELETE FROM inference_port_leases WHERE cell_key = ?", (cell_key,))
+            conn.execute("DELETE FROM inference_node_locks WHERE cell_key = ?", (cell_key,))
+            conn.commit()
+
+    def record_inference_cell_event(
+        self, name: str, namespace: str | None, event_type: str, message: str
+    ) -> None:
+        cell_key = self._inference_key(name, namespace)
+        created_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO inference_cell_events (cell_key, event_type, message, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (cell_key, event_type, message, created_at),
+            )
+            conn.commit()
+
+    def list_inference_cell_events(
+        self, name: str, namespace: str | None = None, limit: int = 20
+    ) -> list[InferenceCellEvent]:
+        cell_key = self._inference_key(name, namespace)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_type, message, created_at
+                FROM inference_cell_events
+                WHERE cell_key = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (cell_key, int(limit)),
+            ).fetchall()
+        events: list[InferenceCellEvent] = []
+        for row in rows:
+            events.append(
+                InferenceCellEvent(
+                    cell_key=cell_key,
+                    event_type=str(row[0]),
+                    message=str(row[1]),
+                    created_at=self._parse_iso_datetime(row[2]),
+                )
+            )
+        return events
+
+    def register_inference_cellset(
+        self, manifest: InferenceCellSetManifest, *, source: str | None = None
+    ) -> None:
+        namespace = manifest.metadata.namespace or DEFAULT_NAMESPACE
+        name = manifest.metadata.name
+        set_key = self._inference_key(name, namespace)
+        spec_json = json.dumps(manifest.model_dump(by_alias=True), sort_keys=True)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT current, ready, last_error FROM inference_cell_sets WHERE set_key = ?",
+                (set_key,),
+            ).fetchone()
+            current = int(row[0]) if row else 0
+            ready = int(row[1]) if row else 0
+            last_error = row[2] if row else None
+            conn.execute(
+                """
+                INSERT INTO inference_cell_sets (
+                  set_key, namespace, name, spec_json, desired, current, ready, last_error, source, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(set_key) DO UPDATE SET
+                  namespace = excluded.namespace,
+                  name = excluded.name,
+                  spec_json = excluded.spec_json,
+                  desired = excluded.desired,
+                  current = excluded.current,
+                  ready = excluded.ready,
+                  last_error = excluded.last_error,
+                  source = excluded.source,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    set_key,
+                    namespace,
+                    name,
+                    spec_json,
+                    int(manifest.spec.replicas),
+                    current,
+                    ready,
+                    last_error,
+                    str(source or "unknown"),
+                    now_iso,
+                ),
+            )
+            conn.commit()
+
+    def _cellset_record_from_row(self, row) -> InferenceCellSetRecord | None:
+        try:
+            manifest = InferenceCellSetManifest.model_validate_json(row[3])
+        except Exception:
+            return None
+        return InferenceCellSetRecord(
+            set_key=row[0],
+            namespace=row[1],
+            name=row[2],
+            manifest=manifest,
+            desired=int(row[4]),
+            current=int(row[5]),
+            ready=int(row[6]),
+            last_error=row[7],
+            source=row[8],
+            updated_at=self._parse_iso_datetime(row[9]),
+        )
+
+    def get_inference_cellset(
+        self, name: str, namespace: str | None = None
+    ) -> InferenceCellSetRecord | None:
+        set_key = self._inference_key(name, namespace)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT set_key, namespace, name, spec_json, desired, current, ready,
+                       last_error, source, updated_at
+                FROM inference_cell_sets
+                WHERE set_key = ?
+                """,
+                (set_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._cellset_record_from_row(row)
+
+    def list_inference_cellsets(self, namespace: str | None = None) -> list[InferenceCellSetRecord]:
+        with self._connect() as conn:
+            if namespace:
+                rows = conn.execute(
+                    """
+                    SELECT set_key, namespace, name, spec_json, desired, current, ready,
+                           last_error, source, updated_at
+                    FROM inference_cell_sets
+                    WHERE namespace = ?
+                    ORDER BY name
+                    """,
+                    (str(namespace or DEFAULT_NAMESPACE),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT set_key, namespace, name, spec_json, desired, current, ready,
+                           last_error, source, updated_at
+                    FROM inference_cell_sets
+                    ORDER BY namespace, name
+                    """
+                ).fetchall()
+        items: list[InferenceCellSetRecord] = []
+        for row in rows:
+            rec = self._cellset_record_from_row(row)
+            if rec is not None:
+                items.append(rec)
+        return items
+
+    def update_inference_cellset_status(
+        self,
+        name: str,
+        namespace: str | None = None,
+        *,
+        desired: int | None = None,
+        current: int | None = None,
+        ready: int | None = None,
+        last_error: str | None | object = _UNSET,
+    ) -> bool:
+        set_key = self._inference_key(name, namespace)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT desired, current, ready, last_error FROM inference_cell_sets WHERE set_key = ?",
+                (set_key,),
+            ).fetchone()
+            if row is None:
+                return False
+            next_desired = int(desired if desired is not None else row[0])
+            next_current = int(current if current is not None else row[1])
+            next_ready = int(ready if ready is not None else row[2])
+            next_error = row[3] if last_error is _UNSET else last_error
+            conn.execute(
+                """
+                UPDATE inference_cell_sets
+                SET desired = ?, current = ?, ready = ?, last_error = ?, updated_at = ?
+                WHERE set_key = ?
+                """,
+                (next_desired, next_current, next_ready, next_error, now_iso, set_key),
+            )
+            conn.commit()
+        return True
+
+    def upsert_fabric_session(
+        self,
+        *,
+        session_id: str,
+        cell_key: str,
+        policy_mode: str,
+        members: list[dict],
+        allowed_rules: list[dict],
+        status: str,
+        expires_at: datetime | None,
+    ) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        exp_iso = expires_at.isoformat() if expires_at else None
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO inference_fabric_sessions (
+                  session_id, cell_key, policy_mode, members_json, allowed_rules_json,
+                  status, expires_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                  cell_key = excluded.cell_key,
+                  policy_mode = excluded.policy_mode,
+                  members_json = excluded.members_json,
+                  allowed_rules_json = excluded.allowed_rules_json,
+                  status = excluded.status,
+                  expires_at = excluded.expires_at,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    session_id,
+                    cell_key,
+                    policy_mode,
+                    json.dumps(members, sort_keys=True),
+                    json.dumps(allowed_rules, sort_keys=True),
+                    status,
+                    exp_iso,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+
+    def delete_fabric_session(self, session_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM inference_fabric_sessions WHERE session_id = ?", (session_id,)
+            )
+            conn.commit()
+
+    def list_fabric_sessions(
+        self, cell_name: str | None = None, namespace: str | None = None
+    ) -> list[FabricSessionRecord]:
+        rows = []
+        with self._connect() as conn:
+            if cell_name:
+                cell_key = self._inference_key(cell_name, namespace)
+                rows = conn.execute(
+                    """
+                    SELECT session_id, cell_key, policy_mode, members_json, allowed_rules_json,
+                           status, expires_at, created_at, updated_at
+                    FROM inference_fabric_sessions
+                    WHERE cell_key = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (cell_key,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT session_id, cell_key, policy_mode, members_json, allowed_rules_json,
+                           status, expires_at, created_at, updated_at
+                    FROM inference_fabric_sessions
+                    ORDER BY created_at DESC
+                    """
+                ).fetchall()
+        out: list[FabricSessionRecord] = []
+        for row in rows:
+            try:
+                members = json.loads(row[3] or "[]")
+                if not isinstance(members, list):
+                    members = []
+            except Exception:
+                members = []
+            try:
+                rules = json.loads(row[4] or "[]")
+                if not isinstance(rules, list):
+                    rules = []
+            except Exception:
+                rules = []
+            out.append(
+                FabricSessionRecord(
+                    session_id=row[0],
+                    cell_key=row[1],
+                    policy_mode=row[2],
+                    members=members,
+                    allowed_rules=rules,
+                    status=row[5],
+                    expires_at=self._parse_iso_datetime(row[6]) if row[6] else None,
+                    created_at=self._parse_iso_datetime(row[7]),
+                    updated_at=self._parse_iso_datetime(row[8]),
+                )
+            )
+        return out
+
+    def acquire_inference_gpu_leases(
+        self,
+        *,
+        lease_id: str,
+        cell_key: str,
+        slots: list[tuple[str, int]],
+        ttl_seconds: int,
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        exp_iso = (now + timedelta(seconds=max(1, int(ttl_seconds)))).isoformat()
+        with self._connect() as conn:
+            try:
+                for node_id, gpu_idx in slots:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO inference_gpu_leases
+                          (node_id, gpu_index, lease_id, cell_key, expires_at, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(node_id, gpu_index) DO NOTHING
+                        """,
+                        (node_id, int(gpu_idx), lease_id, cell_key, exp_iso, now_iso),
+                    )
+                    if int(getattr(cur, "rowcount", 0) or 0) == 0:
+                        conn.rollback()
+                        return False
+                conn.commit()
+                return True
+            except Exception:
+                conn.rollback()
+                return False
+
+    def release_inference_gpu_leases(self, lease_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM inference_gpu_leases WHERE lease_id = ?", (lease_id,))
+            conn.commit()
+
+    def reserve_inference_port(
+        self,
+        *,
+        lease_id: str,
+        cell_key: str,
+        node_id: str,
+        port: int,
+        ttl_seconds: int,
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        exp_iso = (now + timedelta(seconds=max(1, int(ttl_seconds)))).isoformat()
+        with self._connect() as conn:
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO inference_port_leases
+                      (node_id, port, lease_id, cell_key, expires_at, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(node_id, port) DO NOTHING
+                    """,
+                    (node_id, int(port), lease_id, cell_key, exp_iso, now_iso),
+                )
+                conn.commit()
+                return int(getattr(cur, "rowcount", 0) or 0) > 0
+            except Exception:
+                conn.rollback()
+                return False
+
+    def reserve_inference_port_from_range(
+        self,
+        *,
+        lease_id: str,
+        cell_key: str,
+        node_id: str,
+        start: int,
+        end: int,
+        ttl_seconds: int,
+    ) -> int | None:
+        lo = int(min(start, end))
+        hi = int(max(start, end))
+        for port in range(lo, hi + 1):
+            ok = self.reserve_inference_port(
+                lease_id=lease_id,
+                cell_key=cell_key,
+                node_id=node_id,
+                port=port,
+                ttl_seconds=ttl_seconds,
+            )
+            if ok:
+                return port
+        return None
+
+    def release_inference_port_leases(self, lease_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM inference_port_leases WHERE lease_id = ?", (lease_id,))
+            conn.commit()
+
+    def acquire_inference_node_locks(
+        self,
+        *,
+        lease_id: str,
+        cell_key: str,
+        node_ids: list[str],
+        ttl_seconds: int,
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        exp_iso = (now + timedelta(seconds=max(1, int(ttl_seconds)))).isoformat()
+        with self._connect() as conn:
+            try:
+                for node_id in node_ids:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO inference_node_locks
+                          (node_id, lease_id, cell_key, expires_at, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(node_id) DO NOTHING
+                        """,
+                        (node_id, lease_id, cell_key, exp_iso, now_iso),
+                    )
+                    if int(getattr(cur, "rowcount", 0) or 0) == 0:
+                        conn.rollback()
+                        return False
+                conn.commit()
+                return True
+            except Exception:
+                conn.rollback()
+                return False
+
+    def release_inference_node_locks(self, lease_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM inference_node_locks WHERE lease_id = ?", (lease_id,))
+            conn.commit()
 
     # --- Node leases (lab-edge) ---
     def acquire_lease(
@@ -1334,9 +2682,7 @@ class SQLiteStateStore:
                     continue
                 payload = json.loads(payload_json) if payload_json else {}
                 try:
-                    self.update_work_state(
-                        work_id=work_id, attempt=attempt, state="Dispatched"
-                    )
+                    self.update_work_state(work_id=work_id, attempt=attempt, state="Dispatched")
                 except Exception:
                     pass
                 leases.append(
@@ -1359,6 +2705,63 @@ class SQLiteStateStore:
         updated = 0
         with self._connect() as conn:
             for lease_id in lease_ids:
+                cursor = conn.execute(
+                    """
+                    UPDATE work_queue
+                    SET state = ?, acked_at = ?, updated_at = ?
+                    WHERE lease_id = ?
+                    """,
+                    ("Acked", now, now, lease_id),
+                )
+                try:
+                    updated += int(getattr(cursor, "rowcount", 0) or 0)
+                except Exception:
+                    pass
+            conn.commit()
+        return updated
+
+    def ack_work_items(self, ack_items: list[dict]) -> int:
+        if not ack_items:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        updated = 0
+        with self._connect() as conn:
+            for item in ack_items:
+                if not isinstance(item, dict):
+                    continue
+                lease_id = str(item.get("lease_id") or "").strip()
+                if not lease_id:
+                    continue
+                envelope = parse_envelope(item)
+                if envelope is None:
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT work_id, attempt, payload_json
+                    FROM work_queue
+                    WHERE lease_id = ?
+                    """,
+                    (lease_id,),
+                ).fetchone()
+                if not row:
+                    continue
+                work_id = str(row[0] or "")
+                attempt = int(row[1] or 0)
+                try:
+                    payload = json.loads(row[2]) if row[2] else {}
+                except Exception:
+                    payload = {}
+                queued_envelope = parse_envelope(payload)
+                if queued_envelope != envelope:
+                    continue
+                if item.get("work_id") not in {None, "", work_id}:
+                    continue
+                try:
+                    ack_attempt = int(item.get("attempt") or 0)
+                except Exception:
+                    ack_attempt = 0
+                if ack_attempt not in {0, attempt}:
+                    continue
                 cursor = conn.execute(
                     """
                     UPDATE work_queue
@@ -1614,6 +3017,16 @@ class SQLiteStateStore:
             )
             conn.commit()
 
+    def delete_edge_ingress_route(self, *, name: str, namespace: str) -> bool:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM edge_ingress_routes WHERE name = ? AND namespace = ?",
+                (name, namespace),
+            )
+            deleted = bool(getattr(conn, "total_changes", 0))
+            conn.commit()
+        return deleted
+
     def update_edge_ingress_policy_status(
         self,
         *,
@@ -1638,9 +3051,7 @@ class SQLiteStateStore:
         items: list[EdgeIngressRouteRecord] = []
         with self._connect() as conn:
             rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_edge_ingress_routes_all.sql"
-                )
+                resource_loader.load_text("sql", "controller", "select_edge_ingress_routes_all.sql")
             ).fetchall()
         for row in rows:
             spec = {}
@@ -1875,6 +3286,8 @@ class SQLiteStateStore:
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         payload_json = json.dumps(payload)
+        publish_subject = _outbox_publish_subject(site_id)
+        publish_msg_id = _outbox_publish_msg_id(work_id, attempt, payload)
         with self._connect() as conn:
             conn.execute(
                 "DELETE FROM work_outbox WHERE work_id = ? AND attempt = ?",
@@ -1883,17 +3296,20 @@ class SQLiteStateStore:
             conn.execute(
                 """
                 INSERT INTO work_outbox
-                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
-                   last_publish_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (work_id, attempt, site_id, payload_json, publish_subject, publish_msg_id,
+                   state, publish_attempts, last_publish_at, last_publish_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     work_id,
                     int(attempt),
                     site_id,
                     payload_json,
+                    publish_subject,
+                    publish_msg_id,
                     "Unpublished",
                     0,
+                    None,
                     None,
                     now,
                     now,
@@ -1905,7 +3321,8 @@ class SQLiteStateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT work_id, attempt, site_id, payload_json, publish_attempts
+                SELECT work_id, attempt, site_id, payload_json, publish_subject,
+                       publish_msg_id, publish_attempts, last_publish_at, last_publish_error
                 FROM work_outbox
                 WHERE state = 'Unpublished'
                 ORDER BY created_at
@@ -1922,7 +3339,15 @@ class SQLiteStateStore:
                     attempt=int(row[1]),
                     site_id=str(row[2]),
                     payload=payload,
-                    publish_attempts=int(row[4] or 0),
+                    publish_subject=str(row[4] or _outbox_publish_subject(str(row[2]))),
+                    publish_msg_id=str(
+                        row[5] or _outbox_publish_msg_id(str(row[0]), int(row[1]), payload)
+                    ),
+                    publish_attempts=int(row[6] or 0),
+                    last_publish_at=(
+                        datetime.fromisoformat(str(row[7])) if row[7] else None
+                    ),
+                    last_publish_error=str(row[8]) if row[8] else None,
                 )
             )
         return entries
@@ -1951,23 +3376,30 @@ class SQLiteStateStore:
                 """
                 UPDATE work_outbox
                 SET state = ?, publish_attempts = publish_attempts + 1,
-                    last_publish_at = ?, updated_at = ?
+                    last_publish_at = ?, last_publish_error = NULL, updated_at = ?
                 WHERE work_id = ? AND attempt = ?
                 """,
                 ("Published", now, now, work_id, int(attempt)),
             )
             conn.commit()
 
-    def record_outbox_publish_attempt(self, work_id: str, attempt: int) -> None:
+    def record_outbox_publish_attempt(
+        self,
+        work_id: str,
+        attempt: int,
+        *,
+        error: str | None = None,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE work_outbox
-                SET publish_attempts = publish_attempts + 1, last_publish_at = ?, updated_at = ?
+                SET publish_attempts = publish_attempts + 1, last_publish_at = ?,
+                    last_publish_error = ?, updated_at = ?
                 WHERE work_id = ? AND attempt = ?
                 """,
-                (now, now, work_id, int(attempt)),
+                (now, error, now, work_id, int(attempt)),
             )
             conn.commit()
 
@@ -1979,6 +3411,9 @@ class SQLiteStateStore:
         attempt: int,
         site_id: str,
         state: str,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
+        operation_id: str | None = None,
         desired_generation: int | None = None,
     ) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -1991,7 +3426,8 @@ class SQLiteStateStore:
                 conn.execute(
                     """
                     UPDATE work_ledger
-                    SET attempt = ?, site_id = ?, state = ?, desired_generation = ?,
+                    SET attempt = ?, site_id = ?, state = ?, controller_id = ?,
+                        controller_epoch = ?, operation_id = ?, desired_generation = ?,
                         updated_at = ?, state_updated_at = ?
                     WHERE work_id = ?
                     """,
@@ -1999,6 +3435,9 @@ class SQLiteStateStore:
                         int(attempt),
                         site_id,
                         state,
+                        controller_id,
+                        controller_epoch,
+                        operation_id,
                         desired_generation,
                         now_iso,
                         now_iso,
@@ -2009,16 +3448,20 @@ class SQLiteStateStore:
                 conn.execute(
                     """
                     INSERT INTO work_ledger
-                      (work_id, attempt, site_id, state, desired_generation,
+                      (work_id, attempt, site_id, state, controller_id, controller_epoch,
+                       operation_id, desired_generation,
                        assigned_node_id, observed_generation, result_json,
                        created_at, updated_at, state_updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         work_id,
                         int(attempt),
                         site_id,
                         state,
+                        controller_id,
+                        controller_epoch,
+                        operation_id,
                         desired_generation,
                         None,
                         None,
@@ -2034,7 +3477,8 @@ class SQLiteStateStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT work_id, attempt, site_id, state, desired_generation,
+                SELECT work_id, attempt, site_id, state, controller_id,
+                       controller_epoch, operation_id, desired_generation,
                        assigned_node_id, observed_generation, result_json,
                        created_at, updated_at, state_updated_at
                 FROM work_ledger
@@ -2045,9 +3489,9 @@ class SQLiteStateStore:
             if not row:
                 return None
             result = None
-            if row[7]:
+            if row[10]:
                 try:
-                    result = json.loads(row[7])
+                    result = json.loads(row[10])
                 except Exception:
                     result = None
             return WorkLedgerEntry(
@@ -2055,13 +3499,16 @@ class SQLiteStateStore:
                 attempt=int(row[1]),
                 site_id=str(row[2]),
                 state=str(row[3]),
-                desired_generation=int(row[4]) if row[4] is not None else None,
-                assigned_node_id=str(row[5]) if row[5] else None,
-                observed_generation=int(row[6]) if row[6] is not None else None,
+                controller_id=str(row[4]) if row[4] else None,
+                controller_epoch=int(row[5]) if row[5] is not None else None,
+                operation_id=str(row[6]) if row[6] else None,
+                desired_generation=int(row[7]) if row[7] is not None else None,
+                assigned_node_id=str(row[8]) if row[8] else None,
+                observed_generation=int(row[9]) if row[9] is not None else None,
                 result=result,
-                created_at=datetime.fromisoformat(row[8]),
-                updated_at=datetime.fromisoformat(row[9]),
-                state_updated_at=datetime.fromisoformat(row[10]),
+                created_at=datetime.fromisoformat(row[11]),
+                updated_at=datetime.fromisoformat(row[12]),
+                state_updated_at=datetime.fromisoformat(row[13]),
             )
 
     def update_work_state(
@@ -2104,15 +3551,14 @@ class SQLiteStateStore:
             conn.commit()
             return updated > 0
 
-    def list_work_state_before(
-        self, state: str, cutoff: datetime
-    ) -> list[WorkLedgerEntry]:
+    def list_work_state_before(self, state: str, cutoff: datetime) -> list[WorkLedgerEntry]:
         cutoff_iso = cutoff.isoformat()
         rows: list[WorkLedgerEntry] = []
         with self._connect() as conn:
             results = conn.execute(
                 """
-                SELECT work_id, attempt, site_id, state, desired_generation,
+                SELECT work_id, attempt, site_id, state, controller_id,
+                       controller_epoch, operation_id, desired_generation,
                        assigned_node_id, observed_generation, result_json,
                        created_at, updated_at, state_updated_at
                 FROM work_ledger
@@ -2123,9 +3569,9 @@ class SQLiteStateStore:
             ).fetchall()
             for row in results:
                 result = None
-                if row[7]:
+                if row[10]:
                     try:
-                        result = json.loads(row[7])
+                        result = json.loads(row[10])
                     except Exception:
                         result = None
                 rows.append(
@@ -2134,13 +3580,16 @@ class SQLiteStateStore:
                         attempt=int(row[1]),
                         site_id=str(row[2]),
                         state=str(row[3]),
-                        desired_generation=int(row[4]) if row[4] is not None else None,
-                        assigned_node_id=str(row[5]) if row[5] else None,
-                        observed_generation=int(row[6]) if row[6] is not None else None,
+                        controller_id=str(row[4]) if row[4] else None,
+                        controller_epoch=int(row[5]) if row[5] is not None else None,
+                        operation_id=str(row[6]) if row[6] else None,
+                        desired_generation=int(row[7]) if row[7] is not None else None,
+                        assigned_node_id=str(row[8]) if row[8] else None,
+                        observed_generation=int(row[9]) if row[9] is not None else None,
                         result=result,
-                        created_at=datetime.fromisoformat(row[8]),
-                        updated_at=datetime.fromisoformat(row[9]),
-                        state_updated_at=datetime.fromisoformat(row[10]),
+                        created_at=datetime.fromisoformat(row[11]),
+                        updated_at=datetime.fromisoformat(row[12]),
+                        state_updated_at=datetime.fromisoformat(row[13]),
                     )
                 )
         return rows
@@ -2150,6 +3599,8 @@ class SQLiteStateStore:
         *,
         work_id: str,
         attempt: int,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
     ) -> int | None:
         now_iso = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
@@ -2173,15 +3624,25 @@ class SQLiteStateStore:
             payload.setdefault("work_id", work_id)
             payload.setdefault("site_id", site_id)
             payload["created_at"] = now_iso
+            if controller_id:
+                payload["controller_id"] = controller_id
+            if controller_epoch is not None:
+                payload["controller_epoch"] = int(controller_epoch)
+            if payload.get("controller_id") and payload.get("controller_epoch") is not None:
+                payload["operation_id"] = work_operation(work_id, new_attempt)
             cursor = conn.execute(
                 """
                 UPDATE work_ledger
-                SET attempt = ?, state = ?, updated_at = ?, state_updated_at = ?
+                SET attempt = ?, state = ?, controller_id = ?, controller_epoch = ?,
+                    operation_id = ?, updated_at = ?, state_updated_at = ?
                 WHERE work_id = ? AND attempt = ?
                 """,
                 (
                     new_attempt,
                     "Pending",
+                    payload.get("controller_id"),
+                    payload.get("controller_epoch"),
+                    payload.get("operation_id"),
                     now_iso,
                     now_iso,
                     work_id,
@@ -2198,17 +3659,20 @@ class SQLiteStateStore:
             conn.execute(
                 """
                 INSERT INTO work_outbox
-                  (work_id, attempt, site_id, payload_json, state, publish_attempts,
-                   last_publish_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (work_id, attempt, site_id, payload_json, publish_subject, publish_msg_id,
+                   state, publish_attempts, last_publish_at, last_publish_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     work_id,
                     new_attempt,
                     site_id,
                     json.dumps(payload),
+                    _outbox_publish_subject(site_id),
+                    _outbox_publish_msg_id(work_id, new_attempt, payload),
                     "Unpublished",
                     0,
+                    None,
                     None,
                     now_iso,
                     now_iso,
@@ -2216,15 +3680,12 @@ class SQLiteStateStore:
             )
             conn.commit()
             return new_attempt
-
     # --- Canary rollout state ----------------------------------------------
 
     def get_canary_state(self, app_name: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_rollout_canary.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "select_rollout_canary.sql"),
                 (app_name,),
             ).fetchone()
         if row is None:
@@ -2274,14 +3735,11 @@ class SQLiteStateStore:
             )
             conn.execute("DELETE FROM service_endpoints WHERE app_name = ?", (app_name,))
             rows = [
-                (ep.app_name, ep.port, ep.ip, ep.target_port, int(ep.ready))
-                for ep in endpoints
+                (ep.app_name, ep.port, ep.ip, ep.target_port, int(ep.ready)) for ep in endpoints
             ]
             if rows:
                 conn.executemany(
-                    resource_loader.load_text(
-                        "sql", "controller", "insert_service_endpoints.sql"
-                    ),
+                    resource_loader.load_text("sql", "controller", "insert_service_endpoints.sql"),
                     rows,
                 )
             conn.commit()
@@ -2316,9 +3774,7 @@ class SQLiteStateStore:
             ]
             if rows:
                 conn.executemany(
-                    resource_loader.load_text(
-                        "sql", "controller", "insert_service_endpoints.sql"
-                    ),
+                    resource_loader.load_text("sql", "controller", "insert_service_endpoints.sql"),
                     rows,
                 )
             conn.commit()
@@ -2423,9 +3879,7 @@ class SQLiteStateStore:
     def list_nodes(self) -> list[tuple[NodeRecord, NodeStatus | None]]:
         with self._connect() as conn:
             rows = conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "select_nodes_with_heartbeat.sql"
-                )
+                resource_loader.load_text("sql", "controller", "select_nodes_with_heartbeat.sql")
             ).fetchall()
         result: list[tuple[NodeRecord, NodeStatus | None]] = []
         for row in rows:
@@ -2529,9 +3983,7 @@ class SQLiteStateStore:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
-                resource_loader.load_text(
-                    "sql", "controller", "upsert_volume_attachments.sql"
-                ),
+                resource_loader.load_text("sql", "controller", "upsert_volume_attachments.sql"),
                 (app_name, volume_name, node_id, retention, now),
             )
             conn.commit()
@@ -2583,6 +4035,14 @@ class SQLiteStateStore:
                 conn.execute("DELETE FROM app_events WHERE app_name = ?", (app_name,))
                 conn.execute("DELETE FROM app_revisions WHERE app_name = ?", (app_name,))
             conn.commit()
+
+
+def _outbox_publish_subject(site_id: str) -> str:
+    return f"k1s.v1.work.site.{site_id}"
+
+
+def _outbox_publish_msg_id(work_id: str, attempt: int, payload: dict) -> str:
+    return str(payload.get("operation_id") or f"{work_id}:{attempt}")
 
 
 def state_store_from_env() -> SQLiteStateStore:

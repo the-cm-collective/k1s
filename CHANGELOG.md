@@ -3,13 +3,35 @@
 ## Unreleased
 
 ### Added
-- No user-facing additions yet.
+- No user-facing changes yet.
 
 ### Changed
 - No user-facing changes yet.
 
 ### Fixed
-- No user-facing fixes yet.
+- No user-facing changes yet.
+
+## 0.1.4 - 2026-04-22
+
+### Added
+- High-availability control-plane support across controller authority, mutation fencing/CAS, HA-safe API-shim reads, and shared authority handling for workload-core, CRD, HPA, CronJob, and storage resources.
+- HA operator tooling and observability for retained and stage-2 lanes, including public control-plane Envoy exposure, HA dashboard/system surfaces, authority freshness/build recovery metrics, etcd snapshot/recovery helpers, and new HA drill/upgrade/bootstrap scripts.
+- HA VM validation automation via `make lab-vm-ha-validation`, with attached-node, retained, drain, stage-2, live-helper, and drill coverage backed by the checked-in HA lab variants and closeout helpers.
+- Benchmark rollout policy automation now includes retained dataset rebuilding, rollout-overlap reporting, candidate summarization, and ordered CRI benchmark profile publishing for release-grade comparison runs.
+
+### Changed
+- Runbooks, validated procedures, and generated site pages now treat the retained attached-node flow and stage-1/stage-2 HA validation sequence as the canonical operator path.
+- This tag's release verification records pooled Debian/NixOS host validation: both hosts run the shared baseline with `AE_USE_REGISTRY_CACHE=0`, Debian owns `make e2e` plus `make strict-cri-smoke`, and NixOS owns `make lab-vm-ha-validation` plus the full benchmark rerun; per-host full-matrix verification starts next release.
+- Benchmark runners, retained artifacts, and published docs were hardened for rootless, rootful, k1nd, k3d, and CRI reruns, including isolated bench environments, refreshed comparison outputs, stronger rerun guidance, and refreshed pre-tag benchmark/site artifacts.
+- Local dev/operator tooling now includes stronger environment/bootstrap helpers such as `env-doctor`, controller env export helpers, and Nix-based dev shell support.
+- CI and release workflows were consolidated into core/docs/nightly lanes and hardened for Gitea-hosted execution, including warning-only Kubernetes export checks and release artifact packaging aligned to the new workflow layout.
+
+### Fixed
+- VM golden-image verification and lab overlay guards now size verifier overlays from the backing qcow2 virtual size and reject undersized stale overlays, preventing truncated initramfs/root-device failures in HA validation reruns.
+- Demo and premerge smoke workflows were stabilized across playground auth/reset cleanup, helm shim demo behavior, fixed-port rollouts, strict-CRI apishim image builds, and simple dashboard recovery.
+- Runtime and benchmark reliability improved across Podman netns socket probing, Docker list races in k1nd, CRI env/bootstrap checks, reserved-name recovery, cleanup boundaries, steady-state attribution, snapshot timing, and k3d comparison/chart capture.
+- Published procedures and generated site artifacts now scrub local paths and no longer embed lab tokens in exported output.
+- HA VM retained-lane issues were tightened across cloud-init wait behavior, drain/reseed flows, ingress routing/trust setup, SSH dry-run checks, and host mapping restoration during purge/reset.
 
 ## 0.1.3 - 2026-02-19
 

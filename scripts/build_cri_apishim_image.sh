@@ -20,7 +20,8 @@ Options:
   -h, --help                 Show this help
 
 Environment:
-  AE_CRI_LOCAL_BUILD_BACKEND  Preferred backend (nerdctl|podman|docker)
+  AE_CRI_IMAGE_BUILD_BACKEND  Preferred build backend (nerdctl|podman|docker)
+  AE_CRI_LOCAL_BUILD_BACKEND  Legacy shared backend override (nerdctl|podman|docker)
 USAGE
 }
 
@@ -99,8 +100,13 @@ registry_ref() {
 }
 
 resolve_engine() {
-  local prefer="${engine:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}"
+  local prefer="${engine:-${AE_CRI_IMAGE_BUILD_BACKEND:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}}"
   if [[ -n "$prefer" ]]; then
+    if [[ "$prefer" == "ctr" ]]; then
+      echo "Requested build backend 'ctr' is invalid; ctr cannot build local images." >&2
+      echo "Use AE_CRI_IMAGE_BUILD_BACKEND=podman|docker|nerdctl (or AE_CRI_LOCAL_BUILD_BACKEND)." >&2
+      exit 1
+    fi
     if ! command -v "$prefer" >/dev/null 2>&1; then
       echo "Requested build backend '$prefer' not found" >&2
       exit 1
@@ -142,6 +148,20 @@ engine_push() {
   "$engine" push "$image"
 }
 
+engine_build() {
+  local image="$1"
+  local dockerfile="${root_dir}/ops/images/apishim.Dockerfile"
+  case "$engine" in
+    podman|docker)
+      echo "[build-cri-apishim] using host networking for ${engine} build"
+      "$engine" build --network host -f "$dockerfile" -t "$image" "$root_dir"
+      ;;
+    *)
+      "$engine" build -f "$dockerfile" -t "$image" "$root_dir"
+      ;;
+  esac
+}
+
 if [[ -z "$image" ]]; then
   image="$tag"
 fi
@@ -173,7 +193,7 @@ if [[ ! -f "${root_dir}/ops/images/apishim.Dockerfile" ]]; then
   exit 1
 fi
 
-"$engine" build -f "${root_dir}/ops/images/apishim.Dockerfile" -t "$image" "$root_dir"
+engine_build "$image"
 
 if (( push == 1 )); then
   echo "[build-cri-apishim] pushing ${image}"

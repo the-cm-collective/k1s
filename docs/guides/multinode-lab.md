@@ -1,6 +1,9 @@
-# Multi-node Edge Gateway Manual Test
+# Multi-Node Lab
 
-This walkthrough is a manual test pattern for the core hub plus edge gateways. It focuses on a JetStream hub with lightweight edge sites and multiple gateways per site. For the ops-focused runbook, see `docs/ops/core-edge-manual-test.md`.
+This walkthrough is a manual test pattern for the core hub plus edge gateways.
+It focuses on a JetStream hub with lightweight edge sites and multiple gateways
+per site. For the ops-focused companion runbook, see
+`docs/ops/core-edge-manual-test.md`.
 
 ## Quick Navigation
 
@@ -13,6 +16,7 @@ Podman / mixed-runtime patterns:
 CRI patterns:
 - [CRI Deployment (strict CRI)](#cri-deployment)
 - [Single-Host Dev Ops Patterns (CRI)](#cri-single-host)
+- [HA Counterpart](#cri-ha-counterpart)
 - [Same-Host Variant (hub + edge on one box)](#cri-same-host-variant)
 - [CRI troubleshooting notes](#cri-troubleshooting)
 
@@ -129,6 +133,11 @@ sudo -E env PATH="$SUDO_PATH" \
   make k1s-edge-core-cri
 ```
 
+Note:
+- In this helper-backed same-host path, `edge-site-cri` exposes the edge leader
+  on host port `4224` while the underlying edge NATS listener keeps its default
+  `4223`.
+
 Edge-local preflight (root-safe):
 ```bash
 cpid=$(pgrep -f "python -m ae.controller" | head -n1)
@@ -231,6 +240,17 @@ Expected:
 - `ae status` workloads reach `ready`.
 - CRI pods are visible in `sudo crictl pods` for core/edge components.
 
+## HA Counterpart {#cri-ha-counterpart}
+
+If you want the HA version of the role-based command blocks on this page, use [HA Cluster Bring-Up: HA command readout](ha-cluster-bring-up.html#ha-command-readout).
+
+That page is the canonical docs-server location for:
+- the exact `k1s-ha-core` controller commands by ingress mode
+- the HA equivalents of the `k1s-core-node`, `edge-site-cri`, `k1s-edge-core-cri`, and `k1s-edge-node` role commands
+- the reduced one-box HA regression lane at [HA Cluster Bring-Up: one-box readout](ha-cluster-bring-up.html#ha-command-readout-one-box)
+
+This page remains the single-host and non-HA strict-CRI pattern. There is no supported single-host 3x `k1s-ha-core` cluster. For the reduced local HA harness in its original closeout context, see [HA Closeout](ha-closeout.html).
+
 ## Option A — LAN-only multi-node (no WireGuard) {#option-a-lan-only}
 
 Use this path when all nodes are on the same LAN and you want typical k8s-style
@@ -250,12 +270,12 @@ AE_POD_CIDR_POOL=10.42.0.0/16 \
 AE_POD_CIDR_MASK=24 \
 AE_AGENT_API_PORT=9110 \
 AE_AGENT_API_TOKEN=devtoken \
-python -m ae.controller --loop --interval 10 --specs .local/spec/ --metrics-port 9108
+python -m ae.controller --loop --interval 10 --specs state/specs-lab/ --metrics-port 9108
 ```
 Notes:
 - Ensure the overlay network exists (`AE_OVERLAY_NET`) before starting the controller.
 - Optional ingress DNS reachability: set `AE_PODMAN_NETWORK=<net>` (Podman) or `AE_DOCKER_NETWORK=<net>` (Docker) so multi-replica ingress can target container DNS.
-- Prefer a dedicated specs directory (for example `.local/spec/`) to avoid reconciling every manifest under `specs/examples/`.
+- Prefer a dedicated specs directory (for example `state/specs-lab/`) to avoid reconciling every manifest under `specs/examples/`.
 - `--interval` controls the reconcile loop cadence (default is 2s). For ops, set a higher value (for example 10–30s) to reduce noisy logs and churn.
 - The controller imports manifests from `--specs` into the registry but always reconciles from the registry. An empty specs dir does not clear existing workloads; use `ae delete <app>` or clean the state DB to start fresh.
 - Keep `AE_AGENT_API_TOKEN` private; nodes need it for registration.
@@ -341,6 +361,8 @@ Production equivalent:
 Same host (dev helper):
 - `make edge-site` already starts an edge NATS leader bound to `127.0.0.1:<EDGE_PORT>`.
 - Use `AE_NATS_URL=nats://gateway:dev@127.0.0.1:4224` for the gateways.
+- In this local helper path, host port `4224` forwards to the edge leader's
+  default listener `4223`.
 
 Remote host (behind NAT):
 - Run an edge NATS server with a leaf connection back to the hub.
@@ -354,7 +376,7 @@ Gateway 1:
 ```
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
-AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4224 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
 AE_TRANSPORT_BACKEND=nats-js \
 AE_JS_DOMAIN=K1S \
 AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-1.db \
@@ -365,14 +387,15 @@ Gateway 2:
 ```
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-2 \
-AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4224 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
 AE_TRANSPORT_BACKEND=nats-js \
 AE_JS_DOMAIN=K1S \
 AE_GATEWAY_SPOOL_PATH=$HOME/.local/share/ae/gateway-sea-edge-02--edge-2.db \
 python -m ae.gateway
 ```
 Notes:
-- Same-host dev: replace `REMOTE_EDGE_NATS:4223` with `127.0.0.1:4224`.
+- Same-host dev helper: use `127.0.0.1:4224`.
+- Remote raw edge leader: use `REMOTE_EDGE_NATS:4223`.
 - Remote host: set `REMOTE_EDGE_NATS` to the edge NATS LAN IP/hostname.
 - Gateways clear their spool DB on exit unless `AE_GATEWAY_KEEP_SPOOL=1` is set.
 
@@ -406,6 +429,8 @@ DEBUG ae.worker_stub: work completed node_id=sea-edge-02--edge-1 work_id=test-ed
 This runbook adds the overlay + node agent steps so apishim can exec/port-forward
 to pods running on remote hosts. NATS remains control-plane only; exec/port-forward
 streams are apishim → node agent.
+
+Companion overlay reference: `docs/ops/core-edge-wg-psk.md`.
 
 Prereqs:
 - Hub public hostname/IP reachable from Site B on TCP `7422` (NATS leaf).
@@ -453,18 +478,23 @@ Note
 - For SPDY exec/port-forward over WG, keep `AE_AGENT_ENDPOINT` on the WG IP, not `127.0.0.1` or a host-only name.
 
 ### Host B (remote site)
-1. Configure WireGuard with `PersistentKeepalive=25` and AllowedIPs that include:
-the WG subnet, the pod CIDR pool, and the service CIDR (if used).
-2. Start the edge NATS leader with a leaf connection back to the hub (see `docs/ops/core-edge-wg-psk.md` for the full config steps).
-3. Start the gateway leader:
+Step 1: Configure WireGuard with `PersistentKeepalive=25` and AllowedIPs that
+include the WG subnet, the pod CIDR pool, and the service CIDR (if used).
+
+Step 2: Start the edge NATS leader with a leaf connection back to the hub (see
+`docs/ops/core-edge-wg-psk.md` for the full config steps).
+
+Step 3: Start the gateway leader. Raw remote edge leaders default to `4223`;
+reserve `127.0.0.1:4224` for the local `make edge-site` helper path:
 ```
 AE_SITE_ID=sea-edge-02 \
 AE_NODE_ID=edge-1 \
-AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4224 \
+AE_NATS_URL=nats://gateway:dev@REMOTE_EDGE_NATS:4223 \
 AE_LOG_LEVEL=debug \
 make k1s-edge-core
 ```
-4. Start the edge node (WG + Rosenpass) on each host that runs pods:
+
+Step 4: Start the edge node (WG + Rosenpass) on each host that runs pods:
 ```
 sudo -E AE_NODE_ID=edge-1 \
 AE_NODE_LABELS="role=worker,site=sea-edge-02,wg_role=spk,wg_psk=rp" \
@@ -752,8 +782,8 @@ Production default in this guide:
 - Fallback lane: NFS (`k1s-nfs`) for simpler bring-up and recovery drills.
 
 Related references:
-- `docs/reference/storage.md` (NetFS behavior and event reasons)
-- `docs/wip/site-to-site-storage.md` (CSI-oriented architecture and phases)
+- [Storage](storage.html) (NetFS behavior and event reasons)
+- [Site-to-Site CSI Storage](site-to-site-csi-storage.html) (CSI-oriented architecture and phases)
 - `docs/ops/core-edge-wg-psk.md` (overlay and Rosenpass runbook)
 
 ### Production Pattern (split hosts, hybrid storage lanes)
@@ -1106,8 +1136,10 @@ Treat these three ingress modes as canonical for core/edge deployments:
 
 This option layers ingress validation on top of Option B (WG/Rosenpass + hub/edge
 transport). Use `core-to-edge-public` as the canonical name in docs/config.
-For the full capability sequence (single-host, multi-host, faults, repeatability),
-see `docs/guides/ingress-capability-test-sequence.md`.
+For the full capability sequence (single-host, multi-host, faults,
+repeatability), see [Ingress Capability Test Sequence](ingress-capability-test-sequence.html).
+The verbose sequence below stays here so the full multi-node lab context remains
+in one page.
 
 Shared setup:
 - Complete Option B first (hub + edge gateways + node agents).
@@ -1254,7 +1286,10 @@ scripts/dev/run_ingress_mode_lanes.sh --lanes all
 # Integrated security sweep:
 scripts/dev/run_ingress_lanes.sh --lanes all --security-all
 ```
-Full rootful startup command sets validated for these lanes are documented in `docs/guides/ingress-capability-test-sequence.md` Step 1a.
+Full rootful startup command sets validated for these lanes are also published
+on [Ingress Capability Test Sequence](ingress-capability-test-sequence.html)
+Step 1a.
+
 Core-proxy lane (start stack with `EDGE_INGRESS_MODE=core-proxy`):
 ```bash
 CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh \

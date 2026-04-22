@@ -15,9 +15,16 @@ from urllib.parse import urlparse
 
 import requests
 
+from ae.ha.fencing import (
+    delete_operation,
+    ensure_operation,
+    gc_operation,
+    merge_envelope,
+    resolve_controller_identity,
+)
 from ae.controller.spec import AppManifest
 
-from .base import PodState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 
 LOGGER = logging.getLogger(__name__)
 
@@ -25,9 +32,18 @@ LOGGER = logging.getLogger(__name__)
 class RemoteRuntime(RuntimeAdapter):
     """RuntimeAdapter that forwards calls to an ae.node agent over HTTP."""
 
-    def __init__(self, agent_url: str | None, local_runtime: RuntimeAdapter) -> None:
+    def __init__(
+        self,
+        agent_url: str | None,
+        local_runtime: RuntimeAdapter,
+        *,
+        authority=None,
+        node_id: str | None = None,
+    ) -> None:
         self._agent_url = agent_url.rstrip("/") if agent_url else None
         self._local = local_runtime
+        self._authority = authority
+        self._node_id = str(node_id or "")
         import os
 
         self._verify = os.getenv("AE_AGENT_CA_FILE") or True
@@ -154,6 +170,16 @@ class RemoteRuntime(RuntimeAdapter):
         resp.raise_for_status()
         return resp
 
+    def _mutation_payload(
+        self,
+        payload: dict[str, object],
+        operation_id: str,
+        *,
+        identity=None,
+    ) -> dict[str, object]:
+        identity = identity or resolve_controller_identity(self._authority)
+        return merge_envelope(payload, identity.envelope(operation_id))
+
     # --- RuntimeAdapter API --------------------------------------------
     def ensure_app(
         self,
@@ -183,6 +209,16 @@ class RemoteRuntime(RuntimeAdapter):
             "replica_ids": pod_names,
             "node_id": node_id,
         }
+        identity = resolve_controller_identity(self._authority)
+        payload = self._mutation_payload(
+            payload,
+            ensure_operation(
+                str(manifest.metadata.name),
+                revision,
+                str(node_id or self._node_id or ""),
+            ),
+            identity=identity,
+        )
         resp = self._request("POST", "/v1/ensure_app", json=payload, timeout=30)
         data = resp.json()
         return _runtime_result_from_json(data)
@@ -190,16 +226,53 @@ class RemoteRuntime(RuntimeAdapter):
     def remove_app(self, app_name: str) -> int:
         if self._use_local():
             return self._local.remove_app(app_name)
-        resp = self._request("POST", "/v1/remove_app", json={"app": app_name}, timeout=15)
+        identity = resolve_controller_identity(self._authority)
+        payload = self._mutation_payload(
+            {"app": app_name},
+            delete_operation(app_name, self._node_id, identity.controller_epoch),
+            identity=identity,
+        )
+        resp = self._request("POST", "/v1/remove_app", json=payload, timeout=15)
         return int(resp.json().get("removed", 0))
 
     def remove_old_revisions(self, app_name: str, keep_revision: int) -> int:
         if self._use_local():
             return self._local.remove_old_revisions(app_name, keep_revision)
+        identity = resolve_controller_identity(self._authority)
+        payload = self._mutation_payload(
+            {"app": app_name, "keep_revision": keep_revision},
+            gc_operation(app_name, keep_revision, self._node_id),
+            identity=identity,
+        )
         resp = self._request(
             "POST",
             "/v1/remove_old",
-            json={"app": app_name, "keep_revision": keep_revision},
+            json=payload,
+            timeout=15,
+        )
+        return int(resp.json().get("removed", 0))
+
+    def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:
+        if self._use_local():
+            remove = getattr(self._local, "remove_replicas", None)
+            if callable(remove):
+                return int(remove(app_name, replica_ids))
+            return 0
+        identity = resolve_controller_identity(self._authority)
+        op_id = "gc.replicas:{app}:{node}:{replicas}".format(
+            app=app_name,
+            node=str(self._node_id or ""),
+            replicas=",".join(sorted(str(replica_id) for replica_id in replica_ids if replica_id)),
+        )
+        payload = self._mutation_payload(
+            {"app": app_name, "replica_ids": list(replica_ids or [])},
+            op_id,
+            identity=identity,
+        )
+        resp = self._request(
+            "POST",
+            "/v1/remove_replicas",
+            json=payload,
             timeout=15,
         )
         return int(resp.json().get("removed", 0))
@@ -209,6 +282,46 @@ class RemoteRuntime(RuntimeAdapter):
             return self._local.list_containers_info()
         resp = self._request("GET", "/v1/containers", timeout=10)
         return resp.json().get("containers", [])
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        if self._use_local():
+            return self._local.list_workload_metrics()
+        resp = self._request("GET", "/v1/workload_metrics", timeout=10)
+        payload = resp.json()
+        items = payload.get("items") if isinstance(payload, dict) else None
+        out: list[WorkloadMetricSample] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            collected_at = item.get("collected_at")
+            try:
+                ts = datetime.fromisoformat(str(collected_at))
+            except Exception:
+                ts = datetime.now()
+            try:
+                memory_bytes = int(item.get("memory_bytes", 0) or 0)
+            except Exception:
+                memory_bytes = 0
+            try:
+                pod_count = int(item.get("pod_count", 0) or 0)
+            except Exception:
+                pod_count = 0
+            cpu_raw = item.get("cpu_cores")
+            try:
+                cpu_cores = float(cpu_raw) if cpu_raw is not None else None
+            except Exception:
+                cpu_cores = None
+            out.append(
+                WorkloadMetricSample(
+                    app_name=str(item.get("app_name") or ""),
+                    node_id=str(item.get("node_id") or self._node_id or ""),
+                    collected_at=ts,
+                    cpu_cores=cpu_cores,
+                    memory_bytes=memory_bytes,
+                    pod_count=pod_count,
+                )
+            )
+        return out
 
     def read_logs(
         self,
@@ -287,7 +400,12 @@ class RemoteRuntime(RuntimeAdapter):
         port: int,
     ):
         if self._use_local():
-            raise NotImplementedError("local port-forward socket not implemented")
+            return self._local.port_forward_socket(
+                pod_id=pod_id,
+                pod_name=pod_name,
+                namespace=namespace,
+                port=int(port),
+            )
         payload = {
             "pod_id": pod_id,
             "pod_name": pod_name,
@@ -352,6 +470,11 @@ def _runtime_result_from_json(data: dict) -> RuntimeResult:
                 pod_name=pod_name,
                 ready=bool(item.get("ready")),
                 status=item.get("status", "unknown"),
+                revision=(
+                    int(item.get("revision"))
+                    if str(item.get("revision", "")).isdigit()
+                    else None
+                ),
                 endpoint=item.get("endpoint"),
                 exit_code=exit_code,
                 finished_at=finished_at,

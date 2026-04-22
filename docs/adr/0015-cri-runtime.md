@@ -500,7 +500,7 @@ Exit criteria:
   - `src/ae/apishim/adapter.py` and `src/ae/apishim/server.py`
   - Use backend values aligned with Kubernetes terminology: `cri` or `containerd`, not `kubelet`.
   - Persist node backend as `cri` to reflect the CRI runtime (Kubernetes uses CRI as the contract).
-- Doc: `docs/wip/cri-runtime.md` (this file) + `docs/ops/runbook.md` snippet for node preflight
+- Docs: `docs/reference/cri-containerd.md`, `docs/wip/cri-parity.md`, and `docs/ops/runbook.md`
   - Use Kubernetes terms: CRI endpoint, sandbox image, CNI bin/conf dirs, and cgroup driver alignment.
   - Match kubelet endpoint format: `unix:///run/containerd/containerd.sock` (note triple slash).
 
@@ -580,10 +580,10 @@ Exit criteria:
   - A CRI-native streaming proxy can still replace this later.
 - Done: implement log follow via CRI `log_path` (basic; kubelet-style rotation not covered).
 - Done: validate CI integration tests: containerd node smoke + CRI adapter in CI
-  - CI workflow added (`.github/workflows/cri-ci.yml`) using `scripts/cri_ci_setup.sh`.
+  - CI coverage now lives in `.github/workflows/nightly-runtime.yml` using `scripts/cri_ci_setup.sh`.
   - CI setup now runs under sudo and waits for `RuntimeReady` + `NetworkReady`.
   - Gated integration tests exist locally (AE_CRI_SMOKE_PULL, AE_CRI_IT).
-  - `cri-ci` validated on runner.
+  - The CRI lane is validated on the runner.
 - Done: update docs: `docs/ops/runbook.md` with CRI debug and `crictl` usage.
 
 ---

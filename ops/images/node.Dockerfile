@@ -13,7 +13,7 @@ RUN apt-get update -y \
   && apt-get install -y --no-install-recommends ca-certificates curl tar gzip \
   && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md /app/
+COPY pyproject.toml README.md requirements.in /app/
 COPY src /app/src
 
 RUN pip install --no-cache-dir .

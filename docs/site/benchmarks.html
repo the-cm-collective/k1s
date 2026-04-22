@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -693,24 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
       <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -748,6 +784,43 @@
 <li><code>combined/combined.{json,csv}</code>: merged rollups across labels (for charts and reports).</li>
 <li><code>charts/*.png</code>: control‑plane/system charts and per‑pod overhead plots.</li>
 </ul>
+<p>Current published benchmark set</p>
+<ul>
+<li>Current published authoritative stamp: <code>r20260421-223436-authoritative2</code></li>
+<li>Current retained publish set keeps <code>110</code> rows: <code>40</code> frozen legacy rows and <code>70</code> current rows from the authoritative rerun.</li>
+<li>Current published family names normalize to OCI-tagged forms:
+<ul>
+<li><code>r20260421-223436-authoritative2+podman+crun+rootless+cg2</code></li>
+<li><code>r20260421-223436-authoritative2+podman+crun+priv+cg2</code></li>
+<li><code>r20260421-223436-authoritative2+docker+runc+k1nd</code></li>
+<li><code>r20260421-223436-authoritative2+k3d+runc</code></li>
+<li><code>r20260421-223436-authoritative2+cri-runc-verify-run{1,2,3}+cri+containerd</code></li>
+</ul>
+</li>
+<li>Use <a href="validated-procedures.html#full-benchmark-rerun">Validated Procedures</a> for the exact copy/paste rerun sequence and <a href="#retained-artifact-rebuild">Retained Artifact Rebuild</a> for the publish model.</li>
+</ul>
+<p>Jump to: <a href="#latest-benchmarks-auto">Latest benchmarks</a> · <a href="#latest-comparison-matrix">Comparison matrix</a> · <a href="#charts">Charts</a> · <a href="#validated-full-clean-rerun">Validated rerun</a></p>
+<p>Interpreting results</p>
+<ul>
+<li>Process PSS approximates unique+fair‑share memory for control‑plane processes.</li>
+<li>Container <code>memory.current</code> shows cgroup‑resident memory per container (includes cache); we split into app vs non‑app containers.</li>
+<li>Host system cgroups reflects only OS services under <code>system.slice</code> and <code>init.scope</code> (excludes user/container trees), summed over leaf cgroups to avoid double counting.</li>
+<li>Per‑pod app footprint (rough) ≈ app_container_bytes / pod_count.</li>
+<li>MemAvailable Δ validates totals at the kernel level: <code>delta = MemAvailable(before) − MemAvailable(after)</code> for the snapshot window. Small negatives are clamped to 0.</li>
+</ul>
+<p>Limitations</p>
+<ul>
+<li>cgroup paths vary across distros; the snapshotter falls back gracefully.</li>
+<li>If Docker is unavailable, container-level stats are skipped; process PSS is still reported.</li>
+<li>USS is approximated from <code>Private_*</code> in <code>smaps_rollup</code>.</li>
+</ul>
+<p>Caveats</p>
+<ul>
+<li>k3s (via k3d) enables Traefik by default; the provided Ingress uses class <code>traefik</code>. Keep ingress turned on in k1s for apples-to-apples, or disable both.</li>
+<li>The echo image <code>ealen/echo-server:0.7.0</code> serves <code>/</code> on port 80 and has a lightweight memory footprint suitable for baseline comparisons.</li>
+<li>If you prefer your demo image, push it to a registry and update <code>specs/examples/k3s-echo.yaml</code> accordingly.</li>
+</ul>
+<details> <summary><strong>Quick Commands and Setup Workflows</strong></summary>
 <p>Quick start 1) Take a snapshot (k1s):</p>
 <pre><code>make bench-mem-k1s LABEL=idle DURATION=30</code></pre>
 <p>2) Aggregate latest snapshot for a label:</p>
@@ -777,26 +850,6 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 <p>OCI runtime note</p>
 <ul>
 <li>Using Podman (<code>AE_RUNTIME_BACKEND=podman</code>) typically reduces idle control‑plane footprint on long‑lived hosts compared to Docker. Keep the runtime consistent across runs when comparing results.</li>
-</ul>
-<p>Interpreting results</p>
-<ul>
-<li>Process PSS approximates unique+fair‑share memory for control‑plane processes.</li>
-<li>Container <code>memory.current</code> shows cgroup‑resident memory per container (includes cache); we split into app vs non‑app containers.</li>
-<li>Host system cgroups reflects only OS services under <code>system.slice</code> and <code>init.scope</code> (excludes user/container trees), summed over leaf cgroups to avoid double counting.</li>
-<li>Per‑pod app footprint (rough) ≈ app_container_bytes / pod_count.</li>
-<li>MemAvailable Δ validates totals at the kernel level: <code>delta = MemAvailable(before) − MemAvailable(after)</code> for the snapshot window. Small negatives are clamped to 0.</li>
-</ul>
-<p>Limitations</p>
-<ul>
-<li>cgroup paths vary across distros; the snapshotter falls back gracefully.</li>
-<li>If Docker is unavailable, container-level stats are skipped; process PSS is still reported.</li>
-<li>USS is approximated from <code>Private_*</code> in <code>smaps_rollup</code>.</li>
-</ul>
-<p>Caveats</p>
-<ul>
-<li>k3s (via k3d) enables Traefik by default; the provided Ingress uses class <code>traefik</code>. Keep ingress turned on in k1s for apples-to-apples, or disable both.</li>
-<li>The echo image <code>ealen/echo-server:0.7.0</code> serves <code>/</code> on port 80 and has a lightweight memory footprint suitable for baseline comparisons.</li>
-<li>If you prefer your demo image, push it to a registry and update <code>specs/examples/k3s-echo.yaml</code> accordingly.</li>
 </ul>
 <p>Automate a small matrix (k1s)</p>
 <ul>
@@ -838,6 +891,7 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 <pre><code>make bench-mem-backfill-oci LABEL=r20251110+podman+rootless+cg2* REBUILD_DOCS=1</code></pre>
 <ul>
 <li>Detects the OCI runtime per-snapshot by reading <code>raw/podman_inspect.json</code> (<code>.OCIRuntime</code>) or <code>raw/docker_inspect.json</code> (<code>HostConfig.Runtime</code>), then writes it to <code>meta.json</code> and injects <code>+&lt;oci&gt;+</code> into the label (e.g., <code>+crun+</code>) without renaming folders.</li>
+<li><code>LABEL=...</code> matches the on-disk snapshot directories, so older reruns may still use the raw pre-OCI family shape here even though the rebuilt published labels normalize to <code>+podman+crun+...</code>, <code>+docker+runc+...</code>, or <code>+k3d+runc</code>.</li>
 <li>Then recombines and regenerates charts. Add <code>OCI=runc</code> to force an override if needed. Use <code>GLOB=&#x27;snapshots/r2025*/*&#x27;</code> to target explicit paths.</li>
 </ul>
 <p>Backfill just the latest label</p>
@@ -864,87 +918,254 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 <pre><code>make bench-k3s-down K3S_NAME=bench</code></pre>
 <p>End-to-end (k3s one-liner; cluster must be up)</p>
 <pre><code>make bench-mem-e2e-k3s LABEL_SUITE=baseline MANIFEST=specs/examples/k3s-echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></pre>
-<h2 id="runbook-successful-benchmark-runs">Runbook: Successful Benchmark Runs</h2>
+</details>
+<h2 id="validated-full-clean-rerun">Validated Full Clean Rerun</h2>
+<p>Use <a href="validated-procedures.html#full-benchmark-rerun">Validated Procedures</a> for the exact full clean rerun command block and acceptance checks. That page is the published copy/paste source of truth for the validated split baseline + CRI flow.</p>
+<details> <summary><strong>Show validated rerun procedure notes</strong></summary>
+<p>Current rollout stage model</p>
 <ul>
-<li>Environment
+<li>Baseline lanes (<code>rootless</code>, <code>rootful</code>, <code>k1nd</code>, <code>k3d</code>) publish <code>10</code> stages per family:
 <ul>
-<li><code>PYTHONPATH=src</code> in the shell running commands.</li>
-<li>Runtime backend: <code>AE_RUNTIME_BACKEND=podman</code> (preferred) or <code>docker</code>.</li>
-<li>Secrets (demo-friendly): set <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> unless SOPS is configured (or run <code>init_demo.sh --with-secrets-env</code>).</li>
+<li><code>idle</code></li>
+<li><code>pods-1</code></li>
+<li><code>pods-5</code></li>
+<li><code>pods-10</code></li>
+<li><code>rollout-2-during</code></li>
+<li><code>rollout-2-during-warm</code></li>
+<li><code>rollout-2-post</code></li>
+<li><code>rollout-5-during</code></li>
+<li><code>rollout-5-during-warm</code></li>
+<li><code>rollout-5-post</code></li>
+</ul>
+</li>
+<li>CRI verify publishes the same <code>10</code> stages per run.</li>
+<li><code>during-warm</code> is additive diagnostic data and stays out of ranking weight; the docs/chart builders keep using the legacy stage set for rollup weighting.</li>
+</ul>
+</details>
+<h2 id="isolated-rollout-tuning-experiments">Isolated Rollout Tuning Experiments</h2>
+<p>Use the experiment runner when you want to test rollout quieting or strategy changes without touching the published benchmark path.</p>
+<details> <summary><strong>Show experiment-only workflows</strong></summary>
+<p>Experiment guarantees</p>
+<ul>
+<li>Labels must contain <code>+exp+</code>.</li>
+<li>Outputs stay under <code>state/bench-experiments/&lt;experiment-id&gt;/</code>.</li>
+<li>The runner does not write <code>combined/combined.csv</code>, <code>charts/</code>, or docs artifacts.</li>
+<li>Retained rebuild profiles ignore these experiment families because they only keep explicit published prefixes.</li>
+</ul>
+<p>Quick examples</p>
+<p>CRI, baseline behavior but isolated output:</p>
+<pre><code>make bench-rollout-tuning-experiment \
+  LANE=cri \
+  LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-cri+exp+baseline&quot; \
+  EXPERIMENT_ID=&quot;cri-baseline-exp&quot;</code></pre>
+<p>CRI, steady-quiet hook plus accepted rollout-policy override:</p>
+<pre><code>BENCH_EXPERIMENT_STEADY_QUIET=1 \
+BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel \
+BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0 \
+BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1 \
+make bench-rollout-tuning-experiment \
+  LANE=cri \
+  LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-cri+exp+candidate&quot; \
+  EXPERIMENT_ID=&quot;cri-policy-exp&quot;</code></pre>
+<p>Cross-check the same logic on other k1s-family lanes:</p>
+<pre><code>BENCH_EXPERIMENT_STEADY_QUIET=1 \
+make bench-rollout-tuning-experiment \
+  LANE=rootless \
+  LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-rootless+exp+quiet&quot; \
+  EXPERIMENT_ID=&quot;rootless-quiet-exp&quot;</code></pre>
+<p>Available lanes</p>
+<ul>
+<li><code>cri</code></li>
+<li><code>rootless</code></li>
+<li><code>rootful</code></li>
+<li><code>k1nd</code></li>
+</ul>
+<p>Relevant experiment env vars</p>
+<ul>
+<li><code>BENCH_EXPERIMENT_STEADY_QUIET=1</code> enables backend-aware steady-state checks before <code>pods-*</code> and <code>rollout-*-post</code> snapshots. Leave it unset for control runs; the default is <code>0</code>.</li>
+<li><code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=ordered|parallel</code> rewrites the bench-local manifest copy used by the experiment.</li>
+<li><code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=&lt;n&gt;</code> caps extra replicas above desired during rollout.</li>
+<li><code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=&lt;n&gt;</code> allows bounded old-replica removal before replacement is fully ready.</li>
+<li><code>EXPERIMENT_STEADY_TIMEOUT</code>, <code>EXPERIMENT_STEADY_DELAY</code>, and <code>EXPERIMENT_STEADY_POLLS</code> tune the steady-state wait helper.</li>
+</ul>
+<p>Outputs</p>
+<ul>
+<li><code>state/bench-experiments/&lt;id&gt;/snapshots/</code></li>
+<li><code>state/bench-experiments/&lt;id&gt;/combined/combined.csv</code></li>
+<li><code>state/bench-experiments/&lt;id&gt;/charts/</code></li>
+<li><code>state/bench-experiments/&lt;id&gt;/reports/audit.txt</code></li>
+<li><code>state/bench-experiments/&lt;id&gt;/reports/summary.txt</code></li>
+</ul>
+<p>The experiment harness uses the same generic k1s matrix/rollout scripts as the baseline lanes. Only the optional pre-snapshot hooks and bench-local manifest overrides change, so viability checks stay close to the published benchmark behavior.</p>
+<p>CRI rollout-policy candidate workflow</p>
+<p>For the accepted CRI rollout-policy rerun, invoke <code>scripts/bench/run_cri_verify.sh</code> with the promoted policy explicitly:</p>
+<ul>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_SURGE=0</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1</code></li>
+<li><code>BENCH_CRI_STEADY_QUIET=1</code></li>
+</ul>
+<p>Use the paired candidate wrapper when you want to compare the accepted policy against the old retained baseline again:</p>
+<pre><code>make bench-cri-rollout-candidate</code></pre>
+<p>The wrapper creates a group under <code>state/bench-experiments/&lt;group-id&gt;/</code> and runs:</p>
+<ul>
+<li><code>baseline-r1..rN</code> with <code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=1</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=0</code>, and <code>BENCH_EXPERIMENT_STEADY_QUIET=0</code></li>
+<li><code>candidate-r1..rN</code> with <code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1</code>, and <code>BENCH_EXPERIMENT_STEADY_QUIET=1</code></li>
+</ul>
+<p>After the runs complete it writes:</p>
+<ul>
+<li><code>reports/candidate.txt</code></li>
+<li><code>reports/candidate.json</code></li>
+</ul>
+<p>The candidate summary reports scenario means for the key rollout stages and evaluates these CRI promotion gates by default:</p>
+<ul>
+<li><code>pods-5</code> app drift <code>&lt;= 3 MiB</code></li>
+<li><code>rollout-5-post</code> app drift <code>&lt;= 3 MiB</code></li>
+<li><code>rollout-5-during</code> app improvement <code>&gt;= 15 MiB</code></li>
+<li><code>rollout-5-during</code> CRI overlap reduction <code>&gt;= 1.0</code></li>
+<li><code>rollout-2-during</code> app improvement informational only</li>
+</ul>
+<p>These candidate groups still live on the experiment path. They are for promotion decisions, not for direct publication into retained benchmark artifacts.</p>
+<p>To force the old retained CRI baseline for an explicit comparison run:</p>
+<pre><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_ROLLOUT_MAX_SURGE=1 \
+BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=0 \
+BENCH_CRI_STEADY_QUIET=0 \
+BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify&quot; \
+RUNS=&quot;1 2 3&quot; \
+./scripts/bench/run_cri_verify.sh</code></pre>
+<p>For CRI reruns, use <code>scripts/bench/run_cri_verify.sh</code> instead of looping over <code>make bench-mem-cri</code> manually. The wrapper:</p>
+<ul>
+<li>tears down <code>state/bench-cri</code> between runs and kills stale bench controllers</li>
+<li>writes a durable operator log under <code>state/bench-cri-rerun-*.log</code></li>
+<li>pins the bench-local manifest to <code>runtimeClassName: runc</code></li>
+<li>rejects <code>/k8s.io/kata</code> cgroup paths in the <code>pods-1</code> snapshot</li>
+<li>captures rollout <code>-during</code> immediately after <code>ae apply</code></li>
+<li>captures <code>-during-warm</code> as the warmed transition sample</li>
+<li>waits for a stable <code>ready/live/desired</code> window before <code>-post</code></li>
+<li>checks for <code>10</code> combined rows per run before and after finalization</li>
+</ul>
+<p>Recommended smoke lane:</p>
+<pre><code>./scripts/bench/bench_env_teardown.sh --env state/bench-cri/env.sh || true
+sudo pkill -f &quot;python .*ae\\.controller.*state/bench-cri/specs&quot; || true
+
+export BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-wrapper-check&quot;
+BENCH_CRI_ROLLOUT_STRATEGY=parallel \
+BENCH_CRI_ROLLOUT_MAX_SURGE=0 \
+BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1 \
+BENCH_CRI_STEADY_QUIET=1 \
+RUNS=&quot;1&quot; ./scripts/bench/run_cri_verify.sh
+grep -c &quot;^${BASE}-run1+cri+containerd-&quot; combined/combined.csv</code></pre>
+<p>Important: set <code>BASE=...</code> / <code>RUNS=...</code> before the script name (or <code>export</code> them). <code>./scripts/bench/run_cri_verify.sh BASE=...</code> passes positional args and does not override the wrapper environment.</p>
+</details>
+<h2 id="retained-artifact-rebuild">Retained Artifact Rebuild</h2>
+<p>Published benchmark artifacts now come from an explicit retained set, not from every snapshot left under <code>snapshots/</code>.</p>
+<p>Current canonical retained rebuild</p>
+<ul>
+<li>Current published authoritative stamp: <code>r20260421-223436-authoritative2</code></li>
+<li>Rebuild the current published set with:</li>
+</ul>
+<pre><code>make bench-retained-rebuild PROFILE=final STAMP=r20260421-223436-authoritative2 DELETE_DROPPED=1</code></pre>
+<ul>
+<li>The rebuilt retained set contains <code>110</code> rows:
+<ul>
+<li><code>40</code> frozen legacy rows</li>
+<li><code>40</code> fresh baseline rows</li>
+<li><code>30</code> fresh CRI rows</li>
+</ul>
+</li>
+<li>The current published families normalize to:
+<ul>
+<li><code>r20260421-223436-authoritative2+podman+crun+rootless+cg2</code></li>
+<li><code>r20260421-223436-authoritative2+podman+crun+priv+cg2</code></li>
+<li><code>r20260421-223436-authoritative2+docker+runc+k1nd</code></li>
+<li><code>r20260421-223436-authoritative2+k3d+runc</code></li>
+<li><code>r20260421-223436-authoritative2+cri-runc-verify-run{1,2,3}+cri+containerd</code></li>
 </ul>
 </li>
 </ul>
+<details> <summary><strong>Show fresh rerun publish flow and historical retained rebuilds</strong></summary>
+<p>Retained publish model</p>
 <ul>
-<li>Controller
+<li>Frozen reference import: <code>scripts/bench/data/legacy_20260203_frozen.csv</code></li>
+<li>Interim review profile: April 17, 2026 validated families only</li>
+<li>Final publish profile: frozen <code>20260203</code> reference plus one fresh full-pass stamp</li>
+</ul>
+<p>Fresh rerun publish flow</p>
+<pre><code>python scripts/bench/rebuild_retained_artifacts.py --profile final --stamp &quot;$STAMP&quot; --delete-dropped</code></pre>
+<p>Or via <code>make</code>:</p>
+<pre><code>make bench-retained-rebuild PROFILE=final STAMP=&quot;$STAMP&quot; DELETE_DROPPED=1</code></pre>
+<p>Fresh rerun expectations</p>
 <ul>
-<li>Keep the controller running for the full duration:
+<li>Run the full baseline + CRI sequence with a fresh <code>STAMP</code></li>
+<li>The rebuilt retained set contains <code>110</code> rows:
 <ul>
-<li>Terminal A: <code>python -m ae.controller --loop --specs specs/ --watch</code></li>
+<li><code>40</code> frozen legacy rows</li>
+<li><code>40</code> fresh baseline rows</li>
+<li><code>30</code> fresh CRI rows</li>
 </ul>
 </li>
-<li>The bench scripts auto-start it if missing and log to <code>/tmp/k1s_ctrl_bench.log</code>, but a dedicated terminal is more predictable.</li>
+<li>Published baseline families normalize to OCI-tagged names:
+<ul>
+<li><code>${STAMP}+podman+crun+rootless+cg2</code></li>
+<li><code>${STAMP}+podman+crun+priv+cg2</code></li>
+<li><code>${STAMP}+docker+runc+k1nd</code></li>
+<li><code>${STAMP}+k3d+runc</code></li>
 </ul>
 </li>
-</ul>
+<li>Published CRI families remain:
 <ul>
-<li>Images
-<ul>
-<li>Podman: <code>podman build -t localhost/demo-blue:latest samples/servers/blue</code> and <code>localhost/demo-green:latest samples/servers/green</code>.</li>
-<li>Docker: <code>docker build -t demo-blue:latest samples/servers/blue</code> and <code>demo-green:latest</code>.</li>
-<li>Verify: <code>podman images | rg &#x27;demo-(blue|green)&#x27;</code> or <code>docker images | rg &#x27;demo-(blue|green)&#x27;</code>.</li>
-</ul>
-</li>
-</ul>
-<ul>
-<li>Commands (Podman-first)
-<ul>
-<li>Terminal B:
-<ul>
-<li><code>export PYTHONPATH=src AE_RUNTIME_BACKEND=podman AE_ALLOW_PLAINTEXT_SECRETS=1</code> (or start with <code>./scripts/init_demo.sh --with-secrets-env</code>)</li>
-<li><code>make bench-mem-e2e-k1s LABEL_SUITE=report-YYYYMMDD APP=specs/examples/echo.yaml REPLICAS=1,5,10 DURATION=30 ROLL_REPLICAS=5</code></li>
-<li><code>python scripts/bench/mem_combine.py snapshots/*/*</code></li>
-<li><code>python scripts/bench/plot_overhead.py combined/combined.csv charts</code></li>
-<li><code>python docs/build_docs.py</code></li>
-</ul>
-</li>
-</ul>
-</li>
-</ul>
-<ul>
-<li>Docker fallback
-<ul>
-<li><code>export AE_RUNTIME_BACKEND=docker</code> and re-run the same commands.</li>
-<li>Ensure the current user can run <code>docker ps</code> without sudo (group membership or rootless config).</li>
+<li><code>${STAMP}+cri-runc-verify-run1+cri+containerd</code></li>
+<li><code>${STAMP}+cri-runc-verify-run2+cri+containerd</code></li>
+<li><code>${STAMP}+cri-runc-verify-run3+cri+containerd</code></li>
 </ul>
 </li>
 </ul>
+<p>Historical interim review (2026-04-17)</p>
 <ul>
-<li>Preflights and guardrails
+<li>Use this only when you need to reconstruct the older April 17 retained review set.</li>
+</ul>
+<pre><code>python scripts/bench/rebuild_retained_artifacts.py --profile interim-20260417 --delete-dropped</code></pre>
+<pre><code>make bench-retained-rebuild PROFILE=interim-20260417 DELETE_DROPPED=1</code></pre>
+<p>Historical interim retained set</p>
 <ul>
-<li>Podman readiness: <code>podman info</code> must succeed. If not, try:
+<li><code>r20260417-cri-runc-baseline-clean5-run1+cri+containerd</code></li>
+<li><code>r20260417-cri-runc-baseline-clean5-run2+cri+containerd</code></li>
+<li><code>r20260417-cri-runc-baseline-clean5-run3+cri+containerd</code></li>
+<li><code>r20260417-overlap-smoke-rootless</code></li>
+<li><code>r20260417-overlap-smoke-rootful</code></li>
+<li><code>r20260417-overlap-smoke-cri-run1+cri+containerd</code></li>
+<li><code>r20260417-overlap-smoke-k1nd</code></li>
+<li><code>r20260417-overlap-smoke-k3d</code></li>
+</ul>
+<p>Historical interim rebuild expectations</p>
 <ul>
-<li><code>systemctl --user reset-failed; systemctl --user daemon-reload</code></li>
-<li><code>systemctl --user start podman.socket || systemctl --user start podman.service</code></li>
-<li><code>loginctl enable-linger &quot;$USER&quot;</code>; open a new login shell</li>
-<li><code>podman system migrate</code></li>
+<li><code>combined/combined.csv</code> contains <code>89</code> rows:
+<ul>
+<li><code>40</code> frozen legacy rows</li>
+<li><code>24</code> retained <code>clean5</code> CRI rows</li>
+<li><code>25</code> retained overlap-smoke rows</li>
 </ul>
 </li>
-<li>Secrets guard: if <code>AE_ALLOW_PLAINTEXT_SECRETS!=1</code> and <code>sops</code> is missing or cannot decrypt, the scripts will fail fast with guidance.</li>
-<li>Logs: controller auto-start logs at <code>/tmp/k1s_ctrl_bench.log</code>.</li>
+<li>superseded April 13/15 reruns and the CRI rollout-probe families are absent from the rebuilt artifacts</li>
+</ul>
+</details>
+<p>Result interpretation</p>
+<ul>
+<li>Treat <code>combined/combined.csv</code> and <code>combined/combined.json</code> as the authoritative artifacts.</li>
+<li><code>bench-mem-finalize-sudo</code> is still useful for mixed-ownership cleanup and local chart/doc refresh, but retained publishing should use <code>bench-retained-rebuild</code>.</li>
+<li>If chart generation prints <code>matplotlib not available</code>, the benchmark run is still valid; only plot regeneration was skipped.</li>
+<li><code>Ctrl/CP</code> is scenario-aware:
+<ul>
+<li>k1s / k1nd: AE controller PSS</li>
+<li>k3d: k3s control-plane PSS</li>
 </ul>
 </li>
-</ul>
-<ul>
-<li>After run</li>
-<li>Combined table: <code>combined/combined.csv</code> and <code>combined/combined.json</code>.
-<ul>
-<li>Charts: <code>charts/control_plane_pss.png</code>, <code>charts/system_cgroups.png</code>, <code>charts/per_pod_overhead.png</code>.</li>
-</ul>
-</li>
-<li>Docs page <code>benchmarks.html</code> auto-appends a “Latest Benchmarks (Auto)” section from <code>combined/combined.csv</code>.</li>
+<li><code>HostCG</code> is the absolute host system cgroup sum, not a per-scenario delta.</li>
 </ul>
 <h2 id="automated-prep-teardown">Automated Prep/Teardown</h2>
 <p>The helper scripts <code>scripts/bench/bench_env_prep.sh</code> and <code>scripts/bench/bench_env_teardown.sh</code> power both <code>make bench-mem-e2e-all</code> and <code>make bench-mem-e2e-minimal</code>:</p>
+<details> <summary><strong>Show bench sandbox prep and teardown details</strong></summary>
 <ul>
 <li>Prep copies <code>specs/</code> into <code>state/bench-env/specs/</code>, removes every Deployment manifest except the allowlist, and leaves shared configs/secrets intact so relative <code>configRefs</code> still work.</li>
 <li>A dedicated controller (log + pid under <code>state/bench-env/</code>) watches only that sandbox, so background demos or labs can’t steal ports or replicas.</li>
@@ -953,10 +1174,23 @@ make bench-mem-agg LABEL=pods-5</code></pre>
 <li>If rootful Podman containers with the <code>ae.app</code> label are still running, prep lists them and asks whether to remove them (set <code>BENCH_AUTOCLEAN_PODMAN=1</code> to auto-approve in CI, or <code>=0</code> to refuse). This prevents stray demos from holding ports like 18080.</li>
 <li>Ingress writes are disabled by default for benches (<code>BENCH_DISABLE_INGRESS=1</code>). Set <code>BENCH_DISABLE_INGRESS=0</code> if a scenario actually needs Caddy updates; otherwise the sandbox exports <code>AE_DISABLE_INGRESS=1</code> and skips writing to <code>ops/dev/caddy/*</code>, avoiding permission chatter.</li>
 </ul>
-<h2 id="all-in-one-run-sudo-once">All-in-one Run (sudo once)</h2>
-<p>Run k1s rootful, k1s rootless, and k1nd in one go and rebuild docs:</p>
-<pre><code>sudo make bench-mem-e2e-all DURATION=30 REPLICAS=1,5,10 ROLL_REPLICAS=5</code></pre>
-<p>Defaults: <code>OCI_RUNTIME=crun</code>, <code>AE_ENGINE_STRICT=1</code>, <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code>, <code>PRUNE_OLD=1</code>.</p>
+</details>
+<h2 id="convenience-targets">Convenience Targets</h2>
+<details> <summary><strong>Show convenience targets</strong></summary>
+<ul>
+<li><code>make bench-mem-e2e-all</code> is still useful for a quick all-baselines sweep.</li>
+<li><code>make bench-mem-e2e-minimal</code> is the fast rootful-only sanity lane while iterating on manifests or Podman tuning.</li>
+<li><code>make bench-retained-rebuild PROFILE=final STAMP=r20260421-223436-authoritative2 DELETE_DROPPED=1</code> rebuilds the current published retained set.</li>
+<li>For release-grade reruns, prefer the validated full clean sequence above because it includes:
+<ul>
+<li>explicit pre-teardown</li>
+<li>baseline + CRI split</li>
+<li>retained-artifact rebuild against the frozen <code>20260203</code> reference import</li>
+<li>the baseline steady-state and CRI rollout fixes validated in the 2026-04-21/22 authoritative run</li>
+</ul>
+</li>
+</ul>
+</details>
 <details> <summary><strong>Troubleshooting: Rootful Podman readiness timeouts (host ports hang)</strong></summary>
 <p>Symptoms</p>
 <ul>
@@ -1066,28 +1300,28 @@ sudo sysctl --system</code></pre>
 </ul>
 </details>
 <hr/>
-<h2>Latest Benchmarks (Auto)</h2>
+<h2 id='latest-benchmarks-auto'>Latest Benchmarks (Auto)</h2>
 <p>Summarized from <code>combined/combined.csv</code> at build time. (k1s only)</p>
 <table border=1 cellpadding=6 cellspacing=0>
 <tr><th>Label</th><th>Mode</th><th>Timestamp</th><th>Ctrl‑Plane PSS (MiB)</th><th>App Cgroups (MiB)</th><th>Infra Cgroups (MiB)</th><th>Host System (MiB)</th><th>MemAvail Δ (MiB)</th></tr>
-<tr><td>r20260203+docker+runc+rootless+cg2-idle</td><td>k1s</td><td>20260203-151547</td><td style='text-align:right'>174.0</td><td style='text-align:right'>0.0</td><td style='text-align:right'>366.5</td><td style='text-align:right'>2541.7</td><td style='text-align:right'>168.1</td></tr>
-<tr><td>r20260203+docker+runc+rootless+cg2-pods-1</td><td>k1s</td><td>20260203-151621</td><td style='text-align:right'>177.0</td><td style='text-align:right'>22.7</td><td style='text-align:right'>370.6</td><td style='text-align:right'>2582.0</td><td style='text-align:right'>192.2</td></tr>
-<tr><td>r20260203+docker+runc+rootless+cg2-pods-5</td><td>k1s</td><td>20260203-151702</td><td style='text-align:right'>181.3</td><td style='text-align:right'>95.2</td><td style='text-align:right'>374.8</td><td style='text-align:right'>2726.4</td><td style='text-align:right'>87.2</td></tr>
-<tr><td>r20260203+docker+runc+rootless+cg2-pods-10</td><td>k1s</td><td>20260203-151748</td><td style='text-align:right'>185.1</td><td style='text-align:right'>184.9</td><td style='text-align:right'>377.9</td><td style='text-align:right'>2893.8</td><td style='text-align:right'>51.3</td></tr>
-<tr><td>baseline-rollout-2-during</td><td>k1s</td><td>20260203-151832</td><td style='text-align:right'>186.7</td><td style='text-align:right'>34.5</td><td style='text-align:right'>380.6</td><td style='text-align:right'>2642.2</td><td style='text-align:right'>195.9</td></tr>
-<tr><td>baseline-rollout-2-post</td><td>k1s</td><td>20260203-151903</td><td style='text-align:right'>186.7</td><td style='text-align:right'>35.2</td><td style='text-align:right'>378.9</td><td style='text-align:right'>2645.3</td><td style='text-align:right'>23.0</td></tr>
-<tr><td>baseline-rollout-5-during</td><td>k1s</td><td>20260203-152005</td><td style='text-align:right'>185.4</td><td style='text-align:right'>72.5</td><td style='text-align:right'>378.6</td><td style='text-align:right'>2724.2</td><td style='text-align:right'>235.8</td></tr>
-<tr><td>baseline-rollout-5-post</td><td>k1s</td><td>20260203-152036</td><td style='text-align:right'>185.4</td><td style='text-align:right'>72.5</td><td style='text-align:right'>377.6</td><td style='text-align:right'>2731.5</td><td style='text-align:right'>90.0</td></tr>
+<tr><td>r20260421-223436-authoritative2+cri-runc-verify-run3+cri+containerd-pods-5</td><td>k1s</td><td>20260421-233118</td><td style='text-align:right'>83.8</td><td style='text-align:right'>96.1</td><td style='text-align:right'>0.0</td><td style='text-align:right'>1919.9</td><td style='text-align:right'>6.2</td></tr>
+<tr><td>r20260421-223436-authoritative2+cri-runc-verify-run3+cri+containerd-pods-10</td><td>k1s</td><td>20260421-233309</td><td style='text-align:right'>83.3</td><td style='text-align:right'>195.2</td><td style='text-align:right'>0.0</td><td style='text-align:right'>1945.1</td><td style='text-align:right'>27.6</td></tr>
+<tr><td>r20260421-223436-authoritative2+cri-runc-verify-run3+cri+containerd-rollout-2-during</td><td>k1s</td><td>20260421-233428</td><td style='text-align:right'>84.5</td><td style='text-align:right'>31.9</td><td style='text-align:right'>0.0</td><td style='text-align:right'>1906.0</td><td style='text-align:right'>105.1</td></tr>
+<tr><td>r20260421-223436-authoritative2+cri-runc-verify-run3+cri+containerd-rollout-2-during-warm</td><td>k1s</td><td>20260421-233428</td><td style='text-align:right'>85.1</td><td style='text-align:right'>28.7</td><td style='text-align:right'>0.0</td><td style='text-align:right'>1907.5</td><td style='text-align:right'>104.6</td></tr>
+<tr><td>r20260421-223436-authoritative2+cri-runc-verify-run3+cri+containerd-rollout-2-post</td><td>k1s</td><td>20260421-233521</td><td style='text-align:right'>84.5</td><td style='text-align:right'>28.7</td><td style='text-align:right'>0.0</td><td style='text-align:right'>1906.8</td><td style='text-align:right'>2.3</td></tr>
+<tr><td>r20260421-223436-authoritative2+cri-runc-verify-run3+cri+containerd-rollout-5-during</td><td>k1s</td><td>20260421-233643</td><td style='text-align:right'>83.3</td><td style='text-align:right'>87.4</td><td style='text-align:right'>0.0</td><td style='text-align:right'>1921.3</td><td style='text-align:right'>149.1</td></tr>
+<tr><td>r20260421-223436-authoritative2+cri-runc-verify-run3+cri+containerd-rollout-5-during-warm</td><td>k1s</td><td>20260421-233643</td><td style='text-align:right'>83.9</td><td style='text-align:right'>75.8</td><td style='text-align:right'>0.0</td><td style='text-align:right'>1921.7</td><td style='text-align:right'>153.1</td></tr>
+<tr><td>r20260421-223436-authoritative2+cri-runc-verify-run3+cri+containerd-rollout-5-post</td><td>k1s</td><td>20260421-233748</td><td style='text-align:right'>84.7</td><td style='text-align:right'>71.8</td><td style='text-align:right'>0.0</td><td style='text-align:right'>1921.9</td><td style='text-align:right'>23.7</td></tr>
 </table>
 <style>table.mini td, table.mini th { border:1px solid var(--border); padding:6px; }</style>
-<h2>Latest Comparison Matrix</h2>
+<h2 id='latest-comparison-matrix'>Latest Comparison Matrix</h2>
 <style> .pill { display:inline-block; padding:4px 10px; border:1px solid var(--border); border-radius:999px; margin-right:8px; } .pill.win { background:#144d2a; color:#fff; border-color:#1f6f3e; } .pill.place2 { background:#4d4a14; color:#fff; border-color:#6f6a1f; } .pill.place3 { background:#4d2b14; color:#fff; border-color:#6f3f1f; } .pill.dim { opacity:.7; } .band { margin:6px 0 12px 0 }</style>
-<div class='band'><strong>Overall Ranking:</strong> <span class='pill win' title='comparisons:32 coverage:100%'> k1s cri <span style='opacity:.85'>&nbsp;(7)</span></span><span class='pill place2' title='comparisons:32 coverage:100%'> k1s rootful <span style='opacity:.85'>&nbsp;(11)</span></span><span class='pill place3' title='comparisons:32 coverage:100%'> k1s rootless <span style='opacity:.85'>&nbsp;(20)</span></span><span class='pill dim' title='comparisons:32 coverage:100%'> k1nd <span style='opacity:.85'>&nbsp;(21)</span></span><span class='pill dim' title='comparisons:32 coverage:100%'> k3d <span style='opacity:.85'>&nbsp;(95)</span></span></div>
-<h3>Control Plane PSS (MiB) — lower is better</h3><table class='mini' style='border-collapse:collapse;width:100%'><thead><tr><th>Stage</th><th>k1s rootless</th><th>k1s rootful</th><th>k1s cri</th><th>k1nd</th><th>k3d</th></tr></thead><tbody><tr><td>idle</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>56.7</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>56.6</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>55.4</td><td style='text-align:right;background:hsl(86,60%,25%); color:#fff'>174.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>479.1</td></tr><tr><td>pods-1</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>73.8</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>72.0</td><td style='text-align:right;background:hsl(117,60%,25%); color:#fff'>80.3</td><td style='text-align:right;background:hsl(87,60%,25%); color:#fff'>177.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>458.4</td></tr><tr><td>pods-10</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>74.4</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>72.6</td><td style='text-align:right;background:hsl(117,60%,25%); color:#fff'>79.6</td><td style='text-align:right;background:hsl(85,60%,25%); color:#fff'>185.1</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>468.8</td></tr><tr><td>pods-5</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>74.1</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>72.3</td><td style='text-align:right;background:hsl(117,60%,25%); color:#fff'>80.9</td><td style='text-align:right;background:hsl(86,60%,25%); color:#fff'>181.3</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>460.2</td></tr><tr><td>rollout-2-during</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>74.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>74.7</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>80.1</td><td style='text-align:right;background:hsl(86,60%,25%); color:#fff'>186.7</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>470.8</td></tr><tr><td>rollout-2-post</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>74.9</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>74.8</td><td style='text-align:right;background:hsl(117,60%,25%); color:#fff'>82.0</td><td style='text-align:right;background:hsl(86,60%,25%); color:#fff'>186.7</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>472.7</td></tr><tr><td>rollout-5-during</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>74.8</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>72.8</td><td style='text-align:right;background:hsl(117,60%,25%); color:#fff'>82.9</td><td style='text-align:right;background:hsl(87,60%,25%); color:#fff'>185.4</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>490.3</td></tr><tr><td>rollout-5-post</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>74.8</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>73.5</td><td style='text-align:right;background:hsl(117,60%,25%); color:#fff'>83.1</td><td style='text-align:right;background:hsl(87,60%,25%); color:#fff'>185.4</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>491.4</td></tr></tbody></table>
-<h3>App Cgroups (MiB) — lower is better</h3><table class='mini' style='border-collapse:collapse;width:100%'><thead><tr><th>Stage</th><th>k1s rootless</th><th>k1s rootful</th><th>k1s cri</th><th>k1nd</th><th>k3d</th></tr></thead><tbody><tr><td>idle</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>0.0</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>0.0</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>0.0</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>0.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>87.5</td></tr><tr><td>pods-1</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>18.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>17.9</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>17.7</td><td style='text-align:right;background:hsl(113,60%,25%); color:#fff'>22.7</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>111.6</td></tr><tr><td>pods-10</td><td style='text-align:right;background:hsl(112,60%,25%); color:#fff'>190.9</td><td style='text-align:right;background:hsl(113,60%,25%); color:#fff'>190.3</td><td style='text-align:right;background:hsl(117,60%,25%); color:#fff'>186.8</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>184.9</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>286.6</td></tr><tr><td>pods-5</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>93.2</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>92.8</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>92.6</td><td style='text-align:right;background:hsl(116,60%,25%); color:#fff'>95.2</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>189.1</td></tr><tr><td>rollout-2-during</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>28.9</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>28.9</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>28.8</td><td style='text-align:right;background:hsl(112,60%,25%); color:#fff'>34.5</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>125.8</td></tr><tr><td>rollout-2-post</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>28.9</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>28.9</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>28.8</td><td style='text-align:right;background:hsl(112,60%,25%); color:#fff'>35.2</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>125.7</td></tr><tr><td>rollout-5-during</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>72.2</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>72.3</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>71.9</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>72.5</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>193.6</td></tr><tr><td>rollout-5-post</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>72.3</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>72.3</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>72.2</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>72.5</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>196.9</td></tr></tbody></table>
-<h3>Host System Cgroups (MiB) — lower is better</h3><table class='mini' style='border-collapse:collapse;width:100%'><thead><tr><th>Stage</th><th>k1s rootless</th><th>k1s rootful</th><th>k1s cri</th><th>k1nd</th><th>k3d</th></tr></thead><tbody><tr><td>idle</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>2049.8</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>2057.0</td><td style='text-align:right;background:hsl(93,60%,25%); color:#fff'>2389.2</td><td style='text-align:right;background:hsl(82,60%,25%); color:#fff'>2541.7</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>3604.6</td></tr><tr><td>pods-1</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>2050.8</td><td style='text-align:right;background:hsl(117,60%,25%); color:#fff'>2089.1</td><td style='text-align:right;background:hsl(96,60%,25%); color:#fff'>2392.1</td><td style='text-align:right;background:hsl(83,60%,25%); color:#fff'>2582.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>3786.3</td></tr><tr><td>pods-10</td><td style='text-align:right;background:hsl(114,60%,25%); color:#fff'>2177.5</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>2096.0</td><td style='text-align:right;background:hsl(97,60%,25%); color:#fff'>2469.4</td><td style='text-align:right;background:hsl(70,60%,25%); color:#fff'>2893.8</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4046.2</td></tr><tr><td>pods-5</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>2049.0</td><td style='text-align:right;background:hsl(117,60%,25%); color:#fff'>2092.7</td><td style='text-align:right;background:hsl(95,60%,25%); color:#fff'>2429.0</td><td style='text-align:right;background:hsl(75,60%,25%); color:#fff'>2726.4</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>3895.0</td></tr><tr><td>rollout-2-during</td><td style='text-align:right;background:hsl(103,60%,25%); color:#fff'>2356.1</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>2097.2</td><td style='text-align:right;background:hsl(101,60%,25%); color:#fff'>2403.6</td><td style='text-align:right;background:hsl(86,60%,25%); color:#fff'>2642.2</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4033.4</td></tr><tr><td>rollout-2-post</td><td style='text-align:right;background:hsl(102,60%,25%); color:#fff'>2373.6</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>2097.8</td><td style='text-align:right;background:hsl(100,60%,25%); color:#fff'>2403.3</td><td style='text-align:right;background:hsl(85,60%,25%); color:#fff'>2645.3</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4022.5</td></tr><tr><td>rollout-5-during</td><td style='text-align:right;background:hsl(101,60%,25%); color:#fff'>2383.0</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>2064.9</td><td style='text-align:right;background:hsl(98,60%,25%); color:#fff'>2429.0</td><td style='text-align:right;background:hsl(81,60%,25%); color:#fff'>2724.2</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4127.6</td></tr><tr><td>rollout-5-post</td><td style='text-align:right;background:hsl(102,60%,25%); color:#fff'>2368.5</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>2066.2</td><td style='text-align:right;background:hsl(99,60%,25%); color:#fff'>2426.5</td><td style='text-align:right;background:hsl(81,60%,25%); color:#fff'>2731.5</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4133.9</td></tr></tbody></table>
-<h3>MemAvail Δ (MiB) — lower is better</h3><table class='mini' style='border-collapse:collapse;width:100%'><thead><tr><th>Stage</th><th>k1s rootless</th><th>k1s rootful</th><th>k1s cri</th><th>k1nd</th><th>k3d</th></tr></thead><tbody><tr><td>idle</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>397.7</td><td style='text-align:right;background:hsl(19,60%,25%); color:#fff'>360.1</td><td style='text-align:right;background:hsl(101,60%,25%); color:#fff'>202.8</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>168.1</td><td style='text-align:right;background:hsl(98,60%,25%); color:#fff'>209.2</td></tr><tr><td>pods-1</td><td style='text-align:right;background:hsl(61,60%,25%); color:#fff'>215.2</td><td style='text-align:right;background:hsl(27,60%,25%); color:#fff'>321.2</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>33.2</td><td style='text-align:right;background:hsl(69,60%,25%); color:#fff'>192.2</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>408.3</td></tr><tr><td>pods-10</td><td style='text-align:right;background:hsl(103,60%,25%); color:#fff'>99.3</td><td style='text-align:right;background:hsl(102,60%,25%); color:#fff'>100.4</td><td style='text-align:right;background:hsl(113,60%,25%); color:#fff'>71.0</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>51.3</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>397.2</td></tr><tr><td>pods-5</td><td style='text-align:right;background:hsl(45,60%,25%); color:#fff'>248.0</td><td style='text-align:right;background:hsl(107,60%,25%); color:#fff'>114.1</td><td style='text-align:right;background:hsl(97,60%,25%); color:#fff'>136.2</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>87.2</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>347.4</td></tr><tr><td>rollout-2-during</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>524.7</td><td style='text-align:right;background:hsl(52,60%,25%); color:#fff'>321.2</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>59.1</td><td style='text-align:right;background:hsl(84,60%,25%); color:#fff'>195.9</td><td style='text-align:right;background:hsl(16,60%,25%); color:#fff'>461.8</td></tr><tr><td>rollout-2-post</td><td style='text-align:right;background:hsl(32,60%,25%); color:#fff'>196.9</td><td style='text-align:right;background:hsl(49,60%,25%); color:#fff'>159.3</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>9.6</td><td style='text-align:right;background:hsl(113,60%,25%); color:#fff'>23.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>265.3</td></tr><tr><td>rollout-5-during</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>342.8</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>130.5</td><td style='text-align:right;background:hsl(104,60%,25%); color:#fff'>157.4</td><td style='text-align:right;background:hsl(60,60%,25%); color:#fff'>235.8</td><td style='text-align:right;background:hsl(79,60%,25%); color:#fff'>202.7</td></tr><tr><td>rollout-5-post</td><td style='text-align:right;background:hsl(36,60%,25%); color:#fff'>190.9</td><td style='text-align:right;background:hsl(76,60%,25%); color:#fff'>99.4</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>0.8</td><td style='text-align:right;background:hsl(80,60%,25%); color:#fff'>90.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>272.9</td></tr></tbody></table>
-<h2>Charts</h2><div style='margin:8px 0; padding:8px; border:1px solid var(--border); color:#f59e0b'>Staleness warning: control_plane_pss_k3d.png, control_plane_pss_k1s_rootless.png, control_plane_pss_k1s_rootful.png, control_plane_pss_k1nd.png, system_cgroups_k3d.png, system_cgroups_k1s_rootless.png, system_cgroups_k1s_rootful.png, system_cgroups_k1nd.png, per_pod_overhead.png, per_pod_scaling.png, rollout_pairs.png, matrix_heatmap.png are older than 168 hours; regenerate charts if this is unexpected.</div><h3>Control‑plane PSS — Timeline (k3s)</h3><img src='charts/control_plane_pss_k3d.png' alt='Control‑plane PSS — Timeline (k3s)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control‑plane PSS — Timeline (k1s rootless)</h3><img src='charts/control_plane_pss_k1s_rootless.png' alt='Control‑plane PSS — Timeline (k1s rootless)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control‑plane PSS — Timeline (k1s rootful)</h3><img src='charts/control_plane_pss_k1s_rootful.png' alt='Control‑plane PSS — Timeline (k1s rootful)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control‑plane PSS — Timeline (k1nd)</h3><img src='charts/control_plane_pss_k1nd.png' alt='Control‑plane PSS — Timeline (k1nd)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups — Timeline (k3s)</h3><img src='charts/system_cgroups_k3d.png' alt='System Cgroups — Timeline (k3s)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups — Timeline (k1s rootless)</h3><img src='charts/system_cgroups_k1s_rootless.png' alt='System Cgroups — Timeline (k1s rootless)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups — Timeline (k1s rootful)</h3><img src='charts/system_cgroups_k1s_rootful.png' alt='System Cgroups — Timeline (k1s rootful)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups — Timeline (k1nd)</h3><img src='charts/system_cgroups_k1nd.png' alt='System Cgroups — Timeline (k1nd)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Per‑Pod Overhead (MiB)</h3><img src='charts/per_pod_overhead.png' alt='Per‑Pod Overhead (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Per‑Pod Scaling (MiB)</h3><img src='charts/per_pod_scaling.png' alt='Per‑Pod Scaling (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Rollout During vs Post (CP PSS)</h3><img src='charts/rollout_pairs.png' alt='Rollout During vs Post (CP PSS)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Latest Comparison Heatmap</h3><img src='charts/matrix_heatmap.png' alt='Latest Comparison Heatmap' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Pods-1</h3><img src='charts/comparison_memavail_delta_pods-1.png' alt='Memavail Delta Pods-1' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-5-During</h3><img src='charts/comparison_host_system_cgroups_rollout-5-during.png' alt='Host System Cgroups Rollout-5-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Idle</h3><img src='charts/comparison_control_plane_pss_idle.png' alt='Control Plane Pss Idle' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Pods-5</h3><img src='charts/comparison_app_cgroups_pods-5.png' alt='App Cgroups Pods-5' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-2-Post</h3><img src='charts/comparison_memavail_delta_rollout-2-post.png' alt='Memavail Delta Rollout-2-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Idle</h3><img src='charts/comparison_memavail_delta_idle.png' alt='Memavail Delta Idle' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-5-During</h3><img src='charts/comparison_app_cgroups_rollout-5-during.png' alt='App Cgroups Rollout-5-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-5-During</h3><img src='charts/comparison_control_plane_pss_rollout-5-during.png' alt='Control Plane Pss Rollout-5-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Pods-10</h3><img src='charts/comparison_app_cgroups_pods-10.png' alt='App Cgroups Pods-10' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Idle</h3><img src='charts/comparison_host_system_cgroups_idle.png' alt='Host System Cgroups Idle' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-2-Post</h3><img src='charts/comparison_app_cgroups_rollout-2-post.png' alt='App Cgroups Rollout-2-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-2-During</h3><img src='charts/comparison_host_system_cgroups_rollout-2-during.png' alt='Host System Cgroups Rollout-2-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-2-Post</h3><img src='charts/comparison_host_system_cgroups_rollout-2-post.png' alt='Host System Cgroups Rollout-2-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-5-Post</h3><img src='charts/comparison_app_cgroups_rollout-5-post.png' alt='App Cgroups Rollout-5-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Pods-5</h3><img src='charts/comparison_control_plane_pss_pods-5.png' alt='Control Plane Pss Pods-5' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Pods-1</h3><img src='charts/comparison_host_system_cgroups_pods-1.png' alt='Host System Cgroups Pods-1' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Pods-1</h3><img src='charts/comparison_control_plane_pss_pods-1.png' alt='Control Plane Pss Pods-1' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Pods-10</h3><img src='charts/comparison_host_system_cgroups_pods-10.png' alt='Host System Cgroups Pods-10' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Pods-1</h3><img src='charts/comparison_app_cgroups_pods-1.png' alt='App Cgroups Pods-1' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Pods-10</h3><img src='charts/comparison_control_plane_pss_pods-10.png' alt='Control Plane Pss Pods-10' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Idle</h3><img src='charts/comparison_app_cgroups_idle.png' alt='App Cgroups Idle' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-2-During</h3><img src='charts/comparison_control_plane_pss_rollout-2-during.png' alt='Control Plane Pss Rollout-2-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-2-During</h3><img src='charts/comparison_memavail_delta_rollout-2-during.png' alt='Memavail Delta Rollout-2-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-5-Post</h3><img src='charts/comparison_control_plane_pss_rollout-5-post.png' alt='Control Plane Pss Rollout-5-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Pods-10</h3><img src='charts/comparison_memavail_delta_pods-10.png' alt='Memavail Delta Pods-10' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-2-Post</h3><img src='charts/comparison_control_plane_pss_rollout-2-post.png' alt='Control Plane Pss Rollout-2-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Pods-5</h3><img src='charts/comparison_host_system_cgroups_pods-5.png' alt='Host System Cgroups Pods-5' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-5-Post</h3><img src='charts/comparison_host_system_cgroups_rollout-5-post.png' alt='Host System Cgroups Rollout-5-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-2-During</h3><img src='charts/comparison_app_cgroups_rollout-2-during.png' alt='App Cgroups Rollout-2-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-5-During</h3><img src='charts/comparison_memavail_delta_rollout-5-during.png' alt='Memavail Delta Rollout-5-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-5-Post</h3><img src='charts/comparison_memavail_delta_rollout-5-post.png' alt='Memavail Delta Rollout-5-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Pods-5</h3><img src='charts/comparison_memavail_delta_pods-5.png' alt='Memavail Delta Pods-5' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/>
+<div class='band'><strong>Overall Ranking:</strong> <span class='pill win' title='comparisons:32 coverage:100%'> k1s rootful <span style='opacity:.85'>&nbsp;(15)</span></span><span class='pill place2' title='comparisons:32 coverage:100%'> k1s rootless <span style='opacity:.85'>&nbsp;(19)</span></span><span class='pill place3' title='comparisons:32 coverage:100%'> k1s cri <span style='opacity:.85'>&nbsp;(21)</span></span><span class='pill dim' title='comparisons:32 coverage:100%'> k1nd <span style='opacity:.85'>&nbsp;(33)</span></span><span class='pill dim' title='comparisons:32 coverage:100%'> k3d <span style='opacity:.85'>&nbsp;(77)</span></span></div>
+<h3>Control Plane PSS (MiB) — lower is better</h3><table class='mini' style='border-collapse:collapse;width:100%'><thead><tr><th>Stage</th><th>k1s rootless</th><th>k1s rootful</th><th>k1s cri</th><th>k1nd</th><th>k3d</th></tr></thead><tbody><tr><td>idle</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>75.2</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>75.2</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>79.6</td><td style='text-align:right;background:hsl(104,60%,25%); color:#fff'>137.1</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>555.1</td></tr><tr><td>pods-1</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>77.9</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>78.2</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>84.7</td><td style='text-align:right;background:hsl(105,60%,25%); color:#fff'>137.4</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>557.5</td></tr><tr><td>pods-10</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>78.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>78.7</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>83.3</td><td style='text-align:right;background:hsl(105,60%,25%); color:#fff'>135.1</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>564.7</td></tr><tr><td>pods-5</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>78.1</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>78.4</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>83.8</td><td style='text-align:right;background:hsl(105,60%,25%); color:#fff'>137.3</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>558.8</td></tr><tr><td>rollout-2-during</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>78.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>78.7</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>84.5</td><td style='text-align:right;background:hsl(105,60%,25%); color:#fff'>135.1</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>564.2</td></tr><tr><td>rollout-2-during-warm</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>78.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>78.7</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>85.1</td><td style='text-align:right;background:hsl(106,60%,25%); color:#fff'>135.1</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>564.7</td></tr><tr><td>rollout-2-post</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>78.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>78.7</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>84.5</td><td style='text-align:right;background:hsl(106,60%,25%); color:#fff'>135.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>569.2</td></tr><tr><td>rollout-5-during</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>78.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>78.7</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>83.3</td><td style='text-align:right;background:hsl(106,60%,25%); color:#fff'>134.6</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>561.3</td></tr><tr><td>rollout-5-during-warm</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>78.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>78.7</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>83.9</td><td style='text-align:right;background:hsl(106,60%,25%); color:#fff'>134.5</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>561.7</td></tr><tr><td>rollout-5-post</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>78.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>78.7</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>84.7</td><td style='text-align:right;background:hsl(106,60%,25%); color:#fff'>134.5</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>567.6</td></tr></tbody></table>
+<h3>App Cgroups (MiB) — lower is better</h3><table class='mini' style='border-collapse:collapse;width:100%'><thead><tr><th>Stage</th><th>k1s rootless</th><th>k1s rootful</th><th>k1s cri</th><th>k1nd</th><th>k3d</th></tr></thead><tbody><tr><td>idle</td><td style='text-align:right;background:rgba(128,128,128,.2)'>0.0</td><td style='text-align:right;background:rgba(128,128,128,.2)'>0.0</td><td style='text-align:right;background:rgba(128,128,128,.2)'>0.0</td><td style='text-align:right;background:rgba(128,128,128,.2)'>0.0</td><td style='text-align:right;background:rgba(128,128,128,.2)'>0.0</td></tr><tr><td>pods-1</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>18.1</td><td style='text-align:right;background:hsl(47,60%,25%); color:#fff'>19.0</td><td style='text-align:right;background:hsl(57,60%,25%); color:#fff'>18.8</td><td style='text-align:right;background:hsl(75,60%,25%); color:#fff'>18.6</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>19.5</td></tr><tr><td>pods-10</td><td style='text-align:right;background:hsl(51,60%,25%); color:#fff'>188.3</td><td style='text-align:right;background:hsl(88,60%,25%); color:#fff'>183.4</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>195.2</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>179.2</td><td style='text-align:right;background:hsl(22,60%,25%); color:#fff'>192.2</td></tr><tr><td>pods-5</td><td style='text-align:right;background:hsl(90,60%,25%); color:#fff'>92.7</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>91.6</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>96.1</td><td style='text-align:right;background:hsl(95,60%,25%); color:#fff'>92.5</td><td style='text-align:right;background:hsl(18,60%,25%); color:#fff'>95.4</td></tr><tr><td>rollout-2-during</td><td style='text-align:right;background:hsl(11,60%,25%); color:#fff'>49.3</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>51.2</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>31.9</td><td style='text-align:right;background:hsl(4,60%,25%); color:#fff'>50.5</td><td style='text-align:right;background:hsl(73,60%,25%); color:#fff'>39.4</td></tr><tr><td>rollout-2-during-warm</td><td style='text-align:right;background:hsl(2,60%,25%); color:#fff'>28.8</td><td style='text-align:right;background:hsl(2,60%,25%); color:#fff'>28.8</td><td style='text-align:right;background:hsl(2,60%,25%); color:#fff'>28.7</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>29.0</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>15.3</td></tr><tr><td>rollout-2-post</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>28.8</td><td style='text-align:right;background:hsl(118,60%,25%); color:#fff'>28.8</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>28.7</td><td style='text-align:right;background:hsl(110,60%,25%); color:#fff'>29.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>32.6</td></tr><tr><td>rollout-5-during</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>107.4</td><td style='text-align:right;background:hsl(10,60%,25%); color:#fff'>105.7</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>87.4</td><td style='text-align:right;background:hsl(8,60%,25%); color:#fff'>105.9</td><td style='text-align:right;background:hsl(112,60%,25%); color:#fff'>88.7</td></tr><tr><td>rollout-5-during-warm</td><td style='text-align:right;background:hsl(23,60%,25%); color:#fff'>90.3</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>98.7</td><td style='text-align:right;background:hsl(64,60%,25%); color:#fff'>75.8</td><td style='text-align:right;background:hsl(12,60%,25%); color:#fff'>94.4</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>56.2</td></tr><tr><td>rollout-5-post</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>72.0</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>72.0</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>71.8</td><td style='text-align:right;background:hsl(116,60%,25%); color:#fff'>72.6</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>96.0</td></tr></tbody></table>
+<h3>Host System Cgroups (MiB) — lower is better</h3><table class='mini' style='border-collapse:collapse;width:100%'><thead><tr><th>Stage</th><th>k1s rootless</th><th>k1s rootful</th><th>k1s cri</th><th>k1nd</th><th>k3d</th></tr></thead><tbody><tr><td>idle</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1592.8</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1582.2</td><td style='text-align:right;background:hsl(97,60%,25%); color:#fff'>1895.4</td><td style='text-align:right;background:hsl(91,60%,25%); color:#fff'>1976.5</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>3255.3</td></tr><tr><td>pods-1</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1593.2</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1604.7</td><td style='text-align:right;background:hsl(100,60%,25%); color:#fff'>1901.2</td><td style='text-align:right;background:hsl(93,60%,25%); color:#fff'>2001.4</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>3469.3</td></tr><tr><td>pods-10</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1598.4</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1611.4</td><td style='text-align:right;background:hsl(101,60%,25%); color:#fff'>1945.1</td><td style='text-align:right;background:hsl(85,60%,25%); color:#fff'>2240.1</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>3829.5</td></tr><tr><td>pods-5</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1594.1</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1606.9</td><td style='text-align:right;background:hsl(101,60%,25%); color:#fff'>1919.9</td><td style='text-align:right;background:hsl(90,60%,25%); color:#fff'>2108.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>3707.3</td></tr><tr><td>rollout-2-during</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1598.6</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1609.9</td><td style='text-align:right;background:hsl(102,60%,25%); color:#fff'>1906.0</td><td style='text-align:right;background:hsl(93,60%,25%); color:#fff'>2058.8</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>3662.1</td></tr><tr><td>rollout-2-during-warm</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1598.3</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1608.4</td><td style='text-align:right;background:hsl(104,60%,25%); color:#fff'>1907.5</td><td style='text-align:right;background:hsl(98,60%,25%); color:#fff'>2031.7</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4038.7</td></tr><tr><td>rollout-2-post</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1598.6</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1609.3</td><td style='text-align:right;background:hsl(104,60%,25%); color:#fff'>1906.8</td><td style='text-align:right;background:hsl(98,60%,25%); color:#fff'>2031.6</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4038.5</td></tr><tr><td>rollout-5-during</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1601.1</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1613.8</td><td style='text-align:right;background:hsl(105,60%,25%); color:#fff'>1921.3</td><td style='text-align:right;background:hsl(94,60%,25%); color:#fff'>2140.9</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4171.3</td></tr><tr><td>rollout-5-during-warm</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1601.1</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1614.5</td><td style='text-align:right;background:hsl(104,60%,25%); color:#fff'>1921.7</td><td style='text-align:right;background:hsl(94,60%,25%); color:#fff'>2129.8</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4106.0</td></tr><tr><td>rollout-5-post</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>1601.6</td><td style='text-align:right;background:hsl(119,60%,25%); color:#fff'>1614.0</td><td style='text-align:right;background:hsl(104,60%,25%); color:#fff'>1921.9</td><td style='text-align:right;background:hsl(96,60%,25%); color:#fff'>2099.3</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>4109.5</td></tr></tbody></table>
+<h3>MemAvail Δ (MiB) — lower is better</h3><table class='mini' style='border-collapse:collapse;width:100%'><thead><tr><th>Stage</th><th>k1s rootless</th><th>k1s rootful</th><th>k1s cri</th><th>k1nd</th><th>k3d</th></tr></thead><tbody><tr><td>idle</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>8.2</td><td style='text-align:right;background:hsl(115,60%,25%); color:#fff'>11.9</td><td style='text-align:right;background:hsl(110,60%,25%); color:#fff'>16.8</td><td style='text-align:right;background:hsl(80,60%,25%); color:#fff'>43.7</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>117.5</td></tr><tr><td>pods-1</td><td style='text-align:right;background:hsl(109,60%,25%); color:#fff'>7.1</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>2.6</td><td style='text-align:right;background:hsl(76,60%,25%); color:#fff'>22.2</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>56.4</td><td style='text-align:right;background:hsl(75,60%,25%); color:#fff'>22.5</td></tr><tr><td>pods-10</td><td style='text-align:right;background:hsl(83,60%,25%); color:#fff'>29.4</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>11.3</td><td style='text-align:right;background:hsl(86,60%,25%); color:#fff'>27.6</td><td style='text-align:right;background:hsl(24,60%,25%); color:#fff'>58.2</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>70.4</td></tr><tr><td>pods-5</td><td style='text-align:right;background:hsl(73,60%,25%); color:#fff'>23.4</td><td style='text-align:right;background:hsl(85,60%,25%); color:#fff'>18.9</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>6.2</td><td style='text-align:right;background:hsl(83,60%,25%); color:#fff'>19.7</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>50.2</td></tr><tr><td>rollout-2-during</td><td style='text-align:right;background:hsl(49,60%,25%); color:#fff'>72.2</td><td style='text-align:right;background:hsl(26,60%,25%); color:#fff'>92.1</td><td style='text-align:right;background:hsl(10,60%,25%); color:#fff'>105.1</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>114.3</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>13.2</td></tr><tr><td>rollout-2-during-warm</td><td style='text-align:right;background:hsl(52,60%,25%); color:#fff'>70.5</td><td style='text-align:right;background:hsl(27,60%,25%); color:#fff'>92.0</td><td style='text-align:right;background:hsl(12,60%,25%); color:#fff'>104.6</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>115.2</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>13.7</td></tr><tr><td>rollout-2-post</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>81.5</td><td style='text-align:right;background:hsl(53,60%,25%); color:#fff'>45.4</td><td style='text-align:right;background:hsl(116,60%,25%); color:#fff'>2.3</td><td style='text-align:right;background:hsl(69,60%,25%); color:#fff'>34.7</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>0.2</td></tr><tr><td>rollout-5-during</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>41.7</td><td style='text-align:right;background:hsl(85,60%,25%); color:#fff'>73.0</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>149.1</td><td style='text-align:right;background:hsl(13,60%,25%); color:#fff'>136.7</td><td style='text-align:right;background:hsl(102,60%,25%); color:#fff'>57.1</td></tr><tr><td>rollout-5-during-warm</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>37.5</td><td style='text-align:right;background:hsl(91,60%,25%); color:#fff'>65.4</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>153.1</td><td style='text-align:right;background:hsl(15,60%,25%); color:#fff'>138.6</td><td style='text-align:right;background:hsl(93,60%,25%); color:#fff'>62.7</td></tr><tr><td>rollout-5-post</td><td style='text-align:right;background:hsl(0,60%,25%); color:#fff'>52.7</td><td style='text-align:right;background:hsl(103,60%,25%); color:#fff'>19.9</td><td style='text-align:right;background:hsl(92,60%,25%); color:#fff'>23.7</td><td style='text-align:right;background:hsl(41,60%,25%); color:#fff'>39.6</td><td style='text-align:right;background:hsl(120,60%,25%); color:#fff'>14.8</td></tr></tbody></table>
+<h2 id='charts'>Charts</h2><h3>Control‑plane PSS — Timeline (k3s)</h3><img src='charts/control_plane_pss_k3d.png' alt='Control‑plane PSS — Timeline (k3s)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control‑plane PSS — Timeline (k1s rootless)</h3><img src='charts/control_plane_pss_k1s_rootless.png' alt='Control‑plane PSS — Timeline (k1s rootless)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control‑plane PSS — Timeline (k1s rootful)</h3><img src='charts/control_plane_pss_k1s_rootful.png' alt='Control‑plane PSS — Timeline (k1s rootful)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control‑plane PSS — Timeline (k1s cri)</h3><img src='charts/control_plane_pss_k1s_cri.png' alt='Control‑plane PSS — Timeline (k1s cri)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control‑plane PSS — Timeline (k1nd)</h3><img src='charts/control_plane_pss_k1nd.png' alt='Control‑plane PSS — Timeline (k1nd)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups — Timeline (k3s)</h3><img src='charts/system_cgroups_k3d.png' alt='System Cgroups — Timeline (k3s)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups — Timeline (k1s rootless)</h3><img src='charts/system_cgroups_k1s_rootless.png' alt='System Cgroups — Timeline (k1s rootless)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups — Timeline (k1s rootful)</h3><img src='charts/system_cgroups_k1s_rootful.png' alt='System Cgroups — Timeline (k1s rootful)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups — Timeline (k1s cri)</h3><img src='charts/system_cgroups_k1s_cri.png' alt='System Cgroups — Timeline (k1s cri)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>System Cgroups — Timeline (k1nd)</h3><img src='charts/system_cgroups_k1nd.png' alt='System Cgroups — Timeline (k1nd)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Per‑Pod Overhead (MiB)</h3><img src='charts/per_pod_overhead.png' alt='Per‑Pod Overhead (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Per‑Pod Scaling (MiB)</h3><img src='charts/per_pod_scaling.png' alt='Per‑Pod Scaling (MiB)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Rollout During vs Post (CP PSS)</h3><img src='charts/rollout_pairs.png' alt='Rollout During vs Post (CP PSS)' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Latest Comparison Heatmap</h3><img src='charts/matrix_heatmap.png' alt='Latest Comparison Heatmap' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Idle</h3><img src='charts/comparison_app_cgroups_idle.png' alt='App Cgroups Idle' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Pods-1</h3><img src='charts/comparison_control_plane_pss_pods-1.png' alt='Control Plane Pss Pods-1' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-5-During</h3><img src='charts/comparison_memavail_delta_rollout-5-during.png' alt='Memavail Delta Rollout-5-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-5-During</h3><img src='charts/comparison_host_system_cgroups_rollout-5-during.png' alt='Host System Cgroups Rollout-5-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-2-During</h3><img src='charts/comparison_app_cgroups_rollout-2-during.png' alt='App Cgroups Rollout-2-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Pods-10</h3><img src='charts/comparison_control_plane_pss_pods-10.png' alt='Control Plane Pss Pods-10' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-2-During-Warm</h3><img src='charts/comparison_control_plane_pss_rollout-2-during-warm.png' alt='Control Plane Pss Rollout-2-During-Warm' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Pods-5</h3><img src='charts/comparison_host_system_cgroups_pods-5.png' alt='Host System Cgroups Pods-5' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Pods-10</h3><img src='charts/comparison_memavail_delta_pods-10.png' alt='Memavail Delta Pods-10' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Pods-1</h3><img src='charts/comparison_memavail_delta_pods-1.png' alt='Memavail Delta Pods-1' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Idle</h3><img src='charts/comparison_memavail_delta_idle.png' alt='Memavail Delta Idle' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-2-During</h3><img src='charts/comparison_memavail_delta_rollout-2-during.png' alt='Memavail Delta Rollout-2-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-2-Post</h3><img src='charts/comparison_memavail_delta_rollout-2-post.png' alt='Memavail Delta Rollout-2-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Pods-10</h3><img src='charts/comparison_host_system_cgroups_pods-10.png' alt='Host System Cgroups Pods-10' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-5-Post</h3><img src='charts/comparison_memavail_delta_rollout-5-post.png' alt='Memavail Delta Rollout-5-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-5-Post</h3><img src='charts/comparison_host_system_cgroups_rollout-5-post.png' alt='Host System Cgroups Rollout-5-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-2-Post</h3><img src='charts/comparison_app_cgroups_rollout-2-post.png' alt='App Cgroups Rollout-2-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-2-During-Warm</h3><img src='charts/comparison_host_system_cgroups_rollout-2-during-warm.png' alt='Host System Cgroups Rollout-2-During-Warm' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Pods-5</h3><img src='charts/comparison_app_cgroups_pods-5.png' alt='App Cgroups Pods-5' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-2-Post</h3><img src='charts/comparison_host_system_cgroups_rollout-2-post.png' alt='Host System Cgroups Rollout-2-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-5-During</h3><img src='charts/comparison_app_cgroups_rollout-5-during.png' alt='App Cgroups Rollout-5-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-2-Post</h3><img src='charts/comparison_control_plane_pss_rollout-2-post.png' alt='Control Plane Pss Rollout-2-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Idle</h3><img src='charts/comparison_control_plane_pss_idle.png' alt='Control Plane Pss Idle' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Pods-5</h3><img src='charts/comparison_control_plane_pss_pods-5.png' alt='Control Plane Pss Pods-5' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-2-During-Warm</h3><img src='charts/comparison_app_cgroups_rollout-2-during-warm.png' alt='App Cgroups Rollout-2-During-Warm' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-5-During-Warm</h3><img src='charts/comparison_memavail_delta_rollout-5-during-warm.png' alt='Memavail Delta Rollout-5-During-Warm' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-2-During</h3><img src='charts/comparison_control_plane_pss_rollout-2-during.png' alt='Control Plane Pss Rollout-2-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-2-During</h3><img src='charts/comparison_host_system_cgroups_rollout-2-during.png' alt='Host System Cgroups Rollout-2-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Pods-5</h3><img src='charts/comparison_memavail_delta_pods-5.png' alt='Memavail Delta Pods-5' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Pods-1</h3><img src='charts/comparison_host_system_cgroups_pods-1.png' alt='Host System Cgroups Pods-1' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-5-During</h3><img src='charts/comparison_control_plane_pss_rollout-5-during.png' alt='Control Plane Pss Rollout-5-During' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Pods-1</h3><img src='charts/comparison_app_cgroups_pods-1.png' alt='App Cgroups Pods-1' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Pods-10</h3><img src='charts/comparison_app_cgroups_pods-10.png' alt='App Cgroups Pods-10' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-5-Post</h3><img src='charts/comparison_control_plane_pss_rollout-5-post.png' alt='Control Plane Pss Rollout-5-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Idle</h3><img src='charts/comparison_host_system_cgroups_idle.png' alt='Host System Cgroups Idle' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Memavail Delta Rollout-2-During-Warm</h3><img src='charts/comparison_memavail_delta_rollout-2-during-warm.png' alt='Memavail Delta Rollout-2-During-Warm' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-5-Post</h3><img src='charts/comparison_app_cgroups_rollout-5-post.png' alt='App Cgroups Rollout-5-Post' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Host System Cgroups Rollout-5-During-Warm</h3><img src='charts/comparison_host_system_cgroups_rollout-5-during-warm.png' alt='Host System Cgroups Rollout-5-During-Warm' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>Control Plane Pss Rollout-5-During-Warm</h3><img src='charts/comparison_control_plane_pss_rollout-5-during-warm.png' alt='Control Plane Pss Rollout-5-During-Warm' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/><h3>App Cgroups Rollout-5-During-Warm</h3><img src='charts/comparison_app_cgroups_rollout-5-during-warm.png' alt='App Cgroups Rollout-5-During-Warm' style='max-width:100%;height:auto;border:1px solid var(--border);margin:8px 0'/>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -1095,7 +1329,7 @@ sudo sysctl --system</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 14:20:07</span>
+        <span>Built 2026-04-22 07:47:39</span>
       </div>
     </footer>
     <script>

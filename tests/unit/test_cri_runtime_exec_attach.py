@@ -50,6 +50,7 @@ def test_exec_attach_tty_uses_pty(monkeypatch):
     runtime = _runtime(monkeypatch)
     calls: list[tuple[list[str], dict, _FakeProc]] = []
     closed: list[int] = []
+    resolved_crictl = "/usr/bin/crictl"
 
     def _fake_popen(argv, **kwargs):
         proc = _FakeProc(
@@ -60,7 +61,8 @@ def test_exec_attach_tty_uses_pty(monkeypatch):
         calls.append((list(argv), kwargs, proc))
         return proc
 
-    monkeypatch.setattr("ae.runtime.cri_runtime.shutil.which", lambda _bin: "/usr/bin/crictl")
+    monkeypatch.setenv("CRICTL_BIN", resolved_crictl)
+    monkeypatch.setattr("ae.runtime.cri_runtime.shutil.which", lambda _bin: resolved_crictl)
     monkeypatch.setattr("ae.runtime.cri_runtime.subprocess.Popen", _fake_popen)
     monkeypatch.setattr("ae.runtime.cri_runtime.threading.Thread", _NoopThread)
     monkeypatch.setattr("pty.openpty", lambda: (101, 102))
@@ -73,7 +75,7 @@ def test_exec_attach_tty_uses_pty(monkeypatch):
 
     argv, kwargs, _proc = calls[0]
     assert argv[0:5] == [
-        "crictl",
+        resolved_crictl,
         "--runtime-endpoint",
         "unix:///run/containerd/containerd.sock",
         "exec",
@@ -99,6 +101,7 @@ def test_exec_attach_tty_uses_pty(monkeypatch):
 def test_exec_attach_non_tty_uses_pipes(monkeypatch):
     runtime = _runtime(monkeypatch)
     calls: list[tuple[list[str], dict, _FakeProc]] = []
+    resolved_crictl = "/usr/bin/crictl"
 
     def _fake_popen(argv, **kwargs):
         proc = _FakeProc(
@@ -109,7 +112,8 @@ def test_exec_attach_non_tty_uses_pipes(monkeypatch):
         calls.append((list(argv), kwargs, proc))
         return proc
 
-    monkeypatch.setattr("ae.runtime.cri_runtime.shutil.which", lambda _bin: "/usr/bin/crictl")
+    monkeypatch.setenv("CRICTL_BIN", resolved_crictl)
+    monkeypatch.setattr("ae.runtime.cri_runtime.shutil.which", lambda _bin: resolved_crictl)
     monkeypatch.setattr("ae.runtime.cri_runtime.subprocess.Popen", _fake_popen)
     monkeypatch.setattr("ae.runtime.cri_runtime.threading.Thread", _NoopThread)
 
@@ -118,6 +122,7 @@ def test_exec_attach_non_tty_uses_pipes(monkeypatch):
     exec_sock.close()
 
     argv, kwargs, _proc = calls[0]
+    assert argv[0] == resolved_crictl
     assert "-t" not in argv
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["stdout"] is subprocess.PIPE

@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 .venv/
+.direnv/
 .eggs/
 build/
 dist/
@@ -9,6 +10,8 @@ dist/
 state/
 .venv-demo/
 .local/
+.codex/
+tmp/
 # Benchmark/test artifacts
 snapshots/
 combined/
@@ -46,3 +49,6 @@ rosenpass*.key
 rosenpass*.pub
 rosenpass*.conf
 rosenpass-status.json
+artifacts/
+runs/
+scripts/dev/*.bak.*

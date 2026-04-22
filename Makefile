@@ -1,9 +1,16 @@
-.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track
-.PHONY: dev-min dev-etcd k1s-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
+.PHONY: install test lint run loop dev-up dev-down down apply-sample status-sample logs-sample haproxy-update haproxy-watch install-systemd uninstall-systemd install-ha-core-systemd uninstall-ha-core-systemd install-docs-service uninstall-docs-service start-here k8s-smoke docs-local-ignore docs-local-track ha-closeout-e2e env-doctor dev-local-clean profile-smoke strict-cri-smoke docs-verify premerge-dev _profile-smoke-root _strict-cri-smoke-root
+.PHONY: dev-min dev-etcd k1s-core k1s-ha-core k1s-edge k1s-core-edge k1s-edge-core k1s-core-node k1s-edge-node
 .PHONY: k1s-core-cri k1s-edge-cri k1s-core-edge-cri k1s-edge-core-cri edge-site-cri
 .PHONY: edge-site
 .PHONY: k1s-core-caddy dev-min-caddy dev-etcd-caddy dev-local
 .PHONY: shim-helm-demo
+.PHONY: lab-vm-image-build lab-vm-image-verify lab-vm-image-transfer
+.PHONY: lab-vm-host-prepare lab-vm-up lab-vm-validate lab-vm-bootstrap
+.PHONY: lab-vm-baseline lab-vm-throughput lab-vm-gate lab-vm-collect lab-vm-down lab-vm-smoke
+.PHONY: lab-vm-ha-attached-node-up lab-vm-ha-attached-node-status lab-vm-ha-attached-node-down lab-vm-ha-attached-node-purge
+.PHONY: lab-vm-ha-attached-node-reseed-core lab-vm-ha-attached-node-restart-core
+.PHONY: lab-vm-ha-attached-node-restart-apishim lab-vm-ha-attached-node-restart-node
+.PHONY: lab-vm-ha-attached-node-refresh-all lab-vm-ha-attached-node-reset lab-vm-ha-attached-node-workload-smoke lab-vm-ha-core-workload-smoke lab-vm-ha-validation
 
 install:
 	python -m pip install -e .[dev]
@@ -13,6 +20,67 @@ watch:
 
 test:
 	pytest -q
+
+profile-smoke:
+	@if [ "$$(id -u)" -eq 0 ] && [ "$${AE_PROFILE_SMOKE_ALLOW_ROOT:-0}" != "1" ]; then \
+	  echo "[profile-smoke] run this target as your normal user."; \
+	  echo "[profile-smoke] dev-min exercises the rootless Podman profile and is not representative under sudo."; \
+	  echo "[profile-smoke] set AE_PROFILE_SMOKE_ALLOW_ROOT=1 only when you explicitly want root execution."; \
+	  exit 1; \
+	fi
+	@$(MAKE) _profile-smoke-root
+
+_profile-smoke-root:
+	@AE_PROFILE_SMOKE=1 python -m pytest --maxfail=1 --disable-warnings -q tests/integration/test_profile_entrypoints.py
+
+strict-cri-smoke:
+	@if [ "$$(id -u)" -ne 0 ]; then \
+	  if ! sudo -v >/dev/null; then \
+	    echo "[strict-cri-smoke] strict CRI smoke requires a prepared host with runtime-ready containerd access."; \
+	    echo "[strict-cri-smoke] rerun with: sudo -E make strict-cri-smoke"; \
+	    echo "[strict-cri-smoke] or grant temporary access via: ./scripts/containerd_socket_access.sh --grant"; \
+	    exit 1; \
+	  fi; \
+	  exec sudo -E env "PATH=$$PATH" $(MAKE) _strict-cri-smoke-root; \
+	else \
+	  exec $(MAKE) _strict-cri-smoke-root; \
+	fi
+
+_strict-cri-smoke-root:
+	@AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh
+	@AE_STRICT_CRI_PROFILE_SMOKE=1 AE_CRI_IT=1 AE_CRI_SMOKE_PULL=1 ./scripts/dev/strict_cri_smoke.sh
+
+docs-verify:
+	@DOCS_API_BASE=$${DOCS_API_BASE:-https://api.home.arpa:8443} \
+	  DOCS_DASHBOARD_URL=$${DOCS_DASHBOARD_URL:-https://dash.home.arpa:8443/dashboard} \
+	  python -m pytest --maxfail=1 --disable-warnings -q \
+	    tests/unit/test_docs_command_alignment.py \
+	    tests/integration/test_docs_export_and_links.py
+
+premerge-dev:
+	@if [ "$$(id -u)" -eq 0 ]; then \
+	  echo "[premerge-dev] run this target as your normal user after 'sudo -v'."; \
+	  echo "[premerge-dev] do not run the full gate under sudo."; \
+	  exit 1; \
+	fi
+	@if [ "$$(id -u)" -ne 0 ] && ! sudo -n true >/dev/null 2>&1; then \
+	  echo "[premerge-dev] make e2e requires root or cached sudo on this host."; \
+	  echo "[premerge-dev] run 'sudo -v' first, then rerun as your normal user: make premerge-dev"; \
+	  exit 1; \
+	fi
+	@python -m pytest --maxfail=1 --disable-warnings -q
+	@$(MAKE) e2e
+	@$(MAKE) profile-smoke
+	@$(MAKE) docs-verify
+	@$(MAKE) ha-closeout-e2e
+	@if [ "$${AE_PREMERGE_STRICT_CRI:-0}" = "1" ]; then \
+	  $(MAKE) strict-cri-smoke; \
+	else \
+	  echo "[premerge-dev] strict-cri-smoke skipped (set AE_PREMERGE_STRICT_CRI=1 to enable)."; \
+	fi
+
+ha-closeout-e2e:
+	@./scripts/dev/ha_closeout_e2e.sh $${HA_CLOSEOUT_E2E_ARGS:-}
 
 lint:
 	ruff check
@@ -41,6 +109,9 @@ dev-etcd:
 
 k1s-core:
 	@./scripts/dev/run_profile.sh k1s-core
+
+k1s-ha-core:
+	@./scripts/dev/run_profile.sh k1s-ha-core
 
 k1s-edge:
 	@./scripts/dev/run_profile.sh k1s-edge
@@ -77,28 +148,36 @@ k1s-edge-core:
 	@EDGE_PROFILE=k1s-core ./scripts/dev/run_profile.sh k1s-edge
 
 k1s-core-node:
-	@AE_NODE_ID=$${AE_NODE_ID:-hub-1} \
-	  AE_NODE_LABELS="$${AE_NODE_LABELS:-role=hub,site=hub}$${AE_WG_ENDPOINT:+,wg_endpoint=$${AE_WG_ENDPOINT}}" \
+	@AE_NODE_ID=$${AE_NODE_ID:-attached-node-1} \
+	  AE_NODE_LABELS="$${AE_NODE_LABELS:-role=worker,site=core}$${AE_WG_ENDPOINT:+,wg_endpoint=$${AE_WG_ENDPOINT}}" \
 	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.0.0/24} \
+	  AE_CNI_SUBNET=$${AE_CNI_SUBNET:-$${AE_POD_CIDR:-10.42.0.0/24}} \
+	  AE_CNI_FORCE=$${AE_CNI_FORCE:-1} \
+	  AE_POD_BRIDGE=$${AE_POD_BRIDGE:-cni0} \
+	  AE_CNI_BRIDGE_NAME=$${AE_CNI_BRIDGE_NAME:-$${AE_POD_BRIDGE:-cni0}} \
 	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
 	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
 	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-$$(if [ "$$(id -u)" -eq 0 ]; then echo /var/lib/ae/rosenpass; else echo state/rosenpass; fi)} \
 	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
 	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
 	  AE_NODE_PORT=$${AE_NODE_PORT:-9111} \
-	  PYTHONPATH=src python -m ae.node --ensure-pod-net
+	  ./scripts/dev/ensure_cri_node_cni.sh && PYTHONPATH=src python -m ae.node --ensure-pod-net
 
 k1s-edge-node:
 	@AE_NODE_ID=$${AE_NODE_ID:-edge-1} \
 	  AE_NODE_LABELS="$${AE_NODE_LABELS:-site=edge}" \
 	  AE_POD_CIDR=$${AE_POD_CIDR:-10.42.1.0/24} \
+	  AE_CNI_SUBNET=$${AE_CNI_SUBNET:-$${AE_POD_CIDR:-10.42.1.0/24}} \
+	  AE_CNI_FORCE=$${AE_CNI_FORCE:-1} \
+	  AE_POD_BRIDGE=$${AE_POD_BRIDGE:-cni0} \
+	  AE_CNI_BRIDGE_NAME=$${AE_CNI_BRIDGE_NAME:-$${AE_POD_BRIDGE:-cni0}} \
 	  AE_ROSENPASS_ENABLED=$${AE_ROSENPASS_ENABLED:-1} \
 	  AE_ROSENPASS_CONFIG=$${AE_ROSENPASS_CONFIG:-controller} \
 	  AE_ROSENPASS_DIR=$${AE_ROSENPASS_DIR:-$$(if [ "$$(id -u)" -eq 0 ]; then echo /var/lib/ae/rosenpass; else echo state/rosenpass; fi)} \
 	  AE_CONTROLLER_URL=$${AE_CONTROLLER_URL:-http://127.0.0.1:9110} \
 	  AE_AGENT_TOKEN=$${AE_AGENT_TOKEN:-devtoken} \
 	  AE_NODE_PORT=$${AE_NODE_PORT:-9112} \
-	  PYTHONPATH=src python -m ae.node --ensure-pod-net
+	  ./scripts/dev/ensure_cri_node_cni.sh && PYTHONPATH=src python -m ae.node --ensure-pod-net
 
 k1s-core-caddy:
 	@CORE_CADDY=1 ./scripts/dev/run_profile.sh k1s-core
@@ -111,6 +190,12 @@ dev-etcd-caddy:
 
 dev-local:
 	@AE_DEV_LOCAL=1 ./scripts/dev/ensure_dev_local.sh
+
+dev-local-clean:
+	@AE_DEV_LOCAL_ACTION=clean ./scripts/dev/ensure_dev_local.sh
+
+env-doctor:
+	@./scripts/dev/env_doctor.sh
 
 apply-sample:
 	python -m ae.cli apply -f specs/examples/echo.yaml
@@ -153,6 +238,12 @@ install-systemd:
 
 uninstall-systemd:
 			@bash scripts/install.sh uninstall --disable
+
+install-ha-core-systemd:
+		@bash scripts/install.sh ha-core-install --enable
+
+uninstall-ha-core-systemd:
+			@bash scripts/install.sh ha-core-uninstall --disable
 
 install-docs-service:
 			@bash scripts/install.sh docs-install --enable
@@ -214,7 +305,7 @@ apishim-smoke:
 	  exit $$rc
 
 labs-aio-up:
-	@CORE_CADDY=1 AE_DEV_LOCAL=1 ./scripts/dev/run_profile.sh dev-etcd
+	@CORE_CADDY=1 AE_DEV_LOCAL=$${AE_DEV_LOCAL:-1} ./scripts/dev/run_profile.sh dev-etcd
 
 labs-aio-down:
 	@$(MAKE) down
@@ -227,17 +318,127 @@ labs-apishim-env:
 	@echo "[labs] apishim tokens (dev only):"
 	@cat state/profiles/dev-etcd/apishim.env
 
+# VM GPU lab -------------------------------------------------------------
+# Required env:
+# - VARIANT: path under lab/variants/*.yaml
+# Optional env:
+# - RUN_ID, INFERENCE_URL, BASELINE_RUN_ID
+
+lab-vm-image-build:
+	@./scripts/lab/vm/labctl.sh image build --variant $${VARIANT_KIND:-all}
+
+lab-vm-image-verify:
+	@./scripts/lab/vm/labctl.sh image verify --variant $${VARIANT_KIND:-all}
+
+lab-vm-image-transfer:
+	@./scripts/lab/vm/labctl.sh image transfer --host $${DEST_HOST:?set DEST_HOST} --dest $${DEST_DIR:?set DEST_DIR} --variant $${VARIANT_KIND:-all}
+
+lab-vm-host-prepare:
+	@./scripts/lab/vm/labctl.sh host prepare $${LAB_HOST_PREPARE_ARGS:-}
+
+lab-vm-up:
+	@./scripts/lab/vm/labctl.sh variant up --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-validate:
+	@./scripts/lab/vm/labctl.sh variant validate --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-bootstrap:
+	@./scripts/lab/vm/k1s_bootstrap.sh --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID} $${EXECUTE:+--execute}
+
+lab-vm-smoke:
+	@./scripts/lab/vm/smoke_helper.py --variant $${VARIANT:-lab/variants/test3-abc-pp2.yaml} $${RUN_ID:+--run-id $$RUN_ID} $${LAB_VM_SMOKE_ARGS:-}
+
+lab-vm-baseline:
+	@./scripts/lab/vm/labctl.sh variant baseline --variant $${VARIANT:?set VARIANT} --endpoint $${INFERENCE_URL:?set INFERENCE_URL} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-throughput:
+	@./scripts/lab/vm/labctl.sh variant throughput --variant $${VARIANT:?set VARIANT} --endpoint $${INFERENCE_URL:?set INFERENCE_URL} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-gate:
+	@./scripts/lab/vm/labctl.sh variant gate --variant $${VARIANT:?set VARIANT} --baseline-run-id $${BASELINE_RUN_ID:?set BASELINE_RUN_ID} --current-run-id $${RUN_ID:?set RUN_ID}
+
+lab-vm-collect:
+	@./scripts/lab/vm/labctl.sh collect --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID}
+
+lab-vm-down:
+	@./scripts/lab/vm/labctl.sh variant down --variant $${VARIANT:?set VARIANT} $${RUN_ID:+--run-id $$RUN_ID} $${LAB_VM_DOWN_ARGS:-}
+
+lab-vm-ha-attached-node-up:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh up $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-attached-node-status:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh status $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-attached-node-workload-smoke:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh workload-smoke $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-core-workload-smoke:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-core.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-control-plane-core} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh core-workload-smoke $${LAB_VM_HA_CORE_ARGS:-$${LAB_VM_HA_ATTACHED_NODE_ARGS:-}}
+
+lab-vm-ha-validation:
+	@./scripts/lab/vm/run_ha_validation.sh $${LAB_VM_HA_VALIDATION_ARGS:-}
+
+lab-vm-ha-attached-node-down:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh down $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-attached-node-purge:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh purge $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-attached-node-reseed-core:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh reseed-core $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-attached-node-restart-core:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh restart-core $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-attached-node-restart-apishim:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh restart-apishim $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-attached-node-restart-node:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh restart-node $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-attached-node-refresh-all:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh refresh-all $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
+lab-vm-ha-attached-node-reset:
+	@VARIANT=$${VARIANT:-lab/variants/ha-control-plane-attached-node.yaml} \
+	  RUN_ID=$${RUN_ID:-ha-attached-node-local} \
+	  ./scripts/lab/vm/ha_dashboard_smoke.sh reset $${LAB_VM_HA_ATTACHED_NODE_ARGS:-}
+
 .PHONY: demo demo-legacy demo-down integ-test labs
 demo:
 	@PROFILE_DIR=$${PROFILE_DIR:-state/profiles/demo} \
 	  SPECS_DIR=$${SPECS_DIR:-state/profiles/demo/specs} \
 	  AE_ALLOW_PLAINTEXT_SECRETS=$${AE_ALLOW_PLAINTEXT_SECRETS:-1} \
+	  AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} \
 	  AE_RUNTIME_BACKEND=$${AE_RUNTIME_BACKEND:-podman} \
 	  AE_INFRA_BACKEND=$${AE_INFRA_BACKEND:-compose} \
 	  AE_DEMO_SEED=1 \
 	  AE_DEMO_SEED_WIPE=1 \
 	  AE_DEMO_MODE=1 \
 	  AE_DEV_LOCAL=$${AE_DEV_LOCAL:-1} \
+	  DOCS_EMBED_LABS_TOKEN=$${DOCS_EMBED_LABS_TOKEN:-1} \
 	  CORE_CADDY=$${CORE_CADDY:-1} \
 	  ./scripts/dev/run_profile.sh dev-min
 
@@ -343,7 +544,7 @@ bench-mem-matrix-k1s:
 	@./scripts/bench/run_matrix.sh --label-suite $${LABEL_SUITE:-baseline} --app $${APP:-specs/examples/echo.yaml} --app-name $${APP_NAME:-echo} --replicas $${REPLICAS:-1,5,10} --duration $${DURATION:-30}
 
 bench-mem-combine:
-	@python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@python scripts/bench/mem_combine.py $${COMBINE_OUTDIR:+--outdir $$COMBINE_OUTDIR} $${GLOB:-snapshots/*/*}
 
 # Verify a specific snapshot (or latest for LABEL) and print per-container split
 bench-mem-verify:
@@ -372,6 +573,18 @@ bench-mem-rollout-k3s:
 
 bench-mem-plot:
 	@python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+
+.PHONY: bench-rollout-tuning-experiment
+bench-rollout-tuning-experiment:
+	@./scripts/bench/run_rollout_tuning_experiment.sh --lane $${LANE:?set LANE=cri|rootless|rootful|k1nd} $${LABEL_BASE:+--label-base "$$LABEL_BASE"} $${EXPERIMENT_ID:+--experiment-id "$$EXPERIMENT_ID"}
+
+.PHONY: bench-cri-rollout-candidate
+bench-cri-rollout-candidate:
+	@./scripts/bench/run_cri_rollout_candidate.sh
+
+.PHONY: bench-lane-quiet-candidate
+bench-lane-quiet-candidate:
+	@./scripts/bench/run_lane_quiet_candidate.sh
 
 .PHONY: bench-mem-e2e-k3s-sudo
 # End-to-end K3s (with sudo for snapshots to capture accurate PSS)
@@ -458,8 +671,9 @@ bench-mem-cri-quick:
 # - Uses Docker on the host for preflights and container cgroup metrics
 # - Skips guard auto-start to avoid spawning a host controller
 bench-mem-e2e-k1nd:
-	@scripts/bench/k1nd_sanitize.sh pre
-	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	@set -e; \
+	 scripts/bench/k1nd_sanitize.sh pre; \
+	 APP_PATH=$${APP:-specs/examples/echo.yaml}; \
 	 APP_BASE=$$(basename "$$APP_PATH"); \
 	 export K1ND_MANIFEST="$$APP_PATH"; \
 	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
@@ -469,6 +683,7 @@ bench-mem-e2e-k1nd:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_matrix.sh \
@@ -481,6 +696,7 @@ bench-mem-e2e-k1nd:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_rollout_k1s.sh \
@@ -496,8 +712,9 @@ bench-mem-e2e-k1nd:
 .PHONY: bench-mem-e2e-k1nd-sudo
 # Same as bench-mem-e2e-k1nd but runs snapshots with sudo to capture full PSS
 bench-mem-e2e-k1nd-sudo:
-	@scripts/bench/k1nd_sanitize.sh pre
-	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	@set -e; \
+	 scripts/bench/k1nd_sanitize.sh pre; \
+	 APP_PATH=$${APP:-specs/examples/echo.yaml}; \
 	 APP_BASE=$$(basename "$$APP_PATH"); \
 	 export K1ND_MANIFEST="$$APP_PATH"; \
 	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
@@ -507,6 +724,7 @@ bench-mem-e2e-k1nd-sudo:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_matrix.sh \
@@ -520,6 +738,7 @@ bench-mem-e2e-k1nd-sudo:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_rollout_k1s.sh \
@@ -536,8 +755,9 @@ bench-mem-e2e-k1nd-sudo:
 .PHONY: bench-mem-e2e-k1nd-quick
 # Fast profile: in-container CLI, no warm, shorter snapshots, fewer waits
 bench-mem-e2e-k1nd-quick:
-	@scripts/bench/k1nd_sanitize.sh pre
-	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	@set -e; \
+	 scripts/bench/k1nd_sanitize.sh pre; \
+	 APP_PATH=$${APP:-specs/examples/echo.yaml}; \
 	 APP_BASE=$$(basename "$$APP_PATH"); \
 	 export K1ND_MANIFEST="$$APP_PATH"; \
 	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
@@ -548,6 +768,7 @@ bench-mem-e2e-k1nd-quick:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 \
 	 bash ./scripts/bench/run_matrix.sh \
@@ -561,6 +782,7 @@ bench-mem-e2e-k1nd-quick:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
 	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
@@ -575,8 +797,9 @@ bench-mem-e2e-k1nd-quick:
 .PHONY: bench-mem-e2e-k1nd-resume-rollout
 # Resume only the rollout stage (use the same LABEL_SUITE as the previous matrix stage)
 bench-mem-e2e-k1nd-resume-rollout:
-	@scripts/bench/k1nd_sanitize.sh pre
-	@APP_PATH=$${APP:-specs/examples/echo.yaml}; \
+	@set -e; \
+	 scripts/bench/k1nd_sanitize.sh pre; \
+	 APP_PATH=$${APP:-specs/examples/echo.yaml}; \
 	 APP_BASE=$$(basename "$$APP_PATH"); \
 	 export K1ND_MANIFEST="$$APP_PATH"; \
 	 export K1ND_APP_IN_CONTAINER="/apply/$$APP_BASE"; \
@@ -586,6 +809,7 @@ bench-mem-e2e-k1nd-resume-rollout:
 	 AE_K1ND_CONTROLLER_CONTAINER=$${AE_K1ND_CONTROLLER_CONTAINER:-k1nd-server} \
 	 AE_K1ND_APISHIM_CONTAINER=$${AE_K1ND_APISHIM_CONTAINER:-k1nd-server} \
 	 AE_K1ND_INGRESS_CONTAINER=$${AE_K1ND_INGRESS_CONTAINER:-k1nd-server} \
+	 BENCH_WAIT_RUNTIME=$${BENCH_WAIT_RUNTIME:-1} \
 	 AE_COLLECT_ENGINE=$${AE_COLLECT_ENGINE:-docker} AE_ENGINE_STRICT=$${AE_ENGINE_STRICT:-1} \
 	 AE_SERIAL_SERVICE_ROLLOUT=$${AE_SERIAL_SERVICE_ROLLOUT:-1} SKIP_EXISTING=$${SKIP_EXISTING:-1} \
 	 AE_RUNTIME_BACKEND=docker SKIP_GUARDS=1 bash ./scripts/bench/run_rollout_k1s.sh \
@@ -766,11 +990,31 @@ bench-mem-backfill-oci-latest:
 		echo "[oci-backfill-latest] latest label=$$LBL" >&2; \
 		$(MAKE) bench-mem-backfill-oci LABEL="$$LBL*" $${OCI:+OCI=$$OCI} $${REBUILD_DOCS:+REBUILD_DOCS=$$REBUILD_DOCS}
 
+.PHONY: bench-retained-rebuild
+# Rebuild published benchmark artifacts from an explicit retained snapshot set plus
+# the frozen 20260203 legacy reference import.
+#
+# Variables:
+#   PROFILE        - retained profile name (`interim-20260417` or `final`)
+#   STAMP          - required when PROFILE=final; the fresh rerun stamp prefix
+#   DELETE_DROPPED - set to 1 to delete snapshot dirs outside the retained set
+#   DRY_RUN        - set to 1 to write keep/drop inventories without rebuilding
+#   SKIP_PLOTS     - set to 1 to skip chart regeneration
+#   SKIP_DOCS      - set to 1 to skip docs rebuild
+bench-retained-rebuild:
+	@ARGS="--profile $${PROFILE:-interim-20260417}"; \
+	if [ -n "$${STAMP:-}" ]; then ARGS="$$ARGS --stamp $$STAMP"; fi; \
+	if [ "$${DELETE_DROPPED:-0}" = "1" ]; then ARGS="$$ARGS --delete-dropped"; fi; \
+	if [ "$${DRY_RUN:-0}" = "1" ]; then ARGS="$$ARGS --dry-run"; fi; \
+	if [ "$${SKIP_PLOTS:-0}" = "1" ]; then ARGS="$$ARGS --skip-plots"; fi; \
+	if [ "$${SKIP_DOCS:-0}" = "1" ]; then ARGS="$$ARGS --skip-docs"; fi; \
+	python scripts/bench/rebuild_retained_artifacts.py $$ARGS
+
 .PHONY: bench-mem-finalize-sudo
 # Finalize benchmarks after mixed non-root/root runs (run with sudo):
 # - Backfill OCI runtime into labels and metadata across ALL snapshots
-# - Recombine results and regenerate charts with a wider history window
-# - Rebuild docs with a one-week staleness threshold
+# - Recombine results under sudo, then normalize ownership
+# - Regenerate charts/docs as the invoking user so repo venv matplotlib works
 # - Normalize permissions back to the invoking user
 #
 # Usage:
@@ -783,10 +1027,15 @@ bench-mem-finalize-sudo:
 	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" python scripts/bench/label_backfill.py "snapshots/*/*" --insert-into-label || true
 	@echo "[finalize] combining snapshots" >&2
 	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" python scripts/bench/mem_combine.py $${GLOB:-snapshots/*/*}
+	@$(MAKE) bench-fix-perms
 	@echo "[finalize] plotting charts (PLOT_LATEST=$${PLOT_LATEST:-500})" >&2
-	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
+	@RUN_AS="$${SUDO_USER:+sudo -u $$SUDO_USER}"; \
+	 USER_PATH="$$(pwd)/.venv/bin:$${PATH}"; \
+	 $$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}" NIX_LD_LIBRARY_PATH="$${NIX_LD_LIBRARY_PATH:-}" NIX_LD="$${NIX_LD:-}" PLOT_LATEST=$${PLOT_LATEST:-500} python scripts/bench/plot_overhead.py $${CSV:-combined/combined.csv} $${OUTDIR:-charts}
 	@echo "[finalize] building docs (DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168})" >&2
-	@sudo env PATH="$${PATH}" PYTHONPATH="$${PYTHONPATH:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
+	@RUN_AS="$${SUDO_USER:+sudo -u $$SUDO_USER}"; \
+	 USER_PATH="$$(pwd)/.venv/bin:$${PATH}"; \
+	 $$RUN_AS env PATH="$$USER_PATH" PYTHONPATH="$${PYTHONPATH:-}" LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}" NIX_LD_LIBRARY_PATH="$${NIX_LD_LIBRARY_PATH:-}" NIX_LD="$${NIX_LD:-}" DOCS_CHART_STALENESS_HOURS=$${DOCS_CHART_STALENESS_HOURS:-168} python docs/build_docs.py
 	@$(MAKE) bench-fix-perms
 
 .PHONY: docs-watch

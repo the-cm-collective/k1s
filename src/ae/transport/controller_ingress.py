@@ -10,8 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import threading
 
+from ae.config.transport import desired_js_replicas
 from ae.controller.node_identity import scoped_node_id
 from ae.controller.state import SQLiteStateStore
+from ae.ha.fencing import lease_operation, parse_envelope, resolve_controller_identity
+from ae.observability.http_api import record_ha_fence_event
 from ae.transport.nats_client import NatsClient, NatsClientError, NatsMessage
 
 LOGGER = logging.getLogger(__name__)
@@ -20,7 +23,9 @@ LOGGER = logging.getLogger(__name__)
 @dataclass(slots=True)
 class LeaseResponse:
     accepted: bool
+    controller_id: str
     controller_epoch: int
+    operation_id: str | None
     lease_id: str | None
     lease_ttl_ms: int
     renew_after_ms: int
@@ -29,7 +34,9 @@ class LeaseResponse:
     def as_dict(self) -> dict:
         return {
             "accepted": self.accepted,
+            "controller_id": self.controller_id,
             "controller_epoch": self.controller_epoch,
+            "operation_id": self.operation_id,
             "lease_id": self.lease_id,
             "lease_ttl_ms": self.lease_ttl_ms,
             "renew_after_ms": self.renew_after_ms,
@@ -49,6 +56,7 @@ class NatsControllerIngress:
         renew_after_ms: int | None = None,
         js_provision: bool = False,
         edge_renderer=None,
+        authority=None,
     ) -> None:
         self._store = store
         self._client = NatsClient(url=url, creds=creds, name="k1s-controller-ingress")
@@ -77,6 +85,13 @@ class NatsControllerIngress:
         self._core_proxy_port_min = int(os.getenv("AE_CORE_PROXY_PORT_MIN", "18080") or 18080)
         self._core_proxy_port_max = int(os.getenv("AE_CORE_PROXY_PORT_MAX", "18999") or 18999)
         self._edge_renderer = edge_renderer
+        self._authority = authority
+        self._authority_poll_s = max(
+            0.1,
+            float(os.getenv("AE_CONTROLLER_INGRESS_AUTHORITY_POLL_SECONDS", "0.5") or 0.5),
+        )
+        self._authority_stop = threading.Event()
+        self._authority_thread: threading.Thread | None = None
         self._subs: list[str] = []
 
     def start(self) -> None:
@@ -85,6 +100,52 @@ class NatsControllerIngress:
         except NatsClientError as exc:
             LOGGER.warning("nats ingress connect failed: %s", exc)
             return
+        self.sync_authority()
+        if self._authority is not None:
+            self._authority_thread = threading.Thread(target=self._watch_authority, daemon=True)
+            self._authority_thread.start()
+        LOGGER.info("nats ingress started (%s subs)", len(self._subs))
+
+    def close(self) -> None:
+        self._authority_stop.set()
+        if self._authority_thread is not None:
+            try:
+                self._authority_thread.join(timeout=1.0)
+            except Exception:
+                pass
+        for sid in self._subs:
+            try:
+                self._client.unsubscribe(sid)
+            except Exception:
+                pass
+        self._subs = []
+        try:
+            self._client.close()
+        except Exception:
+            pass
+
+    def sync_authority(self) -> None:
+        if self._authority is None:
+            if not self._subs:
+                self._subscribe_mutating()
+            return
+        snapshot = self._authority.snapshot()
+        if snapshot.leader_info is not None and snapshot.leader_info.controller_epoch:
+            self._epoch = int(snapshot.leader_info.controller_epoch)
+        if snapshot.is_leader:
+            if not self._subs:
+                self._subscribe_mutating()
+        elif self._subs:
+            self._unsubscribe_mutating()
+
+    def _watch_authority(self) -> None:
+        while not self._authority_stop.wait(self._authority_poll_s):
+            try:
+                self.sync_authority()
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("nats ingress authority sync failed: %s", exc)
+
+    def _subscribe_mutating(self) -> None:
         self._subs.append(
             self._client.subscribe("k1s.v1.site.*.lease.acquire", self._on_lease_acquire)
         )
@@ -98,29 +159,81 @@ class NatsControllerIngress:
             self._client.subscribe("k1s.v1.site.*.work.ack", self._on_work_ack)
         )
         self._subs.append(self._client.subscribe("k1s.v1.site.*.result", self._on_result))
-        LOGGER.info("nats ingress started (%s subs)", len(self._subs))
 
-    def close(self) -> None:
+    def _unsubscribe_mutating(self) -> None:
         for sid in self._subs:
             try:
                 self._client.unsubscribe(sid)
             except Exception:
                 pass
         self._subs = []
-        try:
-            self._client.close()
-        except Exception:
-            pass
+
+    def _is_leader(self) -> bool:
+        if self._authority is None:
+            return True
+        snapshot = self._authority.snapshot()
+        if snapshot.leader_info is not None and snapshot.leader_info.controller_epoch:
+            self._epoch = int(snapshot.leader_info.controller_epoch)
+        return bool(snapshot.is_leader)
+
+    def _leader_hint(self) -> dict[str, object]:
+        if self._authority is None:
+            return {}
+        snapshot = self._authority.snapshot()
+        info = snapshot.leader_info
+        if info is None:
+            return {}
+        payload: dict[str, object] = {
+            "controller_id": info.controller_id,
+            "controller_epoch": info.controller_epoch,
+        }
+        if info.advertise_addr:
+            payload["advertise_addr"] = info.advertise_addr
+        return payload
+
+    def _mutation_identity(self):
+        return resolve_controller_identity(
+            self._authority,
+            controller_epoch=self._epoch,
+        )
 
     def _on_lease_acquire(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            self._reply(
+                msg,
+                {
+                    "accepted": False,
+                    "reason": "not_leader",
+                    "controller_epoch": self._epoch,
+                    **self._leader_hint(),
+                },
+            )
+            return
         payload = self._safe_json(msg)
+        request_id = lease_operation(str(payload.get("request_id") or "").strip())
         site_id = _site_id_from_subject(msg.subject) or str(payload.get("site_id") or "")
         node_id = str(payload.get("node_id") or "").strip()
         session_id = str(payload.get("session_id") or "").strip()
+        identity = self._mutation_identity()
+        if not request_id:
+            resp = LeaseResponse(
+                accepted=False,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=None,
+                lease_id=None,
+                lease_ttl_ms=self._lease_ttl_ms,
+                renew_after_ms=self._renew_after_ms,
+                reason="request_id required",
+            )
+            self._reply(msg, resp.as_dict())
+            return
         if not site_id or not node_id:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -131,7 +244,9 @@ class NatsControllerIngress:
         if payload.get("site_id") and str(payload.get("site_id")) != site_id:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -171,7 +286,9 @@ class NatsControllerIngress:
             LOGGER.warning("lease acquire store update failed: %s", exc)
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -181,7 +298,9 @@ class NatsControllerIngress:
             return
         resp = LeaseResponse(
             accepted=True,
-            controller_epoch=self._epoch,
+            controller_id=identity.controller_id,
+            controller_epoch=identity.controller_epoch,
+            operation_id=request_id,
             lease_id=lease.lease_id,
             lease_ttl_ms=lease.lease_ttl_ms,
             renew_after_ms=lease.renew_after_ms,
@@ -191,13 +310,41 @@ class NatsControllerIngress:
         self._reply(msg, resp.as_dict())
 
     def _on_lease_renew(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            self._reply(
+                msg,
+                {
+                    "accepted": False,
+                    "reason": "not_leader",
+                    "controller_epoch": self._epoch,
+                    **self._leader_hint(),
+                },
+            )
+            return
         payload = self._safe_json(msg)
+        request_id = lease_operation(str(payload.get("request_id") or "").strip())
         site_id = _site_id_from_subject(msg.subject) or str(payload.get("site_id") or "")
         node_id = str(payload.get("node_id") or "").strip()
+        identity = self._mutation_identity()
+        if not request_id:
+            resp = LeaseResponse(
+                accepted=False,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=None,
+                lease_id=None,
+                lease_ttl_ms=self._lease_ttl_ms,
+                renew_after_ms=self._renew_after_ms,
+                reason="request_id required",
+            )
+            self._reply(msg, resp.as_dict())
+            return
         if not site_id or not node_id:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -209,7 +356,9 @@ class NatsControllerIngress:
         if not lease_id:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=None,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -226,7 +375,9 @@ class NatsControllerIngress:
         if lease is None:
             resp = LeaseResponse(
                 accepted=False,
-                controller_epoch=self._epoch,
+                controller_id=identity.controller_id,
+                controller_epoch=identity.controller_epoch,
+                operation_id=request_id,
                 lease_id=lease_id,
                 lease_ttl_ms=self._lease_ttl_ms,
                 renew_after_ms=self._renew_after_ms,
@@ -240,7 +391,9 @@ class NatsControllerIngress:
             LOGGER.warning("lease renew heartbeat failed: %s", exc)
         resp = LeaseResponse(
             accepted=True,
-            controller_epoch=self._epoch,
+            controller_id=identity.controller_id,
+            controller_epoch=identity.controller_epoch,
+            operation_id=request_id,
             lease_id=lease.lease_id,
             lease_ttl_ms=lease.lease_ttl_ms,
             renew_after_ms=lease.renew_after_ms,
@@ -250,6 +403,8 @@ class NatsControllerIngress:
         self._reply(msg, resp.as_dict())
 
     def _on_result(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            return
         payload = self._safe_json(msg)
         work_id = payload.get("work_id")
         status = payload.get("status")
@@ -259,6 +414,17 @@ class NatsControllerIngress:
             try:
                 attempt = int(payload.get("attempt") or 0)
                 if attempt:
+                    envelope = parse_envelope(payload)
+                    ledger = self._store.get_work_ledger(str(work_id))
+                    if not _result_matches_ledger(ledger, attempt=attempt, envelope=envelope):
+                        record_ha_fence_event("controller_ingress.result", stale=True)
+                        LOGGER.warning(
+                            "ignoring stale work result site=%s work_id=%s attempt=%s",
+                            site_id,
+                            work_id,
+                            attempt,
+                        )
+                        return
                     status_norm = str(status or "").lower()
                     node_id = payload.get("node_id")
                     observed_generation = payload.get("observed_generation")
@@ -314,6 +480,17 @@ class NatsControllerIngress:
             LOGGER.info("site_result site=%s payload=%s", site_id, payload)
 
     def _on_work_pull(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            self._reply(
+                msg,
+                {
+                    "accepted": False,
+                    "reason": "not_leader",
+                    "controller_epoch": self._epoch,
+                    **self._leader_hint(),
+                },
+            )
+            return
         payload = self._safe_json(msg)
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         if not msg.reply:
@@ -346,12 +523,32 @@ class NatsControllerIngress:
             self._reply(msg, {"accepted": False, "reason": str(exc)})
 
     def _on_work_ack(self, msg: NatsMessage) -> None:
+        if not self._is_leader():
+            self._reply(
+                msg,
+                {
+                    "accepted": False,
+                    "reason": "not_leader",
+                    "controller_epoch": self._epoch,
+                    **self._leader_hint(),
+                },
+            )
+            return
         payload = self._safe_json(msg)
         site_id = _site_id_from_subject(msg.subject) or payload.get("site_id")
         lease_ids = payload.get("lease_ids") or []
+        ack_items = payload.get("ack_items") or []
         LOGGER.debug("work.ack site=%s leases=%s", site_id, lease_ids)
         try:
-            updated = self._store.ack_work([str(x) for x in lease_ids if x])
+            if ack_items and hasattr(self._store, "ack_work_items"):
+                updated = self._store.ack_work_items(
+                    [item for item in ack_items if isinstance(item, dict)]
+                )
+                stale_count = max(0, len([item for item in ack_items if isinstance(item, dict)]) - updated)
+                if stale_count:
+                    record_ha_fence_event("controller_ingress.work_ack", stale=stale_count)
+            else:
+                updated = self._store.ack_work([str(x) for x in lease_ids if x])
         except Exception:
             updated = 0
         self._reply(msg, {"accepted": True, "reason": None, "acked": updated})
@@ -385,12 +582,21 @@ class NatsControllerIngress:
 
         def _provision() -> None:
             try:
+                replicas = desired_js_replicas()
                 if not self._js_stream_ready:
                     self._client.ensure_stream(
                         name=self._js_stream_name,
                         subjects=[self._js_work_subject],
                         storage=self._js_storage,
                         retention="workqueue",
+                        replicas=replicas,
+                    )
+                    self._client.validate_stream(
+                        name=self._js_stream_name,
+                        subjects=[self._js_work_subject],
+                        storage=self._js_storage,
+                        retention="workqueue",
+                        replicas=replicas,
                     )
                     self._js_stream_ready = True
                 self._client.ensure_consumer(
@@ -401,6 +607,17 @@ class NatsControllerIngress:
                     max_ack_pending=self._js_max_ack_pending,
                     max_deliver=self._js_max_deliver,
                     max_waiting=self._js_max_waiting,
+                    replicas=replicas,
+                )
+                self._client.validate_consumer(
+                    stream=self._js_stream_name,
+                    durable=f"WORK_SITE_{site_id}",
+                    filter_subject=f"k1s.v1.work.site.{site_id}",
+                    ack_wait_s=self._js_ack_wait_s,
+                    max_ack_pending=self._js_max_ack_pending,
+                    max_deliver=self._js_max_deliver,
+                    max_waiting=self._js_max_waiting,
+                    replicas=replicas,
                 )
                 self._js_sites.add(site_id)
             except Exception as exc:  # noqa: BLE001
@@ -456,6 +673,20 @@ def _site_id_from_subject(subject: str) -> str | None:
     if parts[0] != "k1s" or parts[1] != "v1" or parts[2] != "site":
         return None
     return parts[3]
+
+
+def _result_matches_ledger(ledger, *, attempt: int, envelope) -> bool:
+    if ledger is None or envelope is None:
+        return False
+    if int(getattr(ledger, "attempt", 0) or 0) != int(attempt):
+        return False
+    if str(getattr(ledger, "controller_id", "") or "") != envelope.controller_id:
+        return False
+    if int(getattr(ledger, "controller_epoch", 0) or 0) != int(envelope.controller_epoch):
+        return False
+    if str(getattr(ledger, "operation_id", "") or "") != envelope.operation_id:
+        return False
+    return True
 
 
 __all__ = ["NatsControllerIngress"]

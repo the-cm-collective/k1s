@@ -12,6 +12,7 @@ raise, so the agent can continue to run workload APIs even when overlay setup fa
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import logging
 import shutil
 import subprocess
@@ -30,21 +31,66 @@ def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)  # noqa: S603,S607 - fixed binaries; shell disabled
 
 
+def _ensure_iptables_rule(
+    chain: str,
+    rule: list[str],
+    *,
+    table: str | None = None,
+    position: int | None = None,
+) -> None:
+    check_cmd = [IPTABLES_BIN]
+    if table:
+        check_cmd.extend(["-t", table])
+    check_cmd.extend(["-C", chain, *rule])
+    result = subprocess.run(  # noqa: S603,S607 - fixed binary; shell disabled
+        check_cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode == 0:
+        return
+    apply_cmd = [IPTABLES_BIN]
+    if table:
+        apply_cmd.extend(["-t", table])
+    if position is None:
+        apply_cmd.extend(["-A", chain, *rule])
+    else:
+        apply_cmd.extend(["-I", chain, str(position), *rule])
+    _run(apply_cmd)
+
+
+def _bridge_addr_for_cidr(cidr: str) -> str:
+    try:
+        network = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return cidr
+    host = next(network.hosts(), network.network_address)
+    return f"{host}/{network.prefixlen}"
+
+
 def ensure_pod_bridge(bridge: str, cidr: str) -> None:
     """Create and configure a pod bridge with the given CIDR."""
     with contextlib.suppress(Exception):
         _run([IP_BIN, "link", "add", bridge, "type", "bridge"])
     try:
         _run([IP_BIN, "addr", "flush", "dev", bridge])
-        _run([IP_BIN, "addr", "add", f"{cidr}", "dev", bridge])
+        _run([IP_BIN, "addr", "add", _bridge_addr_for_cidr(cidr), "dev", bridge])
         _run([IP_BIN, "link", "set", bridge, "up"])
         _run([SYSCTL_BIN, "-w", "net.ipv4.ip_forward=1"])
-        iptables_cmd = [
-            IPTABLES_BIN,
-            "-t",
-            "nat",
-            "-A",
+        _ensure_iptables_rule(
+            "FORWARD",
+            ["-i", bridge, "-j", "ACCEPT"],
+            position=1,
+        )
+        _ensure_iptables_rule(
+            "FORWARD",
+            ["-o", bridge, "-j", "ACCEPT"],
+            position=1,
+        )
+        _ensure_iptables_rule(
             "POSTROUTING",
+            [
             "-s",
             cidr,
             "!",
@@ -52,8 +98,9 @@ def ensure_pod_bridge(bridge: str, cidr: str) -> None:
             cidr,
             "-j",
             "MASQUERADE",
-        ]
-        _run(iptables_cmd)
+            ],
+            table="nat",
+        )
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("pod bridge setup failed: %s", exc)
 

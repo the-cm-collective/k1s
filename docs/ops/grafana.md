@@ -5,7 +5,7 @@ This folder includes `ae_dashboard.json`, a minimal Grafana dashboard seeded wit
 - Per-app reconcile duration (avg via sum/count)
 - Canary weight per app
 - Container restart counts
-- Transport stats (sites seen/stale, outbox publish OK/fail, JS stream/consumer gauges, gateway NAK/stale, route bundle apply)
+- Transport stats (sites seen/stale, outbox publish OK/fail, JS stream/consumer gauges, gateway NAK/stale/replay, route bundle apply/publish/pending ack age)
 
 Steps
 1) Ensure Prometheus scrapes the controller (port 9108 by default):
@@ -25,6 +25,9 @@ Steps
 Notes
 - The controller exposes metrics even without ingress. If you run it in Docker, publish `-p 9108:9108`.
 - Canary metrics appear when canary strategy with auto progression is active.
+- HA transport panels should now prefer:
+  - `ae_gateway_result_replay_total`, `ae_gateway_result_replay_fail_total`, `ae_gateway_result_replay_backlog`
+  - `ae_route_bundle_publish_ok_total`, `ae_route_bundle_publish_fail_total`, `ae_route_bundle_pending`, `ae_route_bundle_ack_age_seconds`
 
 
 One-liner demo stack (controller + Prometheus + Grafana)

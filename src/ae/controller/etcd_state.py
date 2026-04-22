@@ -15,6 +15,7 @@ import requests
 from ae.controller.health import HealthReport
 from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.controller.state import (
+    AuthorityObjectEntry,
     AppEvent,
     AppStatus,
     EdgeIngressPolicyRecord,
@@ -24,6 +25,7 @@ from ae.controller.state import (
     NodeStatus,
     PodStatus,
     ProbeHistoryEntry,
+    RegistryConflictError,
     RegistryEntry,
     RevisionInfo,
     ServiceEndpoint,
@@ -32,11 +34,15 @@ from ae.controller.state import (
     SiteIngressEndpoint,
     SiteIngressListItem,
     VolumeAttachment,
+    WorkloadMetricsSnapshot,
     WorkLedgerEntry,
     WorkOutboxEntry,
     WorkQueueLease,
     SQLiteStateStore,
+    _outbox_publish_msg_id,
+    _outbox_publish_subject,
 )
+from ae.ha.fencing import parse_envelope, work_operation
 from ae.runtime import RuntimeResult
 
 
@@ -312,6 +318,24 @@ class EtcdHttpClient:
         payload = {"ID": int(lease_id)}
         self._post("/lease/revoke", payload)
 
+    def maintenance_status(self) -> dict[str, Any]:
+        return self._post("/maintenance/status", {})
+
+    def maintenance_alarms(self, *, action: str = "GET", member_id: str | None = None, alarm: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"action": str(action).upper()}
+        if member_id is not None:
+            payload["memberID"] = str(member_id)
+        if alarm is not None:
+            payload["alarm"] = str(alarm).upper()
+        return self._post("/maintenance/alarm", payload)
+
+    def compact(self, revision: int, *, physical: bool = True) -> None:
+        payload = {"revision": str(int(revision)), "physical": bool(physical)}
+        self._post("/kv/compaction", payload)
+
+    def defragment(self) -> None:
+        self._post("/maintenance/defragment", {})
+
 
 class EtcdStateStore(SQLiteStateStore):
     """Etcd-backed state store (dev-etcd)."""
@@ -335,6 +359,9 @@ class EtcdStateStore(SQLiteStateStore):
         op_timeout = _parse_duration_seconds(env.get("AE_ETCD_OP_TIMEOUT"), 3.0)
         timeout_s = float(timeout_s if timeout_s is not None else op_timeout)
         self._lease_ttl_seconds = int(env.get("AE_ETCD_LEASE_TTL_SECONDS", "60") or 60)
+        refresh_ratio = float(env.get("AE_ETCD_LEASE_REFRESH_RATIO", "0.5") or 0.5)
+        self._lease_refresh_ratio = max(0.05, min(0.95, refresh_ratio))
+        self._node_leases: dict[str, tuple[int, float]] = {}
         ca_cert = env.get("AE_ETCD_CA") or None
         cert = env.get("AE_ETCD_CERT") or None
         key = env.get("AE_ETCD_KEY") or None
@@ -373,6 +400,73 @@ class EtcdStateStore(SQLiteStateStore):
             return json.loads(raw)
         except Exception:
             return {}
+
+    @staticmethod
+    def _is_lease_not_found_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "lease not found" in msg or "requested lease not found" in msg
+
+    def _lease_refresh_after_seconds(self) -> float:
+        ttl_s = max(2.0, float(self._lease_ttl_seconds))
+        refresh_after = ttl_s * self._lease_refresh_ratio
+        return max(1.0, min(ttl_s - 1.0, refresh_after))
+
+    def _grant_node_lease(self, node_id: str, *, force_new: bool = False) -> tuple[int, bool]:
+        now = time.monotonic()
+        current = self._node_leases.get(node_id)
+        if not force_new and current is not None and now < current[1]:
+            return current[0], False
+        lease_id = self._client.grant_lease(self._lease_ttl_seconds)
+        refresh_at = now + self._lease_refresh_after_seconds()
+        self._node_leases[node_id] = (lease_id, refresh_at)
+        return lease_id, True
+
+    def _put_with_node_lease(
+        self,
+        *,
+        key: str,
+        payload: dict,
+        node_id: str,
+        lease_id: int,
+    ) -> tuple[int, bool]:
+        try:
+            self._put_json(key, payload, lease_id=lease_id)
+            return lease_id, False
+        except Exception as exc:
+            if not self._is_lease_not_found_error(exc):
+                raise
+        lease_id, _ = self._grant_node_lease(node_id, force_new=True)
+        self._put_json(key, payload, lease_id=lease_id)
+        return lease_id, True
+
+    @staticmethod
+    def _node_payload_changed(existing: dict | None, payload: dict) -> bool:
+        if not existing:
+            return True
+        for key in (
+            "node_id",
+            "name",
+            "labels",
+            "taints",
+            "backend",
+            "endpoint",
+            "pod_cidr",
+            "wg_pubkey",
+            "rp_pubkey",
+            "cordoned",
+        ):
+            if existing.get(key) != payload.get(key):
+                return True
+        return False
+
+    @staticmethod
+    def _record_heartbeat_metrics(*, node_rewrite: bool) -> None:
+        try:
+            from ae.observability.http_api import record_heartbeat_write
+
+            record_heartbeat_write(node_rewrite=node_rewrite)
+        except Exception:
+            pass
 
     def _get_json(self, key: str) -> tuple[dict | None, int]:
         resp = self._client.range(key, limit=1)
@@ -419,6 +513,13 @@ class EtcdStateStore(SQLiteStateStore):
         health_report: HealthReport,
         revision: int,
         revision_status: str,
+        *,
+        current_revision_ready_replicas: int = 0,
+        current_revision_live_replicas: int = 0,
+        old_revision_ready_replicas: int = 0,
+        old_revision_live_replicas: int = 0,
+        overlap_ready_replicas: int = 0,
+        overlap_live_replicas: int = 0,
     ) -> None:
         app_name = app_key_for_manifest(manifest)
         status = {
@@ -432,6 +533,12 @@ class EtcdStateStore(SQLiteStateStore):
             "created": int(runtime_result.created),
             "updated": int(runtime_result.updated),
             "removed": int(runtime_result.removed),
+            "current_revision_ready_replicas": int(current_revision_ready_replicas),
+            "current_revision_live_replicas": int(current_revision_live_replicas),
+            "old_revision_ready_replicas": int(old_revision_ready_replicas),
+            "old_revision_live_replicas": int(old_revision_live_replicas),
+            "overlap_ready_replicas": int(overlap_ready_replicas),
+            "overlap_live_replicas": int(overlap_live_replicas),
             "ingress_host": getattr(manifest.spec.ingress, "host", None)
             if manifest.spec.ingress
             else None,
@@ -579,6 +686,12 @@ class EtcdStateStore(SQLiteStateStore):
             created=int(rec.get("created", 0)),
             updated=int(rec.get("updated", 0)),
             removed=int(rec.get("removed", 0)),
+            current_revision_ready_replicas=int(rec.get("current_revision_ready_replicas", 0)),
+            current_revision_live_replicas=int(rec.get("current_revision_live_replicas", 0)),
+            old_revision_ready_replicas=int(rec.get("old_revision_ready_replicas", 0)),
+            old_revision_live_replicas=int(rec.get("old_revision_live_replicas", 0)),
+            overlap_ready_replicas=int(rec.get("overlap_ready_replicas", 0)),
+            overlap_live_replicas=int(rec.get("overlap_live_replicas", 0)),
             ingress_host=rec.get("ingress_host"),
             ingress_path=rec.get("ingress_path"),
         )
@@ -599,6 +712,16 @@ class EtcdStateStore(SQLiteStateStore):
                     created=int(rec.get("created", 0)),
                     updated=int(rec.get("updated", 0)),
                     removed=int(rec.get("removed", 0)),
+                    current_revision_ready_replicas=int(
+                        rec.get("current_revision_ready_replicas", 0)
+                    ),
+                    current_revision_live_replicas=int(
+                        rec.get("current_revision_live_replicas", 0)
+                    ),
+                    old_revision_ready_replicas=int(rec.get("old_revision_ready_replicas", 0)),
+                    old_revision_live_replicas=int(rec.get("old_revision_live_replicas", 0)),
+                    overlap_ready_replicas=int(rec.get("overlap_ready_replicas", 0)),
+                    overlap_live_replicas=int(rec.get("overlap_live_replicas", 0)),
                     ingress_host=rec.get("ingress_host"),
                     ingress_path=rec.get("ingress_path"),
                 )
@@ -700,13 +823,16 @@ class EtcdStateStore(SQLiteStateStore):
         *,
         source: str | None = None,
         labels: dict | None = None,
-    ) -> None:
+        expected_resource_version: int | None = None,
+    ) -> int:
         app_name = app_key_for_manifest(manifest)
-        existing = self.get_registered_entry(app_name)
+        key = self._k("apps", app_name, "registry")
+        existing, current_rv = self._get_json(key)
         if source is None and existing is not None:
-            source = existing.source
+            source = str(existing.get("source", ""))
         if labels is None and existing is not None:
-            labels = existing.labels
+            current_labels = existing.get("labels") or {}
+            labels = current_labels if isinstance(current_labels, dict) else {}
         spec_hash = self._manifest_hash(manifest)
         updated_at = _now_iso()
         payload = {
@@ -717,7 +843,44 @@ class EtcdStateStore(SQLiteStateStore):
             "labels": labels or {},
             "updated_at": updated_at,
         }
-        self._put_json(self._k("apps", app_name, "registry"), payload)
+        if expected_resource_version is None:
+            self._put_json(key, payload)
+            return self._get_json(key)[1]
+        compare: list[dict]
+        if int(expected_resource_version) == 0:
+            compare = [
+                {
+                    "key": _b64encode(key),
+                    "target": "CREATE",
+                    "createRevision": "0",
+                }
+            ]
+        else:
+            compare = [
+                {
+                    "key": _b64encode(key),
+                    "target": "MOD",
+                    "modRevision": str(int(expected_resource_version)),
+                }
+            ]
+        success = [
+            {
+                "requestPut": {
+                    "key": _b64encode(key),
+                    "value": _b64encode(self._encode(payload)),
+                }
+            }
+        ]
+        failure = [{"requestRange": {"key": _b64encode(key), "limit": 1}}]
+        resp = self._client.txn(compare, success, failure)
+        if not bool(resp.get("succeeded")):
+            actual_rv = self._get_json(key)[1]
+            raise RegistryConflictError(
+                app_name,
+                expected=int(expected_resource_version),
+                actual=actual_rv,
+            )
+        return self._get_json(key)[1]
 
     def list_registered_apps(self) -> list[RegistryEntry]:
         rows = self._list_prefix(self._k("apps"))
@@ -736,6 +899,7 @@ class EtcdStateStore(SQLiteStateStore):
                     source=str(rec.get("source", "")),
                     labels=rec.get("labels") or {},
                     updated_at=updated or datetime.fromtimestamp(0, tz=timezone.utc),
+                    resource_version=int(_rev or 0),
                 )
             )
         return out
@@ -748,7 +912,7 @@ class EtcdStateStore(SQLiteStateStore):
         return [n for n in names if n]
 
     def get_registered_entry(self, app_name: str) -> RegistryEntry | None:
-        rec, _ = self._get_json(self._k("apps", app_name, "registry"))
+        rec, mod_rev = self._get_json(self._k("apps", app_name, "registry"))
         if not rec:
             return None
         spec = rec.get("spec") or {}
@@ -760,14 +924,315 @@ class EtcdStateStore(SQLiteStateStore):
             source=str(rec.get("source", "")),
             labels=rec.get("labels") or {},
             updated_at=updated or datetime.fromtimestamp(0, tz=timezone.utc),
+            resource_version=int(mod_rev or 0),
         )
 
     def get_registered_manifest(self, app_name: str) -> AppManifest | None:
         entry = self.get_registered_entry(app_name)
         return entry.manifest if entry else None
 
-    def delete_registered_app(self, app_name: str) -> None:
-        self._delete(self._k("apps", app_name, "registry"))
+    def delete_registered_app(
+        self,
+        app_name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        key = self._k("apps", app_name, "registry")
+        if expected_resource_version is None:
+            existing, _rv = self._get_json(key)
+            if existing is None:
+                return False
+            self._delete(key)
+            return True
+        compare = [
+            {
+                "key": _b64encode(key),
+                "target": "MOD",
+                "modRevision": str(int(expected_resource_version)),
+            }
+        ]
+        success = [{"requestDeleteRange": {"key": _b64encode(key)}}]
+        failure = [{"requestRange": {"key": _b64encode(key), "limit": 1}}]
+        resp = self._client.txn(compare, success, failure)
+        if not bool(resp.get("succeeded")):
+            actual_rv = self._get_json(key)[1]
+            raise RegistryConflictError(
+                app_name,
+                expected=int(expected_resource_version),
+                actual=actual_rv,
+            )
+        return True
+
+    @staticmethod
+    def _authority_ns_key(namespace: str | None) -> str:
+        return str(namespace or "_cluster")
+
+    def _authority_key(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+    ) -> str:
+        return self._k(
+            "apishim",
+            "authority",
+            group or "_core",
+            version,
+            resource,
+            self._authority_ns_key(namespace),
+            name,
+        )
+
+    def register_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        kind: str,
+        metadata: dict | None = None,
+        spec: dict | None = None,
+        status: dict | None = None,
+        expected_resource_version: int | None = None,
+    ) -> int:
+        key = self._authority_key(group, version, resource, namespace, name)
+        payload = {
+            "group": group,
+            "version": version,
+            "resource": resource,
+            "namespace": namespace or "",
+            "name": name,
+            "kind": kind,
+            "metadata": metadata or {},
+            "spec": spec or {},
+            "status": status or {},
+            "updated_at": _now_iso(),
+        }
+        conflict_key = self._authority_object_conflict_key(group, version, resource, namespace, name)
+        if expected_resource_version is None:
+            self._put_json(key, payload)
+            return self._get_json(key)[1]
+        compare: list[dict]
+        if int(expected_resource_version) == 0:
+            compare = [{"key": _b64encode(key), "target": "CREATE", "createRevision": "0"}]
+        else:
+            compare = [
+                {
+                    "key": _b64encode(key),
+                    "target": "MOD",
+                    "modRevision": str(int(expected_resource_version)),
+                }
+            ]
+        success = [
+            {
+                "requestPut": {
+                    "key": _b64encode(key),
+                    "value": _b64encode(self._encode(payload)),
+                }
+            }
+        ]
+        failure = [{"requestRange": {"key": _b64encode(key), "limit": 1}}]
+        resp = self._client.txn(compare, success, failure)
+        if not bool(resp.get("succeeded")):
+            actual_rv = self._get_json(key)[1]
+            raise RegistryConflictError(
+                conflict_key,
+                expected=int(expected_resource_version),
+                actual=actual_rv,
+            )
+        return self._get_json(key)[1]
+
+    def list_authority_objects(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None = None,
+    ) -> list[AuthorityObjectEntry]:
+        prefix = self._k("apishim", "authority", group or "_core", version, resource)
+        if namespace is not None:
+            prefix = self._k(prefix, self._authority_ns_key(namespace))
+        rows = self._list_prefix(prefix)
+        out: list[AuthorityObjectEntry] = []
+        for _key, rec, mod_rev in rows:
+            namespace_value = rec.get("namespace")
+            out.append(
+                AuthorityObjectEntry(
+                    group=str(rec.get("group", "")),
+                    version=str(rec.get("version", version)),
+                    resource=str(rec.get("resource", resource)),
+                    namespace=(str(namespace_value) if namespace_value not in {None, ""} else None),
+                    name=str(rec.get("name", "")),
+                    kind=str(rec.get("kind", "")),
+                    metadata=rec.get("metadata") if isinstance(rec.get("metadata"), dict) else {},
+                    spec=rec.get("spec") if isinstance(rec.get("spec"), dict) else {},
+                    status=rec.get("status") if isinstance(rec.get("status"), dict) else {},
+                    updated_at=_dt_from_iso(
+                        rec.get("updated_at"),
+                        default=datetime.fromtimestamp(0, tz=timezone.utc),
+                    )
+                    or datetime.fromtimestamp(0, tz=timezone.utc),
+                    resource_version=int(mod_rev or 0),
+                )
+            )
+        out.sort(key=lambda entry: ((entry.namespace or ""), entry.name))
+        return out
+
+    def get_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+    ) -> AuthorityObjectEntry | None:
+        rec, mod_rev = self._get_json(self._authority_key(group, version, resource, namespace, name))
+        if not rec:
+            return None
+        namespace_value = rec.get("namespace")
+        return AuthorityObjectEntry(
+            group=str(rec.get("group", "")),
+            version=str(rec.get("version", version)),
+            resource=str(rec.get("resource", resource)),
+            namespace=(str(namespace_value) if namespace_value not in {None, ""} else None),
+            name=str(rec.get("name", name)),
+            kind=str(rec.get("kind", "")),
+            metadata=rec.get("metadata") if isinstance(rec.get("metadata"), dict) else {},
+            spec=rec.get("spec") if isinstance(rec.get("spec"), dict) else {},
+            status=rec.get("status") if isinstance(rec.get("status"), dict) else {},
+            updated_at=_dt_from_iso(
+                rec.get("updated_at"),
+                default=datetime.fromtimestamp(0, tz=timezone.utc),
+            )
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+            resource_version=int(mod_rev or 0),
+        )
+
+    def delete_authority_object(
+        self,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str,
+        *,
+        expected_resource_version: int | None = None,
+    ) -> bool:
+        key = self._authority_key(group, version, resource, namespace, name)
+        if expected_resource_version is None:
+            existing, _rv = self._get_json(key)
+            if existing is None:
+                return False
+            self._delete(key)
+            return True
+        compare = [
+            {
+                "key": _b64encode(key),
+                "target": "MOD",
+                "modRevision": str(int(expected_resource_version)),
+            }
+        ]
+        success = [{"requestDeleteRange": {"key": _b64encode(key)}}]
+        failure = [{"requestRange": {"key": _b64encode(key), "limit": 1}}]
+        resp = self._client.txn(compare, success, failure)
+        if not bool(resp.get("succeeded")):
+            actual_rv = self._get_json(key)[1]
+            raise RegistryConflictError(
+                self._authority_object_conflict_key(group, version, resource, namespace, name),
+                expected=int(expected_resource_version),
+                actual=actual_rv,
+            )
+        return True
+
+    def _workload_metrics_key(self, app_name: str) -> str:
+        return self._k("hpa", "workload_metrics", app_name)
+
+    def upsert_workload_metrics_snapshot(
+        self,
+        app_name: str,
+        *,
+        controller_id: str,
+        controller_epoch: int,
+        collected_at: datetime,
+        cpu_utilization: float | None,
+        memory_utilization: float | None,
+        memory_bytes: int,
+        pod_count: int,
+        node_count: int,
+    ) -> None:
+        payload = {
+            "app_name": str(app_name),
+            "controller_id": str(controller_id),
+            "controller_epoch": int(controller_epoch),
+            "collected_at": collected_at.astimezone(timezone.utc).isoformat(),
+            "cpu_utilization": float(cpu_utilization) if cpu_utilization is not None else None,
+            "memory_utilization": (
+                float(memory_utilization) if memory_utilization is not None else None
+            ),
+            "memory_bytes": int(memory_bytes),
+            "pod_count": int(pod_count),
+            "node_count": int(node_count),
+            "updated_at": _now_iso(),
+        }
+        self._put_json(self._workload_metrics_key(app_name), payload)
+
+    def get_workload_metrics_snapshot(self, app_name: str) -> WorkloadMetricsSnapshot | None:
+        rec, _mod_rev = self._get_json(self._workload_metrics_key(app_name))
+        return self._workload_metrics_snapshot_from_record(rec)
+
+    def list_workload_metrics_snapshots(self) -> list[WorkloadMetricsSnapshot]:
+        rows = self._list_prefix(self._k("hpa", "workload_metrics"))
+        out: list[WorkloadMetricsSnapshot] = []
+        for _key, rec, _mod_rev in rows:
+            entry = self._workload_metrics_snapshot_from_record(rec)
+            if entry is not None:
+                out.append(entry)
+        out.sort(key=lambda entry: entry.app_name)
+        return out
+
+    def delete_workload_metrics_snapshot(self, app_name: str) -> bool:
+        key = self._workload_metrics_key(app_name)
+        existing, _mod_rev = self._get_json(key)
+        if existing is None:
+            return False
+        self._delete(key)
+        return True
+
+    def _workload_metrics_snapshot_from_record(
+        self, rec: dict[str, Any] | None
+    ) -> WorkloadMetricsSnapshot | None:
+        if not rec:
+            return None
+        return WorkloadMetricsSnapshot(
+            app_name=str(rec.get("app_name", "")),
+            controller_id=str(rec.get("controller_id", "")),
+            controller_epoch=int(rec.get("controller_epoch", 0) or 0),
+            collected_at=_dt_from_iso(
+                rec.get("collected_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+            cpu_utilization=(
+                float(rec.get("cpu_utilization"))
+                if rec.get("cpu_utilization") is not None
+                else None
+            ),
+            memory_utilization=(
+                float(rec.get("memory_utilization"))
+                if rec.get("memory_utilization") is not None
+                else None
+            ),
+            memory_bytes=int(rec.get("memory_bytes", 0) or 0),
+            pod_count=int(rec.get("pod_count", 0) or 0),
+            node_count=int(rec.get("node_count", 0) or 0),
+            updated_at=_dt_from_iso(
+                rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+        )
 
     def _get_latest_revision(self, app_name: str) -> RevisionInfo | None:
         revs = self.list_revisions(app_name, limit=1_000_000)
@@ -1028,6 +1493,50 @@ class EtcdStateStore(SQLiteStateStore):
                 updated += 1
         return updated
 
+    def ack_work_items(self, ack_items: list[dict]) -> int:
+        if not ack_items:
+            return 0
+        now_iso = _now_iso()
+        updated = 0
+        rows = self._list_prefix(self._k("work_queue"))
+        by_lease_id: dict[str, tuple[str, dict[str, Any], int]] = {}
+        for key, rec, rev in rows:
+            lease_id = str(rec.get("lease_id") or "").strip()
+            if lease_id:
+                by_lease_id[lease_id] = (key, rec, rev)
+        for item in ack_items:
+            if not isinstance(item, dict):
+                continue
+            lease_id = str(item.get("lease_id") or "").strip()
+            if not lease_id:
+                continue
+            envelope = parse_envelope(item)
+            if envelope is None:
+                continue
+            queued = by_lease_id.get(lease_id)
+            if queued is None:
+                continue
+            key, rec, _rev = queued
+            queued_envelope = parse_envelope(rec.get("payload") or {})
+            if queued_envelope != envelope:
+                continue
+            work_id = str(rec.get("work_id") or "")
+            if item.get("work_id") not in {None, "", work_id}:
+                continue
+            try:
+                ack_attempt = int(item.get("attempt") or 0)
+            except Exception:
+                ack_attempt = 0
+            attempt = int(rec.get("attempt") or 0)
+            if ack_attempt not in {0, attempt}:
+                continue
+            rec["state"] = "Acked"
+            rec["acked_at"] = now_iso
+            rec["updated_at"] = now_iso
+            self._put_json(key, rec)
+            updated += 1
+        return updated
+
     # --- Site ingress endpoints ----------------------------------------
     def get_site_ingress_endpoint(self, site_id: str) -> SiteIngressEndpoint | None:
         rec, _ = self._get_json(self._k("ingress", "sites", site_id))
@@ -1251,6 +1760,14 @@ class EtcdStateStore(SQLiteStateStore):
             updated_at=updated,
         )
 
+    def delete_edge_ingress_route(self, *, name: str, namespace: str) -> bool:
+        key = self._k("ingress", "routes", namespace or "default", name)
+        rec, _rev = self._get_json(key)
+        if not rec:
+            return False
+        self._delete(key)
+        return True
+
     def list_edge_ingress_routes_for_site(self, site_id: str) -> list[EdgeIngressRouteRecord]:
         return [r for r in self.list_edge_ingress_routes() if r.site_id == site_id]
 
@@ -1322,9 +1839,12 @@ class EtcdStateStore(SQLiteStateStore):
             "attempt": int(attempt),
             "site_id": site_id,
             "payload": payload,
+            "publish_subject": _outbox_publish_subject(site_id),
+            "publish_msg_id": _outbox_publish_msg_id(work_id, attempt, payload),
             "state": "Unpublished",
             "publish_attempts": 0,
             "last_publish_at": None,
+            "last_publish_error": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -1341,7 +1861,25 @@ class EtcdStateStore(SQLiteStateStore):
                 attempt=int(rec.get("attempt", 0)),
                 site_id=str(rec.get("site_id", "")),
                 payload=rec.get("payload") or {},
+                publish_subject=str(
+                    rec.get("publish_subject")
+                    or _outbox_publish_subject(str(rec.get("site_id", "")))
+                ),
+                publish_msg_id=str(
+                    rec.get("publish_msg_id")
+                    or _outbox_publish_msg_id(
+                        str(rec.get("work_id", "")),
+                        int(rec.get("attempt", 0)),
+                        rec.get("payload") or {},
+                    )
+                ),
                 publish_attempts=int(rec.get("publish_attempts", 0)),
+                last_publish_at=_dt_from_iso(rec.get("last_publish_at")),
+                last_publish_error=(
+                    str(rec.get("last_publish_error"))
+                    if rec.get("last_publish_error") is not None
+                    else None
+                ),
             )
             entries.append((str(rec.get("created_at", "")), entry))
         entries.sort(key=lambda e: (e[0], e[1].work_id, e[1].attempt))
@@ -1362,10 +1900,17 @@ class EtcdStateStore(SQLiteStateStore):
         rec["state"] = "Published"
         rec["publish_attempts"] = int(rec.get("publish_attempts", 0)) + 1
         rec["last_publish_at"] = now
+        rec["last_publish_error"] = None
         rec["updated_at"] = now
         self._put_json(key, rec)
 
-    def record_outbox_publish_attempt(self, work_id: str, attempt: int) -> None:
+    def record_outbox_publish_attempt(
+        self,
+        work_id: str,
+        attempt: int,
+        *,
+        error: str | None = None,
+    ) -> None:
         key = self._k("outbox", "work", work_id, str(attempt))
         rec, _ = self._get_json(key)
         if not rec:
@@ -1373,6 +1918,7 @@ class EtcdStateStore(SQLiteStateStore):
         now = _now_iso()
         rec["publish_attempts"] = int(rec.get("publish_attempts", 0)) + 1
         rec["last_publish_at"] = now
+        rec["last_publish_error"] = error
         rec["updated_at"] = now
         self._put_json(key, rec)
 
@@ -1384,6 +1930,9 @@ class EtcdStateStore(SQLiteStateStore):
         attempt: int,
         site_id: str,
         state: str,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
+        operation_id: str | None = None,
         desired_generation: int | None = None,
     ) -> None:
         key = self._k("work", "ledger", work_id)
@@ -1395,6 +1944,9 @@ class EtcdStateStore(SQLiteStateStore):
                     "attempt": int(attempt),
                     "site_id": site_id,
                     "state": state,
+                    "controller_id": controller_id,
+                    "controller_epoch": controller_epoch,
+                    "operation_id": operation_id,
                     "desired_generation": desired_generation,
                     "updated_at": now,
                     "state_updated_at": now,
@@ -1406,6 +1958,9 @@ class EtcdStateStore(SQLiteStateStore):
                 "attempt": int(attempt),
                 "site_id": site_id,
                 "state": state,
+                "controller_id": controller_id,
+                "controller_epoch": controller_epoch,
+                "operation_id": operation_id,
                 "desired_generation": desired_generation,
                 "assigned_node_id": None,
                 "observed_generation": None,
@@ -1425,6 +1980,17 @@ class EtcdStateStore(SQLiteStateStore):
             attempt=int(rec.get("attempt", 0)),
             site_id=str(rec.get("site_id", "")),
             state=str(rec.get("state", "")),
+            controller_id=(
+                str(rec.get("controller_id")) if rec.get("controller_id") is not None else None
+            ),
+            controller_epoch=(
+                int(rec.get("controller_epoch"))
+                if rec.get("controller_epoch") is not None
+                else None
+            ),
+            operation_id=(
+                str(rec.get("operation_id")) if rec.get("operation_id") is not None else None
+            ),
             desired_generation=rec.get("desired_generation"),
             assigned_node_id=rec.get("assigned_node_id"),
             observed_generation=rec.get("observed_generation"),
@@ -1475,6 +2041,21 @@ class EtcdStateStore(SQLiteStateStore):
                         attempt=int(rec.get("attempt", 0)),
                         site_id=str(rec.get("site_id", "")),
                         state=str(rec.get("state", "")),
+                        controller_id=(
+                            str(rec.get("controller_id"))
+                            if rec.get("controller_id") is not None
+                            else None
+                        ),
+                        controller_epoch=(
+                            int(rec.get("controller_epoch"))
+                            if rec.get("controller_epoch") is not None
+                            else None
+                        ),
+                        operation_id=(
+                            str(rec.get("operation_id"))
+                            if rec.get("operation_id") is not None
+                            else None
+                        ),
                         desired_generation=rec.get("desired_generation"),
                         assigned_node_id=rec.get("assigned_node_id"),
                         observed_generation=rec.get("observed_generation"),
@@ -1486,7 +2067,14 @@ class EtcdStateStore(SQLiteStateStore):
                 )
         return out
 
-    def reschedule_work(self, *, work_id: str, attempt: int) -> int | None:
+    def reschedule_work(
+        self,
+        *,
+        work_id: str,
+        attempt: int,
+        controller_id: str | None = None,
+        controller_epoch: int | None = None,
+    ) -> int | None:
         outbox_key = self._k("outbox", "work", work_id, str(attempt))
         outbox, _ = self._get_json(outbox_key)
         if not outbox:
@@ -1507,6 +2095,15 @@ class EtcdStateStore(SQLiteStateStore):
         payload.setdefault("work_id", work_id)
         payload.setdefault("site_id", outbox.get("site_id"))
         payload["created_at"] = now
+        if controller_id:
+            payload["controller_id"] = controller_id
+        if controller_epoch is not None:
+            payload["controller_epoch"] = int(controller_epoch)
+        if payload.get("controller_id") and payload.get("controller_epoch") is not None:
+            payload["operation_id"] = work_operation(work_id, new_attempt)
+            ledger["controller_id"] = payload.get("controller_id")
+            ledger["controller_epoch"] = payload.get("controller_epoch")
+            ledger["operation_id"] = payload.get("operation_id")
         self.enqueue_work_outbox(work_id, new_attempt, outbox.get("site_id", ""), payload)
         return new_attempt
 
@@ -1618,7 +2215,8 @@ class EtcdStateStore(SQLiteStateStore):
         rp_pubkey: str | None = None,
         cordoned: bool | None = None,
     ) -> None:
-        existing, _ = self._get_json(self._k("nodes", self._site_id, node_id))
+        node_key = self._k("nodes", self._site_id, node_id)
+        existing, _ = self._get_json(node_key)
         if cordoned is None:
             cordoned = bool(existing.get("cordoned", False)) if existing else False
         created_at = existing.get("created_at") if existing else _now_iso()
@@ -1636,17 +2234,86 @@ class EtcdStateStore(SQLiteStateStore):
             "created_at": created_at,
             "updated_at": _now_iso(),
         }
-        lease_id = self._client.grant_lease(self._lease_ttl_seconds)
-        self._put_json(self._k("nodes", self._site_id, node_id), payload, lease_id=lease_id)
+        lease_id, lease_rotated = self._grant_node_lease(node_id)
+        should_write = self._node_payload_changed(existing, payload) or lease_rotated
+        if not should_write:
+            return
+        self._put_with_node_lease(key=node_key, payload=payload, node_id=node_id, lease_id=lease_id)
 
     def record_heartbeat(self, node_id: str, status: str) -> None:
-        lease_id = self._client.grant_lease(self._lease_ttl_seconds)
+        lease_id, lease_rotated = self._grant_node_lease(node_id)
         now_iso = _now_iso()
         payload = {"node_id": node_id, "status": status, "seen_at": now_iso}
-        self._put_json(self._k("node_status", self._site_id, node_id), payload, lease_id=lease_id)
-        existing, _ = self._get_json(self._k("nodes", self._site_id, node_id))
-        if existing:
-            self._put_json(self._k("nodes", self._site_id, node_id), existing, lease_id=lease_id)
+        status_key = self._k("node_status", self._site_id, node_id)
+        lease_id, retry_rotated = self._put_with_node_lease(
+            key=status_key,
+            payload=payload,
+            node_id=node_id,
+            lease_id=lease_id,
+        )
+        lease_rotated = lease_rotated or retry_rotated
+        node_rewrite = False
+        if lease_rotated:
+            node_key = self._k("nodes", self._site_id, node_id)
+            existing, _ = self._get_json(node_key)
+            if existing:
+                lease_id, _ = self._put_with_node_lease(
+                    key=node_key,
+                    payload=existing,
+                    node_id=node_id,
+                    lease_id=lease_id,
+                )
+                node_rewrite = True
+        self._record_heartbeat_metrics(node_rewrite=node_rewrite)
+
+    def run_maintenance_watchdog(
+        self,
+        *,
+        threshold_pct: int | None = None,
+        quota_backend_bytes: int | None = None,
+    ) -> bool:
+        threshold = int(
+            threshold_pct
+            if threshold_pct is not None
+            else os.getenv("AE_ETCD_MAINTENANCE_THRESHOLD_PCT", "80") or 80
+        )
+        quota = int(
+            quota_backend_bytes
+            if quota_backend_bytes is not None
+            else os.getenv("AE_ETCD_QUOTA_BACKEND_BYTES", "2147483648") or 2147483648
+        )
+        quota = max(1, quota)
+        status = self._client.maintenance_status()
+        alarms = self._client.maintenance_alarms(action="GET")
+        header = status.get("header") if isinstance(status, dict) else {}
+        header = header if isinstance(header, dict) else {}
+        revision = int(header.get("revision") or 0)
+        db_size = int(status.get("dbSize") or 0) if isinstance(status, dict) else 0
+        usage_pct = int((db_size * 100) / quota)
+        alarm_items = alarms.get("alarms") if isinstance(alarms, dict) else []
+        alarm_items = alarm_items if isinstance(alarm_items, list) else []
+        nospace = any(str((item or {}).get("alarm") or "").upper() == "NOSPACE" for item in alarm_items)
+        should_reclaim = nospace or usage_pct >= threshold
+        if not should_reclaim:
+            return False
+        if revision <= 0:
+            raise RuntimeError("etcd maintenance watchdog refused compaction: revision is zero")
+        self._client.compact(revision, physical=True)
+        self._client.defragment()
+        for item in alarm_items:
+            alarm = str((item or {}).get("alarm") or "").upper()
+            member_id = str((item or {}).get("memberID") or (item or {}).get("memberId") or "0")
+            if not alarm:
+                continue
+            try:
+                self._client.maintenance_alarms(
+                    action="DEACTIVATE",
+                    member_id=member_id,
+                    alarm=alarm,
+                )
+            except Exception:
+                pass
+        return True
 
     def _get_node_cordoned(self, node_id: str) -> bool:
         rec, _ = self._get_json(self._k("nodes", self._site_id, node_id))

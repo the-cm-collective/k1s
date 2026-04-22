@@ -1,0 +1,47 @@
+name: test1-a-only-passthrough
+test_id: 1
+description: Site A only baseline with one core and one GPU node.
+network:
+  bridge: k1s-br0
+  cidr: 192.168.152.0/24
+  gateway: 192.168.152.1
+  dns:
+    - 1.1.1.1
+    - 8.8.8.8
+vm:
+  memory_mb: 4096
+  vcpus: 4
+  disk_gb: 40
+images:
+  base: artifacts/images/ubuntu-22.04-k1s-base.qcow2
+  gpu: artifacts/images/ubuntu-22.04-k1s-gpu.qcow2
+hosts:
+  - name: a-core
+    ip: 192.168.152.10
+    role: k1s-core
+    gpu: false
+    node_id: core-a-gw
+  - name: a-node-1
+    ip: 192.168.152.11
+    role: k1s-edge-node
+    gpu: true
+    site_id: core-a
+    node_id: core-a--gpu-1
+    node_labels: role=worker,site=core-a,gpu.sku=rtx-8000
+    agent_port: 9111
+k1s:
+  agent_token: devtoken
+  controller_port: 9108
+  inference_experimental: true
+transport:
+  leaf_uplink_mode: direct_ip
+  hub_host: 192.168.152.10
+  hub_leaf_port: 7422
+baseline:
+  duration_minutes: 20
+  concurrency: 16
+  max_error_rate: 0.001
+throughput_gate:
+  min_tps_ratio: 0.90
+  max_p95_ratio: 1.20
+  max_error_rate: 0.001

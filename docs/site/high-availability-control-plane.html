@@ -1,0 +1,1314 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>High Availability Control Plane</title>
+    <link rel="icon" href="static/favicon.ico" sizes="any"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
+    <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-16x16.svg"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="static/favicon-16x16.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-48x48.svg"/>
+    <link rel="icon" type="image/png" sizes="48x48" href="static/favicon-48x48.png"/>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180x180.png"/>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --k1s-bg: #121212;
+        --k1s-surface: #181818;
+        --k1s-panel: #2c2c2c;
+        --k1s-border: #404040;
+        --k1s-border-soft: #4a4a4a;
+        --k1s-text: #e5e7eb;
+        --k1s-text-muted: #9ca3af;
+        --k1s-primary: #2563eb;
+        --k1s-primary-soft: #3b82f6;
+        --k1s-highlight: #60a5fa;
+        --k1s-info: #0284c7;
+        --k1s-info-bg: #e0f2fe;
+        --k1s-success: #16a34a;
+        --k1s-success-bg: #16a34a33;
+        --k1s-warn: #f59e0b;
+        --k1s-warn-bg: #f59e0b33;
+        --k1s-danger: #ef4444;
+        --k1s-danger-bg: #ef444433;
+        --k1s-card-bg: #2c2c2c;
+        --k1s-header-bg: #0a0a0a10;
+        --k1s-radius: 8px;
+        --k1s-radius-pill: 999px;
+        --k1s-gap: 12px;
+        --k1s-brand-gold: #fbc02d;
+        --k1s-brand-graphite: #404040;
+        --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
+        /* Legacy aliases used by docs/labs styles */
+        --bg: var(--k1s-bg);
+        --fg: var(--k1s-text);
+        --muted: var(--k1s-panel);
+        --link: #5a86c9;
+        --link-hover: #7aa0e8;
+        --code-bg: #1b1b1b;
+        --border: var(--k1s-border);
+      }
+      html[data-theme="light"] {
+        --k1s-bg: #f4f5f7;
+        --k1s-surface: #f8fafb;
+        --k1s-panel: #ffffff;
+        --k1s-border: #d4d7dd;
+        --k1s-border-soft: #e6e8ec;
+        --k1s-text: #0f141c;
+        --k1s-text-muted: #4a5565;
+        --k1s-card-bg: #ffffff;
+        --k1s-header-bg: rgba(255,255,255,0.82);
+        --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
+        --bg: var(--k1s-bg);
+        --fg: var(--k1s-text);
+        --muted: var(--k1s-panel);
+        --link: #2f59b9;
+        --link-hover: #3b63c5;
+        --border: var(--k1s-border);
+      }
+    </style>
+    <style>
+      /* Base layout aligned to dashboard palette */
+      html { height: 100%; }
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
+        margin: 0;
+        padding: 2rem;
+        line-height: 1.55;
+        box-sizing: border-box;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
+        color: var(--fg);
+      }
+      img { max-width: 100%; height: auto; }
+      nav {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: .6rem;
+        justify-content: center;
+        margin: 0 auto 1.25rem auto;
+        width: min(100%, 1320px);
+        padding: 10px 16px;
+        box-sizing: border-box;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 14px;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+        position: sticky;
+        top: 12px;
+        z-index: 10;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+      }
+      nav::after {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        bottom: 6px;
+        height: 2px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent);
+        opacity: 0.5;
+        pointer-events: none;
+      }
+      nav a {
+        display: inline-flex;
+        align-items: center;
+        gap: .25rem;
+        padding: 7px 12px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        text-decoration: none;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.16);
+        transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
+        font-weight: 600;
+      }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
+      nav a:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-brand-gold);
+        color: var(--link-hover);
+        transform: translateY(-1px);
+      }
+      nav .nav-brand {
+        gap: 10px;
+        padding: 6px 10px;
+        border: 1px solid transparent;
+        background: transparent;
+        box-shadow: none;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 11px;
+        color: var(--k1s-text-muted);
+      }
+      nav .nav-brand:hover {
+        background: color-mix(in srgb, var(--k1s-card-bg) 60%, transparent);
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+        transform: translateY(0);
+      }
+      nav .nav-brand img {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+      }
+      nav a:active { transform: translateY(0); }
+      .spacer { flex: 1 1 auto; }
+      button#api-mode-toggle {
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        border: 1px solid var(--k1s-border);
+        border-radius: 8px;
+        padding: 6px 10px;
+        cursor: pointer;
+        transition: background .15s ease, border-color .15s ease;
+      }
+      button#api-mode-toggle:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-border-soft);
+      }
+      .theme-fab {
+        position: fixed;
+        right: 18px;
+        bottom: 140px;
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 12px 35px rgba(0,0,0,0.32);
+        cursor: pointer;
+        z-index: 20;
+        transition: background .15s ease, border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+      }
+      .theme-fab:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-border-soft);
+        transform: translateY(-1px);
+        box-shadow: 0 14px 40px rgba(0,0,0,0.38);
+      }
+      .theme-fab:active { transform: translateY(0); }
+      .theme-fab svg { width: 26px; height: 26px; fill: currentColor; }
+      .theme-fab .icon-sun { display: none; }
+      html[data-theme="light"] .theme-fab .icon-sun { display: block; }
+      html[data-theme="light"] .theme-fab .icon-moon { display: none; }
+      html[data-theme="dark"] .theme-fab .icon-moon { display: block; }
+      @media (max-height: 740px) {
+        .theme-fab { bottom: 32px; }
+      }
+      code, pre {
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        border-radius: 8px;
+      }
+      code { overflow-wrap: anywhere; }
+      pre code { overflow-wrap: normal; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      thead th {
+        text-align: left;
+        padding: 12px 14px;
+        background: var(--k1s-card-bg);
+        border-bottom: 1px solid var(--k1s-border);
+        color: var(--fg);
+        font-weight: 600;
+      }
+      tbody td {
+        padding: 12px 14px;
+        border-top: 1px solid var(--k1s-border-soft);
+        color: var(--fg);
+        vertical-align: top;
+      }
+      tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #000000 8%);
+      }
+      html[data-theme="light"] tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #ffffff 8%);
+      }
+      pre {
+        padding: 12px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        position: relative;
+      }
+      pre::-webkit-scrollbar { width: 0; height: 0; }
+      pre.has-copy { padding-top: 32px; }
+      .copy-btn {
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 9px;
+        border-radius: 8px;
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-surface);
+        color: var(--fg);
+        font-size: 12px;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.24);
+        opacity: 0;
+        transition: opacity .14s ease, transform .12s ease, background .12s ease, border-color .12s ease;
+        z-index: 1;
+      }
+      pre:hover .copy-btn,
+      pre:focus-within .copy-btn {
+        opacity: .96;
+      }
+      .copy-btn:hover {
+        background: var(--k1s-panel);
+        border-color: var(--k1s-border-soft);
+      }
+      .copy-btn:active { transform: translateY(0); }
+      .copy-btn svg { width: 16px; height: 16px; fill: currentColor; }
+      .copy-btn.copied { color: var(--k1s-success); border-color: var(--k1s-success); }
+      h1 { margin-top: 0; font-size: 28px; letter-spacing: 0.01em; }
+      h2 { margin-top: 1.5em; font-size: 20px; }
+      h3 { margin-top: 1.1em; font-size: 17px; }
+      a { color: var(--link); }
+      a:hover { color: var(--link-hover); }
+      a:focus-visible { outline: 2px solid var(--k1s-highlight); outline-offset: 2px; border-radius: 4px; }
+      .container {
+        width: min(100%, 1320px);
+        max-width: 1320px;
+        margin: 0 auto;
+        flex: 1 0 auto;
+      }
+      .card {
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-card-bg);
+        border-radius: var(--k1s-radius);
+        padding: 10px 12px;
+      }
+      .hero {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+        padding: 22px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 22%, transparent) 0%, transparent 55%),
+          linear-gradient(135deg, color-mix(in srgb, var(--k1s-panel) 86%, #000000 14%) 0%, var(--k1s-panel) 55%, color-mix(in srgb, var(--k1s-brand-gold) 14%, var(--k1s-panel)) 100%);
+        overflow: hidden;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+      }
+      html[data-theme="light"] .hero {
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 26%, transparent) 0%, transparent 60%),
+          linear-gradient(135deg, #ffffff 0%, #f8f7f2 60%, color-mix(in srgb, var(--k1s-brand-gold) 18%, #ffffff) 100%);
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        right: -24px;
+        bottom: -36px;
+        width: 220px;
+        height: 220px;
+        background: url('static/k1s-logo-circle.svg') no-repeat center / contain;
+        opacity: 0.12;
+        pointer-events: none;
+      }
+      .hero-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 1;
+      }
+      .hero-logo-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .hero-logo {
+        width: min(320px, 90%);
+        height: auto;
+        opacity: 0.85;
+      }
+      .hero-pill {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        background: var(--k1s-brand-gold);
+        color: #2b2b2b;
+        box-shadow: 0 10px 22px rgba(251, 192, 45, 0.25);
+      }
+      .hero h1 {
+        font-size: 32px;
+        margin: 4px 0 0;
+      }
+      .hero-tagline {
+        max-width: 52ch;
+        color: var(--k1s-text-muted);
+        font-size: 15px;
+      }
+      .hero-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      .hero-repo {
+        margin-top: 14px;
+        padding: 10px 12px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 6px 10px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 12px;
+        background: var(--k1s-panel);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+      }
+      .hero-repo-label {
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-link {
+        color: var(--link);
+        font-weight: 600;
+        text-decoration: none;
+        word-break: break-word;
+      }
+      .hero-repo-link:hover {
+        color: var(--link-hover);
+        text-decoration: underline;
+      }
+      .hero-link {
+        text-decoration: none;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 70%, transparent);
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .hero-link--stack {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .hero-link-title {
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .hero-link-sub {
+        font-weight: 400;
+        font-size: 11px;
+        line-height: 1.3;
+        color: var(--k1s-text-muted);
+      }
+      .hero-link:hover {
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+      }
+      .hero-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        align-items: start;
+        z-index: 1;
+      }
+      .hero-card {
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 85%, transparent);
+        border-radius: 14px;
+        padding: 12px;
+        box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+      }
+      .hero-card h2 {
+        margin: 0 0 6px;
+        font-size: 16px;
+      }
+      .hero-card p {
+        margin: 0 0 10px;
+        color: var(--k1s-text-muted);
+        font-size: 13px;
+      }
+      .hero-card pre {
+        margin: 8px 0 0;
+        font-size: 12px;
+      }
+      .hero-index {
+        grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 2fr);
+      }
+      .hero-index .hero-actions {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .hero-card--section {
+        min-height: 180px;
+      }
+      .hero-links--dense {
+        gap: 8px;
+      }
+      .hero-links--dense .hero-link {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
+      .callout, blockquote {
+        border-left: 4px solid var(--k1s-primary-soft);
+        background: var(--k1s-card-bg);
+        border: 1px solid var(--k1s-border);
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .muted, .note { color: var(--k1s-text-muted); }
+      /* Shared helper to allow scrolling without visible bars */
+      .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+      .scrollbar-hide::-webkit-scrollbar { width: 0; height: 0; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+      footer.site-footer {
+        margin-top: 3rem;
+        border-top: 1px solid var(--k1s-border);
+        flex: 0 0 auto;
+      }
+      footer.site-footer .inner {
+        display: flex;
+        align-items: center;
+        gap: .75rem;
+        padding: 14px 0;
+        opacity: .85;
+      }
+      @media (hover: none) {
+        .copy-btn { opacity: .92; }
+        pre.has-copy { padding-top: 36px; }
+      }
+      @media (max-width: 980px) {
+        body { padding: 1.5rem; }
+        nav {
+          width: 100%;
+          padding: 8px 10px;
+          gap: .5rem;
+          justify-content: flex-start;
+        }
+        nav a {
+          padding: 6px 10px;
+          font-size: 12px;
+        }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
+        nav .nav-brand {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+        }
+        .hero {
+          padding: 18px;
+        }
+        .hero h1 { font-size: 28px; }
+        .hero-tagline { font-size: 14px; }
+        .hero-index { grid-template-columns: 1fr; }
+        .hero-actions { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        .hero-card--section { min-height: auto; }
+        .theme-fab { right: 12px; bottom: 88px; }
+        footer.site-footer .inner { flex-wrap: wrap; }
+      }
+      @media (max-width: 720px) {
+        body { padding: 1.1rem; }
+        nav {
+          top: 8px;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        nav::-webkit-scrollbar { width: 0; height: 0; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
+        nav::after { left: 8px; right: 8px; }
+        h1 { font-size: 24px; }
+        h2 { font-size: 18px; }
+        h3 { font-size: 15px; }
+        .hero { padding: 16px; }
+        .hero-logo { width: min(220px, 90%); }
+        .hero-pill { font-size: 11px; }
+        .hero-links { gap: 8px; }
+        .hero-link { font-size: 12px; }
+        .hero-actions { grid-template-columns: 1fr; }
+        .theme-fab { bottom: 24px; width: 48px; height: 48px; }
+        pre { font-size: 13px; }
+        table {
+          display: block;
+          max-width: 100%;
+          width: max-content;
+          min-width: 100%;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        thead th, tbody td { padding: 10px 12px; }
+      }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        const labels = {
+          dark: 'Switch to light mode',
+          light: 'Switch to dark mode',
+        };
+        function update(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          var label = labels[cur] || 'Toggle theme';
+          btn.setAttribute('aria-label', label);
+          btn.setAttribute('title', label);
+        }
+        function wire() {
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) return;
+          update(btn);
+          btn.addEventListener('click', function() {
+            var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+            var next = (cur === 'dark') ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', next);
+            localStorage.setItem(key, next);
+            update(btn);
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', wire);
+        } else {
+          wire();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>
+      // Attach copy buttons to all code blocks client-side
+      (function() {
+        function addButtons() {
+          var blocks = document.querySelectorAll('pre > code');
+          blocks.forEach(function(code) {
+            var pre = code.parentElement;
+            if (pre.dataset.hasCopy) return;
+            pre.dataset.hasCopy = '1';
+            pre.classList.add('has-copy');
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'copy-btn';
+            btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z"/></svg><span>Copy</span>';
+
+            btn.addEventListener('click', function() {
+              var text = code.textContent || '';
+              var setState = function(ok) {
+                btn.classList.toggle('copied', ok);
+                btn.lastChild.textContent = ok ? 'Copied!' : 'Copy';
+                setTimeout(function() {
+                  btn.classList.remove('copied');
+                  btn.lastChild.textContent = 'Copy';
+                }, 1400);
+              };
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() { setState(true); }, function() { setState(false); });
+              } else {
+                try {
+                  var ta = document.createElement('textarea');
+                  ta.value = text;
+                  ta.style.position = 'fixed';
+                  ta.style.opacity = '0';
+                  document.body.appendChild(ta);
+                  ta.select();
+                  document.execCommand('copy');
+                  document.body.removeChild(ta);
+                  setState(true);
+                } catch (e) {
+                  setState(false);
+                }
+              }
+            });
+
+            pre.style.position = 'relative';
+            pre.insertBefore(btn, code);
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', addButtons);
+        } else {
+          addButtons();
+        }
+      })();
+    </script>
+    
+  </head>
+  <body>
+    <nav>
+      <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
+      <a href="start-here.html">Start Here</a>
+      <a href="overview.html">Overview</a>
+      <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
+      <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
+      <a href="cri-containerd.html">CRI containerd</a>
+      <a href="multinode-lab.html">Multi-Node</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
+      <a href="api-auth.html">API Auth</a>
+      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="playground.html">Playground</a>
+    </nav>
+    <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
+      <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
+        <path d="M480-360q50 0 85-35t35-85q0-50-35-85t-85-35q-50 0-85 35t-35 85q0 50 35 85t85 35Zm0 80q-83 0-141.5-58.5T280-480q0-83 58.5-141.5T480-680q83 0 141.5 58.5T680-480q0 83-58.5 141.5T480-280ZM200-440H40v-80h160v80Zm720 0H760v-80h160v80ZM440-760v-160h80v160h-80Zm0 720v-160h80v160h-80ZM256-650l-101-97 57-59 96 100-52 56Zm492 496-97-101 53-55 101 97-57 59Zm-98-550 97-101 59 57-100 96-56-52ZM154-212l101-97 55 53-97 101-59-57Zm326-268Z"/>
+      </svg>
+      <svg class="icon-moon" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
+        <path d="M480-120q-150 0-255-105T120-480q0-150 105-255t255-105q14 0 27.5 1t26.5 3q-41 29-65.5 75.5T444-660q0 90 63 153t153 63q55 0 101-24.5t75-65.5q2 13 3 26.5t1 27.5q0 150-105 255T480-120Zm0-80q88 0 158-48.5T740-375q-20 5-40 8t-40 3q-123 0-209.5-86.5T364-660q0-20 3-40t8-40q-78 32-126.5 102T200-480q0 116 82 198t198 82Zm-10-270Z"/>
+      </svg>
+    </button>
+    <div class="container">
+    <h1 id="high-availability-control-plane-roadmap">High Availability Control Plane Roadmap</h1>
+<p>Status: implemented roadmap and closed HA control-plane track for true HA <code>k1s</code> core.</p>
+<p>This roadmap defines the control-plane foundation that must exist before <code>k1s</code> can claim a true HA mode. It precedes the AMD fabric deployment work in <a href="distributed-compute-fabric.html">Distributed Compute Fabric Roadmap</a> and gives that later roadmap a stable authority model to depend on instead of re-defining core HA inside provider-edge or fabric docs.</p>
+<p>The core position is deliberate:</p>
+<ul>
+<li><code>etcd</code> is the single source of truth for controller authority, desired state, leases, revisions, and fencing</li>
+<li><code>NATS</code> and <code>JetStream</code> are the transport and replay plane for work, events, and route distribution</li>
+<li>a 3-controller deployment is not a controller voting cluster; the quorum lives in the 3-member <code>etcd</code> cluster</li>
+</ul>
+<h2 id="summary">Summary</h2>
+<p>The repo already contains several of the primitives needed for this path:</p>
+<ul>
+<li>an <code>etcd</code>-backed controller state lane</li>
+<li>controller and node leases with <code>controller_epoch</code> fields</li>
+<li>NATS Core and JetStream transport modes</li>
+<li>outbox-based dispatch and gateway spool durability</li>
+</ul>
+<p>The first HA slice now removes local <code>specs/</code> authority in HA mode, elects one mutating controller, gates controller-native mutation and transport publication on that authority, and makes non-converged apishim mutation explicitly read-only until the later <code>H4b*</code> slices. <code>H2</code> fencing is now in place across controller work, gateway lease/work/route flows, remote runtime calls, and fabric session HTTP calls; gateways and node agents persist fence state and reject stale epochs, and controller ingress rejects stale work results and stale route acknowledgements. <code>H3</code> now hardens outbox replay, gateway replay, and JetStream HA validation without turning transport into truth. <code>H4a</code> routes workload-core resources through shared controller authority in HA mode. <code>H4b1</code> converges <code>ConfigMap</code>, <code>Secret</code>, <code>ServiceAccount</code>, and <code>CronJob</code>, <code>H4b-hpa</code> runs leader-only HPA scaling from shared workload metrics, <code>H4b2a</code> extends shared authority to <code>Namespace</code>, RBAC, and <code>PodDisruptionBudget</code>, <code>H4b2b-crd</code> converges CRDs plus dynamic custom-resource routing, <code>H4b2c-core</code> routes <code>StorageClass</code>, PVC, and PV through shared authority while the elected main controller owns the core storage reconcile loop, and <code>H4b2c-csi</code> now brings the remaining snapshot and CSI resources onto the same shared-authority model while CRI and node-agent storage reads stop depending on local shim DB state. <code>H5a-core</code>, <code>H5b1-etcd-recovery</code>, and <code>H5b2a-core-upgrades</code> now give that surface a real bootstrap, snapshot, drill, recovery, and rolling-upgrade story. <code>H5b2b-hub-transport-upgrades</code> now covers shared hub NATS/JetStream upgrade and replacement procedures, <code>H5b2c-edge-transport-upgrades</code> extends that posture to edge-site gateway-first / leader-last transport choreography with per-gateway build visibility and bounded leaf reconnect validation, and <code>H5c-ha-closeout</code> adds the final audit plus integrated evidence lanes needed before the <code>H*</code> track can close.</p>
+<p>The two design rules for the whole program are:</p>
+<ul>
+<li>watches and messages trigger work; only <code>etcd</code> transactions authorize work</li>
+<li>transport may duplicate; executors must be idempotent; fencing makes duplicates harmless</li>
+</ul>
+<p>For the underlying consistency and transport behavior, see:</p>
+<ul>
+<li><a href="https://etcd.io/docs/v3.5/learning/api_guarantees/">etcd API guarantees</a></li>
+<li><a href="https://etcd.io/docs/v3.5/tutorials/how-to-conduct-elections/">etcd leader election tutorial</a></li>
+<li><a href="https://docs.nats.io/running-a-nats-service/configuration/clustering/jetstream_clustering">NATS JetStream clustering</a></li>
+<li><a href="https://docs.nats.io/nats-concepts/core-nats/queue">NATS queue groups</a></li>
+</ul>
+<h2 id="why-this-precedes-fabric-ha">Why This Precedes Fabric HA</h2>
+<p>The fabric roadmap already assumes an HA edge, broker boundary, and later multi-cell growth. Those claims become ambiguous if the backend <code>k1s</code> core itself is still a single-process authority with no fencing.</p>
+<p>This roadmap therefore comes first:</p>
+<ul>
+<li>fabric D0 may continue as a single-cell validation track</li>
+<li>fabric D1 and later deployment milestones depend on the control-plane HA phases here</li>
+<li>provider-edge HA does not replace backend controller HA; it fronts it</li>
+</ul>
+<h2 id="authority-model">Authority Model</h2>
+<p>The target HA shape is:</p>
+<ul>
+<li>3 control-plane nodes</li>
+<li>3 <code>etcd</code> members across those nodes</li>
+<li>3 controller processes, one per control-plane node</li>
+<li>3 hub NATS servers with JetStream enabled for durable streams at <code>R=3</code></li>
+<li>dedicated worker and fabric nodes outside the control-plane set whenever size permits</li>
+</ul>
+<p>Role split:</p>
+<ul>
+<li><code>etcd</code>: authority, revisions, elections, leases, ownership, fencing epochs</li>
+<li>active controller: the only process allowed to mutate cluster state or publish mutating work</li>
+<li>standby controllers: hot spares that observe shared state and take over on leader loss</li>
+<li>NATS/JetStream: work dispatch, replay, route publication, async events, partition buffering</li>
+<li>agents, gateways, ingress writers, fabric allocators: idempotent executors that honor fencing tokens</li>
+</ul>
+<p>HA mode also tightens the desired-state boundary:</p>
+<ul>
+<li>authoritative desired-state writes must land in shared controller state</li>
+<li>local <code>specs/</code> import remains valid for single-node and dev flows</li>
+<li>local <code>specs/</code> import is not the authority path for multi-controller HA mode</li>
+</ul>
+<h2 id="phases">Phases</h2>
+<h3 id="h0-shared-desired-state-authority">H0: Shared desired-state authority</h3>
+<p>Goal:</p>
+<ul>
+<li>remove local-only desired-state assumptions from true HA mode</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li><code>etcd</code>-backed shared controller state is the only authoritative desired-state registry in HA mode</li>
+<li>file import from <code>specs/</code> is explicitly documented as dev-only for HA deployments</li>
+<li>controller-native CLI and controller API writers land intent into the same shared registry in HA mode</li>
+<li>apishim remains read/list/watch-capable in HA mode, but non-converged mutation is rejected until the relevant later <code>H4b*</code> slice</li>
+<li>revision and generation semantics are shared across controller replicas</li>
+</ul>
+<h3 id="h1-leader-election-and-controller-epochs">H1: Leader election and controller epochs</h3>
+<p>Goal:</p>
+<ul>
+<li>ensure exactly one controller can authorize mutations at a time</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>controllers campaign for leadership through a lease-backed <code>etcd</code> key under the controller prefix</li>
+<li>the winner becomes the only mutating controller until its lease expires or is revoked</li>
+<li>every leadership win yields a monotonically increasing controller epoch derived from <code>etcd</code></li>
+<li>non-leaders remain hot standbys and never publish mutating work</li>
+<li>followers reject leader-only controller mutations with leader hints and stop mutating background loops on authority loss</li>
+</ul>
+<h3 id="h2-fencing-and-idempotent-mutation-envelopes">H2: Fencing and idempotent mutation envelopes</h3>
+<p>Goal:</p>
+<ul>
+<li>turn split-brain from a correctness failure into a stale-command rejection path</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>every mutating action carries <code>controller_id</code>, <code>controller_epoch</code>, and <code>operation_id</code></li>
+<li>gateways, node agents, ingress writers, and fabric allocators persist the highest accepted epoch</li>
+<li>stale epochs are rejected and duplicate <code>operation_id</code> replays become no-ops</li>
+<li>destructive and allocative paths become epoch-aware, including container lifecycle, route publication, service updates, and fabric reservation work</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>controller work attempts, route bundles, remote runtime calls, and fabric session mutations now emit fenced mutation envelopes</li>
+<li>site gateways persist fence state, reject stale lease/work/route commands, and echo accepted envelopes on results and route acknowledgements</li>
+<li>node agents reject stale runtime and fabric mutations and treat duplicate <code>operation_id</code> requests as successful no-ops</li>
+<li>controller ingress now validates work acknowledgements and rejects stale work results and stale route acknowledgements instead of trusting transport ordering</li>
+<li><code>/metrics</code> exposes <code>ae_ha_fence_stale_total</code>, <code>ae_ha_fence_duplicate_total</code>, and <code>ae_ha_fence_epoch_advance_total</code> so failover and stale-command behavior are visible during rollout</li>
+</ul>
+<h3 id="h3-transport-hardening-around-etcd-authority">H3: Transport hardening around <code>etcd</code> authority</h3>
+<p>Goal:</p>
+<ul>
+<li>make durable transport safe without turning transport into authority</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>work dispatch, route bundles, and async reconcile messages publish only from the active leader</li>
+<li>outbox dispatch re-checks leadership before publish and after failover</li>
+<li>JetStream remains the durable hub path with <code>R=3</code> streams for critical work subjects</li>
+<li>gateway result replay is restart-safe and uses bounded retry/backoff instead of a hot loop</li>
+<li>route bundles remain on the current periodic publish/ack path in this phase; reconnect forces immediate resend and metrics expose pending ack age</li>
+<li>transport degradation may pause or delay work, but it does not corrupt ownership because truth remains in <code>etcd</code></li>
+<li>the first HA slice already moves mutating NATS request/reply bindings to the active leader; full replay safety still depends on <code>H2</code></li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>outbox entries persist deterministic publish subject and <code>Nats-Msg-Id</code>, and the publisher re-checks authority before publish and before marking rows published</li>
+<li>HA mode validates JetStream work stream and consumer replicas at bootstrap instead of silently accepting topology drift</li>
+<li>gateway spool results now persist replay attempts, next retry time, and last replay error so buffered results can survive restart and replay with bounded backoff</li>
+<li>gateway reconnect resets replay scheduling immediately instead of waiting for a fixed retry interval</li>
+<li>route bundles still use periodic publish/ack, but reconnect now resets pending sites for immediate resend and <code>/metrics</code> exposes route publish counters, pending state, and <code>ae_route_bundle_ack_age_seconds</code></li>
+<li>gateway telemetry now exposes <code>ae_gateway_result_replay_total</code>, <code>ae_gateway_result_replay_fail_total</code>, and <code>ae_gateway_result_replay_backlog</code></li>
+</ul>
+<h3 id="h4a-workload-core-apishim-convergence">H4a: Workload-core apishim convergence</h3>
+<p>Goal:</p>
+<ul>
+<li>restore HA mutation for converged workload-core resources without re-introducing a second truth store</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>apishim HA workload mutation for <code>Deployment</code>, <code>StatefulSet</code>, <code>DaemonSet</code>, <code>Job</code>, <code>Deployment/scale</code>, and attached <code>Service</code>/<code>Ingress</code> now lands in shared controller authority instead of the local shim DB</li>
+<li>the converged workload surface reads back from shared controller state instead of the adapter/mirror path in HA mode</li>
+<li>attached <code>Service</code> and <code>Ingress</code> writes are treated as workload-owned intent and fail closed on ambiguous mappings</li>
+<li>the current Postgres-backed shim store is treated as transitional and legacy-only for non-converged resources in HA mode</li>
+<li>non-converged shim resource families remain read/list/watch-capable, but mutation stays explicitly unsupported until the relevant later <code>H4b*</code> slice</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>HA mode now uses a multiplex shim store that routes converged workload-core resources onto shared controller authority while leaving legacy resources on the existing object store</li>
+<li>controller registry entries carry workload-kind and attached <code>Service</code>/<code>Ingress</code> identity labels so the shim can synthesize converged reads without consulting the legacy DB</li>
+<li>HA apishim workload PUT/DELETE/scale flows now perform CAS writes against controller authority and return <code>409 Conflict</code> on stale <code>resourceVersion</code></li>
+<li>controller HA mode disables the old apishim mirror fallback and materializes converged <code>DaemonSet</code> desired replicas from controller-visible node count during reconcile</li>
+</ul>
+<h3 id="h4b1-cronjob-and-passive-shim-object-convergence">H4b1: CronJob and passive shim-object convergence</h3>
+<p>Goal:</p>
+<ul>
+<li>converge <code>CronJob</code>, <code>ConfigMap</code>, <code>Secret</code>, and <code>ServiceAccount</code> onto shared HA authority without reopening storage or HPA side paths</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li><code>CronJob</code>, <code>ConfigMap</code>, <code>Secret</code>, and <code>ServiceAccount</code> gain shared-authority HA read/write/watch behavior</li>
+<li>the elected controller owns <code>CronJob</code> execution in HA mode; schedule cursor and last-run status live in shared authority state</li>
+<li>HA mode disables the apishim <code>StorageController</code>, so storage watch loops do not keep mutating outside the converged authority boundary</li>
+<li>containerd/CRI runtime reads for converged passive resources stop depending on local shim DB authority in HA mode</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>HA mode now routes <code>ConfigMap</code>, <code>Secret</code>, <code>ServiceAccount</code>, and <code>CronJob</code> writes through the generic shared-authority apishim store instead of the legacy shim DB</li>
+<li>the apishim <code>StorageController</code> no longer starts in HA mode, keeping storage watch loops off shim replicas while later controller-owned storage slices converge the authority model</li>
+<li><code>CriRuntime</code> now prefers the HA apishim HTTP read client for converged <code>Secret</code> and <code>ServiceAccount</code> lookups in HA mode and does not fall back to local shim DB authority for that surface</li>
+<li>the new controller-native <code>CronJobAuthorityController</code> runs only on the elected controller, creates deterministic child <code>Job</code> entries through workload authority, and persists <code>lastScheduleTime</code>/<code>lastSuccessfulTime</code> in shared authority state</li>
+</ul>
+<h3 id="h4b-hpa-shared-metrics-hpa-convergence">H4b-hpa: Shared-metrics HPA convergence</h3>
+<p>Goal:</p>
+<ul>
+<li>re-enable HA <code>HorizontalPodAutoscaler</code> mutation only after a controller-visible shared metrics source exists</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>HPA state and scale writes converge on the same shared HA authority model as <code>H4a</code> and <code>H4b1</code></li>
+<li>autoscaling decisions no longer depend on per-replica adapter-host runtime stats</li>
+<li>HPA remains read-only in HA mode until this shared-metrics slice lands</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>HA apishim now routes <code>autoscaling/v2</code> HPA CRUD/list/watch through shared authority with HA validation for supported resource metrics and converged target kinds</li>
+<li>node agents expose <code>/v1/workload_metrics</code>, <code>CriRuntime</code> aggregates per-workload CRI metrics, and the elected controller writes shared workload-metrics snapshots before applying HPA decisions</li>
+<li>the controller-native HPA authority loop now persists <code>lastScaleTime</code>, conditions, and current metrics in shared authority state and scales converged workloads through the existing CAS-protected workload authority path</li>
+</ul>
+<h3 id="h4b2a-built-in-passive-resource-convergence">H4b2a: Built-in passive resource convergence</h3>
+<p>Goal:</p>
+<ul>
+<li>converge the remaining built-in passive shim resources that do not need new active control loops</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li><code>Namespace</code>, RBAC resources, and <code>PodDisruptionBudget</code> gain shared-authority HA CRUD/list/watch behavior</li>
+<li>RBAC evaluation becomes shared-authority-based across shim replicas instead of depending on local shim DB state</li>
+<li>storage stays explicitly read-only in HA mode during this slice</li>
+<li>the storage controller remains disabled in HA mode; <code>H4b2a</code> does not reopen PVC/PV/snapshot watch loops</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>HA apishim now routes <code>Namespace</code>, <code>Role</code>, <code>RoleBinding</code>, <code>ClusterRole</code>, <code>ClusterRoleBinding</code>, and <code>PodDisruptionBudget</code> through the generic shared-authority store instead of the legacy shim DB</li>
+<li>the H4b2a cut expanded the HA mutation guard to those built-in passive resources without reopening storage-controller authority paths</li>
+<li>RBAC authorization evaluation now reads shared-authority <code>Role</code>/<code>Binding</code> objects across shim replicas, so cross-replica auth decisions no longer depend on local DB contents</li>
+</ul>
+<h3 id="h4b2b-crd-crd-and-custom-resource-convergence">H4b2b-crd: CRD and custom-resource convergence</h3>
+<p>Goal:</p>
+<ul>
+<li>converge CRDs and dynamic custom-resource instances onto shared HA authority without reopening storage reconciliation</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li><code>CustomResourceDefinition</code> gains shared-authority HA CRUD/list/watch behavior</li>
+<li>served custom-resource GVRs route onto shared authority in HA mode instead of the legacy shim DB</li>
+<li>discovery for CRD-served groups and versions refreshes across shim replicas without restart</li>
+<li>storage, snapshot, and CSI resources stay explicitly read-only in HA mode during this slice</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>HA apishim now routes <code>apiextensions.k8s.io/v1 CustomResourceDefinition</code> through shared authority instead of the legacy shim DB</li>
+<li>the HA store now treats served CRD GVRs as dynamic shared-authority resources, so custom-resource CRUD/list/watch bypasses the legacy shim DB in HA mode</li>
+<li>shim request handling refreshes its CRD discovery cache from shared authority in HA mode, so CRD discovery and custom-resource routing converge across replicas without process restart</li>
+</ul>
+<h3 id="h4b2c-core-core-storage-authority-convergence">H4b2c-core: Core storage authority convergence</h3>
+<p>Goal:</p>
+<ul>
+<li>converge the core storage API path first without reopening snapshot or CSI scope</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li><code>StorageClass</code>, <code>PersistentVolumeClaim</code>, and <code>PersistentVolume</code> now route through shared HA authority in apishim</li>
+<li>the elected main controller now hosts the active core storage reconcile loop, so PVC/PV binding and the existing local-path/NFS provisioning path are leader-owned instead of shim-local</li>
+<li>the apishim-local <code>StorageController</code> stays disabled in HA mode</li>
+<li>snapshot and CSI resources remain explicitly read-only in HA mode during this slice</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>HA apishim now routes <code>storage.k8s.io/v1 StorageClass</code>, core PVC, and core PV through shared authority instead of the legacy shim DB</li>
+<li>the main controller now hosts a leader-owned storage authority runner that seeds storage classes and runs the core PVC/PV reconcile loop over shared authority state</li>
+<li>the storage reconcile engine now has a core-storage mode that suppresses snapshot, CSI, and CSI capacity branches for this slice</li>
+</ul>
+<h3 id="h4b2c-csi-snapshot-csi-and-remaining-storage-resource-convergence">H4b2c-csi: Snapshot, CSI, and remaining storage-resource convergence</h3>
+<p>Goal:</p>
+<ul>
+<li>finish the remaining storage-specific convergence work after the lower-risk core storage cut lands</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>snapshot, CSI, and the remaining storage-specific mutation surfaces converge on the same shared HA authority model instead of the transitional shim DB path</li>
+<li>watch/resourceVersion/compaction behavior for the remaining HA storage surface aligns with the same monotonic revision model used by the controller and the earlier <code>H4*</code> slices</li>
+<li>Postgres and SQLite remain optional deployment backends, but they are no longer the HA authority story for public API behavior</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li>HA apishim now routes snapshot and CSI storage resources through shared authority</li>
+<li>controller-owned storage resources (<code>VolumeAttachment</code>, <code>CSIStorageCapacity</code>, <code>VolumeSnapshotContent</code>) are read-only at the HA API edge and are written only by the elected storage controller</li>
+<li>the leader-owned storage authority runner now re-enables snapshot, CSI, and storage-capacity reconciliation from the main controller</li>
+<li>CRI and node-agent storage reads now use the HA apishim HTTP path for PVC/PV/StorageClass/VolumeAttachment/CSIDriver lookups instead of falling back to local shim DB authority</li>
+</ul>
+<h3 id="h5a-core-ha-bootstrap-snapshots-and-first-line-drills">H5a-core: HA bootstrap, snapshots, and first-line drills</h3>
+<p>Goal:</p>
+<ul>
+<li>make the HA core operationally repeatable on the intended strict-CRI core profile, not only architecturally plausible</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>documented <code>k1s-ha-core</code> bootstrap contract for one HA core node in a shared 3-controller control plane</li>
+<li>fail-fast validation for shared/external <code>etcd</code> and NATS dependencies before starting the core profile</li>
+<li>etcd snapshot save/status/restore helper for HA backup workflows</li>
+<li>repeatable drills for leader failover, transport recovery, and external-etcd restart validation</li>
+<li>clear separation between <code>k1s-core</code> single-host dev behavior and <code>k1s-ha-core</code> shared-authority behavior</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>make k1s-ha-core</code> now starts a strict-CRI HA core node with <code>AE_HA_MODE=1</code> and refuses to bootstrap local singleton <code>etcd</code>, NATS, or Postgres</li>
+<li><a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a> now provides the canonical operator sequence for that 3-controller bootstrap contract, including first validation and first snapshot checkpoint</li>
+<li>the new <code>ha_core_preflight.py</code> helper validates required HA env, shared <code>etcd</code> reachability, and NATS reachability before startup</li>
+<li><code>etcd_snapshot.py</code> provides explicit etcd snapshot save/status/restore tooling instead of overloading the existing SQLite/specs <code>ae backup</code> path</li>
+<li><code>ha_core_drills.py</code> provides focused verification helpers for leader failover, transport recovery, and external-etcd restart drills</li>
+<li><code>ha_core_drills.py etcd-restart</code> and <code>transport-recovery</code> now prefer the current leader&#x27;s metrics endpoint when <code>--etcd-endpoints</code> and <code>--etcd-prefix</code> are supplied, so drill verification remains valid after leader movement</li>
+</ul>
+<h3 id="h5b1-etcd-recovery-member-replacement-quorum-loss-and-stale-leader-recovery">H5b1-etcd-recovery: Member replacement, quorum loss, and stale-leader recovery</h3>
+<p>Goal:</p>
+<ul>
+<li>turn the HA control plane from bootstrap-ready into operator-recoverable around <code>etcd</code> authority loss and recovery</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>documented etcd member replacement procedure using the v3.5 learner workflow</li>
+<li>documented quorum-loss recovery path from snapshot into a fresh 3-member cluster</li>
+<li>stale-leader isolation, follower takeover, and safe rejoin documented in operator terms</li>
+<li>control-plane node role separation documented for AMD fabric deployments</li>
+<li>controller metrics expose leader state, authority health, and current epoch for recovery validation</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>scripts/dev/etcd_recovery.py</code> now exposes <code>endpoint-status</code>, <code>member-list</code>, <code>member-remove</code>, <code>member-add --learner</code>, <code>member-promote</code>, and <code>quorum-restore-plan</code></li>
+<li><code>src/ae/ha/ops.py</code> now provides shared etcd recovery command builders, learner-add parsing, and 3-member quorum-restore plan rendering</li>
+<li>controller metrics now expose <code>ae_controller_is_leader</code>, <code>ae_controller_epoch</code>, and <code>ae_controller_authority_healthy</code> for operator-visible recovery checks</li>
+<li>the runbook now documents member replacement, quorum-loss restore, stale-leader isolation, and control-plane role separation on top of the <code>k1s-ha-core</code> bootstrap surface</li>
+</ul>
+<h3 id="h5b2a-core-upgrades-rolling-upgrades-for-k1s-ha-core">H5b2a-core-upgrades: Rolling upgrades for <code>k1s-ha-core</code></h3>
+<p>Goal:</p>
+<ul>
+<li>turn the recovery-ready HA core profile into a repeatable rolling-upgrade surface for controller, apishim, and core-node services</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>explicit installed-service surface for systemd-managed <code>k1s-ha-core</code> nodes</li>
+<li>operator-assisted precheck, per-node plan, and cluster verification helpers for follower-first and leader-last upgrades</li>
+<li>controller and apishim build/version visibility suitable for upgrade gating</li>
+<li>narrow two-build skew contract for one-node-at-a-time upgrades</li>
+<li>NATS/JetStream member replacement and transport-cluster upgrade sequencing stay explicitly deferred to a later slice</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>make install-ha-core-systemd</code> and <code>make uninstall-ha-core-systemd</code> now manage an explicit HA node-role service surface built around <code>ae-ha-core.service</code>, <code>/etc/ae/ha-core.env</code>, and <code>/usr/local/bin/ae-ha-core-service</code></li>
+<li><code>scripts/install.sh</code> now exposes <code>ha-core-install</code> and <code>ha-core-uninstall</code> actions without changing the older single-node install path</li>
+<li><code>scripts/dev/ha_core_upgrade.py</code> now provides <code>precheck</code>, <code>node-plan</code>, and <code>cluster-verify</code> commands for operator-assisted rolling upgrades</li>
+<li>controller and apishim now expose <code>GET /__ae/version</code>, and controller metrics now expose <code>ae_controller_build_info{version,sha,date} 1</code></li>
+<li>the runbook now documents follower-first, leader-last rolling upgrades with a strict two-build window for <code>k1s-ha-core</code></li>
+</ul>
+<h3 id="h5b2b-hub-transport-upgrades-shared-hub-nats-jetstream-upgrade-sequencing-and-replacement">H5b2b-hub-transport-upgrades: Shared hub NATS/JetStream upgrade sequencing and replacement</h3>
+<p>Goal:</p>
+<ul>
+<li>extend the HA operating model from core-node upgrades to the shared hub NATS/JetStream cluster that <code>k1s-ha-core</code> depends on</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>documented hub NATS/JetStream member replacement and upgrade sequencing</li>
+<li>helper-driven hub transport precheck, per-node plan, cluster verification, and replacement planning that build on the finished <code>k1s-ha-core</code> rolling-upgrade surface</li>
+<li>controller transport health and NATS monitor endpoints are the validation surface, without introducing a repo-managed NATS install path</li>
+<li>any later edge-site NATS leader choreography stays explicitly separate from hub transport procedures</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>scripts/dev/ha_transport_upgrade.py</code> now provides <code>precheck</code>, <code>node-plan</code>, <code>cluster-verify</code>, and <code>member-replace-plan</code> for operator-assisted hub transport changes</li>
+<li><code>src/ae/ha/ops.py</code> now provides shared hub NATS monitor target parsing, <code>/varz</code>/<code>/routez</code>/<code>/jsz</code>/optional <code>/leafz</code> fetch helpers, and health evaluation for route mesh plus JetStream replication</li>
+<li>the runbook now documents shared hub transport upgrade checks, helper usage, and controller metrics that gate hub restarts and replacement verification</li>
+</ul>
+<h3 id="h5b2c-edge-transport-upgrades-edge-site-nats-leader-upgrades-and-replacement-choreography">H5b2c-edge-transport-upgrades: Edge-site NATS leader upgrades and replacement choreography</h3>
+<p>Goal:</p>
+<ul>
+<li>extend the HA operating model from the shared hub transport cluster to edge-site NATS leader restart, replacement, and reconnect choreography</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>documented edge-site transport upgrade and replacement sequencing that builds on the finished shared hub procedures</li>
+<li>operator-assisted helper-driven gateway-first / leader-last choreography for one edge site at a time</li>
+<li>per-gateway visibility at the controller metrics surface so site recovery can be verified by node as well as by site</li>
+<li>explicit separation between shared hub transport operations and edge gateway/site transport operations</li>
+<li><code>k1s-edge-core</code> / <code>k1s-edge-core-cri</code> remain the milestone-defining HA lane; <code>k1s-edge</code> / <code>k1s-core-edge</code> remain secondary compatibility rather than exit criteria</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>scripts/dev/ha_edge_transport.py</code> now provides <code>precheck</code>, <code>gateway-plan</code>, <code>site-verify</code>, <code>leader-plan</code>, and <code>leader-replace-plan</code> for operator-assisted edge-site transport changes</li>
+<li><code>src/ae/ha/ops.py</code> now provides edge site target parsing, <code>/varz</code> and <code>/leafz</code> fetch helpers, site-health evaluation, and per-gateway status collection from controller metrics</li>
+<li>gateway status telemetry now includes build identity, and <code>/metrics</code> now exports <code>ae_site_gateway_last_seen_seconds{site,node}</code> plus <code>ae_site_gateway_build_info{site,node,version,sha,date}</code> alongside the existing site-wide replay and route convergence series</li>
+<li>the runbook now documents gateway-first / leader-last sequencing, helper usage, and the recovery checks required before moving on to the next gateway or edge leader step</li>
+</ul>
+<h3 id="h5c-ha-closeout-audit-integrated-evidence-and-track-closure">H5c-ha-closeout: Audit, integrated evidence, and track closure</h3>
+<p>Goal:</p>
+<ul>
+<li>turn the implemented <code>H0</code> through <code>H5</code> slices into a decision-complete HA track instead of leaving them as a long set of individually landed but never-audited slices</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>one canonical HA closeout artifact records the capability matrix, evidence map, open gaps, and closure criteria</li>
+<li>the VM/lab harness now understands explicit <code>k1s-ha-core</code> hosts and a <code>ha_control_plane</code> smoke lane that drives the already-landed HA helper family against a real HA-oriented variant</li>
+<li>a smaller reduced local HA e2e harness exists for nightly/manual regression outside the primary VM/lab evidence lane</li>
+<li>the HA track only closes after the audit shows no <code>must_fix_before_closeout</code> gaps and the primary evidence lane is green</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><a href="ha-closeout.html">HA Closeout</a> now serves as the compact audit artifact for the H0-H5 capability matrix, evidence lanes, gap register, and close criteria</li>
+<li><a href="ha-cluster-bring-up.html">HA Cluster Bring-Up</a> owns the canonical day-0 operator sequence, and <a href="roadmap-status.html">Roadmap Status</a> owns the dated closeout and maintenance checkpoints</li>
+<li>the checked-in <code>ha_control_plane</code> variants plus <code>make lab-vm-ha-validation</code> now provide the promoted primary VM operator rerun, while the helper-backed <code>make lab-vm-smoke</code> flow remains the narrower one-shot/drill entrypoint with machine-readable <code>ha_summary.json</code> artifacts</li>
+<li><code>make ha-closeout-e2e</code> remains the supported reduced local regression lane for failover-plus-replay validation outside the primary VM/lab evidence path</li>
+<li>the original closeout result remains the 2026-03-19 roadmap checkpoint, and the 2026-04-07 maintenance rerun kept both the primary VM lane and the reduced harness green</li>
+</ul>
+<h3 id="h5c-amendment-integrated-ha-dashboard-observability">H5c Amendment: Integrated HA Dashboard Observability</h3>
+<p>Goal:</p>
+<ul>
+<li>extend the closed <code>H5c</code> operator surface so the built-in Hive dashboard exposes HA authority, transport, and site health directly instead of leaving those signals split across <code>/metrics</code> and helper scripts</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li><code>GET /system</code> now exposes a stable top-level <code>ha</code> snapshot used by the integrated dashboard</li>
+<li>the Hive dashboard now renders a dedicated <code>HA Control Plane</code> section with authority, etcd, transport, edge-site, and issue-banner views</li>
+<li>optional controller-owned cached etcd/NATS member probes can enrich the live dashboard without moving Prometheus parsing into the browser</li>
+<li>the amendment is explicitly post-closeout observability work; it does not reopen HA correctness scope or change the original <code>H5c</code> closeout claim</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>src/ae/observability/http_api.py</code> now assembles <code>system.ha</code> from authority state, build identity, transport counters, HPA counters, and optional cached probe data while keeping the legacy top-level <code>transport</code> snapshot for compatibility</li>
+<li><code>src/ae/controller/__main__.py</code> now starts an optional HA dashboard probe cache that feeds <code>system_info_fn</code> when <code>AE_HA_DASHBOARD_PROBES=1</code></li>
+<li><code>src/ae/ha/dashboard.py</code> now provides the background etcd and NATS monitor polling used only for the integrated dashboard&#x27;s optional member-level view</li>
+<li><code>src/ae/resources/observability/dashboard.html</code> now renders first-class HA authority, etcd, transport, and edge-site panels plus issue banners and leader/standby graph cues from <code>GET /system</code></li>
+<li>the observability reference, runbook, status table, and closeout doc now record this amendment as a post-closeout operator-surface extension instead of a reopened HA milestone</li>
+</ul>
+<p>Later follow-on dashboard amendments extend controller-member visibility and freshness on top of this foundation without reopening HA correctness scope or changing the original <code>H5c</code> closeout claim.</p>
+<h3 id="h5c-amendment-follow-on-phase-1-authority-backed-ha-member-visuals">H5c Amendment Follow-On Phase 1: Authority-Backed HA Member Visuals</h3>
+<p>Goal:</p>
+<ul>
+<li>extend the integrated HA dashboard so the collapsed system controller hex can show controller-cluster membership directly without expanding the graph or borrowing workload-pod semantics</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li><code>GET /system</code> gains an additive <code>ha.authority.members</code> list derived from controller authority presence instead of inferred site or node layout</li>
+<li>the system controller hex renders distinct HA member pips that remain visually separate from workload pod dots and from the existing leader or standby controller highlight</li>
+<li>member detail is available through pip hover and the controller detail card so the view remains usable in dense desktop layouts and touch-oriented dashboard use</li>
+<li>phase 1 explicitly does not claim per-member freshness; membership and role are authoritative, but freshness remains out of scope</li>
+<li>the amendment remains post-closeout operator-surface work and does not reopen HA correctness scope or change the original <code>H5c</code> closeout claim</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>src/ae/controller/authority.py</code> now lists controller presence members directly from <code>controlplane/controllers/*</code> so phase 1 uses authority-backed membership instead of inferred node layout</li>
+<li><code>src/ae/observability/http_api.py</code> now exposes <code>ha.authority.members</code> with leader/local role flags in the <code>GET /system</code> HA payload</li>
+<li><code>src/ae/resources/observability/dashboard.html</code> now renders controller-only HA member pips on the collapsed system controller hex, adds a distinct graph legend entry, and mirrors member details into both the HA authority card and the controller hover card</li>
+<li><code>tests/unit/test_controller_authority.py</code>, <code>tests/unit/test_system_ha_dashboard.py</code>, and <code>tests/unit/test_dashboard_template_ha.py</code> cover the authority member read path, additive payload shape, and dashboard template hooks for this phase</li>
+</ul>
+<h3 id="h5c-amendment-follow-on-phase-2-presence-freshness-and-member-age">H5c Amendment Follow-On Phase 2: Presence Freshness and Member Age</h3>
+<p>Goal:</p>
+<ul>
+<li>add true freshness semantics to controller-member presence so the HA dashboard can show when authority members were last heartbeating instead of only which members are currently present</li>
+</ul>
+<p>Primary outcomes:</p>
+<ul>
+<li>controller authority presence becomes heartbeat-capable rather than initial-publish-only metadata, so member freshness is derived from controller-written presence state instead of inference from lease TTL or static <code>observed_at</code></li>
+<li><code>GET /system</code> extends <code>ha.authority.members</code> with freshness fields suitable for dashboard display and stale or unknown handling</li>
+<li>the dashboard surfaces member freshness in controller detail views and member-level hover treatment without implying generalized node health or site health</li>
+<li>phase 2 depends on the phase 1 member-visual amendment and preserves the same boundary: it extends operator visibility without reopening HA correctness scope or changing the original <code>H5c</code> closeout claim</li>
+</ul>
+<p>Current implementation status:</p>
+<ul>
+<li><code>src/ae/controller/authority.py</code> now refreshes controller presence records with a dedicated <code>heartbeat_at</code> field on initial publish, on successful keepalive, and on lease re-grant without repurposing legacy <code>observed_at</code></li>
+<li><code>src/ae/observability/http_api.py</code> now exposes additive <code>last_heartbeat_at</code>, <code>last_heartbeat_age_s</code>, <code>freshness</code>, and <code>stale_after_seconds</code> fields on <code>ha.authority.members</code></li>
+<li><code>src/ae/resources/observability/dashboard.html</code> now renders member freshness in the HA authority card, controller hover card, and member-pip hover treatment while keeping role color semantics separate from freshness cues</li>
+<li><code>tests/unit/test_controller_authority.py</code>, <code>tests/unit/test_system_ha_dashboard.py</code>, and <code>tests/unit/test_dashboard_template_ha.py</code> cover the refreshed presence write path, additive payload shape, and dashboard freshness hooks for this phase</li>
+</ul>
+<h2 id="dependency-model">Dependency Model</h2>
+<p>This HA track is the foundation for later deployment work:</p>
+<table><thead><tr><th>Phase</th><th>Depends on</th><th>Why</th></tr></thead><tbody><tr><td>H1</td><td>H0</td><td>Leader election only matters after desired-state authority is shared.</td></tr><tr><td>H2</td><td>H1</td><td>Fencing depends on a real elected leader and an <code>etcd</code>-issued epoch.</td></tr><tr><td>H3</td><td>H1, H2</td><td>Durable transport is only safe after mutations are leader-gated and fenced.</td></tr><tr><td>H4a</td><td>H0, H1, H2</td><td>Workload-core shim mutation can only converge after shared authority, leadership, and fencing exist.</td></tr><tr><td>H4b1</td><td>H4a</td><td><code>CronJob</code> and passive shim objects can extend the same authority model without reopening storage or HPA metrics scope.</td></tr><tr><td>H4b-hpa</td><td>H4b1</td><td>HPA should only converge after the passive-resource cut and a controller-visible shared metrics source exist.</td></tr><tr><td>H4b2a</td><td>H4b1, H4b-hpa</td><td>Built-in passive resources should converge after the narrower CronJob/passive-object and shared-metrics HPA cuts land.</td></tr><tr><td>H4b2b-crd</td><td>H4b2a</td><td>CRD and custom-resource convergence should land before the remaining storage controller authority cut.</td></tr><tr><td>H4b2c-core</td><td>H4b2b-crd</td><td>Core storage authority can converge before the riskier snapshot and CSI paths.</td></tr><tr><td>H4b2c-csi</td><td>H4b2c-core</td><td>Snapshot and CSI convergence should wait until the core PVC/PV/StorageClass cut is stable.</td></tr><tr><td>H5a-core</td><td>H1, H3, H4b2c-csi</td><td>HA bootstrap and drills are only meaningful after authority, transport, and API convergence are defined.</td></tr><tr><td>H5b1-etcd-recovery</td><td>H5a-core</td><td>Member replacement, quorum loss, and stale-leader recovery should build on one real HA bootstrap and drill surface, not precede it.</td></tr><tr><td>H5b2a-core-upgrades</td><td>H5b1-etcd-recovery</td><td>Rolling upgrades for systemd-managed <code>k1s-ha-core</code> nodes should build on the finished etcd recovery posture instead of redefining it.</td></tr><tr><td>H5b2b-hub-transport-upgrades</td><td>H5b2a-core-upgrades</td><td>Shared hub NATS/JetStream upgrade sequencing should build on the finished core-node upgrade surface instead of mixing the first operator contract with transport-cluster replacement.</td></tr><tr><td>H5b2c-edge-transport-upgrades</td><td>H5b2b-hub-transport-upgrades</td><td>Edge-site NATS leader choreography should build on the shared hub upgrade posture instead of mixing shared-cluster and per-site recovery in one slice.</td></tr><tr><td>H5c-ha-closeout</td><td>H5b2c-edge-transport-upgrades</td><td>The HA track should only close after edge transport is in place and one integrated audit plus acceptance lane proves the full operator contract.</td></tr></tbody></table>
+<p>The fabric deployment milestones depend on this track rather than re-stating it:</p>
+<table><thead><tr><th>Fabric milestone</th><th>Additional HA dependency</th><th>Why</th></tr></thead><tbody><tr><td>D1</td><td>H3</td><td>The HA edge and broker boundary should not front a single-process backend authority.</td></tr><tr><td>D2</td><td>H4b2c-csi</td><td>Provider-backed intake should not depend on a second HA truth store or a partially converged shim authority model.</td></tr><tr><td>D3</td><td>H5c-ha-closeout</td><td>Multi-cell operation needs a closed HA evidence lane and audited operator contract, not only individual recovery and upgrade slices.</td></tr><tr><td>D4</td><td>H5c-ha-closeout</td><td>Partner and domain operations require the HA track to be decision-closed with auditable evidence and documented boundaries.</td></tr></tbody></table>
+<h2 id="failure-model">Failure Model</h2>
+<p>The desired failure behavior is simple and explicit:</p>
+<ul>
+<li>if one controller dies, another controller wins leadership through <code>etcd</code> lease expiry and continues</li>
+<li>if one control-plane node dies, <code>etcd</code> and JetStream remain available at 2/3 quorum</li>
+<li>if the old leader is partitioned, it loses lease keepalive and becomes stale; new commands from it are fenced</li>
+<li>if JetStream is impaired but <code>etcd</code> still has quorum, the system keeps truth and ownership in <code>etcd</code> while dispatch pauses or retries</li>
+<li>if <code>etcd</code> loses quorum, no controller may authorize new mutations; the system degrades to read-only truth plus buffered transport</li>
+</ul>
+<h2 id="tracking">Tracking</h2>
+<p>Use <a href="roadmap-status.html">Roadmap Status</a> as the canonical progress table for the <code>H*</code>, <code>F*</code>, and <code>D*</code> tracks.</p>
+<p>Implementation-level authority details for this roadmap are frozen in <code>docs/adr/0019-ha-control-plane-authority.md</code>.</p>
+    </div>
+    <footer class="site-footer">
+      <div class="container inner">
+        <span>k1s Documentation</span>
+        <span class="spacer"></span>
+        <button id="api-mode-toggle">API Mode</button>
+        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
+        <span>Built 2026-04-17 10:02:07</span>
+      </div>
+    </footer>
+    <script>
+      (function() {
+        var btn = document.getElementById('api-mode-toggle');
+        if (!btn) return;
+        function label() {
+          var mode = localStorage.getItem('docsApiMode') || 'proxy';
+          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
+          var lab = document.getElementById('api-mode-label');
+          if (lab) {
+            if (mode === 'direct') {
+              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
+              lab.textContent = ' [' + base + ']';
+            } else {
+              lab.textContent = ' (proxy)';
+            }
+          }
+        }
+        btn.addEventListener('click', function() {
+          var cur = localStorage.getItem('docsApiMode') || 'proxy';
+          var next = (cur === 'direct') ? 'proxy' : 'direct';
+          localStorage.setItem('docsApiMode', next);
+          label();
+          if (location.pathname.endsWith('playground.html')) location.reload();
+        });
+        label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
+      })();
+    </script>
+  </body>
+</html>

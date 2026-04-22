@@ -140,6 +140,25 @@
         transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
         font-weight: 600;
       }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
       nav a:hover {
         background: var(--k1s-surface);
         border-color: var(--k1s-brand-gold);
@@ -545,6 +564,11 @@
           padding: 6px 10px;
           font-size: 12px;
         }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
         nav .nav-brand {
           font-size: 10px;
           letter-spacing: 0.1em;
@@ -569,7 +593,7 @@
           scrollbar-width: none;
         }
         nav::-webkit-scrollbar { width: 0; height: 0; }
-        nav a { flex: 0 0 auto; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
         nav::after { left: 8px; right: 8px; }
         h1 { font-size: 24px; }
         h2 { font-size: 18px; }
@@ -693,24 +717,36 @@
   <body>
     <nav>
       <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
       <a href="start-here.html">Start Here</a>
       <a href="overview.html">Overview</a>
       <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
       <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
       <a href="cri-containerd.html">CRI containerd</a>
       <a href="multinode-lab.html">Multi-Node</a>
-      <a href="http-api.html">HTTP API</a>
-      <a href="apishim-compatibility-matrix.html">API Shim</a>
-      <a href="/openapi/v3" target="_blank" rel="noopener">OpenAPI v3</a>
       <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="concepts.html">Concepts</a>
-      <a href="benchmarks.html">Benchmarks</a>
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
       <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
-      <a href="concepts-in-practice.html">Concepts in Practice</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -722,91 +758,69 @@
     </button>
     <div class="container">
     <h1 id="k1s-concepts">k1s Concepts</h1>
-<p>This guide explains core concepts used throughout k1s.</p>
-<h2 id="terminology-map-k1s-kubernetes">Terminology map (k1s -&gt; Kubernetes)</h2>
-<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>Deployment</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: Deployment</code>).</td></tr><tr><td>Pod</td><td>Pod</td><td>One container instance for a Deployment revision.</td></tr><tr><td>Revision</td><td>ReplicaSet / Deployment revision</td><td>Immutable snapshot of desired state.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable virtual IP for service routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition.</td></tr></tbody></table>
-<h2 id="deployment-k1s-workload">Deployment (k1s workload)</h2>
-<p>The primary unit of deployment. Defined by a <code>Deployment</code> manifest with a desired image, replicas, ports, health checks, and optional ingress/secrets/resources.</p>
+<p>This page is the glossary and mental-model guide for the core nouns and control loops used throughout k1s. Use <a href="overview.html">Overview</a> for the current architecture snapshot and <a href="concepts-in-practice.html">Concepts in Practice</a> for chapterized walkthroughs.</p>
+<h2 id="terminology-map-k1s-kubernetes">Terminology Map (k1s -&gt; Kubernetes)</h2>
+<table><thead><tr><th>k1s term</th><th>Kubernetes term</th><th>Notes</th></tr></thead><tbody><tr><td>Deployment</td><td>Deployment (workload)</td><td>k1s native workload manifest (<code>kind: Deployment</code>).</td></tr><tr><td>Pod</td><td>Pod</td><td>One running container instance for a revision.</td></tr><tr><td>Revision</td><td>Deployment revision / ReplicaSet snapshot</td><td>Immutable desired-state snapshot.</td></tr><tr><td>Service VIP</td><td>Service / ClusterIP</td><td>Stable service address used for L4 routing.</td></tr><tr><td>Spec / manifest</td><td>Manifest</td><td>YAML resource definition for desired state.</td></tr><tr><td>HTTP API</td><td>Controller-native API</td><td>Operational status, metrics, planner, and mutation surface.</td></tr><tr><td>API shim</td><td>Kubernetes-compatible API</td><td>Discovery and object surface for <code>kubectl</code>, Helm, and compatibility clients.</td></tr></tbody></table>
+<h2 id="deployment">Deployment</h2>
+<p>The primary workload unit in k1s is a <code>Deployment</code> manifest. It captures the desired image, replica count, ports, health checks, config and secret projection, rollout preferences, scheduling hints, and optional service or ingress exposure.</p>
 <h2 id="pod">Pod</h2>
-<p>An individual container instance belonging to an app revision. Pod names follow the pattern <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> (e.g., <code>echo-rev3-0</code>).</p>
+<p>A pod is one running container instance for a deployment revision. Pod names follow the <code>&lt;app&gt;-rev&lt;revision&gt;-&lt;index&gt;</code> pattern and give the controller a stable way to track readiness, liveness, logs, and rollout progress.</p>
 <h2 id="node">Node</h2>
-<p>A registered worker (or the controller host) that can run pods. Nodes send heartbeats, advertise labels/taints, and expose a runtime endpoint that the controller uses for ensure/logs/exec/probes. Nodes can be cordoned or drained via <code>ae nodes</code>.</p>
-<h2 id="service-vip-service-clusterip">Service VIP (Service/ClusterIP)</h2>
-<p>A stable virtual IP allocated from the Service CIDR and fronted by the overlay provider. Ingress prefers VIPs when ready endpoints exist; hostPorts remain for single-node edge cases.</p>
-<h2 id="revision-deployment-revision">Revision (Deployment revision)</h2>
-<p>An immutable snapshot of desired state computed from the manifest spec hash. A new revision is created when the manifest content changes.</p>
-<ul>
-<li>Stored in SQLite with its normalized JSON and status.</li>
-<li>Used for rollbacks: <code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code>.</li>
-</ul>
+<p>A node is a worker that can host pods. Nodes advertise labels, taints, runtime capability, and heartbeat freshness. The scheduler uses that inventory to decide placement, and operators manage node availability with <code>ae nodes</code>.</p>
+<h2 id="service-vip">Service VIP</h2>
+<p>A Service VIP is the stable service address allocated from the service CIDR and backed by the current overlay or provider path. It gives the system a node-agnostic L4 target for service routing, health-based upstream switching, and multi-node ingress.</p>
+<h2 id="revision">Revision</h2>
+<p>A revision is an immutable snapshot of desired workload state derived from the manifest spec hash. Revision metadata lives in controller state: SQLite is the local default, while shared-authority HA and strict-CRI lanes use the durable control-plane state path. Rollbacks target a stored revision rather than reconstructing state from live containers.</p>
 <h2 id="reconcile">Reconcile</h2>
-<p>The controller compares the desired state from specs to the observed state (SQLite/Postgres + node inventory + runtimes) and performs the operations needed to converge.</p>
+<p>Reconcile is the control loop that compares desired state with observed state and performs the operations needed to converge:</p>
 <ul>
-<li>Schedules replicas onto Ready nodes that match <code>nodeSelector</code>/tolerations/topology spread. Storage pinning keeps retained volumes on a single node.</li>
-<li>Creates or updates containers via the node agent runtime (pulling images as needed); falls back to the local runtime when no nodes are eligible.</li>
-<li>Removes containers from older revisions after the new revision is live.</li>
-<li>Allocates Service VIPs and updates ingress to healthy upstreams once readiness passes.</li>
+<li>schedule replicas onto eligible nodes</li>
+<li>create or update runtime containers</li>
+<li>pin retained storage to the correct node</li>
+<li>allocate Service VIPs</li>
+<li>update exposure paths once readiness gates pass</li>
 </ul>
-<h2 id="health">Health</h2>
+<p>This is the core controller pattern that maps most directly to Kubernetes controller behavior.</p>
+<h2 id="health-and-status">Health and Status</h2>
 <ul>
-<li>Readiness: Determines whether a pod should receive traffic (2xx HTTP implies success).</li>
-<li>Liveness: Indicates the pod is still alive (defaults to true if not specified).</li>
-<li>Initial delay: Allows the app to boot before probes start.</li>
-<li>Startup probes gate readiness/liveness until they succeed; lifecycle hooks (postStart/preStop) run around pod start/stop.</li>
+<li>Readiness decides whether a pod should receive traffic.</li>
+<li>Liveness decides whether the runtime should treat the pod as still alive.</li>
+<li>Startup probes delay readiness and liveness evaluation until boot is complete.</li>
+<li>Aggregate app status rolls up these signals into states such as <code>ready</code>, <code>progressing</code>, or <code>degraded</code>.</li>
 </ul>
-<h2 id="status">Status</h2>
-<p>Per‑app aggregate status is one of:</p>
-<ul>
-<li>ready: all desired replicas are ready</li>
-<li>progressing: desired count is live but not yet all ready</li>
-<li>degraded: otherwise (e.g., live replicas below desired or readiness fails)</li>
-</ul>
-<p>CLI examples:</p>
-<pre><code>ae status myapp --wide --events</code></pre>
+<p>Health is pod-level; status is the controller’s higher-level summary of the app as a whole.</p>
 <h2 id="events">Events</h2>
-<p>Lightweight audit trail for changes and noteworthy events:</p>
-<ul>
-<li>ApplyStarted, ApplyCompleted</li>
-<li>IngressConfigured, IngressRemoved</li>
-<li>NodeRegistered, NodeCordon, NodeUncordon</li>
-<li>ServiceVIPAllocated, ServiceVIPRemoved</li>
-<li>Readiness/rollout failures when health gates trip</li>
-</ul>
-<p>Inspect with:</p>
-<pre><code>ae events myapp --limit 20</code></pre>
+<p>Events are the lightweight audit trail for desired-state changes and notable runtime transitions. They record things like apply completion, ingress changes, node cordon actions, Service VIP allocation, and rollout or probe failures.</p>
 <h2 id="rollouts">Rollouts</h2>
-<p>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics across one or more nodes:</p>
-<p>1. Start a new pod for the next revision. 2. Wait for readiness. 3. Switch ingress to the new Service VIP endpoints (or hostPort when VIP disabled). 4. Stop and remove old revision containers.</p>
-<p>Pause/resume and canary:</p>
+<p>A rollout is the controlled transition from one revision to the next. k1s starts new pods, waits for readiness, switches service and ingress traffic, and only then removes the older revision. Rollbacks reuse a previously stored revision, so rollout history is part of the control-plane model rather than a best-effort log.</p>
+<h2 id="resources-volumes-and-placement">Resources, Volumes, and Placement</h2>
+<p>CPU and memory requests or limits describe runtime expectations. Volumes describe host-path or retained named storage. Placement hints such as selectors, tolerations, and topology spread tell the scheduler where replicas are allowed to run. Retained storage is single-node by default, so storage locality is part of placement, not just runtime mounting.</p>
+<h2 id="ingress-and-exposure">Ingress and Exposure</h2>
+<p>Service exposure in k1s has two layers:</p>
 <ul>
-<li>Pause/resume: <code>ae rollout pause|resume &lt;app&gt;</code> halts or resumes rollout progression.</li>
-<li>Canary: set <code>spec.rollout.strategy: canary</code> and <code>spec.rollout.weight</code> (optional <code>auto</code> ramp) to bias routing.</li>
+<li>Service VIPs provide stable L4 routing for app traffic.</li>
+<li>Ingress provides the L7 entry path on top of those services.</li>
 </ul>
-<p>Rollback uses the recorded manifest for the target revision:</p>
-<pre><code>ae rollback myapp --to 3</code></pre>
-<h2 id="resources-volumes">Resources &amp; Volumes</h2>
+<p>Current ingress modes split by topology:</p>
 <ul>
-<li>CPU/memory limits map to engine flags (Docker nano_cpus; Podman/Docker <code>--cpus</code>, memory quantities → bytes).</li>
-<li>Volumes map to hostPath → bind mount (ro/rw). <code>spec.storage</code> creates named engine volumes per app.</li>
-<li>Storage volumes are bound to the node that first creates them; scheduler pins retained volumes to that node.</li>
+<li>core ingress modes use Envoy as the primary ingress surface on the core side</li>
+<li>edge-local renders gateway-local Caddy from route bundles on the edge side</li>
+<li>docs, API, and dashboard TLS hostnames are adjacent control-plane surfaces, not the same thing as app ingress modes</li>
 </ul>
-<h2 id="ingress">Ingress</h2>
-<p>For apps with <code>spec.ingress</code>, the controller writes a Caddy site snippet and reloads the proxy. When Caddy runs in a container, loopback upstreams are rewritten to the host alias: <code>host.docker.internal</code> (Docker) or <code>host.containers.internal</code> (Podman).</p>
-<p>In multi-node runs, ingress prefers Service VIPs supplied by the overlay provider so upstream selection is node-agnostic.</p>
-<h2 id="http-api">HTTP API</h2>
-<p>Read‑only status/metrics/events published at:</p>
+<p>Use <a href="ingress.html">Ingress</a> for the current architecture and <a href="ingress-capability-test-sequence.html">Ingress Validation</a> for the command-heavy validation sequence.</p>
+<h2 id="api-surfaces">API Surfaces</h2>
+<p>k1s exposes two distinct API layers:</p>
 <ul>
-<li><code>/metrics</code>, <code>/health</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code></li>
-<li><code>/history/&lt;app&gt;</code> for probe history, <code>/manifest/&lt;app&gt;</code> for latest stored manifest</li>
-<li><code>/nodes</code> for node inventory + heartbeat staleness</li>
-<li><code>/system</code> + <code>/dashboard</code> for a quick UI snapshot</li>
-<li><code>/openapi.json</code> and a tiny docs page at <code>/docs</code></li>
+<li><a href="http-api.html">HTTP API</a>: the controller-native operational surface for status, metrics, planner calls, dashboard data, and opt-in mutations</li>
+<li><a href="api-shim.html">API Shim</a>: the Kubernetes-compatible discovery and object surface for <code>kubectl</code>, Helm, and compatibility-oriented tooling</li>
 </ul>
-<p>Note: when any token is configured, reads require the READ token.</p>
-<p>Kubernetes API shim (optional):</p>
+<p>Auth and mutation gating are separate concerns from the route catalog. Use <a href="api-auth.html">API Auth</a> for token roles, scopes, expiry, controller mutation gating, and shim auth modes.</p>
+<h2 id="further-reading">Further Reading</h2>
 <ul>
-<li><code>AE_APISHIM_ENABLE=1 python -m ae.apishim serve --token &lt;bearer&gt;</code> exposes <code>/api</code>, <code>/apis</code>, <code>/openapi/v2|v3</code> with SSA/patch and port-forward (HTTP by default; add <code>--tls</code> for HTTPS).</li>
-<li>Works with kubectl/helm for Deployments/Services/Ingress/HPA/RBAC; StatefulSet/DaemonSet/Job/CronJob are accepted but emulated (see <code>docs/reference/apishim-compatibility-matrix.md</code>).</li>
+<li><a href="overview.html">Overview</a></li>
+<li><a href="start-here.html">Start Here</a></li>
+<li><a href="concepts-in-practice.html">Concepts in Practice</a></li>
+<li><a href="architecture.html">Architecture</a></li>
 </ul>
     </div>
     <footer class="site-footer">
@@ -815,7 +829,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-02-12 14:20:07</span>
+        <span>Built 2026-04-17 10:02:07</span>
       </div>
     </footer>
     <script>

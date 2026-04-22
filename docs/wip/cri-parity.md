@@ -1,6 +1,9 @@
 # CRI parity tracking (containerd)
 
 Last updated: 2026-02-12
+Status: active WIP tracker
+Owner area: runtime/controller/ops
+Intended destination: remain in `docs/wip/` until CRI parity work narrows to stable operator guidance
 
 Goal: make CRI/containerd a safe default backend for k1s dev/labs with a
 Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
@@ -24,7 +27,7 @@ Kubernetes-aligned registry-first image flow and core runtime parity vs Podman.
   - strict `k1s-core` now supports `AE_APISHIM_MODE=cri` (`k1s-core-apishim` CRI pod)
   - missing strict-CRI images support interactive build/pull prompt (`AE_CRI_IMAGE_POLICY`)
   - strict-CRI fallback action `b` uses local build + registry push + CRI pull verify
-    (backend order: nerdctl, podman, docker; override via `AE_CRI_LOCAL_BUILD_BACKEND`)
+    (backend order: nerdctl, podman, docker, ctr; override via `AE_CRI_LOCAL_BUILD_BACKEND`)
   - strict-CRI image refs can target existing dev registries via `AE_CRI_REGISTRY`
 
 ## P0: Required for CRI as default backend (dev/labs)

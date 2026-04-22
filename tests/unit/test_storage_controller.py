@@ -1,7 +1,17 @@
 from pathlib import Path
 
+from ae.apishim.ha_store import MultiplexApishimStore
 from ae.apishim.store import ObjectStore
+from ae.controller.state import SQLiteStateStore
 from ae.storage.controller import StorageController
+
+
+def _make_ha_storage_store(tmp_path):
+    state = SQLiteStateStore(tmp_path / "state.db")
+    legacy = ObjectStore(db_path=tmp_path / "apishim.db")
+    store = MultiplexApishimStore.from_state_and_legacy(state, legacy)
+    return state, legacy, store
+
 
 def test_storage_controller_seeds_default_local_class(tmp_path, monkeypatch):
     monkeypatch.delenv("AE_STORAGE_PROVISIONERS", raising=False)
@@ -19,6 +29,29 @@ def test_storage_controller_seeds_default_local_class(tmp_path, monkeypatch):
     assert spec.get("volumeBindingMode") == "WaitForFirstConsumer"
     annotations = (sc.metadata or {}).get("annotations") or {}
     assert annotations.get("storageclass.kubernetes.io/is-default-class") == "true"
+
+
+def test_storage_controller_core_mode_seeds_storage_class_in_shared_authority(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("AE_STORAGE_PROVISIONERS", raising=False)
+    monkeypatch.setenv("AE_STORAGE_SEED_DEFAULTS", "1")
+    monkeypatch.setenv("AE_STORAGE_LOCAL_CLASS", "k1s-local")
+    state, legacy, store = _make_ha_storage_store(tmp_path)
+    controller = StorageController(
+        store,
+        enable_snapshots=False,
+        enable_csi=False,
+        enable_storage_capacity=False,
+    )
+
+    seeded = controller.sync()
+
+    assert seeded == 1
+    entry = state.get_authority_object("storage.k8s.io", "v1", "storageclasses", None, "k1s-local")
+    assert entry is not None
+    assert entry.spec["provisioner"] == "k1s.io/local-path"
+    assert legacy.get("storage.k8s.io", "v1", "storageclasses", None, "k1s-local") is None
 
 
 def test_storage_controller_seeds_nfs_class_when_configured(tmp_path, monkeypatch):
@@ -88,6 +121,75 @@ def test_storage_controller_binds_pvc(tmp_path):
     assert claim_ref.get("name") == "pvc1"
     assert claim_ref.get("namespace") == "default"
     assert (pv.status or {}).get("phase") == "Bound"
+
+
+def test_storage_controller_core_mode_binds_pvc_via_shared_authority(tmp_path):
+    state, legacy, store = _make_ha_storage_store(tmp_path)
+    controller = StorageController(
+        store,
+        enable_snapshots=False,
+        enable_csi=False,
+        enable_storage_capacity=False,
+    )
+
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteMany"],
+        "storageClassName": "k1s-nfs",
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteMany"],
+        "storageClassName": "k1s-nfs",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+
+    store.upsert("", "v1", "persistentvolumes", None, "pv1", {"name": "pv1"}, pv_spec)
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "pvc1",
+        {"name": "pvc1", "namespace": "default"},
+        pvc_spec,
+    )
+
+    controller.reconcile_once()
+
+    pvc = state.get_authority_object("", "v1", "persistentvolumeclaims", "default", "pvc1")
+    pv = state.get_authority_object("", "v1", "persistentvolumes", None, "pv1")
+    assert pvc is not None
+    assert pv is not None
+    assert pvc.spec["volumeName"] == "pv1"
+    assert (pvc.status or {}).get("phase") == "Bound"
+    claim_ref = (pv.spec or {}).get("claimRef") or {}
+    assert claim_ref.get("name") == "pvc1"
+    assert claim_ref.get("namespace") == "default"
+    assert (pv.status or {}).get("phase") == "Bound"
+    assert legacy.get("", "v1", "persistentvolumeclaims", "default", "pvc1") is None
+    assert legacy.get("", "v1", "persistentvolumes", None, "pv1") is None
+
+
+def test_storage_controller_core_mode_skips_snapshot_and_capacity_paths(tmp_path, monkeypatch):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(
+        store,
+        enable_snapshots=False,
+        enable_csi=False,
+        enable_storage_capacity=False,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(controller, "_reconcile_all", lambda: calls.append("all"))
+    monkeypatch.setattr(controller, "_reconcile_snapshots", lambda: calls.append("snapshots"))
+    monkeypatch.setattr(controller, "_check_volume_health", lambda: calls.append("health"))
+    monkeypatch.setattr(
+        controller, "_reconcile_storage_capacity", lambda: calls.append("capacity")
+    )
+
+    controller.reconcile_once()
+
+    assert calls == ["all", "health"]
 
 
 def test_storage_controller_adds_pvc_pv_finalizers(tmp_path):
@@ -660,6 +762,44 @@ def test_storage_controller_creates_volume_attachment_for_csi(tmp_path):
     assert (va.status or {}).get("attached") is True
 
 
+def test_storage_controller_ha_mode_creates_volume_attachment_for_csi(tmp_path):
+    state, legacy, store = _make_ha_storage_store(tmp_path)
+    controller = StorageController(store)
+    pvc_uid = "uid-csi"
+    pv_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "persistentVolumeReclaimPolicy": "Retain",
+        "claimRef": {"namespace": "default", "name": "data", "uid": pvc_uid},
+        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-csi",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pvc_meta = {
+        "name": "data",
+        "namespace": "default",
+        "uid": pvc_uid,
+        "annotations": {"volume.kubernetes.io/selected-node": "node-a"},
+    }
+
+    store.upsert("", "v1", "persistentvolumes", None, "pv-csi", {"name": "pv-csi"}, pv_spec)
+    store.upsert("", "v1", "persistentvolumeclaims", "default", "data", pvc_meta, pvc_spec)
+
+    controller.reconcile_once()
+
+    va_name = controller._volume_attachment_name("pv-csi", "node-a")
+    va = state.get_authority_object("storage.k8s.io", "v1", "volumeattachments", None, va_name)
+    assert va is not None
+    assert (va.spec or {}).get("nodeName") == "node-a"
+    assert (va.spec or {}).get("attacher") == "csi.example.com"
+    source = (va.spec or {}).get("source") or {}
+    assert source.get("persistentVolumeName") == "pv-csi"
+    assert (va.status or {}).get("attached") is True
+    assert legacy.get("storage.k8s.io", "v1", "volumeattachments", None, va_name) is None
+
+
 def test_storage_controller_skips_attachment_when_attach_not_required(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)
@@ -758,6 +898,66 @@ provisioners:
     assert pv is not None
     csi_spec = (pv.spec or {}).get("csi") or {}
     assert csi_spec.get("volumeHandle") == "vol-1"
+
+
+def test_storage_controller_ha_mode_provisions_csi_volume(tmp_path, monkeypatch):
+    state, legacy, store = _make_ha_storage_store(tmp_path)
+    provisioners_path = tmp_path / "provisioners.yaml"
+    provisioners_path.write_text(
+        """
+provisioners:
+  - name: csi-fast
+    provisioner: csi.example.com
+    type: csi
+    controllerEndpoint: unix:///tmp/csi.sock
+    nodeEndpoint: unix:///tmp/csi.sock
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AE_STORAGE_PROVISIONERS", str(provisioners_path))
+    import ae.storage.controller as storage_controller
+
+    monkeypatch.setattr(storage_controller, "grpc", object())
+    controller = StorageController(store)
+    controller.sync()
+
+    pvc_uid = "uid-csi"
+    pvc_spec = {
+        "accessModes": ["ReadWriteMany"],
+        "storageClassName": "csi-fast",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pvc_meta = {
+        "name": "data",
+        "namespace": "default",
+        "uid": pvc_uid,
+        "annotations": {"volume.kubernetes.io/selected-node": "node-a"},
+    }
+    store.upsert("", "v1", "persistentvolumeclaims", "default", "data", pvc_meta, pvc_spec)
+
+    class FakeResp:
+        def __init__(self):
+            self.volume = type(
+                "V", (), {"volume_id": "vol-1", "volume_context": {"foo": "bar"}}
+            )()
+
+    class FakeClient:
+        def create_volume(self, **_kwargs):  # noqa: ANN003
+            return FakeResp()
+
+    monkeypatch.setattr(
+        StorageController,
+        "_csi_controller_client",
+        lambda self, driver, sc_name: FakeClient(),
+    )
+
+    controller.reconcile_once()
+
+    pv = state.get_authority_object("", "v1", "persistentvolumes", None, f"pvc-{pvc_uid}")
+    assert pv is not None
+    csi_spec = (pv.spec or {}).get("csi") or {}
+    assert csi_spec.get("volumeHandle") == "vol-1"
+    assert legacy.get("", "v1", "persistentvolumes", None, f"pvc-{pvc_uid}") is None
 
 
 def test_storage_controller_blocks_multi_attach_for_csi(tmp_path):
@@ -1187,6 +1387,65 @@ def test_storage_controller_storage_capacity_override(tmp_path):
     )
 
 
+def test_storage_controller_ha_mode_storage_capacity_uses_shared_authority(tmp_path):
+    state, legacy, store = _make_ha_storage_store(tmp_path)
+    controller = StorageController(store)
+    host_root = tmp_path / "local-root"
+    host_root.mkdir(parents=True, exist_ok=True)
+    sc_spec = {
+        "provisioner": "k1s.io/local-path",
+        "volumeBindingMode": "Immediate",
+        "parameters": {"hostPath": str(host_root)},
+    }
+    pv_spec = {
+        "capacity": {"storage": "1Gi"},
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "local-path",
+        "nodeAffinity": {
+            "required": {
+                "nodeSelectorTerms": [
+                    {
+                        "matchExpressions": [
+                            {
+                                "key": "kubernetes.io/hostname",
+                                "operator": "In",
+                                "values": ["node-a"],
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+    }
+    pv_meta = {
+        "name": "pv-capacity",
+        "annotations": {
+            "k1s.io/local-host-root": str(host_root),
+            "k1s.io/local-host-path": str(host_root / "vol-1"),
+        },
+    }
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "local-path",
+        {"name": "local-path"},
+        sc_spec,
+        status={},
+    )
+    store.upsert("", "v1", "persistentvolumes", None, "pv-capacity", pv_meta, pv_spec)
+
+    controller.reconcile_once()
+
+    caps = state.list_authority_objects("storage.k8s.io", "v1", "csistoragecapacities", "default")
+    assert caps
+    cap = next((c for c in caps if (c.spec or {}).get("storageClassName") == "local-path"), None)
+    assert cap is not None
+    assert int((cap.spec or {}).get("capacity") or 0) > 0
+    assert legacy.list_all("storage.k8s.io", "v1", "csistoragecapacities") == []
+
+
 def test_storage_controller_snapshot_and_clone_nfs(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)
@@ -1500,3 +1759,102 @@ def test_storage_controller_snapshot_csi_ready(tmp_path):
     source = (content.spec or {}).get("source") or {}
     assert source.get("volumeHandle") == "vol-123"
     assert (content.status or {}).get("readyToUse") is True
+
+
+def test_storage_controller_ha_mode_snapshot_status_and_content_use_shared_authority(tmp_path):
+    state, legacy, store = _make_ha_storage_store(tmp_path)
+    controller = StorageController(store)
+    host_root = tmp_path / "nfs-root"
+    sc_spec = {
+        "provisioner": "k1s.io/nfs",
+        "parameters": {
+            "server": "127.0.0.1",
+            "path": "/exports/netfs",
+            "hostPath": str(host_root),
+        },
+        "reclaimPolicy": "Delete",
+        "volumeBindingMode": "Immediate",
+    }
+    pvc_uid = "uid-src"
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "k1s-nfs",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+
+    store.upsert(
+        "storage.k8s.io",
+        "v1",
+        "storageclasses",
+        None,
+        "k1s-nfs",
+        {"name": "k1s-nfs"},
+        sc_spec,
+        status={},
+    )
+    store.upsert(
+        "",
+        "v1",
+        "persistentvolumeclaims",
+        "default",
+        "data-src",
+        {"name": "data-src", "namespace": "default", "uid": pvc_uid},
+        pvc_spec,
+        status={"phase": "Pending"},
+    )
+
+    controller.reconcile_once()
+
+    source_path = host_root / pvc_uid
+    source_path.mkdir(parents=True, exist_ok=True)
+    (source_path / "data.txt").write_text("hello snapshot", encoding="utf-8")
+
+    store.upsert(
+        "snapshot.storage.k8s.io",
+        "v1",
+        "volumesnapshotclasses",
+        None,
+        "nfs-snap",
+        {"name": "nfs-snap"},
+        {"driver": "k1s.io/nfs", "deletionPolicy": "Delete"},
+        status={},
+    )
+    store.upsert(
+        "snapshot.storage.k8s.io",
+        "v1",
+        "volumesnapshots",
+        "default",
+        "snap1",
+        {"name": "snap1", "namespace": "default", "uid": "snap-uid"},
+        {
+            "source": {"persistentVolumeClaimName": "data-src"},
+            "volumeSnapshotClassName": "nfs-snap",
+        },
+        status={},
+    )
+
+    controller.reconcile_once()
+
+    snap = state.get_authority_object(
+        "snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "snap1"
+    )
+    assert snap is not None
+    assert (snap.status or {}).get("readyToUse") is True
+    content_name = (snap.status or {}).get("boundVolumeSnapshotContentName")
+    assert content_name
+    content = state.get_authority_object(
+        "snapshot.storage.k8s.io", "v1", "volumesnapshotcontents", None, content_name
+    )
+    assert content is not None
+    annotations = (content.metadata or {}).get("annotations") or {}
+    snap_path = annotations.get("k1s.io/snapshot-host-path")
+    assert snap_path
+    assert Path(str(snap_path)).exists()
+    assert (
+        legacy.get("snapshot.storage.k8s.io", "v1", "volumesnapshots", "default", "snap1")
+        is None
+    )
+    assert (
+        legacy.get("snapshot.storage.k8s.io", "v1", "volumesnapshotcontents", None, content_name)
+        is None
+    )

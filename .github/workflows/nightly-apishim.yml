@@ -1,0 +1,816 @@
+name: nightly-apishim
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "all|shim-smoke|helm-smoke|exec|portforward|ssa-rbac|spdy|live-openapi"
+        required: false
+        default: "all"
+      runtime:
+        description: "stub|docker|podman"
+        required: false
+        default: "stub"
+      target:
+        description: "local|external"
+        required: false
+        default: "local"
+  schedule:
+    - cron: "0 5 * * *"
+
+concurrency:
+  group: nightly-apishim-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  server-guard:
+    if: ${{ github.server_url != 'https://github.com' || env.ACT == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm supported actions host
+        run: echo "Running nightly-apishim on ${GITHUB_SERVER_URL:-unknown}"
+
+  shim-smoke:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'shim-smoke' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install project and kubectl
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_kubectl
+      - name: Start apishim
+        env:
+          AE_APISHIM_ENABLE: "1"
+          AE_APISHIM_ALLOW_ANON: "1"
+          AE_RUNTIME_BACKEND: stub
+          PYTHONPATH: src
+        run: |
+          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --allow-anonymous >/tmp/apishim-smoke.log 2>&1 &
+          echo $! >/tmp/apishim.pid
+          sleep 3
+      - name: kubectl apply and get
+        run: |
+          cat <<'YAML' | kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify --validate=false apply --dry-run=server -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: shimdemo
+            namespace: default
+          data:
+            hello: world
+          YAML
+          kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify get configmap shimdemo -o yaml
+      - name: Show logs on failure
+        if: failure()
+        run: cat /tmp/apishim-smoke.log
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f /tmp/apishim.pid ]; then
+            kill "$(cat /tmp/apishim.pid)" 2>/dev/null || true
+          fi
+
+  helm-smoke:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'helm-smoke' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      SELECTED_RUNTIME: ${{ github.event.inputs.runtime }}
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+          ci_configure_docker_env
+      - name: Install podman when requested
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.runtime == 'podman' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_podman
+      - name: Install project and CLI tools
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_kubectl
+          ci_install_helm
+      - name: Start apishim
+        env:
+          PYTHONPATH: src
+        run: |
+          runtime="${SELECTED_RUNTIME:-stub}"
+          AE_APISHIM_ENABLE=1 \
+          AE_APISHIM_ALLOW_ANON=1 \
+          AE_RUNTIME_BACKEND="$runtime" \
+          PYTHONPATH=src \
+          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --allow-anonymous >/tmp/apishim-helm.log 2>&1 &
+          echo $! >/tmp/apishim.pid
+          sleep 3
+      - name: Run Helm shim smoke
+        env:
+          PYTHONPATH: src
+        run: |
+          runtime="${SELECTED_RUNTIME:-stub}"
+          APISHIM_SERVER="http://127.0.0.1:8445" \
+          RUNTIME="$runtime" \
+          HELM_SHIM_SMOKE_TEMPLATE_ONLY=1 \
+          TOKEN=helm-demo \
+          bash scripts/ci/helm-shim-smoke.sh
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          find /tmp -name "shim.log" -print -exec cat {} \;
+          echo "=== apishim ===" && cat /tmp/apishim-helm.log || true
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f /tmp/apishim.pid ]; then
+            kill "$(cat /tmp/apishim.pid)" 2>/dev/null || true
+          fi
+
+  exec-streaming:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'exec' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+          ci_configure_docker_env
+      - name: Install project and kubectl
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_kubectl
+      - name: Generate apishim TLS cert
+        run: |
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+            -keyout /tmp/apishim-tls.key -out /tmp/apishim-tls.crt \
+            -subj "/CN=127.0.0.1" -days 1 >/dev/null 2>&1
+          echo "AE_APISHIM_TLS_CERT=/tmp/apishim-tls.crt" >> "$GITHUB_ENV"
+          echo "AE_APISHIM_TLS_KEY=/tmp/apishim-tls.key" >> "$GITHUB_ENV"
+      - name: Start apishim
+        env:
+          AE_APISHIM_ENABLE: "1"
+          AE_APISHIM_TOKEN: "ci-token"
+          AE_APISHIM_READ_TOKEN: "read-token"
+          AE_APISHIM_SPDY_DEBUG: "1"
+          AE_APISHIM_SPDY_LOG: "/tmp/apishim-spdy.log"
+          AE_LOG_LEVEL: "WARNING"
+          AE_RUNTIME_BACKEND: docker
+          AE_APISHIM_RBAC: "1"
+          AE_APISHIM_RBAC_EVAL: "0"
+          PYTHONPATH: src
+        run: |
+          python -m ae.apishim serve --host 127.0.0.1 --port 8446 --token "$AE_APISHIM_TOKEN" --tls >/tmp/apishim-exec.log 2>&1 &
+          echo $! >/tmp/apishim.pid
+          sleep 3
+      - name: Wait for apishim
+        env:
+          TOKEN: "ci-token"
+        run: |
+          set -euo pipefail
+          for _i in $(seq 1 60); do
+            if curl -kfsS -H "Authorization: Bearer $TOKEN" "https://127.0.0.1:8446/version" >/dev/null 2>&1; then
+              exit 0
+            fi
+            if [ -f /tmp/apishim.pid ] && ! kill -0 "$(cat /tmp/apishim.pid)" >/dev/null 2>&1; then
+              tail -n 200 /tmp/apishim-exec.log || true
+              exit 1
+            fi
+            sleep 0.5
+          done
+          tail -n 200 /tmp/apishim-exec.log || true
+          exit 1
+      - name: Apply deployment
+        env:
+          TOKEN: "ci-token"
+        run: |
+          cat <<'YAML' >/tmp/exec-deploy.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: exec-echo
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: exec-echo
+            template:
+              metadata:
+                labels:
+                  app: exec-echo
+              spec:
+                containers:
+                  - name: main
+                    image: busybox:1.36
+                    command: ["sh", "-c", "sleep 300"]
+          YAML
+          kubectl --server=https://127.0.0.1:8446 --token="$TOKEN" --insecure-skip-tls-verify --validate=false apply -f /tmp/exec-deploy.yaml
+      - name: Wait for pod Ready
+        env:
+          TOKEN: "ci-token"
+        run: |
+          for i in $(seq 1 30); do
+            phase="$(kubectl --server=https://127.0.0.1:8446 --token="$TOKEN" --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)"
+            ready="$(kubectl --server=https://127.0.0.1:8446 --token="$TOKEN" --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || true)"
+            if [ "$phase" = "Running" ] && [ "$ready" = "true" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          kubectl --server=https://127.0.0.1:8446 --token="$TOKEN" --insecure-skip-tls-verify get pods -o wide || true
+          exit 1
+      - name: Exec streaming checks
+        env:
+          TOKEN: "ci-token"
+          READ_TOKEN: "read-token"
+        run: |
+          pod="$(kubectl --server=https://127.0.0.1:8446 --token="$TOKEN" --insecure-skip-tls-verify get pods -l app=exec-echo -o jsonpath='{.items[0].metadata.name}')"
+          out="$(kubectl --server=https://127.0.0.1:8446 --token="$TOKEN" --insecure-skip-tls-verify exec "$pod" -- sh -c 'echo hello-exec')"
+          test "$out" = "hello-exec"
+          set +e
+          kubectl --server=https://127.0.0.1:8446 --token="$TOKEN" --insecure-skip-tls-verify exec "$pod" -- sh -c 'exit 37'
+          rc=$?
+          set -e
+          test "$rc" -eq 37
+          set +e
+          kubectl --server=https://127.0.0.1:8446 --token="$READ_TOKEN" --insecure-skip-tls-verify exec "$pod" -- sh -c 'echo denied'
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== docker info ==="
+          docker info || true
+          echo "=== apishim SPDY log ==="
+          cat /tmp/apishim-spdy.log || true
+          echo "=== apishim tail ==="
+          tail -n 200 /tmp/apishim-exec.log || true
+      - name: Cleanup
+        if: always()
+        run: |
+          kubectl --server=https://127.0.0.1:8446 --token=ci-token --insecure-skip-tls-verify delete -f /tmp/exec-deploy.yaml || true
+          if [ -f /tmp/apishim.pid ]; then
+            kill "$(cat /tmp/apishim.pid)" 2>/dev/null || true
+          fi
+
+  portforward:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'portforward' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install project and kubectl
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_kubectl
+      - name: Start host echo server
+        run: |
+          python -m http.server 8081 >/tmp/echo-server.log 2>&1 &
+          echo $! >/tmp/echo-server.pid
+      - name: Start apishim
+        env:
+          AE_APISHIM_ENABLE: "1"
+          AE_APISHIM_ALLOW_ANON: "1"
+          AE_APISHIM_ADAPTER: "1"
+          AE_APISHIM_SPDY_DEBUG: "1"
+          AE_APISHIM_PF_DEBUG: "1"
+          AE_RUNTIME_BACKEND: stub
+          AE_STUB_BACKEND_HOST: "127.0.0.1"
+          AE_STUB_BACKEND_PORT: "8081"
+          AE_REGISTER_LOCAL_NODE: "1"
+          PYTHONPATH: src
+        run: |
+          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --allow-anonymous >/tmp/apishim-portforward.log 2>&1 &
+          echo $! >/tmp/apishim.pid
+          sleep 2
+      - name: Apply manifest and port-forward
+        run: |
+          cat <<'YAML' >/tmp/pf-deploy.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: pf-echo
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: pf-echo
+            template:
+              metadata:
+                labels:
+                  app: pf-echo
+              spec:
+                containers:
+                  - name: web
+                    image: nginx:1.25-alpine
+                    ports:
+                      - containerPort: 80
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: pf-echo
+          spec:
+            selector:
+              app: pf-echo
+            ports:
+              - port: 80
+                targetPort: 80
+          YAML
+          kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify --validate=false apply -f /tmp/pf-deploy.yaml
+          for _i in $(seq 1 60); do
+            pod="$(kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify get pods -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            if [ -n "$pod" ]; then
+              break
+            fi
+            sleep 0.5
+          done
+          test -n "${pod:-}"
+          kubectl --server=http://127.0.0.1:8445 --insecure-skip-tls-verify port-forward "pod/${pod}" 18080:80 >/tmp/pf.log 2>&1 &
+          echo $! >/tmp/pf.pid
+          for _i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          tail -n 200 /tmp/pf.log || true
+          exit 1
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== apishim ===" && cat /tmp/apishim-portforward.log || true
+          echo "=== port-forward ===" && cat /tmp/pf.log || true
+          echo "=== echo server ===" && cat /tmp/echo-server.log || true
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f /tmp/pf.pid ]; then kill "$(cat /tmp/pf.pid)" 2>/dev/null || true; fi
+          if [ -f /tmp/apishim.pid ]; then kill "$(cat /tmp/apishim.pid)" 2>/dev/null || true; fi
+          if [ -f /tmp/echo-server.pid ]; then kill "$(cat /tmp/echo-server.pid)" 2>/dev/null || true; fi
+
+  ssa-rbac:
+    needs: server-guard
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'ssa-rbac' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+      - name: Install project and kubectl
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_kubectl
+      - name: Generate apishim TLS cert
+        run: |
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+            -keyout /tmp/apishim-tls.key -out /tmp/apishim-tls.crt \
+            -subj "/CN=127.0.0.1" -days 1 >/dev/null 2>&1
+          echo "AE_APISHIM_TLS_CERT=/tmp/apishim-tls.crt" >> "$GITHUB_ENV"
+          echo "AE_APISHIM_TLS_KEY=/tmp/apishim-tls.key" >> "$GITHUB_ENV"
+      - name: Start apishim
+        env:
+          AE_APISHIM_ENABLE: "1"
+          AE_APISHIM_TOKEN: "ci-admin"
+          AE_APISHIM_READ_TOKEN: "ci-read"
+          AE_APISHIM_RBAC: "1"
+          AE_APISHIM_RBAC_EVAL: "1"
+          AE_APISHIM_PATCH_DEBUG: "1"
+          AE_APISHIM_ADAPTER: "0"
+          AE_RUNTIME_BACKEND: stub
+          PYTHONPATH: src
+        run: |
+          python -m ae.apishim serve --host 127.0.0.1 --port 8445 --token "$AE_APISHIM_TOKEN" --tls >/tmp/apishim-ssa.log 2>&1 &
+          echo $! >/tmp/apishim.pid
+          sleep 3
+      - name: RBAC and SSA checks
+        env:
+          SERVER: "https://127.0.0.1:8445"
+          ADMIN: "ci-admin"
+          READ: "ci-read"
+        run: |
+          set -euo pipefail
+          K="kubectl --server=$SERVER --insecure-skip-tls-verify"
+          cat <<'YAML' >/tmp/rbac.yaml
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: default
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: cm-reader
+            namespace: default
+          rules:
+            - apiGroups: [""]
+              resources: ["configmaps"]
+              verbs: ["get", "list"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: cm-reader-binding
+            namespace: default
+          subjects:
+            - kind: User
+              name: reader
+              apiGroup: rbac.authorization.k8s.io
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: cm-reader
+          YAML
+          $K --token="$ADMIN" apply --validate=false -f /tmp/rbac.yaml
+          $K --token="$READ" get configmaps -n default >/dev/null
+          $K --token="$ADMIN" create configmap rbac-test --from-literal=hello=world -n default
+          set +e
+          $K --token="$READ" delete configmap rbac-test -n default
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          cat <<'YAML' >/tmp/ssa.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ssa-demo
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ssa-demo
+            template:
+              metadata:
+                labels:
+                  app: ssa-demo
+              spec:
+                containers:
+                  - name: web
+                    image: nginx:1.25
+                    ports:
+                      - containerPort: 80
+          YAML
+          $K --token="$ADMIN" apply --validate=false --server-side --field-manager=manager-a -f /tmp/ssa.yaml
+          set +e
+          $K --token="$ADMIN" apply --validate=false --server-side --field-manager=manager-b -f /tmp/ssa.yaml
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          $K --token="$ADMIN" apply --validate=false --server-side --force-conflicts --field-manager=manager-b -f /tmp/ssa.yaml
+          $K --token="$ADMIN" patch deploy ssa-demo --type=merge -p '{"spec":{"replicas":2}}'
+          test "$($K --token="$ADMIN" get deploy ssa-demo -o jsonpath='{.spec.replicas}')" = "2"
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== apishim ===" && cat /tmp/apishim-ssa.log || true
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f /tmp/apishim.pid ]; then
+            kill "$(cat /tmp/apishim.pid)" 2>/dev/null || true
+          fi
+
+  spdy-matrix:
+    needs: server-guard
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'spdy') && (github.event_name != 'workflow_dispatch' || github.event.inputs.runtime == matrix.runtime) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: docker
+            allow_failure: false
+          - runtime: podman
+            allow_failure: true
+    continue-on-error: ${{ matrix.allow_failure }}
+    steps:
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+          ci_configure_docker_env
+      - name: Install podman for podman runtime
+        if: ${{ matrix.runtime == 'podman' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_podman
+      - name: Install project and kubectl
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_kubectl
+      - name: Run SPDY matrix
+        env:
+          AE_APISHIM_RUNTIME: ${{ matrix.runtime }}
+          K9S_SMOKE: "0"
+        run: scripts/dev/apishim_spdy_matrix_run.sh
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          cat /tmp/k1s-apishim-spdy.log || true
+          cat /tmp/k1s-ctrl-spdy.log || true
+
+  live-openapi:
+    needs: server-guard
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'live-openapi') && (github.event_name != 'workflow_dispatch' || github.event.inputs.runtime == matrix.runtime) && (github.event_name != 'workflow_dispatch' || github.event.inputs.target == matrix.target) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: local
+            runtime: stub
+          - target: local
+            runtime: docker
+          - target: external
+            runtime: stub
+    env:
+      NO_PROXY: "127.0.0.1,localhost"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      APISHIM_LIVE_USE_PG: "0"
+      APISHIM_LIVE_ARTIFACT_DIR: /tmp/apishim-live
+      APISHIM_LIVE_RUNTIME: ${{ matrix.runtime }}
+      APISHIM_LIVE_TOKEN: live-ci
+      APISHIM_LIVE_NAMESPACE: apishim-live
+      APISHIM_KIND_CLUSTER: ${{ matrix.target == 'external' && vars.APISHIM_KIND_CLUSTER || '' }}
+      APISHIM_LIVE_KUBECONFIG_B64: ${{ matrix.target == 'external' && secrets.APISHIM_LIVE_KUBECONFIG_B64 || '' }}
+      KUBECONFIG_B64: ${{ matrix.target == 'external' && secrets.KUBECONFIG_B64 || '' }}
+    steps:
+      - name: Gate external target when config missing
+        run: |
+          if [ "${{ matrix.target }}" = "external" ] && [ -z "${APISHIM_LIVE_KUBECONFIG_B64:-}" ] && [ -z "${APISHIM_KIND_CLUSTER:-}" ]; then
+            echo "SKIP_LIVE_OPENAPI=1" >> "$GITHUB_ENV"
+          fi
+      - name: Trust Gitea cert for checkout
+        run: |
+          if [ "${ACT:-}" = "true" ] && [ "${GITEA_ACTIONS:-}" != "true" ]; then
+            exit 0
+          fi
+          if [ -n "${GITEA_CA_B64:-}" ]; then
+            echo "$GITEA_CA_B64" | base64 -d > "$RUNNER_TEMP/gitea-ca.crt"
+            git config --global http."https://gitea.core.home.arpa/".sslVerify true
+            git config --global http."https://gitea.core.home.arpa/".sslCAInfo "$RUNNER_TEMP/gitea-ca.crt"
+            echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
+            echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
+          else
+            git config --global http."https://gitea.core.home.arpa/".sslVerify false
+            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
+            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v3
+      - name: Bootstrap local act venv
+        if: ${{ env.ACT == 'true' && env.GITEA_ACTIONS != 'true' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_bootstrap_act_venv
+      - name: Set up Python
+        if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Normalize runner env
+        run: |
+          source scripts/ci/lib.sh
+          ci_maybe_trust_gitea
+          ci_prepare_user_bin
+          ci_configure_docker_env
+      - name: Install podman when needed
+        if: ${{ matrix.runtime == 'podman' }}
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_podman
+      - name: Install project and CLI tools
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_project ".[dev]"
+          ci_install_kubectl
+          ci_install_helm
+          ci_install_kind
+      - name: Materialize optional kubeconfig
+        if: env.APISHIM_LIVE_KUBECONFIG_B64 != '' || env.KUBECONFIG_B64 != ''
+        run: |
+          src="${APISHIM_LIVE_KUBECONFIG_B64:-${KUBECONFIG_B64:-}}"
+          echo "$src" | base64 -d >/tmp/live-kubeconfig
+          echo "APISHIM_LIVE_KUBECONFIG=/tmp/live-kubeconfig" >> "$GITHUB_ENV"
+      - name: Run live OpenAPI gate
+        if: env.SKIP_LIVE_OPENAPI != '1'
+        run: bash scripts/ci/apishim-live-openapi.sh
+      - name: Upload live OpenAPI artifacts
+        if: env.SKIP_LIVE_OPENAPI != '1'
+        uses: actions/upload-artifact@v3
+        with:
+          name: apishim-live-openapi-${{ matrix.target }}-${{ matrix.runtime }}
+          path: /tmp/apishim-live
+      - name: Show logs on failure
+        if: failure()
+        run: find /tmp -name "shim.log" -print -exec cat {} \; || true

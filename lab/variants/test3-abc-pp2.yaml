@@ -1,0 +1,65 @@
+name: test3-abc-pp2
+test_id: 3
+description: Full A/B/C topology with GPU nodes on B and C for PP2 validation.
+network:
+  bridge: k1s-br0
+  cidr: 192.168.152.0/24
+  gateway: 192.168.152.1
+  dns:
+    - 1.1.1.1
+    - 8.8.8.8
+vm:
+  memory_mb: 6144
+  vcpus: 4
+  disk_gb: 50
+images:
+  base: artifacts/images/ubuntu-22.04-k1s-base.qcow2
+  gpu: artifacts/images/ubuntu-22.04-k1s-gpu.qcow2
+hosts:
+  - name: a-core
+    ip: 192.168.152.10
+    role: k1s-core
+    gpu: false
+    node_id: core-a-gw
+  - name: b-edge-core
+    ip: 192.168.152.20
+    role: k1s-edge-core
+    gpu: false
+    site_id: edge-b
+    node_id: edge-b-gw
+  - name: b-edge-node-1
+    ip: 192.168.152.21
+    role: k1s-edge-node
+    gpu: true
+    site_id: edge-b
+    node_id: edge-b--gpu-1
+    node_labels: role=worker,site=edge-b,gpu.sku=rtx-6000
+  - name: c-edge-core
+    ip: 192.168.152.30
+    role: k1s-edge-core
+    gpu: false
+    site_id: edge-c
+    node_id: edge-c-gw
+  - name: c-edge-node-1
+    ip: 192.168.152.31
+    role: k1s-edge-node
+    gpu: true
+    site_id: edge-c
+    node_id: edge-c--gpu-1
+    node_labels: role=worker,site=edge-c,gpu.sku=rtx-8000
+k1s:
+  agent_token: devtoken
+  controller_port: 9108
+  inference_experimental: true
+transport:
+  leaf_uplink_mode: direct_ip
+  hub_host: 192.168.152.10
+  hub_leaf_port: 7422
+baseline:
+  duration_minutes: 30
+  concurrency: 8
+  max_error_rate: 0.001
+throughput_gate:
+  min_tps_ratio: 0.90
+  max_p95_ratio: 1.20
+  max_error_rate: 0.001

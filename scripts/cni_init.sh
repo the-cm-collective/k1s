@@ -6,7 +6,7 @@ bridge_file="${CNI_BRIDGE_FILE:-$conf_dir/10-k1s-bridge.conflist}"
 loopback_file="${CNI_LOOPBACK_FILE:-$conf_dir/99-loopback.conf}"
 bridge_name="${AE_CNI_BRIDGE_NAME:-cni0}"
 subnet="${AE_CNI_SUBNET:-10.88.0.0/16}"
-cni_version="${AE_CNI_VERSION:-1.0.0}"
+cni_version="${AE_CNI_VERSION:-0.4.0}"
 force="${AE_CNI_FORCE:-0}"
 
 need_sudo=0
@@ -43,11 +43,17 @@ write_file() {
 
 run_cmd mkdir -p "$conf_dir"
 
+if [[ "$force" == "1" ]] && command -v ip >/dev/null 2>&1; then
+  if run_cmd ip link show "$bridge_name" >/dev/null 2>&1; then
+    run_cmd ip addr flush dev "$bridge_name" >/dev/null 2>&1 || true
+    echo "Flushed existing bridge addresses on $bridge_name"
+  fi
+fi
+
 # Detect existing non-loopback CNI config
 has_non_loopback=0
-if [[ "$force" != "1" ]] && (
-  compgen -G "$conf_dir/*.conf" >/dev/null || compgen -G "$conf_dir/*.conflist" >/dev/null
-); then
+if [[ "$force" != "1" ]] && find "$conf_dir" -maxdepth 1 -type f \
+  \( -name '*.conf' -o -name '*.conflist' \) -print -quit | grep -q .; then
   for cfg in "$conf_dir"/*; do
     base="$(basename "$cfg")"
     case "$base" in

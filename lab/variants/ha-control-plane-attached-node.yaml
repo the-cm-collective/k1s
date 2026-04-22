@@ -1,0 +1,72 @@
+name: ha-control-plane-attached-node
+test_id: 6
+description: HA control-plane retained manual-smoke topology with three HA core nodes and one attached schedulable node.
+network:
+  bridge: k1s-br0
+  cidr: 192.168.155.0/24
+  gateway: 192.168.155.1
+  dns:
+    - 1.1.1.1
+    - 8.8.8.8
+vm:
+  memory_mb: 5120
+  vcpus: 4
+  disk_gb: 50
+images:
+  base: artifacts/images/ubuntu-22.04-k1s-base.qcow2
+  gpu: artifacts/images/ubuntu-22.04-k1s-gpu.qcow2
+hosts:
+  - name: core-a
+    ip: 192.168.155.10
+    role: k1s-ha-core
+    gpu: false
+    node_id: core-a
+  - name: core-b
+    ip: 192.168.155.11
+    role: k1s-ha-core
+    gpu: false
+    node_id: core-b
+  - name: core-c
+    ip: 192.168.155.12
+    role: k1s-ha-core
+    gpu: false
+    node_id: core-c
+  - name: attached-node-1
+    ip: 192.168.155.20
+    role: k1s-core-node
+    gpu: false
+    site_id: core
+    node_id: attached-node-1
+    node_labels: role=worker,site=core
+    pod_cidr: 10.42.0.0/24
+    vm:
+      memory_mb: 3072
+      vcpus: 2
+k1s:
+  agent_token: devtoken
+  controller_port: 9108
+  agent_api_port: 9110
+  apishim_port: 8445
+  inference_experimental: false
+transport:
+  leaf_uplink_mode: direct_ip
+  hub_host: 192.168.155.10
+  hub_leaf_port: 7422
+ha:
+  etcd_endpoints:
+    - http://192.168.155.10:2379
+    - http://192.168.155.11:2379
+    - http://192.168.155.12:2379
+  etcd_prefix: k1s/lab/ha-control-plane
+  nats_url: nats://hub-controller:dev@192.168.155.10:4222
+  apishim_scheme: https
+  hub_nodes:
+    - name: core-a
+      monitor_url: http://192.168.155.10:8222
+    - name: core-b
+      monitor_url: http://192.168.155.11:8222
+    - name: core-c
+      monitor_url: http://192.168.155.12:8222
+smoke:
+  lanes:
+    - ha_control_plane

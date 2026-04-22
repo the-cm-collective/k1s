@@ -6,10 +6,13 @@ services:
     container_name: k1nd-server
     environment:
       AE_RUNTIME_BACKEND: docker
+      AE_DOCKER_NETWORK: bench_default
+      AE_DOCKER_ENDPOINT_PREFER_NETWORK: "1"
       AE_ALLOW_PLAINTEXT_SECRETS: "1"
       AE_REGISTER_LOCAL_NODE: "1"
       AE_NODE_NOTREADY_AFTER: "600"
       AE_DISABLE_INGRESS: "1"
+      AE_PROBE_LOOPBACK_FALLBACK: host.docker.internal
       AE_STATE_DB: /state/controller.db
       AE_SPECS_DIR: /specs
       AE_APISHIM_DB: /state/apishim.db
@@ -24,6 +27,9 @@ services:
       - ${K1ND_SPECS_DIR:-./state/bench-k1nd-specs}:/specs
       - ${K1ND_APPLY_DIR:-./state/bench-k1nd-apply}:/apply
       - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "host.containers.internal:host-gateway"
     ports:
       - "127.0.0.1:${K1ND_API_PORT:-9108}:9108"
       - "127.0.0.1:${K1ND_APISHIM_PORT:-8445}:8445"

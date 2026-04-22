@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from ae.controller.spec import AppManifest, app_key_for_manifest, runtime_labels_for_manifest
 
-from .base import PodState, RuntimeAdapter, RuntimeResult
+from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 
 
 class StubRuntime(RuntimeAdapter):
@@ -62,6 +62,7 @@ class StubRuntime(RuntimeAdapter):
                     pod_name=pod_name,
                     ready=True if is_job else True,
                     status=status,
+                    revision=revision,
                     endpoint=f"{self._backend_host}:{host_port}",
                     started_at=now,
                     exit_code=exit_code,
@@ -123,9 +124,32 @@ class StubRuntime(RuntimeAdapter):
         _ = (app_name, keep_revision)
         return 0
 
+    def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:  # type: ignore[override]
+        _ = app_name
+        if not replica_ids:
+            return 0
+        removed = 0
+        for app_key, containers in list(self._containers.items()):
+            kept = []
+            for container in containers:
+                replica_id = (
+                    (container.get("labels") or {}).get("ae.pod_name")
+                    or container.get("name")
+                    or ""
+                )
+                if replica_id in replica_ids:
+                    removed += 1
+                    continue
+                kept.append(container)
+            self._containers[app_key] = kept
+        return removed
+
     def list_containers_info(self) -> list[dict]:
         """Return synthetic container info for apishim pod projection."""
         containers: list[dict] = []
         for app_conts in self._containers.values():
             containers.extend(app_conts)
         return containers.copy()
+
+    def list_workload_metrics(self) -> list[WorkloadMetricSample]:
+        return []

@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 import os
@@ -63,6 +64,20 @@ class ReconcileReport:
     live_replicas: int
     revision: int
     revision_status: str
+    current_revision_ready_replicas: int = 0
+    current_revision_live_replicas: int = 0
+    old_revision_ready_replicas: int = 0
+    old_revision_live_replicas: int = 0
+    overlap_ready_replicas: int = 0
+    overlap_live_replicas: int = 0
+
+
+@dataclass(slots=True)
+class _ObservedRuntimeReplica:
+    replica_id: str
+    revision: int | None
+    running: bool
+    runtime: RuntimeAdapter
 
 
 class Reconciler:
@@ -77,6 +92,7 @@ class Reconciler:
         secret_manager: SecretManager | None = None,
         config_manager: ConfigManager | None = None,
         service_controller=None,
+        authority=None,
     ) -> None:
         self._runtime = runtime
         self._state_store = state_store
@@ -86,11 +102,16 @@ class Reconciler:
         self._config_manager = config_manager or ConfigManager()
         self._service_controller = service_controller
         self._scheduler = Scheduler(self._state_store)
-        self._runtime_cache: dict[str, RuntimeAdapter] = {}
+        self._runtime_cache: dict[tuple[str, str], RuntimeAdapter] = {}
         self._base_runtime = getattr(runtime, "_local", runtime)
+        self._mutation_authority = authority
         # Inject exec callback for exec probes
         try:
             self._health_manager.set_exec_callback(self._exec_across_runtimes)
+        except Exception:
+            pass
+        try:
+            self._health_manager.set_portforward_callback(self._portforward_across_runtimes)
         except Exception:
             pass
         try:
@@ -107,19 +128,25 @@ class Reconciler:
         self._default_sc_name: str | None = None
         self._register_local_node = _truthy_env("AE_REGISTER_LOCAL_NODE")
 
-    def _runtime_for_agent(self, agent_url: str | None) -> RuntimeAdapter:
+    def _runtime_for_agent(self, agent_url: str | None, node_id: str | None = None) -> RuntimeAdapter:
         """Return a runtime bound to the target agent URL (cached)."""
         if not agent_url:
             return self._runtime
-        cached = self._runtime_cache.get(agent_url)
+        key = (agent_url, str(node_id or ""))
+        cached = self._runtime_cache.get(key)
         if cached:
             return cached
         try:
             from ae.runtime import RemoteRuntime
 
             base = getattr(self._runtime, "_local", self._base_runtime)
-            rt = RemoteRuntime(agent_url, base)
-            self._runtime_cache[agent_url] = rt
+            rt = RemoteRuntime(
+                agent_url,
+                base,
+                authority=self._mutation_authority,
+                node_id=node_id,
+            )
+            self._runtime_cache[key] = rt
             return rt
         except Exception:
             return self._runtime
@@ -133,6 +160,33 @@ class Reconciler:
             except Exception:
                 continue
         return 127
+
+    def _portforward_across_runtimes(self, pod_name: str, namespace: str | None, port: int):
+        """Try port-forward across cached remote runtimes, then the base runtime."""
+        runtimes = list(self._runtime_cache.values()) + [self._runtime]
+        last_error: Exception | None = None
+        seen: set[int] = set()
+        for rt in runtimes:
+            ident = id(rt)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            fn = getattr(rt, "port_forward_socket", None)
+            if not callable(fn):
+                continue
+            try:
+                return fn(
+                    pod_id=None,
+                    pod_name=pod_name,
+                    namespace=namespace,
+                    port=int(port),
+                )
+            except Exception as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise RuntimeError(f"port-forward failed for {pod_name}:{int(port)}: {last_error}") from last_error
+        raise RuntimeError(f"port-forward unsupported for {pod_name}:{int(port)}")
 
     def _runtime_backend_name(self) -> str:
         env_backend = os.getenv("AE_RUNTIME_BACKEND")
@@ -297,6 +351,7 @@ class Reconciler:
         # Rollout policy
         rollout = getattr(manifest.spec, "rollout", {}) or {}
         strategy = str(rollout.get("strategy", "parallel")).lower()
+        max_surge = int(rollout.get("maxSurge", 1))
         max_unavail = int(rollout.get("maxUnavailable", 0))
 
         # Pause: record snapshot with current status and skip runtime/ingress changes
@@ -355,15 +410,98 @@ class Reconciler:
         until = float(self._create_cooldown_until.get(app_name, 0.0) or 0.0)
         if until > now_ts:
             limit_create = 0
+        keep_old = True
+        try:
+            import os as _os
+
+            serial_service_rollout = str(
+                _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") or "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            svc = getattr(manifest_for_runtime.spec, "service", None)
+            svc_ports = list(getattr(svc, "ports", None) or []) if svc is not None else []
+            fixed_service_port = bool(
+                svc is not None
+                and (
+                    getattr(svc, "port", None) is not None
+                    or any(getattr(p, "node_port", None) is not None for p in svc_ports)
+                )
+            )
+            if (
+                serial_service_rollout
+                and strategy != "canary"
+                and getattr(manifest_for_runtime.spec, "replicas", 1) == 1
+                and fixed_service_port
+            ):
+                keep_old = False
+        except Exception:
+            keep_old = True
 
         placements, schedule_warnings = self._scheduler.plan(manifest_for_runtime, revision)
         for w in schedule_warnings:
             try:
-                self._state_store.record_event(app_name, revision, "ScheduleWarning", w)
+                    self._state_store.record_event(app_name, revision, "ScheduleWarning", w)
             except Exception:
                 pass
         self._apply_selected_node_annotations(manifest_for_runtime, placements, revision)
-        # Persist placement hints before reconcile (so dashboard can render)
+
+        desired = max(int(getattr(manifest.spec, "replicas", 0) or 0), 0)
+        desired_pod_names = [f"{app_name}-rev{revision}-{idx}" for idx in range(desired)]
+        target_pod_names = set(desired_pod_names)
+        effective_limit_create = limit_create
+        pre_remove_by_runtime: dict[RuntimeAdapter, list[str]] = {}
+        if strategy not in {"canary"} and desired_pod_names:
+            current_existing_ids, current_ready_ids, old_replicas = self._observe_runtime_replicas(
+                manifest,
+                revision,
+                desired_pod_names,
+            )
+            old_not_running = [item for item in old_replicas if not item.running]
+            old_running = [item for item in old_replicas if item.running]
+            min_available = max(0, desired - max_unavail)
+            available_replicas = len(current_ready_ids) + len(old_running)
+            available_headroom = max(0, available_replicas - min_available)
+            removable_old = list(old_not_running)
+            if available_headroom > 0:
+                removable_old.extend(old_running[:available_headroom])
+            if strategy == "ordered" and removable_old:
+                removable_old = removable_old[:1]
+            old_remaining = max(0, len(old_replicas) - len(removable_old))
+            allowed_current_total = min(desired, max(0, desired + max_surge - old_remaining))
+            target_new_total = min(
+                desired,
+                max(len(current_existing_ids & set(desired_pod_names)), allowed_current_total),
+            )
+            selected_pod_names = set(current_existing_ids) & set(desired_pod_names)
+            for pod_name in desired_pod_names:
+                if len(selected_pod_names) >= target_new_total:
+                    break
+                selected_pod_names.add(pod_name)
+            target_pod_names = selected_pod_names or set()
+            create_budget = max(0, target_new_total - len(current_existing_ids & target_pod_names))
+            if strategy == "ordered":
+                create_budget = min(create_budget, 1)
+            effective_limit_create = (
+                create_budget
+                if limit_create is None
+                else min(int(limit_create), int(create_budget))
+            )
+            for observed in removable_old:
+                pre_remove_by_runtime.setdefault(observed.runtime, []).append(observed.replica_id)
+
+        filtered_placements = []
+        for placement in placements:
+            pod_names = [
+                pod_name
+                for pod_name in list(dict.fromkeys(getattr(placement, "pod_names", []) or []))
+                if pod_name in target_pod_names
+            ]
+            if not pod_names:
+                continue
+            placement.pod_names = pod_names
+            filtered_placements.append(placement)
+        placements = filtered_placements
+
+        # Persist placement hints after rollout budgets are applied.
         try:
             node_rows: list[tuple[str, str]] = []
             for pl in placements:
@@ -377,15 +515,32 @@ class Reconciler:
         except Exception:
             pass
 
-        # Keep old pods during rollout to respect surge/unavailable; we'll remove them after readiness check
+        # Enforce surge/unavailable budgets before creating more of the new revision.
         aggregate_states: list = []
         created = updated = removed = 0
         runtimes_used: list[RuntimeAdapter] = []
-        remaining_limit = limit_create
+        for runtime, replica_ids in pre_remove_by_runtime.items():
+            if runtime not in runtimes_used:
+                runtimes_used.append(runtime)
+            removed += self._remove_replicas_on_runtime(runtime, app_name, replica_ids)
+        if removed > 0:
+            try:
+                self._state_store.record_event(
+                    app_name,
+                    revision,
+                    "RolloutOldRemoved",
+                    f"Removed {removed} old revision replica(s) before create budget step",
+                )
+            except Exception:
+                pass
+
+        remaining_limit = effective_limit_create
         for placement in placements:
-            # Ensure pod_names are unique per app/revision (avoid duplicate scheduling across nodes)
             pod_names = list(dict.fromkeys(getattr(placement, "pod_names", []) or []))
-            runtime = self._runtime_for_agent(getattr(placement, "agent_url", None))
+            runtime = self._runtime_for_agent(
+                getattr(placement, "agent_url", None),
+                node_id=getattr(getattr(placement, "node", None), "node_id", None),
+            )
             if runtime not in runtimes_used:
                 runtimes_used.append(runtime)
             per_limit = None
@@ -409,7 +564,7 @@ class Reconciler:
                 runtime,
                 manifest_for_runtime,
                 revision,
-                keep_old=True,
+                keep_old=keep_old,
                 limit_create=per_limit,
                 pod_names=pod_names,
                 node_id=getattr(getattr(placement, "node", None), "node_id", None),
@@ -533,6 +688,12 @@ class Reconciler:
         except Exception:
             pass
 
+        rollout_counts = self._calculate_rollout_replica_counts(
+            manifest,
+            health_report,
+            result,
+        )
+
         # Remove old revisions if availability is satisfied, except while canary is active
         desired = manifest.spec.replicas
         ro_now = getattr(manifest.spec, "rollout", {}) or {}
@@ -616,6 +777,7 @@ class Reconciler:
             health_report=health_report,
             revision=revision,
             revision_status=revision_status,
+            **rollout_counts,
         )
         self._state_store.record_event(
             app_name,
@@ -645,6 +807,7 @@ class Reconciler:
             live_replicas=health_report.live_replicas,
             revision=revision,
             revision_status=revision_status,
+            **rollout_counts,
         )
 
     def _run_prestop_on_old(self, manifest: AppManifest, *, keep_revision: int) -> None:
@@ -773,6 +936,130 @@ class Reconciler:
             except Exception:
                 pass
         return total
+
+    def _rollout_observation_runtimes(self) -> list[RuntimeAdapter]:
+        runtimes: list[RuntimeAdapter] = []
+        seen: set[int] = set()
+
+        def _add(rt: RuntimeAdapter | None) -> None:
+            if rt is None:
+                return
+            ident = id(rt)
+            if ident in seen:
+                return
+            seen.add(ident)
+            runtimes.append(rt)
+
+        _add(self._runtime)
+        try:
+            for node, _status in self._state_store.list_nodes():
+                endpoint = getattr(node, "endpoint", None)
+                if not endpoint:
+                    continue
+                _add(self._runtime_for_agent(endpoint, node_id=getattr(node, "node_id", None)))
+        except Exception:
+            pass
+        for rt in self._runtime_cache.values():
+            _add(rt)
+        return runtimes
+
+    def _runtime_info_matches_manifest(self, manifest: AppManifest, labels: dict[str, Any]) -> bool:
+        app_label = str(
+            labels.get("ae.app")
+            or labels.get("app")
+            or labels.get("app.kubernetes.io/name")
+            or ""
+        ).strip()
+        if app_label != str(manifest.metadata.name):
+            return False
+        namespace = str(getattr(manifest.metadata, "namespace", "default") or "default").strip()
+        label_namespace = str(labels.get("ae.namespace") or "").strip()
+        if label_namespace and label_namespace != namespace:
+            return False
+        return True
+
+    def _observed_replica_from_info(
+        self, info: dict[str, Any], runtime: RuntimeAdapter
+    ) -> _ObservedRuntimeReplica | None:
+        labels = (info or {}).get("labels") or {}
+        replica_id = str(
+            labels.get("ae.pod_name")
+            or labels.get("ae.replica_id")
+            or labels.get("ae.replica")
+            or (info or {}).get("name")
+            or ""
+        ).strip()
+        if not replica_id:
+            return None
+        revision = None
+        raw_revision = labels.get("ae.revision")
+        if isinstance(raw_revision, int):
+            revision = raw_revision
+        elif isinstance(raw_revision, str) and raw_revision.isdigit():
+            revision = int(raw_revision)
+        else:
+            revision = self._pod_revision(replica_id, [])
+        return _ObservedRuntimeReplica(
+            replica_id=replica_id,
+            revision=revision,
+            running=bool((info or {}).get("running", False)),
+            runtime=runtime,
+        )
+
+    def _observe_runtime_replicas(
+        self,
+        manifest: AppManifest,
+        revision: int,
+        desired_replica_ids: list[str],
+    ) -> tuple[set[str], set[str], list[_ObservedRuntimeReplica]]:
+        desired_ids = set(desired_replica_ids)
+        current_ready_ids: set[str] = set()
+        try:
+            for pod in self._state_store.list_pods(app_key_for_manifest(manifest)):
+                if pod.ready and pod.pod_name in desired_ids:
+                    current_ready_ids.add(pod.pod_name)
+        except Exception:
+            current_ready_ids = set()
+
+        observed_by_id: dict[str, _ObservedRuntimeReplica] = {}
+        for runtime in self._rollout_observation_runtimes():
+            try:
+                items = list(getattr(runtime, "list_containers_info", lambda: [])() or [])
+            except Exception:
+                items = []
+            for item in items:
+                labels = (item or {}).get("labels") or {}
+                if not self._runtime_info_matches_manifest(manifest, labels):
+                    continue
+                observed = self._observed_replica_from_info(item, runtime)
+                if observed is None:
+                    continue
+                existing = observed_by_id.get(observed.replica_id)
+                if existing is None or (not existing.running and observed.running):
+                    observed_by_id[observed.replica_id] = observed
+
+        current_existing_ids: set[str] = set()
+        old_replicas: list[_ObservedRuntimeReplica] = []
+        for observed in observed_by_id.values():
+            if observed.replica_id in desired_ids or observed.revision == revision:
+                current_existing_ids.add(observed.replica_id)
+            else:
+                old_replicas.append(observed)
+        old_replicas.sort(key=lambda item: item.replica_id)
+        return current_existing_ids, current_ready_ids, old_replicas
+
+    def _remove_replicas_on_runtime(
+        self, runtime: RuntimeAdapter, app_name: str, replica_ids: list[str]
+    ) -> int:
+        if not replica_ids:
+            return 0
+        remove = getattr(runtime, "remove_replicas", None)
+        if not callable(remove):
+            return 0
+        try:
+            return int(remove(app_name, replica_ids))
+        except Exception:
+            return 0
 
     def _run_rollout_hook(self, manifest, runtime_result, hook) -> tuple[bool, str | None]:  # noqa: ANN001
         """Execute a rollout hook against the new revision.
@@ -927,6 +1214,8 @@ class Reconciler:
                     return [f"{svc.cluster_ip}:{svc_port}"]
 
         states_by_id = {state.pod_name: state for state in result.pod_states}
+        preferred_port = self._preferred_container_port(manifest)
+        container_infos_by_pod = self._container_infos_by_pod()
 
         # Prefer only ready endpoints; defer ingress changes until at least one
         # replica is ready to avoid transient 502s during warm-up.
@@ -934,6 +1223,13 @@ class Reconciler:
         for pod in health_report.pods:
             if not pod.ready:
                 continue
+            info = container_infos_by_pod.get(pod.pod_name)
+            if info:
+                target = self._endpoint_from_container_info(info, preferred_port)
+                if target:
+                    host, port = target
+                    ready_eps.append(f"{host}:{int(port)}")
+                    continue
             state = states_by_id.get(pod.pod_name)
             if state and state.endpoint:
                 host, port = self._split_host_port(state.endpoint)
@@ -951,7 +1247,6 @@ class Reconciler:
                 items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
             except Exception:
                 items = []
-            preferred_port = self._preferred_container_port(manifest)
             prev_eps: list[str] = []
             cur_rev = str(result.revision)
             for it in items or []:
@@ -1026,9 +1321,37 @@ class Reconciler:
             pass
         return None
 
+    def _docker_container_dns_enabled(self) -> bool:
+        runtime = self._base_runtime
+        runtime_name = runtime.__class__.__name__.lower()
+        return (
+            "docker" in runtime_name
+            and "podman" not in runtime_name
+            and bool(getattr(runtime, "_network_name", None))
+        )
+
+    def _container_infos_by_pod(self) -> dict[str, dict]:
+        if not self._docker_container_dns_enabled():
+            return {}
+        try:
+            items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
+        except Exception:
+            return {}
+        out: dict[str, dict] = {}
+        for item in items or []:
+            labels = (item or {}).get("labels") or {}
+            pod_name = str(labels.get("ae.pod_name") or labels.get("ae.replica_id") or "").strip()
+            if pod_name:
+                out[pod_name] = item
+        return out
+
     def _endpoint_from_container_info(
         self, info: dict, port_hint: int | None
     ) -> tuple[str, int] | None:
+        if self._docker_container_dns_enabled() and port_hint is not None:
+            name = str((info or {}).get("name") or "").strip()
+            if name:
+                return name, int(port_hint)
         pod_ip = (info or {}).get("pod_ip")
         host_ip = (info or {}).get("host_ip") or "127.0.0.1"
         port_map = (info or {}).get("port_map") or {}
@@ -1056,6 +1379,51 @@ class Reconciler:
             sort_keys=True,
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
+
+    def _pod_revision(self, pod_name: str, states: list[Any]) -> int | None:
+        for state in states:
+            revision = getattr(state, "revision", None)
+            if isinstance(revision, int):
+                return revision
+            if isinstance(revision, str) and revision.isdigit():
+                return int(revision)
+        match = re.search(r"-rev(\d+)-", str(pod_name))
+        if match:
+            return int(match.group(1))
+        return None
+
+    def _calculate_rollout_replica_counts(
+        self,
+        manifest: AppManifest,
+        health_report: HealthReport,
+        runtime_result: RuntimeResult,
+    ) -> dict[str, int]:
+        desired = max(int(getattr(manifest.spec, "replicas", 0) or 0), 0)
+        current_revision = int(getattr(runtime_result, "revision", 0) or 0)
+        pods_by_name = {pod.pod_name: pod for pod in health_report.pods}
+        states_by_name: dict[str, list[Any]] = {}
+        for state in runtime_result.pod_states:
+            states_by_name.setdefault(state.pod_name, []).append(state)
+
+        counts = {
+            "current_revision_ready_replicas": 0,
+            "current_revision_live_replicas": 0,
+            "old_revision_ready_replicas": 0,
+            "old_revision_live_replicas": 0,
+        }
+        for pod_name, pod in pods_by_name.items():
+            pod_revision = self._pod_revision(pod_name, states_by_name.get(pod_name, []))
+            if pod_revision is None:
+                continue
+            prefix = "current_revision" if pod_revision == current_revision else "old_revision"
+            if pod.ready:
+                counts[f"{prefix}_ready_replicas"] += 1
+            if pod.live:
+                counts[f"{prefix}_live_replicas"] += 1
+
+        counts["overlap_ready_replicas"] = max(int(health_report.ready_replicas) - desired, 0)
+        counts["overlap_live_replicas"] = max(int(health_report.live_replicas) - desired, 0)
+        return counts
 
     def _calculate_revision_status(
         self, manifest: AppManifest, report: HealthReport, runtime_result: RuntimeResult

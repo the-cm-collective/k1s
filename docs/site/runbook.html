@@ -1,0 +1,2297 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Runbook</title>
+    <link rel="icon" href="static/favicon.ico" sizes="any"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
+    <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-16x16.svg"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="static/favicon-16x16.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-48x48.svg"/>
+    <link rel="icon" type="image/png" sizes="48x48" href="static/favicon-48x48.png"/>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180x180.png"/>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --k1s-bg: #121212;
+        --k1s-surface: #181818;
+        --k1s-panel: #2c2c2c;
+        --k1s-border: #404040;
+        --k1s-border-soft: #4a4a4a;
+        --k1s-text: #e5e7eb;
+        --k1s-text-muted: #9ca3af;
+        --k1s-primary: #2563eb;
+        --k1s-primary-soft: #3b82f6;
+        --k1s-highlight: #60a5fa;
+        --k1s-info: #0284c7;
+        --k1s-info-bg: #e0f2fe;
+        --k1s-success: #16a34a;
+        --k1s-success-bg: #16a34a33;
+        --k1s-warn: #f59e0b;
+        --k1s-warn-bg: #f59e0b33;
+        --k1s-danger: #ef4444;
+        --k1s-danger-bg: #ef444433;
+        --k1s-card-bg: #2c2c2c;
+        --k1s-header-bg: #0a0a0a10;
+        --k1s-radius: 8px;
+        --k1s-radius-pill: 999px;
+        --k1s-gap: 12px;
+        --k1s-brand-gold: #fbc02d;
+        --k1s-brand-graphite: #404040;
+        --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
+        /* Legacy aliases used by docs/labs styles */
+        --bg: var(--k1s-bg);
+        --fg: var(--k1s-text);
+        --muted: var(--k1s-panel);
+        --link: #5a86c9;
+        --link-hover: #7aa0e8;
+        --code-bg: #1b1b1b;
+        --border: var(--k1s-border);
+      }
+      html[data-theme="light"] {
+        --k1s-bg: #f4f5f7;
+        --k1s-surface: #f8fafb;
+        --k1s-panel: #ffffff;
+        --k1s-border: #d4d7dd;
+        --k1s-border-soft: #e6e8ec;
+        --k1s-text: #0f141c;
+        --k1s-text-muted: #4a5565;
+        --k1s-card-bg: #ffffff;
+        --k1s-header-bg: rgba(255,255,255,0.82);
+        --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
+        --bg: var(--k1s-bg);
+        --fg: var(--k1s-text);
+        --muted: var(--k1s-panel);
+        --link: #2f59b9;
+        --link-hover: #3b63c5;
+        --border: var(--k1s-border);
+      }
+    </style>
+    <style>
+      /* Base layout aligned to dashboard palette */
+      html { height: 100%; }
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
+        margin: 0;
+        padding: 2rem;
+        line-height: 1.55;
+        box-sizing: border-box;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
+        color: var(--fg);
+      }
+      img { max-width: 100%; height: auto; }
+      nav {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: .6rem;
+        justify-content: center;
+        margin: 0 auto 1.25rem auto;
+        width: min(100%, 1320px);
+        padding: 10px 16px;
+        box-sizing: border-box;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 14px;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+        position: sticky;
+        top: 12px;
+        z-index: 10;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+      }
+      nav::after {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        bottom: 6px;
+        height: 2px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent);
+        opacity: 0.5;
+        pointer-events: none;
+      }
+      nav a {
+        display: inline-flex;
+        align-items: center;
+        gap: .25rem;
+        padding: 7px 12px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        text-decoration: none;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.16);
+        transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
+        font-weight: 600;
+      }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
+      nav a:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-brand-gold);
+        color: var(--link-hover);
+        transform: translateY(-1px);
+      }
+      nav .nav-brand {
+        gap: 10px;
+        padding: 6px 10px;
+        border: 1px solid transparent;
+        background: transparent;
+        box-shadow: none;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 11px;
+        color: var(--k1s-text-muted);
+      }
+      nav .nav-brand:hover {
+        background: color-mix(in srgb, var(--k1s-card-bg) 60%, transparent);
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+        transform: translateY(0);
+      }
+      nav .nav-brand img {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+      }
+      nav a:active { transform: translateY(0); }
+      .spacer { flex: 1 1 auto; }
+      button#api-mode-toggle {
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        border: 1px solid var(--k1s-border);
+        border-radius: 8px;
+        padding: 6px 10px;
+        cursor: pointer;
+        transition: background .15s ease, border-color .15s ease;
+      }
+      button#api-mode-toggle:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-border-soft);
+      }
+      .theme-fab {
+        position: fixed;
+        right: 18px;
+        bottom: 140px;
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 12px 35px rgba(0,0,0,0.32);
+        cursor: pointer;
+        z-index: 20;
+        transition: background .15s ease, border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+      }
+      .theme-fab:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-border-soft);
+        transform: translateY(-1px);
+        box-shadow: 0 14px 40px rgba(0,0,0,0.38);
+      }
+      .theme-fab:active { transform: translateY(0); }
+      .theme-fab svg { width: 26px; height: 26px; fill: currentColor; }
+      .theme-fab .icon-sun { display: none; }
+      html[data-theme="light"] .theme-fab .icon-sun { display: block; }
+      html[data-theme="light"] .theme-fab .icon-moon { display: none; }
+      html[data-theme="dark"] .theme-fab .icon-moon { display: block; }
+      @media (max-height: 740px) {
+        .theme-fab { bottom: 32px; }
+      }
+      code, pre {
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        border-radius: 8px;
+      }
+      code { overflow-wrap: anywhere; }
+      pre code { overflow-wrap: normal; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      thead th {
+        text-align: left;
+        padding: 12px 14px;
+        background: var(--k1s-card-bg);
+        border-bottom: 1px solid var(--k1s-border);
+        color: var(--fg);
+        font-weight: 600;
+      }
+      tbody td {
+        padding: 12px 14px;
+        border-top: 1px solid var(--k1s-border-soft);
+        color: var(--fg);
+        vertical-align: top;
+      }
+      tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #000000 8%);
+      }
+      html[data-theme="light"] tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #ffffff 8%);
+      }
+      pre {
+        padding: 12px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        position: relative;
+      }
+      pre::-webkit-scrollbar { width: 0; height: 0; }
+      pre.has-copy { padding-top: 32px; }
+      .copy-btn {
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 9px;
+        border-radius: 8px;
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-surface);
+        color: var(--fg);
+        font-size: 12px;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.24);
+        opacity: 0;
+        transition: opacity .14s ease, transform .12s ease, background .12s ease, border-color .12s ease;
+        z-index: 1;
+      }
+      pre:hover .copy-btn,
+      pre:focus-within .copy-btn {
+        opacity: .96;
+      }
+      .copy-btn:hover {
+        background: var(--k1s-panel);
+        border-color: var(--k1s-border-soft);
+      }
+      .copy-btn:active { transform: translateY(0); }
+      .copy-btn svg { width: 16px; height: 16px; fill: currentColor; }
+      .copy-btn.copied { color: var(--k1s-success); border-color: var(--k1s-success); }
+      h1 { margin-top: 0; font-size: 28px; letter-spacing: 0.01em; }
+      h2 { margin-top: 1.5em; font-size: 20px; }
+      h3 { margin-top: 1.1em; font-size: 17px; }
+      a { color: var(--link); }
+      a:hover { color: var(--link-hover); }
+      a:focus-visible { outline: 2px solid var(--k1s-highlight); outline-offset: 2px; border-radius: 4px; }
+      .container {
+        width: min(100%, 1320px);
+        max-width: 1320px;
+        margin: 0 auto;
+        flex: 1 0 auto;
+      }
+      .card {
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-card-bg);
+        border-radius: var(--k1s-radius);
+        padding: 10px 12px;
+      }
+      .hero {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+        padding: 22px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 22%, transparent) 0%, transparent 55%),
+          linear-gradient(135deg, color-mix(in srgb, var(--k1s-panel) 86%, #000000 14%) 0%, var(--k1s-panel) 55%, color-mix(in srgb, var(--k1s-brand-gold) 14%, var(--k1s-panel)) 100%);
+        overflow: hidden;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+      }
+      html[data-theme="light"] .hero {
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 26%, transparent) 0%, transparent 60%),
+          linear-gradient(135deg, #ffffff 0%, #f8f7f2 60%, color-mix(in srgb, var(--k1s-brand-gold) 18%, #ffffff) 100%);
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        right: -24px;
+        bottom: -36px;
+        width: 220px;
+        height: 220px;
+        background: url('static/k1s-logo-circle.svg') no-repeat center / contain;
+        opacity: 0.12;
+        pointer-events: none;
+      }
+      .hero-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 1;
+      }
+      .hero-logo-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .hero-logo {
+        width: min(320px, 90%);
+        height: auto;
+        opacity: 0.85;
+      }
+      .hero-pill {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        background: var(--k1s-brand-gold);
+        color: #2b2b2b;
+        box-shadow: 0 10px 22px rgba(251, 192, 45, 0.25);
+      }
+      .hero h1 {
+        font-size: 32px;
+        margin: 4px 0 0;
+      }
+      .hero-tagline {
+        max-width: 52ch;
+        color: var(--k1s-text-muted);
+        font-size: 15px;
+      }
+      .hero-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      .hero-repo {
+        margin-top: 14px;
+        padding: 10px 12px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 6px 10px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 12px;
+        background: var(--k1s-panel);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+      }
+      .hero-repo-label {
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-link {
+        color: var(--link);
+        font-weight: 600;
+        text-decoration: none;
+        word-break: break-word;
+      }
+      .hero-repo-link:hover {
+        color: var(--link-hover);
+        text-decoration: underline;
+      }
+      .hero-link {
+        text-decoration: none;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 70%, transparent);
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .hero-link--stack {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .hero-link-title {
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .hero-link-sub {
+        font-weight: 400;
+        font-size: 11px;
+        line-height: 1.3;
+        color: var(--k1s-text-muted);
+      }
+      .hero-link:hover {
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+      }
+      .hero-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        align-items: start;
+        z-index: 1;
+      }
+      .hero-card {
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 85%, transparent);
+        border-radius: 14px;
+        padding: 12px;
+        box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+      }
+      .hero-card h2 {
+        margin: 0 0 6px;
+        font-size: 16px;
+      }
+      .hero-card p {
+        margin: 0 0 10px;
+        color: var(--k1s-text-muted);
+        font-size: 13px;
+      }
+      .hero-card pre {
+        margin: 8px 0 0;
+        font-size: 12px;
+      }
+      .hero-index {
+        grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 2fr);
+      }
+      .hero-index .hero-actions {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .hero-card--section {
+        min-height: 180px;
+      }
+      .hero-links--dense {
+        gap: 8px;
+      }
+      .hero-links--dense .hero-link {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
+      .callout, blockquote {
+        border-left: 4px solid var(--k1s-primary-soft);
+        background: var(--k1s-card-bg);
+        border: 1px solid var(--k1s-border);
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .muted, .note { color: var(--k1s-text-muted); }
+      /* Shared helper to allow scrolling without visible bars */
+      .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+      .scrollbar-hide::-webkit-scrollbar { width: 0; height: 0; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+      footer.site-footer {
+        margin-top: 3rem;
+        border-top: 1px solid var(--k1s-border);
+        flex: 0 0 auto;
+      }
+      footer.site-footer .inner {
+        display: flex;
+        align-items: center;
+        gap: .75rem;
+        padding: 14px 0;
+        opacity: .85;
+      }
+      @media (hover: none) {
+        .copy-btn { opacity: .92; }
+        pre.has-copy { padding-top: 36px; }
+      }
+      @media (max-width: 980px) {
+        body { padding: 1.5rem; }
+        nav {
+          width: 100%;
+          padding: 8px 10px;
+          gap: .5rem;
+          justify-content: flex-start;
+        }
+        nav a {
+          padding: 6px 10px;
+          font-size: 12px;
+        }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
+        nav .nav-brand {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+        }
+        .hero {
+          padding: 18px;
+        }
+        .hero h1 { font-size: 28px; }
+        .hero-tagline { font-size: 14px; }
+        .hero-index { grid-template-columns: 1fr; }
+        .hero-actions { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        .hero-card--section { min-height: auto; }
+        .theme-fab { right: 12px; bottom: 88px; }
+        footer.site-footer .inner { flex-wrap: wrap; }
+      }
+      @media (max-width: 720px) {
+        body { padding: 1.1rem; }
+        nav {
+          top: 8px;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        nav::-webkit-scrollbar { width: 0; height: 0; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
+        nav::after { left: 8px; right: 8px; }
+        h1 { font-size: 24px; }
+        h2 { font-size: 18px; }
+        h3 { font-size: 15px; }
+        .hero { padding: 16px; }
+        .hero-logo { width: min(220px, 90%); }
+        .hero-pill { font-size: 11px; }
+        .hero-links { gap: 8px; }
+        .hero-link { font-size: 12px; }
+        .hero-actions { grid-template-columns: 1fr; }
+        .theme-fab { bottom: 24px; width: 48px; height: 48px; }
+        pre { font-size: 13px; }
+        table {
+          display: block;
+          max-width: 100%;
+          width: max-content;
+          min-width: 100%;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        thead th, tbody td { padding: 10px 12px; }
+      }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        const labels = {
+          dark: 'Switch to light mode',
+          light: 'Switch to dark mode',
+        };
+        function update(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          var label = labels[cur] || 'Toggle theme';
+          btn.setAttribute('aria-label', label);
+          btn.setAttribute('title', label);
+        }
+        function wire() {
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) return;
+          update(btn);
+          btn.addEventListener('click', function() {
+            var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+            var next = (cur === 'dark') ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', next);
+            localStorage.setItem(key, next);
+            update(btn);
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', wire);
+        } else {
+          wire();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
+    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>
+      // Attach copy buttons to all code blocks client-side
+      (function() {
+        function addButtons() {
+          var blocks = document.querySelectorAll('pre > code');
+          blocks.forEach(function(code) {
+            var pre = code.parentElement;
+            if (pre.dataset.hasCopy) return;
+            pre.dataset.hasCopy = '1';
+            pre.classList.add('has-copy');
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'copy-btn';
+            btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z"/></svg><span>Copy</span>';
+
+            btn.addEventListener('click', function() {
+              var text = code.textContent || '';
+              var setState = function(ok) {
+                btn.classList.toggle('copied', ok);
+                btn.lastChild.textContent = ok ? 'Copied!' : 'Copy';
+                setTimeout(function() {
+                  btn.classList.remove('copied');
+                  btn.lastChild.textContent = 'Copy';
+                }, 1400);
+              };
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() { setState(true); }, function() { setState(false); });
+              } else {
+                try {
+                  var ta = document.createElement('textarea');
+                  ta.value = text;
+                  ta.style.position = 'fixed';
+                  ta.style.opacity = '0';
+                  document.body.appendChild(ta);
+                  ta.select();
+                  document.execCommand('copy');
+                  document.body.removeChild(ta);
+                  setState(true);
+                } catch (e) {
+                  setState(false);
+                }
+              }
+            });
+
+            pre.style.position = 'relative';
+            pre.insertBefore(btn, code);
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', addButtons);
+        } else {
+          addButtons();
+        }
+      })();
+    </script>
+    
+  </head>
+  <body>
+    <nav>
+      <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
+      <a href="start-here.html">Start Here</a>
+      <a href="overview.html">Overview</a>
+      <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
+      <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
+      <a href="cri-containerd.html">CRI containerd</a>
+      <a href="multinode-lab.html">Multi-Node</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
+      <a href="api-auth.html">API Auth</a>
+      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="playground.html">Playground</a>
+    </nav>
+    <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
+      <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
+        <path d="M480-360q50 0 85-35t35-85q0-50-35-85t-85-35q-50 0-85 35t-35 85q0 50 35 85t85 35Zm0 80q-83 0-141.5-58.5T280-480q0-83 58.5-141.5T480-680q83 0 141.5 58.5T680-480q0 83-58.5 141.5T480-280ZM200-440H40v-80h160v80Zm720 0H760v-80h160v80ZM440-760v-160h80v160h-80Zm0 720v-160h80v160h-80ZM256-650l-101-97 57-59 96 100-52 56Zm492 496-97-101 53-55 101 97-57 59Zm-98-550 97-101 59 57-100 96-56-52ZM154-212l101-97 55 53-97 101-59-57Zm326-268Z"/>
+      </svg>
+      <svg class="icon-moon" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
+        <path d="M480-120q-150 0-255-105T120-480q0-150 105-255t255-105q14 0 27.5 1t26.5 3q-41 29-65.5 75.5T444-660q0 90 63 153t153 63q55 0 101-24.5t75-65.5q2 13 3 26.5t1 27.5q0 150-105 255T480-120Zm0-80q88 0 158-48.5T740-375q-20 5-40 8t-40 3q-123 0-209.5-86.5T364-660q0-20 3-40t8-40q-78 32-126.5 102T200-480q0 116 82 198t198 82Zm-10-270Z"/>
+      </svg>
+    </button>
+    <div class="container">
+    <h1 id="operations-runbook">Operations Runbook</h1>
+<p>Purpose</p>
+<ul>
+<li>This runbook captures common operational tasks for the k1s controller: exporting manifests to K8s, validating portability, managing ingress/TLS, rollouts, and API tokens.</li>
+</ul>
+<p>Setup</p>
+<ul>
+<li>Install Python deps: <code>python -m pip install -e .[dev]</code></li>
+<li>Dev services (optional): <code>docker compose -f ops/dev/docker-compose.yaml up -d</code></li>
+<li>Controller loop (dev):
+<ul>
+<li>Default specs dir: <code>python -m ae.controller --loop --interval 10 --specs specs/ --metrics-port 9108</code>
+<ul>
+<li><code>--interval</code> defaults to 2s; increase it for ops (for example 10–30s) to reduce log noise.</li>
+<li>The specs dir is imported into the registry; the reconciler always runs against the registry. An empty specs dir does not clear existing workloads.</li>
+</ul>
+</li>
+<li>Curated demo/specs: set <code>AE_SPECS_DIR</code> and use Make targets that respect it:
+<ul>
+<li><code>AE_SPECS_DIR=state/profiles/demo/specs make loop</code> (watches only the curated set)</li>
+<li><code>AE_SPECS_DIR=state/profiles/demo/specs make run</code> (single reconcile pass)</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Tip: <code>scripts/init_demo.sh</code> seeds <code>state/profiles/demo/specs</code> and exports <code>AE_SPECS_DIR</code> + <code>AE_DEMO_MODE=1</code> for demo runs.
+<ul>
+<li>Demo convenience: <code>AE_REGISTER_LOCAL_NODE=1</code> registers a local node when no nodes are present (keeps demo/labs single-node runs working while preserving Kubernetes scheduling semantics by default).</li>
+<li>Reset state quickly when switching contexts: <code>./scripts/init_demo.sh --reset</code> (deletes <code>state/profiles/demo/controller.db</code> and <code>state/profiles/demo/projections/</code>).</li>
+<li>Registry cache: <code>./scripts/init_demo.sh --reset-registry-cache</code> (clears <code>state/registry</code> to force re-pull into the local cache).</li>
+</ul>
+</li>
+<li>Etcd-backed demo/labs:
+<ul>
+<li><code>AE_STATE_BACKEND=etcd make demo</code> (auto-starts etcd for the demo controller)</li>
+<li><code>AE_STATE_BACKEND=etcd make labs-aio-up</code> (labs host-controller wrapper reuses the <code>dev-etcd</code> profile with Caddy/TLS defaults)</li>
+</ul>
+</li>
+<li>SOPS/age (secrets):
+<ul>
+<li>Generate an age identity: <code>mkdir -p ~/.config/ae &amp;&amp; age-keygen -o ~/.config/ae/keys.txt &amp;&amp; chmod 600 ~/.config/ae/keys.txt</code></li>
+<li>Point SOPS to it: <code>export SOPS_AGE_KEY_FILE=~/.config/ae/keys.txt</code></li>
+<li>Seal sample secret: <code>make secrets-seal-demo</code> (uses <code>AE_AGE_RECIPIENT</code> or your keys.txt)</li>
+<li>Convenience for demos: run <code>./scripts/init_demo.sh --with-secrets-env</code> to export both <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code> and <code>SOPS_AGE_KEY_FILE</code> automatically.</li>
+</ul>
+</li>
+</ul>
+<p>VM GPU Fabric Lab</p>
+<ul>
+<li>Golden image build/verify/transfer: <code>docs/ops/vm-golden-image-pipeline.md</code></li>
+<li>Variant orchestration and bootstrap: <a href="vm-variant-runbook.html">VM Variant Runbook</a></li>
+<li>Baseline metrics and throughput gates: <code>docs/ops/vm-metrics-and-gates.md</code></li>
+<li>Remote GPU VM precursor (A+B, libvirt/QEMU): <code>docs/ops/gpu-vm-remote-host-validation.md</code></li>
+<li>Primary smoke entrypoint: <code>make lab-vm-smoke</code></li>
+<li>Lower-level orchestration entrypoint: <code>scripts/lab/vm/labctl.sh</code></li>
+<li>Recommended non-GPU smoke pattern (seeded cache, helper-backed):
+<ul>
+<li><code>AE_CRI_CACHE_SEED_ENGINE=docker AE_CRI_CACHE_SEED_MODE=required AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=0 make lab-vm-smoke VARIANT=lab/variants/test3-abc-no-gpu.yaml RUN_ID=&quot;$RUN_ID&quot; LAB_VM_SMOKE_ARGS=&quot;--purge --destroy-network --lanes multi_non_gpu&quot;</code></li>
+<li>This uses the wrapper-backed smoke path, enables <code>seed_cache</code> before bootstrap, and auto-tears down on success while keeping failed runs for inspection.</li>
+</ul>
+</li>
+</ul>
+<p>NATS + etcd dev stack (Mode A)</p>
+<ul>
+<li>Start hub + etcd + edge NATS: <code>docker compose -f ops/dev/docker-compose.nats-etcd.yaml up -d</code></li>
+<li>Stop stack: <code>docker compose -f ops/dev/docker-compose.nats-etcd.yaml down</code></li>
+<li>Configs: <code>ops/dev/nats-hub.conf</code>, <code>ops/dev/nats-edge.conf</code> (dev-only credentials).</li>
+<li>Manual core+edge test pattern: <code>docs/ops/core-edge-manual-test.md</code></li>
+<li>Gateway env defaults: <code>ops/dev/site-gateway.env.sample</code> (Option A ack settings).</li>
+<li>Default dev creds: hub controller <code>hub-controller/dev</code>, site uplink <code>site-sfo-edge-01-uplink/dev</code>, local <code>gateway/dev</code> and <code>worker/dev</code> (do not use in prod).</li>
+<li>If docker-compose fails to create <code>state/etcd</code>, fix ownership once:
+<ul>
+<li><code>sudo mkdir -p state/etcd</code></li>
+<li><code>sudo chown -R $USER:$USER state/etcd</code></li>
+</ul>
+</li>
+<li>Local E2E stub (work.pull path):
+<ul>
+<li>Start gateway: <code>AE_TRANSPORT_BACKEND=nats-core AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway</code></li>
+<li>Start stub worker: <code>ae-worker-stub --node-id node-01 --nats-url nats://127.0.0.1:4223</code></li>
+<li>Enqueue a work item: <code>ae work enqueue --site-id sfo-edge-01 --mode queue --op ensure_pod --preferred-node node-01</code></li>
+</ul>
+</li>
+<li>Mode A canary (JetStream path):
+<ul>
+<li>Hub controller: <code>AE_TRANSPORT_BACKEND=nats-js AE_SITE_IDS=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4222 python -m ae.controller --loop --interval 2 --metrics-port 9108</code></li>
+<li>Gateway: <code>AE_TRANSPORT_BACKEND=nats-js AE_SITE_ID=sfo-edge-01 AE_NATS_URL=nats://127.0.0.1:4223 ae-gateway</code></li>
+<li>Enqueue: <code>ae work enqueue --site-id sfo-edge-01 --mode outbox --op ensure_pod --preferred-node node-01</code></li>
+<li>Rollback: stop the gateway and restart the controller with <code>AE_TRANSPORT_BACKEND=http</code> (or unset) to return to HTTP dispatch.</li>
+</ul>
+</li>
+<li>Automated canary + rollback: <code>scripts/dev/nats_etcd_canary.sh</code> (uses <code>.venv</code> if present; override <code>METRICS_PORT</code> if 9108 is in use).</li>
+</ul>
+<p>Etcd maintenance (dev/CI)</p>
+<ul>
+<li>Quick status: <code>scripts/dev/etcd_maintenance.sh status</code></li>
+<li>Guard before long ingress lanes: <code>scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog</code></li>
+<li>Forced reclaim when etcd returns <code>mvcc: database space exceeded</code>:
+<ul>
+<li><code>scripts/dev/etcd_maintenance.sh compact-defrag</code></li>
+</ul>
+</li>
+<li>Startup defaults in <code>k1s-core</code>/<code>dev-etcd</code> profiles:
+<ul>
+<li><code>AE_ETCD_MAINTENANCE_ENABLE=1</code></li>
+<li><code>AE_ETCD_MAINTENANCE_THRESHOLD_PCT=80</code></li>
+<li><code>AE_ETCD_MAINTENANCE_INTERVAL_SEC=900</code> (controller loop watchdog cadence)</li>
+</ul>
+</li>
+<li>Override/disable behavior when needed:
+<ul>
+<li><code>AE_ETCD_MAINTENANCE_ENABLE=0 make k1s-core-cri</code></li>
+<li><code>AE_ETCD_MAINTENANCE_THRESHOLD_PCT=70 make k1s-core-cri</code></li>
+</ul>
+</li>
+</ul>
+<p>Rosenpass WireGuard PSK (Option C)</p>
+<ul>
+<li>Requires: WireGuard tools (<code>wg</code>, <code>wg-quick</code>) and Rosenpass installed on each node host.</li>
+<li>Enable managed Rosenpass: <code>AE_ROSENPASS_ENABLED=1</code> on each node.</li>
+<li>Data directory (keys/config/status): <code>AE_ROSENPASS_DIR=/var/lib/ae/rosenpass</code> (default).</li>
+<li>Config file: <code>AE_ROSENPASS_CONFIG=/path/to/rosenpass.yaml</code> for node-local peers or <code>AE_ROSENPASS_CONFIG=controller</code> for controller-managed hub-spoke peers.</li>
+<li>Hub/spoke discovery: hub node labels <code>role=controller</code> or <code>role=hub</code>; hub site override <code>AE_OVERLAY_HUB_SITE=&lt;site-id&gt;</code> (fallback <code>AE_SITE_ID</code>); hub WG endpoint label <code>wg_endpoint=&lt;public-ip:port&gt;</code> or <code>AE_OVERLAY_HUB_ENDPOINT</code>.</li>
+<li>WireGuard interface override: <code>AE_WG_INTERFACE=wg0</code> (default).</li>
+<li>Optional Rosenpass command override (if default fails): <code>AE_ROSENPASS_COMMAND=&quot;rosenpass exchange-config {config}&quot;</code>.</li>
+<li>Peer refresh interval (controller-managed peers): <code>AE_ROSENPASS_PEER_REFRESH_SEC=60</code> (set to <code>0</code> to disable).</li>
+<li>Status file: <code>${AE_ROSENPASS_DIR}/rosenpass-status.json</code> (or <code>AE_ROSENPASS_STATUS_PATH</code>).</li>
+</ul>
+<p>Manual bringup (hub + edge, controller-managed peers)</p>
+<ul>
+<li>Hub controller (agent API enabled): <code>AE_AGENT_API_PORT=9110 AE_AGENT_API_TOKEN=... python -m ae.controller --loop</code></li>
+<li>Hub node (with labels): <code>AE_NODE_LABELS=&quot;role=hub,site=&lt;hub-site&gt;,wg_endpoint=&lt;public-ip:51820&gt;&quot; AE_ROSENPASS_ENABLED=1 AE_ROSENPASS_CONFIG=controller python -m ae.node --ensure-pod-net</code></li>
+<li>Edge node: <code>AE_NODE_LABELS=&quot;site=&lt;edge-site&gt;&quot; AE_ROSENPASS_ENABLED=1 AE_ROSENPASS_CONFIG=controller AE_CONTROLLER_URL=http://&lt;hub&gt;:9110 AE_AGENT_TOKEN=... python -m ae.node --ensure-pod-net</code></li>
+</ul>
+<p>Quick checks</p>
+<ul>
+<li>Overlay config served: <code>curl -H &quot;X-Agent-Token: $AE_AGENT_TOKEN&quot; http://&lt;hub&gt;:9110/v1/nodes/&lt;node-id&gt;/overlay</code></li>
+<li>Rosenpass running: <code>cat /var/lib/ae/rosenpass/rosenpass-status.json</code></li>
+<li>WireGuard handshakes: <code>wg show wg0</code></li>
+</ul>
+<p>CRI nodes (containerd)</p>
+<ul>
+<li>Required env:
+<ul>
+<li><code>AE_RUNTIME_BACKEND=cri</code></li>
+<li><code>AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock</code></li>
+<li><code>AE_CRI_SANDBOX_IMAGE=registry.k8s.io/pause:3.9</code></li>
+</ul>
+</li>
+<li>HA passive-resource reads:
+<ul>
+<li>In HA mode, converged <code>Secret</code> and <code>ServiceAccount</code> reads come from the shim HTTP authority path rather than the local shim DB.</li>
+<li>Set <code>AE_APISHIM_URL</code> (or <code>AE_APISHIM_SERVER</code>) plus <code>AE_APISHIM_READ_TOKEN</code> and <code>AE_APISHIM_CA_BUNDLE</code>/<code>AE_APISHIM_CA</code> when CRI nodes need HA image-pull secret or ServiceAccount lookup.</li>
+</ul>
+</li>
+<li>Current HA boundary:
+<ul>
+<li>HA apishim mutation/read/watch now converges on shared authority for workload-core resources, <code>ConfigMap</code>, <code>Secret</code>, <code>ServiceAccount</code>, <code>CronJob</code>, <code>HorizontalPodAutoscaler</code>, <code>Namespace</code>, RBAC resources, <code>PodDisruptionBudget</code>, CRDs/custom resources, <code>StorageClass</code>, PVC, PV, and the snapshot/CSI resource surface.</li>
+<li>Controller-owned storage resources remain readable but reject external mutation in HA mode: <code>VolumeAttachment</code>, <code>CSIStorageCapacity</code>, and <code>VolumeSnapshotContent</code>.</li>
+<li>The elected main controller owns <code>CronJob</code>, HPA, and storage reconciliation in HA mode; the apishim-local <code>StorageController</code> stays disabled.</li>
+<li>If controller authority is uncertain or <code>etcd</code> quorum is lost, the control plane degrades to read-only.</li>
+</ul>
+</li>
+<li>Service VIP (optional):
+<ul>
+<li><code>AE_ENABLE_SERVICE_PROXY=1</code></li>
+<li><code>AE_SERVICE_PROVIDER=iptables</code></li>
+<li>Run controller as root or with sufficient iptables permissions</li>
+</ul>
+</li>
+<li>Streaming exec/attach uses <code>crictl</code>; ensure it is installed and on PATH (<code>CRICTL_BIN</code> overrides).</li>
+<li>CRI port-forward proxy (pods/services): set <code>AE_APISHIM_CRI_PORTFORWARD=1</code> (or <code>AE_APISHIM_CRI_PORTFORWARD_FORCE=1</code> to always prefer it).</li>
+<li>Service VIP proxy on CRI uses iptables; set <code>AE_ENABLE_SERVICE_PROXY=1</code> and run as root.</li>
+<li>CNI dirs (defaults): <code>/opt/cni/bin</code> and <code>/etc/cni/net.d</code></li>
+<li>Strict startup now auto-materializes <code>/opt/cni/bin</code> when the required plugins are already available in standard source dirs or NixOS PATH-managed plugin locations.</li>
+<li>Init CNI configs (bridge + loopback) if missing: <code>./scripts/cni_init.sh</code>
+<ul>
+<li>Manual plugin bootstrap: <code>./scripts/cni_bin_bootstrap.sh</code></li>
+</ul>
+</li>
+<li>If CNI version mismatches occur, force rewrite with the compatibility default and restart containerd:
+<ul>
+<li><code>AE_CNI_FORCE=1 AE_CNI_VERSION=0.4.0 ./scripts/cni_init.sh</code></li>
+<li><code>sudo systemctl restart containerd</code></li>
+</ul>
+</li>
+<li>Preflight checks: <code>./scripts/cri_preflight.sh</code></li>
+<li>If CRI socket access is root-only, run strict profiles with <code>sudo -E</code> or grant temporary access with <code>./scripts/containerd_socket_access.sh --grant</code></li>
+<li>Smoke check (requires crictl): <code>./scripts/cri_smoke.sh</code> (pulls the sandbox image and runs a PodSandbox)</li>
+<li>Optional pull test: <code>AE_CRI_SMOKE_PULL=1 pytest tests/integration/test_cri_smoke.py -k pull</code></li>
+<li>Optional lifecycle test: <code>AE_CRI_IT=1 pytest tests/integration/test_cri_runtime_integration.py -q</code></li>
+<li>CI-style bootstrap (installs containerd/CNI/crictl): <code>./scripts/cri_ci_setup.sh</code></li>
+<li>CRI benchmark reruns: prefer <code>./scripts/bench/run_cri_verify.sh</code>
+<ul>
+<li>Smoke lane:
+<ul>
+<li><code>./scripts/bench/bench_env_teardown.sh --env state/bench-cri/env.sh || true</code></li>
+<li><code>sudo pkill -f &quot;python .*ae\\.controller.*state/bench-cri/specs&quot; || true</code></li>
+<li><code>export BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-wrapper-check&quot;</code></li>
+<li><code>RUNS=&quot;1&quot; ./scripts/bench/run_cri_verify.sh</code></li>
+</ul>
+</li>
+<li>Full verify:
+<ul>
+<li><code>export BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-verify&quot;</code></li>
+<li><code>RUNS=&quot;1 2 3&quot; ./scripts/bench/run_cri_verify.sh</code></li>
+</ul>
+</li>
+<li>The wrapper logs to <code>state/bench-cri-rerun-*.log</code>, forces a bench-local <code>runtimeClassName: runc</code>, rejects <code>/k8s.io/kata</code> cgroup paths in <code>pods-1</code>, captures rollout <code>-during</code> immediately after apply, captures <code>-during-warm</code> as the warmed transition sample, waits for a stable <code>ready/live/desired</code> window before <code>-post</code>, and checks for <code>10</code> finalized rows per CRI run.</li>
+<li>Set <code>BASE=...</code> / <code>RUNS=...</code> before the script name (or <code>export</code> them); do not pass them after <code>run_cri_verify.sh</code> as positional args.</li>
+<li>Full-stage expectation per CRI run:
+<ul>
+<li><code>idle</code></li>
+<li><code>pods-1</code></li>
+<li><code>pods-5</code></li>
+<li><code>pods-10</code></li>
+<li><code>rollout-2-during</code></li>
+<li><code>rollout-2-during-warm</code></li>
+<li><code>rollout-2-post</code></li>
+<li><code>rollout-5-during</code></li>
+<li><code>rollout-5-during-warm</code></li>
+<li><code>rollout-5-post</code></li>
+</ul>
+</li>
+<li>Host note for this machine: <code>k3d</code> is expected to use <code>unix:///run/docker-k3d.sock</code>. If <code>k3d cluster list</code> fails with a missing <code>docker-k3d.sock</code>, run <code>sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart docker.socket docker.service</code> before benchmarking the <code>k3d</code> lane.</li>
+</ul>
+</li>
+</ul>
+<p>Isolated rollout-tuning experiments</p>
+<ul>
+<li>Use <code>make bench-rollout-tuning-experiment</code> for <code>cri</code>, <code>rootless</code>, <code>rootful</code>, or <code>k1nd</code> when evaluating quiet gates or rollout strategy changes.</li>
+<li>These runs are intentionally non-publishable by default:
+<ul>
+<li>labels must contain <code>+exp+</code></li>
+<li>outputs live under <code>state/bench-experiments/&lt;experiment-id&gt;/</code></li>
+<li>they do not update <code>combined/combined.csv</code>, <code>charts/</code>, or docs</li>
+<li>steady-quiet is disabled by default; set <code>BENCH_EXPERIMENT_STEADY_QUIET=1</code> explicitly when you want the extra pre-snapshot gate</li>
+</ul>
+</li>
+<li>Example CRI experiment:
+<ul>
+<li><code>BENCH_EXPERIMENT_STEADY_QUIET=1 BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0 BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1 make bench-rollout-tuning-experiment LANE=cri LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-cri+exp+candidate&quot; EXPERIMENT_ID=cri-policy-exp</code></li>
+</ul>
+</li>
+<li>Example rootless cross-check:
+<ul>
+<li><code>BENCH_EXPERIMENT_STEADY_QUIET=1 make bench-rollout-tuning-experiment LANE=rootless LABEL_BASE=&quot;r$(date +%Y%m%d-%H%M)-rootless+exp+quiet&quot; EXPERIMENT_ID=rootless-quiet-exp</code></li>
+</ul>
+</li>
+<li>Review the experiment-local outputs before considering promotion:
+<ul>
+<li><code>state/bench-experiments/&lt;id&gt;/combined/combined.csv</code></li>
+<li><code>state/bench-experiments/&lt;id&gt;/charts/</code></li>
+<li><code>state/bench-experiments/&lt;id&gt;/reports/audit.txt</code></li>
+</ul>
+</li>
+<li>CRI rollout-policy candidate verification:
+<ul>
+<li><code>make bench-cri-rollout-candidate</code></li>
+<li>The wrapper runs paired CRI experiments under <code>state/bench-experiments/&lt;group-id&gt;/</code>:
+<ul>
+<li><code>baseline-r1..rN</code>: explicit <code>parallel</code> rollout baseline with <code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=1</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=0</code>, and <code>BENCH_EXPERIMENT_STEADY_QUIET=0</code></li>
+<li><code>candidate-r1..rN</code>: accepted rollout policy with <code>BENCH_EXPERIMENT_ROLLOUT_STRATEGY=parallel</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_SURGE=0</code>, <code>BENCH_EXPERIMENT_ROLLOUT_MAX_UNAVAILABLE=1</code>, and <code>BENCH_EXPERIMENT_STEADY_QUIET=1</code></li>
+</ul>
+</li>
+<li>Candidate group outputs:
+<ul>
+<li><code>state/bench-experiments/&lt;group-id&gt;/reports/candidate.txt</code></li>
+<li><code>state/bench-experiments/&lt;group-id&gt;/reports/candidate.json</code></li>
+</ul>
+</li>
+<li>Current promotion gates used by the helper:
+<ul>
+<li><code>pods-5</code> steady-state app drift <code>&lt;= 3 MiB</code></li>
+<li><code>rollout-5-post</code> app drift <code>&lt;= 3 MiB</code></li>
+<li><code>rollout-5-during</code> app improvement <code>&gt;= 15 MiB</code></li>
+<li><code>rollout-5-during</code> CRI overlap reduction <code>&gt;= 1.0</code></li>
+</ul>
+</li>
+<li>These groups remain non-publishable experiment outputs; they do not touch retained baseline artifacts.</li>
+</ul>
+</li>
+<li>Retained CRI publish default:
+<ul>
+<li>Invoke <code>./scripts/bench/run_cri_verify.sh</code> with the accepted rollout-policy publish profile:
+<ul>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_SURGE=0</code></li>
+<li><code>BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=1</code></li>
+<li><code>BENCH_CRI_STEADY_QUIET=1</code></li>
+</ul>
+</li>
+<li>To force the old retained parallel baseline for comparison:
+<ul>
+<li><code>BENCH_CRI_ROLLOUT_STRATEGY=parallel BENCH_CRI_ROLLOUT_MAX_SURGE=1 BENCH_CRI_ROLLOUT_MAX_UNAVAILABLE=0 BENCH_CRI_STEADY_QUIET=0 BASE=&quot;r$(date +%Y%m%d-%H%M)-cri-runc-parallel-verify&quot; RUNS=&quot;1 2 3&quot; ./scripts/bench/run_cri_verify.sh</code></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>Export and Validate K8s YAML</p>
+<ul>
+<li>Hardened export with validation:
+<ul>
+<li><code>python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/echo-k8s.yaml</code></li>
+</ul>
+</li>
+<li>Multi‑replica hardened export:
+<ul>
+<li><code>python -m ae.cli export-k8s -f specs/examples/multi-replica-echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o specs/examples/multi-replica-echo-k8s.yaml</code></li>
+</ul>
+</li>
+<li>CI runs server‑side <code>kubectl apply --dry-run=server</code> and <code>kubeconform -strict</code> on exported samples.</li>
+</ul>
+<p>Ingress and TLS</p>
+<ul>
+<li>Overview: see docs/reference/ingress.md for multi‑path routing and TLS options.</li>
+<li>TLS sync helper:
+<ul>
+<li>Render PEMs from a Kubernetes Secret file: <code>python -m ae.cli tls sync --name mycert --input path/to/mycert.yaml --root state/tls</code></li>
+<li>Or place direct PEMs <code>state/tls/mycert.crt</code> and <code>state/tls/mycert.key</code>.</li>
+<li>Set only <code>spec.ingress.tlsSecretName: mycert</code> in your Deployment manifest; the controller will resolve and wire cert/key for Caddy.</li>
+</ul>
+</li>
+<li>Environment:
+<ul>
+<li>AE_TLS_DIR (default: state/tls)</li>
+<li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT</li>
+</ul>
+</li>
+</ul>
+<p>Ingress validation lanes (CRI, mode-isolated)</p>
+<ul>
+<li>Preflight before long lanes:
+<ul>
+<li><code>sudo -v</code></li>
+<li><code>scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog</code></li>
+</ul>
+</li>
+<li>Optional guided wrapper with lane checkpoints:
+<ul>
+<li><code>scripts/dev/run_ingress_lanes.sh --lanes all</code> (compat alias: <code>scripts/dev/run_ingress_mode_lanes.sh</code>)</li>
+</ul>
+</li>
+<li>Full tested startup command set (core/core-node/edge-gateway/edge-node by lane mode):
+<ul>
+<li><code>docs/guides/ingress-capability-test-sequence.md</code> (Step 1a)</li>
+</ul>
+</li>
+<li>Core-proxy mini sanity lane:
+<ul>
+<li><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes ws-echo --tier tier2 --validation-profile standard</code></li>
+</ul>
+</li>
+<li>Core-proxy primary deep lane (policy + observability):
+<ul>
+<li><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes ws-echo,lb-distribution,sticky-cookie --tier tier2 --validation-profile deep+perf --perf-profile sample --lb-proof-scope auto</code></li>
+</ul>
+</li>
+<li>Optional full core-proxy lane:
+<ul>
+<li><code>CORE_PROXY_FORCE_RATHOLE_RESTART=0 scripts/dev/test_ingress_matrix_single_host.sh --modes core-proxy --archetypes http-static,http-path-routing,ws-echo,lb-distribution,sticky-cookie --tier tier2 --validation-profile deep+perf --perf-profile sample --lb-proof-scope auto</code></li>
+</ul>
+</li>
+<li>Core-to-edge-public lane (separate stack start with <code>EDGE_INGRESS_MODE=core-to-edge-public</code>):
+<ul>
+<li><code>scripts/dev/test_ingress_matrix_single_host.sh --modes core-to-edge-public --archetypes http-static,http-path-routing --tier tier1 --validation-profile standard</code></li>
+</ul>
+</li>
+<li>Edge-local strict LB proof lane (separate stack start with <code>EDGE_INGRESS_MODE=edge-local</code> + <code>AE_ROUTE_BUNDLE_ENABLED=1</code>):
+<ul>
+<li><code>scripts/dev/test_ingress_matrix_single_host.sh --modes edge-local --archetypes lb-distribution --tier tier2 --validation-profile deep --lb-proof-scope edge-only --lb-sample-requests 5000 --lb-min-backends 2 --lb-max-skew-ratio 0.35 --edge-local-listener-url https://lb-distribution-edge-local.home.arpa/</code></li>
+</ul>
+</li>
+<li>Security baseline + staged active auth probes (per lane or after full sequence):
+<ul>
+<li><code>scripts/dev/security_baseline_check.sh --fail-on high</code></li>
+<li><code>scripts/dev/security_active_tests.sh --fail-on high</code></li>
+<li>wrapper integrated path: <code>scripts/dev/run_ingress_lanes.sh --lanes all --security-all</code></li>
+</ul>
+</li>
+<li>Keep lanes mode-isolated. Do not run mixed-mode rows on one stack profile.</li>
+<li>Summary interpretation (<code>state/test-results/ingress-matrix-*.json</code>):
+<ul>
+<li><code>lb_policy_passed=true</code>: core-proxy policy lane passed.</li>
+<li><code>lb_observability_passed=true</code>: core-proxy LB row emitted usable backend-observation evidence.</li>
+<li><code>lb_strict_proof_passed=true</code>: strict edge-local distribution proof passed.</li>
+</ul>
+</li>
+<li>Cross-platform parity benchmark: <code>docs/ops/perf-parity-k1s-vs-k3s.md</code></li>
+<li>Dev-host gate policy and auto recheck: <code>docs/ops/ingress-gate-policy-devhost.md</code></li>
+</ul>
+<p>Rollouts</p>
+<ul>
+<li>Pause/resume:
+<ul>
+<li><code>python -m ae.cli rollout pause &lt;app&gt;</code></li>
+<li><code>python -m ae.cli rollout resume &lt;app&gt;</code></li>
+</ul>
+</li>
+<li>Canary (static weight): set <code>spec.rollout.strategy: canary</code> and <code>spec.rollout.weight</code> to bias new upstreams.</li>
+<li>Canary (auto), controller‑persisted:
+<ul>
+<li><code>spec.rollout.auto: { start: 1, step: 2, intervalSeconds: 60, max: 10 }</code></li>
+<li>Controller stores weight/next step in SQLite and increments on schedule.</li>
+</ul>
+</li>
+</ul>
+<p>Portability Checks (k8s‑check)</p>
+<ul>
+<li>Baseline: <code>python -m ae.cli k8s-check -f specs/examples/echo.yaml</code></li>
+<li>Strict policy: <code>python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict</code></li>
+<li>HPA assumptions (optional validation hints):
+<ul>
+<li><code>--assume-hpa cpu-util</code>: require CPU requests for utilization metrics</li>
+<li><code>--assume-hpa mem-util</code>: require Memory requests for utilization metrics</li>
+<li><code>--assume-hpa mem-value=200Mi</code>: validate AverageValue quantity format</li>
+</ul>
+</li>
+</ul>
+<p>Testing notes</p>
+<ul>
+<li>Integration coverage targets and fixture notes live here (formerly <code>docs/testing.md</code>). Update when expanding tests or lab fixtures.</li>
+</ul>
+<p>API tokens</p>
+<ul>
+<li>Generate or rotate tokens:
+<ul>
+<li><code>python -m ae.cli api tokens --generate</code> (use <code>--rotate</code> interchangeably)</li>
+<li>Optional: <code>-o .env.api</code> writes export lines to a file.</li>
+<li>Optional expiry (global or per-role): add <code>--ttl-hours 24</code> to emit <code>AE_API_*_TOKEN_EXPIRES</code> lines (UTC ISO8601). You can override per role with <code>--ttl-admin-hours</code>, <code>--ttl-scaler-hours</code>, <code>--ttl-read-hours</code>.</li>
+</ul>
+</li>
+<li>Optional JSON state: add <code>--state state/api_tokens.json</code> to write a JSON file with tokens and expiries for rotation tooling.</li>
+<li>Required env when running the HTTP API with mutations:
+<ul>
+<li><code>AE_API_MUTATIONS=1</code>, <code>AE_API_ADMIN_TOKEN=...</code>, <code>AE_API_SCALER_TOKEN=...</code>, <code>AE_API_READ_TOKEN=...</code></li>
+<li>Optional per-role scopes (mutations):
+<ul>
+<li><code>AE_API_ADMIN_SCOPE</code> and <code>AE_API_SCALER_SCOPE</code> accept comma-separated glob patterns restricting which apps a token can mutate. Examples:
+<ul>
+<li><code>AE_API_ADMIN_SCOPE=&quot;payments-*&quot;</code> (admin token can only mutate apps prefixed payments-)</li>
+<li><code>AE_API_SCALER_SCOPE=&quot;echo,web-*&quot;</code> (scaler token can scale only echo and web-* apps)</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>Registry credentials</p>
+<ul>
+<li>Registry credentials are stored separately from API tokens at <code>~/.config/ae/registries.yaml</code>.</li>
+<li>List configured entries with <code>ae registry list</code>.</li>
+<li>Common login flows:
+<ul>
+<li>Docker Hub: <code>ae registry login custom --registry docker.io --username &lt;you&gt; --password &lt;token&gt;</code></li>
+<li>GHCR: <code>ae registry login ghcr --username &lt;you&gt; --token &lt;PAT&gt;</code> or rely on <code>gh auth token</code></li>
+<li>GCR / Artifact Registry: <code>ae registry login gcr --use-gcloud --gcr-host us.gcr.io</code></li>
+<li>ECR: <code>ae registry login ecr --use-aws --region us-east-1 --account-id 123456789012</code></li>
+<li>Custom: <code>ae registry login custom --registry registry.example.com --username user --password secret</code></li>
+</ul>
+</li>
+<li>Refresh short-lived provider credentials with <code>ae registry refresh</code>, or scope it with <code>--provider gcr</code> / <code>--provider ecr</code>.</li>
+<li><code>ae plan</code> warns when a private image host appears to need registry credentials but no matching <code>registries.yaml</code> entry is configured.</li>
+</ul>
+<p>API shim (kubectl/helm)</p>
+<ul>
+<li>Start shim locally: <code>AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=changeme python -m ae.apishim serve --host 127.0.0.1 --port 8445</code> (add <code>--allow-anonymous</code> only for dev). Postgres backend: set <code>AE_APISHIM_DSN=postgresql://user:pass@host:5432/dbname</code>; default is SQLite at <code>AE_APISHIM_DB</code> (<code>state/apishim.db</code>) unless a DSN is provided.</li>
+<li>Non-root CLI auth (recommended):
+<ul>
+<li>One-time group setup: <code>sudo groupadd -f aecli &amp;&amp; sudo usermod -aG aecli $USER</code> (re-login/newgrp required).</li>
+<li>Start <code>k1s-core</code> with sudo if needed; keep root <code>state/profiles/&lt;profile&gt;/apishim.env</code> private (<code>600</code>).</li>
+<li>Configure a mint-only credential: <code>AE_APISHIM_MINT_TOKEN=&lt;long-random-token&gt;</code> on the shim.</li>
+<li>Startup now syncs <code>state/profiles/&lt;profile&gt;/apishim.cli.env</code> (<code>640 root:aecli</code>) with <code>AE_APISHIM_SERVER</code>, <code>AE_APISHIM_MINT_TOKEN</code>, and <code>AE_APISHIM_CA_BUNDLE</code>.</li>
+<li>Startup also syncs <code>state/profiles/&lt;profile&gt;/apishim.ca.crt</code> (<code>640 root:aecli</code>) for CA verification.</li>
+<li>In operator shells run <code>source &lt;(ae auth local --strict)</code> (no <code>--apishim-env</code> arg required); auth infers the active profile and prefers <code>apishim.cli.env</code>.</li>
+<li><code>ae shell</code> / <code>ae port-forward</code> will mint short-lived scoped <code>sess1.*</code> tokens through <code>POST /api/v1/sessiontokens</code> and automatically refresh once on <code>401</code>.</li>
+<li>If shim token auth returns <code>401</code> but <code>AE_LABS_TOKEN</code> is present, CLI can fallback to controller-minted session tokens via <code>POST /api/apishim/session</code> (dashboard-compatible path).</li>
+<li>Disable controller fallback by setting <code>AE_CLI_LABS_MINT_FALLBACK=0</code> when you want shim-only auth behavior.</li>
+<li>Keep <code>AE_APISHIM_TOKEN</code> (admin) service-only; avoid routine <code>sudo ae ...</code>.</li>
+</ul>
+</li>
+<li><code>k1s-core</code> profile starts Postgres for apishim by default and sets <code>AE_APISHIM_DSN</code>:
+<ul>
+<li><code>AE_APISHIM_MODE=host</code>: uses <code>127.0.0.1:&lt;port&gt;</code>.</li>
+<li>container mode: uses the compose service name <code>postgres:5432</code>.</li>
+</ul>
+</li>
+<li>For multi-site: bind Postgres to the hub WG IP with <code>POSTGRES_BIND_IP=&lt;hub-wg-ip&gt;</code> and point edge nodes at <code>AE_APISHIM_DSN=postgresql://shim:shim@&lt;hub-wg-ip&gt;:5432/shim</code>.
+<ul>
+<li>Example: <code>POSTGRES_BIND_IP=10.255.0.1 make k1s-core</code> and <code>AE_APISHIM_DSN=postgresql://shim:shim@10.255.0.1:5432/shim</code>.</li>
+</ul>
+</li>
+<li>WS exec/port-forward smoke: <code>AE_APISHIM_EXEC_TOKEN=exec AE_APISHIM_PORTFORWARD_TOKEN=pf AE_RUNTIME_BACKEND=docker ./scripts/dev/apishim_ws_smoke.sh</code> (optional: <code>PF_JS=1</code> for JS client, <code>PF_RAW_DUMP=1</code> to capture raw frames).</li>
+<li>Kubeconfig helper: <code>python -m ae.apishim kubeconfig --server http://127.0.0.1:8445 --token $AE_APISHIM_TOKEN --insecure-skip-tls-verify &gt; ~/.kube/k1s-apishim.yaml</code>.</li>
+<li>Storage migration: <code>python -m ae.apishim migrate --source state/apishim.db --target $AE_APISHIM_DSN</code> copies objects while preserving resourceVersion between SQLite and Postgres.</li>
+<li>Shim metrics: <code>/metrics</code> (token required unless anonymous allowed) exposes <code>apishim_watch_*</code> counters/gauges for watch queue depth, enqueued, dropped, streams started, and <code>apishim_store_backend_info</code>.</li>
+<li>Helm/kubectl dry-run: shim serves <code>/openapi/v3</code> as the primary schema endpoint with <code>/openapi/v2</code> as a compatibility mirror; both are exported during release and attached as artifacts.</li>
+</ul>
+<p>Controller state store</p>
+<ul>
+<li>Default: SQLite at <code>state/controller.db</code>.</li>
+<li>Postgres: set <code>AE_STATE_DSN=postgresql://user:pass@host:5432/dbname</code> (shim and controller share the same DSN when present). SQLite path can still be overridden via <code>AE_STATE_DB</code> for single-node dev.</li>
+</ul>
+<p>HA control-plane mode (<code>k1s-ha-core</code>)</p>
+<ul>
+<li><code>make k1s-ha-core</code> is the strict-CRI HA core-node profile. It is intended to be operationally interchangeable with <code>k1s-core</code> at the node role level, but it switches the node onto shared-authority HA mode instead of the single-host/dev bootstrap path.</li>
+<li><code>k1s-core</code> remains the single-host and dev-oriented profile. <code>k1s-ha-core</code> does not replace it.</li>
+<li>Canonical bootstrap sequence: <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up: bootstrap sequence</a></li>
+<li>Exact command readout: <a href="ha-cluster-bring-up.html#ha-command-readout">HA Cluster Bring-Up: exact command readout</a></li>
+<li>Required env before startup:
+<ul>
+<li><code>AE_CONTROLLER_ID</code></li>
+<li><code>AE_CONTROLLER_ADVERTISE_ADDR</code></li>
+<li><code>AE_ETCD_ENDPOINTS</code></li>
+<li><code>AE_ETCD_PREFIX</code></li>
+<li><code>AE_NATS_URL</code></li>
+</ul>
+</li>
+<li><code>k1s-ha-core</code> defaults:
+<ul>
+<li><code>AE_HA_MODE=1</code></li>
+<li><code>AE_STATE_BACKEND=etcd</code></li>
+<li><code>AE_TRANSPORT_BACKEND=nats-js</code></li>
+<li><code>AE_RUNTIME_BACKEND=cri</code></li>
+<li><code>AE_INFRA_BACKEND=cri</code></li>
+<li><code>AE_APISHIM_MODE=cri</code></li>
+<li><code>AE_ETCD_MAINTENANCE_ENABLE=0</code></li>
+<li><code>AE_APISHIM_ETCD_ENDPOINTS</code> defaults from <code>AE_ETCD_ENDPOINTS</code> when unset</li>
+</ul>
+</li>
+<li><code>k1s-ha-core</code> behavior:
+<ul>
+<li>does not auto-start local singleton <code>etcd</code>, NATS, or Postgres</li>
+<li>does not start the controller with <code>--watch</code></li>
+<li>treats shared <code>etcd</code> controller state as authority; local <code>specs/</code> import is not the HA desired-state path</li>
+<li>keeps <code>AE_APISHIM_DB</code> as compatibility storage only; it is not HA authority</li>
+<li>still starts the controller, apishim, and the core ingress/core-proxy sidecars expected on a core node</li>
+<li>allows <code>AE_DEV_LOCAL=1</code> for lab convenience, but defaults to operator-safe values with local singleton services and docs extras off</li>
+</ul>
+</li>
+<li>The new <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up page</a> owns the numbered 3-controller bootstrap sequence, first validation, and first snapshot checkpoint. This runbook keeps the profile contract, installed-service surface, recovery, and upgrade procedures.</li>
+</ul>
+<h3 id="ha-exact-commands">Exact HA Commands</h3>
+<ul>
+<li>Full strict-CRI HA command readout: <a href="ha-cluster-bring-up.html#ha-command-readout">HA Cluster Bring-Up: full command readout</a></li>
+<li>Reduced one-box regression lane: <a href="ha-cluster-bring-up.html#ha-command-readout-one-box">HA Cluster Bring-Up: one-box readout</a> and <a href="ha-closeout.html">HA Closeout: reduced-harness evidence</a></li>
+<li>Role mapping for the HA lane:
+<ul>
+<li>controllers use <code>make k1s-ha-core</code></li>
+<li>hub nodes still use <code>make k1s-core-node</code></li>
+<li>gateways still use <code>make k1s-edge-core-cri</code></li>
+<li>edge workers still use <code>make k1s-edge-node</code></li>
+</ul>
+</li>
+</ul>
+<ul>
+<li>Installed-service surface:
+<ul>
+<li><code>make install-ha-core-systemd</code> installs the HA node-role unit, env file, and wrapper.</li>
+<li><code>make uninstall-ha-core-systemd</code> removes the unit and wrapper while leaving <code>/etc/ae/ha-core.env</code> in place.</li>
+<li>The install surface writes:
+<ul>
+<li><code>/etc/systemd/system/ae-ha-core.service</code></li>
+<li><code>/etc/ae/ha-core.env</code></li>
+<li><code>/usr/local/bin/ae-ha-core-service</code></li>
+</ul>
+</li>
+<li>The wrapper sources <code>/etc/ae/ha-core.env</code>, forces the operator-safe <code>k1s-ha-core</code> defaults, and launches the repo&#x27;s <code>scripts/dev/run_profile.sh k1s-ha-core</code> path without enabling controller <code>--watch</code>.</li>
+<li>Under the hood the same actions are available as <code>bash scripts/install.sh ha-core-install</code> and <code>bash scripts/install.sh ha-core-uninstall</code>.</li>
+</ul>
+</li>
+<li>HA helpers for this profile:
+<ul>
+<li>Preflight: <code>PYTHONPATH=src python scripts/dev/ha_core_preflight.py</code></li>
+<li>Snapshot save: <code>PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto save --output state/backups/ha-$(date +%Y%m%d-%H%M%S).db</code></li>
+<li>Snapshot status: <code>PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto status --input state/backups/ha-20260318-120000.db</code></li>
+<li>Snapshot restore: <code>PYTHONPATH=src python scripts/dev/etcd_snapshot.py --runner auto restore --input state/backups/ha-20260318-120000.db --data-dir state/etcd-restore</code></li>
+<li>Leader failover drill: <code>PYTHONPATH=src python scripts/dev/ha_core_drills.py leader-failover --command &#x27;systemctl restart ae-controller&#x27; --etcd-endpoints http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379 --etcd-prefix /k1s/prod --require-controller-change</code></li>
+<li>External-etcd restart drill: <code>PYTHONPATH=src python scripts/dev/ha_core_drills.py etcd-restart --command &#x27;ssh etcd-a sudo systemctl restart etcd&#x27; --metrics-url http://127.0.0.1:9108/metrics --etcd-endpoints http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379 --etcd-prefix /k1s/prod</code></li>
+<li>Transport recovery drill: <code>PYTHONPATH=src python scripts/dev/ha_core_drills.py transport-recovery --command &#x27;systemctl restart ae-gateway&#x27; --metrics-url http://127.0.0.1:9108/metrics --etcd-endpoints http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379 --etcd-prefix /k1s/prod --site sfo-edge-01</code></li>
+<li><code>etcd-restart</code> and <code>transport-recovery</code> prefer the current leader&#x27;s metrics endpoint when <code>--etcd-endpoints</code> and <code>--etcd-prefix</code> are supplied; use that leader-aware mode for HA validation after failover.</li>
+</ul>
+</li>
+<li>Backup boundary:
+<ul>
+<li><code>ae backup</code> remains the SQLite/specs-oriented single-node backup path.</li>
+<li>HA etcd backup and restore should use <code>scripts/dev/etcd_snapshot.py</code>.</li>
+</ul>
+</li>
+<li>HA runtime behavior:
+<ul>
+<li>in HA mode, controllers stop importing local <code>specs/</code>, followers reject leader-only mutation with <code>not_leader</code>, and only the elected controller reconciles or publishes mutating work</li>
+<li>apishim remains usable for read/list/watch, exec, port-forward, session token minting, and authorization review endpoints during leader changes</li>
+<li>if controller authority is uncertain or <code>etcd</code> quorum is lost, the control plane degrades to read-only</li>
+</ul>
+</li>
+</ul>
+<p>HA etcd recovery (<code>H5b1-etcd-recovery</code>)</p>
+<ul>
+<li>Controller authority metrics:
+<ul>
+<li><code>ae_controller_is_leader</code> is <code>1</code> only on the elected controller.</li>
+<li><code>ae_controller_epoch</code> exposes the current etcd-issued controller epoch.</li>
+<li><code>ae_controller_authority_healthy</code> is <code>1</code> when authority is visible and <code>0</code> when the controller has lost usable HA authority.</li>
+</ul>
+</li>
+<li>Failed member replacement (default learner workflow):
+<ul>
+<li>Inspect cluster health first:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/etcd_recovery.py endpoint-status</code></li>
+<li><code>PYTHONPATH=src python scripts/dev/etcd_recovery.py member-list</code></li>
+</ul>
+</li>
+<li>Remove the failed member:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/etcd_recovery.py member-remove --member-id &lt;member-id&gt;</code></li>
+</ul>
+</li>
+<li>Add the replacement as a learner:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/etcd_recovery.py member-add --name etcd-d --peer-url http://10.0.0.14:2380</code></li>
+</ul>
+</li>
+<li>Start the replacement node with the printed <code>ETCD_INITIAL_CLUSTER</code>, <code>ETCD_INITIAL_CLUSTER_STATE</code>, and <code>ETCD_INITIAL_ADVERTISE_PEER_URLS</code> values.</li>
+<li>Promote after catch-up:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/etcd_recovery.py member-promote --member-id &lt;learner-member-id&gt;</code></li>
+</ul>
+</li>
+<li>Verify the control plane returns to healthy authority:
+<ul>
+<li><code>curl -fsS http://127.0.0.1:9108/metrics | rg &#x27;ae_controller_is_leader|ae_controller_epoch|ae_controller_authority_healthy&#x27;</code></li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Quorum-loss restore from snapshot:
+<ul>
+<li>Use <code>scripts/dev/etcd_snapshot.py save</code> while any healthy member remains.</li>
+<li>Render the restore plan for a fresh 3-member cluster:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/etcd_recovery.py quorum-restore-plan --input state/backups/ha-20260318-120000.db --cluster-token k1s-ha-restore --member etcd-a=http://10.0.0.11:2380 --member etcd-b=http://10.0.0.12:2380 --member etcd-c=http://10.0.0.13:2380</code></li>
+</ul>
+</li>
+<li>Run the printed restore commands on the three replacement members, then start them with the printed <code>initial-cluster</code> settings.</li>
+<li>Repoint <code>k1s-ha-core</code> nodes at the restored quorum and confirm <code>ae_controller_authority_healthy 1</code> appears again before resuming mutation.</li>
+</ul>
+</li>
+<li>Stale-leader isolation and safe rejoin:
+<ul>
+<li>Isolate the suspected stale leader first; do not allow it to keep talking to nodes or gateways while authority is uncertain.</li>
+<li>Verify follower takeover with the existing drill surface:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_core_drills.py leader-failover --command &#x27;systemctl restart ae-controller&#x27; --etcd-endpoints http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379 --etcd-prefix /k1s/prod --require-controller-change</code></li>
+</ul>
+</li>
+<li>Confirm the old leader no longer reports <code>ae_controller_is_leader 1</code> and does not resume mutation until it rejoins as a follower.</li>
+<li>Rejoin the isolated node only after etcd membership and controller authority are healthy again.</li>
+</ul>
+</li>
+<li>Control-plane node role separation:
+<ul>
+<li>Prefer dedicated control-plane nodes for controllers, shared etcd members, and shared NATS/JetStream members.</li>
+<li>Avoid placing etcd quorum roles only on ephemeral worker-focused nodes when the deployment has enough dedicated control-plane capacity.</li>
+<li>For AMD fabric deployments, keep recovery ownership explicit: controller operators own authority recovery, fabric operators consume the resulting health signals instead of improvising their own failover rules.</li>
+</ul>
+</li>
+</ul>
+<p>HA core rolling upgrades (<code>H5b2a-core-upgrades</code>)</p>
+<ul>
+<li>Scope and contract:
+<ul>
+<li>This slice covers systemd-managed <code>k1s-ha-core</code> nodes only.</li>
+<li>Upgrade one core node at a time.</li>
+<li>Followers first, leader last.</li>
+<li>The only supported mixed-build steady state is a temporary two-build window: the current build and one target build.</li>
+<li>There is no explicit leader-transfer command in this slice; the final leader restart relies on the existing etcd lease failover path.</li>
+</ul>
+</li>
+<li>Build/version visibility:
+<ul>
+<li>Controller: <code>curl -fsS http://127.0.0.1:9108/__ae/version</code></li>
+<li>Apishim: <code>curl -fsSk https://127.0.0.1:8445/__ae/version</code></li>
+<li>Controller build metric: <code>curl -fsS http://127.0.0.1:9108/metrics | rg &#x27;ae_controller_build_info|ae_controller_authority_healthy&#x27;</code></li>
+<li>Kubernetes <code>/version</code> stays unchanged; the HA upgrade helper uses <code>/__ae/version</code>.</li>
+</ul>
+</li>
+<li>Upgrade helper surface:
+<ul>
+<li>Precheck: <code>PYTHONPATH=src python scripts/dev/ha_core_upgrade.py precheck --metrics-url http://127.0.0.1:9108/metrics</code></li>
+<li>Per-node plan: <code>PYTHONPATH=src python scripts/dev/ha_core_upgrade.py node-plan --node-name core-a --expected-version 0.1.3.dev0 --expected-sha &lt;target-sha&gt;</code></li>
+<li>Cluster verify: <code>PYTHONPATH=src python scripts/dev/ha_core_upgrade.py cluster-verify --node core-a=http://10.0.0.11:9108,https://10.0.0.11:8445 --node core-b=http://10.0.0.12:9108,https://10.0.0.12:8445 --node core-c=http://10.0.0.13:9108,https://10.0.0.13:8445 --expected-version 0.1.3.dev0 --expected-sha &lt;target-sha&gt;</code></li>
+</ul>
+</li>
+<li>Rolling procedure:
+<ul>
+<li>Run <code>ha_core_upgrade.py precheck</code> before touching any node. It validates one visible leader, controller authority health, shared etcd/NATS reachability, and transport backlog/route-ack thresholds.</li>
+<li>For each follower node:
+<ul>
+<li>Run <code>ha_core_upgrade.py node-plan --node-name &lt;node&gt; ...</code> and follow the printed sequence.</li>
+<li>Install the target build through the node&#x27;s normal package or image delivery path.</li>
+<li>Restart the service: <code>sudo systemctl restart ae-ha-core.service</code></li>
+<li>Verify controller and apishim <code>/__ae/version</code>, then verify <code>ae_controller_authority_healthy</code> and <code>ae_controller_build_info</code>.</li>
+<li>If core ingress sidecars are enabled, confirm listeners are back before treating the node as upgraded.</li>
+<li>Run <code>ha_core_upgrade.py cluster-verify ...</code> and confirm the cluster is still within the two-build window.</li>
+</ul>
+</li>
+<li>Restart the elected leader last, using the same service restart flow and allowing lease failover to choose the next leader.</li>
+<li>After the final node restart, run <code>ha_core_upgrade.py cluster-verify ... --require-converged</code> and confirm every core node reports the same target build.</li>
+</ul>
+</li>
+<li>Non-goals in this slice:
+<ul>
+<li>No remote SSH or multi-node orchestration is provided.</li>
+<li>No NATS/JetStream member replacement or transport-cluster upgrade sequencing is covered here; that is deferred to the later <code>H5b2b-hub-transport-upgrades</code> slice.</li>
+<li>No single-host 3x HA harness is introduced here.</li>
+</ul>
+</li>
+</ul>
+<p>HA hub transport upgrades (<code>H5b2b-hub-transport-upgrades</code>)</p>
+<ul>
+<li>Scope and contract:
+<ul>
+<li>This slice covers the shared hub NATS/JetStream cluster that <code>k1s-ha-core</code> depends on.</li>
+<li>Upgrade or replace one hub NATS node at a time.</li>
+<li>Non-meta-leader JetStream nodes first, JetStream meta leader last.</li>
+<li>The only supported mixed-build steady state is a temporary two-build window: the current hub build and one target build.</li>
+<li>Edge-site NATS leader upgrades and replacement choreography are not in scope here.</li>
+<li>The repo does not install or manage the shared NATS service surface in this slice.</li>
+</ul>
+</li>
+<li>Monitoring and validation surfaces:
+<ul>
+<li>Per-node NATS monitoring endpoints:
+<ul>
+<li><code>/varz</code></li>
+<li><code>/routez</code></li>
+<li><code>/jsz?streams=true&amp;consumers=true&amp;config=true</code></li>
+<li>optional <code>/leafz</code> when edge leaves are present</li>
+</ul>
+</li>
+<li>Controller transport metrics:
+<ul>
+<li><code>ae_gateway_result_replay_backlog</code></li>
+<li><code>ae_route_bundle_ack_age_seconds</code></li>
+<li><code>ae_site_stale</code></li>
+<li><code>ae_js_stream_*</code></li>
+<li><code>ae_js_consumer_*</code></li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Helper surface:
+<ul>
+<li>Precheck:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_transport_upgrade.py precheck --node hub-a=http://10.0.0.21:8222 --node hub-b=http://10.0.0.22:8222 --node hub-c=http://10.0.0.23:8222 --controller-metrics-url http://10.0.0.11:9108/metrics</code></li>
+</ul>
+</li>
+<li>Per-node plan:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_transport_upgrade.py node-plan --node-name hub-a --monitor-url http://10.0.0.21:8222</code></li>
+</ul>
+</li>
+<li>Cluster verify:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_transport_upgrade.py cluster-verify --node hub-a=http://10.0.0.21:8222 --node hub-b=http://10.0.0.22:8222 --node hub-c=http://10.0.0.23:8222 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version &lt;target-version&gt; --expected-commit &lt;target-commit&gt;</code></li>
+</ul>
+</li>
+<li>Member replacement plan:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_transport_upgrade.py member-replace-plan --failed-node hub-b --replacement-node hub-d --replacement-monitor-url http://10.0.0.24:8222 --controller-metrics-url http://10.0.0.11:9108/metrics</code></li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Rolling upgrade procedure:
+<ul>
+<li>Run <code>ha_transport_upgrade.py precheck</code> before touching any hub node. It validates route mesh health, JetStream domain and replica posture, and controller-observed transport health.</li>
+<li>Restart one non-meta-leader hub node at a time, using the operator-managed NATS delivery path for that host.</li>
+<li>After each restart, confirm <code>/varz</code>, <code>/routez</code>, and <code>/jsz?streams=true&amp;consumers=true&amp;config=true</code> on the restarted node, then run <code>ha_transport_upgrade.py cluster-verify ...</code>.</li>
+<li>Keep controller transport metrics inside thresholds between node restarts; do not proceed while replay backlog, route-ack age, or site-stale signals remain out of bounds.</li>
+<li>Restart the JetStream meta leader last, using the same verification path.</li>
+<li>After the final node restart, run <code>ha_transport_upgrade.py cluster-verify ... --require-converged</code> and confirm the hub cluster is back to one target build.</li>
+</ul>
+</li>
+<li>Member replacement procedure:
+<ul>
+<li>Use <code>ha_transport_upgrade.py member-replace-plan</code> to print the fixed checklist for a failed hub member.</li>
+<li>NATS cluster config, JWT/operator auth, and service restart mechanics remain operator-managed outside the repo.</li>
+<li>Validate the replacement through NATS monitoring endpoints and the controller transport metrics before treating the hub as healthy again.</li>
+</ul>
+</li>
+<li>Non-goals in this slice:
+<ul>
+<li>No edge-site NATS leader upgrades or replacement choreography are included here; those are deferred to the later <code>H5b2c-edge-transport-upgrades</code> slice.</li>
+<li>No JWT/operator auth rotation or <code>nsc</code> workflow changes are introduced here.</li>
+<li>No remote SSH or repo-managed NATS install surface is added here.</li>
+</ul>
+</li>
+</ul>
+<p>HA edge transport upgrades (<code>H5b2c-edge-transport-upgrades</code>)</p>
+<ul>
+<li>Scope and contract:
+<ul>
+<li>This slice covers edge-site gateway restart sequencing plus edge NATS leader restart and replacement choreography after the shared hub transport posture is already healthy.</li>
+<li>The milestone-defining HA lane is <code>k1s-edge-core</code> / <code>k1s-edge-core-cri</code>; <code>k1s-edge</code> / <code>k1s-core-edge</code> remain secondary compatibility rather than exit criteria.</li>
+<li>Restart gateways one at a time first, then restart the edge NATS leader last.</li>
+<li>Temporary site degradation during the edge leader restart is acceptable, but bounded recovery is required before moving on.</li>
+<li>The repo does not install or manage an edge service surface in this slice.</li>
+</ul>
+</li>
+<li>Monitoring and validation surfaces:
+<ul>
+<li>Edge NATS monitoring endpoints:
+<ul>
+<li><code>/varz</code></li>
+<li><code>/leafz</code></li>
+</ul>
+</li>
+<li>Controller transport metrics:
+<ul>
+<li><code>ae_site_stale</code></li>
+<li><code>ae_gateway_result_replay_backlog</code></li>
+<li><code>ae_route_bundle_ack_age_seconds</code></li>
+<li><code>ae_site_gateway_last_seen_seconds</code></li>
+<li><code>ae_site_gateway_build_info</code></li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Helper surface:
+<ul>
+<li>Precheck:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_edge_transport.py precheck --site sea=http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b</code></li>
+</ul>
+</li>
+<li>Per-gateway plan:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_edge_transport.py gateway-plan --site-id sea --gateway-node edge-a --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version 0.1.3.dev0 --expected-sha &lt;target-sha&gt;</code></li>
+</ul>
+</li>
+<li>Site verify:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_edge_transport.py site-verify --site sea=http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b --expected-edge-version &lt;target-version&gt; --expected-edge-commit &lt;target-commit&gt; --expected-gateway-version 0.1.3.dev0 --expected-gateway-sha &lt;target-sha&gt; --require-gateway-converged</code></li>
+</ul>
+</li>
+<li>Leader plan:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_edge_transport.py leader-plan --site-id sea --monitor-url http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version &lt;target-version&gt; --expected-commit &lt;target-commit&gt;</code></li>
+</ul>
+</li>
+<li>Leader replacement plan:
+<ul>
+<li><code>PYTHONPATH=src python scripts/dev/ha_edge_transport.py leader-replace-plan --site-id sea --failed-node edge-nats-a --replacement-node edge-nats-b --replacement-monitor-url http://10.0.1.22:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b</code></li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Rolling procedure:
+<ul>
+<li>Run the shared hub precheck first. Do not start edge-site work while hub route mesh, JetStream replication, or controller-observed transport metrics remain out of bounds.</li>
+<li>Run <code>ha_edge_transport.py precheck</code> for the target site before touching any gateway or the edge leader.</li>
+<li>For each gateway in the site:
+<ul>
+<li>Run <code>ha_edge_transport.py gateway-plan ...</code> and follow the printed sequence.</li>
+<li>Restart the operator-managed gateway through the node&#x27;s existing edge profile/service path.</li>
+<li>Run <code>ha_edge_transport.py site-verify ...</code> and confirm the restarted gateway reports the expected build through <code>ae_site_gateway_build_info</code>, its <code>ae_site_gateway_last_seen_seconds</code> value is fresh, and site-wide replay plus route convergence metrics are back inside thresholds.</li>
+</ul>
+</li>
+<li>After the gateways converge, run <code>ha_edge_transport.py leader-plan ...</code> and restart the edge NATS leader last.</li>
+<li>Run <code>ha_edge_transport.py site-verify ...</code> again and confirm <code>/leafz</code> reconnect, <code>ae_site_stale{site=...}</code> clears, replay backlog drains, and expected gateway builds remain visible before treating the site as healthy.</li>
+</ul>
+</li>
+<li>Leader replacement procedure:
+<ul>
+<li>Use <code>ha_edge_transport.py leader-replace-plan</code> to print the fixed checklist for a failed edge NATS leader host.</li>
+<li>Bring up the replacement with the existing operator-managed edge NATS config and service delivery path; this slice does not generate NATS configs or install services.</li>
+<li>Verify the replacement through <code>/varz</code>, <code>/leafz</code>, per-gateway telemetry, and controller transport metrics before returning the site to service.</li>
+</ul>
+</li>
+<li>Non-goals in this slice:
+<ul>
+<li>No installed edge service surface is added here.</li>
+<li>No repo-managed NATS config generation or auth rotation workflow is introduced here.</li>
+<li>No remote SSH or multi-node orchestration is provided.</li>
+<li><code>k1s-edge</code> / <code>k1s-core-edge</code> are not the milestone-defining HA exit lane for this slice.</li>
+</ul>
+</li>
+</ul>
+<p>HA closeout (<code>H5c-ha-closeout</code>)</p>
+<ul>
+<li>Canonical audit artifact: <a href="ha-closeout.html">HA Closeout: audit artifact</a></li>
+<li>Primary evidence lane:
+<ul>
+<li><code>make lab-vm-ha-validation</code> is now the preferred umbrella rerun for the checked-in HA validation flow; it wraps <code>scripts/lab/vm/run_ha_validation.sh</code>.</li>
+<li>The default stage set is <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code>.</li>
+<li>VM/lab variants can now declare explicit <code>k1s-ha-core</code> hosts plus a <code>ha_control_plane</code> smoke lane.</li>
+<li>The checked-in HA closeout topology is <code>lab/variants/ha-control-plane-core.yaml</code>.</li>
+<li>For deeper disruptive validation, use <code>lab/variants/ha-control-plane-core-drills.yaml</code>; it enables the optional leader-failover, etcd-restart, and transport-recovery drill hooks through <code>scripts/lab/vm/ha_drill_actions.sh</code>.</li>
+<li><code>scripts/lab/vm/smoke_helper.py</code> remains the lower-level one-shot operator entrypoint for <code>stage1</code>, <code>stage2</code>, and <code>drills</code>. <code>make lab-vm-smoke</code> is a thin wrapper around it, and the helper in turn wraps <code>smoke_v2.py</code>.</li>
+<li><code>smoke_helper.py</code> prints live phase/check status from the <code>runs/&lt;RUN_ID&gt;/...</code> artifacts and can auto-run <code>variant_down.sh</code> on success.</li>
+<li>Helper-owned wrapper flags are <code>--teardown on-success|always|never</code>, <code>--purge</code>, <code>--destroy-network</code>, and <code>--console</code>; pass any remaining <code>smoke_v2.py</code> flags after the helper flags.</li>
+<li>When the variant points HA endpoints at the three HA core VM IPs, <code>smoke_v2</code> runs a <code>ha_shared_infra</code> phase that boots shared <code>etcd</code> plus shared hub NATS/JetStream on those VMs before <code>k1s-ha-core</code> bootstrap.</li>
+<li>The one-shot and drill lanes write <code>runs/&lt;RUN_ID&gt;/ha_summary.json</code> as the machine-readable HA evidence artifacts; the supplemental drain stage writes <code>runs/&lt;RUN_ID&gt;/summary.json</code>.</li>
+<li>The <code>retained</code> stage and the helper portion of <code>stage2-live</code> are wrapper-level stage checks from <code>run_ha_validation.sh</code>; do not treat them as standalone <code>ha_summary.json</code> artifacts.</li>
+<li>The lane now assumes prereq-ready qcow2 images. Rebuild and re-verify the images after bootstrap/image changes before retrying first-pass VM failures:
+<ul>
+<li><code>scripts/lab/vm/labctl.sh image build --variant all</code></li>
+<li><code>scripts/lab/vm/labctl.sh image verify --variant all</code></li>
+</ul>
+</li>
+<li><code>image verify</code> now sizes its ephemeral verifier overlay from the backing qcow2 virtual size and rejects undersized requested or stale overlays before boot, instead of letting a truncated first-boot verifier fall through to initramfs/root-device failures.</li>
+<li>Troubleshooting split:
+<ul>
+<li>if a fresh VM dies before SSH or in initramfs/root-device discovery, treat it as an image contract problem first and rerun <code>image build</code> plus <code>image verify</code></li>
+<li>if <code>variant up</code> fails in guest <code>cloud-init</code> with <code>Could not get APT lock</code>, tear the run down and rerun once before treating it as a product regression</li>
+</ul>
+</li>
+<li><code>AE_VM_BOOTSTRAP_AUTOFIX=1</code> can temporarily re-enable guest-side repair for manual debugging, but it is not the default HA evidence path.</li>
+<li>The lane reuses the existing HA helper family instead of inventing a second operator contract:
+<ul>
+<li><code>ha_core_preflight.py</code></li>
+<li><code>ha_core_upgrade.py</code></li>
+<li><code>ha_transport_upgrade.py</code></li>
+<li><code>ha_edge_transport.py</code></li>
+<li>optional <code>ha_core_drills.py</code> commands when the variant supplies drill commands</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Secondary evidence lane:
+<ul>
+<li><code>make ha-closeout-e2e</code></li>
+<li><code>scripts/dev/ha_closeout_e2e.sh</code> is the supported wrapper for the reduced harness. It prefers the repo venv, exports the Nix <code>libstdc++</code> runtime path when available, preflights <code>import grpc</code>, and then runs <code>tests/integration/test_ha_closeout_e2e.py</code>.</li>
+<li>This reduced harness is intended for nightly/manual regression, not as the milestone-defining HA lane.</li>
+<li>It forces <code>AE_JS_REPLICAS=1</code>, so it is useful for failover and replay regression but not as transport-fidelity evidence for the shared hub cluster.</li>
+</ul>
+</li>
+<li>Current release policy (2026-04-15 tag):
+<ul>
+<li>Treat Debian and NixOS as pooled cross-host verification inputs rather than requiring both hosts to pass the full release matrix independently.</li>
+<li>Standardize both hosts on <code>AE_USE_REGISTRY_CACHE=0</code> for release verification.</li>
+<li>Require the shared baseline on both hosts: <code>make env-doctor</code>, <code>AE_CRI_REQUIRE_RUNTIME_READY=1 ./scripts/cri_preflight.sh</code>, <code>python -m pytest --maxfail=1 --disable-warnings -q</code>, <code>make docs-verify</code>, <code>make profile-smoke</code>, and <code>make ha-closeout-e2e</code>.</li>
+<li>Debian owns the authoritative <code>make e2e</code> and <code>make strict-cri-smoke</code> lanes for this tag.</li>
+<li>NixOS owns the authoritative <code>make lab-vm-ha-validation</code> and full benchmark rerun lanes for this tag.</li>
+<li>Per-host full-matrix verification becomes the default starting with the next release.</li>
+</ul>
+</li>
+<li>Closeout rule:
+<ul>
+<li>The 2026-03-19 HA closeout checkpoint satisfies the original evidence rule: <a href="ha-closeout.html">HA Closeout: current audit status</a> shows zero <code>must_fix_before_closeout</code> gaps, the primary VM/lab lane is green, and the wrapper-backed reduced harness is green.</li>
+<li>The 2026-04-07 maintenance rerun keeps that claim current: image verification hardening closed the verifier overlay/backing-image mismatch, <code>make lab-vm-ha-validation</code> passed with green <code>stage1</code>, <code>retained</code>, <code>drain</code>, <code>stage2</code>, <code>stage2-live</code>, and <code>drills</code> results, and <code>make ha-closeout-e2e</code> also passed.</li>
+<li>Reopen <code>H5c-ha-closeout</code> if either evidence lane regresses or <a href="ha-closeout.html">HA Closeout: must-fix status</a> regains a must-fix gap.</li>
+<li>On passworded-sudo hosts, run <code>sudo -v</code> before invoking <code>smoke_helper.py</code>; the helper does not prompt for a password and fails fast if <code>sudo -n true</code> is not already warm.</li>
+</ul>
+</li>
+</ul>
+<p>Release notes quick links</p>
+<ul>
+<li>Compatibility matrix: <a href="apishim-compatibility-matrix.html">API Shim Compatibility Matrix</a> (uploaded with releases)</li>
+<li>OpenAPI artifacts: <code>/openapi/v2</code> and <code>/openapi/v3</code> are exported during release and attached as <code>openapi-schemas</code>.</li>
+<li>OCI role images: releases now attach <code>k1s-core</code>, <code>k1s-core-node</code>, <code>k1s-edge-core</code>, and <code>k1s-edge-node</code> as linux/amd64 <code>*.oci.tar</code> archives plus <code>oci-image-metadata</code> (<code>SHA256SUMS</code> + alias manifest).</li>
+<li>Role alias contract: these release images are single-role runtimes, not full profile appliances.</li>
+<li>Podman import: <code>podman load -i k1s-core-&lt;tag&gt;-linux-amd64.oci.tar</code></li>
+<li>Docker import: <code>skopeo copy oci-archive:k1s-core-&lt;tag&gt;-linux-amd64.oci.tar docker-daemon:k1s/k1s-core:&lt;tag&gt;</code></li>
+</ul>
+<p>Observability</p>
+<ul>
+<li>Controller dashboard/API: <code>http://127.0.0.1:9108</code> when <code>--metrics-port</code> is set.</li>
+<li>Prometheus metrics at <code>/metrics</code> (text), recent events via <code>/events/&lt;app&gt;</code>.</li>
+<li>HA authority metrics:
+<ul>
+<li><code>ae_controller_is_leader</code></li>
+<li><code>ae_controller_epoch</code></li>
+<li><code>ae_controller_authority_healthy</code></li>
+</ul>
+</li>
+<li>Integrated HA dashboard:
+<ul>
+<li><code>/dashboard</code> now includes a dedicated <code>HA Control Plane</code> section sourced from <code>GET /system.ha</code>.</li>
+<li>Treat the HA section as the live operator snapshot for authority health, controller-member freshness, etcd reachability summary, transport pressure, site freshness, route acknowledgement age, and HA fence activity.</li>
+<li>Treat Grafana/Prometheus as the history surface; the built-in dashboard does not fetch or parse <code>/metrics</code> directly.</li>
+<li><code>system.ha.issues</code> drives the dashboard issue banner; investigate those warnings before moving on to disruptive HA operations.</li>
+</ul>
+</li>
+<li>Optional member-level dashboard probes:
+<ul>
+<li><code>AE_HA_DASHBOARD_PROBES=1</code> enables background cached probes for the built-in dashboard.</li>
+<li><code>AE_HA_DASHBOARD_PROBE_TIMEOUT_S=2</code> sets per-probe timeout.</li>
+<li><code>AE_HA_DASHBOARD_ETCD_PROBE_INTERVAL_S=30</code> sets the background probe interval.</li>
+<li><code>AE_HA_DASHBOARD_HUB_MONITORS=hub-a=http://10.0.0.21:8222,hub-b=http://10.0.0.22:8222,hub-c=http://10.0.0.23:8222</code> enables hub NATS/JetStream member probing.</li>
+<li><code>AE_HA_DASHBOARD_EDGE_MONITORS=sea=http://10.0.1.21:8223,sfo=http://10.0.2.21:8223</code> enables edge-site NATS monitor probing.</li>
+<li>If those env vars are unset, the dashboard still renders controller-known HA state; only the optional member-level etcd/NATS probe rows remain absent.</li>
+</ul>
+</li>
+</ul>
+<p>Dashboard reload vs. restart</p>
+<ul>
+<li>Code/UI changes only (e.g., edits in <code>src/ae/observability/http_api.py</code>): <code>make dashboard-reload</code>
+<ul>
+<li>Kills the controller; the supervisor restarts it and picks up code changes.</li>
+</ul>
+</li>
+<li>Env or port/token changes (anything in <code>state/env.sh</code>, <code>AE_API_*</code>, <code>AE_*</code> flags): <code>make dashboard-restart</code>
+<ul>
+<li>Stops the supervisor, clears any stale lock, then starts fresh so env is re‑sourced.</li>
+</ul>
+</li>
+<li>Retained HA VM attached-node lane:
+<ul>
+<li>Bring the retained stack up: <code>make lab-vm-ha-attached-node-up</code></li>
+<li>On NixOS, this helper path applies the local DNS/TLS bridge automatically.</li>
+<li>Print public Envoy URLs, per-core ingress smoke, direct diagnostics, and auth hints: <code>make lab-vm-ha-attached-node-status</code></li>
+<li>After <code>up</code>, <code>getent hosts dash.home.arpa docs.home.arpa api.home.arpa</code> should resolve to the retained HA ingress IP instead of the local <code>127.0.0.1</code> dev mapping.</li>
+<li><code>make lab-vm-ha-attached-node-purge</code> and <code>make lab-vm-ha-attached-node-reset</code> restore the prior localhost-oriented mapping on purge/reset when one was already present; if no prior snapshot exists they remove the retained managed mapping instead.</li>
+<li>For the exact retained operator flow, live stage-2 helper, auth bootstrap, and cleanup semantics, use <a href="validated-procedures.html#advanced-dashboard-user-test-retained-ha-vm">Validated Procedures: retained operator readout</a> and <a href="ha-cluster-bring-up.html">HA Cluster Bring-Up: retained operator context</a>.</li>
+<li>Quick references:
+<ul>
+<li>full checked-in HA validation: <code>make lab-vm-ha-validation</code></li>
+<li>retained stage-1 smoke: <code>make lab-vm-ha-attached-node-workload-smoke</code></li>
+<li>retained-VM &quot;rebuild and restart all&quot; path: <code>make lab-vm-ha-attached-node-refresh-all</code></li>
+<li>retained stop for later restart: <code>make lab-vm-ha-attached-node-down</code></li>
+<li>live stage-2 helper: <code>RUN_ID=&lt;live-ha-core-run&gt; make lab-vm-ha-core-workload-smoke</code></li>
+<li>retained cleanup: <code>make lab-vm-ha-attached-node-purge</code></li>
+<li>retained reset: <code>make lab-vm-ha-attached-node-reset</code></li>
+<li>retained hard reset with bridge teardown: <code>make lab-vm-ha-attached-node-reset LAB_VM_HA_ATTACHED_NODE_ARGS=&quot;--rebuild-images --destroy-network&quot;</code></li>
+</ul>
+</li>
+<li>Persistent retained ingress checks use <code>ha-web-smoke.home.arpa</code>, including host-side probes such as <code>curl --resolve ha-web-smoke.home.arpa:10443:192.168.155.10 ...</code>.</li>
+</ul>
+</li>
+<li>Scope of apps shown and reconciled
+<ul>
+<li>The controller respects <code>AE_SPECS_DIR</code> for the active specs root. To avoid reconciling every sample under <code>specs/</code>, set <code>AE_SPECS_DIR</code> to a curated folder (e.g., <code>state/profiles/demo/specs</code>).</li>
+<li>Updated Make targets and bench scripts auto‑honor <code>AE_SPECS_DIR</code>. If unset, they fall back to <code>specs/</code>.</li>
+<li>Dashboard output is unfiltered; scope by curating <code>AE_SPECS_DIR</code> and using token scopes if needed.</li>
+</ul>
+</li>
+<li>Viewing via docs host proxy? If you changed Caddy site files, restart the docs stack:
+<ul>
+<li><code>make dev-down &amp;&amp; make dev-up</code> (or <code>docker compose -f ops/dev/labs-compose.yaml restart caddy</code>).</li>
+</ul>
+</li>
+<li>After any of the above, hard‑refresh the browser (Shift+Reload) to ensure the latest HTML/JS loads.</li>
+</ul>
+<p>Tips</p>
+<ul>
+<li>Prefer non‑root containers and set readOnlyRootFilesystem where possible.</li>
+<li>For utilization HPAs, set CPU/Memory requests to avoid HPA errors.</li>
+<li>Use <code>--policy strict</code> in CI to keep manifests honest.</li>
+</ul>
+<p>NATS edge drills (Mode A)</p>
+<ul>
+<li>Leaf disconnect: stop the edge leader NATS process and confirm <code>ae_site_stale{site=...}</code> flips to 1.</li>
+<li>Gateway reconnect: restart gateway and ensure <code>ae_site_last_seen_seconds</code> drops back near 0.</li>
+<li>JS consumer lag: enqueue a batch of work and watch <code>ae_outbox_publish_success_total</code> advance; use NATS tooling to inspect consumer pending/ack if needed.</li>
+<li>Hub NATS restart: restart the hub NATS process and ensure outbox publishing resumes without manual intervention.</li>
+<li>Gateway replay health: during hub loss or restart, watch <code>ae_gateway_result_replay_backlog</code> grow, then confirm it drains and <code>ae_gateway_result_replay_fail_total</code> stops increasing after reconnect.</li>
+<li>Route convergence: after a gateway reconnect, confirm <code>ae_route_bundle_pending</code> returns to <code>0</code> and <code>ae_route_bundle_ack_age_seconds</code> falls back near <code>0</code>.</li>
+<li>Site disconnect/reconnect: stop the edge leader + gateway, confirm stale metrics, then restart and confirm the site recovers.</li>
+<li>Worker crash mid-work: kill the worker stub during execution and confirm the gateway stops progress acks; message should be NAKed and redelivered once the gateway sees stale heartbeats.</li>
+<li>etcd leader change: force a leader move and ensure controller reconciliation continues without errors.</li>
+</ul>
+<p>Token rotation and cleanup</p>
+<ul>
+<li>Rotate tokens proactively before expiry; consider 24h pre‑expiry for rotation.</li>
+<li>After rotating, remove old <code>AE_API_*_TOKEN</code> and <code>AE_API_*_TOKEN_EXPIRES</code> values from your environment/secret store.</li>
+<li>HTTP API exports token expiry metrics so you can alert:
+<ul>
+<li><code>ae_api_token_expiry_seconds{role=&quot;admin|scaler|read&quot;}</code> (negative when expired).</li>
+</ul>
+</li>
+</ul>
+<p>Cleanup (stop all dev containers/services)</p>
+<ul>
+<li>Preferred: run as the same user who started the containers.
+<ul>
+<li><code>./scripts/stop_all.sh</code></li>
+</ul>
+</li>
+<li>If containers were started with sudo, run:
+<ul>
+<li><code>sudo ./scripts/stop_all.sh</code></li>
+</ul>
+</li>
+<li>If you’re unsure, the script will attempt to stop both rootless and root containers when invoked with sudo.</li>
+</ul>
+<p>Prometheus alert example</p>
+<pre><code>groups:
+- name: ae-tokens
+  rules:
+  - alert: AETokenExpiringSoon
+    expr: ae_api_token_expiry_seconds &lt; 12 * 3600
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: &quot;AE API token for {{ $labels.role }} expires soon&quot;
+      description: &quot;Token for role {{ $labels.role }} expires in {{ humanizeDuration $value }}&quot;
+  - alert: AETokenExpired
+    expr: ae_api_token_expiry_seconds &lt; 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: &quot;AE API token for {{ $labels.role }} expired&quot;
+      description: &quot;Token for role {{ $labels.role }} expired {{ humanizeDuration (0 - $value) }} ago&quot;</code></pre>
+<p>HPA exporter examples</p>
+<ul>
+<li>CPU utilization only:
+<ul>
+<li><code>python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --hpa-min 1 --hpa-max 3 --hpa-cpu-target 70</code></li>
+</ul>
+</li>
+<li>Memory AverageValue (requires a sensible quantity like 200Mi):
+<ul>
+<li><code>python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --hpa-min 1 --hpa-max 3 --hpa-mem-type value --hpa-mem-value 200Mi</code></li>
+</ul>
+</li>
+</ul>
+<p>Planning and CI Gating</p>
+<ul>
+<li>Use <code>ae plan</code> to dry‑run an apply and surface host port conflicts, TLS resolution status, and best‑practice warnings.</li>
+<li>Use <code>ae plan --json</code> for CI gating. The JSON includes a <code>diagnostics</code> object with:
+<ul>
+<li><code>service</code>: <code>{ type, ports[], duplicates{names|ports|nodePorts}, outOfRangeNodePorts[], hostPortConflicts{port:[containers]} }</code></li>
+<li><code>tls</code>: <code>{ ingress, secretName, root, resolved, cert?, key?, error? }</code></li>
+</ul>
+</li>
+</ul>
+<p>Example:</p>
+<pre><code>out=$(python -m ae.cli plan -f specs/examples/echo-multiport.yaml --json)
+echo &quot;$out&quot; | jq &#x27;.&#x27;
+dup_names=$(echo &quot;$out&quot; | jq -r &#x27;.diagnostics.service.duplicates.names | length&#x27;)
+oor=$(echo &quot;$out&quot; | jq -r &#x27;.diagnostics.service.outOfRangeNodePorts | length&#x27;)
+if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
+  echo &quot;Plan validation failed&quot;; exit 2; fi</code></pre>
+<p>Tip: Set <code>AE_TLS_DIR</code> so <code>tlsSecretName</code> can resolve; otherwise plan warns and the controller falls back to Caddy internal TLS.</p>
+<h2 id="tls-and-agent-certs-multinode">TLS and agent certs (multinode)</h2>
+<ul>
+<li>Controller agent API can serve HTTPS and require client certs:
+<ul>
+<li><code>AE_AGENT_API_TLS_CERT</code> / <code>AE_AGENT_API_TLS_KEY</code></li>
+<li><code>AE_AGENT_API_CLIENT_CA</code> and <code>AE_AGENT_API_REQUIRE_CLIENT_CERT=1</code></li>
+</ul>
+</li>
+<li>Agents use mTLS to heartbeat to the controller:
+<ul>
+<li><code>AE_CONTROLLER_TLS_CA</code> (CA bundle), <code>AE_CONTROLLER_TLS_CERT</code> / <code>AE_CONTROLLER_TLS_KEY</code></li>
+</ul>
+</li>
+<li>Join tokens are HMACed with <code>AE_AGENT_JOIN_SECRET</code>; bootstrap is single-use and recorded. Issued certs live in <code>state/tls/issued.json</code>; revoked serials in <code>state/tls/revoked.json</code>.</li>
+<li>Rotate/reissue: <code>ae-rotate-certs --node-id &lt;node&gt;</code> writes a new cert/key/CA bundle and a join token; deploy to the node and restart <code>ae-node</code>.</li>
+<li>Observe status: <code>ae certs</code> lists issued/revoked certs; <code>/metrics</code> exposes <code>ae_agent_cert_expiry_seconds{node=...}</code>. Revoked certs cause heartbeats to be rejected when mTLS is enabled.</li>
+</ul>
+<h2 id="install-as-a-service-systemd">Install as a Service (systemd)</h2>
+<p>Quick install</p>
+<ul>
+<li>Install the package: <code>python -m pip install -e .[dev]</code></li>
+<li>Create a Podman network for multi-replica+ingress DNS (recommended): <code>podman network create devnet</code></li>
+<li>Install and enable the controller service:
+<ul>
+<li><code>make install-systemd</code></li>
+</ul>
+</li>
+</ul>
+<p>What it does</p>
+<ul>
+<li>Installs <code>ops/systemd/ae-controller.service</code> to <code>/etc/systemd/system/</code>.</li>
+<li>Writes env file to <code>/etc/ae/ae.env</code> (edit to suit your host).</li>
+<li>Creates <code>/etc/ae/specs/</code> and seeds a sample <code>echo.yaml</code> if missing.</li>
+<li>Starts the controller (<code>ae-controller.service</code>), serving the API on <code>:9108</code> by default.</li>
+</ul>
+<p>Important env in <code>/etc/ae/ae.env</code></p>
+<ul>
+<li><code>AE_RUNTIME_BACKEND=podman</code> (default)</li>
+<li><code>AE_PODMAN_NETWORK=devnet</code> (set to your network name)</li>
+<li><code>AE_SPECS_DIR=/etc/ae/specs</code></li>
+<li><code>AE_STATE_DB=/var/lib/ae/controller.db</code> (create the dir and adjust perms if you change this)</li>
+<li><code>AE_CADDY_*</code> to integrate with a Caddy instance</li>
+</ul>
+<p>Uninstall</p>
+<ul>
+<li><code>make uninstall-systemd</code></li>
+<li>Removes the systemd unit; leaves <code>/etc/ae</code> for inspection/backups.</li>
+</ul>
+<p>Serve Documentation on Boot (optional)</p>
+<ul>
+<li>Build docs: <code>make docs</code></li>
+<li>Install and enable the docs service (serves static HTML):
+<ul>
+<li><code>make install-docs-service</code></li>
+</ul>
+</li>
+<li>By default it serves <code>/usr/share/ae/docs</code> on <code>:9109</code>.</li>
+<li>Customize in <code>/etc/ae/ae.env</code>:
+<ul>
+<li><code>AE_DOCS_DIR=/usr/share/ae/docs</code></li>
+<li><code>AE_DOCS_PORT=9109</code></li>
+</ul>
+</li>
+<li>Uninstall:
+<ul>
+<li><code>make uninstall-docs-service</code></li>
+</ul>
+</li>
+</ul>
+<h3 id="systemd-hardening-opt-in">Systemd hardening (opt-in)</h3>
+<ul>
+<li>Enable hardening drop-ins during install:
+<ul>
+<li><code>AE_SYSTEMD_HARDEN=1 make install-systemd</code></li>
+</ul>
+</li>
+<li>This creates <code>/etc/systemd/system/ae-controller.service.d/hardening.conf</code> (and similar drop-ins for docs and caddy units when installed) with:
+<ul>
+<li><code>NoNewPrivileges=true</code>, <code>PrivateTmp=true</code>, <code>ProtectSystem=strict</code>, <code>ProtectHome=read-only</code>, <code>LockPersonality=true</code>, <code>RestrictSUIDSGID=true</code>, <code>ProtectControlGroups=true</code>, <code>ProtectKernelTunables=true</code>, <code>ProtectKernelModules=true</code>, <code>ProtectClock=yes</code>, <code>RestrictRealtime=yes</code>, <code>MemoryDenyWriteExecute=true</code>, <code>CapabilityBoundingSet=</code>, <code>AmbientCapabilities=</code>, <code>SystemCallFilter=@system-service</code>.</li>
+</ul>
+</li>
+<li>To disable: remove the drop-in and run <code>systemctl daemon-reload &amp;&amp; systemctl restart ae-controller</code>.</li>
+</ul>
+<h2 id="container-images-and-docker-podman">Container Images and Docker/Podman</h2>
+<p>Build the controller image</p>
+<ul>
+<li>Docker: <code>make image-docker IMAGE=ghcr.io/&lt;org&gt;/ae-controller:dev</code></li>
+<li>Podman: <code>make image-podman IMAGE=ghcr.io/&lt;org&gt;/ae-controller:dev</code></li>
+</ul>
+<p>Push the image</p>
+<ul>
+<li>Docker: <code>make push-docker IMAGE=ghcr.io/&lt;org&gt;/ae-controller:dev</code></li>
+<li>Podman: <code>make push-podman IMAGE=ghcr.io/&lt;org&gt;/ae-controller:dev</code></li>
+</ul>
+<p>Tags guidance</p>
+<ul>
+<li>Use <code>:main</code> for latest from main branch, <code>:vX.Y.Z</code> for releases, and <code>:sha-&lt;short&gt;</code> for immutable pins in CI.</li>
+<li>Example:
+<ul>
+<li><code>export ORG=acme &amp;&amp; export TAG=v0.1.0</code></li>
+<li><code>make image-docker IMAGE=ghcr.io/$ORG/ae-controller:$TAG</code></li>
+<li><code>docker tag ghcr.io/$ORG/ae-controller:$TAG ghcr.io/$ORG/ae-controller:main</code></li>
+<li><code>make push-docker IMAGE=ghcr.io/$ORG/ae-controller:$TAG &amp;&amp; docker push ghcr.io/$ORG/ae-controller:main</code></li>
+</ul>
+</li>
+</ul>
+<p>Run locally with host specs/state</p>
+<ul>
+<li>Docker: <code>docker run --rm -p 9108:9108 -v $PWD/specs:/etc/ae/specs -v $PWD/state:/var/lib/ae ghcr.io/&lt;org&gt;/ae-controller:dev</code></li>
+<li>Podman: <code>podman run --rm -p 9108:9108 -v $PWD/specs:/etc/ae/specs -v $PWD/state:/var/lib/ae ghcr.io/&lt;org&gt;/ae-controller:dev</code></li>
+</ul>
+<p>Docker users (alternative to Podman)</p>
+<ul>
+<li>Set runtime and shared network in <code>/etc/ae/ae.env</code>:
+<ul>
+<li><code>AE_RUNTIME_BACKEND=docker</code></li>
+<li><code>AE_DOCKER_NETWORK=dev_default</code> (or your docker compose network name)</li>
+<li><code>AE_CONTAINER_CLI=docker</code> (if the Caddy container runs under Docker)</li>
+</ul>
+</li>
+<li>Start fixtures with Docker Compose instead of Podman Compose:
+<ul>
+<li><code>docker compose -f ops/dev/docker-compose.yaml up -d</code></li>
+<li>Notes:</li>
+<li>Multi-replica + ingress via container DNS requires a shared Docker network; export <code>AE_DOCKER_NETWORK=&lt;name&gt;</code> so app containers join it for Caddy reachability.</li>
+<li>The controller continues to expose the API on <code>:9108</code> by default; metrics and dashboard are identical.</li>
+</ul>
+</li>
+</ul>
+<h2 id="interactive-labs">Interactive Labs</h2>
+<p>The Interactive Lab Playground is a single HTML page that exercises read‑only verification, controlled actions (apply/scale/reset), live events/logs, and ingress checks.</p>
+<ul>
+<li>Build docs (includes playground): <code>python docs/build_docs.py</code></li>
+<li>Open: <code>docs/site/playground.html</code></li>
+</ul>
+<p>Two easy ways to run it:</p>
+<ul>
+<li>Host controller + Caddy (serve docs only)
+<ul>
+<li>Start controller with labs enabled:
+<ul>
+<li><code>AE_LABS=1 python -m ae.controller --loop --specs specs/ --metrics-port 9108 --watch</code></li>
+</ul>
+</li>
+<li>Serve docs via compose:
+<ul>
+<li><code>docker compose -f ops/dev/labs-compose.yaml up -d</code></li>
+</ul>
+</li>
+<li>Open https://localhost:8443/playground.html</li>
+<li>Dashboard (separate host): https://dash.home.arpa:8443/dashboard</li>
+<li>Optional token gate:
+<ul>
+<li>Export <code>AE_LABS_TOKEN=…</code> for the controller; paste it into “Labs Token” on the page.</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<ul>
+<li>Host-controller labs wrapper (current default)
+<ul>
+<li>Recommended: <code>make labs-aio-up</code> (runs the <code>dev-etcd</code> profile with Caddy/TLS defaults and writes shim tokens before startup)</li>
+<li>CLI/API-only variant: <code>make labs-up</code></li>
+<li>Legacy compose-only path: <code>./scripts/ensure_apishim_env.sh &amp;&amp; docker compose -f ops/dev/labs-aio.yaml up -d</code></li>
+<li>Open https://localhost:8443/playground.html</li>
+<li>Dashboard (separate host): https://dash.home.arpa:8443/dashboard</li>
+<li>API shim starts by default on <code>127.0.0.1:8445</code> with per-run tokens stored in <code>state/profiles/dev-etcd/apishim.env</code> unless <code>PROFILE_DIR=</code> overrides the profile path</li>
+<li>To override tokens, set <code>AE_APISHIM_TOKEN</code> / <code>AE_APISHIM_READ_TOKEN</code> in <code>.env</code> (long values; weak tokens are rejected)</li>
+<li>To run with a local Postgres backend for controller + shim, set <code>AE_LABS_USE_POSTGRES=1</code> before bringing the stack up</li>
+<li>To print the shim tokens: <code>make labs-apishim-env</code></li>
+</ul>
+</li>
+</ul>
+<p>Tips</p>
+<ul>
+<li>Toggle “Enable Controlled Actions” to activate Apply/Scale/Reset; otherwise the page remains read‑only.</li>
+<li>The page auto‑detects the API base; use the “API Mode” button in the footer to switch proxy vs. direct.</li>
+<li>k3s/k3d: click “Create k3d Cluster” to bootstrap a local k3d for the Kubernetes track; ports default to 8081/8444 and are shown in the banner.</li>
+<li>If ingress uses a custom TLS secret, make sure it’s synced (see “Ingress and TLS” above) so the app hostname resolves under Caddy.</li>
+<li>Gates: set <code>AE_PLAYGROUND=0</code> to disable the playground UI and labs endpoints, and <code>AE_DASHBOARD=0</code> to disable the dashboard UI.</li>
+</ul>
+<p>DNS/hosts for local domains</p>
+<ul>
+<li>Add entries to your hosts file so browsers resolve the dev domains:
+<ul>
+<li>Linux/macOS: add to <code>/etc/hosts</code></li>
+<li>Windows: add to <code>C:\Windows\System32\drivers\etc\hosts</code></li>
+</ul>
+</li>
+</ul>
+<pre><code>127.0.0.1 docs.home.arpa
+127.0.0.1 api.home.arpa
+127.0.0.1 dash.home.arpa</code></pre>
+<p>Caddy site config (dev)</p>
+<ul>
+<li>The repo ships site snippets under <code>ops/dev/caddy/sites/</code>:
+<ul>
+<li><code>docs.caddy</code>: serves the docs at <code>https://docs.home.arpa:8443/</code> and proxies API paths (<code>/health</code>, <code>/status</code>, <code>/events</code>, <code>/logs</code>, <code>/metrics</code>, <code>/swagger</code>, <code>/redoc</code>, <code>/labs</code>, <code>/system</code>, <code>/ui/features</code>, <code>/api/apishim/*</code>) to the controller on <code>host.docker.internal:9108</code>.</li>
+<li><code>dash.caddy</code>: exposes the dashboard UI at <code>https://dash.home.arpa:8443/dashboard</code> (controller-backed).</li>
+<li><code>api.caddy</code>: exposes the API directly at <code>https://api.home.arpa:8443/</code> and routes <code>/api/v1</code> + <code>/apis</code> to the API shim (exec/port-forward).</li>
+</ul>
+</li>
+<li>After updating site files, restart Caddy:
+<ul>
+<li><code>docker compose -f ops/dev/labs-compose.yaml restart caddy</code> (or bring the stack up again)</li>
+</ul>
+</li>
+</ul>
+<h2 id="probe-history-dashboard-and-cli">Probe History: Dashboard and CLI</h2>
+<p>The controller records the result of each readiness/liveness evaluation per replica. You can now surface this in two ways:</p>
+<ul>
+<li>Dashboard
+<ul>
+<li>Probe History card: shows the most recent evaluations for the selected app (auto‑refreshes every 10s).</li>
+<li>Replicas table: click a replica row to toggle an inline panel with the last N checks (selector at the top right of the card). Useful for debugging intermittent probe failures or backoff windows.</li>
+</ul>
+</li>
+</ul>
+<ul>
+<li>CLI
+<ul>
+<li>List recent checks:
+<ul>
+<li><code>ae history &lt;app&gt; [--limit 20] [--replica &lt;id&gt;] [--json]</code></li>
+<li>Time filters: <code>--since 30m</code> (supports <code>s</code>, <code>m</code>, <code>h</code>) or <code>--since-time 2025-11-10T12:34:00Z</code>.</li>
+</ul>
+</li>
+<li>Remote mode: add <code>--server http://host:port</code> and <code>--token $AE_API_READ_TOKEN</code> to query a running controller via HTTP.</li>
+</ul>
+</li>
+</ul>
+<p>Notes</p>
+<ul>
+<li>The dashboard caches the most recent history response while browsing replica rows to stay responsive.</li>
+<li>In constrained environments, some tests involving local TCP sockets may be skipped or fail due to sandbox restrictions; this does not affect runtime behavior.</li>
+</ul>
+<h2 id="dev-exporter-preview-k8s-yaml">Dev Exporter Preview (K8s YAML)</h2>
+<p>For rapid iteration on exporter options, enable a development-only endpoint to render Kubernetes YAML from a posted manifest:</p>
+<ul>
+<li>Set <code>AE_API_DEV_EXPORT=1</code> and POST to <code>/k8s/preview</code> with JSON payload <code>{ manifest fields..., &quot;options&quot;: { ExportOptions... } }</code>.</li>
+<li>Response JSON includes a <code>yaml</code> field with a multi‑document manifest.</li>
+</ul>
+<h2 id="ingress-presets-and-storage-overrides">Ingress Presets and Storage Overrides</h2>
+<ul>
+<li>Ingress: use <code>--ingress-preset nginx-web|traefik-web</code> to apply common, opt‑in annotations. Combine with <code>--ingress-class</code> and custom <code>--ingress-annotation key=value</code> for fine‑tuning.</li>
+<li>Storage: <code>--storage-class-name &lt;name&gt;</code> and <code>--pvc-access-modes &lt;mode&gt;</code> override defaults for generated PVCs and StatefulSet <code>volumeClaimTemplates</code>.</li>
+</ul>
+<h2 id="netfs-storage-operations">NetFS Storage Operations</h2>
+<p>Operational toggles:</p>
+<ul>
+<li><code>AE_NETFS_ROOT</code> controls the node mount root (default <code>/var/lib/ae/netfs</code>).</li>
+<li><code>AE_NETFS_FS_RESIZE=1</code> enables best-effort filesystem resize on bound volumes.</li>
+<li><code>AE_NETFS_SELINUX_RECURSIVE=1</code> allows recursive <code>chcon -R</code> on RWX/ROX volumes.</li>
+</ul>
+<p>PVC cloning (filesystem volumes only):</p>
+<ul>
+<li>Set <code>spec.dataSourceRef</code> with kind <code>PersistentVolumeClaim</code> on the target PVC.</li>
+<li>Source PVC must be <code>Bound</code> and hostPath-backed (NFS/local-path provisioners).</li>
+<li>The target StorageClass must match the source StorageClass.</li>
+<li>Not supported for <code>volumeMode: Block</code>.</li>
+</ul>
+<p>CSIStorageCapacity overrides:</p>
+<ul>
+<li>StorageClasses can publish static capacity for external CSI drivers via <code>parameters.capacity</code> (e.g., <code>5Gi</code>) or <code>parameters.capacityBytes</code> (integer bytes).</li>
+<li>This bypasses hostPath disk probes and only affects the advertised capacity object.</li>
+</ul>
+<p>CSI topology + labels (site placement):</p>
+<ul>
+<li>StorageClass must define <code>topologyKeys: [&quot;site&quot;]</code> (or your chosen key).</li>
+<li>Nodes must advertise a matching <code>site=&lt;site-id&gt;</code> label.</li>
+<li>Confirm the selected node aligns with the intended site before attaching/mounting.</li>
+</ul>
+<p>Recovery checklist:</p>
+<ul>
+<li>If PVC binds to the wrong site, update node labels and re-apply the PVC.</li>
+<li>If VolumeAttachment is missing, verify <code>CSIDriver.attachRequired</code> and storage class name.</li>
+<li>If NodePublish fails, confirm CSI node endpoint reachability from the edge site.</li>
+</ul>
+<p>Smoke checklist:</p>
+<ul>
+<li><code>ae nodes</code> shows <code>site</code> labels for all nodes.</li>
+<li>PVC binds on the expected site and VolumeAttachment is present (attachRequired=true).</li>
+<li>Pod mounts successfully on the matching node.</li>
+</ul>
+<p>Common failure reasons (PVC events):</p>
+<ul>
+<li><code>CloneNotReady</code> / <code>CloneNotFound</code>: source PVC missing or not bound.</li>
+<li><code>CloneUnsupported</code>: block volume or non-hostPath-backed source.</li>
+<li><code>CloneInvalid</code>: mismatched StorageClass or invalid <code>dataSourceRef</code>.</li>
+<li><code>VolumeNotAttached</code>: CSI volume lacks a matching VolumeAttachment.</li>
+<li><code>SelinuxRelabelFailed</code>: SELinux relabel attempt failed; check privileges and <code>chcon</code>.</li>
+</ul>
+<p>Useful checks:</p>
+<ul>
+<li><code>ae events &lt;app&gt;</code> for recent PVC/PV events.</li>
+<li><code>ae status --verbose</code> to verify node mount paths and permissions.</li>
+</ul>
+    </div>
+    <footer class="site-footer">
+      <div class="container inner">
+        <span>k1s Documentation</span>
+        <span class="spacer"></span>
+        <button id="api-mode-toggle">API Mode</button>
+        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
+        <span>Built 2026-04-22 19:10:00</span>
+      </div>
+    </footer>
+    <script>
+      (function() {
+        var btn = document.getElementById('api-mode-toggle');
+        if (!btn) return;
+        function label() {
+          var mode = localStorage.getItem('docsApiMode') || 'proxy';
+          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
+          var lab = document.getElementById('api-mode-label');
+          if (lab) {
+            if (mode === 'direct') {
+              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
+              lab.textContent = ' [' + base + ']';
+            } else {
+              lab.textContent = ' (proxy)';
+            }
+          }
+        }
+        btn.addEventListener('click', function() {
+          var cur = localStorage.getItem('docsApiMode') || 'proxy';
+          var next = (cur === 'direct') ? 'proxy' : 'direct';
+          localStorage.setItem('docsApiMode', next);
+          label();
+          if (location.pathname.endsWith('playground.html')) location.reload();
+        });
+        label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
+      })();
+    </script>
+  </body>
+</html>

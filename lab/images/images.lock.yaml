@@ -1,0 +1,5 @@
+ubuntu_22_04_ga:
+  kernel_track: ga-5.15
+  base_image: artifacts/images/ubuntu-22.04-k1s-base.qcow2
+  gpu_image: artifacts/images/ubuntu-22.04-k1s-gpu.qcow2
+  build_template: lab/packer/ubuntu-22.04-ga.pkr.hcl

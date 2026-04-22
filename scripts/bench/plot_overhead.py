@@ -48,7 +48,7 @@ def stage_name(label: str) -> str:
     m = re.search(r"-pods-(\d+)$", l)
     if m:
         return f"pods-{m.group(1)}"
-    m = re.search(r"-rollout-(\d+)-(during|post)$", l)
+    m = re.search(r"-rollout-(\d+)-(during(?:-warm)?|post)$", l)
     if m:
         return f"rollout-{m.group(1)}-{m.group(2)}"
     return "other"
@@ -85,7 +85,7 @@ def display_label(row: Dict[str, str]) -> str:
     m = (
         re.search(r"(-idle)$", label)
         or re.search(r"(-pods-\d+)$", label)
-        or re.search(r"(-rollout-\d+-(during|post))$", label)
+        or re.search(r"(-rollout-\d+-(during(?:-warm)?|post))$", label)
     )
     if m:
         start, _end = m.span(1)
@@ -154,8 +154,9 @@ def ensure_matplotlib():
         import matplotlib.pyplot as plt  # type: ignore
 
         return plt
-    except Exception:
+    except Exception as exc:
         print("matplotlib not available; install with: pip install matplotlib", file=sys.stderr)
+        print(f"matplotlib import error: {exc}", file=sys.stderr)
         print("skipping plot generation; combined CSV remains available", file=sys.stderr)
         return None
 
@@ -283,42 +284,58 @@ def plot_rollout_pairs(
     # Determine replicas to target: use provided or the most common N available
     ns = []
     for _sc, st in latest_map.keys():
-        m = re.match(r"rollout-(\d+)-(during|post)$", st)
+        m = re.match(r"rollout-(\d+)-(during(?:-warm)?|post)$", st)
         if m:
             ns.append(int(m.group(1)))
     if not ns:
         return
     target = replicas if replicas and replicas in ns else max(set(ns), key=ns.count)
     during_vals: List[Tuple[str, float]] = []
+    during_warm_vals: List[Tuple[str, float]] = []
     post_vals: List[Tuple[str, float]] = []
     for sc in scenarios:
         r_d = latest_map.get((sc, f"rollout-{target}-during"))
+        r_dw = latest_map.get((sc, f"rollout-{target}-during-warm"))
         r_p = latest_map.get((sc, f"rollout-{target}-post"))
         if not r_d or not r_p:
             continue
         # Use derived Control‑plane PSS consistently
         during_vals.append((sc, _cp_pss_mib_derived(r_d)))
+        if r_dw:
+            during_warm_vals.append((sc, _cp_pss_mib_derived(r_dw)))
         post_vals.append((sc, _cp_pss_mib_derived(r_p)))
     if not during_vals:
         return
     # Align order by scenario
     order = [s for s, _ in sorted(during_vals, key=lambda x: x[1])]
     dv = [v for s, v in sorted(during_vals, key=lambda x: order.index(x[0]))]
+    dw_map = dict(during_warm_vals)
+    has_warm = all(s in dw_map for s in order)
+    dwv = [dw_map.get(s, dict(post_vals)[s]) for s in order]
     pv = [dict(post_vals)[s] for s in order]
     colors = [PALETTE.get(s, "#94a3b8") for s in order]
     import numpy as np  # type: ignore
 
     x = np.arange(len(order))
-    width = 0.36
+    width = 0.24 if has_warm else 0.36
     fig, ax = plt.subplots(figsize=(11, 4.5))
-    b1 = ax.bar(x - width / 2, dv, width, label="during", color=colors, alpha=0.9)
-    b2 = ax.bar(x + width / 2, pv, width, label="post", color=colors, alpha=0.55)
+    ax.bar(x - width, dv, width, label="during", color=colors, alpha=0.9)
+    if has_warm:
+        ax.bar(x, dwv, width, label="during-warm", color=colors, alpha=0.72)
+        ax.bar(x + width, pv, width, label="post", color=colors, alpha=0.55)
+    else:
+        ax.bar(x + width / 2, pv, width, label="post", color=colors, alpha=0.55)
     ax.set_xticks(x)
     ax.set_xticklabels(order, rotation=30, ha="right")
     ax.set_ylabel("Control‑plane PSS (MiB)")
-    ax.set_title(f"Rollout {target} — During vs Post")
+    ax.set_title(f"Rollout {target} — During vs During-Warm vs Post")
     if str(os.getenv("PLOT_SHOW_LEGEND", "0")).lower() not in ("0", "false", "no", ""):
-        ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.18), ncol=2, frameon=False)
+        ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.18),
+            ncol=(3 if has_warm else 2),
+            frameon=False,
+        )
     ax.grid(axis="y", linestyle=":", alpha=0.4)
     plt.tight_layout(rect=[0, 0, 1, 0.9])
     out = outdir / "rollout_pairs.png"
@@ -601,7 +618,7 @@ def main(argv: List[str]) -> int:
         plt.close()
 
     # Re-enable k1nd timeline now that recent runs have valid PSS
-    for scn in ["k3d", "k1s rootless", "k1s rootful", "k1nd"]:
+    for scn in ["k3d", "k1s rootless", "k1s rootful", "k1s cri", "k1nd"]:
         render_legacy_for(scn)
 
     # New comparative charts
@@ -687,7 +704,7 @@ def main(argv: List[str]) -> int:
     plot_per_pod_overhead()
 
     # Coverage filter for comparison charts and heatmap
-    desired_order = ["k1s rootless", "k1s rootful", "k1nd", "k3d"]
+    desired_order = ["k1s rootless", "k1s rootful", "k1s cri", "k1nd", "k3d"]
     metrics_for_cov = [ex_cp, ex_app, ex_host, ex_mad]
     # Compute stages selected
     selected_stages = stages
