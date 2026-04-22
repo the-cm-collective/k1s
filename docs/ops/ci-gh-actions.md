@@ -2,7 +2,7 @@ GitHub/Gitea Actions: CI layout
 
 The repository now uses five canonical workflows:
 
-- `ci-core.yml`: blocking pull request and branch gate for unit tests, `ruff`, planner validation, Kubernetes export checks, OpenAPI drift validation, and versioning checks. The workflow always reports branch-protection checks, but skips the heavy jobs when a change set is docs-only.
+- `ci-core.yml`: blocking pull request and branch gate for unit tests, planner validation, Kubernetes export checks, OpenAPI drift validation, and versioning checks. The workflow always reports branch-protection checks, but skips the heavy jobs when a change set is docs-only.
 - `ci-docs.yml`: docs gate for `README`, `docs/**`, docs build helpers, and docs tests. The workflow always reports its check, but only runs `make docs-verify` when docs-surface files changed.
 - `nightly-apishim.yml`: manual/nightly API-shim coverage for shim smoke, Helm, RBAC/SSA, exec, port-forward, SPDY, and live OpenAPI checks.
 - `nightly-runtime.yml`: manual/nightly runtime and end-to-end coverage for Podman, CRI, kind/k3s conformance, multinode, service port-forward, `/plan`, core/edge, and HA closeout lanes.
@@ -20,13 +20,14 @@ Representative commands behind the workflows:
 
 ```bash
 pytest --maxfail=1 --disable-warnings -q
-ruff check
 tools/plan_ci.sh
 make k8s-smoke
 scripts/validate-openapi.sh
 python scripts/check_versioning.py
 make docs-verify
 ```
+
+`ruff check` is intentionally not a blocking repo-wide CI gate yet. The current repository still carries substantial pre-existing Ruff debt in tests and helper scripts, so the blocking path stays aligned with the existing passing baseline instead of introducing a mass cleanup requirement into unrelated PRs.
 
 Representative manual/nightly commands:
 
