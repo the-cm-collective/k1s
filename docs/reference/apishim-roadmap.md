@@ -82,9 +82,9 @@ Phase 5 action items:
 - Deliverables: published compatibility matrix; release note gate that runs kubectl/helm smoke; docs for kubeconfig and auth modes.
 
 ### Phase 7 status
-- Discovery/OpenAPI: `/openapi/v2` now includes richer shapes (Service ports + external/loadBalancer/ipFamily fields, Deployment/DaemonSet/StatefulSet conditions, Job/CronJob/HPA status); `/openapi/v3` now mirrors `/openapi/v2` and is treated as authoritative. CI guards drift via `scripts/validate-openapi.sh` (helm-dryrun-openapi workflow), Helm/kubectl dry-run is exercised in CI, and OpenAPI artifacts are published. A lightweight fixture check (`scripts/validate-openapi-fixtures.py`) validates the schemas against the shipped sample manifests.
-- Compatibility matrix: published at `docs/reference/apishim-compatibility-matrix.md`; release gate runs helm shim smoke and uploads the matrix + OpenAPI artifacts and emits a release-note snippet.
-- Live gate: `.github/workflows/apishim-live-openapi.yml` runs local stub and docker runtime lanes plus an optional external kubeconfig target, collecting `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots as artifacts. The script accepts a provided kubeconfig (including kind/dev lab) via `APISHIM_LIVE_KUBECONFIG`/`APISHIM_LIVE_KUBECONFIG_B64` or a kind cluster name via `APISHIM_KIND_CLUSTER`.
+- Discovery/OpenAPI: `/openapi/v2` now includes richer shapes (Service ports + external/loadBalancer/ipFamily fields, Deployment/DaemonSet/StatefulSet conditions, Job/CronJob/HPA status); `/openapi/v3` now mirrors `/openapi/v2` and is treated as authoritative. Blocking CI guards drift via `scripts/validate-openapi.sh` in `ci-core.yml`, and `release.yml` republishes the checked snapshots as artifacts. A lightweight fixture check (`scripts/validate-openapi-fixtures.py`) validates the schemas against the shipped sample manifests.
+- Compatibility matrix: published at `docs/reference/apishim-compatibility-matrix.md`; `release.yml` uploads the matrix together with the OpenAPI artifacts and wheel/image artifacts for tag builds.
+- Live gate: `.github/workflows/nightly-apishim.yml` runs local stub and docker runtime lanes plus an optional external kubeconfig target, collecting `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots as artifacts. The script accepts a provided kubeconfig (including kind/dev lab) via `APISHIM_LIVE_KUBECONFIG`/`APISHIM_LIVE_KUBECONFIG_B64` or a kind cluster name via `APISHIM_KIND_CLUSTER`.
 - Current focus: expand sample coverage and conformance-lite reporting, not the basic docs/release-note wiring.
 
 #### Phase 7.1 — OpenAPI validation hardening (complete)
@@ -94,11 +94,11 @@ Phase 5 action items:
 - `/openapi/v3` remains the authoritative mirror of `/openapi/v2` and is called out in release notes and docs; compatibility matrix links are included in the release summary artifacts.
 
 #### Phase 7.2 — Live cluster gate + doc linkage (complete)
-- Live gate landed: `scripts/ci/apishim-live-openapi.sh` drives kubectl/helm dry-run plus short watch churn against local shim lanes and optional external kubeconfig targets, capturing live `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots. `.github/workflows/apishim-live-openapi.yml` publishes these artifacts on push/PR. The gate can point at a supplied kubeconfig (kind/dev lab) via `APISHIM_LIVE_KUBECONFIG(_B64)` or pull a kind kubeconfig by name with `APISHIM_KIND_CLUSTER`.
+- Live gate landed: `scripts/ci/apishim-live-openapi.sh` drives kubectl/helm dry-run plus short watch churn against local shim lanes and optional external kubeconfig targets, capturing live `/openapi/v2` + `/openapi/v3`, fixture validation logs, and object snapshots. `.github/workflows/nightly-apishim.yml` publishes these artifacts on nightly/manual runs. The gate can point at a supplied kubeconfig (kind/dev lab) via `APISHIM_LIVE_KUBECONFIG(_B64)` or pull a kind kubeconfig by name with `APISHIM_KIND_CLUSTER`.
 - Follow-ups promoted to Phase 7.3: release-blocking promotion, docs/release-note wiring, and expanded sample set validated by the gate.
 
 #### Phase 7.3 — Release gate + site wiring (complete)
-- Promotion: `apishim-live-openapi` now runs on `main`/PRs and release tags; release workflow fails if the live gate fails. Skips are a manual exception reserved for sealed-secret fixtures with explicit justification.
+- Promotion: the live OpenAPI gate is now consolidated under `nightly-apishim.yml`, keeping the PR path lean while still collecting artifacts on scheduled/manual runs.
 - Coverage: nightly live gate runs local stub/docker lanes plus an optional external kubeconfig target when configured; artifacts are uploaded per run.
 - Samples: live gate now validates the multi-replica/PDB+HPA manifest set; fixtures already include the Deployment/HPA exporter output and PDB-emitting Deployment manifests in `specs/examples/`.
 - Docs/release notes: the API docs now point readers at the shim docs surfaces, and release notes call out v3 as primary with v2 as the compatibility mirror.

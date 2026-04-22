@@ -3,6 +3,9 @@ set -euo pipefail
 
 # Requires: kind, kubectl, python3
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${ROOT_DIR}/scripts/ci/lib.sh"
+
 export PYTHONPATH=${PYTHONPATH:-}:src
 
 CLUSTER_NAME="ae-conformance"
@@ -27,9 +30,10 @@ ${KUBECTL_BIN} apply --dry-run=server -f /tmp/echo-mr-k8s.yaml -n demo || exit 1
 echo "Conformance OK"
 
 echo "Installing kubeconform..."
+ci_prepare_user_bin
 curl -sSL -o /tmp/kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
-tar -C /usr/local/bin -xzf /tmp/kubeconform.tar.gz kubeconform
-chmod +x /usr/local/bin/kubeconform
+tar -C "$HOME/.local/bin" -xzf /tmp/kubeconform.tar.gz kubeconform
+chmod +x "$HOME/.local/bin/kubeconform"
 
 echo "Validating exported YAMLs with kubeconform..."
 kubeconform -strict -summary /tmp/echo-k8s.yaml /tmp/echo-mr-k8s.yaml

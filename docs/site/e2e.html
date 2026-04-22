@@ -1032,7 +1032,8 @@
 </ul>
 <p>CI Conformance (reference)</p>
 <ul>
-<li>GitHub workflow <code>.github/workflows/k8s-conformance.yaml</code> bootstraps Kind and k3s, exports hardened samples, <code>kubectl apply --dry-run=server</code>, and validates with <code>kubeconform -strict</code>.</li>
+<li>Blocking CI uses <code>.github/workflows/ci-core.yml</code> for planner validation, exporter smoke checks, and OpenAPI drift validation.</li>
+<li>Nightly/manual runtime coverage lives in <code>.github/workflows/nightly-runtime.yml</code>, which runs the kind and k3s conformance lanes plus the heavier multinode and end-to-end suites.</li>
 </ul>
 <p>Where to next</p>
 <ul>
@@ -1057,7 +1058,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-17 10:02:07</span>
+        <span>Built 2026-04-22 10:08:01</span>
       </div>
     </footer>
     <script>

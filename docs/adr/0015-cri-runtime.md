@@ -580,10 +580,10 @@ Exit criteria:
   - A CRI-native streaming proxy can still replace this later.
 - Done: implement log follow via CRI `log_path` (basic; kubelet-style rotation not covered).
 - Done: validate CI integration tests: containerd node smoke + CRI adapter in CI
-  - CI workflow added (`.github/workflows/cri-ci.yml`) using `scripts/cri_ci_setup.sh`.
+  - CI coverage now lives in `.github/workflows/nightly-runtime.yml` using `scripts/cri_ci_setup.sh`.
   - CI setup now runs under sudo and waits for `RuntimeReady` + `NetworkReady`.
   - Gated integration tests exist locally (AE_CRI_SMOKE_PULL, AE_CRI_IT).
-  - `cri-ci` validated on runner.
+  - The CRI lane is validated on the runner.
 - Done: update docs: `docs/ops/runbook.md` with CRI debug and `crictl` usage.
 
 ---
