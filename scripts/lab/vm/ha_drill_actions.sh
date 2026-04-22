@@ -50,7 +50,9 @@ case "$ACTION" in
 esac
 
 [[ -n "$VARIANT" ]] || { err "--variant required"; exit 2; }
-ensure_ssh_key
+if [[ "$DRY_RUN" -ne 1 ]]; then
+  ensure_ssh_key
+fi
 
 variant_json="$(variant_to_json "$VARIANT")"
 python_bin="$(lab_python)"
