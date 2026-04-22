@@ -26,9 +26,16 @@ def test_smoke_helper_output_root_follows_passthrough(tmp_path: Path) -> None:
     assert output_root == tmp_path.resolve()
 
 
-def test_smoke_helper_lab_python_prefers_repo_venv(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(smoke_helper, "ROOT", ROOT)
-    assert smoke_helper.lab_python() == str(ROOT / ".venv" / "bin" / "python")
+def test_smoke_helper_lab_python_prefers_repo_venv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(smoke_helper, "ROOT", tmp_path)
+
+    assert smoke_helper.lab_python() == str(venv_python)
 
 
 @pytest.mark.parametrize(
