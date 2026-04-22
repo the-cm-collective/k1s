@@ -1931,6 +1931,10 @@ exit 1
             shutil.rmtree(ROOT / "state" / "lab-vm" / run_dir, ignore_errors=True)
 
 
+@pytest.mark.skipif(
+    not shutil.which("qemu-img") or not shutil.which("sha256sum") or not shutil.which("jq"),
+    reason="image verify dependencies not available",
+)
 def test_image_verify_preserves_failed_vm_logs_and_classifies_root_mount_failures(tmp_path: Path) -> None:
     qemu_img = shutil.which("qemu-img")
     sha256sum = shutil.which("sha256sum")
@@ -2064,6 +2068,10 @@ printf 'root_uuid=test-root\\n'
             shutil.rmtree(ROOT / "state" / "lab-vm" / run_dir, ignore_errors=True)
 
 
+@pytest.mark.skipif(
+    not shutil.which("qemu-img") or not shutil.which("sha256sum") or not shutil.which("jq"),
+    reason="image verify dependencies not available",
+)
 def test_image_verify_can_purge_failed_runs_on_request(tmp_path: Path) -> None:
     qemu_img = shutil.which("qemu-img")
     sha256sum = shutil.which("sha256sum")
