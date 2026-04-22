@@ -1337,6 +1337,7 @@ def test_cri_preflight_reports_containerd_permission_hint(tmp_path: Path) -> Non
     try:
         env = os.environ.copy()
         env["AE_CRI_ENDPOINT"] = f"unix://{sock_path}"
+        env["AE_CRI_REQUIRE_RUNTIME_READY"] = "0"
         env["CRICTL_BIN"] = str(fake_crictl)
         env["CNI_BIN_DIR"] = str(cni_bin)
         env["CNI_CONF_DIR"] = str(cni_conf)
