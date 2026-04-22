@@ -287,13 +287,22 @@ def test_endpoint_from_container_prefers_direct_ip_when_enabled(monkeypatch) -> 
     assert endpoint == "10.88.0.42:8080"
 
 
-def test_endpoint_from_container_falls_back_to_direct_ip_without_published_ports() -> None:
+def test_endpoint_from_container_falls_back_to_direct_ip_without_published_ports(monkeypatch) -> None:
     rt = PodmanRuntime()
     container = _container_with_ports()
     container["NetworkSettings"]["Ports"] = {}
+    calls: list[list[str]] = []
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        return DummyResult(1)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
 
     endpoint = rt._endpoint_from_container(_manifest_single(), container)
 
+    assert calls == [[rt._bin, "port", "container-1"]]
     assert endpoint == "10.88.0.42:8080"
 
 
