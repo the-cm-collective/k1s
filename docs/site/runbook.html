@@ -1450,8 +1450,8 @@
 <li>Upgrade helper surface:
 <ul>
 <li>Precheck: <code>PYTHONPATH=src python scripts/dev/ha_core_upgrade.py precheck --metrics-url http://127.0.0.1:9108/metrics</code></li>
-<li>Per-node plan: <code>PYTHONPATH=src python scripts/dev/ha_core_upgrade.py node-plan --node-name core-a --expected-version 0.1.3.dev0 --expected-sha &lt;target-sha&gt;</code></li>
-<li>Cluster verify: <code>PYTHONPATH=src python scripts/dev/ha_core_upgrade.py cluster-verify --node core-a=http://10.0.0.11:9108,https://10.0.0.11:8445 --node core-b=http://10.0.0.12:9108,https://10.0.0.12:8445 --node core-c=http://10.0.0.13:9108,https://10.0.0.13:8445 --expected-version 0.1.3.dev0 --expected-sha &lt;target-sha&gt;</code></li>
+<li>Per-node plan: <code>PYTHONPATH=src python scripts/dev/ha_core_upgrade.py node-plan --node-name core-a --expected-version &lt;target-version&gt; --expected-sha &lt;target-sha&gt;</code></li>
+<li>Cluster verify: <code>PYTHONPATH=src python scripts/dev/ha_core_upgrade.py cluster-verify --node core-a=http://10.0.0.11:9108,https://10.0.0.11:8445 --node core-b=http://10.0.0.12:9108,https://10.0.0.12:8445 --node core-c=http://10.0.0.13:9108,https://10.0.0.13:8445 --expected-version &lt;target-version&gt; --expected-sha &lt;target-sha&gt;</code></li>
 </ul>
 </li>
 <li>Rolling procedure:
@@ -1600,12 +1600,12 @@
 </li>
 <li>Per-gateway plan:
 <ul>
-<li><code>PYTHONPATH=src python scripts/dev/ha_edge_transport.py gateway-plan --site-id sea --gateway-node edge-a --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version 0.1.3.dev0 --expected-sha &lt;target-sha&gt;</code></li>
+<li><code>PYTHONPATH=src python scripts/dev/ha_edge_transport.py gateway-plan --site-id sea --gateway-node edge-a --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version &lt;target-version&gt; --expected-sha &lt;target-sha&gt;</code></li>
 </ul>
 </li>
 <li>Site verify:
 <ul>
-<li><code>PYTHONPATH=src python scripts/dev/ha_edge_transport.py site-verify --site sea=http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b --expected-edge-version &lt;target-version&gt; --expected-edge-commit &lt;target-commit&gt; --expected-gateway-version 0.1.3.dev0 --expected-gateway-sha &lt;target-sha&gt; --require-gateway-converged</code></li>
+<li><code>PYTHONPATH=src python scripts/dev/ha_edge_transport.py site-verify --site sea=http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b --expected-edge-version &lt;target-version&gt; --expected-edge-commit &lt;target-commit&gt; --expected-gateway-version &lt;target-version&gt; --expected-gateway-sha &lt;target-sha&gt; --require-gateway-converged</code></li>
 </ul>
 </li>
 <li>Leader plan:

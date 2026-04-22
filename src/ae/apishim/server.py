@@ -2177,7 +2177,7 @@ def _swagger_doc() -> dict[str, Any]:
         "swagger": "2.0",
         "info": {
             "title": "k1s apishim",
-            "version": "0.1.4",
+            "version": "0.1.5.dev0",
             "description": (
                 "Kubernetes-compatible API shim for local k1s development. "
                 "Supports discovery, basic CRUD for core workloads, and a minimal OpenAPI schema "
