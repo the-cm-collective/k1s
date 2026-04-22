@@ -141,6 +141,13 @@ check_access_issue() {
   local path="$1"
   local item=""
 
+  if [[ -n "$target_uid_override" || -n "$target_gid_override" || -n "${SUDO_UID:-}" ]]; then
+    if check_access_issue_for_target "$path"; then
+      return 0
+    fi
+    return 1
+  fi
+
   if [[ ! -r "$path" ]]; then
     printf '%s (not readable)\n' "$path"
     return 0
@@ -175,6 +182,96 @@ check_access_issue() {
   return 1
 }
 
+target_mode_digit() {
+  local path="$1"
+  local target_uid_local="$2"
+  local target_gid_local="$3"
+  local owner_uid owner_gid mode perms digit=""
+
+  read -r owner_uid owner_gid mode < <(stat -c '%u %g %a' "$path" 2>/dev/null)
+  perms="${mode: -3}"
+  while [[ ${#perms} -lt 3 ]]; do
+    perms="0${perms}"
+  done
+
+  if [[ "$target_uid_local" == "0" ]]; then
+    printf '7\n'
+    return 0
+  fi
+
+  if [[ "$target_uid_local" == "$owner_uid" ]]; then
+    digit="${perms:0:1}"
+  elif [[ -n "$target_gid_local" && "$target_gid_local" == "$owner_gid" ]]; then
+    digit="${perms:1:1}"
+  else
+    digit="${perms:2:1}"
+  fi
+
+  printf '%s\n' "$digit"
+}
+
+target_has_perm() {
+  local path="$1"
+  local perm="$2"
+  local digit mask=0
+
+  digit="$(target_mode_digit "$path" "$target_uid" "$target_gid")"
+  case "$perm" in
+    read)
+      mask=4
+      ;;
+    write)
+      mask=2
+      ;;
+    exec)
+      mask=1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  (( (10#$digit & mask) == mask ))
+}
+
+check_access_issue_for_target() {
+  local path="$1"
+  local item=""
+
+  if ! target_has_perm "$path" read; then
+    printf '%s (not readable)\n' "$path"
+    return 0
+  fi
+  if ! target_has_perm "$path" write; then
+    printf '%s (not writable)\n' "$path"
+    return 0
+  fi
+  if [[ -d "$path" ]] && ! target_has_perm "$path" exec; then
+    printf '%s (not searchable)\n' "$path"
+    return 0
+  fi
+  if [[ ! -d "$path" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r -d '' item; do
+    if ! target_has_perm "$item" read; then
+      printf '%s (not readable)\n' "$item"
+      return 0
+    fi
+    if ! target_has_perm "$item" write; then
+      printf '%s (not writable)\n' "$item"
+      return 0
+    fi
+    if [[ -d "$item" ]] && ! target_has_perm "$item" exec; then
+      printf '%s (not searchable)\n' "$item"
+      return 0
+    fi
+  done < <(find "$path" -mindepth 1 -maxdepth 4 -print0 2>/dev/null)
+
+  return 1
+}
+
 run_check_as_target_user() {
   if [[ -z "${target_uid:-}" || ! "${target_uid}" =~ ^[0-9]+$ ]]; then
     return 1
@@ -193,6 +290,7 @@ run_check_as_target_user() {
     fi
   fi
   cmd+=(env "K1S_ROOT_DIR_OVERRIDE=${ROOT_DIR}")
+  cmd+=("SUDO_UID=" "SUDO_GID=" "SUDO_USER=")
   if [[ -n "${AE_TLS_DIR:-}" ]]; then
     cmd+=("AE_TLS_DIR=${AE_TLS_DIR}")
   fi

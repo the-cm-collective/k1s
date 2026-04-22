@@ -210,6 +210,8 @@ def test_profile_state_ownership_check_passes_for_user_owned_state(tmp_path: Pat
 def test_profile_state_ownership_check_fails_for_unwritable_state(tmp_path: Path) -> None:
     lock_dir = tmp_path / "state" / "profiles" / "k1s-core" / "cri" / ".locks"
     lock_dir.mkdir(parents=True)
+    (lock_dir.parent).chmod(0o777)
+    lock_dir.chmod(0o777)
     lock_file = lock_dir / "k1s-core-etcd.lock"
     lock_file.write_text("held\n", encoding="utf-8")
     lock_file.chmod(0o444)
@@ -218,7 +220,17 @@ def test_profile_state_ownership_check_fails_for_unwritable_state(tmp_path: Path
     env["K1S_ROOT_DIR_OVERRIDE"] = str(tmp_path)
 
     proc = subprocess.run(
-        ["bash", str(PROFILE_STATE_OWNERSHIP_SCRIPT), "--profile", "k1s-core", "--check"],
+        [
+            "bash",
+            str(PROFILE_STATE_OWNERSHIP_SCRIPT),
+            "--profile",
+            "k1s-core",
+            "--check",
+            "--target-uid",
+            "1001",
+            "--target-gid",
+            "1001",
+        ],
         check=False,
         text=True,
         capture_output=True,
