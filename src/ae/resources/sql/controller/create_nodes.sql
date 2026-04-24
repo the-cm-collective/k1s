@@ -11,6 +11,7 @@
                     cordoned INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    rp_pubkey TEXT
+                    rp_pubkey TEXT,
+                    capabilities_json TEXT DEFAULT '{}'
                 )
                 

@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ae import build_info as AE_BUILD_INFO
+from ae.accelerators import preferred_gpu_count, preferred_gpu_models
 from ae.controller.authority import AuthorityConfig, NotLeaderError
 from ae.controller.state import RegistryConflictError
 from ae.controller.state import SQLiteStateStore
@@ -5281,7 +5282,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     "name": node.name,
                     "backend": node.backend,
                     "endpoint": node.endpoint,
+                    "capabilities": getattr(node, "capabilities", {}) or {},
                     "labels": node.labels,
+                    "gpu_count": preferred_gpu_count(node.labels, getattr(node, "capabilities", {}) or {}),
+                    "gpu_models": preferred_gpu_models(
+                        node.labels, getattr(node, "capabilities", {}) or {}
+                    ),
                     "taints": node.taints,
                     "pod_cidr": node.pod_cidr,
                     "wg_pubkey": node.wg_pubkey,

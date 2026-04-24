@@ -12,6 +12,7 @@ from typing import Any
 
 import requests
 
+from ae.accelerators import normalize_capabilities
 from ae.controller.health import HealthReport
 from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.controller.state import (
@@ -447,6 +448,7 @@ class EtcdStateStore(SQLiteStateStore):
             "node_id",
             "name",
             "labels",
+            "capabilities",
             "taints",
             "backend",
             "endpoint",
@@ -2207,6 +2209,7 @@ class EtcdStateStore(SQLiteStateStore):
         *,
         name: str | None = None,
         labels: dict | None = None,
+        capabilities: dict | None = None,
         taints: list | None = None,
         backend: str | None = None,
         endpoint: str | None = None,
@@ -2219,11 +2222,13 @@ class EtcdStateStore(SQLiteStateStore):
         existing, _ = self._get_json(node_key)
         if cordoned is None:
             cordoned = bool(existing.get("cordoned", False)) if existing else False
+        normalized_capabilities = normalize_capabilities(capabilities)
         created_at = existing.get("created_at") if existing else _now_iso()
         payload = {
             "node_id": node_id,
             "name": name,
             "labels": labels or {},
+            "capabilities": normalized_capabilities,
             "taints": taints or [],
             "backend": backend,
             "endpoint": endpoint,
@@ -2342,6 +2347,7 @@ class EtcdStateStore(SQLiteStateStore):
                 node_id=str(rec.get("node_id", "")),
                 name=rec.get("name"),
                 labels=rec.get("labels") or {},
+                capabilities=normalize_capabilities(rec.get("capabilities")),
                 taints=rec.get("taints") or [],
                 backend=rec.get("backend"),
                 endpoint=rec.get("endpoint"),
@@ -2370,6 +2376,7 @@ class EtcdStateStore(SQLiteStateStore):
             node_id=str(rec.get("node_id", "")),
             name=rec.get("name"),
             labels=rec.get("labels") or {},
+            capabilities=normalize_capabilities(rec.get("capabilities")),
             taints=rec.get("taints") or [],
             backend=rec.get("backend"),
             endpoint=rec.get("endpoint"),

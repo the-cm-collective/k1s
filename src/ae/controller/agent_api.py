@@ -14,6 +14,12 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from ae.accelerators import (
+    merge_projected_gpu_labels,
+    normalize_capabilities,
+    preferred_gpu_count,
+    preferred_gpu_models,
+)
 from ae.controller.state import SQLiteStateStore
 
 try:  # Optional: Phase 3 pod CIDR allocator
@@ -51,16 +57,8 @@ def _serialize_nodes(store: SQLiteStateStore) -> list[dict]:
     items = []
     for node, status in store.list_nodes():
         labels = node.labels or {}
-        gpu_count = None
-        for key in ("gpu.count", "nvidia.gpu.count", "gpu_count"):
-            raw = labels.get(key)
-            if raw in (None, ""):
-                continue
-            try:
-                gpu_count = int(raw)
-            except Exception:
-                gpu_count = None
-            break
+        capabilities = getattr(node, "capabilities", {}) or {}
+        gpu_count = preferred_gpu_count(labels, capabilities)
         items.append(
             {
                 "node_id": node.node_id,
@@ -70,9 +68,10 @@ def _serialize_nodes(store: SQLiteStateStore) -> list[dict]:
                 "pod_cidr": node.pod_cidr,
                 "wg_pubkey": node.wg_pubkey,
                 "rp_pubkey": getattr(node, "rp_pubkey", None),
+                "capabilities": capabilities,
                 "labels": labels,
                 "gpu_count": gpu_count,
-                "gpu_models": labels.get("gpu.models"),
+                "gpu_models": preferred_gpu_models(labels, capabilities),
                 "taints": node.taints,
                 "cordoned": bool(getattr(node, "cordoned", False)),
                 "status": status.status if status else None,
@@ -212,7 +211,13 @@ def make_handler(
                 return
 
             labels = payload.get("labels") or {}
+            if not isinstance(labels, dict):
+                labels = {}
+            capabilities = normalize_capabilities(payload.get("capabilities"))
             taints = payload.get("taints") or []
+            if not isinstance(taints, list):
+                taints = []
+            labels = merge_projected_gpu_labels(labels, capabilities)
             backend = payload.get("backend")
             endpoint = payload.get("endpoint")
             name = payload.get("name")
@@ -245,6 +250,7 @@ def make_handler(
                     node_id,
                     name=name,
                     labels=labels,
+                    capabilities=capabilities,
                     taints=taints,
                     backend=backend,
                     endpoint=endpoint,

@@ -7,12 +7,15 @@ import json
 import logging
 import os
 import socket
-import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from ae.accelerators import (
+    detect_nvidia_accelerator_capabilities,
+    merge_projected_gpu_labels,
+)
 from ae.config.transport import TransportConfig, check_nats_connectivity
 from ae.controller.spec import AppManifest
 from ae.ha.fencing import SQLiteFenceStore, parse_envelope
@@ -680,35 +683,6 @@ def _parse_labels(raw: str | None) -> dict:
     return labels
 
 
-def _detect_gpu_labels() -> dict[str, str]:
-    if str(os.getenv("AE_GPU_DISCOVERY_DISABLE", "0")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        return {}
-    bin_name = str(os.getenv("AE_NVIDIA_SMI_BIN", "nvidia-smi")).strip() or "nvidia-smi"
-    try:
-        out = subprocess.check_output(  # noqa: S603
-            [bin_name, "--query-gpu=name", "--format=csv,noheader"],  # noqa: S603
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=3,
-        )
-        names = [line.strip() for line in out.splitlines() if line.strip()]
-        if not names:
-            return {"gpu.present": "false", "gpu.count": "0"}
-        models = sorted(set(names))
-        return {
-            "gpu.present": "true",
-            "gpu.count": str(len(names)),
-            "gpu.models": ",".join(models),
-        }
-    except Exception:
-        return {"gpu.present": "false", "gpu.count": "0"}
-
-
 def _start_heartbeat_loop(
     controller_url: str | None,
     node_id: str,
@@ -716,6 +690,7 @@ def _start_heartbeat_loop(
     backend: str,
     endpoint: str | None,
     labels: dict | None,
+    capabilities: dict | None,
     taints: list | None,
     token: str | None,
     interval: int,
@@ -738,6 +713,7 @@ def _start_heartbeat_loop(
                 "backend": backend,
                 "endpoint": endpoint,
                 "labels": labels or {},
+                "capabilities": capabilities or {},
                 "taints": taints or [],
                 "status": "Ready",
                 "pod_cidr": pod_cidr,
@@ -904,6 +880,7 @@ def serve(
     node_id: str | None = None,
     node_name: str | None = None,
     node_labels: dict | None = None,
+    node_capabilities: dict | None = None,
     node_taints: list | None = None,
     heartbeat_interval: int = 10,
     node_endpoint: str | None = None,
@@ -940,6 +917,7 @@ def serve(
         runtime.__class__.__name__.replace("Runtime", "").lower(),
         node_endpoint,
         node_labels,
+        node_capabilities,
         node_taints,
         token,
         heartbeat_interval,
@@ -1083,9 +1061,8 @@ def main(argv: list[str] | None = None) -> int:
     node_id = os.getenv("AE_NODE_ID", socket.gethostname())
     node_name = os.getenv("AE_NODE_NAME", node_id)
     node_labels = _parse_labels(os.getenv("AE_NODE_LABELS"))
-    gpu_labels = _detect_gpu_labels()
-    for k, v in gpu_labels.items():
-        node_labels.setdefault(k, v)
+    node_capabilities = detect_nvidia_accelerator_capabilities()
+    node_labels = merge_projected_gpu_labels(node_labels, node_capabilities)
     node_taints = []
     token = os.getenv("AE_AGENT_TOKEN")
     endpoint = args.advertise_endpoint or f"http://{socket.gethostname()}:{args.port}"
@@ -1118,6 +1095,7 @@ def main(argv: list[str] | None = None) -> int:
                 "backend": backend,
                 "endpoint": endpoint,
                 "labels": node_labels,
+                "capabilities": node_capabilities,
                 "taints": node_taints,
                 "status": "Ready",
                 "pod_cidr": pod_cidr,
@@ -1157,6 +1135,7 @@ def main(argv: list[str] | None = None) -> int:
         node_id=node_id,
         node_name=node_name,
         node_labels=node_labels,
+        node_capabilities=node_capabilities,
         node_taints=node_taints,
         heartbeat_interval=args.heartbeat_interval,
         node_endpoint=endpoint,

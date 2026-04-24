@@ -99,6 +99,42 @@ def test_inference_cell_execution_mode_requires_registered_members(
     assert rec.last_error == "ADMISSION_MEMBER_INVALID"
 
 
+def test_inference_cell_execution_mode_accepts_typed_accelerators(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("AE_INFERENCE_EXPERIMENTAL", "1")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    for node_id, site_id in (("node-a", "site-a"), ("node-b", "site-b")):
+        store.upsert_node(
+            node_id,
+            name=node_id,
+            labels={"site": site_id},
+            capabilities={
+                "accelerators": [
+                    {
+                        "id": f"{node_id}-gpu-0",
+                        "kind": "discrete_gpu",
+                        "vendor": "nvidia",
+                        "family": "RTX 8000",
+                        "device_count": 1,
+                        "memory_model": "dedicated",
+                        "memory_bytes_per_device": 49152 * 1024 * 1024,
+                        "runtime_handlers": ["nvidia"],
+                        "partitioning_mode": "none",
+                        "backing_device_id": None,
+                        "execution_role": "execution",
+                    }
+                ]
+            },
+            endpoint=f"http://{node_id}.lan:9109",
+        )
+        store.record_heartbeat(node_id, "Ready")
+
+    ctrl = InferenceCellController(store)
+    errors = ctrl._validate_members_for_execution(_cell_manifest(name="typed-exec-cell").spec)
+    assert errors == []
+
+
 def test_inference_stage_manifest_sets_runtime_class(tmp_path):
     store = SQLiteStateStore(tmp_path / "state.db")
     ctrl = InferenceCellController(store)

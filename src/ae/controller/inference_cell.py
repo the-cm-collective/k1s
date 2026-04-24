@@ -20,6 +20,7 @@ from typing import Protocol
 import requests
 
 from ae._utc import UTC
+from ae.accelerators import has_accelerator_inventory, preferred_gpu_count
 from ae.ha.fencing import (
     fabric_ensure_operation,
     fabric_teardown_operation,
@@ -849,20 +850,10 @@ class InferenceCellController:
         self._node_runtimes[endpoint] = runtime
         return runtime, endpoint
 
-    def _gpu_count_from_labels(self, labels: dict | None) -> int | None:
-        if not labels:
-            return None
-        for key in ("gpu.count", "nvidia.gpu.count", "gpu_count"):
-            raw = labels.get(key)
-            if raw in (None, ""):
-                continue
-            if isinstance(raw, int):
-                return raw
-            try:
-                return int(raw)
-            except (TypeError, ValueError):
-                continue
-        return None
+    def _node_gpu_count(self, node) -> int | None:  # type: ignore[no-untyped-def]
+        capabilities = getattr(node, "capabilities", {}) or {}
+        labels = getattr(node, "labels", {}) or {}
+        return preferred_gpu_count(labels, capabilities)
 
     def _validate_members_for_execution(self, spec: InferenceCellSpec) -> list[str]:
         errors: list[str] = []
@@ -877,11 +868,12 @@ class InferenceCellController:
             endpoint = str(node.endpoint or "").strip()
             if not endpoint:
                 errors.append(f"member {member.node_id} has no agent endpoint")
-            gpu_count = self._gpu_count_from_labels(node.labels)
+            gpu_count = self._node_gpu_count(node)
             if gpu_count is not None and gpu_count < int(member.gpu_count):
+                source = "accelerators" if has_accelerator_inventory(node.capabilities) else "gpu.count"
                 errors.append(
                     "member "
-                    f"{member.node_id} gpu.count={gpu_count} < "
+                    f"{member.node_id} {source}={gpu_count} < "
                     f"manifest gpuCount={member.gpu_count}"
                 )
         return errors

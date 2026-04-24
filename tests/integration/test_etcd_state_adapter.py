@@ -92,10 +92,35 @@ def test_etcd_state_store_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     events = store.list_events("etcd-demo", limit=5)
     assert any(ev.event_type == "TestEvent" for ev in events)
 
-    store.upsert_node("node-1", name="node-1", labels={"role": "worker"})
+    store.upsert_node(
+        "node-1",
+        name="node-1",
+        labels={"role": "worker"},
+        capabilities={
+            "accelerators": [
+                {
+                    "id": "gpu-0",
+                    "kind": "discrete_gpu",
+                    "vendor": "nvidia",
+                    "family": "RTX 8000",
+                    "device_count": 1,
+                    "memory_model": "dedicated",
+                    "memory_bytes_per_device": 49152 * 1024 * 1024,
+                    "runtime_handlers": ["nvidia"],
+                    "partitioning_mode": "none",
+                    "backing_device_id": None,
+                    "execution_role": "execution",
+                }
+            ]
+        },
+    )
     store.record_heartbeat("node-1", "Ready")
     nodes = store.list_nodes()
-    assert any(node.node_id == "node-1" for node, _ in nodes)
+    assert any(
+        node.node_id == "node-1"
+        and node.capabilities["accelerators"][0]["family"] == "RTX 8000"
+        for node, _ in nodes
+    )
 
     store.upsert_site_ingress_endpoint(
         site_id="sea-edge-02",

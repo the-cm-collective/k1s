@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
@@ -16,6 +17,7 @@ from urllib.parse import urlparse, urlunparse
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
 from ae._utc import UTC
+from ae.accelerators import preferred_gpu_count, preferred_gpu_models
 from ae.config.manager import ConfigManager
 from ae.controller.health import HealthManager
 from ae.controller.inference_cell import InferenceCellController, InferenceCellSetController
@@ -274,6 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     nodes_parser = subparsers.add_parser("nodes", help="List or describe nodes")
     nodes_parser.add_argument("name", nargs="?", help="Node id to describe (omit to list)")
+    nodes_parser.add_argument("--json", action="store_true", help="Emit JSON output")
     nodes_parser.add_argument("--cordon", action="store_true", help="Mark node unschedulable")
     nodes_parser.add_argument("--uncordon", action="store_true", help="Clear cordon on node")
     nodes_parser.add_argument(
@@ -1953,9 +1956,46 @@ def _node_status_with_staleness(status, *, grace_seconds: int = 40) -> str:  # t
     return st
 
 
+def _node_json_item(node, status, *, grace_seconds: int) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    seen_at = status.seen_at if status else None
+    stale = False
+    if seen_at:
+        try:
+            stale = (datetime.now(UTC) - seen_at).total_seconds() > grace_seconds
+        except Exception:
+            stale = False
+    state = status.status if status else "Unknown"
+    if stale and state == "Ready":
+        state = "NotReady"
+    capabilities = getattr(node, "capabilities", {}) or {}
+    labels = node.labels or {}
+    return {
+        "node_id": node.node_id,
+        "name": node.name,
+        "backend": node.backend,
+        "endpoint": node.endpoint,
+        "pod_cidr": node.pod_cidr,
+        "wg_pubkey": node.wg_pubkey,
+        "rp_pubkey": getattr(node, "rp_pubkey", None),
+        "labels": labels,
+        "capabilities": capabilities,
+        "gpu_count": preferred_gpu_count(labels, capabilities),
+        "gpu_models": preferred_gpu_models(labels, capabilities),
+        "taints": node.taints,
+        "cordoned": bool(getattr(node, "cordoned", False)),
+        "status": state,
+        "seen_at": seen_at.isoformat() if seen_at else None,
+        "stale": stale,
+    }
+
+
 def handle_nodes(
     ns: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter | None = None
 ) -> int:
+    try:
+        grace = int(os.getenv("AE_NODE_NOTREADY_AFTER", "40") or 40)
+    except Exception:
+        grace = 40
     # Mutating operations: cordon/uncordon/drain
     if (
         getattr(ns, "cordon", False)
@@ -2008,6 +2048,13 @@ def handle_nodes(
             print(f"node {ns.name} not found")
             return 1
         node, status = res
+        if getattr(ns, "json", False):
+            payload = {
+                "node": _node_json_item(node, status, grace_seconds=grace),
+                "stale_after_seconds": grace,
+            }
+            print(json.dumps(payload, indent=2))
+            return 0
         print(f"node {node.node_id}")
         print(f"  name:     {node.name or '-'}")
         print(f"  backend:  {node.backend or '-'}")
@@ -2016,6 +2063,13 @@ def handle_nodes(
         print(f"  wgPubkey: {node.wg_pubkey or '-'}")
         print(f"  rpPubkey: {getattr(node, 'rp_pubkey', None) or '-'}")
         print(f"  labels:   {_fmt_labels(node.labels)}")
+        caps = getattr(node, "capabilities", {}) or {}
+        if caps:
+            print(
+                "  accelerators: "
+                f"{preferred_gpu_count(node.labels, caps) or 0} "
+                f"({preferred_gpu_models(node.labels, caps) or '-'})"
+            )
         print(f"  taints:   {_fmt_taints(node.taints)}")
         print(f"  cordoned: {'yes' if getattr(node, 'cordoned', False) else 'no'}")
         if status:
@@ -2026,6 +2080,14 @@ def handle_nodes(
         return 0
 
     rows = store.list_nodes()
+    if getattr(ns, "json", False):
+        payload = {
+            "nodes": [_node_json_item(node, status, grace_seconds=grace) for node, status in rows],
+            "count": len(rows),
+            "stale_after_seconds": grace,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
     if not rows:
         print("No nodes registered.")
         return 0
