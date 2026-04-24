@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Distributed Compute Fabric</title>
+    <title>Nvidia Development Baseline</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -757,257 +757,99 @@
       </svg>
     </button>
     <div class="container">
-    <h1 id="distributed-compute-fabric-roadmap">Distributed Compute Fabric Roadmap</h1>
-<p>Status: formal development path for the AI Max+ 395 fabric program.</p>
-<p>This roadmap defines the public development path for <code>k1s</code> as an AMD Ryzen AI Max+ 395-first compute fabric. The near-term objective is not a generic distributed-compute story. It is a substrate-first program: AI Max+ 395 cells, <code>k1s</code> as the authoritative execution layer, and a generic provider-facing interface that can later expose the fabric to external provider networks.</p>
-<p>This roadmap does not define the backend HA control-plane authority model by itself. That foundation is tracked separately in <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>, which must land before D1 and later provider-edge milestones can be treated as a true HA story.</p>
+    <h1 id="nvidia-development-baseline">Nvidia Development Baseline</h1>
+<p>Status: canonical public baseline for the secondary Nvidia fabric development lane.</p>
+<p>This page defines the practical Nvidia-backed development baseline that can be used to advance fabric work before the AMD AI Max+ 395 systems arrive. It complements <a href="inference-fabric.html">Inference Fabric</a>, <a href="distributed-compute-fabric.html">Distributed Compute Fabric Roadmap</a>, and <a href="fabric-control-plane.html">Fabric Control Plane</a>.</p>
 <h2 id="summary">Summary</h2>
-<p>The repo already contains a real controller-owned fabric precursor through <code>InferenceCell</code>, session reservation, and VM/LAN validation workflows. The next stage is to formalize that work into one public program with the substrate as the primary track and provider-network deployment as a secondary packaging track.</p>
-<p>For context on a directly compatible provider-network model, see Akash&#x27;s overview of <a href="https://akash.network/docs/learn/core-concepts/providers-leases/">providers and leases</a>.</p>
-<p>The roadmap therefore has two linked tracks:</p>
-<p>1. substrate phases that describe what the control plane must learn to do safely 2. deployment milestones that describe how that substrate may later be exposed to provider networks</p>
-<p>Those tracks now sit on top of one control-plane prerequisite:</p>
+<p>The formal fabric program remains AMD-first. The Nvidia lane exists so <code>k1s</code> can keep moving on controller-owned fabric hardening and early typed-capability work with hardware that is already in hand.</p>
+<p>This development lane is intentionally bounded:</p>
 <ul>
-<li>the backend <code>k1s</code> core HA path is <code>etcd</code> for authority and NATS/JetStream for transport, as described in <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a></li>
-</ul>
-<h2 id="hardware-baseline">Hardware Baseline</h2>
-<p>The first public cell is being documented against one exact node baseline:</p>
-<ul>
-<li>Framework Desktop mainboard with AMD Ryzen AI Max+ 395</li>
-<li>Micron 7450 MAX M.2 2280 as the canonical SSD class when one NVMe type is used</li>
-<li>onboard 5GbE for management and fallback access</li>
-<li>Intel E810-XXVDA2 as the canonical RoCE development NIC</li>
-<li>SFP28 DAC as the first lab interconnect medium</li>
-</ul>
-<p>The hardware contract and bring-up sequence are documented in <a href="ai-max-395-hardware-baseline.html">AI Max+ 395 Hardware Baseline</a> and <a href="ai-max-395-cluster-prep.html">AI Max+ 395 Cluster Prep</a>.</p>
-<p>The 4-node cell shape follows AMD&#x27;s published AI Max cluster proof point for local large-model inference.</p>
-<p>This does not change the phase order:</p>
-<ul>
-<li>D0 remains the first repeatable execution baseline on standard transport</li>
-<li>F4 remains the first formal acceleration phase</li>
-</ul>
-<p>The public story is:</p>
-<ul>
-<li>one <code>unit</code> is one AMD Ryzen AI Max+ 395 node</li>
-<li>one <code>cell</code> is four cooperating AI Max+ 395 nodes</li>
-<li>one <code>fabric</code> is one or more cells managed by <code>k1s</code></li>
-<li>one <code>provider interface</code> is the lease- or marketplace-facing boundary that hands execution to the fabric through a provider-facing HA edge</li>
-</ul>
-<h2 id="secondary-nvidia-development-subtrack">Secondary Nvidia Development Subtrack</h2>
-<p>The public roadmap now also includes one bounded secondary development lane: <code>F0n-nvidia-dev</code>.</p>
-<p>That lane exists because accessible Nvidia hardware is available now while the AMD AI Max+ 395 systems are not yet in hand. The current physical-host baseline for that lane is documented in <a href="nvidia-development-baseline.html">Nvidia Development Baseline</a>:</p>
-<ul>
-<li>NixOS workstation with a TITAN RTX 24 GB, used as <code>core-a</code> plus schedulable GPU node <code>core-a--hub</code></li>
-<li>Ubuntu Server workstation with an RTX-8000 48 GB, used as <code>edge-b</code> plus GPU node <code>edge-b--gpu-1</code></li>
-</ul>
-<p>This subtrack is deliberately constrained:</p>
-<ul>
-<li>it advances substrate development and evidence only</li>
+<li>it is a secondary public development subtrack, not a replacement for the AMD mainline</li>
+<li>it uses the two physical Nvidia hosts that are available now</li>
 <li>it stays on standard Ethernet</li>
-<li>it does not change the AMD-first phase order</li>
-<li>it does not satisfy <code>D0</code></li>
-<li>it does not make vGPU or TDM a current milestone requirement</li>
+<li>it does not satisfy AMD <code>D0</code></li>
+<li>it does not make vGPU or TDM part of the current milestone evidence</li>
 </ul>
-<p>The intent is to keep controller, session, readiness, restart, and teardown work moving without turning temporary hardware availability into a rewritten public deployment story.</p>
-<h2 id="target-deployment-shape">Target Deployment Shape</h2>
-<p>The target near-term deployment shape is documented in <a href="fabric-deployment-topology.html">Fabric Deployment Topology</a>.</p>
-<pre class="mermaid">flowchart LR
-    U[Client or Lease Marketplace] --&gt; E[Provider Interface / HA Edge]
-    E --&gt; B[Fabric Broker + Gateway]
-    B --&gt; C1[AI Max+ 395 Cell A]
-    B --&gt; C2[AI Max+ 395 Cell B]
-    C1 --&gt; N1[4-node execution set]
-    C2 --&gt; N2[4-node execution set]</pre>
-<p>Operationally, the front edge handles ingress, tenancy boundaries, and lease-facing lifecycle. The backend fabric handles placement, session realization, execution locality, and later knowledge-assisted optimization.</p>
-<h2 id="current-baseline">Current Baseline</h2>
-<p>Today the repo already includes:</p>
+<h2 id="physical-host-baseline">Physical Host Baseline</h2>
+<p>The current public Nvidia development baseline is one two-host A/B shape:</p>
+<table><thead><tr><th>Host</th><th>Role</th><th>Node IDs</th><th>GPU</th></tr></thead><tbody><tr><td>NixOS workstation</td><td><code>core-a</code> controller plus schedulable GPU node</td><td><code>core-a--hub</code></td><td>TITAN RTX 24 GB</td></tr><tr><td>Ubuntu Server workstation</td><td><code>edge-b</code> plus GPU worker node</td><td><code>edge-b-gw</code>, <code>edge-b--gpu-1</code></td><td>RTX-8000 48 GB</td></tr></tbody></table>
+<p>This is the first practical <code>F0n-nvidia-dev</code> evidence lane:</p>
 <ul>
-<li><code>InferenceCell</code> and <code>InferenceCellSet</code></li>
-<li>deterministic stage placement and boundary admission</li>
-<li>session reservation and node-agent session hooks</li>
-<li>controller-persisted fabric sessions, GPU leases, port leases, and node locks</li>
-<li>VM and LAN validation lanes for distributed inference bring-up</li>
+<li>one single-node execution check on the NixOS TITAN host</li>
+<li>one single-node execution check on the Ubuntu RTX-8000 host</li>
+<li>one two-host <code>pp=2</code> execution check across both hosts</li>
 </ul>
-<p>What it does not yet include is the full provider-interface topology, typed fabric facts, or the locality substrate needed for later advisory and cognitive layers.</p>
-<h2 id="substrate-phases">Substrate Phases</h2>
-<h3 id="f0-fabric-hardening-and-validation">F0: Fabric hardening and validation</h3>
-<p>Goal:</p>
+<p>The baseline is about controller and fabric behavior, not product-family claims. These hosts are close enough to exercise the current <code>InferenceCell</code> lifecycle, node registration, GPU slot reservation, readiness, restart, and teardown flows while the AMD mainline hardware is still unavailable.</p>
+<h2 id="relationship-to-the-amd-mainline">Relationship to the AMD Mainline</h2>
+<p>This baseline does not change the formal roadmap order:</p>
 <ul>
-<li>make the current fabric lane operationally trustworthy enough to support D0 and D1</li>
+<li><code>F0n-nvidia-dev</code> is a secondary development and validation lane</li>
+<li><code>F0</code> remains the AMD-first fabric hardening milestone</li>
+<li><code>F1</code> remains the first typed-facts milestone for the mainline roadmap</li>
+<li><code>D0</code> remains one repeatable AI Max+ 395 cell on the documented AMD hardware baseline</li>
 </ul>
-<p>Primary outcomes:</p>
+<p>The practical meaning is simple:</p>
 <ul>
-<li>real readiness semantics for fabric sessions</li>
-<li>controller-visible member status and rollback signals</li>
-<li>repeatable VM and GPU validation artifacts</li>
-<li>reduced dependence on manifest-only telemetry</li>
+<li>Nvidia evidence can de-risk controller and fabric logic</li>
+<li>Nvidia evidence can inform the first typed accelerator fact shape</li>
+<li>Nvidia evidence does not close AMD execution-baseline milestones on its own</li>
 </ul>
-<h3 id="f1-typed-facts-and-telemetry">F1: Typed facts and telemetry</h3>
-<p>Goal:</p>
+<p>For the AMD public baseline, use <a href="ai-max-395-hardware-baseline.html">AI Max+ 395 Hardware Baseline</a>. For the AMD cell bring-up sequence, use <a href="ai-max-395-cluster-prep.html">AI Max+ 395 Cluster Prep</a>.</p>
+<h2 id="accelerator-fact-shape-reserved-for-f1">Accelerator Fact Shape Reserved for F1</h2>
+<p>The existing <code>gpu.*</code> labels remain useful for the current Nvidia lane, but they should not become the long-term control-plane contract. <code>F1</code> should introduce typed accelerator facts that already account for:</p>
 <ul>
-<li>replace ad hoc labels and manifest hints with typed controller facts</li>
+<li>discrete GPUs</li>
+<li>APUs with unified memory</li>
+<li>virtual or partitioned GPU surfaces</li>
 </ul>
-<p>Primary outcomes:</p>
+<p>The first reserved shape should allow one node to report one or more homogeneous execution pools:</p>
+<pre><code>capabilities:
+  accelerators:
+    - id: titan-rtx-0
+      kind: discrete_gpu | apu | virtual_gpu
+      vendor: nvidia | amd
+      family: TITAN RTX
+      architecture: TU102
+      device_count: 1
+      memory_model: dedicated | unified | partitioned
+      memory_bytes_per_device: 25769803776
+      runtime_handlers:
+        - nvidia
+      partitioning_mode: none | mig | vgpu | tdm | sriov
+      backing_device_id: null
+      execution_role: execution | mixed | management_only</code></pre>
+<p>Important boundaries for this shape:</p>
 <ul>
-<li>typed node capability reporting</li>
-<li>typed accelerator facts that already account for <code>discrete_gpu</code>, <code>apu</code>, and <code>virtual_gpu</code></li>
-<li>typed storage and media reporting, including the baseline NVMe class and any later persistent-memory class</li>
-<li>typed link and topology telemetry</li>
-<li>typed RNIC and RDMA capability reporting, including negotiated PCIe state where relevant</li>
-<li>clear distinction between management, execution, and fabric identities</li>
-<li>current <code>gpu.*</code> labels retained only as a backward-compatibility projection while old flows migrate</li>
-<li>structured inputs for later planning engines</li>
+<li><code>kind=apu</code> reserves unified-memory accelerator nodes without requiring APU-specific scheduling semantics in <code>F0n</code></li>
+<li><code>kind=virtual_gpu</code> reserves partitioned or virtual slices without making vGPU a current evidence requirement</li>
+<li><code>partitioning_mode</code> exists so later MIG, vGPU, TDM, or SR-IOV variants do not require a contract break</li>
+<li>current <code>gpu.*</code> labels remain a backward-compatibility projection until old flows migrate</li>
 </ul>
-<h3 id="f2-chunk-and-cache-locality">F2: Chunk and cache locality</h3>
-<p>Goal:</p>
+<p>Compatibility projection guidance:</p>
 <ul>
-<li>make movement, residency, and warm locality explicit before optimization work expands</li>
+<li><code>gpu.present=true</code> when any execution-capable accelerator exists</li>
+<li><code>gpu.count</code> is the sum of execution-capable device count</li>
+<li><code>gpu.models</code> is a human-readable summary of accelerator family names</li>
+<li>manual <code>gpu.sku</code> lab labels remain acceptable in examples and variants, but they are not the long-term control contract</li>
 </ul>
-<p>Primary outcomes:</p>
+<h2 id="validation-surface">Validation Surface</h2>
+<p>The primary operational evidence for this baseline should come from:</p>
 <ul>
-<li>content-addressed chunk identity</li>
-<li>replica and residency state</li>
-<li>controlled push and pull flows over standard transport</li>
-<li>integrity and epoch semantics for moved data</li>
+<li>single-node and two-host <code>InferenceCell</code> checks using the A/B manifests under <code>specs/examples/inference/</code></li>
+<li>the operator-run <code>scripts/dev/f0n_nvidia_validate.py</code> helper, which captures node inventory plus apply/status/events/delete/reapply artifacts under <code>runs/&lt;RUN_ID&gt;/</code></li>
+<li>the existing LAN GPU procedures in <code>docs/ops/gpu-fabric-abc-lan.md</code>, updated to treat the physical A/B lane as the first <code>F0n</code> evidence surface</li>
+<li>the remote VM GPU procedure in <code>docs/ops/gpu-vm-remote-host-validation.md</code>, treated as a supplemental validation surface rather than the main milestone lane</li>
 </ul>
-<h3 id="f3-hyperon-advisory-planning">F3: Hyperon advisory planning</h3>
-<p>Goal:</p>
+<h2 id="non-goals">Non-Goals</h2>
+<p>This baseline does not:</p>
 <ul>
-<li>add explainable symbolic planning without giving up controller authority</li>
+<li>redefine the formal AMD-first roadmap</li>
+<li>make the Nvidia lane a deployment milestone</li>
+<li>require vGPU or TDM validation now</li>
+<li>define the full final multi-domain typed heartbeat or API schema beyond the current accelerator slice</li>
+<li>define APU-specific or virtual-GPU-specific placement policy</li>
 </ul>
-<p>Primary outcomes:</p>
-<ul>
-<li>advisory request and response contract</li>
-<li>decision traces and divergence recording</li>
-<li>replay and evaluation support</li>
-<li>bounded planning support for placement, admission, and degraded-mode handling</li>
-<li>the first controller-visible continuity and coherence signals needed for later governance</li>
-</ul>
-<h3 id="f4-accelerated-movement">F4: Accelerated movement</h3>
-<p>Goal:</p>
-<ul>
-<li>improve already-correct locality behavior where hardware and transport allow it</li>
-</ul>
-<p>Primary outcomes:</p>
-<ul>
-<li>capability negotiation for faster movement paths</li>
-<li>transfer leases and landing-zone safety</li>
-<li>the first formal RoCE development path documented against the E810 hardware baseline</li>
-<li>accelerated movement with clean fallback to standard transport</li>
-</ul>
-<h3 id="f5-das-cells-and-knowledge-bearing-fabric-services">F5: DAS cells and knowledge-bearing fabric services</h3>
-<p>Goal:</p>
-<ul>
-<li>deploy locality-first knowledge services on the stabilized fabric substrate</li>
-</ul>
-<p>Primary outcomes:</p>
-<ul>
-<li>per-site DAS cell bundles</li>
-<li>local-first query, warming, and promotion behavior</li>
-<li>controlled cross-site replication instead of WAN-dependent hot paths</li>
-<li>a practical substrate for later cognitive-fabric behavior</li>
-</ul>
-<h2 id="philosophy-and-safeguards">Philosophy and Safeguards</h2>
-<p>Later cognitive-fabric phases are governed by the project&#x27;s philosophy docs:</p>
-<ul>
-<li><a href="project-philosophy.html">Project Philosophy</a></li>
-<li><a href="cognitive-welfare-and-continuity.html">Cognitive Welfare and Continuity Safeguards</a></li>
-</ul>
-<p>Those docs do not change the current authority model. They do change the bar for later work:</p>
-<ul>
-<li>continuity, coherence, legibility, and bounded distress become first-class engineering concerns</li>
-<li>capability work should not rely on preventable internal harm, continuity destruction, or opaque coercive control surfaces</li>
-<li>later cognitive-substrate work should add continuity logging, coherence and overload visibility, and review gates for major continuity-changing operations</li>
-</ul>
-<h2 id="dependency-model">Dependency Model</h2>
-<p>The substrate phases remain the primary dependency chain:</p>
-<table><thead><tr><th>Phase</th><th>Depends on</th><th>Why</th></tr></thead><tbody><tr><td>F1</td><td>F0</td><td>Typed facts are only useful after the base lifecycle is real.</td></tr><tr><td>F2</td><td>F1</td><td>Locality policy needs trustworthy facts and telemetry.</td></tr><tr><td>F3</td><td>F1, F2</td><td>Hyperon advisory logic only makes sense with typed facts and explicit locality state.</td></tr><tr><td>F4</td><td>F2, F3</td><td>Acceleration is only safe after correctness and policy guardrails exist.</td></tr><tr><td>F5</td><td>F2, F3</td><td>Knowledge cells depend on locality semantics and bounded policy behavior.</td></tr></tbody></table>
-<p>The deployment milestones are secondary and deliberately coupled to the substrate:</p>
-<table><thead><tr><th>Milestone</th><th>Depends on</th><th>Why</th></tr></thead><tbody><tr><td>D0</td><td>F0</td><td>One cell is only meaningful if readiness and validation are real.</td></tr><tr><td>D1</td><td>D0, F0, H3</td><td>The edge and broker cannot be trusted until the execution cell is trusted and the backend authority model is a real HA control plane.</td></tr><tr><td>D2</td><td>D1, F1, H4b2c-csi</td><td>A lease path needs typed capability and status facts, plus one fully converged HA authority model for controller and shim/API surfaces.</td></tr><tr><td>D3</td><td>D2, F1, F2, H5c-ha-closeout</td><td>Multi-cell service requires explicit locality and cross-cell cost awareness plus a closed HA evidence and recovery posture.</td></tr><tr><td>D4</td><td>D3, F3, H5c-ha-closeout</td><td>Domain-scale partner operation needs explainable decisions, stable evidence, and a decision-complete HA operations baseline.</td></tr></tbody></table>
-<h2 id="hyperon-trajectory">Hyperon Trajectory</h2>
-<p>Hyperon is part of the roadmap, but not the v1 authority model.</p>
-<ul>
-<li>In v1 and early pilots, Hyperon is advisory only: it ranks, explains, and records divergence against the deterministic baseline.</li>
-<li>After the locality substrate matures, Hyperon can move into bounded automation for placement, degradation, and learning loops.</li>
-<li>The later-stage objective is a self-optimizing cognitive substrate at the control-plane and fabric layer, but that is a later phase, not a current capability claim.</li>
-</ul>
-<h2 id="deployment-milestones">Deployment Milestones</h2>
-<p>These milestones are secondary to the substrate phases above. They track how the fabric may later be packaged behind a provider interface once the substrate is trustworthy enough to expose externally.</p>
-<h3 id="d0-single-cell-execution-baseline">D0: Single-cell execution baseline</h3>
-<p>Goal:</p>
-<ul>
-<li>prove one AI Max+ 395 cell as a repeatable execution unit on the documented node baseline</li>
-</ul>
-<p>Primary outcomes:</p>
-<ul>
-<li>repeatable node preparation on the documented public baseline</li>
-<li>repeatable 4-node cell bring-up</li>
-<li>controller-visible fabric readiness and restart behavior</li>
-<li>usable LAN and VM validation evidence</li>
-<li>current <code>InferenceCell</code> lane mapped cleanly onto the future cell contract</li>
-</ul>
-<h3 id="d1-ha-edge-k1s-or-k3s-and-fabric-broker">D1: HA edge (k1s or k3s) and fabric broker</h3>
-<p>Goal:</p>
-<ul>
-<li>front the AMD cell with a stable HA edge (k1s or k3s) and a broker boundary</li>
-</ul>
-<p>This milestone assumes the backend <code>k1s</code> core is already following the HA authority model defined in <a href="high-availability-control-plane.html">HA Control Plane Roadmap</a>. The edge does not substitute for backend controller fencing, shared desired-state authority, or <code>etcd</code>-backed leadership.</p>
-<p>Primary outcomes:</p>
-<ul>
-<li>HA edge for ingress and lease-facing control</li>
-<li>explicit broker and gateway role between edge and fabric</li>
-<li>north/south ingress separated from east/west fabric traffic</li>
-<li>operational trust boundaries suitable for pilot deployments</li>
-</ul>
-<h3 id="d2-provider-backed-lease-pilot">D2: Provider-backed lease pilot</h3>
-<p>Goal:</p>
-<ul>
-<li>drive the AMD fabric through a provider-facing lease path via the HA edge (k1s or k3s) without collapsing authority into the edge</li>
-</ul>
-<p>Primary outcomes:</p>
-<ul>
-<li>lease intake translated into fabric reservations</li>
-<li>edge-to-broker-to-cell lifecycle proof</li>
-<li>provider-facing status, teardown, and failure reporting</li>
-<li>pilot evidence for a first marketplace-backed deployment path</li>
-</ul>
-<h3 id="d3-multi-cell-locality-service">D3: Multi-cell locality service</h3>
-<p>Goal:</p>
-<ul>
-<li>operate more than one cell as one locality-aware fabric</li>
-</ul>
-<p>Primary outcomes:</p>
-<ul>
-<li>multi-cell capacity accounting</li>
-<li>locality-aware placement and degradation choices</li>
-<li>explicit distinction between cell-local and cross-cell execution</li>
-<li>repeatable service behavior under growth and impairment</li>
-</ul>
-<h3 id="d4-domain-operations-and-partner-readiness">D4: Domain operations and partner readiness</h3>
-<p>Goal:</p>
-<ul>
-<li>package the fabric as a fundable and partner-readable operating model</li>
-</ul>
-<p>Primary outcomes:</p>
-<ul>
-<li>repeatable domain deployment shape</li>
-<li>grant-ready milestone evidence and pilot reports</li>
-<li>clear separation between public tiers, reserved capacity, and domain-level operations</li>
-<li>a stable story for execution today and intelligence later</li>
-</ul>
-<h2 id="public-positioning">Public Positioning</h2>
-<p>The public position for this roadmap is intentionally concrete:</p>
-<ul>
-<li>the near-term hardware target is the AMD Ryzen AI Max+ 395</li>
-<li>the near-term execution unit is the 4-node cell</li>
-<li>the near-term deployment shape uses a provider-facing HA edge in front of the <code>k1s</code> AMD fabric</li>
-<li><code>k1s</code> remains authoritative for reconcile, safety, and rollback</li>
-<li>Hyperon is advisory first and becomes more autonomous only in later phases</li>
-<li>later cognitive-fabric work is explicitly constrained by continuity and welfare safeguards rather than capability goals alone</li>
-</ul>
-<p>This keeps the grant and partner story specific enough to be credible without claiming maturity that the repo does not yet have.</p>
-<h2 id="tracking">Tracking</h2>
-<p>The <a href="roadmap-status.html">roadmap status page</a> is the canonical progress surface for this roadmap. Use it to track both substrate phases and deployment milestones, along with their evidence, dependencies, and primary code areas.</p>
+<p>Those details belong to the later <code>F1</code> implementation work after the current <code>F0n</code> development lane has produced stable evidence.</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -1015,7 +857,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-24 14:41:20</span>
+        <span>Built 2026-04-24 15:32:42</span>
       </div>
     </footer>
     <script>

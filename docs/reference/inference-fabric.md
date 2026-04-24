@@ -36,11 +36,13 @@ The current fabric lane exists to prove that `k1s` can:
 
 The current lane is suitable for labs, controller development, and staged validation. It is not yet a production-grade multi-site fabric.
 
+Today the most accessible hardware-backed validation surface for that lane is the bounded Nvidia development track documented in [Nvidia Development Baseline](nvidia-development-baseline.html). The formal deployment mainline remains AMD-first.
+
 ## How This Maps Forward
 
 The formal roadmap targets AI Max+ 395-first execution cells behind a provider-facing HA edge. The current `InferenceCell` lane is the precursor to that path, not the finished deployment model.
 
-The target hardware baseline for that path is documented in [AI Max+ 395 Hardware Baseline](ai-max-395-hardware-baseline.html), with the actionable bring-up sequence in [AI Max+ 395 Cluster Prep](ai-max-395-cluster-prep.html).
+The current physical-host development baseline for accessible validation is documented in [Nvidia Development Baseline](nvidia-development-baseline.html). The target deployment hardware baseline for the formal mainline is documented in [AI Max+ 395 Hardware Baseline](ai-max-395-hardware-baseline.html), with the actionable bring-up sequence in [AI Max+ 395 Cluster Prep](ai-max-395-cluster-prep.html).
 
 Forward mapping:
 
@@ -118,6 +120,7 @@ The controller records session metadata such as:
 - `InferenceCellSet` expansion and scale-down
 - fabric session persistence in controller state
 - VM and LAN validation workflows through:
+  - [Nvidia Development Baseline](nvidia-development-baseline.html)
   - `docs/ops/gpu-fabric-abc-lan.md`
   - [VM Variant Runbook](vm-variant-runbook.html)
   - `docs/ops/vm-metrics-and-gates.md`
@@ -150,6 +153,8 @@ The current lane does not yet provide:
 
 - Host and LAN pattern:
   - `docs/ops/gpu-fabric-abc-lan.md`
+- Current Nvidia development baseline:
+  - [Nvidia Development Baseline](nvidia-development-baseline.html)
 - AI Max hardware contract:
   - [AI Max+ 395 Hardware Baseline](ai-max-395-hardware-baseline.html)
 - AI Max cluster prep:

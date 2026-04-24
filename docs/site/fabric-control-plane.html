@@ -765,6 +765,7 @@
 <ul>
 <li><code>k1s</code> remains authoritative for reconcile, safety gates, and rollback behavior.</li>
 <li>The near-term v1 path is AMD-first, using AI Max+ 395 cells as the first authoritative fabric-session implementation target.</li>
+<li>A secondary Nvidia development subtrack may advance current fabric hardening and typed-fact design, but it does not replace the AMD mainline or satisfy AMD deployment milestones.</li>
 <li>The near-term deployment topology uses a provider-facing HA edge in front of the <code>k1s</code> AMD fabric. That topology is described in <a href="fabric-deployment-topology.html">Fabric Deployment Topology</a>.</li>
 <li>The backend HA authority path is <code>etcd</code> for truth and NATS/JetStream for transport. Provider-edge HA does not replace backend controller HA.</li>
 <li>Hyperon is advisory in v1. It may rank or explain safe choices, but it does not become controller authority.</li>
@@ -809,6 +810,9 @@
 <p>The public AI Max node profile is documented in <a href="ai-max-395-hardware-baseline.html">AI Max+ 395 Hardware Baseline</a>, but the control plane should not hard-code decisions directly against product names.</p>
 <p>The controller and planner should instead consume typed capability facts such as:</p>
 <ul>
+<li>accelerator kind, vendor, family, and architecture</li>
+<li>accelerator memory model and per-device memory size</li>
+<li>runtime handler support and partitioning mode</li>
 <li>storage and media class</li>
 <li>persistent-memory class when present</li>
 <li>RNIC family and RDMA mode support</li>
@@ -816,6 +820,29 @@
 <li>interface role such as management, execution, or fabric</li>
 </ul>
 <p>That keeps the public hardware story concrete without turning the control plane into a SKU-specific rules engine.</p>
+<p>The reserved accelerator fact shape should already account for:</p>
+<ul>
+<li><code>discrete_gpu</code></li>
+<li><code>apu</code></li>
+<li><code>virtual_gpu</code></li>
+</ul>
+<p>One node may therefore report one or more execution pools through a typed structure such as:</p>
+<pre><code>capabilities:
+  accelerators:
+    - id: titan-rtx-0
+      kind: discrete_gpu | apu | virtual_gpu
+      vendor: nvidia | amd
+      family: TITAN RTX
+      architecture: TU102
+      device_count: 1
+      memory_model: dedicated | unified | partitioned
+      memory_bytes_per_device: 25769803776
+      runtime_handlers:
+        - nvidia
+      partitioning_mode: none | mig | vgpu | tdm | sriov
+      backing_device_id: null
+      execution_role: execution | mixed | management_only</code></pre>
+<p>Current <code>gpu.*</code> labels may remain as a compatibility projection during the transition, but they should not be the long-term control-plane contract.</p>
 <h2 id="current-branch-mapping">Current Branch Mapping</h2>
 <table><thead><tr><th>Current seam</th><th>Formal role</th></tr></thead><tbody><tr><td><code>StagePlanner</code></td><td>deterministic planning engine</td></tr><tr><td><code>BoundaryBudgetAdmission</code></td><td>deterministic admission evaluator</td></tr><tr><td><code>FabricBroker</code></td><td>baseline session-provider seam</td></tr><tr><td><code>FabricAgentClient</code></td><td>node materializer seam</td></tr><tr><td><code>fabric.mode</code></td><td>transport mode</td></tr><tr><td>current fabric session metadata</td><td>precursor to a shared session record</td></tr></tbody></table>
 <h2 id="later-hyperon-path">Later Hyperon Path</h2>
@@ -870,7 +897,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-17 10:02:07</span>
+        <span>Built 2026-04-24 14:41:20</span>
       </div>
     </footer>
     <script>

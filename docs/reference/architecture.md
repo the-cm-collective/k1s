@@ -124,6 +124,7 @@ Current behavior:
 The formal roadmap turns this lane into an AI Max+ 395-first fabric program. The near-term deployment shape is a provider-facing HA edge in front of a `k1s` AMD cell fabric; the current `InferenceCell` implementation is the controller-owned precursor to that model.
 
 The current lane is documented in `docs/reference/inference-fabric.md`.
+The current Nvidia development baseline is documented in `docs/reference/nvidia-development-baseline.md`.
 The current node baseline and cluster-prep sequence are documented in `docs/reference/ai-max-395-hardware-baseline.md` and `docs/ops/ai-max-395-cluster-prep.md`.
 The backend HA authority model that precedes provider-edge work is documented in `docs/roadmap/high-availability-control-plane.md`.
 The formal authority split and provider model are documented in `docs/design/fabric-control-plane.md`.

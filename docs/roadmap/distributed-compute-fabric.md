@@ -47,6 +47,25 @@ The public story is:
 - one `fabric` is one or more cells managed by `k1s`
 - one `provider interface` is the lease- or marketplace-facing boundary that hands execution to the fabric through a provider-facing HA edge
 
+## Secondary Nvidia Development Subtrack
+
+The public roadmap now also includes one bounded secondary development lane: `F0n-nvidia-dev`.
+
+That lane exists because accessible Nvidia hardware is available now while the AMD AI Max+ 395 systems are not yet in hand. The current physical-host baseline for that lane is documented in [Nvidia Development Baseline](nvidia-development-baseline.html):
+
+- NixOS workstation with a TITAN RTX 24 GB, used as `core-a` plus schedulable GPU node `core-a--hub`
+- Ubuntu Server workstation with an RTX-8000 48 GB, used as `edge-b` plus GPU node `edge-b--gpu-1`
+
+This subtrack is deliberately constrained:
+
+- it advances substrate development and evidence only
+- it stays on standard Ethernet
+- it does not change the AMD-first phase order
+- it does not satisfy `D0`
+- it does not make vGPU or TDM a current milestone requirement
+
+The intent is to keep controller, session, readiness, restart, and teardown work moving without turning temporary hardware availability into a rewritten public deployment story.
+
 ## Target Deployment Shape
 
 The target near-term deployment shape is documented in [Fabric Deployment Topology](fabric-deployment-topology.html).
@@ -97,10 +116,12 @@ Goal:
 Primary outcomes:
 
 - typed node capability reporting
+- typed accelerator facts that already account for `discrete_gpu`, `apu`, and `virtual_gpu`
 - typed storage and media reporting, including the baseline NVMe class and any later persistent-memory class
 - typed link and topology telemetry
 - typed RNIC and RDMA capability reporting, including negotiated PCIe state where relevant
 - clear distinction between management, execution, and fabric identities
+- current `gpu.*` labels retained only as a backward-compatibility projection while old flows migrate
 - structured inputs for later planning engines
 
 ### F2: Chunk and cache locality

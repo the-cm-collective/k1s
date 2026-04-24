@@ -6,6 +6,8 @@ Purpose
 - Host B (remote hypervisor): Ubuntu LTS VM with RTX-6000 passthrough, running `edge-b`.
 - Run the sequence from Host A over SSH for repeatability.
 
+This is a supplemental Nvidia development surface. The primary `F0n-nvidia-dev` baseline is the physical-host A/B path documented in [Nvidia Development Baseline](nvidia-development-baseline.html) and `docs/ops/gpu-fabric-abc-lan.md`.
+
 Scope
 - Includes VM bring-up, k1s edge connectivity, and inference cell readiness.
 - Uses `libvirt+QEMU`, bridged static LAN networking, and repo golden GPU image.

@@ -6,6 +6,7 @@ DOCS_MAPPING = {
     "reference/architecture.md": "architecture.html",
     "reference/inference-fabric.md": "inference-fabric.html",
     "reference/ai-max-395-hardware-baseline.md": "ai-max-395-hardware-baseline.html",
+    "reference/nvidia-development-baseline.md": "nvidia-development-baseline.html",
     "reference/apishim-roadmap.md": "apishim-roadmap.html",
     "reference/cri-containerd.md": "cri-containerd.html",
     "guides/multinode-lab.md": "multinode-lab.html",

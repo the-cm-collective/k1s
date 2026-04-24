@@ -10,6 +10,7 @@ The underlying HA control-plane authority model is tracked separately in [HA Con
 
 - `k1s` remains authoritative for reconcile, safety gates, and rollback behavior.
 - The near-term v1 path is AMD-first, using AI Max+ 395 cells as the first authoritative fabric-session implementation target.
+- A secondary Nvidia development subtrack may advance current fabric hardening and typed-fact design, but it does not replace the AMD mainline or satisfy AMD deployment milestones.
 - The near-term deployment topology uses a provider-facing HA edge in front of the `k1s` AMD fabric. That topology is described in [Fabric Deployment Topology](fabric-deployment-topology.html).
 - The backend HA authority path is `etcd` for truth and NATS/JetStream for transport. Provider-edge HA does not replace backend controller HA.
 - Hyperon is advisory in v1. It may rank or explain safe choices, but it does not become controller authority.
@@ -84,6 +85,9 @@ The public AI Max node profile is documented in [AI Max+ 395 Hardware Baseline](
 
 The controller and planner should instead consume typed capability facts such as:
 
+- accelerator kind, vendor, family, and architecture
+- accelerator memory model and per-device memory size
+- runtime handler support and partitioning mode
 - storage and media class
 - persistent-memory class when present
 - RNIC family and RDMA mode support
@@ -91,6 +95,34 @@ The controller and planner should instead consume typed capability facts such as
 - interface role such as management, execution, or fabric
 
 That keeps the public hardware story concrete without turning the control plane into a SKU-specific rules engine.
+
+The reserved accelerator fact shape should already account for:
+
+- `discrete_gpu`
+- `apu`
+- `virtual_gpu`
+
+One node may therefore report one or more execution pools through a typed structure such as:
+
+```yaml
+capabilities:
+  accelerators:
+    - id: titan-rtx-0
+      kind: discrete_gpu | apu | virtual_gpu
+      vendor: nvidia | amd
+      family: TITAN RTX
+      architecture: TU102
+      device_count: 1
+      memory_model: dedicated | unified | partitioned
+      memory_bytes_per_device: 25769803776
+      runtime_handlers:
+        - nvidia
+      partitioning_mode: none | mig | vgpu | tdm | sriov
+      backing_device_id: null
+      execution_role: execution | mixed | management_only
+```
+
+Current `gpu.*` labels may remain as a compatibility projection during the transition, but they should not be the long-term control-plane contract.
 
 ## Current Branch Mapping
 
