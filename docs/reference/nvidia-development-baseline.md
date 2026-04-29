@@ -22,16 +22,32 @@ The current public Nvidia development baseline is one two-host A/B shape:
 
 | Host | Role | Node IDs | GPU |
 | --- | --- | --- | --- |
-| NixOS workstation | `core-a` controller plus schedulable GPU node | `core-a--hub` | TITAN RTX 24 GB |
+| NixOS workstation | `core-a` controller plus one Ubuntu guest with Linux GPU passthrough | `core-a--hub` | TITAN RTX 24 GB |
 | Ubuntu Server workstation | `edge-b` plus GPU worker node | `edge-b-gw`, `edge-b--gpu-1` | RTX-8000 48 GB |
 
 This is the first practical `F0n-nvidia-dev` evidence lane:
 
-- one single-node execution check on the NixOS TITAN host
+- one single-node execution check on the NixOS-hosted TITAN passthrough guest
 - one single-node execution check on the Ubuntu RTX-8000 host
 - one two-host `pp=2` execution check across both hosts
 
 The baseline is about controller and fabric behavior, not product-family claims. These hosts are close enough to exercise the current `InferenceCell` lifecycle, node registration, GPU slot reservation, readiness, restart, and teardown flows while the AMD mainline hardware is still unavailable.
+
+## Current Development Hardware
+
+Publishing the exact development hardware here is intentional. The point is not to promote one workstation shape. The point is to make the current dev substrate explicit enough that another operator can understand what is being exercised, what is dedicated to passthrough, and which parts of the lane are still workstation-specific.
+
+| Host | Current role | Development hardware notes |
+| --- | --- | --- |
+| Host A | `core-a` controller plus one Linux passthrough guest | Current NixOS workstation based on an Intel Hades Canyon NUC. It uses dual interfaces so one NIC can stay with the host and one dedicated NIC can be handed to the guest. |
+| Host A guest | `core-a--hub` execution node | Ubuntu guest on libvirt `qemu:///system`, Q35 + OVMF, host-passthrough CPU, hugepages, locked memory, and one passed-through TITAN RTX with its audio function. The guest keeps one virtio management NIC on libvirt `default` for rescue/bootstrap only. |
+| Host B | `edge-b` site plus GPU worker | Ubuntu Server workstation with one RTX-8000 48 GB as the current second physical Nvidia lane. |
+
+Current Host A posture
+- one dedicated LAN NIC is reserved for passthrough testing and is the primary validation and `AE_AGENT_ENDPOINT` identity for the guest
+- one separate host-facing NIC remains with the workstation for normal host access and controller duties
+- the current guest shape passes through the TITAN RTX GPU function plus the associated audio function first, keeping auxiliary TITAN functions out of the first Linux compute slice
+- the A/B development lane is therefore split between a host-owned control role on Host A and a guest-owned execution role on the same physical box
 
 ## Relationship to the AMD Mainline
 
@@ -97,7 +113,9 @@ Compatibility projection guidance:
 The primary operational evidence for this baseline should come from:
 
 - single-node and two-host `InferenceCell` checks using the A/B manifests under `specs/examples/inference/`
-- the operator-run `scripts/dev/f0n_nvidia_validate.py` helper, which captures node inventory plus apply/status/events/delete/reapply artifacts under `runs/<RUN_ID>/`
+- the Host A libvirt passthrough procedure in [Host A Linux GPU Guest](host-a-linux-gpu-guest.html), which keeps the TITAN guest, the dedicated passthrough NIC policy, the local `state/host-a-gpu.env` workflow, and the management-NIC fallback path explicit
+- the guest-coupled `scripts/dev/gpu_guest_passthrough_validate.py` helper, which proves guest attach, CRI runtime readiness, and seeded CUDA execution for the NixOS TITAN lane
+- the operator-run `scripts/dev/f0n_nvidia_validate.py` helper, which captures the passthrough phase plus node inventory and apply/status/events/delete/reapply artifacts under `runs/<RUN_ID>/`
 - the existing LAN GPU procedures in `docs/ops/gpu-fabric-abc-lan.md`, updated to treat the physical A/B lane as the first `F0n` evidence surface
 - the remote VM GPU procedure in `docs/ops/gpu-vm-remote-host-validation.md`, treated as a supplemental validation surface rather than the main milestone lane
 

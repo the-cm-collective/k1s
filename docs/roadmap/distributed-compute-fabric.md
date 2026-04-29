@@ -51,10 +51,12 @@ The public story is:
 
 The public roadmap now also includes one bounded secondary development lane: `F0n-nvidia-dev`.
 
-That lane exists because accessible Nvidia hardware is available now while the AMD AI Max+ 395 systems are not yet in hand. The current physical-host baseline for that lane is documented in [Nvidia Development Baseline](nvidia-development-baseline.html):
+That lane exists because accessible Nvidia hardware is available now while the AMD AI Max+ 395 systems are not yet in hand. The current mixed-host baseline for that lane is documented in [Nvidia Development Baseline](nvidia-development-baseline.html):
 
-- NixOS workstation with a TITAN RTX 24 GB, used as `core-a` plus schedulable GPU node `core-a--hub`
+- NixOS workstation with a TITAN RTX 24 GB, used as `core-a` plus one Ubuntu guest that registers as `core-a--hub` through Linux GPU passthrough
 - Ubuntu Server workstation with an RTX-8000 48 GB, used as `edge-b` plus GPU node `edge-b--gpu-1`
+
+The exact development hardware details are published on purpose. That disclosure is meant to improve reproducibility and make the current workstation-specific substrate explicit, not to redefine the long-term target baseline. Keep the detailed machine notes in [Nvidia Development Baseline](nvidia-development-baseline.html).
 
 This subtrack is deliberately constrained:
 

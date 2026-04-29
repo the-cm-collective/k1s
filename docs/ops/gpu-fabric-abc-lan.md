@@ -2,7 +2,7 @@
 
 Purpose
 - Stand up the primary `F0n-nvidia-dev` physical-host lane first:
-  - Host A: `k1s-core` plus schedulable GPU node on the local workstation.
+  - Host A: `k1s-core` on the NixOS workstation plus one dedicated Ubuntu GPU guest with TITAN RTX passthrough, registered as `core-a--hub`.
   - Host B: `k1s-edge-core` plus GPU edge node on the second physical workstation.
 - Extend to a 3-host LAN pattern later when you want the older A/B/C cross-edge pattern:
   - Host C: optional second edge site with one more GPU node.
@@ -13,6 +13,7 @@ This guide complements [Nvidia Development Baseline](nvidia-development-baseline
 
 Related VM Lab Docs
 - Nvidia physical-host baseline: [Nvidia Development Baseline](nvidia-development-baseline.html)
+- Host A libvirt passthrough guest: [Host A Linux GPU Guest](host-a-linux-gpu-guest.html)
 - Golden image pipeline (Ubuntu 22.04 GA / kernel 5.15): `docs/ops/vm-golden-image-pipeline.md`
 - Variant orchestration and bootstrap runbook: `docs/ops/vm-variant-runbook.md`
 - Baseline + throughput gating workflow: `docs/ops/vm-metrics-and-gates.md`
@@ -23,6 +24,11 @@ Current capability baseline
 - Deployment manifests support `spec.runtimeClassName`; CRI maps this to pod sandbox `runtime_handler`.
 - Inference cell executor supports `executor.runtimeClassName`; generated worker/leader workloads inherit it.
 - Inference examples under `specs/examples/inference/` are set to `runtimeClassName: nvidia`.
+
+Validation boundaries
+- `scripts/lab/vm/labctl.sh image verify --variant gpu` remains an image-contract check only.
+- `python scripts/dev/gpu_guest_passthrough_validate.py validate ...` is the host-coupled passthrough proof for the NixOS TITAN guest.
+- `ae cell ...` and `python scripts/dev/f0n_nvidia_validate.py collect ...` are the fabric and controller evidence steps.
 
 Endpoint policy
 
@@ -46,7 +52,7 @@ Expected
 - `nvidia-smi` lists GPUs.
 - preflight reports `required runtime handler=nvidia` as available.
 
-## 2) Bring up host A (core plus schedulable GPU node)
+## 2) Bring up host A (core plus Ubuntu GPU guest)
 
 ```bash
 sudo -E \
@@ -56,7 +62,34 @@ sudo -E \
   make k1s-core-cri
 ```
 
-Primary schedulable node on host A:
+Then verify the guest image contract, boot the Ubuntu GPU guest through the Host A libvirt helper, and prove passthrough before starting `core-a--hub`:
+
+```bash
+cp ops/dev/host-a-gpu.env.sample state/host-a-gpu.env
+scripts/lab/vm/labctl.sh image verify --variant gpu
+scripts/lab/vm/labctl.sh host-a-gpu preflight
+scripts/lab/vm/labctl.sh host-a-gpu create-overlay
+scripts/lab/vm/labctl.sh host-a-gpu create-seed
+scripts/lab/vm/labctl.sh host-a-gpu define
+scripts/lab/vm/labctl.sh host-a-gpu start
+scripts/lab/vm/labctl.sh host-a-gpu ips --json
+python scripts/dev/gpu_guest_passthrough_validate.py validate \
+  --run-id "$RUN_ID" \
+  --vm-name k1s-core-a-gpu \
+  --inventory "state/libvirt-host-a/k1s-core-a-gpu/inventory.json" \
+  --guest-repo /home/ae/k1s \
+  --expected-gpu "TITAN RTX" \
+  --min-vram-gib 24
+```
+
+Rules for this lane
+- The local `state/host-a-gpu.env` file defines which dedicated NIC and GPU PCI functions are passed through on this workstation.
+- The guest needs exclusive access to the configured passthrough GPU and primary NIC device set.
+- The guest's primary LAN IP on the passed-through NIC is the k1s validation target.
+- The libvirt `default` NAT NIC is management and rescue only.
+- The current CUDA smoke baseline for this lane is `nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1`.
+
+Only after that passes, start the schedulable guest node on host A:
 
 ```bash
 sudo -E \
@@ -65,7 +98,7 @@ sudo -E \
   AE_NODE_ID=core-a--hub \
   AE_NODE_LABELS="role=hub,site=core-a,gpu.sku=titan-rtx" \
   AE_CONTROLLER_URL=http://core-a.lan:9110 \
-  AE_AGENT_ENDPOINT=http://core-a.lan:9111 \
+  AE_AGENT_ENDPOINT=http://<primary-lan-ip>:9111 \
   AE_AGENT_TOKEN=devtoken \
   make k1s-core-node
 ```
@@ -180,10 +213,13 @@ Expected
 Primary evidence helper:
 
 ```bash
-python scripts/dev/f0n_nvidia_validate.py collect --run-id f0n-review-001
+python scripts/dev/f0n_nvidia_validate.py collect \
+  --run-id f0n-review-001 \
+  --vm-name k1s-core-a-gpu \
+  --inventory "state/libvirt-host-a/k1s-core-a-gpu/inventory.json"
 ```
 
-This captures the canonical node inventory plus apply/status/events/delete/reapply artifacts under `runs/<RUN_ID>/`.
+This captures the NixOS guest passthrough proof plus the canonical node inventory and apply/status/events/delete/reapply artifacts under `runs/<RUN_ID>/`.
 
 ```bash
 for i in $(seq 1 20); do

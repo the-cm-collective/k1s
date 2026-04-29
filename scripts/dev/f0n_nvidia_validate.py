@@ -13,9 +13,14 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_DIR = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import gpu_guest_passthrough_validate as egpu_validate
 
 DEFAULT_RUNS_DIR = ROOT / "runs"
 
@@ -40,6 +45,24 @@ def default_run_id() -> str:
 
 def build_plan(*, run_id: str, runs_dir: Path) -> dict[str, Any]:
     run_root = runs_dir / run_id
+    egpu_config = egpu_validate.ValidationConfig(
+        run_id=run_id,
+        runs_dir=runs_dir,
+        guest_ip=None,
+        vm_name=None,
+        inventory=None,
+        ssh_user=egpu_validate.DEFAULT_SSH_USER,
+        ssh_key=str(Path.home() / ".ssh" / "id_rsa"),
+        guest_repo=egpu_validate.DEFAULT_GUEST_REPO,
+        expected_gpu=egpu_validate.DEFAULT_EXPECTED_GPU,
+        min_vram_gib=egpu_validate.DEFAULT_MIN_VRAM_GIB,
+        expected_pci_bus_id=None,
+        runtime_handler=egpu_validate.DEFAULT_RUNTIME_HANDLER,
+        compute_image=egpu_validate.DEFAULT_COMPUTE_IMAGE,
+        compute_success_signal=egpu_validate.DEFAULT_COMPUTE_SUCCESS_SIGNAL,
+        execution_model=egpu_validate.DEFAULT_EXECUTION_MODEL,
+    )
+    egpu_plan = egpu_validate.build_plan(egpu_config)
     cells: list[dict[str, Any]] = []
     for lane in CELL_LANES:
         cell_root = run_root / "cells" / lane.name
@@ -67,6 +90,36 @@ def build_plan(*, run_id: str, runs_dir: Path) -> dict[str, Any]:
             "plan": str(run_root / "plan.json"),
             "summary": str(run_root / "summary.json"),
         },
+        "execution_hosts": [
+            {
+                "host_id": "core-a",
+                "node_id": "core-a--hub",
+                "execution_model": "linux_guest_passthrough",
+            },
+            {
+                "host_id": "edge-b",
+                "node_id": "edge-b--gpu-1",
+                "execution_model": "host_native",
+            },
+        ],
+        "checks": {
+            "egpu_passthrough_validate": egpu_plan["artifacts"]["summary"],
+            "egpu_attach": egpu_plan["artifacts"]["attach"],
+            "egpu_cri_runtime": egpu_plan["artifacts"]["cri_runtime"],
+            "egpu_compute_smoke": egpu_plan["artifacts"]["compute_smoke"],
+        },
+        "phases": [
+            {
+                "name": "egpu_passthrough_validate",
+                "execution_model": "linux_guest_passthrough",
+                "artifacts": egpu_plan["artifacts"],
+            },
+            {
+                "name": "cell_validation",
+                "execution_model": "mixed_lane",
+                "cell_count": len(CELL_LANES),
+            },
+        ],
         "cells": cells,
     }
 
@@ -93,6 +146,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional ae binary override. Defaults to `python -m ae.cli` from this repo.",
     )
     collect.add_argument("--limit-events", type=int, default=20)
+    collect.add_argument(
+        "--skip-egpu-passthrough-validate",
+        action="store_true",
+        help="Skip the guest passthrough validator. This bypasses the canonical host-A proof step.",
+    )
+    egpu_validate.add_target_args(collect)
     return parser.parse_args()
 
 
@@ -148,6 +207,40 @@ def run_collect(args: argparse.Namespace) -> int:
     run_root.mkdir(parents=True, exist_ok=True)
     _write_json(Path(plan["inventory"]["plan"]), plan)
 
+    phases: list[dict[str, Any]] = []
+    egpu_summary: dict[str, Any] | None = None
+    if args.skip_egpu_passthrough_validate:
+        phases.append(
+            {
+                "phase": "egpu_passthrough_validate",
+                "status": "skipped",
+                "detail": "skipped via --skip-egpu-passthrough-validate",
+            }
+        )
+    else:
+        egpu_config = egpu_validate.make_config(args)
+        egpu_summary = egpu_validate.run_validation(egpu_config)
+        phases.append(
+            {
+                "phase": "egpu_passthrough_validate",
+                "status": egpu_summary["status"],
+                "detail": f"guest_ip={egpu_summary['guest']['guest_ip']}",
+                "checks": egpu_summary["checks"],
+            }
+        )
+        if egpu_summary["status"] != "passed":
+            summary = {
+                "run_id": plan["run_id"],
+                "run_root": plan["run_root"],
+                "status": "failed",
+                "phase_status": phases,
+                "checks": egpu_summary["checks"],
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _write_json(Path(plan["inventory"]["summary"]), summary)
+            print(json.dumps(summary, indent=2))
+            return 1
+
     env = _ae_env()
     ae = _ae_prefix(str(args.ae_bin))
     _run_capture(cmd=[*ae, "nodes", "--json"], path=Path(plan["inventory"]["nodes"]), env=env)
@@ -185,10 +278,20 @@ def run_collect(args: argparse.Namespace) -> int:
         )
         _run_capture(cmd=[*ae, "cell", "delete", name], path=Path(artifacts["teardown"]), env=env)
 
+    phases.append(
+        {
+            "phase": "cell_validation",
+            "status": "passed",
+            "detail": f"validated {len(plan['cells'])} cells",
+        }
+    )
     summary = {
         "run_id": plan["run_id"],
         "run_root": plan["run_root"],
+        "status": "passed",
         "cell_count": len(plan["cells"]),
+        "phase_status": phases,
+        "checks": egpu_summary["checks"] if egpu_summary else {"egpu_passthrough_validate": "skipped"},
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
     _write_json(Path(plan["inventory"]["summary"]), summary)
