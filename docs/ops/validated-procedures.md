@@ -9,6 +9,7 @@ Latest validation snapshot
 
 | Procedure | Primary entrypoint | Success signal | Last validated |
 | --- | --- | --- | --- |
+| Host A strict-CRI retest | [Host A Strict-CRI Retest](host-a-strict-cri-retest.html) | passthrough validation passes; `core-a--hub` is `Ready`; overlay `errors: []` | 2026-04-29 |
 | Simple dashboard user test | `make demo` | docs + dashboard load on `:8443`, simple layout visible | 2026-04-14 |
 | Advanced dashboard user test | `make lab-vm-ha-attached-node-up` | docs + dashboard load on `:10443`, HA section visible | 2026-04-14 |
 | HA stage 1/2 validation | `make lab-vm-ha-validation` | `stage1`, `retained`, `stage2`, `stage2-live` green | 2026-04-14 |
@@ -18,6 +19,7 @@ Latest validation snapshot
 Current pre-tag release verification baseline
 - Treat Debian and NixOS as pooled cross-host verification inputs for the current pre-tag pass; do not claim that each host independently passed the full release matrix.
 - Standardize release verification on `AE_USE_REGISTRY_CACHE=0` on both hosts.
+- Use [Host A Strict-CRI Retest](host-a-strict-cri-retest.html) as the exact copy/paste source when re-running the current Host A GPU passthrough lane.
 - Require the common baseline on both hosts:
 
 ```bash

@@ -14,6 +14,7 @@ This guide complements [Nvidia Development Baseline](nvidia-development-baseline
 Related VM Lab Docs
 - Nvidia physical-host baseline: [Nvidia Development Baseline](nvidia-development-baseline.html)
 - Host A libvirt passthrough guest: [Host A Linux GPU Guest](host-a-linux-gpu-guest.html)
+- Canonical Host A strict-CRI retest flow: [Host A Strict-CRI Retest](host-a-strict-cri-retest.html)
 - Golden image pipeline (Ubuntu 22.04 GA / kernel 5.15): `docs/ops/vm-golden-image-pipeline.md`
 - Variant orchestration and bootstrap runbook: `docs/ops/vm-variant-runbook.md`
 - Baseline + throughput gating workflow: `docs/ops/vm-metrics-and-gates.md`
@@ -62,7 +63,16 @@ sudo -E \
   make k1s-core-cri
 ```
 
-Then verify the guest image contract, boot the Ubuntu GPU guest through the Host A libvirt helper, and prove passthrough before starting `core-a--hub`:
+Then verify the guest image contract, boot the Ubuntu GPU guest through the Host A libvirt helper, and prove passthrough before starting `core-a--hub`.
+
+Use [Host A Strict-CRI Retest](host-a-strict-cri-retest.html) as the canonical copy/paste source for that sequence. The older abbreviated snippets on this page are intentionally not the source of truth anymore because the current Host A lane now depends on:
+- rebuilding and validating the guest before starting the controller
+- running `k1s-core-cri` with `POSTGRES_BIND_IP` and `POSTGRES_PORT=55432`
+- installing guest repo deps before `make k1s-core-node`
+- probing `http://<guest-primary-ip>:9111/v1/containers`
+- verifying controller registration via `/v1/nodes/core-a--hub/overlay`
+
+Background-only outline:
 
 ```bash
 cp ops/dev/host-a-gpu.env.sample state/host-a-gpu.env
@@ -89,18 +99,10 @@ Rules for this lane
 - The libvirt `default` NAT NIC is management and rescue only.
 - The current CUDA smoke baseline for this lane is `nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1`.
 
-Only after that passes, start the schedulable guest node on host A:
+Only after that passes, start the schedulable guest node on host A through the retest guide flow:
 
 ```bash
-sudo -E \
-  AE_RUNTIME_BACKEND=cri \
-  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
-  AE_NODE_ID=core-a--hub \
-  AE_NODE_LABELS="role=hub,site=core-a,gpu.sku=titan-rtx" \
-  AE_CONTROLLER_URL=http://core-a.lan:9110 \
-  AE_AGENT_ENDPOINT=http://<primary-lan-ip>:9111 \
-  AE_AGENT_TOKEN=devtoken \
-  make k1s-core-node
+# Follow docs/ops/host-a-strict-cri-retest.md step C
 ```
 
 ## 3) Bring up host B (edge-core + GPU node)

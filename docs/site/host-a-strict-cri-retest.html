@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Index</title>
+    <title>Host A Strict Cri Retest</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -757,7 +757,350 @@
       </svg>
     </button>
     <div class="container">
-    <div class="hero">   <div class="hero-brand">     <div class="hero-logo-row">       <img src="static/k1s-logo-horizontal.svg" alt="k1s logo" class="hero-logo" />       <span class="hero-pill">Concepts in Practice</span>     </div>     <h1>Concepts in Practice</h1>     <p class="hero-tagline">Hands-on, chapterized walkthroughs for k1s orchestration concepts, mapped to Kubernetes equivalents.</p>     <div class="hero-links">       <a class="hero-link" href="start-here.html">Start Here</a>       <a class="hero-link" href="concepts.html">Concepts Overview</a>       <a class="hero-link" href="multinode-lab.html">Multi-Node Lab</a>     </div>   </div>   <div class="hero-actions">     <div class="hero-card">       <h2>Core Control Loop</h2>       <p>Spec, apply, and execution foundations.</p>       <div class="hero-links hero-links--dense">         <a class="hero-link hero-link--stack" href="concepts-in-practice-01-desired-state-reconciliation.html">           <span class="hero-link-title">Chapter 01: Desired State &amp; Reconciliation</span>           <span class="hero-link-sub">Explain how k1s continuously converges actual runtime state to the declared spec, and map that pattern to Kubernetes controllers.</span>         </a>         <a class="hero-link hero-link--stack" href="concepts-in-practice-02-declarative-apply.html">           <span class="hero-link-title">Chapter 02: Declarative Specs &amp; Apply</span>           <span class="hero-link-sub">Show how a declarative spec becomes the single source of truth, and how apply merges desired state into the controller's registry.</span>         </a>         <a class="hero-link hero-link--stack" href="concepts-in-practice-03-runtime-adapters.html">           <span class="hero-link-title">Chapter 03: Runtime Adapters &amp; Container Execution</span>           <span class="hero-link-sub">Trace how k1s translates a manifest into runtime operations and how adapters make that portable across container engines.</span>         </a>       </div>     </div>     <div class="hero-card">       <h2>Scheduling &amp; Observability</h2>       <p>Placement decisions and system signals.</p>       <div class="hero-links hero-links--dense">         <a class="hero-link hero-link--stack" href="concepts-in-practice-04-scheduling-placement.html">           <span class="hero-link-title">Chapter 04: Scheduling &amp; Placement</span>           <span class="hero-link-sub">Explain how k1s decides pod placement and how that maps to Kubernetes scheduler behavior.</span>         </a>         <a class="hero-link hero-link--stack" href="concepts-in-practice-05-observability.html">           <span class="hero-link-title">Chapter 05: Observability</span>           <span class="hero-link-sub">Teach how to inspect k1s state using metrics snapshots and event streams, and map that to k8s observability patterns.</span>         </a>       </div>     </div>     <div class="hero-card">       <h2>Exposure &amp; Rollouts</h2>       <p>Ingress, probes, and update safety.</p>       <div class="hero-links hero-links--dense">         <a class="hero-link hero-link--stack" href="concepts-in-practice-06-ingress-service-exposure.html">           <span class="hero-link-title">Chapter 06: Ingress &amp; Service Exposure</span>           <span class="hero-link-sub">Walk through how k1s exposes services: L4 Service VIPs and L7 ingress via Caddy, then map to k8s Services and Ingress/Gateway.</span>         </a>         <a class="hero-link hero-link--stack" href="concepts-in-practice-07-health-probes.html">           <span class="hero-link-title">Chapter 07: Health Probes</span>           <span class="hero-link-sub">Explain how readiness/liveness/startup probes gate traffic and restarts, and show how k1s evaluates probe state.</span>         </a>         <a class="hero-link hero-link--stack" href="concepts-in-practice-08-rollouts-updates.html">           <span class="hero-link-title">Chapter 08: Rollouts, Updates, &amp; Rollbacks</span>           <span class="hero-link-sub">Show how k1s performs controlled updates, tracks revisions, and supports rollbacks, then map to k8s Deployment rollouts.</span>         </a>       </div>     </div>     <div class="hero-card">       <h2>Config &amp; Policy</h2>       <p>Secrets, access, and enforcement boundaries.</p>       <div class="hero-links hero-links--dense">         <a class="hero-link hero-link--stack" href="concepts-in-practice-09-configuration-secrets.html">           <span class="hero-link-title">Chapter 09: Config &amp; Secrets</span>           <span class="hero-link-sub">Show how k1s loads configs and sealed secrets, projects them into env/files, and maps that to k8s ConfigMaps/Secrets.</span>         </a>         <a class="hero-link hero-link--stack" href="concepts-in-practice-10-access-policy.html">           <span class="hero-link-title">Chapter 10: Access &amp; Policy</span>           <span class="hero-link-sub">Explain how k1s enforces API access roles, registry credentials, and node join tokens, then map that to k8s RBAC and admission controls.</span>         </a>       </div>     </div>   </div> </div>
+    <h1 id="host-a-strict-cri-retest">Host A Strict-CRI Retest</h1>
+<p>Purpose</p>
+<ul>
+<li>Keep the current working Host A strict-CRI retest sequence in one copy/paste operator page.</li>
+<li>Rebuild the Host A GPU guest, start the host <code>k1s-core-cri</code> controller, and bring <code>core-a--hub</code> back to <code>Ready</code>.</li>
+<li>Use the current validated probes for this lane instead of the older <code>/readyz</code> and <code>ae nodes</code> checks.</li>
+</ul>
+<p>Use this page when you want the exact retest flow. Use <a href="host-a-linux-gpu-guest.html">Host A Linux GPU Guest</a> for the hardware profile, libvirt topology, and passthrough background.</p>
+<p>Operational notes</p>
+<ul>
+<li>Run from the repo root with the repo venv on <code>PATH</code>.</li>
+<li>Step <code>A</code> is the destructive rebuild path. It purges the Host A guest artifacts and rebuilds the GPU qcow2 image.</li>
+<li>Start <code>B</code> only after <code>A</code> returns successfully.</li>
+<li>Leave <code>B</code> running while you execute <code>C</code>.</li>
+<li>The guest primary LAN IP is the published k1s identity. The libvirt <code>default</code> NAT IP is rescue-only.</li>
+<li>This lane installs repo Python deps from the synced guest checkout before starting <code>core-a--hub</code>. Those deps are not baked into the golden image.</li>
+</ul>
+<h2 id="a-purge-rebuild-boot-sync-and-validate-the-guest">A) Purge, rebuild, boot, sync, and validate the guest</h2>
+<pre><code>(
+  emulate -L zsh
+  set -e
+  setopt pipefail
+
+  cd /home/m4xx3d0ut/git/k1s-wt/k1s
+  sudo -v
+
+  : &quot;${HOST_A_GPU_ENV_FILE:=state/host-a-gpu.env}&quot;
+  [[ -f &quot;$HOST_A_GPU_ENV_FILE&quot; ]] || { print -u2 -- &quot;missing $HOST_A_GPU_ENV_FILE&quot;; exit 1; }
+
+  set -a
+  source &quot;$HOST_A_GPU_ENV_FILE&quot;
+  set +a
+
+  : &quot;${HOST_A_GPU_DOMAIN_NAME:=k1s-core-a-gpu}&quot;
+  : &quot;${HOST_A_GPU_STATE_ROOT:=state/libvirt-host-a}&quot;
+  : &quot;${HOST_A_GPU_OVERLAY_DIR:=$HOME/VMs}&quot;
+  : &quot;${HOST_A_GPU_BASE_IMAGE:=artifacts/images/ubuntu-22.04-k1s-gpu.qcow2}&quot;
+  : &quot;${HOST_A_GPU_GUEST_REPO:=/home/ae/k1s}&quot;
+
+  STATE_DIR=&quot;${HOST_A_GPU_STATE_ROOT}/${HOST_A_GPU_DOMAIN_NAME}&quot;
+  OVERLAY_PATH=&quot;${HOST_A_GPU_OVERLAY_DIR}/${HOST_A_GPU_DOMAIN_NAME}.qcow2&quot;
+  SEED_PATH=&quot;${HOST_A_GPU_OVERLAY_DIR}/${HOST_A_GPU_DOMAIN_NAME}-seed.iso&quot;
+  GPU_IMAGE=&quot;${HOST_A_GPU_BASE_IMAGE}&quot;
+  GPU_IMAGE_SHA=&quot;${GPU_IMAGE}.sha256&quot;
+  GPU_IMAGE_META=&quot;${GPU_IMAGE}.meta.json&quot;
+  IPS_JSON=&quot;${STATE_DIR}/ips.startup.json&quot;
+  RUN_ID=&quot;host-a-$(date -u +%Y%m%dT%H%M%SZ)&quot;
+
+  print -r -- &quot;[1/10] clearing stale Host A guest artifacts&quot;
+  scripts/lab/vm/labctl.sh host-a-gpu stop --force &gt;/dev/null 2&gt;&amp;1 || true
+  scripts/lab/vm/labctl.sh host-a-gpu undefine &gt;/dev/null 2&gt;&amp;1 || true
+  rm -rf &quot;$STATE_DIR&quot;
+  rm -f &quot;$OVERLAY_PATH&quot; &quot;$SEED_PATH&quot;
+  rm -f &quot;$GPU_IMAGE&quot; &quot;$GPU_IMAGE_SHA&quot; &quot;$GPU_IMAGE_META&quot;
+  rm -rf artifacts/images/build-gpu
+
+  print -r -- &quot;[2/10] rebuilding GPU image&quot;
+  scripts/lab/vm/labctl.sh image build --variant gpu
+
+  print -r -- &quot;[3/10] verifying GPU image&quot;
+  scripts/lab/vm/labctl.sh image verify --variant gpu
+
+  print -r -- &quot;[4/10] host preflight&quot;
+  scripts/lab/vm/labctl.sh host-a-gpu preflight
+
+  print -r -- &quot;[5/10] rendering guest and creating overlay/seed&quot;
+  scripts/lab/vm/labctl.sh host-a-gpu render
+  scripts/lab/vm/labctl.sh host-a-gpu create-overlay
+  scripts/lab/vm/labctl.sh host-a-gpu create-seed
+
+  print -r -- &quot;[6/10] defining and starting guest&quot;
+  scripts/lab/vm/labctl.sh host-a-gpu define
+  scripts/lab/vm/labctl.sh host-a-gpu start
+
+  print -r -- &quot;[7/10] waiting for guest IPs&quot;
+  typeset GUEST_IP=&quot;&quot;
+  for attempt in $(seq 1 30); do
+    STATE=&quot;$(virsh -c qemu:///system domstate &quot;$HOST_A_GPU_DOMAIN_NAME&quot; 2&gt;/dev/null | tr -d &#x27;\r&#x27; | head -n1 | xargs || true)&quot;
+    if [[ &quot;$STATE&quot; != &quot;running&quot; ]]; then
+      REASON=&quot;$(virsh -c qemu:///system domstate &quot;$HOST_A_GPU_DOMAIN_NAME&quot; --reason 2&gt;/dev/null | tr -d &#x27;\r&#x27; | tail -n1 | xargs || true)&quot;
+      print -u2 -- &quot;guest left running state: state=${STATE:-unknown} reason=${REASON:-unknown}&quot;
+      sudo tail -n 120 &quot;/var/log/libvirt/qemu/${HOST_A_GPU_DOMAIN_NAME}.log&quot; || true
+      exit 1
+    fi
+
+    scripts/lab/vm/labctl.sh host-a-gpu ips --json &gt; &quot;$IPS_JSON&quot; 2&gt;/dev/null || true
+    GUEST_IP=&quot;$(
+      python - &quot;$IPS_JSON&quot; &lt;&lt;&#x27;PY&#x27;
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+value = &quot;&quot;
+try:
+    if path.exists():
+        payload = json.loads(path.read_text(encoding=&quot;utf-8&quot;))
+        value = str(payload.get(&quot;primary_ip&quot;) or &quot;&quot;)
+except Exception:
+    value = &quot;&quot;
+print(value)
+PY
+    )&quot;
+    if [[ -n &quot;$GUEST_IP&quot; ]]; then
+      break
+    fi
+    sleep 5
+  done
+
+  [[ -n &quot;$GUEST_IP&quot; ]] || { print -u2 -- &quot;guest never reported a primary LAN IP&quot;; exit 1; }
+  print -r -- &quot;guest_ip=${GUEST_IP}&quot;
+
+  print -r -- &quot;[8/10] syncing repo into guest&quot;
+  typeset -a ssh_opts
+  ssh_opts=(
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -i /home/m4xx3d0ut/.ssh/id_rsa
+  )
+
+  ssh &quot;${ssh_opts[@]}&quot; &quot;ae@${GUEST_IP}&quot; &quot;mkdir -p &#x27;${HOST_A_GPU_GUEST_REPO}&#x27;&quot;
+
+  rsync -az --delete \
+    --exclude &#x27;.git/&#x27; \
+    --exclude &#x27;.venv/&#x27; \
+    --exclude &#x27;state/&#x27; \
+    --exclude &#x27;runs/&#x27; \
+    --exclude &#x27;artifacts/&#x27; \
+    --exclude &#x27;docs/site/&#x27; \
+    --exclude &#x27;__pycache__/&#x27; \
+    --exclude &#x27;.pytest_cache/&#x27; \
+    --exclude &#x27;.mypy_cache/&#x27; \
+    -e &quot;ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/m4xx3d0ut/.ssh/id_rsa&quot; \
+    ./ \
+    &quot;ae@${GUEST_IP}:${HOST_A_GPU_GUEST_REPO}/&quot;
+
+  print -r -- &quot;[9/10] validating passthrough inside guest&quot;
+  python scripts/dev/gpu_guest_passthrough_validate.py validate \
+    --run-id &quot;$RUN_ID&quot; \
+    --vm-name &quot;$HOST_A_GPU_DOMAIN_NAME&quot; \
+    --inventory &quot;${STATE_DIR}/inventory.json&quot; \
+    --guest-repo &quot;$HOST_A_GPU_GUEST_REPO&quot; \
+    --expected-gpu &quot;TITAN RTX&quot; \
+    --min-vram-gib 24
+
+  print -r -- &quot;[10/10] guest boot and passthrough validation passed&quot;
+  print -r -- &quot;run_id=${RUN_ID}&quot;
+  print -r -- &quot;guest_ip=${GUEST_IP}&quot;
+)</code></pre>
+<p>Success signals</p>
+<ul>
+<li>the passthrough validator reports <code>status: &quot;passed&quot;</code></li>
+<li>the final output includes <code>guest boot and passthrough validation passed</code></li>
+<li>the printed <code>guest_ip</code> is the guest primary LAN IP, not the libvirt NAT IP</li>
+</ul>
+<h2 id="b-start-the-host-a-controller-and-leave-it-running">B) Start the Host A controller and leave it running</h2>
+<p>Run this in a separate terminal after <code>A</code> succeeds:</p>
+<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+
+CONTROLLER_HOST_IP=&quot;$(
+  ip route get 1.1.1.1 | awk &#x27;{
+    for (i = 1; i &lt;= NF; i++) {
+      if ($i == &quot;src&quot;) {
+        print $(i+1)
+        exit
+      }
+    }
+  }&#x27;
+)&quot;
+
+print -r -- &quot;controller_host_ip=${CONTROLLER_HOST_IP}&quot;
+
+sudo -E \
+  AE_DEV_LOCAL=1 \
+  AE_RUNTIME_BACKEND=cri \
+  AE_INFRA_BACKEND=cri \
+  AE_CRI_RUNTIME_HANDLER=runc \
+  AE_APISHIM_MODE=cri \
+  AE_AGENT_API_PORT=9110 \
+  AE_AGENT_API_TOKEN=devtoken \
+  POSTGRES_PORT=55432 \
+  POSTGRES_BIND_IP=&quot;${CONTROLLER_HOST_IP}&quot; \
+  AE_APISHIM_DSN=postgresql://shim:shim@127.0.0.1:55432/shim \
+  AE_APISHIM_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
+  make k1s-core-cri</code></pre>
+<p>Quick check from another shell:</p>
+<pre><code>curl -fsS http://127.0.0.1:9110/healthz
+ss -ltnp | rg &#x27;:9110\\b|:7422\\b|:55432\\b&#x27;</code></pre>
+<p>Expected</p>
+<ul>
+<li><code>http://127.0.0.1:9110/healthz</code> returns <code>{&quot;ok&quot;: true}</code></li>
+<li>the host is listening on <code>:9110</code></li>
+<li>Postgres is bound on <code>:55432</code> so the guest can reach the apishim store</li>
+</ul>
+<h2 id="c-start-core-a-hub-in-the-guest-after-controller-health-is-green">C) Start <code>core-a--hub</code> in the guest after controller health is green</h2>
+<pre><code>(
+  emulate -L zsh
+  set -e
+  setopt pipefail
+
+  cd /home/m4xx3d0ut/git/k1s-wt/k1s
+
+  CONTROLLER_HOST_IP=&quot;$(
+    ip route get 1.1.1.1 | awk &#x27;{
+      for (i = 1; i &lt;= NF; i++) {
+        if ($i == &quot;src&quot;) {
+          print $(i+1)
+          exit
+        }
+      }
+    }&#x27;
+  )&quot;
+  CONTROLLER_URL=&quot;http://${CONTROLLER_HOST_IP}:9110&quot;
+  APISHIM_DSN=&quot;postgresql://shim:shim@${CONTROLLER_HOST_IP}:55432/shim&quot;
+  GUEST_REPO=&quot;/home/ae/k1s&quot;
+  IPS_JSON=&quot;state/libvirt-host-a/k1s-core-a-gpu/ips.start-node.json&quot;
+
+  print -r -- &quot;[node] refreshing guest IPs&quot;
+  scripts/lab/vm/labctl.sh host-a-gpu ips --json &gt; &quot;$IPS_JSON&quot;
+
+  GUEST_IP=&quot;$(
+    python - &quot;$IPS_JSON&quot; &lt;&lt;&#x27;PY&#x27;
+import json, sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text(encoding=&quot;utf-8&quot;))
+print(payload.get(&quot;primary_ip&quot;) or &quot;&quot;)
+PY
+  )&quot;
+
+  [[ -n &quot;$GUEST_IP&quot; ]] || { print -u2 -- &quot;missing guest primary_ip&quot;; exit 1; }
+
+  typeset -a ssh_opts
+  ssh_opts=(
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -i /home/m4xx3d0ut/.ssh/id_rsa
+  )
+
+  print -r -- &quot;[node] verifying controller from host and guest&quot;
+  curl -fsS &quot;${CONTROLLER_URL}/healthz&quot; &gt;/dev/null
+  ssh &quot;${ssh_opts[@]}&quot; &quot;ae@${GUEST_IP}&quot; &quot;curl -fsS &#x27;${CONTROLLER_URL}/healthz&#x27; &gt;/dev/null&quot;
+  ssh &quot;${ssh_opts[@]}&quot; &quot;ae@${GUEST_IP}&quot; &quot;bash -lc &#x27;cat &lt;/dev/null &gt;/dev/tcp/${CONTROLLER_HOST_IP}/55432&#x27;&quot;
+
+  print -r -- &quot;[node] installing guest deps and starting core-a--hub&quot;
+  ssh &quot;${ssh_opts[@]}&quot; &quot;ae@${GUEST_IP}&quot; bash -s -- &quot;$GUEST_REPO&quot; &quot;$CONTROLLER_URL&quot; &quot;$GUEST_IP&quot; &quot;$APISHIM_DSN&quot; &lt;&lt;&#x27;SH&#x27;
+set -euo pipefail
+guest_repo=&quot;$1&quot;
+controller_url=&quot;$2&quot;
+guest_ip=&quot;$3&quot;
+apishim_dsn=&quot;$4&quot;
+
+cd &quot;$guest_repo&quot;
+
+if sudo python3 -m pip install --help 2&gt;/dev/null | grep -q -- --break-system-packages; then
+  sudo python3 -m pip install -r requirements.in --break-system-packages
+else
+  sudo python3 -m pip install -r requirements.in
+fi
+
+if pgrep -f &#x27;k1s-core-node|python -m ae\.node&#x27; &gt;/dev/null 2&gt;&amp;1; then
+  sudo pkill -f -- &#x27;k1s-core-node|python -m ae\.node&#x27; &gt;/dev/null 2&gt;&amp;1 || true
+  sleep 2
+fi
+
+nohup sudo env \
+  AE_RUNTIME_BACKEND=cri \
+  AE_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+  AE_CRI_RUNTIME_HANDLER=nvidia \
+  AE_ENABLE_NETFS=1 \
+  AE_APISHIM_DSN=&quot;$apishim_dsn&quot; \
+  AE_NODE_ID=core-a--hub \
+  AE_NODE_LABELS=&quot;role=hub,site=core-a,gpu.sku=titan-rtx&quot; \
+  AE_POD_CIDR=10.42.0.0/24 \
+  AE_CNI_SUBNET=10.42.0.0/24 \
+  AE_ROSENPASS_ENABLED=0 \
+  AE_CONTROLLER_URL=&quot;$controller_url&quot; \
+  AE_AGENT_ENDPOINT=&quot;http://${guest_ip}:9111&quot; \
+  AE_AGENT_TOKEN=devtoken \
+  AE_NODE_PORT=9111 \
+  make k1s-core-node &gt; /home/ae/k1s-core-node.log 2&gt;&amp;1 &lt;/dev/null &amp;
+SH
+
+  print -r -- &quot;[node] waiting for guest node agent API&quot;
+  for attempt in $(seq 1 45); do
+    if curl -fsS &quot;http://${GUEST_IP}:9111/v1/containers&quot; &gt;/dev/null 2&gt;&amp;1; then
+      break
+    fi
+    sleep 2
+  done
+
+  if ! curl -fsS &quot;http://${GUEST_IP}:9111/v1/containers&quot; &gt;/dev/null 2&gt;&amp;1; then
+    ssh &quot;${ssh_opts[@]}&quot; &quot;ae@${GUEST_IP}&quot; &quot;tail -n 200 /home/ae/k1s-core-node.log || true&quot;
+    exit 1
+  fi
+
+  print -r -- &quot;[node] waiting for controller registration&quot;
+  for attempt in $(seq 1 20); do
+    if curl -fsS \
+      -H &#x27;X-Agent-Token: devtoken&#x27; \
+      &quot;${CONTROLLER_URL}/v1/nodes/core-a--hub/overlay&quot; &gt;/dev/null 2&gt;&amp;1; then
+      break
+    fi
+    sleep 3
+  done
+
+  if ! curl -fsS \
+    -H &#x27;X-Agent-Token: devtoken&#x27; \
+    &quot;${CONTROLLER_URL}/v1/nodes/core-a--hub/overlay&quot; &gt;/dev/null 2&gt;&amp;1; then
+    ssh &quot;${ssh_opts[@]}&quot; &quot;ae@${GUEST_IP}&quot; &quot;tail -n 200 /home/ae/k1s-core-node.log || true&quot;
+    curl -sS -H &#x27;X-Agent-Token: devtoken&#x27; &quot;${CONTROLLER_URL}/v1/nodes&quot; | python -m json.tool || true
+    exit 1
+  fi
+
+  curl -sS -H &#x27;X-Agent-Token: devtoken&#x27; &quot;${CONTROLLER_URL}/v1/nodes&quot; | python -m json.tool
+  curl -sS -H &#x27;X-Agent-Token: devtoken&#x27; &quot;${CONTROLLER_URL}/v1/nodes/core-a--hub/overlay&quot; | python -m json.tool
+
+  print -r -- &quot;controller_url=${CONTROLLER_URL}&quot;
+  print -r -- &quot;apishim_dsn=${APISHIM_DSN}&quot;
+  print -r -- &quot;guest_ip=${GUEST_IP}&quot;
+  print -r -- &quot;agent_endpoint=http://${GUEST_IP}:9111&quot;
+)</code></pre>
+<p>Why this differs from the older Host A snippets</p>
+<ul>
+<li>the guest does not expose <code>/readyz</code> or <code>/healthz</code> on <code>:9111</code>; use <code>/v1/containers</code></li>
+<li>controller registration is confirmed through the controller agent API overlay endpoint, not <code>ae nodes</code></li>
+<li><code>AE_ROSENPASS_ENABLED=0</code> is intentional for this lane</li>
+<li>the guest installs <code>requirements.in</code> from the synced checkout before starting <code>make k1s-core-node</code></li>
+</ul>
+<p>Success signals</p>
+<ul>
+<li><code>GET /v1/nodes</code> shows <code>core-a--hub</code> with <code>status: &quot;Ready&quot;</code></li>
+<li><code>GET /v1/nodes/core-a--hub/overlay</code> returns <code>errors: []</code></li>
+<li>the node advertises the expected TITAN RTX capability and <code>runtime_handlers: [&quot;nvidia&quot;]</code></li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p>Refresh guest IPs before reusing SSH commands:</p>
+<pre><code>scripts/lab/vm/labctl.sh host-a-gpu ips --json</code></pre>
+<p>Tail the guest node log:</p>
+<pre><code>ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/m4xx3d0ut/.ssh/id_rsa ae@&lt;guest-primary-ip&gt; &#x27;tail -n 200 /home/ae/k1s-core-node.log&#x27;</code></pre>
+<p>Common causes</p>
+<ul>
+<li><code>B</code> is healthy locally, but the host firewall is still blocking guest access to <code>9110</code> or <code>55432</code></li>
+<li>the guest primary LAN IP changed since the last run</li>
+<li>the guest checkout no longer matches the installed Python deps because <code>requirements.in</code> was skipped</li>
+<li>the node agent is healthy, but the check is still using the old <code>/readyz</code> probe</li>
+</ul>
     </div>
     <footer class="site-footer">
       <div class="container inner">

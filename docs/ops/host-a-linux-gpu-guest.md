@@ -5,6 +5,10 @@ Purpose
 - Reuse the repo GPU qcow2 image flow while keeping PCI passthrough separate from the local `variant up` harness.
 - Keep machine-specific PCI, IOMMU, GPU, and NIC values in an uncommitted local env file instead of committed script defaults.
 
+Canonical retest flow
+- Use [Host A Strict-CRI Retest](host-a-strict-cri-retest.html) for the exact copy/paste `A`/`B`/`C` sequence that rebuilds the guest, starts `k1s-core-cri`, and brings `core-a--hub` back to `Ready`.
+- Keep this page focused on the local hardware profile, artifact layout, and passthrough topology.
+
 Operating rules
 - This guest requires exclusive access to the passed-through GPU functions and the dedicated primary passthrough NIC configured for your workstation.
 - The guest uses libvirt on `qemu:///system`, not `scripts/lab/vm/variant_up.sh`.
@@ -124,7 +128,15 @@ Do not continue to `make k1s-core-node` until this validator passes.
 
 ## 7) Start `core-a--hub` inside the guest
 
-Use the guest's primary LAN IP for `AE_AGENT_ENDPOINT`, not the management NIC:
+Use the guest's primary LAN IP for `AE_AGENT_ENDPOINT`, not the management NIC.
+
+The current validated command sequence now lives on [Host A Strict-CRI Retest](host-a-strict-cri-retest.html). Use that page instead of the older direct `make k1s-core-node` snippet here because the strict-CRI retest lane now depends on:
+- the host-side `k1s-core-cri` controller flow with `POSTGRES_BIND_IP` and `POSTGRES_PORT=55432`
+- installing guest repo deps from `requirements.in` before the node starts
+- probing `http://<primary-lan-ip>:9111/v1/containers` instead of `/readyz`
+- confirming registration via the controller agent API overlay endpoint
+
+Minimal intent reminder:
 
 ```bash
 sudo -E \

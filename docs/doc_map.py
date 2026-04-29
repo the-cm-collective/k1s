@@ -36,6 +36,7 @@ DOCS_MAPPING = {
     "ops/validated-procedures.md": "validated-procedures.html",
     "ops/runbook.md": "runbook.html",
     "ops/host-a-linux-gpu-guest.md": "host-a-linux-gpu-guest.html",
+    "ops/host-a-strict-cri-retest.md": "host-a-strict-cri-retest.html",
     "ops/ha-closeout.md": "ha-closeout.html",
     "ops/vm-variant-runbook.md": "vm-variant-runbook.html",
     "roadmap/high-availability-control-plane.md": "high-availability-control-plane.html",

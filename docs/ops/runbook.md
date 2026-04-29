@@ -28,6 +28,7 @@ Setup
 
 VM GPU Fabric Lab
 - Host A libvirt passthrough guest: [Host A Linux GPU Guest](host-a-linux-gpu-guest.html)
+- Canonical Host A strict-CRI rebuild/start sequence: [Host A Strict-CRI Retest](host-a-strict-cri-retest.html)
 - Golden image build/verify/transfer: `docs/ops/vm-golden-image-pipeline.md`
 - Variant orchestration and bootstrap: [VM Variant Runbook](vm-variant-runbook.html)
   - This is the local QEMU harness. It does not define the Host A passthrough guest with PCI hostdevs.

@@ -772,14 +772,24 @@
 </ul>
 <h2 id="physical-host-baseline">Physical Host Baseline</h2>
 <p>The current public Nvidia development baseline is one two-host A/B shape:</p>
-<table><thead><tr><th>Host</th><th>Role</th><th>Node IDs</th><th>GPU</th></tr></thead><tbody><tr><td>NixOS workstation</td><td><code>core-a</code> controller plus schedulable GPU node</td><td><code>core-a--hub</code></td><td>TITAN RTX 24 GB</td></tr><tr><td>Ubuntu Server workstation</td><td><code>edge-b</code> plus GPU worker node</td><td><code>edge-b-gw</code>, <code>edge-b--gpu-1</code></td><td>RTX-8000 48 GB</td></tr></tbody></table>
+<table><thead><tr><th>Host</th><th>Role</th><th>Node IDs</th><th>GPU</th></tr></thead><tbody><tr><td>NixOS workstation</td><td><code>core-a</code> controller plus one Ubuntu guest with Linux GPU passthrough</td><td><code>core-a--hub</code></td><td>TITAN RTX 24 GB</td></tr><tr><td>Ubuntu Server workstation</td><td><code>edge-b</code> plus GPU worker node</td><td><code>edge-b-gw</code>, <code>edge-b--gpu-1</code></td><td>RTX-8000 48 GB</td></tr></tbody></table>
 <p>This is the first practical <code>F0n-nvidia-dev</code> evidence lane:</p>
 <ul>
-<li>one single-node execution check on the NixOS TITAN host</li>
+<li>one single-node execution check on the NixOS-hosted TITAN passthrough guest</li>
 <li>one single-node execution check on the Ubuntu RTX-8000 host</li>
 <li>one two-host <code>pp=2</code> execution check across both hosts</li>
 </ul>
 <p>The baseline is about controller and fabric behavior, not product-family claims. These hosts are close enough to exercise the current <code>InferenceCell</code> lifecycle, node registration, GPU slot reservation, readiness, restart, and teardown flows while the AMD mainline hardware is still unavailable.</p>
+<h2 id="current-development-hardware">Current Development Hardware</h2>
+<p>Publishing the exact development hardware here is intentional. The point is not to promote one workstation shape. The point is to make the current dev substrate explicit enough that another operator can understand what is being exercised, what is dedicated to passthrough, and which parts of the lane are still workstation-specific.</p>
+<table><thead><tr><th>Host</th><th>Current role</th><th>Development hardware notes</th></tr></thead><tbody><tr><td>Host A</td><td><code>core-a</code> controller plus one Linux passthrough guest</td><td>Current NixOS workstation based on an Intel Hades Canyon NUC. It uses dual interfaces so one NIC can stay with the host and one dedicated NIC can be handed to the guest.</td></tr><tr><td>Host A guest</td><td><code>core-a--hub</code> execution node</td><td>Ubuntu guest on libvirt <code>qemu:///system</code>, Q35 + OVMF, host-passthrough CPU, hugepages, locked memory, and one passed-through TITAN RTX with its audio function. The guest keeps one virtio management NIC on libvirt <code>default</code> for rescue/bootstrap only.</td></tr><tr><td>Host B</td><td><code>edge-b</code> site plus GPU worker</td><td>Ubuntu Server workstation with one RTX-8000 48 GB as the current second physical Nvidia lane.</td></tr></tbody></table>
+<p>Current Host A posture</p>
+<ul>
+<li>one dedicated LAN NIC is reserved for passthrough testing and is the primary validation and <code>AE_AGENT_ENDPOINT</code> identity for the guest</li>
+<li>one separate host-facing NIC remains with the workstation for normal host access and controller duties</li>
+<li>the current guest shape passes through the TITAN RTX GPU function plus the associated audio function first, keeping auxiliary TITAN functions out of the first Linux compute slice</li>
+<li>the A/B development lane is therefore split between a host-owned control role on Host A and a guest-owned execution role on the same physical box</li>
+</ul>
 <h2 id="relationship-to-the-amd-mainline">Relationship to the AMD Mainline</h2>
 <p>This baseline does not change the formal roadmap order:</p>
 <ul>
@@ -836,7 +846,9 @@
 <p>The primary operational evidence for this baseline should come from:</p>
 <ul>
 <li>single-node and two-host <code>InferenceCell</code> checks using the A/B manifests under <code>specs/examples/inference/</code></li>
-<li>the operator-run <code>scripts/dev/f0n_nvidia_validate.py</code> helper, which captures node inventory plus apply/status/events/delete/reapply artifacts under <code>runs/&lt;RUN_ID&gt;/</code></li>
+<li>the Host A libvirt passthrough procedure in <a href="host-a-linux-gpu-guest.html">Host A Linux GPU Guest</a>, which keeps the TITAN guest, the dedicated passthrough NIC policy, the local <code>state/host-a-gpu.env</code> workflow, and the management-NIC fallback path explicit</li>
+<li>the guest-coupled <code>scripts/dev/gpu_guest_passthrough_validate.py</code> helper, which proves guest attach, CRI runtime readiness, and seeded CUDA execution for the NixOS TITAN lane</li>
+<li>the operator-run <code>scripts/dev/f0n_nvidia_validate.py</code> helper, which captures the passthrough phase plus node inventory and apply/status/events/delete/reapply artifacts under <code>runs/&lt;RUN_ID&gt;/</code></li>
 <li>the existing LAN GPU procedures in <code>docs/ops/gpu-fabric-abc-lan.md</code>, updated to treat the physical A/B lane as the first <code>F0n</code> evidence surface</li>
 <li>the remote VM GPU procedure in <code>docs/ops/gpu-vm-remote-host-validation.md</code>, treated as a supplemental validation surface rather than the main milestone lane</li>
 </ul>
@@ -857,7 +869,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-24 15:32:42</span>
+        <span>Built 2026-04-29 15:42:33</span>
       </div>
     </footer>
     <script>

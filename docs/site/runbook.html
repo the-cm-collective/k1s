@@ -806,8 +806,14 @@
 </ul>
 <p>VM GPU Fabric Lab</p>
 <ul>
+<li>Host A libvirt passthrough guest: <a href="host-a-linux-gpu-guest.html">Host A Linux GPU Guest</a></li>
+<li>Canonical Host A strict-CRI rebuild/start sequence: <a href="host-a-strict-cri-retest.html">Host A Strict-CRI Retest</a></li>
 <li>Golden image build/verify/transfer: <code>docs/ops/vm-golden-image-pipeline.md</code></li>
-<li>Variant orchestration and bootstrap: <a href="vm-variant-runbook.html">VM Variant Runbook</a></li>
+<li>Variant orchestration and bootstrap: <a href="vm-variant-runbook.html">VM Variant Runbook</a>
+<ul>
+<li>This is the local QEMU harness. It does not define the Host A passthrough guest with PCI hostdevs.</li>
+</ul>
+</li>
 <li>Baseline metrics and throughput gates: <code>docs/ops/vm-metrics-and-gates.md</code></li>
 <li>Remote GPU VM precursor (A+B, libvirt/QEMU): <code>docs/ops/gpu-vm-remote-host-validation.md</code></li>
 <li>Primary smoke entrypoint: <code>make lab-vm-smoke</code></li>
@@ -2205,7 +2211,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-22 19:10:00</span>
+        <span>Built 2026-04-29 15:42:33</span>
       </div>
     </footer>
     <script>
