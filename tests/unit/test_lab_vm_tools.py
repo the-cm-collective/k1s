@@ -2681,6 +2681,7 @@ def test_cri_seed_lock_contains_core_and_edge_images() -> None:
     assert "docker.io/library/demo-shell:latest" in payload["images"]["core"]
     assert "docker.io/library/demo-shell:latest" in payload["images"]["edge"]
     assert "localhost:5001/k1s-apishim:dev" in payload["images"]["core"]
+    assert "nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1" in payload["images"]["core"]
     assert "docker.io/library/caddy:2.8" in payload["images"]["core"]
 
 

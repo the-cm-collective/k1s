@@ -53,7 +53,7 @@ kind: Deployment
 metadata:
   name: gpu-app
 spec:
-  image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda12.5.0
+  image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1
   runtimeClassName: nvidia
         """.strip(),
     )

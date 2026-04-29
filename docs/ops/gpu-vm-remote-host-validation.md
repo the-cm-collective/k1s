@@ -14,7 +14,7 @@ Scope
 - Includes an appendix to extend from `A+B` to `A+B+C`.
 
 Success criteria
-- Remote VM reports GPU and CRI runtime handler `nvidia` as ready.
+- Remote VM passes guest attach, CRI runtime, and containerized CUDA compute checks.
 - `edge-b` gateway and node register and become `Ready`.
 - `specs/examples/inference/cell-b-single.yaml` reaches `READY`.
 
@@ -75,6 +75,10 @@ scripts/lab/vm/labctl.sh image transfer --host "$REMOTE_SSH" --dest /var/lib/k1s
 
 Use the transferred GPU image on Host B:
 - `/var/lib/k1s/images/ubuntu-22.04-k1s-gpu.qcow2`
+
+Important boundary:
+- `image verify` proves the qcow boot/bootstrap contract only.
+- Passthrough proof is a separate guest-coupled step after the VM boots.
 
 ## 2) Hypervisor preflight on Host B (libvirt + VFIO)
 
@@ -207,16 +211,23 @@ for _ in $(seq 1 90); do
 done
 ```
 
-## 4) Guest preflight (inside remote VM)
+## 4) Guest passthrough validation (inside remote VM)
 
 ```bash
 ssh "${SSH_OPTS[@]}" "ae@$VM_IP" "hostname; ip -4 -brief addr; nvidia-smi -L"
 ssh "${SSH_OPTS[@]}" "ae@$VM_IP" "cd $REMOTE_REPO && AE_CRI_RUNTIME_HANDLER=nvidia scripts/cri_preflight.sh"
+python scripts/dev/gpu_guest_passthrough_validate.py validate \
+  --run-id "$RUN_ID" \
+  --guest-ip "$VM_IP" \
+  --guest-repo "$REMOTE_REPO" \
+  --expected-gpu "RTX-6000" \
+  --min-vram-gib 24
 ```
 
 Expected
 - RTX-6000 appears in `nvidia-smi`.
 - CRI preflight passes with runtime handler `nvidia`.
+- the CUDA vectoradd smoke succeeds without a live pull and emits `runs/<RUN_ID>/checks/egpu_*.json`
 
 ## 5) Start core on Host A and register `edge-b` site credentials
 

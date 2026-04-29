@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "seed_version": "2026-04-06-v4",
+  "seed_version": "2026-04-29-v6",
   "platform": "linux/amd64",
   "images": {
     "core": [
@@ -13,7 +13,8 @@
       "docker.io/rapiz1/rathole:v0.5.0",
       "docker.io/library/caddy:2.8",
       "docker.io/library/demo-shell:latest",
-      "localhost:5001/k1s-apishim:dev"
+      "localhost:5001/k1s-apishim:dev",
+      "nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1"
     ],
     "edge": [
       "docker.io/library/registry:2",

@@ -27,8 +27,10 @@ Setup
   - Convenience for demos: run `./scripts/init_demo.sh --with-secrets-env` to export both `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE` automatically.
 
 VM GPU Fabric Lab
+- Host A libvirt passthrough guest: [Host A Linux GPU Guest](host-a-linux-gpu-guest.html)
 - Golden image build/verify/transfer: `docs/ops/vm-golden-image-pipeline.md`
 - Variant orchestration and bootstrap: [VM Variant Runbook](vm-variant-runbook.html)
+  - This is the local QEMU harness. It does not define the Host A passthrough guest with PCI hostdevs.
 - Baseline metrics and throughput gates: `docs/ops/vm-metrics-and-gates.md`
 - Remote GPU VM precursor (A+B, libvirt/QEMU): `docs/ops/gpu-vm-remote-host-validation.md`
 - Primary smoke entrypoint: `make lab-vm-smoke`

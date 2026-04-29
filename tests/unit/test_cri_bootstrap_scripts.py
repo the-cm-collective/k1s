@@ -14,6 +14,7 @@ CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 BUILD_CRI_APISHIM_IMAGE_SCRIPT = ROOT / "scripts" / "build_cri_apishim_image.sh"
 PROFILE_STATE_OWNERSHIP_SCRIPT = ROOT / "scripts" / "dev" / "profile_state_ownership.sh"
 CRI_SMOKE_SCRIPT = ROOT / "scripts" / "cri_smoke.sh"
+CRI_CUDA_VECTORADD_SMOKE_SCRIPT = ROOT / "scripts" / "cri_cuda_vectoradd_smoke.sh"
 CRI_CI_SETUP_SCRIPT = ROOT / "scripts" / "cri_ci_setup.sh"
 COMMON_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "common-bootstrap.sh"
 GPU_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "gpu-bootstrap.sh"
@@ -57,6 +58,17 @@ def test_cni_init_defaults_to_compatible_version(tmp_path: Path) -> None:
     assert '"cniVersion": "0.4.0"' in bridge
     assert '"type": "firewall"' in bridge
     assert '"cniVersion": "0.4.0"' in loopback
+
+
+def test_cri_cuda_vectoradd_smoke_uses_seeded_image_and_success_signal() -> None:
+    text = CRI_CUDA_VECTORADD_SMOKE_SCRIPT.read_text(encoding="utf-8")
+    assert 'image="${AE_CRI_VECTORADD_IMAGE:-nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1}"' in text
+    assert 'success_signal="${AE_CRI_VECTORADD_SUCCESS_SIGNAL:-Test PASSED}"' in text
+    assert 'inspecti "$image"' in text
+    assert 'runp -r "$runtime_handler"' in text
+    assert 'logs "$container_id"' in text
+    assert 'inspect "$container_id"' in text
+    assert 'CONTAINER_EXITED' in text
 
 
 def test_cni_init_honors_version_override(tmp_path: Path) -> None:
