@@ -1404,6 +1404,7 @@ class CRIRuntime(RuntimeAdapter):
         replica_id = self._pod_labels(pod).get(self.REPLICA_LABEL, "")
         if not container:
             try:
+                self._ensure_image(manifest.spec.image)
                 self._create_main_container(
                     manifest,
                     pod_id,

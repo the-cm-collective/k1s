@@ -1123,6 +1123,7 @@ def test_ensure_main_container_recovers_from_stale_sandbox(monkeypatch) -> None:
     recreated: list[tuple[str, int, str | None, int, int]] = []
 
     monkeypatch.setattr(runtime, "_find_container", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_ensure_image", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         runtime,
         "_create_main_container",
@@ -1211,6 +1212,42 @@ def test_ensure_main_container_waits_for_created_container_to_reach_running(
     assert clock.sleeps == [0.2]
 
 
+def test_ensure_main_container_rechecks_image_before_create_when_container_missing(
+    monkeypatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    pod = SimpleNamespace(id="pod-1", labels={"ae.pod_name": "default/demo-rev1-0"})
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(runtime, "_find_container", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_image",
+        lambda image_ref: calls.append(("ensure_image", str(image_ref))),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_create_main_container",
+        lambda *_args, **_kwargs: calls.append(("create_main_container", "pod-1")),
+    )
+    monkeypatch.setattr(runtime, "_ensure_sidecars", lambda *_args, **_kwargs: None)
+
+    changed = runtime._ensure_main_container(
+        manifest,
+        pod,
+        1,
+        is_job=False,
+        job_backoff_limit=None,
+    )
+
+    assert changed is True
+    assert calls == [
+        ("ensure_image", "docker.io/library/demo-shell:latest"),
+        ("create_main_container", "pod-1"),
+    ]
+
+
 def test_cleanup_reserved_container_refuses_mismatched_replica(monkeypatch) -> None:
     runtime = CRIRuntime(node_id="hub-1")
 
@@ -1281,6 +1318,7 @@ def test_ensure_main_container_recovers_from_reserved_container_name(monkeypatch
     cleaned: list[tuple[str | None, str | None, int]] = []
 
     monkeypatch.setattr(runtime, "_find_container", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_ensure_image", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         runtime,
         "_create_main_container",
