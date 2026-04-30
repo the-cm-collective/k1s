@@ -31,6 +31,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ae import build_info as AE_BUILD_INFO
+from ae.controller.spec import DEFAULT_NAMESPACE, split_app_key
 from ae.controller.state import (
     AppEvent,
     RegistryConflictError,
@@ -2239,6 +2240,33 @@ class Principal:
     scopes: list[str] | None = None
 
 
+@dataclass
+class ControllerPodRecord:
+    namespace: str
+    app_name: str
+    pod_name: str
+    node_id: str | None
+    ready: bool
+    live: bool
+    status: str
+    readiness_message: str
+    liveness_message: str
+
+
+@dataclass
+class PodTarget:
+    namespace: str
+    pod_name: str
+    runtime: RuntimeAdapter
+    node_id: str | None
+    endpoint: str | None
+    app_name: str | None = None
+    container: dict[str, Any] | None = None
+    controller: ControllerPodRecord | None = None
+    runtime_error: str | None = None
+    source: str = "runtime"
+
+
 class ShimHandler(BaseHTTPRequestHandler):
     server_version = "k1s-apishim"
     admin_token: str | None = os.getenv("AE_APISHIM_TOKEN")
@@ -2742,6 +2770,222 @@ class ShimHandler(BaseHTTPRequestHandler):
         node, _status = rec
         return getattr(node, "endpoint", None)
 
+    @staticmethod
+    def _pod_namespace(namespace: str | None) -> str:
+        ns = str(namespace or DEFAULT_NAMESPACE).strip()
+        return ns or DEFAULT_NAMESPACE
+
+    def _controller_pod_records(
+        self, namespace: str | None = None
+    ) -> dict[tuple[str, str], ControllerPodRecord]:
+        cache = getattr(self, "_controller_pod_records_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_controller_pod_records_cache", cache)
+        cache_key = namespace or "*"
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+        state = getattr(self.server, "state", None)  # type: ignore[attr-defined]
+        records: dict[tuple[str, str], ControllerPodRecord] = {}
+        if state is None or not hasattr(state, "list_status") or not hasattr(state, "list_pod_nodes"):
+            cache[cache_key] = records
+            return records
+        namespace_filter = self._pod_namespace(namespace) if namespace is not None else None
+        try:
+            statuses = list(state.list_status())
+        except Exception:
+            statuses = []
+        for status in statuses:
+            app_name = str(getattr(status, "app_name", "") or "")
+            if not app_name:
+                continue
+            app_namespace, _app_simple = split_app_key(app_name)
+            if namespace_filter and app_namespace != namespace_filter:
+                continue
+            try:
+                rows = state.list_pod_nodes(app_name)
+            except Exception:
+                rows = []
+            for row in rows:
+                if not row:
+                    continue
+                pod_name = str(row[0] or "")
+                if not pod_name:
+                    continue
+                node_id = str(row[1]) if len(row) > 1 and row[1] is not None else None
+                ready = bool(row[2]) if len(row) > 2 else False
+                live = bool(row[3]) if len(row) > 3 else False
+                pod_status = str(row[4] or "") if len(row) > 4 else ""
+                readiness_message = str(row[5] or "") if len(row) > 5 else ""
+                liveness_message = str(row[6] or "") if len(row) > 6 else ""
+                records[(app_namespace, pod_name)] = ControllerPodRecord(
+                    namespace=app_namespace,
+                    app_name=app_name,
+                    pod_name=pod_name,
+                    node_id=node_id,
+                    ready=ready,
+                    live=live,
+                    status=pod_status,
+                    readiness_message=readiness_message,
+                    liveness_message=liveness_message,
+                )
+        cache[cache_key] = records
+        return records
+
+    def _runtime_inventory_for_node(
+        self, node_id: str | None, endpoint: str | None
+    ) -> tuple[RuntimeAdapter, list[dict[str, Any]], str | None]:
+        cache = getattr(self, "_runtime_inventory_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_runtime_inventory_cache", cache)
+        normalized_endpoint = self._normalize_runtime_endpoint(endpoint)
+        cache_key = normalized_endpoint or f"local:{node_id or 'host'}"
+        cached = cache.get(cache_key)
+        if isinstance(cached, tuple) and len(cached) == 3:
+            runtime, containers, err = cached
+            return runtime, list(containers), err
+        runtime = self._runtime_for_endpoint(endpoint)
+        try:
+            containers = list(runtime.list_containers_info())  # type: ignore[attr-defined]
+            err = None
+        except Exception as exc:
+            containers = []
+            err = str(exc)
+        cache[cache_key] = (runtime, list(containers), err)
+        return runtime, containers, err
+
+    def _match_container_from_list(
+        self, namespace: str | None, pod_name: str, containers: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        for c in containers:
+            labels = c.get("labels", {}) or {}
+            rid = labels.get("ae.pod_name") or labels.get("ae.replica_id") or c.get("name")
+            if rid != pod_name and c.get("name") != pod_name:
+                continue
+            c_ns = self._pod_namespace(labels.get("ae.namespace"))
+            if namespace is not None and c_ns != self._pod_namespace(namespace):
+                continue
+            return c
+        return None
+
+    def _projected_pod_inventory(
+        self, namespace: str | None = None
+    ) -> dict[tuple[str, str], PodTarget]:
+        cache = getattr(self, "_projected_pod_inventory_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_projected_pod_inventory_cache", cache)
+        cache_key = namespace or "*"
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+        inventory: dict[tuple[str, str], PodTarget] = {}
+        controller_records = self._controller_pod_records(namespace)
+        local_runtime, local_containers, local_err = self._runtime_inventory_for_node(None, None)
+
+        for (pod_ns, pod_name), record in controller_records.items():
+            endpoint = self._node_endpoint_for_id(record.node_id)
+            runtime, containers, runtime_err = self._runtime_inventory_for_node(record.node_id, endpoint)
+            container = self._match_container_from_list(pod_ns, pod_name, containers)
+            inventory[(pod_ns, pod_name)] = PodTarget(
+                namespace=pod_ns,
+                pod_name=pod_name,
+                runtime=runtime,
+                node_id=record.node_id,
+                endpoint=endpoint,
+                app_name=record.app_name,
+                container=container,
+                controller=record,
+                runtime_error=runtime_err,
+                source="controller",
+            )
+
+        for container in local_containers:
+            labels = container.get("labels", {}) or {}
+            pod_ns = self._pod_namespace(labels.get("ae.namespace"))
+            if namespace is not None and pod_ns != self._pod_namespace(namespace):
+                continue
+            pod_name = (
+                labels.get("ae.pod_name") or labels.get("ae.replica_id") or container.get("name")
+            )
+            if not pod_name:
+                continue
+            key = (pod_ns, str(pod_name))
+            if key in inventory:
+                if inventory[key].container is None:
+                    inventory[key].container = container
+                continue
+            inventory[key] = PodTarget(
+                namespace=pod_ns,
+                pod_name=str(pod_name),
+                runtime=local_runtime,
+                node_id=str(labels.get("ae.node")) if labels.get("ae.node") else None,
+                endpoint=None,
+                app_name=self._app_from_labels(labels),
+                container=container,
+                controller=None,
+                runtime_error=local_err,
+                source="runtime",
+            )
+
+        cache[cache_key] = inventory
+        return inventory
+
+    def _resolve_pod_target(self, namespace: str | None, pod_name: str) -> PodTarget | None:
+        pod_ns = self._pod_namespace(namespace)
+        return self._projected_pod_inventory(pod_ns).get((pod_ns, pod_name))
+
+    def _pod_obj_from_target(self, target: PodTarget, rv: int) -> dict[str, Any]:
+        container = dict(target.container or {})
+        labels = dict(container.get("labels", {}) or {})
+        labels.setdefault("ae.namespace", target.namespace)
+        labels.setdefault("ae.pod_name", target.pod_name)
+        if target.app_name:
+            labels.setdefault("ae.app", target.app_name)
+        if target.node_id:
+            labels.setdefault("ae.node", target.node_id)
+        container.setdefault("name", target.pod_name)
+        container["labels"] = labels
+        if target.container is None:
+            phase = (target.controller.status if target.controller else "") or "Pending"
+            running = False
+            if target.controller is not None:
+                running = bool(target.controller.live or target.controller.ready)
+                if str(target.controller.status or "").lower() == "running":
+                    running = True
+            container.setdefault("running", running)
+        pod_obj = _pod_obj(container, rv, target.node_id)
+        if target.controller is None:
+            return pod_obj
+        status = pod_obj.get("status", {}) if isinstance(pod_obj, dict) else {}
+        container_statuses = status.get("containerStatuses", [])
+        if container_statuses:
+            cs = container_statuses[0]
+            cs["ready"] = bool(target.controller.ready)
+            if not target.controller.ready:
+                cs["state"] = {
+                    "waiting": {
+                        "reason": target.controller.status or "Pending",
+                        "message": target.controller.readiness_message or target.runtime_error or "",
+                    }
+                }
+        status["hostIP"] = target.node_id or status.get("hostIP")
+        status["phase"] = (
+            "Running"
+            if target.controller.live or target.controller.ready or str(target.controller.status).lower() == "running"
+            else "Pending"
+        )
+        status["conditions"] = [
+            {"type": "PodScheduled", "status": "True"},
+            {"type": "Ready", "status": "True" if target.controller.ready else "False"},
+            {"type": "ContainersReady", "status": "True" if target.controller.ready else "False"},
+        ]
+        pod_obj["status"] = status
+        return pod_obj
+
     def _node_id_for_pod(
         self,
         pod_name: str,
@@ -2754,33 +2998,23 @@ class ShimHandler(BaseHTTPRequestHandler):
         node_id = labels.get("ae.node")
         if node_id:
             return str(node_id)
-        state = getattr(self.server, "state", None)  # type: ignore[attr-defined]
-        if state is None or not hasattr(state, "list_pod_nodes"):
-            return None
-        try:
+        pod_ns = self._pod_namespace(namespace)
+        record = self._controller_pod_records(pod_ns).get((pod_ns, pod_name))
+        if record is not None:
             if app_name:
-                rows = state.list_pod_nodes(app_name)
-                for row in rows:
-                    if row and row[0] == pod_name:
-                        return str(row[1])
-            if not hasattr(state, "list_status"):
-                return None
-            for status in state.list_status():
-                if namespace and not str(getattr(status, "app_name", "")).startswith(
-                    f"{namespace}/"
-                ):
-                    continue
-                rows = state.list_pod_nodes(status.app_name)
-                for row in rows:
-                    if row and row[0] == pod_name:
-                        return str(row[1])
-        except Exception:
-            return None
+                _, want_app = split_app_key(str(app_name))
+                _, got_app = split_app_key(str(record.app_name))
+                if want_app and got_app and want_app != got_app:
+                    return None
+            return record.node_id
         return None
 
     def _runtime_for_pod(
         self, namespace: str | None, pod_name: str, *, container_info: dict | None = None
     ) -> tuple[RuntimeAdapter, str | None, str | None]:
+        target = self._resolve_pod_target(namespace, pod_name)
+        if target is not None:
+            return target.runtime, target.node_id, target.endpoint
         app_name = None
         if container_info:
             app_name = self._app_from_labels(container_info.get("labels", {}) or {})
@@ -2994,16 +3228,24 @@ class ShimHandler(BaseHTTPRequestHandler):
         expected_uid: str | None = None,
         expected_rv: int | None = None,
     ) -> dict | None:
-        runtime, _node_id, _endpoint = self._runtime_for_pod(namespace, pod_name)
-        container = self._resolve_pod_container(namespace, pod_name, runtime=runtime)
-        if container is None and runtime is not self.server.runtime:  # type: ignore[attr-defined]
-            container = self._resolve_pod_container(
-                namespace,
-                pod_name,
-                runtime=self.server.runtime,  # type: ignore[arg-type]
-            )
-        if not container:
+        target = self._resolve_pod_target(namespace, pod_name)
+        if target is None:
             self._not_found()
+            return None
+        if target.container is None and target.runtime_error and target.controller is not None:
+            self._json_status(
+                HTTPStatus.BAD_GATEWAY,
+                reason="BadGateway",
+                message=f"node runtime unavailable for pod: {target.runtime_error}",
+            )
+            return None
+        container = target.container
+        if not container:
+            self._json_status(
+                HTTPStatus.CONFLICT,
+                reason="Conflict",
+                message="pod is not runnable",
+            )
             return None
         if expected_uid:
             actual_uid = container.get("uid") or container.get("id")
@@ -3022,7 +3264,8 @@ class ShimHandler(BaseHTTPRequestHandler):
             )
             return None
         labels = container.get("labels", {}) or {}
-        app = self._app_from_labels(labels) or pod_name
+        app = self._app_from_labels(labels) or target.app_name or pod_name
+        _scope_ns, app = split_app_key(str(app))
         if self.pod_state_check and hasattr(self.server, "state"):
             try:
                 fn = getattr(self.server.state, "list_pod_nodes", None)  # type: ignore[attr-defined]
@@ -6596,55 +6839,15 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         # Pods (projected from runtime containers)
         if plural == "pods":
-            containers = []
-            try:
-                containers = self.server.runtime.list_containers_info()  # type: ignore[attr-defined]
-            except Exception:
-                containers = []
             label_sel, field_sel = _selector_values_from_query(q)
-            # enrich with controller pod/node info when available
-            replica_info: dict[str, tuple[str | None, bool, bool, str, str, str]] = {}
-            try:
-                # Build once for all apps to avoid N+1 queries
-                for app in {(c.get("labels", {}) or {}).get("ae.app") for c in containers}:
-                    if not app:
-                        continue
-                    rows = []
-                    try:
-                        rows = self.server.state.list_pod_nodes(app)  # type: ignore[attr-defined]
-                    except Exception:
-                        rows = []
-                    for rid, node_id, ready, live, status, rmsg, lmsg in rows:
-                        replica_info[rid] = (node_id, ready, live, status, rmsg, lmsg)
-            except Exception:
-                replica_info = {}
             now_rv = int(time.time() * 1000)
             pod_objs = []
-            for c in containers:
-                labels = c.get("labels", {}) or {}
-                c_ns = labels.get("ae.namespace") or "default"
-                if ns and c_ns != ns:
+            for target in self._projected_pod_inventory(ns).values():
+                if ns and target.namespace != self._pod_namespace(ns):
                     continue
-                rid = labels.get("ae.pod_name") or labels.get("ae.replica_id") or c.get("name")
-                rep_info = replica_info.get(str(rid))
-                node_name = labels.get("ae.node") or (rep_info[0] if rep_info else None)
-                pod_obj = _pod_obj(c, now_rv, node_name)
+                pod_obj = self._pod_obj_from_target(target, now_rv)
                 if not _matches_selectors(pod_obj, label_sel, field_sel):
                     continue
-                if rep_info:
-                    pod_obj["status"]["hostIP"] = node_name
-                    # reflect readiness/live from controller status if available
-                    cs = pod_obj["status"]["containerStatuses"][0]
-                    cs["ready"] = bool(rep_info[1])
-                    pod_obj["status"]["conditions"] = [
-                        {"type": "PodScheduled", "status": "True"},
-                        {"type": "Ready", "status": "True" if rep_info[1] else "False"},
-                        {"type": "ContainersReady", "status": "True" if rep_info[1] else "False"},
-                    ]
-                    if not rep_info[1]:
-                        cs["state"] = {
-                            "waiting": {"reason": rep_info[3] or "Pending", "message": rep_info[4]}
-                        }
                 pod_objs.append(pod_obj)
             self._update_pod_watch_cache(pod_objs, now_rv)
             if q.get("watch", ["0"])[0] in ("1", "true", "True"):
@@ -6732,15 +6935,33 @@ class ShimHandler(BaseHTTPRequestHandler):
                     line_ts = line
                 return line_ts.encode("utf-8", errors="ignore")
 
+            target = self._resolve_pod_target(ns, pod_name)
+            if target is None:
+                self._not_found()
+                return
+            if target.container is None and target.runtime_error and target.controller is not None:
+                self._json_status(
+                    HTTPStatus.BAD_GATEWAY,
+                    reason="BadGateway",
+                    message=f"node runtime unavailable for pod: {target.runtime_error}",
+                )
+                return
+            if target.container is None:
+                self._json_status(
+                    HTTPStatus.CONFLICT,
+                    reason="Conflict",
+                    message="pod is not runnable",
+                )
+                return
             try:
                 if follow:
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/plain")
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
-                    for ln in self.server.runtime.read_logs(
+                    for ln in target.runtime.read_logs(  # type: ignore[attr-defined]
                         pod_name, follow=True, tail=tail_i, since=since_i
-                    ):  # type: ignore[attr-defined]
+                    ):
                         try:
                             data = _emit(ln)
                             if not data.endswith(b"\n"):
@@ -6752,10 +6973,10 @@ class ShimHandler(BaseHTTPRequestHandler):
                     return
                 else:
                     lines = list(
-                        self.server.runtime.read_logs(
+                        target.runtime.read_logs(  # type: ignore[attr-defined]
                             pod_name, follow=False, tail=tail_i, since=since_i
                         )
-                    )  # type: ignore[attr-defined]
+                    )
                     body = b"".join([_emit(ln) for ln in lines])
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/plain")

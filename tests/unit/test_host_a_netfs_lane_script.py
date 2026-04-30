@@ -17,6 +17,36 @@ sys.modules[_SPEC.name] = host_a_netfs_lane
 _SPEC.loader.exec_module(host_a_netfs_lane)
 
 
+def _make_config(tmp_path: Path) -> host_a_netfs_lane.HostAConfig:
+    return host_a_netfs_lane.HostAConfig(
+        repo_root=tmp_path,
+        env_file=tmp_path / "host-a-gpu.env",
+        connection_uri="qemu:///system",
+        domain_name="k1s-core-a-gpu",
+        guest_user="ae",
+        guest_repo="/home/ae/k1s",
+        guest_key=tmp_path / "id_rsa",
+        guest_port=22,
+        node_id="core-a--hub",
+        state_root=tmp_path / "state",
+        overlay_dir=tmp_path / "VMs",
+        base_image=tmp_path / "artifacts" / "images" / "ubuntu-22.04-k1s-gpu.qcow2",
+        apishim_env=tmp_path / "apishim.env",
+        controller_env=tmp_path / "controller.env",
+        apishim_server="https://127.0.0.1:8445",
+        lane_log_dir=tmp_path / "lane",
+        nfs_export_root=tmp_path / "state" / "host-a-nfs-export",
+        nfs_export_path=tmp_path / "state" / "host-a-nfs-export" / "netfs",
+        nfs_container_name="ae-host-a-nfs",
+        nfs_export_path_in_guest="/netfs",
+        nfs_permitted=r"192.168.29.0\/24",
+        smoke_script=tmp_path / "smoke.sh",
+        labctl_script=tmp_path / "labctl.sh",
+        gpu_validator_script=tmp_path / "gpu_validate.py",
+        apishim_kubectl_script=tmp_path / "apishim_kubectl.sh",
+    )
+
+
 def test_parse_args_resume_defaults() -> None:
     args = host_a_netfs_lane.parse_args(["resume"])
 
@@ -111,6 +141,25 @@ def test_build_smoke_command_targets_guest_ip(tmp_path: Path) -> None:
     assert "https://127.0.0.1:8445" in cmd
 
 
+def test_ssh_base_args_suppresses_known_host_noise(tmp_path: Path) -> None:
+    args = host_a_netfs_lane.parse_args(
+        [
+            "resume",
+            "--env-file",
+            str(tmp_path / "missing.env"),
+            "--guest-key",
+            str(tmp_path / "id_rsa"),
+        ]
+    )
+    config = host_a_netfs_lane.load_config(args)
+
+    ssh_args = host_a_netfs_lane.ssh_base_args(config)
+
+    assert "StrictHostKeyChecking=no" in ssh_args
+    assert "UserKnownHostsFile=/dev/null" in ssh_args
+    assert "LogLevel=ERROR" in ssh_args
+
+
 def test_rebuild_paths_follow_host_a_defaults(tmp_path: Path) -> None:
     env_file = tmp_path / "host-a-gpu.env"
     env_file.write_text(
@@ -135,34 +184,123 @@ def test_rebuild_paths_follow_host_a_defaults(tmp_path: Path) -> None:
     assert config.base_image_sha == tmp_path / "artifacts" / "images" / "ubuntu-22.04-k1s-gpu.qcow2.sha256"
 
 
-def test_do_down_treats_already_stopped_vm_as_success(monkeypatch, tmp_path: Path) -> None:
-    config = host_a_netfs_lane.HostAConfig(
-        repo_root=tmp_path,
-        env_file=tmp_path / "host-a-gpu.env",
-        connection_uri="qemu:///system",
-        domain_name="k1s-core-a-gpu",
-        guest_user="ae",
-        guest_repo="/home/ae/k1s",
-        guest_key=tmp_path / "id_rsa",
-        guest_port=22,
-        node_id="core-a--hub",
-        state_root=tmp_path / "state",
-        overlay_dir=tmp_path / "VMs",
-        base_image=tmp_path / "artifacts" / "images" / "ubuntu-22.04-k1s-gpu.qcow2",
-        apishim_env=tmp_path / "apishim.env",
-        controller_env=tmp_path / "controller.env",
-        apishim_server="https://127.0.0.1:8445",
-        lane_log_dir=tmp_path / "lane",
-        nfs_export_root=tmp_path / "state" / "host-a-nfs-export",
-        nfs_export_path=tmp_path / "state" / "host-a-nfs-export" / "netfs",
-        nfs_container_name="ae-host-a-nfs",
-        nfs_export_path_in_guest="/netfs",
-        nfs_permitted=r"192.168.29.0\/24",
-        smoke_script=tmp_path / "smoke.sh",
-        labctl_script=tmp_path / "labctl.sh",
-        gpu_validator_script=tmp_path / "gpu_validate.py",
-        apishim_kubectl_script=tmp_path / "apishim_kubectl.sh",
+def test_wait_for_controller_shutdown_requires_lock_release_and_port_drain(monkeypatch, tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    time_values = iter([0.0, 0.1, 2.1, 4.1])
+    lock_states = iter([False, True])
+    health_states = iter([True, False])
+    postgres_states = iter([True, False])
+
+    monkeypatch.setattr(host_a_netfs_lane.time, "monotonic", lambda: next(time_values))
+    monkeypatch.setattr(host_a_netfs_lane.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(host_a_netfs_lane, "profile_lock_available", lambda _path: next(lock_states))
+    monkeypatch.setattr(host_a_netfs_lane, "controller_healthy", lambda: next(health_states))
+    monkeypatch.setattr(
+        host_a_netfs_lane,
+        "tcp_connectable",
+        lambda host, port, timeout_s=1.0: next(postgres_states),
     )
+
+    host_a_netfs_lane.wait_for_controller_shutdown(
+        config,
+        "192.168.29.178",
+        timeout_s=10,
+        dry_run=False,
+    )
+
+
+def test_wait_for_controller_health_requires_postgres_port(monkeypatch, tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    time_values = iter([0.0, 0.1, 2.1, 4.1])
+    postgres_states = iter([False, True])
+    tcp_calls: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(host_a_netfs_lane.time, "monotonic", lambda: next(time_values))
+    monkeypatch.setattr(host_a_netfs_lane.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(host_a_netfs_lane, "controller_start_failure", lambda _config: None)
+    monkeypatch.setattr(host_a_netfs_lane, "http_json", lambda _url, headers=None: {"ok": True})
+
+    def fake_tcp(host: str, port: int, *, timeout_s: float = 1.0) -> bool:
+        tcp_calls.append((host, port))
+        return next(postgres_states)
+
+    monkeypatch.setattr(host_a_netfs_lane, "tcp_connectable", fake_tcp)
+
+    host_a_netfs_lane.wait_for_controller_health(
+        config,
+        "192.168.29.178",
+        timeout_s=10,
+        dry_run=False,
+    )
+
+    assert tcp_calls == [("192.168.29.178", 55432), ("192.168.29.178", 55432)]
+
+
+def test_do_resume_restart_controller_waits_for_shutdown_before_restart(monkeypatch, tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    calls: list[str] = []
+
+    def fake_run_cmd(cmd, **kwargs):
+        if list(cmd) == ["bash", "-lc", "sudo -E make down || true"]:
+            calls.append("down")
+        return subprocess.CompletedProcess(list(cmd), 0, "", "")
+
+    monkeypatch.setattr(host_a_netfs_lane, "load_config", lambda _args: config)
+    monkeypatch.setattr(host_a_netfs_lane, "require_cmd", lambda _name: None)
+    monkeypatch.setattr(host_a_netfs_lane, "resolve_controller_host_ip", lambda _args: "192.168.29.178")
+    monkeypatch.setattr(host_a_netfs_lane, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(host_a_netfs_lane, "start_vm", lambda *_args, **_kwargs: calls.append("start_vm"))
+    monkeypatch.setattr(
+        host_a_netfs_lane,
+        "wait_for_guest_ip",
+        lambda *_args, **_kwargs: calls.append("wait_guest_ip") or "192.168.29.105",
+    )
+    monkeypatch.setattr(host_a_netfs_lane, "ensure_nfs_export", lambda *_args, **_kwargs: calls.append("ensure_nfs"))
+    monkeypatch.setattr(
+        host_a_netfs_lane,
+        "wait_for_controller_shutdown",
+        lambda *_args, **_kwargs: calls.append("wait_shutdown"),
+    )
+    monkeypatch.setattr(host_a_netfs_lane, "start_controller", lambda *_args, **_kwargs: calls.append("start_controller"))
+    monkeypatch.setattr(host_a_netfs_lane, "wait_for_controller_health", lambda *_args, **_kwargs: calls.append("wait_health"))
+
+    rc = host_a_netfs_lane.do_resume(
+        argparse.Namespace(
+            env_file=tmp_path / "missing.env",
+            guest_key=tmp_path / "id_rsa",
+            guest_port=22,
+            apishim_env=tmp_path / "apishim.env",
+            controller_env=tmp_path / "controller.env",
+            server="https://127.0.0.1:8445",
+            restart_controller=True,
+            skip_controller=False,
+            skip_sync=True,
+            skip_node=True,
+            smoke=False,
+            dry_run=False,
+            guest_ip=None,
+            guest_ip_timeout=150,
+            controller_health_timeout=30,
+            node_ready_timeout=30,
+            overlay_timeout=30,
+            controller_host_ip=None,
+        )
+    )
+
+    assert rc == 0
+    assert calls == [
+        "down",
+        "wait_shutdown",
+        "start_vm",
+        "wait_guest_ip",
+        "ensure_nfs",
+        "start_controller",
+        "wait_health",
+    ]
+
+
+def test_do_down_treats_already_stopped_vm_as_success(monkeypatch, tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
     calls: list[list[str]] = []
 
     def fake_run_cmd(cmd, **kwargs):

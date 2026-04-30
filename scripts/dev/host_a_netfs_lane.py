@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -85,6 +87,10 @@ class HostAConfig:
     @property
     def controller_log(self) -> Path:
         return self.lane_log_dir / "controller.log"
+
+    @property
+    def controller_profile_lock(self) -> Path:
+        return self.repo_root / "state" / "profiles" / "k1s-core" / ".profile.lock"
 
     @property
     def ips_json(self) -> Path:
@@ -464,26 +470,91 @@ def start_controller(config: HostAConfig, controller_host_ip: str, *, dry_run: b
     run_cmd(["bash", "-lc", command], cwd=config.repo_root, dry_run=dry_run)
 
 
-def wait_for_controller_health(config: HostAConfig, *, timeout_s: int, dry_run: bool) -> None:
+def tcp_connectable(host: str, port: int, *, timeout_s: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
+def profile_lock_available(lock_path: Path) -> bool:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as fh:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return True
+
+
+def controller_log_tail(config: HostAConfig, *, lines: int = 40) -> str:
+    if not config.controller_log.exists():
+        return ""
+    return "".join(config.controller_log.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)[-lines:])
+
+
+def controller_start_failure(config: HostAConfig) -> str | None:
+    tail = controller_log_tail(config)
+    if "profile 'k1s-core' is already running" in tail:
+        return tail.strip()
+    if "make: ***" in tail and "k1s-core-cri" in tail:
+        return tail.strip()
+    return None
+
+
+def wait_for_controller_shutdown(config: HostAConfig, controller_host_ip: str, *, timeout_s: int, dry_run: bool) -> None:
     if dry_run:
-        log("dry-run: controller health would be checked at http://127.0.0.1:9110/healthz")
+        log(
+            "dry-run: controller shutdown would be checked for "
+            "lock release and port drain"
+        )
+        return
+    deadline = time.monotonic() + float(timeout_s)
+    last_state = "controller stack still shutting down"
+    while time.monotonic() < deadline:
+        lock_free = profile_lock_available(config.controller_profile_lock)
+        health_up = controller_healthy()
+        postgres_up = tcp_connectable(controller_host_ip, 55432)
+        if lock_free and not health_up and not postgres_up:
+            return
+        last_state = (
+            "controller shutdown incomplete: "
+            f"lock_free={lock_free} health_up={health_up} postgres_up={postgres_up}"
+        )
+        time.sleep(2)
+    tail = controller_log_tail(config)
+    raise LaneError(f"timed out waiting for controller shutdown: {last_state}\n{tail}".strip())
+
+
+def wait_for_controller_health(config: HostAConfig, controller_host_ip: str, *, timeout_s: int, dry_run: bool) -> None:
+    if dry_run:
+        log(
+            "dry-run: controller health would be checked at "
+            f"http://127.0.0.1:9110/healthz and tcp://{controller_host_ip}:55432"
+        )
         return
     deadline = time.monotonic() + float(timeout_s)
     last_error = "controller health not yet green"
     while time.monotonic() < deadline:
+        start_failure = controller_start_failure(config)
+        if start_failure:
+            raise LaneError(start_failure)
         try:
             payload = http_json("http://127.0.0.1:9110/healthz")
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
             time.sleep(2)
             continue
-        if payload == {"ok": True}:
+        if payload == {"ok": True} and tcp_connectable(controller_host_ip, 55432):
             return
-        last_error = f"unexpected health payload: {payload!r}"
+        if payload != {"ok": True}:
+            last_error = f"unexpected health payload: {payload!r}"
+        else:
+            last_error = f"controller health ready but postgres not yet reachable at {controller_host_ip}:55432"
         time.sleep(2)
-    tail = ""
-    if config.controller_log.exists():
-        tail = "".join(config.controller_log.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)[-40:])
+    tail = controller_log_tail(config)
     raise LaneError(f"{last_error}\n{tail}".strip())
 
 
@@ -531,6 +602,8 @@ def ssh_base_args(config: HostAConfig) -> list[str]:
         "StrictHostKeyChecking=no",
         "-o",
         "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
         "-i",
         str(config.guest_key),
         "-p",
@@ -712,6 +785,12 @@ def do_resume(args: argparse.Namespace) -> int:
 
     if args.restart_controller:
         run_cmd(["bash", "-lc", "sudo -E make down || true"], cwd=config.repo_root, dry_run=args.dry_run)
+        wait_for_controller_shutdown(
+            config,
+            controller_host_ip,
+            timeout_s=args.controller_health_timeout,
+            dry_run=args.dry_run,
+        )
 
     start_vm(config, dry_run=args.dry_run)
     guest_ip = args.guest_ip or wait_for_guest_ip(config, timeout_s=args.guest_ip_timeout, dry_run=args.dry_run)
@@ -723,7 +802,12 @@ def do_resume(args: argparse.Namespace) -> int:
     if not args.skip_controller:
         if args.restart_controller or args.dry_run or not controller_healthy():
             start_controller(config, controller_host_ip, dry_run=args.dry_run)
-        wait_for_controller_health(config, timeout_s=args.controller_health_timeout, dry_run=args.dry_run)
+        wait_for_controller_health(
+            config,
+            controller_host_ip,
+            timeout_s=args.controller_health_timeout,
+            dry_run=args.dry_run,
+        )
 
     if not args.skip_sync:
         sync_repo(config, guest_ip, dry_run=args.dry_run)
@@ -770,7 +854,12 @@ def do_rebuild(args: argparse.Namespace) -> int:
 
     if not args.skip_controller:
         start_controller(config, controller_host_ip, dry_run=args.dry_run)
-        wait_for_controller_health(config, timeout_s=args.controller_health_timeout, dry_run=args.dry_run)
+        wait_for_controller_health(
+            config,
+            controller_host_ip,
+            timeout_s=args.controller_health_timeout,
+            dry_run=args.dry_run,
+        )
 
     if not args.skip_node:
         verify_controller_from_guest(config, guest_ip, controller_host_ip, dry_run=args.dry_run)

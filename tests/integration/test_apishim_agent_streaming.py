@@ -8,11 +8,14 @@ import socket
 import socketserver
 import threading
 import uuid
+from datetime import datetime, timezone
 from http.server import HTTPServer
+from types import SimpleNamespace
 
 import pytest
 
 from ae.apishim.server import ShimServer
+from ae.controller.state import NodeRecord
 from ae.runtime.base import RuntimeAdapter, RuntimeResult
 from ae.controller.spec import AppManifest
 from ae.node.server import AgentHandler
@@ -114,6 +117,88 @@ class DummyRuntime(RuntimeAdapter):
 
     def exec_exit_code(self, _exec_id: str) -> int:
         return 0
+
+
+class EmptyRuntime(RuntimeAdapter):
+    def ensure_app(  # pragma: no cover - unused in this test
+        self,
+        manifest: AppManifest,
+        revision: int,
+        *,
+        keep_old: bool = False,
+        limit_create: int | None = None,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
+    ) -> RuntimeResult:
+        _ = (manifest, revision, keep_old, limit_create, pod_names, node_id)
+        return RuntimeResult(revision=revision, created=0, updated=0, removed=0, pod_states=[])
+
+    def remove_app(self, _app_name: str) -> int:  # pragma: no cover - unused in this test
+        return 0
+
+    def remove_old_revisions(  # pragma: no cover - unused in this test
+        self, _app_name: str, _keep_revision: int
+    ) -> int:
+        return 0
+
+    def read_logs(  # pragma: no cover - unused in this test
+        self,
+        _pod_name: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: int | None = None,
+    ):
+        _ = (follow, tail, since)
+        return iter(())
+
+    def ensure_storage_volumes(self, _app_name: str, _volumes: list[dict]) -> None:  # pragma: no cover
+        return None
+
+    def remove_storage_volumes(self, _app_name: str, _names: list[str]) -> int:  # pragma: no cover
+        return 0
+
+    def list_storage_volumes(self, _app_name: str | None = None) -> list[dict]:  # pragma: no cover
+        return []
+
+    def list_containers_info(self) -> list[dict]:
+        return []
+
+
+class RemotePodState:
+    def __init__(self, agent_url: str) -> None:
+        now = datetime.now(timezone.utc)
+        self.node = NodeRecord(
+            node_id="node-test",
+            name="node-test",
+            labels={"role": "hub"},
+            capabilities={},
+            taints=[],
+            backend="cri",
+            endpoint=agent_url,
+            pod_cidr="10.42.0.0/24",
+            wg_pubkey=None,
+            rp_pubkey=None,
+            cordoned=False,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def list_status(self):
+        return [SimpleNamespace(app_name="demo")]
+
+    def list_pod_nodes(self, app_name: str):
+        if app_name != "demo":
+            return []
+        return [("demo-pod", "node-test", True, True, "running", "ready", "live")]
+
+    def get_node(self, node_id: str):
+        if node_id != self.node.node_id:
+            return None
+        return self.node, None
+
+    def list_nodes(self):
+        return [(self.node, None)]
 
 
 class EchoHandler(socketserver.BaseRequestHandler):
@@ -264,6 +349,85 @@ def test_apishim_exec_and_portforward(monkeypatch: pytest.MonkeyPatch, tmp_path)
         assert b"pong" in out
 
         # Port-forward over WebSocket
+        pf_path = "/api/v1/namespaces/default/pods/demo-pod/portforward?ports=8080"
+        pf = _ws_handshake(
+            "127.0.0.1", apishim.server_port, pf_path, ["portforward.k8s.io"]
+        )
+        pf.settimeout(2)
+        _ws_send(pf, b"\x00hello", opcode=0x2)
+        msg = _ws_recv(pf)
+        assert msg is not None
+        _opcode, payload = msg
+        assert payload[0:1] == b"\x00"
+        assert payload[1:] == b"hello"
+        pf.close()
+    finally:
+        apishim.shutdown()
+        apishim.server_close()
+        apishim_thread.join(timeout=2)
+        agent.shutdown()
+        agent.server_close()
+        agent_thread.join(timeout=2)
+        echo_server.shutdown()
+        echo_server.server_close()
+        echo_thread.join(timeout=2)
+
+
+def test_apishim_exec_and_portforward_via_remote_pod_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    echo_server, echo_thread = _start_echo_server()
+    echo_port = echo_server.server_address[1]
+    agent_runtime = DummyRuntime(echo_port=echo_port)
+    agent, agent_thread = _start_agent(agent_runtime)
+    apishim, apishim_thread = _start_apishim(monkeypatch, tmp_path, "")
+    try:
+        apishim.runtime = EmptyRuntime()
+        apishim._runtime_base = EmptyRuntime()
+        apishim._runtime_cache = {}
+        state = RemotePodState(f"http://127.0.0.1:{agent.server_port}")
+        apishim.state = state
+
+        pods_resp = socket.create_connection(("127.0.0.1", apishim.server_port), timeout=5)
+        try:
+            req = (
+                "GET /api/v1/namespaces/default/pods HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{apishim.server_port}\r\n"
+                "Connection: close\r\n\r\n"
+            )
+            pods_resp.sendall(req.encode("utf-8"))
+            raw = b""
+            while True:
+                chunk = pods_resp.recv(4096)
+                if not chunk:
+                    break
+                raw += chunk
+        finally:
+            pods_resp.close()
+        assert b"demo-pod" in raw
+
+        exec_path = (
+            "/api/v1/namespaces/default/pods/demo-pod/exec"
+            "?command=echo&command=hi&stdin=0&stdout=1&stderr=1&tty=0"
+        )
+        ws = _ws_handshake("127.0.0.1", apishim.server_port, exec_path, ["v4.channel.k8s.io"])
+        ws.settimeout(2)
+        out = b""
+        while True:
+            msg = _ws_recv(ws)
+            if msg is None:
+                break
+            _opcode, payload = msg
+            if not payload:
+                continue
+            channel = payload[0]
+            data = payload[1:]
+            if channel == 1:
+                out += data
+                break
+        ws.close()
+        assert b"pong" in out
+
         pf_path = "/api/v1/namespaces/default/pods/demo-pod/portforward?ports=8080"
         pf = _ws_handshake(
             "127.0.0.1", apishim.server_port, pf_path, ["portforward.k8s.io"]
