@@ -5188,8 +5188,9 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                 generic_token=generic_token,
                 mint_token=mint_token,
             )
-            try:
-                return _exec_over_spdy(
+            def _call_exec_transport(kind: str) -> int:
+                fn = _exec_over_ws if kind == "websocket" else _exec_over_spdy
+                return fn(
                     apishim_base,
                     namespace=ns,
                     pod_name=pod_name,
@@ -5202,144 +5203,70 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                     token=token,
                     timeout=getattr(args, "timeout", None),
                 )
-            except Exception as exc:
-                if _extract_http_status(exc) == 401:
-                    refreshed = _resolve_apishim_stream_token(
-                        base=apishim_base,
-                        role="exec",
-                        scope=scope,
-                        explicit_token=explicit_token,
-                        role_token=role_token,
-                        generic_token=generic_token,
-                        mint_token=mint_token,
-                        force_refresh=True,
-                    )
-                    if refreshed and refreshed != token:
-                        token = refreshed
-                        try:
-                            return _exec_over_spdy(
-                                apishim_base,
-                                namespace=ns,
-                                pod_name=pod_name,
-                                command=cmd,
-                                container=container_name,
-                                stdin=want_stdin,
-                                stdout=True,
-                                stderr=want_stderr,
-                                tty=want_tty,
-                                token=token,
-                                timeout=getattr(args, "timeout", None),
-                            )
-                        except Exception as retry_exc:
-                            exc = retry_exc
-                if _extract_http_status(exc) == 401 and not labs_attempted:
-                    labs_attempted = True
-                    labs_token = _resolve_labs_stream_token(
-                        apishim_base=apishim_base,
-                        role="exec",
-                        scope=scope,
-                        global_server=str(labs_server) if labs_server else None,
-                    )
-                    if labs_token and labs_token != token:
-                        print("spdy exec got 401; trying labs session token fallback...")
-                        token = labs_token
-                        try:
-                            return _exec_over_spdy(
-                                apishim_base,
-                                namespace=ns,
-                                pod_name=pod_name,
-                                command=cmd,
-                                container=container_name,
-                                stdin=want_stdin,
-                                stdout=True,
-                                stderr=want_stderr,
-                                tty=want_tty,
-                                token=token,
-                                timeout=getattr(args, "timeout", None),
-                            )
-                        except Exception as retry_exc:
-                            exc = retry_exc
-                if ws_fallback:
-                    print(f"spdy exec failed ({exc}); trying websocket fallback...")
-                    try:
-                        return _exec_over_ws(
-                            apishim_base,
-                            namespace=ns,
-                            pod_name=pod_name,
-                            command=cmd,
-                            container=container_name,
-                            stdin=want_stdin,
-                            stdout=True,
-                            stderr=want_stderr,
-                            tty=want_tty,
-                            token=token,
-                            timeout=getattr(args, "timeout", None),
+
+            def _attempt_exec_transport(kind: str) -> int:
+                nonlocal token, labs_attempted
+                try:
+                    return _call_exec_transport(kind)
+                except Exception as exc:
+                    if _extract_http_status(exc) == 401:
+                        refreshed = _resolve_apishim_stream_token(
+                            base=apishim_base,
+                            role="exec",
+                            scope=scope,
+                            explicit_token=explicit_token,
+                            role_token=role_token,
+                            generic_token=generic_token,
+                            mint_token=mint_token,
+                            force_refresh=True,
                         )
-                    except Exception as exc2:
-                        if _extract_http_status(exc2) == 401:
-                            refreshed = _resolve_apishim_stream_token(
-                                base=apishim_base,
-                                role="exec",
-                                scope=scope,
-                                explicit_token=explicit_token,
-                                role_token=role_token,
-                                generic_token=generic_token,
-                                mint_token=mint_token,
-                                force_refresh=True,
-                            )
-                            if refreshed and refreshed != token:
-                                token = refreshed
-                                try:
-                                    return _exec_over_ws(
-                                        apishim_base,
-                                        namespace=ns,
-                                        pod_name=pod_name,
-                                        command=cmd,
-                                        container=container_name,
-                                        stdin=want_stdin,
-                                        stdout=True,
-                                        stderr=want_stderr,
-                                        tty=want_tty,
-                                        token=token,
-                                        timeout=getattr(args, "timeout", None),
-                                    )
-                                except Exception as retry_ws_exc:
-                                    exc2 = retry_ws_exc
-                        if _extract_http_status(exc2) == 401 and not labs_attempted:
-                            labs_attempted = True
-                            labs_token = _resolve_labs_stream_token(
-                                apishim_base=apishim_base,
-                                role="exec",
-                                scope=scope,
-                                global_server=str(labs_server) if labs_server else None,
-                            )
-                            if labs_token and labs_token != token:
-                                print(
-                                    "websocket exec got 401; trying labs session token fallback..."
-                                )
-                                token = labs_token
-                                try:
-                                    return _exec_over_ws(
-                                        apishim_base,
-                                        namespace=ns,
-                                        pod_name=pod_name,
-                                        command=cmd,
-                                        container=container_name,
-                                        stdin=want_stdin,
-                                        stdout=True,
-                                        stderr=want_stderr,
-                                        tty=want_tty,
-                                        token=token,
-                                        timeout=getattr(args, "timeout", None),
-                                    )
-                                except Exception as retry_ws_exc:
-                                    exc2 = retry_ws_exc
-                        print(f"websocket exec failed: {exc2}")
-                        return 1
-                if _looks_like_connection_refused(exc) and _is_local_apishim_server(apishim_base):
-                    _print_apishim_connection_refused_hint(apishim_base)
-                print(f"spdy exec failed: {exc}")
+                        if refreshed and refreshed != token:
+                            token = refreshed
+                            try:
+                                return _call_exec_transport(kind)
+                            except Exception as retry_exc:
+                                exc = retry_exc
+                    if _extract_http_status(exc) == 401 and not labs_attempted:
+                        labs_attempted = True
+                        labs_token = _resolve_labs_stream_token(
+                            apishim_base=apishim_base,
+                            role="exec",
+                            scope=scope,
+                            global_server=str(labs_server) if labs_server else None,
+                        )
+                        if labs_token and labs_token != token:
+                            print(f"{kind} exec got 401; trying labs session token fallback...")
+                            token = labs_token
+                            try:
+                                return _call_exec_transport(kind)
+                            except Exception as retry_exc:
+                                exc = retry_exc
+                    raise exc
+
+            transport_order = ["websocket", "spdy"] if not want_stdin and not want_tty else ["spdy"]
+            if ws_fallback and "websocket" not in transport_order:
+                transport_order.append("websocket")
+
+            last_exc: Exception | None = None
+            last_kind = transport_order[-1]
+            for idx, kind in enumerate(transport_order):
+                last_kind = kind
+                try:
+                    return _attempt_exec_transport(kind)
+                except Exception as exc:
+                    last_exc = exc
+                    if idx + 1 < len(transport_order):
+                        print(
+                            f"{kind} exec failed ({exc}); trying {transport_order[idx + 1]} fallback..."
+                        )
+                        continue
+            if last_exc is not None and _looks_like_connection_refused(last_exc) and _is_local_apishim_server(apishim_base):
+                _print_apishim_connection_refused_hint(apishim_base)
+            if last_exc is not None:
+                print(f"{last_kind} exec failed: {last_exc}")
                 return 1
+            print(f"{last_kind} exec failed: unknown error")
+            return 1
         if gargs is not None and getattr(gargs, "server", None):
             return handle_exec_remote(args, gargs)
 

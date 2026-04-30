@@ -65,11 +65,11 @@ def test_handle_exec_mints_session_token_when_missing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "_mint_apishim_session_token", _fake_mint)
 
-    def _fake_spdy(*_a, **kwargs):
+    def _fake_ws(*_a, **kwargs):
         assert kwargs.get("token") == "sess1.token-a.sig"
         return 0
 
-    monkeypatch.setattr(cli, "_exec_over_spdy", _fake_spdy)
+    monkeypatch.setattr(cli, "_exec_over_ws", _fake_ws)
     rc = cli.handle_exec(args, store, DummyRuntime())
     assert rc == 0
 
@@ -103,14 +103,14 @@ def test_handle_exec_refreshes_token_after_401(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_mint_apishim_session_token", lambda *_a, **_k: next(issued))
     calls: list[str | None] = []
 
-    def _fake_spdy(*_a, **kwargs):
+    def _fake_ws(*_a, **kwargs):
         tok = kwargs.get("token")
         calls.append(tok)
         if len(calls) == 1:
-            raise RuntimeError("spdy upgrade failed: 401")
+            raise RuntimeError("websocket upgrade failed: 401")
         return 0
 
-    monkeypatch.setattr(cli, "_exec_over_spdy", _fake_spdy)
+    monkeypatch.setattr(cli, "_exec_over_ws", _fake_ws)
     rc = cli.handle_exec(args, store, DummyRuntime())
     assert rc == 0
     assert calls == ["sess1.token-a.sig", "sess1.token-b.sig"]
@@ -139,14 +139,14 @@ def test_handle_exec_labs_fallback_after_401(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_resolve_labs_stream_token", lambda **_k: "sess1.labs.sig")
     calls: list[str | None] = []
 
-    def _fake_spdy(*_a, **kwargs):
+    def _fake_ws(*_a, **kwargs):
         tok = kwargs.get("token")
         calls.append(tok)
         if len(calls) == 1:
-            raise RuntimeError("spdy upgrade failed: 401")
+            raise RuntimeError("websocket upgrade failed: 401")
         return 0
 
-    monkeypatch.setattr(cli, "_exec_over_spdy", _fake_spdy)
+    monkeypatch.setattr(cli, "_exec_over_ws", _fake_ws)
     rc = cli.handle_exec(args, store, DummyRuntime())
     assert rc == 0
     assert calls == ["stale-token", "sess1.labs.sig"]
@@ -206,6 +206,11 @@ def test_handle_exec_labs_fallback_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_resolve_apishim_stream_token", lambda **_k: "stale-token")
     monkeypatch.setattr(
         cli,
+        "_exec_over_ws",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("websocket upgrade failed: 401")),
+    )
+    monkeypatch.setattr(
+        cli,
         "_exec_over_spdy",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("spdy upgrade failed: 401")),
     )
@@ -231,6 +236,11 @@ def test_handle_exec_connection_refused_prints_apishim_hint(monkeypatch, tmp_pat
     monkeypatch.setattr(cli, "_resolve_apishim_stream_token", lambda **_k: "exec-token")
     monkeypatch.setattr(
         cli,
+        "_exec_over_ws",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("[Errno 111] Connection refused")),
+    )
+    monkeypatch.setattr(
+        cli,
         "_exec_over_spdy",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("[Errno 111] Connection refused")),
     )
@@ -240,3 +250,35 @@ def test_handle_exec_connection_refused_prints_apishim_hint(monkeypatch, tmp_pat
     assert "spdy exec failed:" in out
     assert "apishim appears unreachable" in out
     assert "state/apishim.pid" in out
+
+
+def test_handle_exec_interactive_prefers_spdy(monkeypatch, tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    args = argparse.Namespace(
+        name="echo",
+        cmd=["--", "sh"],
+        apishim="http://127.0.0.1:8445",
+        stdin=True,
+        tty=True,
+        container=None,
+        ws_fallback=False,
+        timeout=None,
+    )
+    monkeypatch.setattr(
+        cli, "_resolve_exec_target", lambda _store, _app, _container: ("echo-rev1-0", None)
+    )
+    called = {"spdy": False, "ws": False}
+
+    def _fake_spdy(*_a, **_k):
+        called["spdy"] = True
+        return 0
+
+    def _fake_ws(*_a, **_k):
+        called["ws"] = True
+        return 0
+
+    monkeypatch.setattr(cli, "_exec_over_spdy", _fake_spdy)
+    monkeypatch.setattr(cli, "_exec_over_ws", _fake_ws)
+    rc = cli.handle_exec(args, store, DummyRuntime())
+    assert rc == 0
+    assert called == {"spdy": True, "ws": False}
