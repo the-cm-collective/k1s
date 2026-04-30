@@ -280,6 +280,82 @@ esac
     assert writer_attempts.read_text(encoding="utf-8") == "2"
 
 
+def test_netfs_validate_retries_reader_before_fallback(tmp_path: Path) -> None:
+    ae_log = tmp_path / "ae.log"
+    stamp_file = tmp_path / "stamp.txt"
+    reader_attempts = tmp_path / "reader-attempts.txt"
+
+    fake_ae = tmp_path / "ae"
+    _write_executable(
+        fake_ae,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_AE_LOG"
+if [[ "$1" != "exec" ]]; then
+  echo "unexpected ae subcommand: $1" >&2
+  exit 1
+fi
+app="${4:-}"
+if [[ "$app" == "writer-app" ]]; then
+  shell_cmd="$*"
+  stamp="$(printf '%s' "$shell_cmd" | sed -n 's/.*echo \\([^ ]*\\) > .*/\\1/p')"
+  printf '%s' "$stamp" >"$FAKE_STAMP_FILE"
+  printf '%s\\n' "$stamp"
+  exit 0
+fi
+if [[ "$app" == "reader-app" ]]; then
+  attempts=0
+  if [[ -f "$FAKE_READER_ATTEMPTS" ]]; then
+    attempts="$(cat "$FAKE_READER_ATTEMPTS")"
+  fi
+  attempts=$((attempts + 1))
+  printf '%s' "$attempts" >"$FAKE_READER_ATTEMPTS"
+  if [[ "$attempts" == "1" ]]; then
+    exit 0
+  fi
+  cat "$FAKE_STAMP_FILE"
+  printf '\\n'
+  exit 0
+fi
+echo "unexpected app: $app" >&2
+exit 1
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_AE_LOG"] = str(ae_log)
+    env["FAKE_STAMP_FILE"] = str(stamp_file)
+    env["FAKE_READER_ATTEMPTS"] = str(reader_attempts)
+    env["AE_EXEC_READ_RETRIES"] = "2"
+    env["AE_EXEC_READ_RETRY_DELAY"] = "0"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(VALIDATOR_SCRIPT),
+            "--writer-app",
+            "writer-app",
+            "--reader-app",
+            "reader-app",
+            "--runtime",
+            "cri",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        cwd=ROOT,
+        env=env,
+    )
+
+    out = proc.stdout
+    assert "reader miss on attempt 1/2" in out
+    assert "PASS: netfs shared read/write via ae exec" in out
+    assert "PASS: stream path clean" in out
+    assert "ae exec path not clean" not in out
+    assert reader_attempts.read_text(encoding="utf-8") == "2"
+
+
 def test_apishim_kubectl_uses_read_only_token(tmp_path: Path) -> None:
     ca_bundle = tmp_path / "ca.pem"
     ca_bundle.write_text("dummy-ca", encoding="utf-8")

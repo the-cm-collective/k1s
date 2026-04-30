@@ -12,6 +12,8 @@ CRI_KEY="${CRI_KEY:-}"
 CRI_PORT="${CRI_PORT:-22}"
 CRI_EXEC_RETRIES="${CRI_EXEC_RETRIES:-3}"
 CRI_EXEC_RETRY_DELAY="${CRI_EXEC_RETRY_DELAY:-1}"
+AE_EXEC_READ_RETRIES="${AE_EXEC_READ_RETRIES:-3}"
+AE_EXEC_READ_RETRY_DELAY="${AE_EXEC_READ_RETRY_DELAY:-1}"
 
 usage() {
   cat <<'USAGE'
@@ -255,9 +257,23 @@ log "writer=${WRITER_APP} reader=${READER_APP} mount=${MOUNT_PATH} runtime=${RUN
 set +e
 writer_out="$(ae exec -n "$NAMESPACE" "$WRITER_APP" -- sh -lc "echo ${stamp} > ${writer_file} && cat ${writer_file}" 2>&1)"
 writer_rc=$?
-reader_out="$(ae exec -n "$NAMESPACE" "$READER_APP" -- cat "${writer_file}" 2>&1)"
-reader_rc=$?
 set -e
+
+reader_out=""
+reader_rc=1
+for ((reader_attempt=1; reader_attempt<=AE_EXEC_READ_RETRIES; reader_attempt++)); do
+  set +e
+  reader_out="$(ae exec -n "$NAMESPACE" "$READER_APP" -- cat "${writer_file}" 2>&1)"
+  reader_rc=$?
+  set -e
+  if [[ "$reader_rc" -eq 0 ]] && printf '%s' "$reader_out" | grep -q "$stamp"; then
+    break
+  fi
+  if (( reader_attempt < AE_EXEC_READ_RETRIES )); then
+    log "reader miss on attempt ${reader_attempt}/${AE_EXEC_READ_RETRIES}; retrying ae exec read..."
+    sleep "$AE_EXEC_READ_RETRY_DELAY"
+  fi
+done
 
 printf '%s\n' "$writer_out"
 printf '%s\n' "$reader_out"
