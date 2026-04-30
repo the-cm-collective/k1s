@@ -391,6 +391,21 @@ class RemoteRuntime(RuntimeAdapter):
         resp = self._request("POST", "/v1/exec_inspect", json={"exec_id": exec_id}, timeout=10)
         return int(resp.json().get("exit_code", 0))
 
+    def exec_status(self, exec_id: str) -> tuple[bool, int | None] | None:
+        if self._use_local():
+            if hasattr(self._local, "exec_status"):
+                return self._local.exec_status(exec_id)
+            return None
+        resp = self._request("POST", "/v1/exec_inspect", json={"exec_id": exec_id}, timeout=10)
+        data = resp.json()
+        if "running" not in data:
+            return None
+        running = bool(data.get("running"))
+        exit_code = data.get("exit_code")
+        if exit_code is not None:
+            exit_code = int(exit_code)
+        return running, exit_code
+
     def port_forward_socket(
         self,
         *,

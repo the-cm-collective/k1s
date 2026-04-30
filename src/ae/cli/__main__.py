@@ -4683,6 +4683,7 @@ def _exec_over_ws(
     import socket
     import sys
     import threading
+    import time
     import urllib.parse
     from contextlib import contextmanager
 
@@ -4708,7 +4709,10 @@ def _exec_over_ws(
     query = urllib.parse.urlencode(params, doseq=True)
     full_path = path + ("?" + query if query else "")
 
-    sock = socket.create_connection((host, port), timeout=timeout or 10)
+    connect_timeout = float(timeout or 10)
+    ws_read_timeout = 1.0
+    completion_grace_seconds = min(2.0, max(0.2, connect_timeout))
+    sock = socket.create_connection((host, port), timeout=connect_timeout)
     if scheme == "https":
         ctx = _apishim_ssl_context()
         sock = ctx.wrap_socket(sock, server_hostname=host)
@@ -4747,8 +4751,10 @@ def _exec_over_ws(
         status_code = 0
     if status_code != 101:
         raise RuntimeError(f"websocket upgrade failed: {status_code}")
+    sock.settimeout(ws_read_timeout)
 
     send_lock = threading.Lock()
+    ws_timeout = object()
 
     def _send_ws(payload: bytes, opcode: int = 0x2) -> None:
         mask_key = os.urandom(4)
@@ -4767,17 +4773,28 @@ def _exec_over_ws(
         with send_lock:
             sock.sendall(bytes(header) + mask_key + masked)
 
-    def _recv_exact(n: int) -> bytes | None:
+    def _recv_exact(n: int, *, allow_timeout: bool = False) -> bytes | None | object:
         buf = b""
+        deadline = time.monotonic() + ws_read_timeout
         while len(buf) < n:
-            chunk = sock.recv(n - len(buf))
+            try:
+                chunk = sock.recv(n - len(buf))
+            except socket.timeout:
+                if allow_timeout and not buf:
+                    return ws_timeout
+                if time.monotonic() >= deadline:
+                    raise
+                continue
             if not chunk:
                 return None
             buf += chunk
+            deadline = time.monotonic() + ws_read_timeout
         return buf
 
-    def _recv_ws() -> tuple[int, bytes] | None:
-        hdr = _recv_exact(2)
+    def _recv_ws() -> tuple[int, bytes] | None | object:
+        hdr = _recv_exact(2, allow_timeout=True)
+        if hdr is ws_timeout:
+            return ws_timeout
         if not hdr:
             return None
         opcode = hdr[0] & 0x0F
@@ -4800,6 +4817,9 @@ def _exec_over_ws(
     stop_event = threading.Event()
     exit_code = 0
     err_buf = b""
+    output_seen = False
+    status_seen = False
+    completion_deadline: float | None = None
 
     @contextmanager
     def _maybe_raw() -> None:
@@ -4855,23 +4875,46 @@ def _exec_over_ws(
             stdin_thread = threading.Thread(target=_pump_stdin, daemon=True)
             stdin_thread.start()
         while not stop_event.is_set():
-            msg = _recv_ws()
+            try:
+                msg = _recv_ws()
+            except socket.timeout:
+                msg = ws_timeout
+            if msg is ws_timeout:
+                if not output_seen:
+                    raise RuntimeError("The read operation timed out")
+                now = time.monotonic()
+                if completion_deadline is None:
+                    completion_deadline = now + completion_grace_seconds
+                    continue
+                if now < completion_deadline:
+                    continue
+                break
             if msg is None:
+                if output_seen:
+                    break
+                if not status_seen:
+                    raise RuntimeError("websocket closed before exec status")
                 break
             opcode, payload = msg
             if opcode == 0x8:
+                if not status_seen and not output_seen:
+                    raise RuntimeError("websocket closed before exec status")
                 break
             if not payload:
                 continue
+            completion_deadline = None
             ch = payload[0]
             data = payload[1:]
             if ch == 1 and stdout:
+                output_seen = True
                 sys.stdout.buffer.write(data)
                 sys.stdout.buffer.flush()
             elif ch == 2 and stderr and not tty:
+                output_seen = True
                 sys.stderr.buffer.write(data)
                 sys.stderr.buffer.flush()
             elif ch == 3:
+                status_seen = True
                 err_buf += data
                 try:
                     status = json.loads(err_buf.decode("utf-8", "ignore") or "{}")
@@ -5158,12 +5201,35 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         ws_fallback = bool(
             getattr(args, "ws_fallback", False) or _os.getenv("AE_EXEC_WS_FALLBACK") == "1"
         )
+        exec_transport_report = _os.getenv("AE_EXEC_TRANSPORT_REPORT") == "1"
         explicit_token = getattr(gargs, "token", None) if gargs is not None else None
         role_token = _os.getenv("AE_APISHIM_EXEC_TOKEN")
         generic_token = _os.getenv("AE_APISHIM_TOKEN")
         mint_token = _os.getenv("AE_APISHIM_MINT_TOKEN")
         labs_server = getattr(gargs, "server", None) if gargs is not None else None
         labs_attempted = False
+
+        def _emit_exec_transport_report(
+            *,
+            primary: str,
+            final: str | None,
+            fallback_used: bool,
+            ok: bool,
+        ) -> None:
+            if not exec_transport_report:
+                return
+            import sys as _sys
+
+            report = "AE_EXEC_TRANSPORT_REPORT " + " ".join(
+                [
+                    f"primary={primary}",
+                    f"final={final or 'none'}",
+                    f"fallback={'1' if fallback_used else '0'}",
+                    f"status={'ok' if ok else 'error'}",
+                ]
+            )
+            print(report, file=_sys.stderr)
+
         if apishim_base:
             app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
             cmd = list(args.cmd or [])
@@ -5258,10 +5324,18 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
 
             last_exc: Exception | None = None
             last_kind = transport_order[-1]
+            primary_kind = transport_order[0]
             for idx, kind in enumerate(transport_order):
                 last_kind = kind
                 try:
-                    return _attempt_exec_transport(kind)
+                    rc = _attempt_exec_transport(kind)
+                    _emit_exec_transport_report(
+                        primary=primary_kind,
+                        final=kind,
+                        fallback_used=idx > 0,
+                        ok=True,
+                    )
+                    return rc
                 except Exception as exc:
                     last_exc = exc
                     if idx + 1 < len(transport_order):
@@ -5272,8 +5346,20 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
             if last_exc is not None and _looks_like_connection_refused(last_exc) and _is_local_apishim_server(apishim_base):
                 _print_apishim_connection_refused_hint(apishim_base)
             if last_exc is not None:
+                _emit_exec_transport_report(
+                    primary=primary_kind,
+                    final=last_kind,
+                    fallback_used=last_kind != primary_kind,
+                    ok=False,
+                )
                 print(f"{last_kind} exec failed: {last_exc}")
                 return 1
+            _emit_exec_transport_report(
+                primary=primary_kind,
+                final=last_kind,
+                fallback_used=last_kind != primary_kind,
+                ok=False,
+            )
             print(f"{last_kind} exec failed: unknown error")
             return 1
         if gargs is not None and getattr(gargs, "server", None):

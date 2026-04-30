@@ -4754,8 +4754,12 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         exec_done = False
         exec_done_at = 0.0
-        exec_grace_seconds = 2.0
+        exec_close_grace_seconds = 0.2
+        exec_status_quiet_seconds = 0.2
         exec_buf = b""
+        exec_output_seen = False
+        exec_last_output_at = 0.0
+        exec_status_hint: int | None = None
         stop_reason = "unknown"
         max_seconds, idle_seconds = self._stream_limits()
         max_bytes = self._stream_byte_limit()
@@ -4763,6 +4767,24 @@ class ShimHandler(BaseHTTPRequestHandler):
         bytes_out = 0
         start_ts = time.time()
         last_activity = start_ts
+
+        def _inspect_exec_status() -> tuple[bool, int | None] | None:
+            if not exec_id or not hasattr(rt, "exec_status"):
+                return None
+            try:
+                status = rt.exec_status(exec_id)  # type: ignore[attr-defined]
+            except Exception:
+                return None
+            if status is None:
+                return None
+            running, exit_code = status
+            if exit_code is not None:
+                try:
+                    exit_code = int(exit_code)
+                except Exception:
+                    exit_code = None
+            return bool(running), exit_code
+
         try:
             while True:
                 now = time.time()
@@ -4827,8 +4849,11 @@ class ShimHandler(BaseHTTPRequestHandler):
                     if chunk:
                         last_activity = time.time()
                         bytes_out += len(chunk)
+                        exec_done = False
                         if tty:
                             if want_stdout:
+                                exec_output_seen = True
+                                exec_last_output_at = time.time()
                                 _send_channel(1, chunk)
                         else:
                             exec_buf += chunk
@@ -4845,28 +4870,53 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 if dm:
                                     stype, data = dm
                                     if stype == 1 and want_stdout:
+                                        exec_output_seen = True
+                                        exec_last_output_at = time.time()
                                         _send_channel(1, data)
                                     elif stype == 2 and want_stderr:
+                                        exec_output_seen = True
+                                        exec_last_output_at = time.time()
                                         _send_channel(2, data)
                     elif chunk == b"":
                         exec_done = True
                         exec_done_at = time.time()
+                        exec_status_hint = None
                         try:
                             exec_sock.close()
                         except Exception:
                             pass
                         exec_sock = None
 
-                if exec_done and (time.time() - exec_done_at) > exec_grace_seconds:
+                if (
+                    not exec_done
+                    and exec_output_seen
+                    and exec_last_output_at
+                    and (time.time() - exec_last_output_at) > exec_status_quiet_seconds
+                ):
+                    inspected = _inspect_exec_status()
+                    if inspected is not None:
+                        running, exit_code = inspected
+                        if not running:
+                            exec_done = True
+                            exec_done_at = time.time()
+                            exec_status_hint = exit_code if exit_code is not None else 0
+
+                if exec_done and (time.time() - exec_done_at) > exec_close_grace_seconds:
                     stop_reason = "exec_done"
                     break
         finally:
-            exit_code = 0
-            try:
-                if exec_id and hasattr(rt, "exec_exit_code"):
-                    exit_code = int(rt.exec_exit_code(exec_id))  # type: ignore[attr-defined]
-            except Exception:
-                exit_code = 0
+            exit_code = exec_status_hint if exec_status_hint is not None else 0
+            inspected = _inspect_exec_status()
+            if inspected is not None:
+                _running, inspected_code = inspected
+                if inspected_code is not None:
+                    exit_code = int(inspected_code)
+            elif exec_status_hint is None:
+                try:
+                    if exec_id and hasattr(rt, "exec_exit_code"):
+                        exit_code = int(rt.exec_exit_code(exec_id))  # type: ignore[attr-defined]
+                except Exception:
+                    exit_code = 0
             if stream_debug:
                 msg = (
                     "WS exec end "

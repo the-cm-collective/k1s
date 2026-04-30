@@ -1,7 +1,10 @@
 import argparse
+import json
+import socket
 import ssl
 import time
 
+import pytest
 import requests
 
 from ae.cli import __main__ as cli
@@ -10,6 +13,55 @@ from ae.controller.state import SQLiteStateStore
 
 class DummyRuntime:
     pass
+
+
+def _ws_frame(payload: bytes, *, opcode: int = 0x2) -> bytes:
+    header = bytearray()
+    header.append(0x80 | (opcode & 0x0F))
+    length = len(payload)
+    if length < 126:
+        header.append(length)
+    elif length < (1 << 16):
+        header.append(126)
+        header.extend(length.to_bytes(2, "big"))
+    else:
+        header.append(127)
+        header.extend(length.to_bytes(8, "big"))
+    return bytes(header) + payload
+
+
+class _ScriptedSocket:
+    def __init__(self, script: list[bytes | BaseException]) -> None:
+        self._script = list(script)
+        self.sent: list[bytes] = []
+        self.timeout: float | None = None
+
+    def recv(self, n: int) -> bytes:
+        if not self._script:
+            return b""
+        item = self._script[0]
+        if isinstance(item, BaseException):
+            self._script.pop(0)
+            raise item
+        if not item:
+            self._script.pop(0)
+            return b""
+        data = item[:n]
+        rest = item[n:]
+        if rest:
+            self._script[0] = rest
+        else:
+            self._script.pop(0)
+        return data
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def settimeout(self, value: float | None) -> None:
+        self.timeout = value
+
+    def close(self) -> None:
+        return
 
 
 def test_apishim_ssl_context_loads_ca_bundle(monkeypatch, tmp_path):
@@ -149,6 +201,138 @@ def test_handle_exec_ws_fallback(monkeypatch, tmp_path):
     rc = cli.handle_exec(args, store, DummyRuntime())
     assert rc == 0
     assert called["ws"] is True
+
+
+def test_handle_exec_reports_transport_fallback(monkeypatch, tmp_path, capsys):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    args = argparse.Namespace(
+        name="echo",
+        cmd=["--", "sh"],
+        apishim="http://127.0.0.1:8445",
+        stdin=False,
+        tty=False,
+        container=None,
+        ws_fallback=False,
+        timeout=None,
+    )
+    monkeypatch.setenv("AE_EXEC_TRANSPORT_REPORT", "1")
+    monkeypatch.setattr(
+        cli, "_resolve_exec_target", lambda _store, _app, _container: ("echo-rev1-0", None)
+    )
+    monkeypatch.setattr(
+        cli,
+        "_exec_over_ws",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("The read operation timed out")),
+    )
+    monkeypatch.setattr(cli, "_exec_over_spdy", lambda *_a, **_k: 0)
+
+    rc = cli.handle_exec(args, store, DummyRuntime())
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "trying spdy fallback" in captured.out
+    assert (
+        "AE_EXEC_TRANSPORT_REPORT primary=websocket final=spdy fallback=1 status=ok"
+        in captured.err
+    )
+
+
+def test_handle_exec_reports_primary_transport_success(monkeypatch, tmp_path, capsys):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    args = argparse.Namespace(
+        name="echo",
+        cmd=["--", "sh"],
+        apishim="http://127.0.0.1:8445",
+        stdin=False,
+        tty=False,
+        container=None,
+        ws_fallback=False,
+        timeout=None,
+    )
+    monkeypatch.setenv("AE_EXEC_TRANSPORT_REPORT", "1")
+    monkeypatch.setattr(
+        cli, "_resolve_exec_target", lambda _store, _app, _container: ("echo-rev1-0", None)
+    )
+    monkeypatch.setattr(cli, "_exec_over_ws", lambda *_a, **_k: 0)
+
+    rc = cli.handle_exec(args, store, DummyRuntime())
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out == ""
+    assert (
+        "AE_EXEC_TRANSPORT_REPORT primary=websocket final=websocket fallback=0 status=ok"
+        in captured.err
+    )
+
+
+def test_exec_over_ws_tolerates_late_status_after_output(monkeypatch, capsys):
+    status = json.dumps(
+        {"status": "Success", "details": {"exitCode": 0}},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    sock = _ScriptedSocket(
+        [
+            (
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n\r\n"
+            ),
+            _ws_frame(b"\x01hello\n"),
+            socket.timeout("timed out"),
+            _ws_frame(b"\x03" + status),
+            _ws_frame(b"\x03\xe8", opcode=0x8),
+        ]
+    )
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: sock)
+
+    rc = cli._exec_over_ws(
+        "http://127.0.0.1:8445",
+        namespace="default",
+        pod_name="demo-pod",
+        command=["echo", "hi"],
+        container=None,
+        stdin=False,
+        stdout=True,
+        stderr=True,
+        tty=False,
+        token=None,
+        timeout=None,
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out == "hello\n"
+    assert sock.timeout == 1.0
+
+
+def test_exec_over_ws_times_out_before_output(monkeypatch):
+    sock = _ScriptedSocket(
+        [
+            (
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n\r\n"
+            ),
+            socket.timeout("timed out"),
+        ]
+    )
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: sock)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        cli._exec_over_ws(
+            "http://127.0.0.1:8445",
+            namespace="default",
+            pod_name="demo-pod",
+            command=["echo", "hi"],
+            container=None,
+            stdin=False,
+            stdout=True,
+            stderr=True,
+            tty=False,
+            token=None,
+            timeout=None,
+        )
 
 
 def test_handle_exec_mints_session_token_when_missing(monkeypatch, tmp_path):

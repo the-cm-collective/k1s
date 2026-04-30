@@ -1393,11 +1393,22 @@ class DockerRuntime(RuntimeAdapter):
             return
 
     def exec_exit_code(self, exec_id: str) -> int:
+        status = self.exec_status(exec_id)
+        if status is None:
+            return 0
+        _running, exit_code = status
+        return int(exit_code or 0)
+
+    def exec_status(self, exec_id: str) -> tuple[bool, int | None] | None:
         try:
             info = self._client.api.exec_inspect(exec_id)
-            return int(info.get("ExitCode", 0))
+            running = bool(info.get("Running", False))
+            if running:
+                return True, None
+            raw_exit = info.get("ExitCode")
+            return False, int(raw_exit) if raw_exit is not None else 0
         except APIError:
-            return 0
+            return None
 
     def _build_state(self, manifest: AppManifest, container: Container) -> PodState:
         self._reload(container)

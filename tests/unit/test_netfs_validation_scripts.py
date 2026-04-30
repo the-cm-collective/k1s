@@ -356,6 +356,137 @@ exit 1
     assert reader_attempts.read_text(encoding="utf-8") == "2"
 
 
+def test_netfs_validate_reader_exec_polls_for_expected_stamp(tmp_path: Path) -> None:
+    ae_log = tmp_path / "ae.log"
+    stamp_file = tmp_path / "stamp.txt"
+
+    fake_ae = tmp_path / "ae"
+    _write_executable(
+        fake_ae,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_AE_LOG"
+if [[ "$1" != "exec" ]]; then
+  echo "unexpected ae subcommand: $1" >&2
+  exit 1
+fi
+app="${4:-}"
+if [[ "$app" == "writer-app" ]]; then
+  shell_cmd="$*"
+  stamp="$(printf '%s' "$shell_cmd" | sed -n 's/.*echo \\([^ ]*\\) > .*/\\1/p')"
+  printf '%s' "$stamp" >"$FAKE_STAMP_FILE"
+  printf '%s\\n' "$stamp"
+  exit 0
+fi
+if [[ "$app" == "reader-app" ]]; then
+  cat "$FAKE_STAMP_FILE"
+  printf '\\n'
+  exit 0
+fi
+echo "unexpected app: $app" >&2
+exit 1
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_AE_LOG"] = str(ae_log)
+    env["FAKE_STAMP_FILE"] = str(stamp_file)
+    env["AE_EXEC_READ_RETRIES"] = "1"
+    env["AE_EXEC_READ_POLL_SECONDS"] = "2"
+    env["AE_EXEC_READ_POLL_INTERVAL"] = "0.5"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(VALIDATOR_SCRIPT),
+            "--writer-app",
+            "writer-app",
+            "--reader-app",
+            "reader-app",
+            "--runtime",
+            "cri",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        cwd=ROOT,
+        env=env,
+    )
+
+    assert "PASS: netfs shared read/write via ae exec" in proc.stdout
+    ae_calls = ae_log.read_text(encoding="utf-8")
+    assert "exec -n default reader-app -- sh -lc" in ae_calls
+    assert "max_polls=4" in ae_calls
+    assert "sleep \"$poll_interval\"" in ae_calls
+    assert "grep -q \"$expected\" \"$target\"" in ae_calls
+
+
+def test_netfs_validate_warns_when_exec_transport_falls_back(tmp_path: Path) -> None:
+    ae_log = tmp_path / "ae.log"
+    stamp_file = tmp_path / "stamp.txt"
+
+    fake_ae = tmp_path / "ae"
+    _write_executable(
+        fake_ae,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_AE_LOG"
+if [[ "$1" != "exec" ]]; then
+  echo "unexpected ae subcommand: $1" >&2
+  exit 1
+fi
+app="${4:-}"
+if [[ "$app" == "writer-app" ]]; then
+  shell_cmd="$*"
+  stamp="$(printf '%s' "$shell_cmd" | sed -n 's/.*echo \\([^ ]*\\) > .*/\\1/p')"
+  printf 'AE_EXEC_TRANSPORT_REPORT primary=websocket final=spdy fallback=1 status=ok\\n' >&2
+  printf '%s' "$stamp" >"$FAKE_STAMP_FILE"
+  printf '%s\\n' "$stamp"
+  exit 0
+fi
+if [[ "$app" == "reader-app" ]]; then
+  printf 'AE_EXEC_TRANSPORT_REPORT primary=websocket final=websocket fallback=0 status=ok\\n' >&2
+  cat "$FAKE_STAMP_FILE"
+  printf '\\n'
+  exit 0
+fi
+echo "unexpected app: $app" >&2
+exit 1
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_AE_LOG"] = str(ae_log)
+    env["FAKE_STAMP_FILE"] = str(stamp_file)
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(VALIDATOR_SCRIPT),
+            "--writer-app",
+            "writer-app",
+            "--reader-app",
+            "reader-app",
+            "--runtime",
+            "cri",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        cwd=ROOT,
+        env=env,
+    )
+
+    out = proc.stdout
+    assert "AE_EXEC_TRANSPORT_REPORT" not in out
+    assert "WARN: ae exec transport fallback used (writer=websocket->spdy)" in out
+    assert "PASS: netfs shared read/write via ae exec" in out
+    assert "PASS: stream path recovered via fallback" in out
+    assert "PASS: stream path clean" not in out
+
+
 def test_apishim_kubectl_uses_read_only_token(tmp_path: Path) -> None:
     ca_bundle = tmp_path / "ca.pem"
     ca_bundle.write_text("dummy-ca", encoding="utf-8")

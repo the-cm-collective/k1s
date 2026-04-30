@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import socket
 import socketserver
@@ -11,7 +12,7 @@ import time
 import uuid
 import zlib
 from datetime import datetime, timezone
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
@@ -31,8 +32,17 @@ SPDY_DICT = base64.b64decode(
 class DummyRuntime(RuntimeAdapter):
     """Runtime stub used by the node agent."""
 
-    def __init__(self, echo_port: int) -> None:
+    def __init__(
+        self,
+        echo_port: int,
+        *,
+        status_delay: float = 0.0,
+        close_delay: float = 0.0,
+    ) -> None:
         self._echo_port = int(echo_port)
+        self._status_delay = float(status_delay)
+        self._close_delay = float(close_delay)
+        self._exec_done: dict[str, threading.Event] = {}
 
     def ensure_app(  # pragma: no cover - unused in this test
         self,
@@ -101,6 +111,8 @@ class DummyRuntime(RuntimeAdapter):
         _ = (container, tty)
         parent_sock, child_sock = socket.socketpair()
         exec_id = uuid.uuid4().hex
+        done = threading.Event()
+        self._exec_done[exec_id] = done
 
         def _send() -> None:
             try:
@@ -109,6 +121,11 @@ class DummyRuntime(RuntimeAdapter):
                 header[0] = 1  # stdout
                 header[4:8] = len(payload).to_bytes(4, "big")
                 child_sock.sendall(bytes(header) + payload)
+                if self._status_delay > 0:
+                    time.sleep(self._status_delay)
+                done.set()
+                if self._close_delay > 0:
+                    time.sleep(self._close_delay)
             finally:
                 try:
                     child_sock.shutdown(socket.SHUT_RDWR)
@@ -124,6 +141,14 @@ class DummyRuntime(RuntimeAdapter):
 
     def exec_exit_code(self, _exec_id: str) -> int:
         return 0
+
+    def exec_status(self, exec_id: str) -> tuple[bool, int | None] | None:
+        done = self._exec_done.get(exec_id)
+        if done is None:
+            return None
+        if done.is_set():
+            return False, 0
+        return True, None
 
 
 class EmptyRuntime(RuntimeAdapter):
@@ -232,7 +257,7 @@ def _start_agent(runtime: RuntimeAdapter):
     AgentHandler.runtime = runtime  # type: ignore[assignment]
     AgentHandler.node_id = "node-test"
     try:
-        server = HTTPServer(("127.0.0.1", 0), AgentHandler)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), AgentHandler)
     except PermissionError:
         pytest.skip("listener sockets not permitted in sandbox")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -300,27 +325,71 @@ def _ws_send(sock: socket.socket, payload: bytes, opcode: int = 0x2) -> None:
     sock.sendall(bytes(header) + mask + masked)
 
 
+def _ws_recv_exact(sock: socket.socket, n: int) -> bytes | None:
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+
 def _ws_recv(sock: socket.socket) -> tuple[int, bytes] | None:
-    hdr = sock.recv(2)
+    hdr = _ws_recv_exact(sock, 2)
     if not hdr:
         return None
     opcode = hdr[0] & 0x0F
     masked = bool(hdr[1] & 0x80)
     length = hdr[1] & 0x7F
     if length == 126:
-        length = int.from_bytes(sock.recv(2), "big")
+        ext = _ws_recv_exact(sock, 2)
+        if ext is None:
+            return None
+        length = int.from_bytes(ext, "big")
     elif length == 127:
-        length = int.from_bytes(sock.recv(8), "big")
-    mask = sock.recv(4) if masked else b""
-    payload = b""
-    while len(payload) < length:
-        chunk = sock.recv(length - len(payload))
-        if not chunk:
-            break
-        payload += chunk
+        ext = _ws_recv_exact(sock, 8)
+        if ext is None:
+            return None
+        length = int.from_bytes(ext, "big")
+    mask = _ws_recv_exact(sock, 4) if masked else b""
+    payload = _ws_recv_exact(sock, length) if length else b""
+    if payload is None:
+        return None
     if masked and mask:
         payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
     return opcode, payload
+
+
+def _ws_collect_exec(sock: socket.socket, *, timeout: float = 5.0) -> tuple[bytes, bytes, dict | None, bool]:
+    sock.settimeout(0.2)
+    deadline = time.time() + timeout
+    stdout = b""
+    stderr = b""
+    status = None
+    close_seen = False
+    while time.time() < deadline:
+        try:
+            msg = _ws_recv(sock)
+        except socket.timeout:
+            continue
+        if msg is None:
+            break
+        opcode, payload = msg
+        if opcode == 0x8:
+            close_seen = True
+            break
+        if not payload:
+            continue
+        channel = payload[0]
+        data = payload[1:]
+        if channel == 1:
+            stdout += data
+        elif channel == 2:
+            stderr += data
+        elif channel == 3:
+            status = json.loads(data.decode("utf-8"))
+    return stdout, stderr, status, close_seen
 
 
 def _spdy_handshake(
@@ -452,22 +521,12 @@ def test_apishim_exec_and_portforward(monkeypatch: pytest.MonkeyPatch, tmp_path)
             "?command=echo&command=hi&stdin=0&stdout=1&stderr=1&tty=0"
         )
         ws = _ws_handshake("127.0.0.1", apishim.server_port, exec_path, ["v4.channel.k8s.io"])
-        ws.settimeout(2)
-        out = b""
-        while True:
-            msg = _ws_recv(ws)
-            if msg is None:
-                break
-            _opcode, payload = msg
-            if not payload:
-                continue
-            channel = payload[0]
-            data = payload[1:]
-            if channel == 1:
-                out += data
-                break
+        out, err, status, close_seen = _ws_collect_exec(ws)
         ws.close()
         assert b"pong" in out
+        assert err == b""
+        assert status == {"metadata": {}, "status": "Success", "message": "", "reason": "", "code": 0, "details": {"exitCode": 0}}
+        assert close_seen is True
 
         # Port-forward over WebSocket
         pf_path = "/api/v1/namespaces/default/pods/demo-pod/portforward?ports=8080"
@@ -532,22 +591,12 @@ def test_apishim_exec_and_portforward_via_remote_pod_state(
             "?command=echo&command=hi&stdin=0&stdout=1&stderr=1&tty=0"
         )
         ws = _ws_handshake("127.0.0.1", apishim.server_port, exec_path, ["v4.channel.k8s.io"])
-        ws.settimeout(2)
-        out = b""
-        while True:
-            msg = _ws_recv(ws)
-            if msg is None:
-                break
-            _opcode, payload = msg
-            if not payload:
-                continue
-            channel = payload[0]
-            data = payload[1:]
-            if channel == 1:
-                out += data
-                break
+        out, err, status, close_seen = _ws_collect_exec(ws)
         ws.close()
         assert b"pong" in out
+        assert err == b""
+        assert status == {"metadata": {}, "status": "Success", "message": "", "reason": "", "code": 0, "details": {"exitCode": 0}}
+        assert close_seen is True
 
         pf_path = "/api/v1/namespaces/default/pods/demo-pod/portforward?ports=8080"
         pf = _ws_handshake(
@@ -622,6 +671,52 @@ def test_apishim_exec_spdy_buffers_stdout_until_stream_registration(
             sock.close()
 
         assert b"pong" in payloads.get(3, b"")
+    finally:
+        apishim.shutdown()
+        apishim.server_close()
+        apishim_thread.join(timeout=2)
+        agent.shutdown()
+        agent.server_close()
+        agent_thread.join(timeout=2)
+        echo_server.shutdown()
+        echo_server.server_close()
+        echo_thread.join(timeout=2)
+
+
+def test_apishim_exec_ws_completes_before_attach_close_via_remote_pod_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    echo_server, echo_thread = _start_echo_server()
+    echo_port = echo_server.server_address[1]
+    agent_runtime = DummyRuntime(echo_port=echo_port, close_delay=3.0)
+    agent, agent_thread = _start_agent(agent_runtime)
+    apishim, apishim_thread = _start_apishim(monkeypatch, tmp_path, "")
+    try:
+        apishim.runtime = EmptyRuntime()
+        apishim._runtime_base = EmptyRuntime()
+        apishim._runtime_cache = {}
+        state = RemotePodState(f"http://127.0.0.1:{agent.server_port}")
+        apishim.state = state
+
+        exec_path = (
+            "/api/v1/namespaces/default/pods/demo-pod/exec"
+            "?command=echo&command=hi&stdin=0&stdout=1&stderr=1&tty=0"
+        )
+        ws = _ws_handshake("127.0.0.1", apishim.server_port, exec_path, ["v4.channel.k8s.io"])
+        out, err, status, close_seen = _ws_collect_exec(ws, timeout=2.0)
+        ws.close()
+
+        assert out == b"pong"
+        assert err == b""
+        assert status == {
+            "metadata": {},
+            "status": "Success",
+            "message": "",
+            "reason": "",
+            "code": 0,
+            "details": {"exitCode": 0},
+        }
+        assert close_seen is True
     finally:
         apishim.shutdown()
         apishim.server_close()

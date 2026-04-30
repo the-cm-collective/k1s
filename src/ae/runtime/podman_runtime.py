@@ -78,6 +78,8 @@ class PodmanRuntime(RuntimeAdapter):
         self._apishim_store = None
         self._volume_manager_checked = False
         self._volume_manager = None
+        self._exec_procs: dict[str, subprocess.Popen[bytes]] = {}
+        self._exec_exit_codes: dict[str, int] = {}
 
     def _maybe_inject_runtime(self, argv: list[str]) -> None:
         """Inject --runtime into a `podman run` argv in-place when AE_OCI_RUNTIME is set."""
@@ -764,7 +766,9 @@ class PodmanRuntime(RuntimeAdapter):
                 except Exception:
                     pass
 
-        return _FDAsSocket(master, proc), f"{cid}:{proc.pid}"
+        exec_id = f"{cid}:{proc.pid}"
+        self._exec_procs[exec_id] = proc
+        return _FDAsSocket(master, proc), exec_id
 
     def exec_resize(
         self, exec_id: str, *, height: int | None = None, width: int | None = None
@@ -786,19 +790,40 @@ class PodmanRuntime(RuntimeAdapter):
             return
 
     def exec_exit_code(self, exec_id: str) -> int:
+        status = self.exec_status(exec_id)
+        if status is None:
+            return 0
+        _running, exit_code = status
+        return int(exit_code or 0)
+
+    def exec_status(self, exec_id: str) -> tuple[bool, int | None] | None:
+        if exec_id in self._exec_exit_codes:
+            return False, int(self._exec_exit_codes.get(exec_id, 0))
+        proc = self._exec_procs.get(exec_id)
+        if proc is not None:
+            try:
+                rc = proc.poll()
+            except Exception:
+                rc = None
+            if rc is None:
+                return True, None
+            self._exec_exit_codes.setdefault(exec_id, int(rc))
+            return False, int(rc)
         try:
             if ":" in exec_id:
                 _cid, pid_s = exec_id.split(":", 1)
                 pid = int(pid_s)
                 _, sts = os.waitpid(pid, os.WNOHANG)
                 if sts == 0:
-                    return 0
+                    return True, None
                 if os.WIFEXITED(sts):
-                    return int(os.WEXITSTATUS(sts))
-                return 0
+                    rc = int(os.WEXITSTATUS(sts))
+                    self._exec_exit_codes.setdefault(exec_id, rc)
+                    return False, rc
+                return False, 0
         except Exception:
-            return 0
-        return 0
+            return None
+        return None
 
     def remove_app(self, app_name: str) -> int:
         removed = 0

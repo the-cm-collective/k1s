@@ -14,6 +14,10 @@ CRI_EXEC_RETRIES="${CRI_EXEC_RETRIES:-3}"
 CRI_EXEC_RETRY_DELAY="${CRI_EXEC_RETRY_DELAY:-1}"
 AE_EXEC_READ_RETRIES="${AE_EXEC_READ_RETRIES:-3}"
 AE_EXEC_READ_RETRY_DELAY="${AE_EXEC_READ_RETRY_DELAY:-1}"
+AE_EXEC_READ_POLL_SECONDS="${AE_EXEC_READ_POLL_SECONDS:-2}"
+AE_EXEC_READ_POLL_INTERVAL="${AE_EXEC_READ_POLL_INTERVAL:-0.25}"
+AE_EXEC_TRANSPORT_REPORT="${AE_EXEC_TRANSPORT_REPORT:-1}"
+AE_EXEC_FAIL_ON_FALLBACK="${AE_EXEC_FAIL_ON_FALLBACK:-0}"
 
 usage() {
   cat <<'USAGE'
@@ -254,8 +258,88 @@ choose_runtime() {
 
 log "writer=${WRITER_APP} reader=${READER_APP} mount=${MOUNT_PATH} runtime=${RUNTIME} namespace=${NAMESPACE}"
 
+shell_quote() {
+  local value="${1-}"
+  printf "'%s'" "${value//\'/\'\\\'\'}"
+}
+
+extract_exec_transport_report() {
+  local text="${1-}"
+  printf '%s\n' "$text" | sed -n 's/^AE_EXEC_TRANSPORT_REPORT //p' | tail -n 1
+}
+
+strip_exec_transport_report() {
+  local text="${1-}"
+  printf '%s\n' "$text" | sed '/^AE_EXEC_TRANSPORT_REPORT /d'
+}
+
+exec_transport_field() {
+  local report="${1-}"
+  local field="${2-}"
+  [[ -n "$report" && -n "$field" ]] || return 0
+  printf '%s\n' "$report" | tr ' ' '\n' | sed -n "s/^${field}=//p" | tail -n 1
+}
+
+exec_transport_summary() {
+  local report="${1-}"
+  local primary=""
+  local final=""
+  primary="$(exec_transport_field "$report" primary)"
+  final="$(exec_transport_field "$report" final)"
+  [[ -n "$primary" ]] || return 0
+  if [[ -z "$final" || "$final" == "none" || "$primary" == "$final" ]]; then
+    printf '%s' "$primary"
+    return
+  fi
+  printf '%s->%s' "$primary" "$final"
+}
+
+exec_transport_used_fallback() {
+  local report="${1-}"
+  local fallback=""
+  fallback="$(exec_transport_field "$report" fallback)"
+  [[ "$fallback" == "1" ]]
+}
+
+reader_poll_loops="$(awk -v secs="$AE_EXEC_READ_POLL_SECONDS" -v interval="$AE_EXEC_READ_POLL_INTERVAL" 'BEGIN {
+  s = secs + 0
+  i = interval + 0
+  if (s <= 0) s = 0
+  if (i <= 0) i = 0.25
+  loops = int((s / i) + 0.999999)
+  if (loops < 1) loops = 1
+  print loops
+}')"
+writer_file_q="$(shell_quote "$writer_file")"
+stamp_q="$(shell_quote "$stamp")"
+reader_poll_interval_q="$(shell_quote "$AE_EXEC_READ_POLL_INTERVAL")"
+read -r -d '' READER_READ_CMD <<EOF || true
+target=${writer_file_q}
+expected=${stamp_q}
+poll_interval=${reader_poll_interval_q}
+max_polls=${reader_poll_loops}
+i=0
+while [ "\$i" -lt "\$max_polls" ]; do
+  if [ -f "\$target" ] && grep -q "\$expected" "\$target" 2>/dev/null; then
+    cat "\$target"
+    exit 0
+  fi
+  i=\$((i + 1))
+  if [ "\$i" -lt "\$max_polls" ]; then
+    sleep "\$poll_interval"
+  fi
+done
+if [ -f "\$target" ]; then
+  cat "\$target"
+fi
+exit 0
+EOF
+
 set +e
-writer_out="$(ae exec -n "$NAMESPACE" "$WRITER_APP" -- sh -lc "echo ${stamp} > ${writer_file} && cat ${writer_file}" 2>&1)"
+writer_out="$(
+  AE_EXEC_TRANSPORT_REPORT="$AE_EXEC_TRANSPORT_REPORT" \
+    ae exec -n "$NAMESPACE" "$WRITER_APP" -- sh -lc "echo ${stamp} > ${writer_file} && cat ${writer_file}" 2>&1
+)"
 writer_rc=$?
 set -e
 
@@ -263,24 +347,63 @@ reader_out=""
 reader_rc=1
 for ((reader_attempt=1; reader_attempt<=AE_EXEC_READ_RETRIES; reader_attempt++)); do
   set +e
-  reader_out="$(ae exec -n "$NAMESPACE" "$READER_APP" -- cat "${writer_file}" 2>&1)"
+  reader_out="$(
+    AE_EXEC_TRANSPORT_REPORT="$AE_EXEC_TRANSPORT_REPORT" \
+      ae exec -n "$NAMESPACE" "$READER_APP" -- sh -lc "$READER_READ_CMD" 2>&1
+  )"
   reader_rc=$?
   set -e
-  if [[ "$reader_rc" -eq 0 ]] && printf '%s' "$reader_out" | grep -q "$stamp"; then
+  reader_report="$(extract_exec_transport_report "$reader_out")"
+  reader_clean="$(strip_exec_transport_report "$reader_out")"
+  if [[ "$reader_rc" -eq 0 ]] && printf '%s' "$reader_clean" | grep -q "$stamp"; then
+    reader_out="$reader_clean"
     break
   fi
+  reader_out="$reader_clean"
   if (( reader_attempt < AE_EXEC_READ_RETRIES )); then
     log "reader miss on attempt ${reader_attempt}/${AE_EXEC_READ_RETRIES}; retrying ae exec read..."
     sleep "$AE_EXEC_READ_RETRY_DELAY"
   fi
 done
 
+writer_report="$(extract_exec_transport_report "$writer_out")"
+writer_out="$(strip_exec_transport_report "$writer_out")"
+reader_report="${reader_report:-$(extract_exec_transport_report "$reader_out")}"
+reader_out="$(strip_exec_transport_report "$reader_out")"
+
+writer_transport="$(exec_transport_summary "$writer_report")"
+reader_transport="$(exec_transport_summary "$reader_report")"
+transport_fallback_used=0
+transport_fallback_parts=()
+if exec_transport_used_fallback "$writer_report"; then
+  transport_fallback_used=1
+  transport_fallback_parts+=("writer=${writer_transport:-unknown}")
+fi
+if exec_transport_used_fallback "$reader_report"; then
+  transport_fallback_used=1
+  transport_fallback_parts+=("reader=${reader_transport:-unknown}")
+fi
+transport_fallback_detail=""
+if (( ${#transport_fallback_parts[@]} > 0 )); then
+  transport_fallback_detail="$(IFS=', '; printf '%s' "${transport_fallback_parts[*]}")"
+fi
+
 printf '%s\n' "$writer_out"
 printf '%s\n' "$reader_out"
 
 if [[ "$writer_rc" -eq 0 && "$reader_rc" -eq 0 ]] && printf '%s' "$reader_out" | grep -q "$stamp"; then
+  if (( transport_fallback_used )); then
+    log "WARN: ae exec transport fallback used (${transport_fallback_detail})"
+    if [[ "$AE_EXEC_FAIL_ON_FALLBACK" == "1" ]]; then
+      die "ae exec transport fallback used (${transport_fallback_detail})"
+    fi
+  fi
   log "PASS: netfs shared read/write via ae exec (${stamp})"
-  log "PASS: stream path clean (writer_rc=${writer_rc}, reader_rc=${reader_rc})"
+  if (( transport_fallback_used )); then
+    log "PASS: stream path recovered via fallback (writer_rc=${writer_rc}, reader_rc=${reader_rc})"
+  else
+    log "PASS: stream path clean (writer_rc=${writer_rc}, reader_rc=${reader_rc})"
+  fi
   exit 0
 fi
 

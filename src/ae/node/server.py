@@ -9,7 +9,7 @@ import os
 import socket
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from ae.accelerators import (
@@ -504,6 +504,19 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/exec_inspect":
                 exec_id = payload.get("exec_id", "")
+                if hasattr(self.runtime, "exec_status"):
+                    try:
+                        status = self.runtime.exec_status(exec_id)
+                    except Exception:
+                        status = None
+                    if status is not None:
+                        running, exit_code = status
+                        _json_response(
+                            self,
+                            200,
+                            {"running": bool(running), "exit_code": exit_code},
+                        )
+                        return
                 code = 0
                 try:
                     code = int(self.runtime.exec_exit_code(exec_id))
@@ -958,7 +971,7 @@ def serve(
         except Exception as exc:  # noqa: BLE001
             AgentHandler.volume_manager = None
             LOGGER.warning("failed to enable netfs volume manager: %s", exc)
-    server = HTTPServer((host, port), AgentHandler)
+    server = ThreadingHTTPServer((host, port), AgentHandler)
     if tls_cert and tls_key:
         import ssl
 

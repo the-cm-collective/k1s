@@ -546,17 +546,28 @@ class CRIRuntime(RuntimeAdapter):
         return
 
     def exec_exit_code(self, exec_id: str) -> int:
+        status = self.exec_status(exec_id)
+        if status is None:
+            return 0
+        _running, exit_code = status
+        return int(exit_code or 0)
+
+    def exec_status(self, exec_id: str) -> tuple[bool, int | None] | None:
         with self._exec_lock:
             if exec_id in self._exec_exit_codes:
-                return int(self._exec_exit_codes.get(exec_id, 0))
+                return False, int(self._exec_exit_codes.get(exec_id, 0))
             proc = self._exec_procs.get(exec_id)
         if proc is None:
-            return 0
+            return None
         try:
             rc = proc.poll()
-            return int(rc) if rc is not None else 0
+            if rc is None:
+                return True, None
+            with self._exec_lock:
+                self._exec_exit_codes.setdefault(exec_id, int(rc))
+            return False, int(rc)
         except Exception:
-            return 0
+            return None
 
     # Init containers --------------------------------------------------
     def run_init_containers(self, manifest: AppManifest):  # type: ignore[override]
