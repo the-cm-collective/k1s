@@ -111,11 +111,55 @@ def test_build_guest_bootstrap_script_includes_expected_node_env(tmp_path: Path)
         "192.168.29.104",
     )
 
-    assert "sudo apt-get install -y nfs-common" in script
+    assert "run_apt_get update" in script
+    assert "run_apt_get install -y nfs-common" in script
+    assert "Could not get lock" in script
+    assert "package_manager_busy()" in script
+    assert "pgrep -x apt-get" in script
+    assert "pgrep -x dpkg" in script
+    assert "print_package_diagnostics" in script
+    assert "systemctl --no-pager --full --lines=20 status apt-daily.service" in script
+    assert "sudo fuser /var/lib/apt/lists/lock" in script
+    assert "pgrep -f unattended-upgrade" not in script
+    assert "pgrep -f unattended-upgrades" not in script
     assert "AE_ENABLE_NETFS=1" in script
     assert 'AE_NODE_ID=core-a--hub' in script
     assert 'AE_AGENT_ENDPOINT="http://${guest_ip}:9111"' in script
     assert "make k1s-core-node > /home/ae/k1s-core-node.log" in script
+
+
+def test_wait_for_guest_bootstrap_ready_checks_cloud_init_and_apt_idle(monkeypatch, tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    captured: dict[str, str] = {}
+
+    def fake_run_remote_script(_config, _guest_ip, script, *, dry_run):
+        assert dry_run is False
+        captured["script"] = script
+
+    monkeypatch.setattr(host_a_netfs_lane, "run_remote_script", fake_run_remote_script)
+
+    host_a_netfs_lane.wait_for_guest_bootstrap_ready(
+        config,
+        "192.168.29.105",
+        timeout_s=180,
+        dry_run=False,
+    )
+
+    script = captured["script"]
+    assert "cloud-init status" in script
+    assert "cloud-init status --long" in script
+    assert "/var/lib/cloud/instance/boot-finished" in script
+    assert 'status: error' in script
+    assert "package_manager_busy()" in script
+    assert "pgrep -x apt-get" in script
+    assert "pgrep -x dpkg" in script
+    assert "print_bootstrap_diagnostics" in script
+    assert "systemctl is-system-running" in script
+    assert "sudo fuser /var/lib/apt/lists/lock" in script
+    assert "tail -n 40 /var/log/cloud-init.log /var/log/cloud-init-output.log /var/log/apt/term.log" in script
+    assert "guest package manager still busy before bootstrap deadline" in script
+    assert "pgrep -f unattended-upgrade" not in script
+    assert "pgrep -f unattended-upgrades" not in script
 
 
 def test_build_smoke_command_targets_guest_ip(tmp_path: Path) -> None:
@@ -297,6 +341,73 @@ def test_do_resume_restart_controller_waits_for_shutdown_before_restart(monkeypa
         "start_controller",
         "wait_health",
     ]
+
+
+def test_do_rebuild_waits_for_guest_bootstrap_before_start_guest_node(monkeypatch, tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    calls: list[str] = []
+    timeouts: list[int] = []
+
+    monkeypatch.setattr(host_a_netfs_lane, "load_config", lambda _args: config)
+    monkeypatch.setattr(host_a_netfs_lane, "ensure_lane_dirs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(host_a_netfs_lane, "require_cmd", lambda _name: None)
+    monkeypatch.setattr(host_a_netfs_lane, "resolve_controller_host_ip", lambda _args: "192.168.29.178")
+    monkeypatch.setattr(
+        host_a_netfs_lane,
+        "rebuild_guest",
+        lambda *_args, **_kwargs: calls.append("rebuild_guest") or "192.168.29.100",
+    )
+    monkeypatch.setattr(host_a_netfs_lane, "ensure_nfs_export", lambda *_args, **_kwargs: calls.append("ensure_nfs"))
+    monkeypatch.setattr(host_a_netfs_lane, "start_controller", lambda *_args, **_kwargs: calls.append("start_controller"))
+    monkeypatch.setattr(host_a_netfs_lane, "wait_for_controller_health", lambda *_args, **_kwargs: calls.append("wait_health"))
+    monkeypatch.setattr(
+        host_a_netfs_lane,
+        "verify_controller_from_guest",
+        lambda *_args, **_kwargs: calls.append("verify_controller"),
+    )
+    monkeypatch.setattr(
+        host_a_netfs_lane,
+        "wait_for_guest_bootstrap_ready",
+        lambda *_args, **_kwargs: timeouts.append(int(_kwargs["timeout_s"])) or calls.append("wait_guest_bootstrap"),
+    )
+    monkeypatch.setattr(host_a_netfs_lane, "start_guest_node", lambda *_args, **_kwargs: calls.append("start_guest_node"))
+    monkeypatch.setattr(host_a_netfs_lane, "wait_for_guest_node", lambda *_args, **_kwargs: calls.append("wait_guest_node"))
+
+    rc = host_a_netfs_lane.do_rebuild(
+        argparse.Namespace(
+            env_file=tmp_path / "missing.env",
+            guest_key=tmp_path / "id_rsa",
+            guest_port=22,
+            apishim_env=tmp_path / "apishim.env",
+            controller_env=tmp_path / "controller.env",
+            server="https://127.0.0.1:8445",
+            guest_ip=None,
+            guest_ip_timeout=150,
+            controller_health_timeout=30,
+            node_ready_timeout=120,
+            overlay_timeout=30,
+            controller_host_ip=None,
+            skip_sync=True,
+            skip_gpu_validate=True,
+            skip_controller=False,
+            skip_node=False,
+            smoke=False,
+            dry_run=False,
+        )
+    )
+
+    assert rc == 0
+    assert calls == [
+        "rebuild_guest",
+        "ensure_nfs",
+        "start_controller",
+        "wait_health",
+        "verify_controller",
+        "wait_guest_bootstrap",
+        "start_guest_node",
+        "wait_guest_node",
+    ]
+    assert timeouts == [600]
 
 
 def test_do_down_treats_already_stopped_vm_as_success(monkeypatch, tmp_path: Path) -> None:

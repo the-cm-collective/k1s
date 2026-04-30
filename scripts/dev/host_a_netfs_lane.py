@@ -316,10 +316,71 @@ controller_url={shlex.quote(controller_url)}
 guest_ip={shlex.quote(guest_ip)}
 apishim_dsn={shlex.quote(apishim_dsn)}
 
+print_package_diagnostics() {{
+  echo "[guest-bootstrap] package processes:" >&2
+  ps -eo pid=,ppid=,etimes=,state=,comm=,args= | grep -E 'apt|apt-get|dpkg|unattended' | grep -v grep >&2 || true
+  echo "[guest-bootstrap] package services:" >&2
+  systemctl --no-pager --full --lines=20 status apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null >&2 || true
+  echo "[guest-bootstrap] package lock holders:" >&2
+  if command -v fuser >/dev/null 2>&1; then
+    sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>/dev/null >&2 || true
+  else
+    echo "fuser unavailable" >&2
+  fi
+}}
+
+package_manager_busy() {{
+  if pgrep -x apt >/dev/null 2>&1 \\
+    || pgrep -x apt-get >/dev/null 2>&1 \\
+    || pgrep -x dpkg >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v fuser >/dev/null 2>&1; then
+    if sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  return 1
+}}
+
+wait_for_apt_idle() {{
+  local deadline=$((SECONDS + 300))
+  while (( SECONDS < deadline )); do
+    if package_manager_busy; then
+      sleep 2
+      continue
+    fi
+    return 0
+  done
+  echo "timed out waiting for apt/dpkg to become idle" >&2
+  print_package_diagnostics
+  return 1
+}}
+
+run_apt_get() {{
+  local attempt output rc
+  for attempt in $(seq 1 10); do
+    wait_for_apt_idle
+    if output="$(sudo DEBIAN_FRONTEND=noninteractive apt-get "$@" 2>&1)"; then
+      printf '%s\\n' "$output"
+      return 0
+    fi
+    rc=$?
+    printf '%s\\n' "$output" >&2
+    if printf '%s' "$output" | grep -Eq 'Could not get lock|Unable to lock directory|dpkg frontend is locked by another process|dpkg was interrupted'; then
+      sleep 3
+      continue
+    fi
+    return "$rc"
+  done
+  echo "apt-get $* failed after repeated lock retries" >&2
+  return 1
+}}
+
 cd "$guest_repo"
 
-sudo apt-get update
-sudo apt-get install -y nfs-common
+run_apt_get update
+run_apt_get install -y nfs-common
 
 if sudo python3 -m pip install --help 2>/dev/null | grep -q -- --break-system-packages; then
   sudo python3 -m pip install -r requirements.in --break-system-packages
@@ -640,6 +701,90 @@ def guest_log_tail(config: HostAConfig, guest_ip: str, *, dry_run: bool) -> str:
     return ((proc.stdout or "") + (proc.stderr or "")).strip()
 
 
+def wait_for_guest_bootstrap_ready(config: HostAConfig, guest_ip: str, *, timeout_s: int, dry_run: bool) -> None:
+    if dry_run:
+        log(
+            "dry-run: guest bootstrap readiness would wait for "
+            "cloud-init completion and apt/dpkg idleness"
+        )
+        return
+    script = f"""set -euo pipefail
+deadline=$((SECONDS + {int(timeout_s)}))
+cloud_init_done=0
+
+print_bootstrap_diagnostics() {{
+  echo "[guest-bootstrap-ready] cloud-init status:" >&2
+  if command -v cloud-init >/dev/null 2>&1; then
+    cloud-init status --long 2>/dev/null >&2 || cloud-init status 2>/dev/null >&2 || true
+  else
+    echo "cloud-init command unavailable" >&2
+  fi
+  echo "[guest-bootstrap-ready] system state:" >&2
+  systemctl is-system-running 2>/dev/null >&2 || true
+  echo "[guest-bootstrap-ready] package processes:" >&2
+  ps -eo pid=,ppid=,etimes=,state=,comm=,args= | grep -E 'apt|apt-get|dpkg|unattended' | grep -v grep >&2 || true
+  echo "[guest-bootstrap-ready] package services:" >&2
+  systemctl --no-pager --full --lines=20 status apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null >&2 || true
+  echo "[guest-bootstrap-ready] package lock holders:" >&2
+  if command -v fuser >/dev/null 2>&1; then
+    sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>/dev/null >&2 || true
+  else
+    echo "fuser unavailable" >&2
+  fi
+  echo "[guest-bootstrap-ready] recent logs:" >&2
+  tail -n 40 /var/log/cloud-init.log /var/log/cloud-init-output.log /var/log/apt/term.log 2>/dev/null >&2 || true
+}}
+
+package_manager_busy() {{
+  if pgrep -x apt >/dev/null 2>&1 \\
+    || pgrep -x apt-get >/dev/null 2>&1 \\
+    || pgrep -x dpkg >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v fuser >/dev/null 2>&1; then
+    if sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  return 1
+}}
+
+if command -v cloud-init >/dev/null 2>&1; then
+  while (( SECONDS < deadline )); do
+    status="$(cloud-init status 2>/dev/null || true)"
+    if [[ "$status" == *"status: done"* ]] || [[ "$status" == *"status: disabled"* ]] || [[ -f /var/lib/cloud/instance/boot-finished ]]; then
+      cloud_init_done=1
+      break
+    fi
+    if [[ "$status" == *"status: error"* ]]; then
+      printf '%s\\n' "$status" >&2
+      print_bootstrap_diagnostics
+      exit 1
+    fi
+    sleep 2
+  done
+  if (( cloud_init_done == 0 )) && [[ ! -f /var/lib/cloud/instance/boot-finished ]]; then
+    echo "cloud-init did not finish before bootstrap deadline" >&2
+    print_bootstrap_diagnostics
+    exit 1
+  fi
+fi
+
+while (( SECONDS < deadline )); do
+  if package_manager_busy; then
+    sleep 2
+    continue
+  fi
+  exit 0
+done
+
+echo "guest package manager still busy before bootstrap deadline" >&2
+print_bootstrap_diagnostics
+exit 1
+"""
+    run_remote_script(config, guest_ip, script, dry_run=dry_run)
+
+
 def verify_controller_from_guest(config: HostAConfig, guest_ip: str, controller_host_ip: str, *, dry_run: bool) -> None:
     script = f"""set -euo pipefail
 curl -fsS http://{controller_host_ip}:9110/healthz >/dev/null
@@ -814,6 +959,12 @@ def do_resume(args: argparse.Namespace) -> int:
 
     if not args.skip_node:
         verify_controller_from_guest(config, guest_ip, controller_host_ip, dry_run=args.dry_run)
+        wait_for_guest_bootstrap_ready(
+            config,
+            guest_ip,
+            timeout_s=max(int(args.node_ready_timeout), 180),
+            dry_run=args.dry_run,
+        )
         start_guest_node(config, guest_ip, controller_host_ip, dry_run=args.dry_run)
         wait_for_guest_node(
             config,
@@ -863,6 +1014,12 @@ def do_rebuild(args: argparse.Namespace) -> int:
 
     if not args.skip_node:
         verify_controller_from_guest(config, guest_ip, controller_host_ip, dry_run=args.dry_run)
+        wait_for_guest_bootstrap_ready(
+            config,
+            guest_ip,
+            timeout_s=max(int(args.node_ready_timeout), 600),
+            dry_run=args.dry_run,
+        )
         start_guest_node(config, guest_ip, controller_host_ip, dry_run=args.dry_run)
         wait_for_guest_node(
             config,
