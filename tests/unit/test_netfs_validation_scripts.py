@@ -55,20 +55,9 @@ exit 1
         """#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >>"$FAKE_SSH_LOG"
-args=("$@")
-remote_args=()
-capture=0
-for arg in "${args[@]}"; do
-  if [[ "$capture" == "1" ]]; then
-    remote_args+=("$arg")
-    continue
-  fi
-  if [[ "$arg" == "bash" ]]; then
-    capture=1
-    remote_args+=("$arg")
-  fi
-done
-
+remote_cmd="${@: -1}"
+eval "set -- $remote_cmd"
+remote_args=("$@")
 cmd=()
 seen_sep=0
 for arg in "${remote_args[@]}"; do
@@ -157,10 +146,138 @@ esac
     assert "ae exec path not clean" in out
     assert "PASS: data path validated via cri runtime" in out
     assert "192.0.2.10" in ssh_calls
+    assert "LogLevel=ERROR" in ssh_calls
     assert "exec writer-cid" in ssh_calls
     assert "exec reader-cid" in ssh_calls
     assert "exec -n default writer-app" in ae_calls
     assert "exec -n default reader-app" in ae_calls
+
+
+def test_netfs_validate_remote_cri_exec_retries_transient_failure(tmp_path: Path) -> None:
+    ssh_log = tmp_path / "ssh.log"
+    stamp_file = tmp_path / "stamp.txt"
+    writer_attempts = tmp_path / "writer-attempts.txt"
+    ae_log = tmp_path / "ae.log"
+    fake_key = tmp_path / "id_rsa"
+    fake_key.write_text("key", encoding="utf-8")
+
+    fake_ae = tmp_path / "ae"
+    _write_executable(
+        fake_ae,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_AE_LOG"
+echo "spdy upgrade failed: 404" >&2
+exit 1
+""",
+    )
+
+    fake_ssh = tmp_path / "ssh"
+    _write_executable(
+        fake_ssh,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_SSH_LOG"
+remote_cmd="${@: -1}"
+eval "set -- $remote_cmd"
+remote_args=("$@")
+cmd=()
+seen_sep=0
+for arg in "${remote_args[@]}"; do
+  if [[ "$seen_sep" == "1" ]]; then
+    cmd+=("$arg")
+    continue
+  fi
+  if [[ "$arg" == "--" ]]; then
+    seen_sep=1
+  fi
+done
+
+subcmd="${cmd[0]:-}"
+case "$subcmd" in
+  info)
+    echo "fake-cri-info"
+    ;;
+  ps)
+    if [[ " ${cmd[*]} " == *" --pod pod-writer "* ]]; then
+      echo "writer-cid"
+    elif [[ " ${cmd[*]} " == *" --pod pod-reader "* ]]; then
+      echo "reader-cid"
+    fi
+    ;;
+  pods)
+    if [[ " ${cmd[*]} " == *" --name writer "* ]] || [[ " ${cmd[*]} " == *" --name writer-app "* ]]; then
+      echo "pod-writer"
+    elif [[ " ${cmd[*]} " == *" --name reader "* ]] || [[ " ${cmd[*]} " == *" --name reader-app "* ]]; then
+      echo "pod-reader"
+    fi
+    ;;
+  exec)
+    cid="${cmd[1]:-}"
+    if [[ "$cid" == "writer-cid" ]]; then
+      attempts=0
+      if [[ -f "$FAKE_WRITER_ATTEMPTS" ]]; then
+        attempts="$(cat "$FAKE_WRITER_ATTEMPTS")"
+      fi
+      attempts=$((attempts + 1))
+      printf '%s' "$attempts" >"$FAKE_WRITER_ATTEMPTS"
+      if [[ "$attempts" == "1" ]]; then
+        echo "bash: line 1: /data/hello.txt: No such file or directory" >&2
+        exit 1
+      fi
+      shell_cmd="${cmd[4]:-}"
+      stamp="$(printf '%s' "$shell_cmd" | sed -n 's/^echo \\([^ ]*\\) > .*$/\\1/p')"
+      printf '%s' "$stamp" >"$FAKE_STAMP_FILE"
+      printf '%s\\n' "$stamp"
+    else
+      cat "$FAKE_STAMP_FILE"
+      printf '\\n'
+    fi
+    ;;
+  *)
+    echo "unexpected ssh subcommand: $subcmd" >&2
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_SSH_LOG"] = str(ssh_log)
+    env["FAKE_STAMP_FILE"] = str(stamp_file)
+    env["FAKE_AE_LOG"] = str(ae_log)
+    env["FAKE_WRITER_ATTEMPTS"] = str(writer_attempts)
+    env["CRI_EXEC_RETRIES"] = "2"
+    env["CRI_EXEC_RETRY_DELAY"] = "0"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(VALIDATOR_SCRIPT),
+            "--writer-app",
+            "writer-app",
+            "--reader-app",
+            "reader-app",
+            "--runtime",
+            "cri",
+            "--cri-host",
+            "192.0.2.10",
+            "--cri-user",
+            "ae",
+            "--cri-key",
+            str(fake_key),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        cwd=ROOT,
+        env=env,
+    )
+
+    assert "PASS: data path validated via cri runtime" in proc.stdout
+    assert "CRI exec attempt 1/2 failed for container writer-cid" in proc.stderr
+    assert writer_attempts.read_text(encoding="utf-8") == "2"
 
 
 def test_apishim_kubectl_uses_read_only_token(tmp_path: Path) -> None:

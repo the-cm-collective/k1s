@@ -10,6 +10,8 @@ CRI_HOST="${CRI_HOST:-}"
 CRI_USER="${CRI_USER:-ae}"
 CRI_KEY="${CRI_KEY:-}"
 CRI_PORT="${CRI_PORT:-22}"
+CRI_EXEC_RETRIES="${CRI_EXEC_RETRIES:-3}"
+CRI_EXEC_RETRY_DELAY="${CRI_EXEC_RETRY_DELAY:-1}"
 
 usage() {
   cat <<'USAGE'
@@ -104,11 +106,16 @@ writer_file="${MOUNT_PATH}/hello.txt"
 cri_cmd() {
   if [[ -n "$CRI_HOST" ]]; then
     command -v ssh >/dev/null 2>&1 || die "runtime=cri selected but ssh is not installed"
-    local ssh_args=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$CRI_PORT")
+    local ssh_args=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p "$CRI_PORT")
     if [[ -n "$CRI_KEY" ]]; then
       ssh_args+=(-i "$CRI_KEY")
     fi
-    ssh "${ssh_args[@]}" "${CRI_USER}@${CRI_HOST}" bash -s -- "$@" <<'SH'
+    local remote_cmd="bash -s --"
+    local arg
+    for arg in "$@"; do
+      printf -v remote_cmd '%s %q' "$remote_cmd" "$arg"
+    done
+    ssh "${ssh_args[@]}" "${CRI_USER}@${CRI_HOST}" "$remote_cmd" <<'SH'
 set -euo pipefail
 if sudo -n true >/dev/null 2>&1; then
   exec sudo -n crictl "$@"
@@ -123,6 +130,40 @@ SH
     return
   fi
   crictl "$@"
+}
+
+run_cri_exec() {
+  local cid="$1"
+  shift
+
+  local retry_count="$CRI_EXEC_RETRIES"
+  if ! [[ "$retry_count" =~ ^[0-9]+$ ]] || (( retry_count < 1 )); then
+    retry_count=1
+  fi
+
+  local attempt rc output=""
+  local short_cid="${cid:0:12}"
+  for ((attempt = 1; attempt <= retry_count; attempt++)); do
+    set +e
+    output="$(cri_cmd exec "$cid" "$@" 2>&1)"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+      printf '%s' "$output"
+      return 0
+    fi
+    if (( attempt < retry_count )); then
+      printf '[netfs-validate] CRI exec attempt %d/%d failed for container %s; retrying in %ss\n' \
+        "$attempt" "$retry_count" "$short_cid" "$CRI_EXEC_RETRY_DELAY" >&2
+      if [[ -n "$output" ]]; then
+        printf '%s\n' "$output" >&2
+      fi
+      sleep "$CRI_EXEC_RETRY_DELAY"
+    fi
+  done
+
+  printf '%s' "$output"
+  return "$rc"
 }
 
 cri_available() {
@@ -239,8 +280,12 @@ case "$selected_runtime" in
     reader_cid="$(find_cri_cid "$READER_APP")"
     [[ -n "$writer_cid" ]] || die "CRI writer container not found for '${WRITER_APP}'"
     [[ -n "$reader_cid" ]] || die "CRI reader container not found for '${READER_APP}'"
-    writer_fb="$(cri_cmd exec "$writer_cid" sh -lc "echo ${stamp} > ${writer_file} && cat ${writer_file}" 2>&1)"
-    reader_fb="$(cri_cmd exec "$reader_cid" cat "${writer_file}" 2>&1)"
+    set +e
+    writer_fb="$(run_cri_exec "$writer_cid" sh -lc "echo ${stamp} > ${writer_file} && cat ${writer_file}")"
+    writer_fb_rc=$?
+    reader_fb="$(run_cri_exec "$reader_cid" cat "${writer_file}")"
+    reader_fb_rc=$?
+    set -e
     ;;
   podman)
     command -v podman >/dev/null 2>&1 || die "runtime=podman selected but podman is not installed"
@@ -255,6 +300,13 @@ esac
 
 printf '%s\n' "$writer_fb"
 printf '%s\n' "$reader_fb"
+
+case "$selected_runtime" in
+  cri)
+    [[ "${writer_fb_rc:-0}" -eq 0 ]] || die "CRI writer exec failed for '${WRITER_APP}' (container ${writer_cid:0:12})"
+    [[ "${reader_fb_rc:-0}" -eq 0 ]] || die "CRI reader exec failed for '${READER_APP}' (container ${reader_cid:0:12})"
+    ;;
+esac
 
 if ! printf '%s' "$reader_fb" | grep -q "$stamp"; then
   die "fallback runtime data path validation failed (stamp '${stamp}' not found in reader output)"
