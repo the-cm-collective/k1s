@@ -1,5 +1,8 @@
 import argparse
+import ssl
 import time
+
+import requests
 
 from ae.cli import __main__ as cli
 from ae.controller.state import SQLiteStateStore
@@ -7,6 +10,115 @@ from ae.controller.state import SQLiteStateStore
 
 class DummyRuntime:
     pass
+
+
+def test_apishim_ssl_context_loads_ca_bundle(monkeypatch, tmp_path):
+    ca_bundle = tmp_path / "apishim.ca.crt"
+    ca_bundle.write_text("dummy-ca", encoding="utf-8")
+    calls: dict[str, str] = {}
+
+    class DummyContext:
+        def __init__(self):
+            self.check_hostname = True
+            self.verify_mode = ssl.CERT_REQUIRED
+
+        def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+            calls["cafile"] = cafile
+
+    dummy = DummyContext()
+    monkeypatch.setenv("AE_APISHIM_CA_BUNDLE", str(ca_bundle))
+    monkeypatch.delenv("AE_APISHIM_INSECURE", raising=False)
+    monkeypatch.setattr(ssl, "create_default_context", lambda: dummy)
+
+    ctx = cli._apishim_ssl_context()
+
+    assert ctx is dummy
+    assert calls["cafile"] == str(ca_bundle)
+    assert dummy.check_hostname is True
+    assert dummy.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_apishim_ssl_context_honors_insecure(monkeypatch):
+    class DummyContext:
+        def __init__(self):
+            self.check_hostname = True
+            self.verify_mode = ssl.CERT_REQUIRED
+            self.loaded = False
+
+        def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+            self.loaded = True
+
+    dummy = DummyContext()
+    monkeypatch.setenv("AE_APISHIM_INSECURE", "1")
+    monkeypatch.setenv("AE_APISHIM_CA_BUNDLE", "/tmp/demo-ca.pem")
+    monkeypatch.setattr(ssl, "create_default_context", lambda: dummy)
+
+    ctx = cli._apishim_ssl_context()
+
+    assert ctx is dummy
+    assert dummy.check_hostname is False
+    assert dummy.verify_mode == ssl.CERT_NONE
+    assert dummy.loaded is False
+
+
+def test_http_get_json_uses_apishim_verify(monkeypatch, tmp_path):
+    ca_bundle = tmp_path / "apishim.ca.crt"
+    ca_bundle.write_text("dummy-ca", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_get(url, headers, timeout, verify):
+        captured["url"] = url
+        captured["verify"] = verify
+        return DummyResponse()
+
+    monkeypatch.setenv("AE_APISHIM_CA_BUNDLE", str(ca_bundle))
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    payload = cli._http_get_json("https://127.0.0.1:8445", "/api/v1/namespaces/default/pods")
+
+    assert payload == {"ok": True}
+    assert captured["url"] == "https://127.0.0.1:8445/api/v1/namespaces/default/pods"
+    assert captured["verify"] == str(ca_bundle)
+
+
+def test_http_post_json_uses_apishim_verify(monkeypatch, tmp_path):
+    ca_bundle = tmp_path / "apishim.ca.crt"
+    ca_bundle.write_text("dummy-ca", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_post(url, headers, json, timeout, verify):
+        captured["url"] = url
+        captured["json"] = json
+        captured["verify"] = verify
+        return DummyResponse()
+
+    monkeypatch.setenv("AE_APISHIM_CA_BUNDLE", str(ca_bundle))
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    payload = cli._http_post_json(
+        "https://127.0.0.1:8445",
+        "/api/apishim/session",
+        {"role": "exec"},
+    )
+
+    assert payload == {"ok": True}
+    assert captured["url"] == "https://127.0.0.1:8445/api/apishim/session"
+    assert captured["json"] == {"role": "exec"}
+    assert captured["verify"] == str(ca_bundle)
 
 
 def test_handle_exec_ws_fallback(monkeypatch, tmp_path):

@@ -2741,7 +2741,7 @@ def _http_get_json(base: str, path: str, token: str | None = None):
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.get(url, headers=headers, timeout=10)
+    r = requests.get(url, headers=headers, timeout=10, verify=_apishim_requests_verify())
     r.raise_for_status()
     return r.json()
 
@@ -2753,7 +2753,7 @@ def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.post(url, headers=headers, json=body, timeout=10)
+    r = requests.post(url, headers=headers, json=body, timeout=10, verify=_apishim_requests_verify())
     r.raise_for_status()
     return r.json()
 
@@ -2767,7 +2767,7 @@ def _apishim_base_url(base: str) -> str:
     return out.rstrip("/")
 
 
-def _apishim_requests_verify() -> bool | str:
+def _apishim_ca_bundle_path() -> str | None:
     ca_bundle = (
         os.getenv("AE_APISHIM_CA_BUNDLE")
         or os.getenv("AE_APISHIM_CA")
@@ -2775,7 +2775,28 @@ def _apishim_requests_verify() -> bool | str:
     )
     if ca_bundle:
         return str(ca_bundle)
+    return None
+
+
+def _apishim_requests_verify() -> bool | str:
+    ca_bundle = _apishim_ca_bundle_path()
+    if ca_bundle:
+        return ca_bundle
     return os.getenv("AE_APISHIM_INSECURE") != "1"
+
+
+def _apishim_ssl_context():
+    import ssl
+
+    ctx = ssl.create_default_context()
+    if os.getenv("AE_APISHIM_INSECURE") == "1":
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    ca_bundle = _apishim_ca_bundle_path()
+    if ca_bundle:
+        ctx.load_verify_locations(cafile=ca_bundle)
+    return ctx
 
 
 def _cli_labs_mint_fallback_enabled() -> bool:
@@ -4357,7 +4378,6 @@ def _exec_over_spdy(
     import shutil
     import signal
     import socket
-    import ssl
     import sys
     import threading
     import urllib.parse
@@ -4388,10 +4408,7 @@ def _exec_over_spdy(
 
     sock = socket.create_connection((host, port), timeout=timeout or 10)
     if scheme == "https":
-        ctx = ssl.create_default_context()
-        if os.getenv("AE_APISHIM_INSECURE") == "1":
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+        ctx = _apishim_ssl_context()
         sock = ctx.wrap_socket(sock, server_hostname=host)
 
     req_lines = [
@@ -4664,7 +4681,6 @@ def _exec_over_ws(
     import shutil
     import signal
     import socket
-    import ssl
     import sys
     import threading
     import urllib.parse
@@ -4694,10 +4710,7 @@ def _exec_over_ws(
 
     sock = socket.create_connection((host, port), timeout=timeout or 10)
     if scheme == "https":
-        ctx = ssl.create_default_context()
-        if os.getenv("AE_APISHIM_INSECURE") == "1":
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+        ctx = _apishim_ssl_context()
         sock = ctx.wrap_socket(sock, server_hostname=host)
 
     ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
@@ -4915,7 +4928,6 @@ def _portforward_over_ws(
     import os
     import signal
     import socket
-    import ssl
     import sys
     import threading
     import urllib.parse
@@ -4938,10 +4950,7 @@ def _portforward_over_ws(
     def _open_ws() -> socket.socket:
         sock = socket.create_connection((host, port), timeout=timeout or 10)
         if scheme == "https":
-            ctx = ssl.create_default_context()
-            if os.getenv("AE_APISHIM_INSECURE") == "1":
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
+            ctx = _apishim_ssl_context()
             sock = ctx.wrap_socket(sock, server_hostname=host)
         ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
         req_lines = [
