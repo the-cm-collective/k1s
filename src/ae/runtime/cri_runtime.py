@@ -998,21 +998,22 @@ class CRIRuntime(RuntimeAdapter):
 
     def _ensure_image(self, image_ref: str) -> None:
         pb2 = self._pb2()
-        spec = pb2.ImageSpec(image=str(image_ref))
+        normalized = self._normalize_image_ref(image_ref)
+        spec = pb2.ImageSpec(image=str(normalized))
         with contextlib.suppress(Exception):
             status = self._images_call(
                 "ImageStatus", pb2.ImageStatusRequest(image=spec, verbose=False)
             )
             if getattr(status, "image", None):
                 return
-        auth = self._image_pull_auth(image_ref)
+        auth = self._image_pull_auth(normalized)
         req = pb2.PullImageRequest(image=spec)
         if auth is not None:
             req.auth = auth
         try:
             self._images_call("PullImage", req)
         except Exception as exc:
-            raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
+            raise RuntimeError(f"Failed to pull image {normalized}: {exc}") from exc
 
     def _image_pull_auth(self, image_ref: str):
         pb2 = self._pb2()
@@ -1293,6 +1294,19 @@ class CRIRuntime(RuntimeAdapter):
         if "." not in host and ":" not in host:
             return None
         return host
+
+    def _normalize_image_ref(self, image: str) -> str:
+        raw = str(image or "").strip()
+        if not raw:
+            return raw
+        if "/" not in raw:
+            return f"docker.io/library/{raw}"
+        host = raw.split("/", 1)[0]
+        if "." in host or ":" in host:
+            return raw
+        if raw.count("/") == 1:
+            return f"docker.io/{raw}"
+        return raw
 
     def _run_pod(
         self,
@@ -2779,7 +2793,7 @@ class CRIRuntime(RuntimeAdapter):
         if is_main and str(getattr(manifest.spec, "workload", "service")).lower() == "job":
             labels[self.JOB_ATTEMPT_LABEL] = str(int(attempt))
 
-        image = self._spec_value(spec, "image") or manifest.spec.image
+        image = self._normalize_image_ref(self._spec_value(spec, "image") or manifest.spec.image)
         command = list(self._spec_value(spec, "command") or [])
         args = list(self._spec_value(spec, "args") or [])
         env_items = self._spec_value(spec, "env") or []

@@ -48,6 +48,7 @@ def test_cri_container_config_separates_command_args_and_mounts():
     assert list(main_cfg.command) == ["/bin/app"]
     assert list(main_cfg.args) == ["--main"]
     assert main_cfg.labels.get("ae.container") == "main"
+    assert main_cfg.image.image == "docker.io/library/alpine:3.20"
 
     sidecar = manifest.spec.containers[0]
     side_cfg = runtime._container_config_for_spec(
@@ -62,12 +63,23 @@ def test_cri_container_config_separates_command_args_and_mounts():
     assert list(side_cfg.command) == ["/bin/side"]
     assert list(side_cfg.args) == ["--flag"]
     assert side_cfg.labels.get("ae.container") == "sidecar"
+    assert side_cfg.image.image == "docker.io/library/alpine:3.20"
 
     mounts = list(side_cfg.mounts or [])
     assert any(
         m.host_path == "/tmp/ae-proj/config/db" and m.container_path == "/etc/db"
         for m in mounts
     )
+
+
+def test_cri_normalize_image_ref_handles_short_and_registry_refs() -> None:
+    runtime = CRIRuntime()
+
+    assert runtime._normalize_image_ref("busybox") == "docker.io/library/busybox"
+    assert runtime._normalize_image_ref("busybox:1.36") == "docker.io/library/busybox:1.36"
+    assert runtime._normalize_image_ref("library/busybox:1.36") == "docker.io/library/busybox:1.36"
+    assert runtime._normalize_image_ref("ghcr.io/acme/demo:1") == "ghcr.io/acme/demo:1"
+    assert runtime._normalize_image_ref("localhost:5001/demo:1") == "localhost:5001/demo:1"
 
 
 def test_run_pod_sets_runtime_handler_from_runtime_class_name(monkeypatch) -> None:
