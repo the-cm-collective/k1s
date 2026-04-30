@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import subprocess
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -131,3 +133,64 @@ def test_rebuild_paths_follow_host_a_defaults(tmp_path: Path) -> None:
     assert config.overlay_path == tmp_path / "VMs" / "k1s-core-a-gpu.qcow2"
     assert config.seed_path == tmp_path / "VMs" / "k1s-core-a-gpu-seed.iso"
     assert config.base_image_sha == tmp_path / "artifacts" / "images" / "ubuntu-22.04-k1s-gpu.qcow2.sha256"
+
+
+def test_do_down_treats_already_stopped_vm_as_success(monkeypatch, tmp_path: Path) -> None:
+    config = host_a_netfs_lane.HostAConfig(
+        repo_root=tmp_path,
+        env_file=tmp_path / "host-a-gpu.env",
+        connection_uri="qemu:///system",
+        domain_name="k1s-core-a-gpu",
+        guest_user="ae",
+        guest_repo="/home/ae/k1s",
+        guest_key=tmp_path / "id_rsa",
+        guest_port=22,
+        node_id="core-a--hub",
+        state_root=tmp_path / "state",
+        overlay_dir=tmp_path / "VMs",
+        base_image=tmp_path / "artifacts" / "images" / "ubuntu-22.04-k1s-gpu.qcow2",
+        apishim_env=tmp_path / "apishim.env",
+        controller_env=tmp_path / "controller.env",
+        apishim_server="https://127.0.0.1:8445",
+        lane_log_dir=tmp_path / "lane",
+        nfs_export_root=tmp_path / "state" / "host-a-nfs-export",
+        nfs_export_path=tmp_path / "state" / "host-a-nfs-export" / "netfs",
+        nfs_container_name="ae-host-a-nfs",
+        nfs_export_path_in_guest="/netfs",
+        nfs_permitted=r"192.168.29.0\/24",
+        smoke_script=tmp_path / "smoke.sh",
+        labctl_script=tmp_path / "labctl.sh",
+        gpu_validator_script=tmp_path / "gpu_validate.py",
+        apishim_kubectl_script=tmp_path / "apishim_kubectl.sh",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, **kwargs):
+        calls.append([str(part) for part in cmd])
+        if calls[-1][-2:] == ["host-a-gpu", "stop"] or "stop" in calls[-1]:
+            return subprocess.CompletedProcess(
+                list(cmd),
+                1,
+                "",
+                (
+                    "virsh shutdown failed: virsh -c qemu:///system shutdown k1s-core-a-gpu\n"
+                    "error: Requested operation is not valid: domain is not running\n"
+                ),
+            )
+        return subprocess.CompletedProcess(list(cmd), 0, "", "")
+
+    monkeypatch.setattr(host_a_netfs_lane, "load_config", lambda _args: config)
+    monkeypatch.setattr(host_a_netfs_lane, "run_cmd", fake_run_cmd)
+
+    rc = host_a_netfs_lane.do_down(
+        argparse.Namespace(
+            env_file=tmp_path / "host-a-gpu.env",
+            force_vm=False,
+            purge_artifacts=False,
+            dry_run=False,
+        )
+    )
+
+    assert rc == 0
+    assert any("make down || true" in " ".join(call) for call in calls)
+    assert any(call[-2:] == ["host-a-gpu", "stop"] for call in calls)

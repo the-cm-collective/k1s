@@ -806,7 +806,22 @@ def do_down(args: argparse.Namespace) -> int:
     stop_args = [str(config.labctl_script), "host-a-gpu", "stop"]
     if args.force_vm:
         stop_args.append("--force")
-    run_cmd(stop_args, cwd=config.repo_root, dry_run=args.dry_run)
+    stop_proc = run_cmd(
+        stop_args,
+        check=False,
+        capture_output=True,
+        cwd=config.repo_root,
+        dry_run=args.dry_run,
+    )
+    if not args.dry_run and stop_proc.returncode != 0:
+        stop_output = ((stop_proc.stdout or "") + (stop_proc.stderr or "")).lower()
+        if "domain is not running" in stop_output:
+            log("VM already stopped")
+        else:
+            raise LaneError(
+                ((stop_proc.stdout or "") + (stop_proc.stderr or "")).strip()
+                or "failed to stop Host A VM"
+            )
     if args.purge_artifacts:
         run_cmd(
             [str(config.labctl_script), "host-a-gpu", "undefine", "--purge-artifacts"],
