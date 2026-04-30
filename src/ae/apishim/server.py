@@ -5190,6 +5190,37 @@ class ShimHandler(BaseHTTPRequestHandler):
             required_streams.add("resize")
         warned_missing_streams = False
         break_reason = ""
+        pending_stream_data: dict[str, bytearray] = {
+            "stdout": bytearray(),
+            "stderr": bytearray(),
+        }
+
+        def _flush_pending_stream(stream_name: str) -> None:
+            sid = stream_ids.get(stream_name)
+            buf = pending_stream_data.get(stream_name)
+            if not sid or not buf:
+                return
+            data = bytes(buf)
+            buf.clear()
+            send_data_frame(sid, data, flags=0)
+            try:
+                send_window_update(sid, len(data))
+            except Exception:
+                pass
+
+        def _queue_or_send_stream(stream_name: str, data: bytes) -> None:
+            if not data:
+                return
+            sid = stream_ids.get(stream_name)
+            if sid:
+                send_data_frame(sid, data, flags=0)
+                try:
+                    send_window_update(sid, len(data))
+                except Exception:
+                    pass
+                return
+            pending_stream_data.setdefault(stream_name, bytearray()).extend(data)
+
         try:
             exec_buf = b""
             while True:
@@ -5279,6 +5310,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                             stream_windows[sid] = window_size
                             if stype == "resize":
                                 resize_sid = sid
+                            if stype in pending_stream_data:
+                                _flush_pending_stream(stype)
                             try:
                                 send_syn_reply(sid)
                             except Exception:
@@ -5370,13 +5403,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         exec_buf += chunk
                         if tty:
                             if want_stdout:
-                                sid = stream_ids.get("stdout")
-                                if sid:
-                                    send_data_frame(sid, chunk, flags=0)
-                                    try:
-                                        send_window_update(sid, len(chunk))
-                                    except Exception:
-                                        pass
+                                _queue_or_send_stream("stdout", chunk)
                         else:
                             while True:
                                 if len(exec_buf) < 8:
@@ -5391,17 +5418,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                                 if dm:
                                     stype, data = dm
                                     if stype == 1 and want_stdout:
-                                        sid = stream_ids.get("stdout")
+                                        _queue_or_send_stream("stdout", data)
                                     elif stype == 2 and want_stderr:
-                                        sid = stream_ids.get("stderr")
-                                    else:
-                                        sid = None
-                                    if sid and data:
-                                        send_data_frame(sid, data, flags=0)
-                                        try:
-                                            send_window_update(sid, len(data))
-                                        except Exception:
-                                            pass
+                                        _queue_or_send_stream("stderr", data)
                     elif chunk == b"":
                         exec_done = True
                         exec_done_at = time.time()
@@ -5412,6 +5431,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                         exec_sock = None
 
                 if exec_done:
+                    _flush_pending_stream("stdout")
+                    _flush_pending_stream("stderr")
                     missing = required_streams.difference(stream_ids.keys())
                     if missing and SPDY_DEBUG and not warned_missing_streams:
                         warned_missing_streams = True

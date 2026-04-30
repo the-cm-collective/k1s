@@ -7,7 +7,9 @@ import os
 import socket
 import socketserver
 import threading
+import time
 import uuid
+import zlib
 from datetime import datetime, timezone
 from http.server import HTTPServer
 from types import SimpleNamespace
@@ -19,6 +21,11 @@ from ae.controller.state import NodeRecord
 from ae.runtime.base import RuntimeAdapter, RuntimeResult
 from ae.controller.spec import AppManifest
 from ae.node.server import AgentHandler
+
+
+SPDY_DICT = base64.b64decode(
+    "AAAAB29wdGlvbnMAAAAEaGVhZAAAAARwb3N0AAAAA3B1dAAAAAZkZWxldGUAAAAFdHJhY2UAAAAGYWNjZXB0AAAADmFjY2VwdC1jaGFyc2V0AAAAD2FjY2VwdC1lbmNvZGluZwAAAA9hY2NlcHQtbGFuZ3VhZ2UAAAANYWNjZXB0LXJhbmdlcwAAAANhZ2UAAAAFYWxsb3cAAAANYXV0aG9yaXphdGlvbgAAAA1jYWNoZS1jb250cm9sAAAACmNvbm5lY3Rpb24AAAAMY29udGVudC1iYXNlAAAAEGNvbnRlbnQtZW5jb2RpbmcAAAAQY29udGVudC1sYW5ndWFnZQAAAA5jb250ZW50LWxlbmd0aAAAABBjb250ZW50LWxvY2F0aW9uAAAAC2NvbnRlbnQtbWQ1AAAADWNvbnRlbnQtcmFuZ2UAAAAMY29udGVudC10eXBlAAAABGRhdGUAAAAEZXRhZwAAAAZleHBlY3QAAAAHZXhwaXJlcwAAAARmcm9tAAAABGhvc3QAAAAIaWYtbWF0Y2gAAAARaWYtbW9kaWZpZWQtc2luY2UAAAANaWYtbm9uZS1tYXRjaAAAAAhpZi1yYW5nZQAAABNpZi11bm1vZGlmaWVkLXNpbmNlAAAADWxhc3QtbW9kaWZpZWQAAAAIbG9jYXRpb24AAAAMbWF4LWZvcndhcmRzAAAABnByYWdtYQAAABJwcm94eS1hdXRoZW50aWNhdGUAAAATcHJveHktYXV0aG9yaXphdGlvbgAAAAVyYW5nZQAAAAdyZWZlcmVyAAAAC3JldHJ5LWFmdGVyAAAABnNlcnZlcgAAAAJ0ZQAAAAd0cmFpbGVyAAAAEXRyYW5zZmVyLWVuY29kaW5nAAAAB3VwZ3JhZGUAAAAKdXNlci1hZ2VudAAAAAR2YXJ5AAAAA3ZpYQAAAAd3YXJuaW5nAAAAEHd3dy1hdXRoZW50aWNhdGUAAAAGbWV0aG9kAAAAA2dldAAAAAZzdGF0dXMAAAAGMjAwIE9LAAAAB3ZlcnNpb24AAAAISFRUUC8xLjEAAAADdXJsAAAABnB1YmxpYwAAAApzZXQtY29va2llAAAACmtlZXAtYWxpdmUAAAAGb3JpZ2luMTAwMTAxMjAxMjAyMjA1MjA2MzAwMzAyMzAzMzA0MzA1MzA2MzA3NDAyNDA1NDA2NDA3NDA4NDA5NDEwNDExNDEyNDEzNDE0NDE1NDE2NDE3NTAyNTA0NTA1MjAzIE5vbi1BdXRob3JpdGF0aXZlIEluZm9ybWF0aW9uMjA0IE5vIENvbnRlbnQzMDEgTW92ZWQgUGVybWFuZW50bHk0MDAgQmFkIFJlcXVlc3Q0MDEgVW5hdXRob3JpemVkNDAzIEZvcmJpZGRlbjQwNCBOb3QgRm91bmQ1MDAgSW50ZXJuYWwgU2VydmVyIEVycm9yNTAxIE5vdCBJbXBsZW1lbnRlZDUwMyBTZXJ2aWNlIFVuYXZhaWxhYmxlSmFuIEZlYiBNYXIgQXByIE1heSBKdW4gSnVsIEF1ZyBTZXB0IE9jdCBOb3YgRGVjIDAwOjAwOjAwIE1vbiwgVHVlLCBXZWQsIFRodSwgRnJpLCBTYXQsIFN1biwgR01UY2h1bmtlZCx0ZXh0L2h0bWwsaW1hZ2UvcG5nLGltYWdlL2pwZyxpbWFnZS9naWYsYXBwbGljYXRpb24veG1sLGFwcGxpY2F0aW9uL3hodG1sK3htbCx0ZXh0L3BsYWluLHRleHQvamF2YXNjcmlwdCxwdWJsaWNwcml2YXRlbWF4LWFnZT1nemlwLGRlZmxhdGUsc2RjaGNoYXJzZXQ9dXRmLThjaGFyc2V0PWlzby04ODU5LTEsdXRmLSwqLGVucT0wLg=="
+)
 
 
 class DummyRuntime(RuntimeAdapter):
@@ -316,6 +323,120 @@ def _ws_recv(sock: socket.socket) -> tuple[int, bytes] | None:
     return opcode, payload
 
 
+def _spdy_handshake(
+    host: str, port: int, path: str, protocols: list[str]
+) -> tuple[socket.socket, bytes]:
+    sock = socket.create_connection((host, port), timeout=5)
+    headers = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}:{port}",
+        "Connection: Upgrade",
+        "Upgrade: SPDY/3.1",
+        "Content-Length: 0",
+        "X-Stream-Protocol-Version: " + ", ".join(protocols),
+        "\r\n",
+    ]
+    sock.sendall("\r\n".join(headers).encode("utf-8"))
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise RuntimeError("spdy handshake failed")
+        buf += chunk
+    header, rest = buf.split(b"\r\n\r\n", 1)
+    status = header.split(b"\r\n", 1)[0]
+    if b"101" not in status:
+        raise RuntimeError(f"spdy handshake failed: {status.decode('utf-8', 'ignore')}")
+    return sock, rest
+
+
+def _spdy_encode_headers(cctx: zlib.compressobj, headers: dict[str, str]) -> bytes:
+    buf = bytearray()
+    buf += len(headers).to_bytes(4, "big")
+    for name, value in headers.items():
+        key = name.encode("utf-8")
+        encoded = value.encode("utf-8")
+        buf += len(key).to_bytes(4, "big")
+        buf += key
+        buf += len(encoded).to_bytes(4, "big")
+        buf += encoded
+    return cctx.compress(bytes(buf)) + cctx.flush(zlib.Z_SYNC_FLUSH)
+
+
+def _spdy_send_syn_stream(
+    sock: socket.socket,
+    *,
+    cctx: zlib.compressobj,
+    stream_id: int,
+    path: str,
+    host: str,
+    streamtype: str,
+) -> None:
+    hdrs = _spdy_encode_headers(
+        cctx,
+        {
+            ":method": "POST",
+            ":path": path,
+            ":version": "HTTP/1.1",
+            ":host": host,
+            "streamtype": streamtype,
+        },
+    )
+    payload = (stream_id & 0x7FFFFFFF).to_bytes(4, "big") + b"\x00\x00\x00\x00" + b"\x00\x00" + hdrs
+    header = bytearray()
+    header += b"\x80\x03"
+    header += (0x01).to_bytes(2, "big")
+    header += b"\x00"
+    header += len(payload).to_bytes(3, "big")
+    sock.sendall(bytes(header) + payload)
+
+
+def _spdy_read_data_frames(
+    sock: socket.socket,
+    *,
+    initial: bytes = b"",
+    timeout: float = 5.0,
+) -> dict[int, bytes]:
+    sock.settimeout(0.2)
+    deadline = time.time() + timeout
+    buf = initial
+    payloads: dict[int, bytes] = {}
+    fin_streams: set[int] = set()
+    while time.time() < deadline:
+        if len(buf) < 8:
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                continue
+            if not chunk:
+                break
+            buf += chunk
+            continue
+        hdr = buf[:8]
+        length = int.from_bytes(hdr[5:8], "big")
+        frame_len = 8 + length
+        if len(buf) < frame_len:
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                continue
+            if not chunk:
+                break
+            buf += chunk
+            continue
+        payload = buf[8:frame_len]
+        buf = buf[frame_len:]
+        if hdr[0] & 0x80:
+            continue
+        stream_id = int.from_bytes(hdr[0:4], "big") & 0x7FFFFFFF
+        payloads[stream_id] = payloads.get(stream_id, b"") + payload
+        if hdr[4] & 0x02:
+            fin_streams.add(stream_id)
+        if 1 in fin_streams and payloads.get(3):
+            break
+    return payloads
+
+
 def test_apishim_exec_and_portforward(monkeypatch: pytest.MonkeyPatch, tmp_path):
     echo_server, echo_thread = _start_echo_server()
     echo_port = echo_server.server_address[1]
@@ -440,6 +561,67 @@ def test_apishim_exec_and_portforward_via_remote_pod_state(
         assert payload[0:1] == b"\x00"
         assert payload[1:] == b"hello"
         pf.close()
+    finally:
+        apishim.shutdown()
+        apishim.server_close()
+        apishim_thread.join(timeout=2)
+        agent.shutdown()
+        agent.server_close()
+        agent_thread.join(timeout=2)
+        echo_server.shutdown()
+        echo_server.server_close()
+        echo_thread.join(timeout=2)
+
+
+def test_apishim_exec_spdy_buffers_stdout_until_stream_registration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    echo_server, echo_thread = _start_echo_server()
+    echo_port = echo_server.server_address[1]
+    agent_runtime = DummyRuntime(echo_port=echo_port)
+    agent, agent_thread = _start_agent(agent_runtime)
+    apishim, apishim_thread = _start_apishim(monkeypatch, tmp_path, "")
+    try:
+        apishim.runtime = EmptyRuntime()
+        apishim._runtime_base = EmptyRuntime()
+        apishim._runtime_cache = {}
+        state = RemotePodState(f"http://127.0.0.1:{agent.server_port}")
+        apishim.state = state
+
+        exec_path = (
+            "/api/v1/namespaces/default/pods/demo-pod/exec"
+            "?command=echo&command=hi&stdin=0&stdout=1&stderr=0&tty=0"
+        )
+        sock, initial = _spdy_handshake(
+            "127.0.0.1",
+            apishim.server_port,
+            exec_path,
+            ["v4.channel.k8s.io"],
+        )
+        cctx = zlib.compressobj(wbits=15, zdict=SPDY_DICT)
+        try:
+            _spdy_send_syn_stream(
+                sock,
+                cctx=cctx,
+                stream_id=1,
+                path=exec_path,
+                host="127.0.0.1",
+                streamtype="error",
+            )
+            time.sleep(0.2)
+            _spdy_send_syn_stream(
+                sock,
+                cctx=cctx,
+                stream_id=3,
+                path=exec_path,
+                host="127.0.0.1",
+                streamtype="stdout",
+            )
+            payloads = _spdy_read_data_frames(sock, initial=initial)
+        finally:
+            sock.close()
+
+        assert b"pong" in payloads.get(3, b"")
     finally:
         apishim.shutdown()
         apishim.server_close()
