@@ -14,10 +14,11 @@ class FakeResp:
 def test_http_helpers_get(monkeypatch):
     from ae.cli.__main__ import _http_get_json
 
-    def fake_get(url, headers, timeout):  # noqa: ANN001
+    def fake_get(url, headers, timeout, verify):  # noqa: ANN001
         _ = timeout
         assert "Authorization" in headers
         assert url.endswith("/status")
+        assert verify is True
         return FakeResp({"items": []})
 
     import requests  # type: ignore
@@ -30,10 +31,11 @@ def test_http_helpers_get(monkeypatch):
 def test_http_helpers_post(monkeypatch):
     from ae.cli.__main__ import _http_post_json
 
-    def fake_post(_url, headers, json, timeout):  # noqa: ANN001
+    def fake_post(_url, headers, json, timeout, verify):  # noqa: ANN001
         _ = timeout
         assert "Authorization" in headers
         assert json == {"replicas": 2}
+        assert verify is True
         return FakeResp({"replicas": 2, "revision": 1, "status": "ready"})
 
     import requests  # type: ignore
