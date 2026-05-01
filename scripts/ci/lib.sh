@@ -97,6 +97,51 @@ ci_configure_docker_env() {
   fi
 }
 
+ci_disable_docker_tls_verify() {
+  # docker-py treats unset/empty DOCKER_TLS_VERIFY as verify=false.
+  # A literal "0" still counts as enabled verification.
+  if [[ -z "${DOCKER_HOST:-}" || "${DOCKER_HOST}" == unix://* ]]; then
+    return 0
+  fi
+  if [[ -n "${DOCKER_CERT_PATH:-}" || -n "${DOCKER_TLS_CERTDIR:-}" ]]; then
+    ci_clear_env DOCKER_TLS_VERIFY
+  fi
+}
+
+ci_docker_published_host() {
+  if [[ -n "${K1S_DOCKER_PUBLISHED_HOST:-}" ]]; then
+    printf '%s\n' "${K1S_DOCKER_PUBLISHED_HOST}"
+    return 0
+  fi
+  local docker_host="${DOCKER_HOST:-}"
+  if [[ -z "$docker_host" || "$docker_host" == unix://* || "$docker_host" == npipe://* ]]; then
+    printf '127.0.0.1\n'
+    return 0
+  fi
+  docker_host="${docker_host#tcp://}"
+  docker_host="${docker_host#http://}"
+  docker_host="${docker_host#https://}"
+  docker_host="${docker_host%%/*}"
+  docker_host="${docker_host%%:*}"
+  if [[ -z "$docker_host" ]]; then
+    docker_host="127.0.0.1"
+  fi
+  printf '%s\n' "$docker_host"
+}
+
+ci_append_no_proxy() {
+  local host="${1:?host is required}"
+  local current="${NO_PROXY:-${no_proxy:-}}"
+  local merged="$current"
+  if [[ -z "$merged" ]]; then
+    merged="$host"
+  elif [[ ",${merged}," != *",${host},"* ]]; then
+    merged="${merged},${host}"
+  fi
+  ci_export_env NO_PROXY "$merged"
+  ci_export_env no_proxy "$merged"
+}
+
 ci_install_kubectl() {
   local version="${1:-v1.30.3}"
   ci_prepare_user_bin

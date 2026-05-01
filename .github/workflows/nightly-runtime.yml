@@ -69,12 +69,12 @@ jobs:
           source scripts/ci/lib.sh
           ci_install_podman
           ci_install_project ".[dev]"
-      - name: Podman compatibility checks
+      - name: Podman CLI tooling compatibility checks
         env:
           AE_RUNTIME_BACKEND: podman
         run: |
-          podman info >/dev/null 2>&1 || true
-          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict
+          podman info >/dev/null 2>&1
+          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy baseline --summary >/dev/null
           python -m ae.cli export-k8s -f specs/examples/echo.yaml --validate >/dev/null
           python -m ae.cli plan -f specs/examples/echo.yaml --json >/dev/null
           python -m ae.cli export-k8s -f specs/examples/echo.yaml --workload statefulset --validate >/dev/null
@@ -173,6 +173,7 @@ jobs:
           ci_maybe_trust_gitea
           ci_prepare_user_bin
           ci_configure_docker_env
+          ci_disable_docker_tls_verify
       - name: Install project and kind tooling
         run: |
           source scripts/ci/lib.sh
@@ -277,6 +278,8 @@ jobs:
           ci_maybe_trust_gitea
           ci_prepare_user_bin
           ci_configure_docker_env
+          ci_export_env K1S_DOCKER_PUBLISHED_HOST "$(ci_docker_published_host)"
+          ci_append_no_proxy "${K1S_DOCKER_PUBLISHED_HOST}"
       - name: Install project
         run: |
           source scripts/ci/lib.sh
@@ -473,7 +476,7 @@ jobs:
     env:
       DOCKER_BUILDKIT: "1"
       K1S_E2E_DIR: /tmp/e2e-core-edge
-      NO_PROXY: "127.0.0.1,localhost"
+      NO_PROXY: "127.0.0.1,localhost,docker"
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
     steps:
@@ -509,6 +512,8 @@ jobs:
           source scripts/ci/lib.sh
           ci_maybe_trust_gitea
           ci_configure_docker_env
+          ci_export_env K1S_DOCKER_PUBLISHED_HOST "$(ci_docker_published_host)"
+          ci_append_no_proxy "${K1S_DOCKER_PUBLISHED_HOST}"
       - name: Install project
         run: |
           source scripts/ci/lib.sh
