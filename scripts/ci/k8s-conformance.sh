@@ -15,6 +15,9 @@ KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 ${KIND_BIN} create cluster --name "${CLUSTER_NAME}" --wait 60s
 trap "${KIND_BIN} delete cluster --name ${CLUSTER_NAME}" EXIT
 
+echo "Ensuring demo namespace exists..."
+${KUBECTL_BIN} create namespace demo --dry-run=client -o yaml | ${KUBECTL_BIN} apply --validate=false -f -
+
 echo "Exporting hardened echo manifest..."
 python -m ae.cli export-k8s -f specs/examples/echo.yaml --namespace demo --preset web-hardened --ingress-class traefik --service-port 80 --validate -o /tmp/echo-k8s.yaml
 

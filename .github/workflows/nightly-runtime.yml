@@ -130,7 +130,7 @@ jobs:
           AE_CRI_ENDPOINT: unix:///run/containerd/containerd.sock
           AE_CRI_SANDBOX_IMAGE: registry.k8s.io/pause:3.9
         run: |
-          sudo -E python -m pytest \
+          sudo -E env "PATH=$PATH" "$(command -v python)" -m pytest \
             tests/integration/test_cri_smoke.py \
             tests/integration/test_cri_runtime_integration.py -q
 
@@ -435,7 +435,7 @@ jobs:
                 port:
                   number: 8080
           YAML
-          $K apply -f /tmp/echo-ing.yaml
+          $K --validate=false apply -f /tmp/echo-ing.yaml
           test "$($K get ingress echo -o jsonpath='{.status.loadBalancer.ingress[0].ip}')" = "10.96.0.50"
           hit() {
             $K port-forward svc/echo-svc 18081:8080 >/tmp/pf.log 2>&1 &
