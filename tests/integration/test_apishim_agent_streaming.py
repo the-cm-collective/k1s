@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ae.apishim import server as shim_server
 from ae.apishim.server import ShimServer
 from ae.controller.state import NodeRecord
 from ae.runtime.base import RuntimeAdapter, RuntimeResult
@@ -610,6 +611,69 @@ def test_apishim_exec_and_portforward_via_remote_pod_state(
         assert payload[0:1] == b"\x00"
         assert payload[1:] == b"hello"
         pf.close()
+    finally:
+        apishim.shutdown()
+        apishim.server_close()
+        apishim_thread.join(timeout=2)
+        agent.shutdown()
+        agent.server_close()
+        agent_thread.join(timeout=2)
+        echo_server.shutdown()
+        echo_server.server_close()
+        echo_thread.join(timeout=2)
+
+
+def test_apishim_exec_via_remote_pod_state_keeps_loopback_when_implicit_fallback_unusable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    monkeypatch.delenv("AE_NODE_ADVERTISE_IP", raising=False)
+    orig_exists = shim_server.Path.exists
+
+    def _exists(path_obj):
+        if str(path_obj) == "/.dockerenv":
+            return True
+        return orig_exists(path_obj)
+
+    orig_lookup = shim_server.socket.getaddrinfo
+
+    def _lookup(host, port, *args, **kwargs):
+        if host == "host.containers.internal":
+            raise OSError("not resolvable")
+        return orig_lookup(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(shim_server.Path, "exists", _exists)
+    monkeypatch.setattr(shim_server.socket, "getaddrinfo", _lookup)
+
+    echo_server, echo_thread = _start_echo_server()
+    echo_port = echo_server.server_address[1]
+    agent_runtime = DummyRuntime(echo_port=echo_port)
+    agent, agent_thread = _start_agent(agent_runtime)
+    apishim, apishim_thread = _start_apishim(monkeypatch, tmp_path, "")
+    try:
+        apishim.runtime = EmptyRuntime()
+        apishim._runtime_base = EmptyRuntime()
+        apishim._runtime_cache = {}
+        state = RemotePodState(f"http://127.0.0.1:{agent.server_port}")
+        apishim.state = state
+
+        exec_path = (
+            "/api/v1/namespaces/default/pods/demo-pod/exec"
+            "?command=echo&command=hi&stdin=0&stdout=1&stderr=1&tty=0"
+        )
+        ws = _ws_handshake("127.0.0.1", apishim.server_port, exec_path, ["v4.channel.k8s.io"])
+        out, err, status, close_seen = _ws_collect_exec(ws)
+        ws.close()
+        assert b"pong" in out
+        assert err == b""
+        assert status == {
+            "metadata": {},
+            "status": "Success",
+            "message": "",
+            "reason": "",
+            "code": 0,
+            "details": {"exitCode": 0},
+        }
+        assert close_seen is True
     finally:
         apishim.shutdown()
         apishim.server_close()

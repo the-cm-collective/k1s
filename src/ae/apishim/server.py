@@ -2680,28 +2680,48 @@ class ShimHandler(BaseHTTPRequestHandler):
         return None
 
     @staticmethod
+    def _host_resolves(host: str, port: int) -> bool:
+        try:
+            socket.getaddrinfo(host, port)
+            return True
+        except OSError:
+            return False
+        except Exception:
+            return False
+
+    @staticmethod
+    def _implicit_runtime_fallback_host(probe_port: int) -> str:
+        try:
+            if not Path("/.dockerenv").exists():
+                return ""
+        except Exception:
+            return ""
+        fallback_host = "host.containers.internal"
+        if not ShimHandler._host_resolves(fallback_host, probe_port):
+            return ""
+        return fallback_host
+
+    @staticmethod
     def _normalize_runtime_endpoint(endpoint: str | None) -> str | None:
         """Rewrite node endpoints for containerized apishim reachability.
 
         In single-host dev flows, node agents may advertise hostnames that are not
         resolvable from the apishim container (or loopback addresses that resolve
         to the container itself). When AE_NODE_ADVERTISE_IP is set for apishim,
-        use it as a fallback host in those cases.
+        use it as a fallback host in those cases. Otherwise, use the implicit
+        container fallback only when that host alias is actually resolvable.
         """
         if not endpoint:
-            return endpoint
-        fallback_host = (os.getenv("AE_NODE_ADVERTISE_IP") or "").strip()
-        if not fallback_host:
-            try:
-                if Path("/.dockerenv").exists():
-                    fallback_host = "host.containers.internal"
-            except Exception:
-                fallback_host = ""
-        if not fallback_host:
             return endpoint
         try:
             parsed = urlparse(endpoint)
         except Exception:
+            return endpoint
+        probe_port = parsed.port or (443 if (parsed.scheme or "http") == "https" else 80)
+        fallback_host = (os.getenv("AE_NODE_ADVERTISE_IP") or "").strip()
+        if not fallback_host:
+            fallback_host = ShimHandler._implicit_runtime_fallback_host(probe_port)
+        if not fallback_host:
             return endpoint
         host = str(parsed.hostname or "").strip()
         if not host:
@@ -2709,10 +2729,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         host_l = host.lower()
         replace = host_l in {"127.0.0.1", "localhost", "::1"}
         if not replace:
-            try:
-                probe_port = parsed.port or (443 if (parsed.scheme or "http") == "https" else 80)
-                socket.getaddrinfo(host, probe_port)
-            except OSError:
+            if not ShimHandler._host_resolves(host, probe_port):
                 replace = True
         if not replace:
             return endpoint

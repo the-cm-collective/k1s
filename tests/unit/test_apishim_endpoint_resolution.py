@@ -17,6 +17,49 @@ def test_normalize_runtime_endpoint_rewrites_loopback(monkeypatch):
     assert out == "http://host.containers.internal:9112"
 
 
+def test_normalize_runtime_endpoint_keeps_loopback_when_implicit_fallback_unresolvable(
+    monkeypatch,
+):
+    monkeypatch.delenv("AE_NODE_ADVERTISE_IP", raising=False)
+    orig_exists = shim_server.Path.exists
+
+    def _exists(path_obj):
+        if str(path_obj) == "/.dockerenv":
+            return True
+        return orig_exists(path_obj)
+
+    def _lookup(host, *_args, **_kwargs):
+        if host == "host.containers.internal":
+            raise OSError("not resolvable")
+        return [(0, 0, 0, "", ("127.0.0.1", 0))]
+
+    monkeypatch.setattr(shim_server.Path, "exists", _exists)
+    monkeypatch.setattr(shim_server.socket, "getaddrinfo", _lookup)
+    endpoint = "http://127.0.0.1:9112"
+    out = shim_server.ShimHandler._normalize_runtime_endpoint(endpoint)
+    assert out == endpoint
+
+
+def test_normalize_runtime_endpoint_rewrites_loopback_when_implicit_fallback_resolves(
+    monkeypatch,
+):
+    monkeypatch.delenv("AE_NODE_ADVERTISE_IP", raising=False)
+    orig_exists = shim_server.Path.exists
+
+    def _exists(path_obj):
+        if str(path_obj) == "/.dockerenv":
+            return True
+        return orig_exists(path_obj)
+
+    def _lookup(*_args, **_kwargs):
+        return [(0, 0, 0, "", ("127.0.0.1", 0))]
+
+    monkeypatch.setattr(shim_server.Path, "exists", _exists)
+    monkeypatch.setattr(shim_server.socket, "getaddrinfo", _lookup)
+    out = shim_server.ShimHandler._normalize_runtime_endpoint("http://127.0.0.1:9112")
+    assert out == "http://host.containers.internal:9112"
+
+
 def test_normalize_runtime_endpoint_rewrites_unresolvable_host(monkeypatch):
     monkeypatch.setenv("AE_NODE_ADVERTISE_IP", "host.containers.internal")
 
