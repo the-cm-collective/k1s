@@ -1523,9 +1523,41 @@ def test_cri_bootstrap_scripts_use_compatible_cni_default() -> None:
     assert "update-grub" in common_bootstrap
     assert "bootstrap_contract_version" in common_bootstrap
     assert '"cni_version": "${expected_cni_version}"' in common_bootstrap
+    assert "configure_apt_network_resilience()" in common_bootstrap
+    assert 'Acquire::Retries "5";' in common_bootstrap
+    assert 'Acquire::ForceIPv4 "true";' in common_bootstrap
+    assert 'Acquire::https::Timeout "30";' in common_bootstrap
+    assert 's#http://archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' in common_bootstrap
+    assert 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' in common_bootstrap
+    assert "apt_get_retry()" in common_bootstrap
+    assert 'apt_get_retry update' in common_bootstrap
+    assert 'apt_get_retry install -y \\' in common_bootstrap
     gpu_bootstrap = GPU_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+    assert 'GPU_REQUIRED_CRI_IMAGES="${GPU_REQUIRED_CRI_IMAGES:-nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1}"' in gpu_bootstrap
+    assert "require_command nvidia-ctk" in gpu_bootstrap
+    assert "require_command nvidia-container-runtime" in gpu_bootstrap
+    assert "require_command nvidia-smi" in gpu_bootstrap
+    assert 'GPU_CONTRACT_SCRIPT="${GPU_CONTRACT_SCRIPT:-/usr/local/bin/k1s-gpu-contract-check}"' in gpu_bootstrap
+    assert "nvidia-ctk runtime configure --runtime=containerd --config=/etc/containerd/config.toml" in gpu_bootstrap
+    assert "|| true" not in gpu_bootstrap
+    assert "write_gpu_contract_script()" in gpu_bootstrap
+    assert 'cat >"$GPU_CONTRACT_SCRIPT" <<' in gpu_bootstrap
+    assert 'test -f /etc/apt/sources.list.d/nvidia-container-toolkit.list' in gpu_bootstrap
+    assert 'require_package "$nvidia_driver_package"' in gpu_bootstrap
+    assert 'ctr -n k8s.io images ls name=="$image"' in gpu_bootstrap
+    assert '"$GPU_CONTRACT_SCRIPT"' in gpu_bootstrap
+    assert 'assert_runtime_handler_available "$NVIDIA_RUNTIME_HANDLER"' in gpu_bootstrap
+    assert 'ctr -n k8s.io images ls name=="$image" | grep -F -- "$image" >/dev/null 2>&1' in gpu_bootstrap
     assert "mkdir -p /etc/k1s-image" in gpu_bootstrap
     assert "cat >/etc/k1s-image/gpu-info.json <<JSON" in gpu_bootstrap
+    assert (
+        'required_images="${GPU_REQUIRED_CRI_IMAGES:-nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1}"'
+        in gpu_bootstrap
+    )
+    assert 'export GPU_REQUIRED_CRI_IMAGES' in gpu_bootstrap
+    assert 'echo "[image-bootstrap] validating gpu contract script"' in gpu_bootstrap
+    assert 'echo "[image-bootstrap] validating gpu runtime handler"' in gpu_bootstrap
+    assert 'echo "[image-bootstrap] validating gpu seed image cache"' in gpu_bootstrap
 
     image_build = IMAGE_BUILD_SCRIPT.read_text(encoding="utf-8")
     assert (
@@ -1533,6 +1565,7 @@ def test_cri_bootstrap_scripts_use_compatible_cni_default() -> None:
         in image_build
     )
     assert 'EXPECTED_CNI_VERSION="${EXPECTED_CNI_VERSION:-0.4.0}"' in image_build
+    assert 'SEED_PROFILE="${SEED_PROFILE:-bootstrap}"' in image_build
     assert 'SEED_BUNDLE_SCRIPT="${SEED_BUNDLE_SCRIPT:-$ROOT_DIR/scripts/lab/vm/image_seed_bundle.sh}"' in image_build
     assert (
         'ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT="${ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT:-$ROOT_DIR/scripts/lab/vm/assert_image_boot_contract.sh}"'
@@ -1543,6 +1576,8 @@ def test_cri_bootstrap_scripts_use_compatible_cni_default() -> None:
     assert 'bash "$ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT" "$image"' in image_build
     assert "bootstrap_contract_version:$bootstrap_contract_version" in image_build
     assert "cni_version:$cni_version" in image_build
+    assert 'gpu_bootstrap_ready:true' not in image_build
+    assert 'gpu_seed_images_ready:true' not in image_build
 
     image_verify = IMAGE_VERIFY_SCRIPT.read_text(encoding="utf-8")
     assert (
@@ -1562,10 +1597,21 @@ def test_cri_bootstrap_scripts_use_compatible_cni_default() -> None:
     assert 'bash "$ASSERT_IMAGE_BOOT_CONTRACT_SCRIPT" "$image"' in image_verify
     assert 'bash "$INSPECT_QCOW_BOOT_SCRIPT" "$state_dir/image-verify-${image_variant}.qcow2"' in image_verify
     assert 'echo "[image-verify] ssh key path: $key_path"' in image_verify
+    assert "verify_gpu_guest_contract()" in image_verify
+    assert '"sudo -n bash -lc \'/usr/local/bin/k1s-gpu-contract-check\'" 2>&1' in image_verify
+    assert "stamp_gpu_metadata()" in image_verify
+    assert 'gpu_bootstrap_ready:true' in image_verify
+    assert 'gpu_runtime_handler:"nvidia"' in image_verify
+    assert 'gpu_seed_images_ready:true' in image_verify
     assert ".bootstrap_contract_version == $v" in image_verify
     assert ".cni_version == $v" in image_verify
     packer_template = PACKER_TEMPLATE.read_text(encoding="utf-8")
     assert 'disk_interface   = "virtio"' in packer_template
+    assert 'source      = "scripts/cri_preflight.sh"' not in packer_template
+    assert "sudo -S -E bash -euo pipefail '{{.Path}}'" in packer_template
+    assert 'chmod +x /tmp/common-bootstrap.sh /tmp/gpu-bootstrap.sh /tmp/cri_smoke.sh' in packer_template
+    assert "echo '[image-bootstrap] running gpu bootstrap'" in packer_template
+    assert "echo '[image-bootstrap] gpu bootstrap complete'" in packer_template
 
 
 def test_guest_prereqs_runs_cri_sandbox_smoke() -> None:

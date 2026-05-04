@@ -10,6 +10,8 @@ crictl_version="${CRICTL_VERSION:-v1.30.0}"
 bootstrap_contract_version="${BOOTSTRAP_CONTRACT_VERSION:-20260324-cni-0.4.0-smoke-v1}"
 expected_cni_version="${AE_CNI_VERSION:-0.4.0}"
 sandbox_image="${AE_CRI_SANDBOX_IMAGE:-registry.k8s.io/pause:3.9}"
+apt_retry_count="${AE_APT_RETRY_COUNT:-3}"
+apt_retry_backoff_seconds="${AE_APT_RETRY_BACKOFF_SECONDS:-5}"
 
 crictl_arch() {
   case "$(uname -m)" in
@@ -38,6 +40,51 @@ install_crictl_binary() {
   tar -C /usr/local/bin -xzf "$tmp/crictl.tar.gz"
   chmod +x /usr/local/bin/crictl
   rm -rf "$tmp"
+}
+
+configure_apt_network_resilience() {
+  local sources_file
+
+  mkdir -p /etc/apt/apt.conf.d
+  cat >/etc/apt/apt.conf.d/80k1s-network-resilience <<'CFG'
+Acquire::Retries "5";
+Acquire::ForceIPv4 "true";
+Acquire::http::Timeout "30";
+Acquire::https::Timeout "30";
+Acquire::http::Pipeline-Depth "0";
+Dpkg::Use-Pty "0";
+CFG
+
+  for sources_file in \
+    /etc/apt/sources.list \
+    /etc/apt/sources.list.d/*.list \
+    /etc/apt/sources.list.d/*.sources
+  do
+    [[ -e "$sources_file" ]] || continue
+    sed -i \
+      -e 's#http://archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' \
+      -e 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' \
+      "$sources_file"
+  done
+}
+
+apt_get_retry() {
+  local attempt=1
+  local max_attempts="$apt_retry_count"
+
+  while (( attempt <= max_attempts )); do
+    if apt-get "$@"; then
+      return 0
+    fi
+    if (( attempt == max_attempts )); then
+      break
+    fi
+    echo "[image-bootstrap] apt-get $* failed (attempt ${attempt}/${max_attempts}); retrying" >&2
+    sleep $((attempt * apt_retry_backoff_seconds))
+    attempt=$((attempt + 1))
+  done
+
+  return 1
 }
 
 write_cni_configs() {
@@ -176,8 +223,10 @@ assert_guest_boot_contract() {
   done
 }
 
-apt-get update
-apt-get install -y \
+configure_apt_network_resilience
+
+apt_get_retry update
+apt_get_retry install -y \
   apt-transport-https \
   ca-certificates \
   cloud-init \

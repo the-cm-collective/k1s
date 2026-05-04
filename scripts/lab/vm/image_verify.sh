@@ -71,6 +71,37 @@ image_virtual_size_gib() {
   printf '%s\n' "$(((size_bytes + 1073741824 - 1) / 1073741824))"
 }
 
+verify_gpu_guest_contract() {
+  local guest_ip="$1"
+  local output=""
+  if ! output="$("$VERIFY_SSH_BIN" \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -i "$key_path" \
+    "ae@${guest_ip}" \
+    "sudo -n bash -lc '/usr/local/bin/k1s-gpu-contract-check'" 2>&1)"; then
+    if [[ -n "$output" ]]; then
+      printf '%s\n' "$output" >&2
+    fi
+    return 1
+  fi
+  return 0
+}
+
+stamp_gpu_metadata() {
+  local meta_file="$1"
+  local tmp_meta=""
+  tmp_meta="$(mktemp)"
+  jq '
+    . + {
+      gpu_bootstrap_ready:true,
+      gpu_runtime_handler:"nvidia",
+      gpu_seed_images_ready:true
+    }
+  ' "$meta_file" >"$tmp_meta"
+  mv "$tmp_meta" "$meta_file"
+}
+
 write_verify_variant() {
   local variant_file="$1"
   local image="$2"
@@ -226,6 +257,13 @@ boot_verify_image() (
     return 1
   fi
 
+  if [[ "$image_variant" == "gpu" ]]; then
+    if ! verify_gpu_guest_contract "$guest_ip"; then
+      verify_failed=1
+      return 1
+    fi
+  fi
+
   echo "[image-verify] boot smoke ok: $image"
 )
 
@@ -265,6 +303,9 @@ check_one() {
 
   if [[ "$METADATA_ONLY" -eq 0 ]]; then
     boot_verify_image "$variant" "$image"
+    if [[ "$variant" == "gpu" ]]; then
+      stamp_gpu_metadata "$meta_file"
+    fi
   fi
 
   echo "[image-verify] ok: $image"

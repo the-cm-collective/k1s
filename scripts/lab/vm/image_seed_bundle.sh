@@ -21,7 +21,7 @@ Build a host-side CRI seed image bundle for VM bootstrap cache import.
 Options:
   --run-id <id>           Run id used for output path
   --manifest <path>       Seed manifest json (default: lab/variants/cri_seed_images.lock.json)
-  --profile <name>        Image subset (core|edge|all, default: all)
+  --profile <name>        Image subset (bootstrap|core|edge|all, default: all)
   --output <path>         Bundle output tar path
   --engine <name>         Pull/export engine (docker|nerdctl|podman|ctr)
   --platform <value>      Pull platform (default: linux/amd64)
@@ -67,9 +67,9 @@ done
 [[ -f "$MANIFEST" ]] || { echo "[cri-seed] manifest not found: $MANIFEST" >&2; exit 2; }
 
 case "$PROFILE" in
-  core|edge|all) ;;
+  bootstrap|core|edge|all) ;;
   *)
-    echo "[cri-seed] invalid --profile: $PROFILE (expected core|edge|all)" >&2
+    echo "[cri-seed] invalid --profile: $PROFILE (expected bootstrap|core|edge|all)" >&2
     exit 2
     ;;
 esac
@@ -267,6 +267,9 @@ engine_export() {
 
 read_images() {
   case "$PROFILE" in
+    bootstrap)
+      jq -r '.images.bootstrap[]?' "$MANIFEST"
+      ;;
     core)
       jq -r '.images.core[]?' "$MANIFEST"
       ;;

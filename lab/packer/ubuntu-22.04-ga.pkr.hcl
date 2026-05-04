@@ -105,11 +105,11 @@ build {
   }
 
   provisioner "shell" {
-    execute_command = "echo 'packer' | {{.Vars}} sudo -S -E bash '{{.Path}}'"
+    execute_command = "echo 'packer' | {{.Vars}} sudo -S -E bash -euo pipefail '{{.Path}}'"
     inline = [
       "chmod +x /tmp/common-bootstrap.sh /tmp/gpu-bootstrap.sh /tmp/cri_smoke.sh",
       "/tmp/common-bootstrap.sh ${var.variant} /tmp/cri_seed_images.lock.json /tmp/cri-seed-images.oci.tar /tmp/cri_smoke.sh",
-      "if [ '${var.variant}' = 'gpu' ]; then /tmp/gpu-bootstrap.sh; fi",
+      "if [ '${var.variant}' = 'gpu' ]; then echo '[image-bootstrap] running gpu bootstrap'; /tmp/gpu-bootstrap.sh; echo '[image-bootstrap] gpu bootstrap complete'; fi",
       "cloud-init clean --logs",
       "truncate -s 0 /etc/machine-id",
       "rm -f /var/lib/dbus/machine-id",
