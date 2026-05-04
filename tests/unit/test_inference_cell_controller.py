@@ -36,6 +36,28 @@ def _cell_manifest(name: str = "demo-cell") -> InferenceCellManifest:
     )
 
 
+class _JoinRuntime:
+    def __init__(self, app_names: list[str]):
+        self._app_names = list(app_names)
+
+    def list_containers_info(self):
+        return [{"labels": {"ae.app": name}} for name in self._app_names]
+
+
+def _joining_alloc(name: str) -> dict:
+    return {
+        "master_addr": "10.0.0.10",
+        "api_port": 18080,
+        "api_endpoint": "10.0.0.10:18080",
+        "execution": {
+            "workloads": [
+                {"node_id": "node-a", "app_name": f"default/{name}-ray-head"},
+                {"node_id": "node-a", "app_name": f"default/{name}-ray-launcher"},
+            ]
+        },
+    }
+
+
 def test_inference_cell_reconcile_ready(tmp_path):
     store = SQLiteStateStore(tmp_path / "state.db")
     ctrl = InferenceCellController(store)
@@ -150,3 +172,85 @@ def test_inference_stage_manifest_sets_runtime_class(tmp_path):
     }
     mp_manifest = ctrl._mp_stage_manifest(manifest, stage0, alloc)
     assert mp_manifest.spec.runtime_class_name == "nvidia"
+
+
+def test_inference_cell_joining_waits_for_leader_api_health(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("AE_INFERENCE_EXPERIMENTAL", "1")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    manifest = _cell_manifest(name="join-pending")
+    store.register_inference_cell(manifest, source="test")
+    alloc = _joining_alloc("join-pending")
+    store.update_inference_cell_status(
+        manifest.metadata.name,
+        namespace=manifest.metadata.namespace,
+        phase="JOINING",
+        allocations=alloc,
+        conditions={},
+        last_error=None,
+    )
+    ctrl = InferenceCellController(store)
+    runtime = _JoinRuntime(
+        [
+            f"default/{manifest.metadata.name}-ray-head",
+            f"default/{manifest.metadata.name}-ray-launcher",
+        ]
+    )
+    monkeypatch.setattr(
+        ctrl,
+        "_runtime_for_node",
+        lambda node_id: (runtime, "http://node-a:9109"),
+    )
+    monkeypatch.setattr(
+        ctrl,
+        "_probe_leader_api",
+        lambda current_alloc: (False, "http://10.0.0.10:18080/health status=503"),
+    )
+
+    rec = ctrl._run_once(manifest)
+    assert rec.phase == "JOINING"
+    assert rec.last_error == "JOIN_API_NOT_READY"
+    assert rec.conditions["ApiReady"]["status"] is False
+    assert "leader api not ready" in rec.conditions["ApiReady"]["message"]
+
+
+def test_inference_cell_joining_requires_leader_api_health_for_ready(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("AE_INFERENCE_EXPERIMENTAL", "1")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    manifest = _cell_manifest(name="join-ready")
+    store.register_inference_cell(manifest, source="test")
+    alloc = _joining_alloc("join-ready")
+    store.update_inference_cell_status(
+        manifest.metadata.name,
+        namespace=manifest.metadata.namespace,
+        phase="JOINING",
+        allocations=alloc,
+        conditions={},
+        last_error="JOIN_API_NOT_READY",
+    )
+    ctrl = InferenceCellController(store)
+    runtime = _JoinRuntime(
+        [
+            f"default/{manifest.metadata.name}-ray-head",
+            f"default/{manifest.metadata.name}-ray-launcher",
+        ]
+    )
+    monkeypatch.setattr(
+        ctrl,
+        "_runtime_for_node",
+        lambda node_id: (runtime, "http://node-a:9109"),
+    )
+    monkeypatch.setattr(
+        ctrl,
+        "_probe_leader_api",
+        lambda current_alloc: (True, "http://10.0.0.10:18080/health"),
+    )
+
+    rec = ctrl._run_once(manifest)
+    assert rec.phase == "READY"
+    assert rec.last_error is None
+    assert rec.conditions["ApiReady"]["status"] is True
+    assert rec.conditions["ApiReady"]["message"] == "http://10.0.0.10:18080/health"

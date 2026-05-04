@@ -9,6 +9,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+from urllib.parse import urlsplit, urlunsplit
 
 try:
     from enum import StrEnum
@@ -850,6 +851,39 @@ class InferenceCellController:
         self._node_runtimes[endpoint] = runtime
         return runtime, endpoint
 
+    @staticmethod
+    def _leader_health_url(api_endpoint: str) -> str:
+        raw = str(api_endpoint or "").strip()
+        if not raw:
+            return ""
+        if "://" not in raw:
+            raw = f"http://{raw}"
+        parts = urlsplit(raw)
+        path = (parts.path or "").rstrip("/")
+        if path.endswith("/health"):
+            health_path = path or "/health"
+        elif not path or path == "/":
+            health_path = "/health"
+        else:
+            health_path = f"{path}/health"
+        return urlunsplit((parts.scheme or "http", parts.netloc, health_path, "", ""))
+
+    def _probe_leader_api(self, alloc: dict) -> tuple[bool, str]:
+        api_endpoint = str(
+            alloc.get("api_endpoint") or f"{alloc.get('master_addr')}:{alloc.get('api_port')}"
+        )
+        health_url = self._leader_health_url(api_endpoint)
+        if not health_url:
+            return False, "missing api endpoint"
+        timeout = float(os.getenv("AE_INFERENCE_API_HEALTH_TIMEOUT", "2") or 2)
+        try:
+            resp = requests.get(health_url, timeout=timeout)
+        except requests.RequestException as exc:
+            return False, f"{health_url} {exc.__class__.__name__}: {exc}"
+        if 200 <= int(resp.status_code) < 300:
+            return True, health_url
+        return False, f"{health_url} status={int(resp.status_code)}"
+
     def _node_gpu_count(self, node) -> int | None:  # type: ignore[no-untyped-def]
         capabilities = getattr(node, "capabilities", {}) or {}
         labels = getattr(node, "labels", {}) or {}
@@ -1551,10 +1585,23 @@ class InferenceCellController:
                     last_error="JOIN_FAILED",
                 )
 
+            api_ready, api_detail = self._probe_leader_api(alloc)
+            if not api_ready:
+                message = f"leader api not ready: {api_detail}"
+                cond = _make_condition(cond, "ApiReady", False, message)
+                self._log_event(manifest, "JoinPending", message)
+                return self._update(
+                    manifest,
+                    phase=CellPhase.JOINING,
+                    allocations=alloc,
+                    conditions=cond,
+                    last_error="JOIN_API_NOT_READY",
+                )
+
             api_ep = str(
                 alloc.get("api_endpoint") or f"{alloc.get('master_addr')}:{alloc.get('api_port')}"
             )
-            cond = _make_condition(cond, "ApiReady", True, api_ep)
+            cond = _make_condition(cond, "ApiReady", True, api_detail)
             self._log_event(manifest, "CellReady", f"cell reached READY api={api_ep}")
             return self._update(
                 manifest,
