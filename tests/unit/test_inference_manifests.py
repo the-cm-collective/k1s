@@ -110,13 +110,17 @@ spec:
     ("rel_path", "expected_name"),
     [
         ("specs/examples/inference/cell-a-single.yaml", "cell-a-single"),
+        ("specs/examples/inference/cell-b-single.yaml", "cell-b-single"),
         ("specs/examples/inference/cell-ab-pp2-ray.yaml", "cell-ab-pp2-ray"),
         ("specs/examples/inference/cell-ab-pp2-mp.yaml", "cell-ab-pp2-mp"),
     ],
 )
-def test_checked_in_ab_inference_examples_load(rel_path: str, expected_name: str) -> None:
+def test_checked_in_inference_examples_load(rel_path: str, expected_name: str) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     doc = load_any_manifest(repo_root / rel_path)
     assert isinstance(doc, InferenceCellManifest)
     assert doc.metadata.name == expected_name
     assert doc.spec.executor.runtime_class_name == "nvidia"
+    assert doc.spec.executor.ray_image == "rayproject/ray:latest"
+    assert doc.spec.executor.mp_image == "vllm/vllm-openai:latest"
+    assert doc.spec.executor.launcher_image == "vllm/vllm-openai:latest"

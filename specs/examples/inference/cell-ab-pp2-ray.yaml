@@ -13,6 +13,9 @@ spec:
   executor:
     type: ray
     fallbackMode: mp_on_failure
+    rayImage: rayproject/ray:latest
+    mpImage: vllm/vllm-openai:latest
+    launcherImage: vllm/vllm-openai:latest
     runtimeClassName: nvidia
   fabric:
     mode: lan_direct
