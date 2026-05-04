@@ -959,6 +959,10 @@ def test_variant_up_uses_variant_aware_host_prepare() -> None:
     text = VARIANT_UP_SCRIPT.read_text(encoding="utf-8")
     assert 'CLOUD_INIT_WAIT_TIMEOUT="${CLOUD_INIT_WAIT_TIMEOUT:-300}"' in text
     assert '"$ROOT_DIR/scripts/lab/vm/host_prepare.sh" --variant "$VARIANT" --apply' in text
+    assert "package_update: false" in text
+    assert "package_upgrade: false" in text
+    assert "package_update: true" not in text
+    assert "python3-pip" not in text
     assert 'pod_route_rows="$(' in text
     assert 'select(.role=="k1s-core-node" and (.pod_cidr // "") != "")' in text
     assert 'render_guest_route_yaml() {' in text
