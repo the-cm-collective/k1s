@@ -802,6 +802,20 @@ class InferenceCellController:
         master_stage = int(manifest.spec.rendezvous.master_stage)
         leader = next((p for p in placements if p.stage == master_stage), placements[0])
         if run_type == "ray":
+            if self._uses_launcher_local_ray(
+                manifest,
+                placements,
+                alloc,
+                executor_type=run_type,
+            ):
+                return {
+                    "name": f"{manifest.metadata.name}-ray-launcher",
+                    "node_id": leader.node_id,
+                    "site_id": leader.site_id,
+                    "type": "ray-launcher",
+                    "stage": leader.stage,
+                    "api_port": int(alloc.get("api_port") or 0),
+                }
             return {
                 "name": f"{manifest.metadata.name}-ray-head",
                 "node_id": leader.node_id,
@@ -868,9 +882,59 @@ class InferenceCellController:
             health_path = f"{path}/health"
         return urlunsplit((parts.scheme or "http", parts.netloc, health_path, "", ""))
 
+    @staticmethod
+    def _uses_launcher_local_ray(
+        manifest: InferenceCellManifest,
+        placements: list[StagePlacement],
+        alloc: dict,
+        *,
+        executor_type: str,
+    ) -> bool:
+        if str(executor_type) != "ray":
+            return False
+        if len(placements) != 1:
+            return False
+        fabric_mode = str(
+            alloc.get("fabric_mode") or getattr(manifest.spec.fabric, "mode", "lan_direct")
+        ).strip()
+        return fabric_mode == "lan_direct"
+
+    def _node_hostport_endpoint(self, node_id: str, port: int) -> str:
+        if not node_id or int(port) <= 0:
+            return ""
+        rec = self._store.get_node(node_id)
+        if rec is None:
+            return ""
+        node, _status = rec
+        endpoint = str(node.endpoint or "").strip()
+        if not endpoint:
+            return ""
+        if "://" not in endpoint:
+            endpoint = f"http://{endpoint}"
+        parts = urlsplit(endpoint)
+        host = str(parts.hostname or "").strip()
+        if not host:
+            return ""
+        return f"{host}:{int(port)}"
+
+    def _resolve_api_endpoint(self, alloc: dict, *, node_id: str, api_endpoint: str = "") -> str:
+        api_endpoint = str(api_endpoint or "").strip()
+        if api_endpoint:
+            return api_endpoint
+        node_endpoint = self._node_hostport_endpoint(node_id, int(alloc.get("api_port") or 0))
+        if node_endpoint:
+            return node_endpoint
+        master_addr = str(alloc.get("master_addr") or "").strip()
+        api_port = int(alloc.get("api_port") or 0)
+        if master_addr and api_port > 0:
+            return f"{master_addr}:{api_port}"
+        return ""
+
     def _probe_leader_api(self, alloc: dict) -> tuple[bool, str]:
-        api_endpoint = str(
-            alloc.get("api_endpoint") or f"{alloc.get('master_addr')}:{alloc.get('api_port')}"
+        api_endpoint = self._resolve_api_endpoint(
+            alloc,
+            node_id=str(alloc.get("leader_node_id") or ""),
+            api_endpoint=str(alloc.get("api_endpoint") or ""),
         )
         health_url = self._leader_health_url(api_endpoint)
         if not health_url:
@@ -925,6 +989,11 @@ class InferenceCellController:
             str(getattr(manifest.spec.executor, "fallback_mode", "none") or "none").strip().lower()
         )
         return mode == "mp_on_failure"
+
+    @staticmethod
+    def _hold_on_failure_suffix() -> str:
+        enabled = str(os.getenv("AE_INFERENCE_DEBUG_HOLD_ON_FAILURE", "") or "").strip().lower()
+        return " || sleep infinity" if enabled in {"1", "true", "yes", "on"} else ""
 
     def _env_list(self, values: dict[str, str | int]) -> list[dict[str, str]]:
         return [{"name": str(k), "value": str(v)} for k, v in values.items()]
@@ -986,6 +1055,11 @@ class InferenceCellController:
         env = str(os.getenv("AE_INFERENCE_RUNTIME_CLASS", "") or "").strip()
         return env or None
 
+    @staticmethod
+    def _executor_dtype(manifest: InferenceCellManifest) -> str | None:
+        raw = str(getattr(manifest.spec.executor, "dtype", "") or "").strip()
+        return raw or None
+
     def _mp_stage_manifest(
         self,
         manifest: InferenceCellManifest,
@@ -998,34 +1072,32 @@ class InferenceCellController:
         tp = int(manifest.spec.parallelism.tp)
         pp = int(manifest.spec.parallelism.pp)
         api_port = int(alloc.get("api_port") or 0)
-        master_port = int(alloc.get("master_port") or 0)
         is_leader = int(placement.stage) == int(manifest.spec.rendezvous.master_stage)
+        dtype = self._executor_dtype(manifest)
         args = [
             (
                 "python3 -m vllm.entrypoints.openai.api_server "
-                '--model "$MODEL_PATH" '
-                "--distributed-executor-backend mp "
-                '--tensor-parallel-size "$TP" '
-                '--pipeline-parallel-size "$PP" '
-                '--nnodes "$PP" '
-                '--node-rank "$STAGE" '
-                '--master-addr "$MASTER_ADDR" '
-                '--master-port "$MASTER_PORT" '
-                '--port "$API_PORT" '
-                "--host 0.0.0.0 " + (" " if is_leader else "--headless ") + "|| sleep infinity"
+                + '--model "$MODEL_PATH" '
+                + ('--dtype "$DTYPE" ' if dtype else "")
+                + "--distributed-executor-backend mp "
+                + '--tensor-parallel-size "$TP" '
+                + '--pipeline-parallel-size "$PP" '
+                + '--port "$API_PORT" '
+                + "--host 0.0.0.0 "
+                + (" " if is_leader else "--headless ")
+                + self._hold_on_failure_suffix()
             )
         ]
         env = {
             "MODEL_PATH": model_path,
             "TP": tp,
             "PP": pp,
-            "STAGE": int(placement.stage),
-            "MASTER_ADDR": str(alloc.get("master_addr") or ""),
-            "MASTER_PORT": master_port,
             "API_PORT": api_port,
             "CUDA_VISIBLE_DEVICES": ",".join(str(i) for i in placement.gpu_indices),
             "NCCL_SOCKET_IFNAME": str(alloc.get("fabric_ifname") or "eth0"),
         }
+        if dtype:
+            env["DTYPE"] = dtype
         runtime_class_name = self._executor_runtime_class(manifest)
         return self._workload_manifest(
             name=name,
@@ -1035,6 +1107,7 @@ class InferenceCellController:
             args=args,
             env=env,
             api_port=(api_port if is_leader else None),
+            publish_service_port=is_leader,
             runtime_class_name=runtime_class_name,
             volumes=self._model_volume(model_path),
         )
@@ -1103,15 +1176,17 @@ class InferenceCellController:
         tp = int(manifest.spec.parallelism.tp)
         pp = int(manifest.spec.parallelism.pp)
         api_port = int(alloc.get("api_port") or 0)
+        dtype = self._executor_dtype(manifest)
         cmd = (
             "python3 -m vllm.entrypoints.openai.api_server "
-            '--model "$MODEL_PATH" '
-            "--distributed-executor-backend ray "
-            '--tensor-parallel-size "$TP" '
-            '--pipeline-parallel-size "$PP" '
-            "--host 0.0.0.0 "
-            '--port "$API_PORT" '
-            "|| sleep infinity"
+            + '--model "$MODEL_PATH" '
+            + ('--dtype "$DTYPE" ' if dtype else "")
+            + "--distributed-executor-backend ray "
+            + '--tensor-parallel-size "$TP" '
+            + '--pipeline-parallel-size "$PP" '
+            + "--host 0.0.0.0 "
+            + '--port "$API_PORT" '
+            + self._hold_on_failure_suffix()
         )
         env = {
             "MODEL_PATH": str(manifest.spec.model.local_path),
@@ -1120,6 +1195,8 @@ class InferenceCellController:
             "API_PORT": api_port,
             "CUDA_VISIBLE_DEVICES": ",".join(str(i) for i in placement.gpu_indices),
         }
+        if dtype:
+            env["DTYPE"] = dtype
         runtime_class_name = self._executor_runtime_class(manifest)
         return self._workload_manifest(
             name=name,
@@ -1452,6 +1529,12 @@ class InferenceCellController:
             placements = self._alloc_stage_placements(alloc)
             alloc.setdefault("workloads", {})
             run_type = self._active_executor(manifest, alloc)
+            local_ray = self._uses_launcher_local_ray(
+                manifest,
+                placements,
+                alloc,
+                executor_type=run_type,
+            )
             alloc["workloads"]["leader"] = self._render_leader(
                 manifest,
                 placements,
@@ -1471,14 +1554,16 @@ class InferenceCellController:
 
             master_stage = int(manifest.spec.rendezvous.master_stage)
             leader = next((p for p in placements if p.stage == master_stage), placements[0])
+            alloc["leader_node_id"] = leader.node_id
             execution = dict(alloc.get("execution") or {})
             execution.setdefault("workloads", [])
             try:
                 if run_type == "ray":
-                    head = self._ray_worker_manifest(manifest, leader, alloc, leader=True)
-                    head_rec = self._apply_manifest_to_node(leader.node_id, head, revision=1)
-                    head_rec["role"] = "ray-head"
-                    execution["workloads"].append(head_rec)
+                    if not local_ray:
+                        head = self._ray_worker_manifest(manifest, leader, alloc, leader=True)
+                        head_rec = self._apply_manifest_to_node(leader.node_id, head, revision=1)
+                        head_rec["role"] = "ray-head"
+                        execution["workloads"].append(head_rec)
 
                     launcher = self._ray_launcher_manifest(manifest, leader, alloc)
                     launcher_rec = self._apply_manifest_to_node(
@@ -1490,10 +1575,12 @@ class InferenceCellController:
                     if launcher_rec.get("pod_states"):
                         first = list(launcher_rec.get("pod_states") or [])[0]
                         api_endpoint = str(first.get("endpoint") or "")
-                    alloc["api_endpoint"] = (
-                        api_endpoint or f"{alloc.get('master_addr')}:{alloc.get('api_port')}"
+                    alloc["api_endpoint"] = self._resolve_api_endpoint(
+                        alloc,
+                        node_id=leader.node_id,
+                        api_endpoint=api_endpoint,
                     )
-                    leader_msg = "runtime applied (ray)"
+                    leader_msg = "runtime applied (ray-local)" if local_ray else "runtime applied (ray)"
                 else:
                     mp_leader = self._mp_stage_manifest(manifest, leader, alloc)
                     mp_rec = self._apply_manifest_to_node(leader.node_id, mp_leader, revision=1)
@@ -1503,8 +1590,10 @@ class InferenceCellController:
                     if mp_rec.get("pod_states"):
                         first = list(mp_rec.get("pod_states") or [])[0]
                         api_endpoint = str(first.get("endpoint") or "")
-                    alloc["api_endpoint"] = (
-                        api_endpoint or f"{alloc.get('master_addr')}:{alloc.get('api_port')}"
+                    alloc["api_endpoint"] = self._resolve_api_endpoint(
+                        alloc,
+                        node_id=leader.node_id,
+                        api_endpoint=api_endpoint,
                     )
                     leader_msg = "runtime applied (mp)"
             except Exception as exc:  # noqa: BLE001
@@ -1558,6 +1647,7 @@ class InferenceCellController:
                 )
 
             missing: list[str] = []
+            stopped: list[str] = []
             for item in list((alloc.get("execution") or {}).get("workloads") or []):
                 if not isinstance(item, dict):
                     continue
@@ -1578,6 +1668,49 @@ class InferenceCellController:
                 ]
                 if not labels_match:
                     missing.append(f"{node_id}:{app_name}")
+                    continue
+                if not any(bool(info.get("running", True)) for info in labels_match):
+                    stopped.append(f"{node_id}:{app_name}")
+            if stopped:
+                message = f"stopped runtime containers: {', '.join(stopped)}"
+                if self._active_executor(manifest, alloc) == "ray" and self._supports_mp_fallback(manifest):
+                    self._log_event(
+                        manifest,
+                        "ExecutorFallback",
+                        f"ray join failed, restarting in mp mode: {message}",
+                    )
+                    alloc["active_executor"] = "mp"
+                    self._remove_execution_workloads(alloc)
+                    alloc["execution"] = {"workloads": []}
+                    cond = _make_condition(cond, "ExecutorFallback", True, message)
+                    return self._update(
+                        manifest,
+                        phase=CellPhase.STARTING_WORKERS,
+                        allocations=alloc,
+                        conditions=cond,
+                        last_error=None,
+                    )
+                retries = int(rec.restarts or 0)
+                max_restarts = int(manifest.spec.health.max_restarts)
+                if retries < max_restarts:
+                    cond = _make_condition(cond, "ApiReady", False, message)
+                    self._log_event(manifest, "JoinPending", message)
+                    return self._update(
+                        manifest,
+                        phase=CellPhase.RESTARTING,
+                        allocations=alloc,
+                        conditions=cond,
+                        last_error="JOIN_FAILED",
+                    )
+                cond = _make_condition(cond, "ApiReady", False, message)
+                self._log_event(manifest, "JoinFailed", message)
+                return self._update(
+                    manifest,
+                    phase=CellPhase.FAILED,
+                    allocations=alloc,
+                    conditions=cond,
+                    last_error="JOIN_FAILED",
+                )
             if missing:
                 retries = int(rec.restarts or 0)
                 max_restarts = int(manifest.spec.health.max_restarts)

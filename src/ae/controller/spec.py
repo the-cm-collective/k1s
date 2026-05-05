@@ -610,7 +610,16 @@ class InferenceExecutorSpec(BaseModel):
     ray_image: str = Field(default="rayproject/ray:latest", alias="rayImage")
     mp_image: str = Field(default="vllm/vllm-openai:latest", alias="mpImage")
     launcher_image: str = Field(default="python:3.12-slim", alias="launcherImage")
+    dtype: str | None = None
     runtime_class_name: str | None = Field(default=None, alias="runtimeClassName")
+
+    @field_validator("dtype", mode="before")
+    @classmethod
+    def _normalize_dtype(cls, v: Optional[str]):  # noqa: D401 - simple guard
+        if v is None:
+            return v
+        raw = str(v).strip()
+        return raw or None
 
     model_config = {"populate_by_name": True}
 

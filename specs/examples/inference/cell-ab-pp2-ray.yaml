@@ -16,6 +16,7 @@ spec:
     rayImage: rayproject/ray:latest
     mpImage: vllm/vllm-openai:latest
     launcherImage: vllm/vllm-openai:latest
+    dtype: half
     runtimeClassName: nvidia
   fabric:
     mode: lan_direct

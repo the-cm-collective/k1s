@@ -25,6 +25,7 @@ SYSCTL_BIN = shutil.which("sysctl") or "sysctl"
 IPTABLES_BIN = shutil.which("iptables") or "iptables"
 WG_BIN = shutil.which("wg") or "wg"
 WG_QUICK_BIN = shutil.which("wg-quick") or "wg-quick"
+LEGACY_POD_BRIDGE = "ae0"
 
 
 def _run(cmd: list[str]) -> None:
@@ -69,9 +70,21 @@ def _bridge_addr_for_cidr(cidr: str) -> str:
     return f"{host}/{network.prefixlen}"
 
 
+def _bridge_exists(name: str) -> bool:
+    result = subprocess.run(  # noqa: S603,S607 - fixed binary; shell disabled
+        [IP_BIN, "link", "show", name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def ensure_pod_bridge(bridge: str, cidr: str) -> None:
     """Create and configure a pod bridge with the given CIDR."""
     with contextlib.suppress(Exception):
+        if bridge != LEGACY_POD_BRIDGE and _bridge_exists(LEGACY_POD_BRIDGE):
+            _run([IP_BIN, "link", "del", LEGACY_POD_BRIDGE])
         _run([IP_BIN, "link", "add", bridge, "type", "bridge"])
     try:
         _run([IP_BIN, "addr", "flush", "dev", bridge])

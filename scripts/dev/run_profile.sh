@@ -846,7 +846,9 @@ ensure_cri_cni_ready() {
     exit 1
   fi
 
-  if [[ ! -d "$cni_conf" ]]; then
+  if is_truthy "${AE_CNI_FORCE:-0}"; then
+    init_needed=1
+  elif [[ ! -d "$cni_conf" ]]; then
     init_needed=1
   elif ! find "$cni_conf" -maxdepth 1 -type f \
     \( -name '*.conf' -o -name '*.conflist' \) -print -quit | grep -q .; then

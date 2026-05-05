@@ -678,6 +678,60 @@ def build_guest_presync_cleanup_script() -> str:
 echo "[guest-presync-cleanup] before:"
 df -h / /tmp /var/lib/containerd || true
 sudo rm -f /tmp/*-core-seed-cri-seed-images.oci.tar || true
+sudo ip link del ae0 >/dev/null 2>&1 || true
+
+managed_container_ids="$(
+  sudo crictl ps -a -o json 2>/dev/null | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except json.JSONDecodeError:
+    payload = {{}}
+
+for container in payload.get("containers", []):
+    labels = container.get("labels") or {{}}
+    if labels.get("ae.app") or labels.get("app.kubernetes.io/managed-by"):
+        container_id = container.get("id")
+        if container_id:
+            print(container_id)
+'
+)"
+if [[ -n "$managed_container_ids" ]]; then
+  sudo crictl rm -f $managed_container_ids >/dev/null 2>&1 || true
+fi
+
+managed_pod_ids="$(
+  sudo crictl pods -o json 2>/dev/null | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except json.JSONDecodeError:
+    payload = {{}}
+
+items = payload.get("items")
+if not isinstance(items, list):
+    items = payload.get("pods")
+if not isinstance(items, list):
+    items = payload.get("podSandboxes")
+if not isinstance(items, list):
+    items = []
+
+for pod in items:
+    labels = pod.get("labels") or {{}}
+    if labels.get("ae.app") or labels.get("app.kubernetes.io/managed-by"):
+        pod_id = pod.get("id")
+        if pod_id:
+            print(pod_id)
+'
+)"
+if [[ -n "$managed_pod_ids" ]]; then
+  sudo crictl stopp $managed_pod_ids >/dev/null 2>&1 || true
+  sudo crictl rmp $managed_pod_ids >/dev/null 2>&1 || true
+fi
 
 for_image() {{
   local image="$1"

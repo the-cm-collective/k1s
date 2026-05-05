@@ -104,6 +104,8 @@ def test_run_profile_guards_compose_provider_and_host_fallback() -> None:
     assert "[cri] using NixOS containerd-managed CNI paths" in text
     assert 'local bootstrap_script="$ROOT_DIR/scripts/cni_bin_bootstrap.sh"' in text
     assert 'bash "$bootstrap_script"' in text
+    assert 'if is_truthy "${AE_CNI_FORCE:-0}"; then' in text
+    assert "init_needed=1" in text
     assert "-print -quit | grep -q ." in text
     assert "strict CRI infra selected but CNI plugin bootstrap failed" in text
     assert "containerd_socket_access.sh --grant" in text

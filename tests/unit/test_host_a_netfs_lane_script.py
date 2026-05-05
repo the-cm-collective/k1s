@@ -141,6 +141,13 @@ def test_build_guest_presync_cleanup_script_targets_stale_inference_images() -> 
     script = host_a_netfs_lane.build_guest_presync_cleanup_script()
 
     assert "rm -f /tmp/*-core-seed-cri-seed-images.oci.tar" in script
+    assert "sudo ip link del ae0" in script
+    assert 'sudo crictl ps -a -o json 2>/dev/null | python3 -c' in script
+    assert 'sudo crictl pods -o json 2>/dev/null | python3 -c' in script
+    assert 'labels.get("ae.app")' in script
+    assert 'labels.get("app.kubernetes.io/managed-by")' in script
+    assert 'sudo crictl stopp $managed_pod_ids' in script
+    assert 'sudo crictl rmp $managed_pod_ids' in script
     assert 'sudo crictl ps -a --image "$image" -q' in script
     assert 'sudo crictl rm -f $ids' in script
     assert 'sudo ctr -n k8s.io images rm --sync "$image"' in script

@@ -904,7 +904,7 @@ def serve(
     rp_pubkey: str | None = None,
     token: str | None = None,
     ensure_pod_net: bool = False,
-    pod_bridge: str = "ae0",
+    pod_bridge: str = "cni0",
     wg_iface: str = "wg0",
     wg_config: str | None = None,
     tls_cert: str | None = None,
@@ -1031,7 +1031,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--pod-bridge",
-        default=os.getenv("AE_POD_BRIDGE", "ae0"),
+        default=os.getenv("AE_POD_BRIDGE", "cni0"),
         help="bridge device for pod CIDR (used when --ensure-pod-net)",
     )
     parser.add_argument("--tls-cert", default=os.getenv("AE_AGENT_TLS_CERT"))

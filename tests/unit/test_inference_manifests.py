@@ -34,6 +34,7 @@ spec:
   executor:
     type: ray
     fallbackMode: mp_on_failure
+    dtype: half
     runtimeClassName: nvidia
   members:
     - siteId: site-a
@@ -55,8 +56,35 @@ spec:
     assert doc.metadata.name == "demo-cell"
     assert doc.spec.executor.type == "ray"
     assert doc.spec.executor.fallback_mode == "mp_on_failure"
+    assert doc.spec.executor.dtype == "half"
     assert doc.spec.executor.runtime_class_name == "nvidia"
     assert doc.spec.fabric.mode == "lan_direct"
+
+
+def test_load_any_manifest_inference_cell_normalizes_blank_dtype(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path / "cell-blank-dtype.yaml",
+        """
+apiVersion: ae.dev/v1alpha1
+kind: InferenceCell
+metadata:
+  name: demo-cell
+spec:
+  model:
+    modelId: llama
+    localPath: /models/llama
+  executor:
+    dtype: "   "
+  members:
+    - siteId: site-a
+      nodeId: node-a
+      gpuCount: 1
+  linkMetrics: []
+        """,
+    )
+    doc = load_any_manifest(p)
+    assert isinstance(doc, InferenceCellManifest)
+    assert doc.spec.executor.dtype is None
 
 
 def test_load_any_manifest_inference_cellset(tmp_path: Path) -> None:
@@ -107,20 +135,23 @@ spec:
 
 
 @pytest.mark.parametrize(
-    ("rel_path", "expected_name"),
+    ("rel_path", "expected_name", "expected_dtype"),
     [
-        ("specs/examples/inference/cell-a-single.yaml", "cell-a-single"),
-        ("specs/examples/inference/cell-b-single.yaml", "cell-b-single"),
-        ("specs/examples/inference/cell-ab-pp2-ray.yaml", "cell-ab-pp2-ray"),
-        ("specs/examples/inference/cell-ab-pp2-mp.yaml", "cell-ab-pp2-mp"),
+        ("specs/examples/inference/cell-a-single.yaml", "cell-a-single", "half"),
+        ("specs/examples/inference/cell-b-single.yaml", "cell-b-single", None),
+        ("specs/examples/inference/cell-ab-pp2-ray.yaml", "cell-ab-pp2-ray", "half"),
+        ("specs/examples/inference/cell-ab-pp2-mp.yaml", "cell-ab-pp2-mp", "half"),
     ],
 )
-def test_checked_in_inference_examples_load(rel_path: str, expected_name: str) -> None:
+def test_checked_in_inference_examples_load(
+    rel_path: str, expected_name: str, expected_dtype: str | None
+) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     doc = load_any_manifest(repo_root / rel_path)
     assert isinstance(doc, InferenceCellManifest)
     assert doc.metadata.name == expected_name
     assert doc.spec.executor.runtime_class_name == "nvidia"
+    assert doc.spec.executor.dtype == expected_dtype
     assert doc.spec.executor.ray_image == "rayproject/ray:latest"
     assert doc.spec.executor.mp_image == "vllm/vllm-openai:latest"
     assert doc.spec.executor.launcher_image == "vllm/vllm-openai:latest"

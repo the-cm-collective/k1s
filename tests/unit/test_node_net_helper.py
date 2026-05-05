@@ -39,6 +39,31 @@ def test_ensure_pod_bridge_assigns_gateway_address(monkeypatch) -> None:
     ) in iptables_calls
 
 
+def test_ensure_pod_bridge_prunes_legacy_bridge_when_using_cni0(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    iptables_calls: list[tuple[str, list[str], str | None, int | None]] = []
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        if list(cmd) == [net_helper.IP_BIN, "link", "show", net_helper.LEGACY_POD_BRIDGE]:
+            return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 1)
+
+    monkeypatch.setattr(net_helper.subprocess, "run", fake_run)
+    monkeypatch.setattr(net_helper, "_run", lambda cmd: calls.append(cmd))
+    monkeypatch.setattr(
+        net_helper,
+        "_ensure_iptables_rule",
+        lambda chain, rule, table=None, position=None: iptables_calls.append(
+            (chain, rule, table, position)
+        ),
+    )
+
+    net_helper.ensure_pod_bridge("cni0", "10.42.0.0/24")
+
+    assert [net_helper.IP_BIN, "link", "del", net_helper.LEGACY_POD_BRIDGE] in calls
+    assert [net_helper.IP_BIN, "addr", "add", "10.42.0.1/24", "dev", "cni0"] in calls
+
+
 def test_ensure_iptables_rule_inserts_missing_rule(monkeypatch) -> None:
     calls: list[list[str]] = []
 
