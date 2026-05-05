@@ -1100,6 +1100,102 @@ esac
     assert "AE_CRI_IMAGE_MIRROR_BACKEND=podman|nerdctl|docker" in proc.stderr
 
 
+def test_cri_image_mirror_ctr_repulls_cached_source_when_convert_content_is_missing(
+    tmp_path: Path,
+) -> None:
+    hosts_dir = tmp_path / "hosts.d"
+    hosts_dir.mkdir()
+    ctr_log = tmp_path / "ctr.log"
+    crictl_log = tmp_path / "crictl.log"
+    state_file = tmp_path / "convert-state"
+
+    fake_ctr = tmp_path / "ctr"
+    _write_executable(
+        fake_ctr,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_CTR_LOG"
+if [[ "${1:-}" == "images" && "${2:-}" == "convert" && "${3:-}" == "--help" ]]; then
+  exit 0
+fi
+args=("$@")
+if [[ "${1:-}" == "-n" ]]; then
+  args=("${@:3}")
+fi
+case "${args[0]:-} ${args[1]:-}" in
+  "images ls")
+    printf '%s\\n' "quay.io/coreos/etcd:v3.5.13"
+    exit 0
+    ;;
+  "images pull")
+    exit 0
+    ;;
+  "images convert")
+    if [[ ! -f "$FAKE_CONVERT_STATE" ]]; then
+      : >"$FAKE_CONVERT_STATE"
+      echo "ctr: content digest sha256:missing: not found" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  "images push"|"images delete")
+    exit 0
+    ;;
+  *)
+    echo "unexpected ctr args: ${args[*]}" >&2
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    fake_crictl = tmp_path / "crictl"
+    _write_executable(
+        fake_crictl,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_CRICTL_LOG"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_CTR_LOG"] = str(ctr_log)
+    env["FAKE_CRICTL_LOG"] = str(crictl_log)
+    env["FAKE_CONVERT_STATE"] = str(state_file)
+    env["AE_CRI_IMAGE_MIRROR_BACKEND"] = "ctr"
+    env["AE_CTR_NAMESPACE"] = "k8s.io"
+    env["AE_CTR_PLATFORM"] = "linux/amd64"
+    env["AE_CTR_HOSTS_DIR"] = str(hosts_dir)
+    env["AE_CRI_ENDPOINT"] = "unix:///tmp/fake-containerd.sock"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(CRI_IMAGE_MIRROR_SCRIPT),
+            "--source",
+            "quay.io/coreos/etcd:v3.5.13",
+            "--target",
+            "localhost:5001/coreos/etcd:v3.5.13",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    ctr_lines = ctr_log.read_text(encoding="utf-8").splitlines()
+    assert ctr_lines.count(
+        f"-n k8s.io images pull --platform linux/amd64 --hosts-dir {hosts_dir} quay.io/coreos/etcd:v3.5.13"
+    ) == 1
+    assert ctr_lines.count(
+        "-n k8s.io images convert --platform linux/amd64 quay.io/coreos/etcd:v3.5.13 localhost:5001/coreos/etcd:v3.5.13"
+    ) == 2
+    assert "[cri-image-mirror] source already cached: quay.io/coreos/etcd:v3.5.13" in proc.stdout
+    assert "refreshing ctr source content for quay.io/coreos/etcd:v3.5.13" in proc.stderr
+
+
 def test_build_cri_apishim_image_prefers_build_backend_env(tmp_path: Path) -> None:
     build_log = tmp_path / "build.log"
     crictl_log = tmp_path / "crictl.log"

@@ -174,6 +174,67 @@ def test_inference_stage_manifest_sets_runtime_class(tmp_path):
     assert mp_manifest.spec.runtime_class_name == "nvidia"
 
 
+def test_inference_mp_stage_manifest_mounts_model_path(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    ctrl = InferenceCellController(store)
+    manifest = _cell_manifest()
+    stage0 = StagePlacement(stage=0, site_id="site-a", node_id="node-a", gpu_indices=[0])
+    alloc = {
+        "master_addr": "10.255.0.10",
+        "master_port": 22000,
+        "api_port": 18080,
+    }
+
+    mp_manifest = ctrl._mp_stage_manifest(manifest, stage0, alloc)
+
+    assert mp_manifest.spec.volumes is not None
+    assert len(mp_manifest.spec.volumes) == 1
+    assert mp_manifest.spec.volumes[0].host_path == "/models/llama"
+    assert mp_manifest.spec.volumes[0].mount_path == "/models/llama"
+    assert mp_manifest.spec.volumes[0].read_only is True
+    assert mp_manifest.spec.args is not None
+    assert "python3 -m vllm.entrypoints.openai.api_server" in mp_manifest.spec.args[0]
+
+
+def test_inference_launcher_manifest_publishes_api_service_port(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    ctrl = InferenceCellController(store)
+    manifest = _cell_manifest()
+    stage0 = StagePlacement(stage=0, site_id="site-a", node_id="node-a", gpu_indices=[0])
+    alloc = {"api_port": 18080}
+
+    launcher = ctrl._ray_launcher_manifest(manifest, stage0, alloc)
+
+    assert launcher.spec.service is not None
+    assert launcher.spec.service.port == 18080
+    assert launcher.spec.service.target_port == 18080
+    assert launcher.spec.volumes is not None
+    assert len(launcher.spec.volumes) == 1
+    assert launcher.spec.volumes[0].host_path == "/models/llama"
+    assert launcher.spec.volumes[0].mount_path == "/models/llama"
+    assert launcher.spec.volumes[0].read_only is True
+    assert launcher.spec.args is not None
+    assert "python3 -m vllm.entrypoints.openai.api_server" in launcher.spec.args[0]
+
+
+def test_inference_ray_head_manifest_does_not_publish_api_service_port(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    ctrl = InferenceCellController(store)
+    manifest = _cell_manifest()
+    stage0 = StagePlacement(stage=0, site_id="site-a", node_id="node-a", gpu_indices=[0])
+    alloc = {
+        "api_port": 18080,
+        "master_addr": "10.255.0.10",
+        "member_fabric_ips": {"node-a": "10.250.0.10"},
+    }
+
+    ray_head = ctrl._ray_worker_manifest(manifest, stage0, alloc, leader=True)
+
+    assert ray_head.spec.service is None
+    assert ray_head.spec.health is None
+    assert ray_head.spec.volumes == []
+
+
 def test_inference_cell_joining_waits_for_leader_api_health(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ):

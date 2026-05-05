@@ -277,7 +277,7 @@ read_images() {
       jq -r '.images.edge[]?' "$MANIFEST"
       ;;
     all)
-      jq -r '[.images.core[]?, .images.edge[]?] | unique[]' "$MANIFEST"
+      jq -r '[.images.bootstrap[]?, .images.core[]?, .images.edge[]?] | unique[]' "$MANIFEST"
       ;;
   esac
 }

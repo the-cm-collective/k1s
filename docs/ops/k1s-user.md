@@ -33,6 +33,7 @@ We prioritize non‑root, user‑scoped trust for registries and services the k1
 
 - Containers/Registries (rootless, preferred)
   - Place CA certs under: `~/.config/containers/certs.d/<registry>/ca.crt` (Podman) so pulls/pushes trust the registry.
+  - Rootful helpers use `/etc/containers/certs.d/<registry>/ca.crt` (Podman) or `/etc/docker/certs.d/<registry>/ca.crt` (Docker).
 - System CA bundle (only when required)
   - Updating the system trust store requires root and is not gated by a group. Options:
     1) Sudo membership: add `k1s` to `sudo`/`wheel` (broad). Not recommended by default.

@@ -129,6 +129,34 @@ def test_result_to_dict_preserves_revision_on_pod_and_replica_states() -> None:
     assert payload["replica_states"][0]["revision"] == 3
 
 
+def test_resolve_portforward_target_prefers_host_port_mapping() -> None:
+    runtime = _RuntimeStub()
+    runtime.list_containers_info = lambda: [  # type: ignore[method-assign]
+        {
+            "name": "cell-a-single-ray-launcher-rev1-0",
+            "labels": {
+                "ae.pod_name": "cell-a-single-ray-launcher-rev1-0",
+                "ae.namespace": "default",
+            },
+            "pod_ip": "10.42.0.14",
+            "host_ip": "192.168.29.148",
+            "host_ports": [32080],
+            "port_map": {18080: 32080},
+        }
+    ]
+    handler = type("H", (), {"runtime": runtime})()
+
+    target = AgentHandler._resolve_portforward_target(
+        handler,
+        pod_id=None,
+        pod_name="cell-a-single-ray-launcher-rev1-0",
+        namespace="default",
+        port=18080,
+    )
+
+    assert target == ("192.168.29.148", 32080)
+
+
 def test_json_response_returns_false_on_broken_pipe() -> None:
     runtime = _RuntimeStub()
     handler = _JsonBodyHandler(

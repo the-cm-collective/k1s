@@ -635,18 +635,20 @@ class AgentHandler(BaseHTTPRequestHandler):
         host_ports = target.get("host_ports") or target.get("hostPorts") or []
         port_map = target.get("port_map") or target.get("portMap") or {}
         target_port = int(port)
-        if not pod_ip:
-            # If we only have host ports, try to map container port -> host port.
-            if isinstance(port_map, dict):
-                if port in port_map:
-                    target_port = int(port_map.get(port) or port)
-                elif str(port) in port_map:
-                    target_port = int(port_map.get(str(port)) or port)
-            if target_port == int(port) and host_ports:
-                try:
-                    target_port = int(host_ports[0])
-                except Exception:
-                    target_port = int(port)
+        # Prefer an advertised host-port mapping when the runtime provides one.
+        if isinstance(port_map, dict):
+            if port in port_map:
+                target_port = int(port_map.get(port) or port)
+                return (str(host_ip), int(target_port))
+            if str(port) in port_map:
+                target_port = int(port_map.get(str(port)) or port)
+                return (str(host_ip), int(target_port))
+        if host_ports:
+            try:
+                target_port = int(host_ports[0])
+                return (str(host_ip), int(target_port))
+            except Exception:
+                target_port = int(port)
         return (str(pod_ip) if pod_ip else str(host_ip), int(target_port))
 
 

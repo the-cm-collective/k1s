@@ -26,6 +26,15 @@ DEFAULT_APISHIM_ENV = ROOT / "state" / "profiles" / "k1s-core" / "apishim.env"
 DEFAULT_CONTROLLER_ENV = ROOT / "state" / "profiles" / "k1s-core" / "controller.env"
 DEFAULT_APISHIM_SERVER = "https://127.0.0.1:8445"
 DEFAULT_LANE_LOG_DIR = ROOT / "state" / "host-a-netfs-lane"
+ROOT_COMMAND_PATH = (
+    "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+PRESYNC_STALE_IMAGES = (
+    "docker.io/vllm/vllm-openai:latest",
+    "docker.io/vllm/vllm-openai:v0.6.2",
+    "docker.io/rayproject/ray:latest",
+)
 
 
 class LaneError(RuntimeError):
@@ -284,9 +293,15 @@ def resolve_controller_host_ip(args: argparse.Namespace) -> str:
 
 def build_controller_start_command(config: HostAConfig, controller_host_ip: str) -> str:
     env_pairs = [
+        ("HOME", "/root"),
+        ("LOGNAME", "root"),
+        ("PATH", ROOT_COMMAND_PATH),
+        ("USER", "root"),
         ("AE_DEV_LOCAL", "1"),
+        ("AE_INFERENCE_EXPERIMENTAL", "1"),
         ("AE_RUNTIME_BACKEND", "cri"),
         ("AE_INFRA_BACKEND", "cri"),
+        ("AE_REMOTE_RUNTIME_ENSURE_TIMEOUT", "180"),
         ("AE_CRI_RUNTIME_HANDLER", "runc"),
         ("AE_APISHIM_MODE", "cri"),
         ("AE_AGENT_API_PORT", "9110"),
@@ -302,7 +317,7 @@ def build_controller_start_command(config: HostAConfig, controller_host_ip: str)
     env_text = " ".join(f"{key}={shlex.quote(value)}" for key, value in env_pairs)
     return (
         f"cd {shlex.quote(str(config.repo_root))} && "
-        f"nohup sudo -E env {env_text} make k1s-core-cri "
+        f"nohup sudo env -i {env_text} bash ./scripts/dev/run_profile.sh k1s-core "
         f"> {shlex.quote(str(config.controller_log))} 2>&1 </dev/null &"
     )
 
@@ -399,6 +414,7 @@ nohup sudo env \\
   AE_APISHIM_DSN="$apishim_dsn" \\
   AE_NODE_ID={shlex.quote(config.node_id)} \\
   AE_NODE_LABELS="role=hub,site=core-a,gpu.sku=titan-rtx" \\
+  AE_NODE_ADVERTISE_IP="${{guest_ip}}" \\
   AE_POD_CIDR=10.42.0.0/24 \\
   AE_CNI_SUBNET=10.42.0.0/24 \\
   AE_ROSENPASS_ENABLED=0 \\
@@ -654,6 +670,49 @@ def sync_repo(config: HostAConfig, guest_ip: str, *, dry_run: bool) -> None:
         f"{config.guest_user}@{guest_ip}:{config.guest_repo}/",
     ]
     run_cmd(rsync_cmd, cwd=config.repo_root, dry_run=dry_run)
+
+
+def build_guest_presync_cleanup_script() -> str:
+    image_lines = "\n".join(f'for_image {shlex.quote(image)}' for image in PRESYNC_STALE_IMAGES)
+    return f"""set -euo pipefail
+echo "[guest-presync-cleanup] before:"
+df -h / /tmp /var/lib/containerd || true
+sudo rm -f /tmp/*-core-seed-cri-seed-images.oci.tar || true
+
+for_image() {{
+  local image="$1"
+  local ids=""
+  ids="$(sudo crictl ps -a --image "$image" -q 2>/dev/null || true)"
+  if [[ -n "$ids" ]]; then
+    sudo crictl rm -f $ids >/dev/null 2>&1 || true
+  fi
+  sudo ctr -n k8s.io images rm --sync "$image" >/dev/null 2>&1 || true
+}}
+
+{image_lines}
+
+avail_kb="$(df -Pk / | awk 'NR==2 {{print $4}}')"
+if [[ -n "$avail_kb" && "$avail_kb" -lt 4194304 ]]; then
+  echo "[guest-presync-cleanup] low disk after targeted cleanup, purging CRI namespace"
+  all_ids="$(sudo crictl ps -a -q 2>/dev/null || true)"
+  if [[ -n "$all_ids" ]]; then
+    sudo crictl rm -f $all_ids >/dev/null 2>&1 || true
+  fi
+  all_refs="$(sudo ctr -n k8s.io images ls -q 2>/dev/null || true)"
+  if [[ -n "$all_refs" ]]; then
+    sudo ctr -n k8s.io images rm --sync $all_refs >/dev/null 2>&1 || true
+  fi
+fi
+
+echo "[guest-presync-cleanup] after:"
+df -h / /tmp /var/lib/containerd || true
+sudo du -sh /var/lib/containerd 2>/dev/null || true
+"""
+
+
+def presync_guest_cleanup(config: HostAConfig, guest_ip: str, *, dry_run: bool) -> None:
+    script = build_guest_presync_cleanup_script()
+    run_remote_script(config, guest_ip, script, dry_run=dry_run)
 
 
 def ssh_base_args(config: HostAConfig) -> list[str]:
@@ -955,6 +1014,7 @@ def do_resume(args: argparse.Namespace) -> int:
         )
 
     if not args.skip_sync:
+        presync_guest_cleanup(config, guest_ip, dry_run=args.dry_run)
         sync_repo(config, guest_ip, dry_run=args.dry_run)
 
     if not args.skip_node:
@@ -996,6 +1056,7 @@ def do_rebuild(args: argparse.Namespace) -> int:
     log(f"controller_host_ip={controller_host_ip}")
 
     if not args.skip_sync:
+        presync_guest_cleanup(config, guest_ip, dry_run=args.dry_run)
         sync_repo(config, guest_ip, dry_run=args.dry_run)
 
     if not args.skip_gpu_validate:

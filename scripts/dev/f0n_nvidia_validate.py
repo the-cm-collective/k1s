@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -30,14 +32,25 @@ import gpu_guest_passthrough_validate as egpu_validate
 DEFAULT_RUNS_DIR = ROOT / "runs"
 CRI_SEED_BUNDLE_SCRIPT = ROOT / "scripts" / "lab" / "vm" / "image_seed_bundle.sh"
 CRI_SEED_MANIFEST = ROOT / "lab" / "variants" / "cri_seed_images.lock.json"
-CRI_SEED_CORE_PROFILE = "core"
+CRI_SEED_VALIDATION_PROFILE = "all"
 HOST_A_CELL_LANES = frozenset({"cell-a-single", "cell-ab-pp2-ray", "cell-ab-pp2-mp"})
+DEFAULT_TEST_MODEL_ID = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+FAST_TEST_MODEL_ID = "HuggingFaceTB/SmolLM2-360M-Instruct"
+DEFAULT_TEST_VLLM_IMAGE = "docker.io/vllm/vllm-openai:v0.6.2"
+DEFAULT_SEEDED_VLLM_IMAGE = "docker.io/vllm/vllm-openai:latest"
 
 
 @dataclass(frozen=True)
 class CellLane:
     name: str
     manifest: Path
+
+
+@dataclass(frozen=True)
+class TestModelSpec:
+    model_id: str
+    revision: str | None
+    local_path: str
 
 
 CELL_LANES = (
@@ -97,6 +110,7 @@ def build_plan(
                 "name": lane.name,
                 "manifest": str(lane.manifest),
                 "artifacts": {
+                    "rendered_manifest": str(cell_root / "manifest-rendered.yaml"),
                     "apply": str(cell_root / "apply.txt"),
                     "status_initial": str(cell_root / "status-initial.json"),
                     "events_initial": str(cell_root / "events-initial.txt"),
@@ -113,6 +127,9 @@ def build_plan(
     return {
         "run_id": run_id,
         "run_root": str(run_root),
+        "artifacts": {
+            "model_bootstrap": str(run_root / "ae" / "model-bootstrap.json"),
+        },
         "inventory": {
             "nodes": str(run_root / "ae" / "nodes.json"),
             "plan": str(run_root / "plan.json"),
@@ -209,6 +226,32 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional controller env file used to seed AE_STATE_* for `ae` CLI calls.",
     )
+    collect.add_argument(
+        "--test-model-id",
+        default=DEFAULT_TEST_MODEL_ID,
+        help=(
+            "Public instruct model downloaded onto the Host A guest for this test workflow. "
+            f"Fast fallback: {FAST_TEST_MODEL_ID}."
+        ),
+    )
+    collect.add_argument(
+        "--test-model-revision",
+        default="",
+        help="Optional Hugging Face revision for the test model.",
+    )
+    collect.add_argument(
+        "--test-model-local-path",
+        default="",
+        help="Absolute guest path used for both download staging and MODEL_PATH mount.",
+    )
+    collect.add_argument(
+        "--test-vllm-image",
+        default=DEFAULT_TEST_VLLM_IMAGE,
+        help=(
+            "Pinned vLLM image used for Host A inference workload validation. "
+            "Defaults to a CUDA 12.1-era image compatible with the current Host A driver lane."
+        ),
+    )
     egpu_validate.add_target_args(collect)
     return parser.parse_args()
 
@@ -291,6 +334,8 @@ def _ae_env(controller_env: Path | None = None) -> dict[str, str]:
             value = str(payload.get(key) or "").strip()
             if value and not str(env.get(key) or "").strip():
                 env[key] = value
+    if not str(env.get("AE_INFERENCE_EXPERIMENTAL") or "").strip():
+        env["AE_INFERENCE_EXPERIMENTAL"] = "1"
     return env
 
 
@@ -362,6 +407,79 @@ def _cell_health_url(api_endpoint: str) -> str:
     return urlunsplit((parts.scheme or "http", parts.netloc, health_path, "", ""))
 
 
+def _default_test_model_local_path(model_id: str) -> str:
+    base = str(model_id or "").strip().rsplit("/", 1)[-1].casefold()
+    slug = re.sub(r"[^a-z0-9._-]+", "-", base).strip("-") or "model"
+    return f"/models/{slug}"
+
+
+def _selected_test_model(args: argparse.Namespace) -> TestModelSpec:
+    model_id = str(getattr(args, "test_model_id", DEFAULT_TEST_MODEL_ID) or "").strip()
+    revision = str(getattr(args, "test_model_revision", "") or "").strip() or None
+    local_path = str(getattr(args, "test_model_local_path", "") or "").strip()
+    if not local_path:
+        local_path = _default_test_model_local_path(model_id)
+    return TestModelSpec(model_id=model_id, revision=revision, local_path=local_path)
+
+
+def _selected_test_vllm_image(args: argparse.Namespace) -> str:
+    image = str(getattr(args, "test_vllm_image", DEFAULT_TEST_VLLM_IMAGE) or "").strip()
+    if not image:
+        return DEFAULT_TEST_VLLM_IMAGE
+    return image
+
+
+def _render_manifest_for_test_model(
+    *,
+    source_manifest: Path,
+    rendered_manifest: Path,
+    test_model: TestModelSpec,
+    test_vllm_image: str,
+) -> None:
+    payload = yaml.safe_load(source_manifest.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise SystemExit(f"unexpected manifest payload in {source_manifest}")
+    spec = payload.setdefault("spec", {})
+    if not isinstance(spec, dict):
+        raise SystemExit(f"manifest spec must be a mapping in {source_manifest}")
+    model = spec.setdefault("model", {})
+    if not isinstance(model, dict):
+        raise SystemExit(f"manifest model spec must be a mapping in {source_manifest}")
+    model["modelId"] = test_model.model_id
+    model["localPath"] = test_model.local_path
+    if test_model.revision:
+        model["revision"] = test_model.revision
+    else:
+        model.pop("revision", None)
+    executor = spec.setdefault("executor", {})
+    if not isinstance(executor, dict):
+        raise SystemExit(f"manifest executor spec must be a mapping in {source_manifest}")
+    executor["launcherImage"] = test_vllm_image
+    executor["mpImage"] = test_vllm_image
+    rendered_manifest.parent.mkdir(parents=True, exist_ok=True)
+    rendered_manifest.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _prepare_rendered_manifests(
+    *,
+    plan: dict[str, Any],
+    test_model: TestModelSpec,
+    test_vllm_image: str,
+) -> None:
+    for cell in plan.get("cells") or []:
+        source_manifest = Path(str(cell.get("manifest") or ""))
+        rendered_manifest = Path(str((cell.get("artifacts") or {}).get("rendered_manifest") or ""))
+        _render_manifest_for_test_model(
+            source_manifest=source_manifest,
+            rendered_manifest=rendered_manifest,
+            test_model=test_model,
+            test_vllm_image=test_vllm_image,
+        )
+
+
 def _read_status_payload(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -412,6 +530,11 @@ def _wait_for_cell_ready(
         time.sleep(max(0.1, float(poll_interval_s)))
 
 
+def _best_effort_delete_cell(*, ae: list[str], name: str, env: dict[str, str]) -> None:
+    # Reruns can inherit a stale FAILED cell object from a prior controller instance.
+    _run_command(cmd=[*ae, "cell", "delete", name], env=env)
+
+
 def _probe_cell_api(*, status_payload: dict[str, Any], path: Path) -> None:
     allocations = status_payload.get("allocations") or {}
     api_endpoint = str(allocations.get("api_endpoint") or "").strip()
@@ -446,13 +569,177 @@ def _cell_lanes_require_host_a_seed(plan: dict[str, Any]) -> bool:
     return any(str(cell.get("name") or "") in HOST_A_CELL_LANES for cell in plan.get("cells") or [])
 
 
-def _core_seed_images(manifest: Path = CRI_SEED_MANIFEST) -> list[str]:
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    return [str(image).strip() for image in payload["images"]["core"] if str(image).strip()]
+def _ordered_unique(images: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for image in images:
+        ref = str(image or "").strip()
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        ordered.append(ref)
+    return ordered
 
 
-def _seed_bundle_paths(run_id: str) -> tuple[str, Path]:
-    seed_run_id = f"{run_id}-core-seed"
+def _normalize_image_ref(image: str) -> str:
+    raw = str(image or "").strip()
+    if not raw:
+        return raw
+    if "/" not in raw:
+        return f"docker.io/library/{raw}"
+    host = raw.split("/", 1)[0]
+    if "." in host or ":" in host:
+        return raw
+    if raw.count("/") == 1:
+        return f"docker.io/{raw}"
+    return raw
+
+
+def _seed_manifest_payload(manifest: Path = CRI_SEED_MANIFEST) -> dict[str, Any]:
+    return json.loads(manifest.read_text(encoding="utf-8"))
+
+
+def _seed_manifest_image_groups(manifest: Path = CRI_SEED_MANIFEST) -> dict[str, list[str]]:
+    payload = _seed_manifest_payload(manifest)
+    images = payload.get("images") or {}
+    if not isinstance(images, dict):
+        raise SystemExit(f"invalid CRI seed manifest images payload in {manifest}")
+    return {
+        "bootstrap": _ordered_unique(
+            [_normalize_image_ref(str(image)) for image in list(images.get("bootstrap") or [])]
+        ),
+        "core": _ordered_unique(
+            [_normalize_image_ref(str(image)) for image in list(images.get("core") or [])]
+        ),
+        "edge": _ordered_unique(
+            [_normalize_image_ref(str(image)) for image in list(images.get("edge") or [])]
+        ),
+    }
+
+
+def _seed_manifest_for_images(
+    *,
+    run_root: Path,
+    filename: str,
+    image_groups: dict[str, list[str]],
+) -> Path:
+    payload = _seed_manifest_payload()
+    payload["images"] = {
+        "bootstrap": _ordered_unique(list(image_groups.get("bootstrap") or [])),
+        "core": _ordered_unique(list(image_groups.get("core") or [])),
+        "edge": _ordered_unique(list(image_groups.get("edge") or [])),
+    }
+    manifest_path = run_root / "ae" / filename
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return manifest_path
+
+
+def _rewrite_seed_manifest_images(
+    *,
+    manifest_path: Path,
+    image_groups: dict[str, list[str]],
+) -> None:
+    payload = _seed_manifest_payload(manifest_path)
+    payload["images"] = {
+        "bootstrap": _ordered_unique(list(image_groups.get("bootstrap") or [])),
+        "core": _ordered_unique(list(image_groups.get("core") or [])),
+        "edge": _ordered_unique(list(image_groups.get("edge") or [])),
+    }
+    manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _rendered_manifest_workload_images(plan: dict[str, Any]) -> list[str]:
+    images: list[str] = []
+    for cell in plan.get("cells") or []:
+        name = str(cell.get("name") or "")
+        if name not in HOST_A_CELL_LANES:
+            continue
+        rendered_manifest = Path(str((cell.get("artifacts") or {}).get("rendered_manifest") or ""))
+        if not rendered_manifest.is_file():
+            raise SystemExit(f"rendered manifest missing before validation seed restore: {rendered_manifest}")
+        payload = yaml.safe_load(rendered_manifest.read_text(encoding="utf-8")) or {}
+        spec = payload.get("spec") or {}
+        executor = spec.get("executor") or {}
+        for key in ("rayImage", "launcherImage", "mpImage"):
+            image = str(executor.get(key) or "").strip()
+            if image:
+                images.append(_normalize_image_ref(image))
+    return _ordered_unique(images)
+
+
+def _validation_seed_image_groups(*, plan: dict[str, Any], args: argparse.Namespace) -> dict[str, list[str]]:
+    base_groups = _seed_manifest_image_groups()
+    egpu_config = egpu_validate.make_config(args)
+    workload_images = _rendered_manifest_workload_images(plan)
+    core_images = _ordered_unique([_normalize_image_ref(egpu_config.compute_image), *workload_images])
+    return {
+        "bootstrap": list(base_groups["bootstrap"]),
+        "core": core_images,
+        "edge": [],
+    }
+
+
+def _required_seed_images(image_groups: dict[str, list[str]]) -> list[str]:
+    return _ordered_unique(
+        [
+            *list(image_groups.get("bootstrap") or []),
+            *list(image_groups.get("core") or []),
+            *list(image_groups.get("edge") or []),
+        ]
+    )
+
+
+def _filter_seed_image_groups(
+    *,
+    image_groups: dict[str, list[str]],
+    keep_refs: set[str],
+) -> dict[str, list[str]]:
+    return {
+        section: [image for image in refs if image in keep_refs]
+        for section, refs in image_groups.items()
+    }
+
+
+def _cleanup_guest_seed_staging(
+    *,
+    config: egpu_validate.ValidationConfig,
+    guest_ip: str,
+    before_refs: set[str],
+    required_images: list[str],
+) -> dict[str, Any]:
+    obsolete_vllm = sorted(
+        ref
+        for ref in before_refs
+        if ref.startswith("docker.io/vllm/vllm-openai:") and ref not in required_images
+    )
+    cleanup_parts = [
+        "rm -f /tmp/*-cri-seed-images.oci.tar",
+    ]
+    for image in obsolete_vllm:
+        cleanup_parts.append(
+            f"ids=$(crictl ps -a --image {shlex.quote(image)} -q 2>/dev/null || true); "
+            'if [[ -n "$ids" ]]; then crictl rm -f $ids >/dev/null 2>&1 || true; fi'
+        )
+        cleanup_parts.append(
+            f"ctr -n k8s.io images rm --sync {shlex.quote(image)} >/dev/null 2>&1 || true"
+        )
+    cleanup_parts.append("df -h / /tmp /var/lib/containerd || true")
+    proc = egpu_validate.run_guest_command(
+        egpu_validate.SubprocessRunner(),
+        config=config,
+        guest_ip=guest_ip,
+        command="sudo bash -lc " + shlex.quote("set -euo pipefail; " + "; ".join(cleanup_parts)),
+    )
+    return {
+        "removed_images": obsolete_vllm,
+        "detail": (proc.stdout or proc.stderr or "").strip(),
+        "status": "ok" if proc.returncode == 0 else "failed",
+    }
+
+
+def _seed_bundle_paths(run_id: str, *, label: str = "core-seed") -> tuple[str, Path]:
+    seed_run_id = f"{run_id}-{label}"
     bundle = ROOT / "state" / "lab-vm" / seed_run_id / "seeds" / "cri-seed-images.oci.tar"
     return seed_run_id, bundle
 
@@ -471,37 +758,170 @@ def _guest_image_refs(*, config: egpu_validate.ValidationConfig, guest_ip: str) 
     return {line.strip() for line in (proc.stdout or "").splitlines() if line.strip()}
 
 
-def _ensure_guest_core_seed_cache(*, args: argparse.Namespace, run_root: Path) -> None:
-    if not _cell_lanes_require_host_a_seed(
-        build_plan(
-            run_id=str(args.run_id),
-            runs_dir=Path(args.runs_dir),
-            cell_lane_names=list(args.cell_lane or []),
-        )
-    ):
-        return
+def _uses_lab_vm_hostshare(guest_target: dict[str, Any]) -> bool:
+    guest_repo = str(guest_target.get("guest_repo") or "").strip()
+    if guest_repo and guest_repo != egpu_validate.DEFAULT_GUEST_REPO:
+        return False
+    inventory = guest_target.get("inventory")
+    if inventory is None:
+        return guest_repo == egpu_validate.DEFAULT_GUEST_REPO
+    inventory_path = Path(inventory).resolve()
+    try:
+        inventory_path.relative_to((ROOT / "state" / "libvirt-host-a").resolve())
+        return False
+    except ValueError:
+        return True
 
+
+def _scp_base_command(config: egpu_validate.ValidationConfig) -> list[str]:
+    cmd = [
+        "scp",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+    ]
+    if config.ssh_key:
+        cmd.extend(["-i", config.ssh_key])
+    return cmd
+
+
+def _ensure_guest_test_model(
+    *,
+    args: argparse.Namespace,
+    run_root: Path,
+    test_model: TestModelSpec,
+) -> None:
+    plan = build_plan(
+        run_id=str(args.run_id),
+        runs_dir=Path(args.runs_dir),
+        cell_lane_names=list(args.cell_lane or []),
+    )
+    if not _cell_lanes_require_host_a_seed(plan):
+        return
     config = egpu_validate.make_config(args)
     if not (config.guest_ip or config.vm_name):
         return
-    guest_ip = egpu_validate.resolve_guest_ip(config)
-    required_images = _core_seed_images()
+    guest_target = egpu_validate.resolve_guest_target(config)
+    guest_ip = str(guest_target["guest_ip"])
+    guest_repo = str(guest_target.get("guest_repo") or config.guest_repo or "").strip()
+    if not guest_repo:
+        raise SystemExit("unable to determine guest repo path for model bootstrap")
+    guest_python = "python3"
+    guest_script = PurePosixPath(guest_repo) / "scripts" / "dev" / "bootstrap_inference_model.py"
+    inner_cmd = [
+        guest_python,
+        str(guest_script),
+        "--model-id",
+        test_model.model_id,
+        "--local-path",
+        test_model.local_path,
+        "--json",
+    ]
+    if test_model.revision:
+        inner_cmd.extend(["--revision", test_model.revision])
+    remote_cmd = "sudo bash -lc " + shlex.quote(" ".join(shlex.quote(part) for part in inner_cmd))
+    proc = egpu_validate.run_guest_command(
+        egpu_validate.SubprocessRunner(),
+        config=config,
+        guest_ip=guest_ip,
+        command=remote_cmd,
+    )
+    artifact_path = run_root / "ae" / "model-bootstrap.json"
+    detail = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        payload = {
+            "status": "failed",
+            "guest_ip": guest_ip,
+            "guest_repo": guest_repo,
+            "model_id": test_model.model_id,
+            "revision": test_model.revision,
+            "local_path": test_model.local_path,
+            "detail": detail,
+        }
+        _write_json(artifact_path, payload)
+        raise SystemExit(f"failed to bootstrap test model on guest -> {artifact_path}")
+    try:
+        result = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        payload = {
+            "status": "failed",
+            "guest_ip": guest_ip,
+            "guest_repo": guest_repo,
+            "model_id": test_model.model_id,
+            "revision": test_model.revision,
+            "local_path": test_model.local_path,
+            "detail": detail,
+            "error": f"JSONDecodeError: {exc}",
+        }
+        _write_json(artifact_path, payload)
+        raise SystemExit(f"invalid model bootstrap output -> {artifact_path}") from exc
+    payload = {
+        "status": str(result.get("status") or "ready"),
+        "guest_ip": guest_ip,
+        "guest_repo": guest_repo,
+        "results": [result],
+    }
+    _write_json(artifact_path, payload)
+    if payload["status"] != "ready":
+        raise SystemExit(f"guest test model bootstrap reported failure -> {artifact_path}")
+
+
+def _ensure_guest_validation_seed_cache(
+    *,
+    args: argparse.Namespace,
+    run_root: Path,
+    plan: dict[str, Any],
+) -> None:
+    config = egpu_validate.make_config(args)
+    if not (config.guest_ip or config.vm_name):
+        return
+    guest_target = egpu_validate.resolve_guest_target(config)
+    guest_ip = str(guest_target["guest_ip"])
+    image_groups = _validation_seed_image_groups(plan=plan, args=args)
+    seed_manifest = _seed_manifest_for_images(
+        run_root=run_root,
+        filename="validation-seed-manifest.json",
+        image_groups=image_groups,
+    )
+    required_images = _required_seed_images(image_groups)
     before_refs = _guest_image_refs(config=config, guest_ip=guest_ip)
     missing_before = [image for image in required_images if image not in before_refs]
-    artifact_path = run_root / "ae" / "core-seed-cache.json"
+    artifact_path = run_root / "ae" / "validation-seed-cache.json"
     if not missing_before:
         _write_json(
             artifact_path,
             {
                 "status": "ready",
                 "guest_ip": guest_ip,
-                "profile": CRI_SEED_CORE_PROFILE,
+                "profile": CRI_SEED_VALIDATION_PROFILE,
+                "manifest": str(seed_manifest),
                 "missing_before": [],
             },
         )
         return
 
-    seed_run_id, bundle = _seed_bundle_paths(str(args.run_id))
+    _rewrite_seed_manifest_images(
+        manifest_path=seed_manifest,
+        image_groups=_filter_seed_image_groups(
+            image_groups=image_groups,
+            keep_refs=set(missing_before),
+        ),
+    )
+    cleanup = {
+        "status": "skipped",
+        "detail": "",
+        "removed_images": [],
+    }
+    if not _uses_lab_vm_hostshare(guest_target):
+        cleanup = _cleanup_guest_seed_staging(
+            config=config,
+            guest_ip=guest_ip,
+            before_refs=before_refs,
+            required_images=required_images,
+        )
+
+    seed_run_id, bundle = _seed_bundle_paths(str(args.run_id), label="validation-seed")
     host_env = os.environ.copy()
     build_proc = _run_command(
         cmd=[
@@ -510,9 +930,9 @@ def _ensure_guest_core_seed_cache(*, args: argparse.Namespace, run_root: Path) -
             "--run-id",
             seed_run_id,
             "--manifest",
-            str(CRI_SEED_MANIFEST),
+            str(seed_manifest),
             "--profile",
-            CRI_SEED_CORE_PROFILE,
+            CRI_SEED_VALIDATION_PROFILE,
             "--output",
             str(bundle),
         ],
@@ -525,21 +945,56 @@ def _ensure_guest_core_seed_cache(*, args: argparse.Namespace, run_root: Path) -
             {
                 "status": "failed",
                 "guest_ip": guest_ip,
-                "profile": CRI_SEED_CORE_PROFILE,
+                "profile": CRI_SEED_VALIDATION_PROFILE,
                 "missing_before": missing_before,
                 "bundle": str(bundle),
+                "manifest": str(seed_manifest),
+                "cleanup": cleanup,
                 "detail": detail,
             },
         )
-        raise SystemExit(f"failed to build core seed bundle -> {artifact_path}")
+        raise SystemExit(f"failed to build validation seed bundle -> {artifact_path}")
 
-    guest_bundle = PurePosixPath("/mnt/host") / bundle.relative_to(ROOT)
-    import_inner = (
-        "mkdir -p /mnt/host && "
-        "mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host >/dev/null 2>&1 || true; "
-        f"bundle={shlex.quote(str(guest_bundle))}; "
-        'test -f "$bundle" && ctr -n k8s.io images import "$bundle"'
-    )
+    if _uses_lab_vm_hostshare(guest_target):
+        guest_bundle = PurePosixPath("/mnt/host") / bundle.relative_to(ROOT)
+        import_inner = (
+            "mkdir -p /mnt/host && "
+            "mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host >/dev/null 2>&1 || true; "
+            f"bundle={shlex.quote(str(guest_bundle))}; "
+            'test -f "$bundle" && ctr -n k8s.io images import --no-unpack "$bundle"'
+        )
+    else:
+        guest_bundle = PurePosixPath("/tmp") / f"{seed_run_id}-cri-seed-images.oci.tar"
+        copy_proc = _run_command(
+            cmd=[
+                *_scp_base_command(config),
+                str(bundle),
+                f"{config.ssh_user}@{guest_ip}:{guest_bundle}",
+            ],
+            env=host_env,
+        )
+        if copy_proc.returncode != 0:
+            detail = _capture_text(copy_proc).strip()
+            _write_json(
+                artifact_path,
+                {
+                    "status": "failed",
+                    "guest_ip": guest_ip,
+                    "profile": CRI_SEED_VALIDATION_PROFILE,
+                    "missing_before": missing_before,
+                    "bundle": str(bundle),
+                    "guest_bundle": str(guest_bundle),
+                    "manifest": str(seed_manifest),
+                    "cleanup": cleanup,
+                    "detail": detail,
+                },
+            )
+            raise SystemExit(f"failed to copy validation seed bundle to guest -> {artifact_path}")
+        import_inner = (
+            f"bundle={shlex.quote(str(guest_bundle))}; "
+            'test -f "$bundle" && ctr -n k8s.io images import --no-unpack "$bundle"; '
+            'status=$?; rm -f "$bundle"; exit "$status"'
+        )
     import_proc = egpu_validate.run_guest_command(
         egpu_validate.SubprocessRunner(),
         config=config,
@@ -553,14 +1008,16 @@ def _ensure_guest_core_seed_cache(*, args: argparse.Namespace, run_root: Path) -
             {
                 "status": "failed",
                 "guest_ip": guest_ip,
-                "profile": CRI_SEED_CORE_PROFILE,
+                "profile": CRI_SEED_VALIDATION_PROFILE,
                 "missing_before": missing_before,
                 "bundle": str(bundle),
                 "guest_bundle": str(guest_bundle),
+                "manifest": str(seed_manifest),
+                "cleanup": cleanup,
                 "detail": detail,
             },
         )
-        raise SystemExit(f"failed to import core seed bundle on guest -> {artifact_path}")
+        raise SystemExit(f"failed to import validation seed bundle on guest -> {artifact_path}")
 
     after_refs = _guest_image_refs(config=config, guest_ip=guest_ip)
     missing_after = [image for image in required_images if image not in after_refs]
@@ -570,15 +1027,17 @@ def _ensure_guest_core_seed_cache(*, args: argparse.Namespace, run_root: Path) -
         {
             "status": status,
             "guest_ip": guest_ip,
-            "profile": CRI_SEED_CORE_PROFILE,
+            "profile": CRI_SEED_VALIDATION_PROFILE,
             "bundle": str(bundle),
             "guest_bundle": str(guest_bundle),
+            "manifest": str(seed_manifest),
             "missing_before": missing_before,
             "missing_after": missing_after,
+            "cleanup": cleanup,
         },
     )
     if missing_after:
-        raise SystemExit(f"guest core seed cache still missing required images -> {artifact_path}")
+        raise SystemExit(f"guest validation seed cache still missing required images -> {artifact_path}")
 
 
 def run_collect(args: argparse.Namespace) -> int:
@@ -594,6 +1053,15 @@ def run_collect(args: argparse.Namespace) -> int:
         shutil.rmtree(run_root)
     run_root.mkdir(parents=True, exist_ok=True)
     _write_json(Path(plan["inventory"]["plan"]), plan)
+
+    test_model = _selected_test_model(args)
+    test_vllm_image = _selected_test_vllm_image(args)
+    _prepare_rendered_manifests(
+        plan=plan,
+        test_model=test_model,
+        test_vllm_image=test_vllm_image,
+    )
+    _ensure_guest_validation_seed_cache(args=args, run_root=run_root, plan=plan)
 
     phases: list[dict[str, Any]] = []
     egpu_summary: dict[str, Any] | None = None
@@ -631,13 +1099,14 @@ def run_collect(args: argparse.Namespace) -> int:
 
     env = _ae_env(controller_env=args.controller_env)
     ae = _ae_prefix(str(args.ae_bin))
-    _ensure_guest_core_seed_cache(args=args, run_root=run_root)
+    _ensure_guest_test_model(args=args, run_root=run_root, test_model=test_model)
     _run_capture(cmd=[*ae, "nodes", "--json"], path=Path(plan["inventory"]["nodes"]), env=env)
 
     for cell in plan["cells"]:
         artifacts = cell["artifacts"]
         name = str(cell["name"])
-        manifest = str(cell["manifest"])
+        manifest = str(artifacts["rendered_manifest"])
+        _best_effort_delete_cell(ae=ae, name=name, env=env)
         initial_status = _wait_for_cell_ready(
             ae=ae,
             manifest=manifest,

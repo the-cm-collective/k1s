@@ -2989,7 +2989,7 @@ class CRIRuntime(RuntimeAdapter):
                 ready = (
                     exit_code == 0 and status == "exited" if is_job else status == "running"
                 )
-            endpoint = self._endpoint_for_manifest(manifest, pod_ip)
+            endpoint = self._endpoint_for_manifest(manifest, pod_ip, replica_id=str(pod_name))
             states.append(
                 PodState(
                     pod_name=str(pod_name),
@@ -3021,9 +3021,13 @@ class CRIRuntime(RuntimeAdapter):
         pb2 = self._pb2()
         return getattr(status, "state", None) == pb2.ContainerState.CONTAINER_RUNNING
 
-    def _endpoint_for_manifest(self, manifest: AppManifest, pod_ip: str | None) -> str | None:
-        if not pod_ip:
-            return None
+    def _endpoint_for_manifest(
+        self,
+        manifest: AppManifest,
+        pod_ip: str | None,
+        *,
+        replica_id: str | None = None,
+    ) -> str | None:
         preferred_port = None
         try:
             if manifest.spec.health and manifest.spec.health.readiness:
@@ -3039,6 +3043,14 @@ class CRIRuntime(RuntimeAdapter):
                 preferred_port = int(manifest.spec.ports[0].container_port)
             except Exception:
                 preferred_port = None
+        if preferred_port is not None and replica_id:
+            port_map = self._port_assignments.get(str(replica_id), {})
+            host_port = port_map.get(preferred_port)
+            if host_port:
+                host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+                return f"{host}:{int(host_port)}"
+        if not pod_ip:
+            return None
         if preferred_port is None:
             return None
         return f"{pod_ip}:{preferred_port}"

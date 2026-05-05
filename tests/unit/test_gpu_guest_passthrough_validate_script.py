@@ -254,3 +254,55 @@ def test_gpu_guest_passthrough_validate_resolves_vm_name_from_inventory_and_writ
         "egpu_compute_smoke": "passed",
     }
     assert summary["detected"]["gpu"]["pci_bus_id"] == "0000:65:00.0"
+
+
+def test_gpu_guest_passthrough_validate_prefers_host_a_inventory_and_guest_repo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(gpu_guest_passthrough_validate, "ROOT", tmp_path)
+    inventory = tmp_path / "state" / "libvirt-host-a" / "k1s-core-a-gpu" / "inventory.json"
+    inventory.parent.mkdir(parents=True, exist_ok=True)
+    inventory.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "k1s-core-a-gpu",
+                    "ip": "192.0.2.44",
+                    "guest_repo": "/home/ae/k1s",
+                    "guest_user": "ae",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = _make_config(
+        tmp_path,
+        guest_ip=None,
+        vm_name="k1s-core-a-gpu",
+        inventory=None,
+        guest_repo=None,
+    )
+    runner = FakeRunner(
+        {
+            "nvidia-smi --query-gpu=name,memory.total,pci.bus_id": _completed(
+                [],
+                stdout="TITAN RTX, 24576 MiB, 0000:65:00.0\n",
+            ),
+            "/home/ae/k1s/scripts/cri_preflight.sh": _completed([], stdout=_runtime_ready_output()),
+            "/home/ae/k1s/scripts/cri_cuda_vectoradd_smoke.sh": _completed(
+                [], stdout=_compute_success_output()
+            ),
+        }
+    )
+
+    payload = gpu_guest_passthrough_validate.run_validation(config, runner=runner)
+    runtime = json.loads(Path(payload["artifacts"]["cri_runtime"]).read_text(encoding="utf-8"))
+    compute = json.loads(Path(payload["artifacts"]["compute_smoke"]).read_text(encoding="utf-8"))
+    summary = json.loads(Path(payload["artifacts"]["summary"]).read_text(encoding="utf-8"))
+
+    assert payload["status"] == "passed"
+    assert summary["guest"]["guest_ip"] == "192.0.2.44"
+    assert summary["guest"]["inventory"] == str(inventory)
+    assert summary["guest"]["guest_repo"] == "/home/ae/k1s"
+    assert "/home/ae/k1s/scripts/cri_preflight.sh" in runtime["command"]
+    assert "/home/ae/k1s/scripts/cri_cuda_vectoradd_smoke.sh" in compute["command"]

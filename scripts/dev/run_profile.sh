@@ -512,8 +512,11 @@ ensure_cri_registry_defaults() {
         elif command -v nerdctl >/dev/null 2>&1; then
           export AE_CRI_IMAGE_MIRROR_BACKEND=nerdctl
           echo "[cri] defaulting AE_CRI_IMAGE_MIRROR_BACKEND=nerdctl on NixOS for managed registry TLS" >&2
+        elif command -v ctr >/dev/null 2>&1 && ctr images convert --help >/dev/null 2>&1; then
+          export AE_CRI_IMAGE_MIRROR_BACKEND=ctr
+          echo "[cri] defaulting AE_CRI_IMAGE_MIRROR_BACKEND=ctr on NixOS for managed registry TLS" >&2
         else
-          echo "error: NixOS strict-CRI mirror/preload requires podman, docker, or nerdctl when AE_CRI_IMAGE_MIRROR_BACKEND is unset." >&2
+          echo "error: NixOS strict-CRI mirror/preload requires podman, docker, nerdctl, or ctr when AE_CRI_IMAGE_MIRROR_BACKEND is unset." >&2
           echo "hint: install one of those tools or set AE_CRI_IMAGE_MIRROR_BACKEND explicitly." >&2
           exit 1
         fi
@@ -741,6 +744,31 @@ ensure_cri_registry_trust() {
   local auto_restart="${AE_CRI_REGISTRY_AUTO_RESTART:-1}"
   local restart_selected=0
   local trust_args=(--host "$registry_host" --scheme "$scheme")
+  local mirror_backend="${AE_CRI_IMAGE_MIRROR_BACKEND:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}"
+  local build_backend="${AE_CRI_IMAGE_BUILD_BACKEND:-${AE_CRI_LOCAL_BUILD_BACKEND:-}}"
+  local podman_trust_selected=0
+  local docker_trust_selected=0
+
+  for backend in "$mirror_backend" "$build_backend"; do
+    case "$backend" in
+      podman)
+        if [[ "$podman_trust_selected" -eq 0 ]]; then
+          if [[ "$EUID" -eq 0 ]]; then
+            trust_args+=(--podman-root)
+          elif [[ -n "${HOME:-}" ]]; then
+            trust_args+=(--podman-user-home "$HOME")
+          fi
+          podman_trust_selected=1
+        fi
+        ;;
+      docker)
+        if [[ "$docker_trust_selected" -eq 0 ]]; then
+          trust_args+=(--docker)
+          docker_trust_selected=1
+        fi
+        ;;
+    esac
+  done
 
   if [[ "$scheme_changed" -eq 1 ]]; then
     if is_truthy "$auto_restart"; then

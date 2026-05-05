@@ -113,8 +113,6 @@ scripts/lab/vm/labctl.sh image verify --variant gpu
 python scripts/dev/gpu_guest_passthrough_validate.py validate \
   --run-id "$RUN_ID" \
   --vm-name k1s-core-a-gpu \
-  --inventory state/libvirt-host-a/k1s-core-a-gpu/inventory.json \
-  --guest-repo /mnt/host \
   --expected-gpu "TITAN RTX" \
   --min-vram-gib 24
 ```
@@ -122,7 +120,7 @@ python scripts/dev/gpu_guest_passthrough_validate.py validate \
 Current smoke-image baseline
 - The validator default compute image is `nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1` for the current Host A guest driver stack.
 
-If the repo is not mounted at `/mnt/host`, pass the checked-out path that exists inside the guest with `--guest-repo`. A practical fallback is to sync `scripts/` into `/home/ae/k1s` and run the validator with `--guest-repo /home/ae/k1s`.
+The validator now prefers `state/libvirt-host-a/<vm>/inventory.json` automatically and uses the guest repo recorded there. Keep `--inventory` and `--guest-repo` for overrides or ad hoc guests. A practical fallback is to sync `scripts/` into `/home/ae/k1s` and run the validator with `--guest-repo /home/ae/k1s`.
 
 Do not continue to `make k1s-core-node` until this validator passes.
 

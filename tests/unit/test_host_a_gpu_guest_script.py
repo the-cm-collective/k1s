@@ -237,6 +237,32 @@ def test_render_network_config_uses_primary_and_management_macs(tmp_path: Path) 
     assert text.count("dhcp4: true") == 2
 
 
+def test_inventory_payload_includes_guest_repo_and_user(tmp_path: Path) -> None:
+    config = _make_config(tmp_path, guest_repo="/home/ae/k1s", guest_user="ae")
+
+    payload = host_a_gpu_guest.inventory_payload(
+        config,
+        {
+            "primary_ip": "192.168.29.148",
+            "management_ip": "192.168.122.202",
+            "interfaces": [],
+        },
+    )
+
+    assert payload == [
+        {
+            "name": "k1s-core-a-gpu",
+            "ip": "192.168.29.148",
+            "primary_ip": "192.168.29.148",
+            "management_ip": "192.168.122.202",
+            "interfaces": [],
+            "execution_model": "linux_guest_passthrough",
+            "guest_repo": "/home/ae/k1s",
+            "guest_user": "ae",
+        }
+    ]
+
+
 def test_create_overlay_uses_repo_gpu_image_as_backing_file(tmp_path: Path) -> None:
     config = _make_config(tmp_path, primary_nic_bdf=None, primary_nic_mac=None, gpu_bdf=None, gpu_audio_bdf=None)
     runner = FakeRunner()

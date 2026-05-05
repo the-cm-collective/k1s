@@ -929,6 +929,15 @@ class InferenceCellController:
     def _env_list(self, values: dict[str, str | int]) -> list[dict[str, str]]:
         return [{"name": str(k), "value": str(v)} for k, v in values.items()]
 
+    def _model_volume(self, model_path: str) -> list[dict[str, object]]:
+        return [
+            {
+                "hostPath": str(model_path),
+                "mountPath": str(model_path),
+                "readOnly": True,
+            }
+        ]
+
     def _workload_manifest(
         self,
         *,
@@ -939,7 +948,9 @@ class InferenceCellController:
         args: list[str],
         env: dict[str, str | int],
         api_port: int | None = None,
+        publish_service_port: bool = False,
         runtime_class_name: str | None = None,
+        volumes: list[dict[str, object]] | None = None,
     ) -> AppManifest:
         payload: dict = {
             "apiVersion": "ae.dev/v1alpha1",
@@ -953,12 +964,16 @@ class InferenceCellController:
                 "env": self._env_list(env),
             },
         }
+        if volumes:
+            payload["spec"]["volumes"] = list(volumes)
         if api_port:
             payload["spec"]["ports"] = [{"name": "http", "containerPort": int(api_port)}]
             payload["spec"]["health"] = {
                 "readiness": {"httpGet": {"path": "/health", "port": int(api_port)}},
                 "liveness": {"httpGet": {"path": "/health", "port": int(api_port)}},
             }
+            if publish_service_port:
+                payload["spec"]["service"] = {"port": int(api_port), "targetPort": int(api_port)}
         if runtime_class_name:
             payload["spec"]["runtimeClassName"] = str(runtime_class_name)
         return AppManifest.model_validate(payload)
@@ -987,7 +1002,7 @@ class InferenceCellController:
         is_leader = int(placement.stage) == int(manifest.spec.rendezvous.master_stage)
         args = [
             (
-                "python -m vllm.entrypoints.openai.api_server "
+                "python3 -m vllm.entrypoints.openai.api_server "
                 '--model "$MODEL_PATH" '
                 "--distributed-executor-backend mp "
                 '--tensor-parallel-size "$TP" '
@@ -1021,6 +1036,7 @@ class InferenceCellController:
             env=env,
             api_port=(api_port if is_leader else None),
             runtime_class_name=runtime_class_name,
+            volumes=self._model_volume(model_path),
         )
 
     def _ray_worker_manifest(
@@ -1073,7 +1089,6 @@ class InferenceCellController:
             command=["/bin/sh", "-lc"],
             args=[base_cmd],
             env=env,
-            api_port=(int(alloc.get("api_port") or 0) if leader else None),
             runtime_class_name=runtime_class_name,
         )
 
@@ -1089,7 +1104,7 @@ class InferenceCellController:
         pp = int(manifest.spec.parallelism.pp)
         api_port = int(alloc.get("api_port") or 0)
         cmd = (
-            "python -m vllm.entrypoints.openai.api_server "
+            "python3 -m vllm.entrypoints.openai.api_server "
             '--model "$MODEL_PATH" '
             "--distributed-executor-backend ray "
             '--tensor-parallel-size "$TP" '
@@ -1114,7 +1129,9 @@ class InferenceCellController:
             args=[cmd],
             env=env,
             api_port=api_port,
+            publish_service_port=True,
             runtime_class_name=runtime_class_name,
+            volumes=self._model_volume(str(manifest.spec.model.local_path)),
         )
 
     def _apply_manifest_to_node(

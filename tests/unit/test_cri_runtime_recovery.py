@@ -262,6 +262,36 @@ def test_cri_runtime_reports_original_grpc_import_error(monkeypatch) -> None:
         runtime._ensure_clients()
 
 
+def test_cri_runtime_prefers_advertised_host_port_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "docker.io/library/demo-shell:latest",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 18080}],
+                "health": {"readiness": {"httpGet": {"path": "/health", "port": 18080}}},
+                "service": {"port": 18080, "targetPort": 18080},
+            },
+        }
+    )
+    runtime._port_assignments["default/demo-rev1-0"] = {18080: 32080}
+    monkeypatch.setenv("AE_NODE_ADVERTISE_IP", "192.168.29.148")
+
+    endpoint = runtime._endpoint_for_manifest(
+        manifest,
+        "10.42.0.14",
+        replica_id="default/demo-rev1-0",
+    )
+
+    assert endpoint == "192.168.29.148:32080"
+
+
 def test_run_pod_recovers_once_from_stale_sandbox(monkeypatch) -> None:
     runtime = CRIRuntime(node_id="hub-1")
     manifest = _manifest()

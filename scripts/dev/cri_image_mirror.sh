@@ -34,6 +34,7 @@ cri_endpoint="${AE_CRI_ENDPOINT:-unix:///run/containerd/containerd.sock}"
 ctr_namespace="${AE_CTR_NAMESPACE:-k8s.io}"
 ctr_hosts_dir="${AE_CTR_HOSTS_DIR:-/etc/containerd/certs.d}"
 ctr_platform="${AE_CTR_PLATFORM:-}"
+ctr_source_pulled=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -96,12 +97,19 @@ resolve_engine() {
 
 engine_pull() {
   local image="$1"
-  if ! is_truthy "${AE_CRI_IMAGE_MIRROR_ALWAYS_PULL:-0}" && engine_has_image "$image"; then
-    echo "[cri-image-mirror] source already cached: ${image}"
-    return
-  fi
-
   if [[ "$engine" == "ctr" ]]; then
+    local force_pull=0
+    if is_truthy "${AE_CRI_IMAGE_MIRROR_ALWAYS_PULL:-0}"; then
+      force_pull=1
+    elif engine_has_image "$image"; then
+      echo "[cri-image-mirror] source already cached: ${image}"
+    else
+      force_pull=1
+    fi
+    if (( force_pull == 0 )); then
+      ctr_source_pulled=0
+      return
+    fi
     local -a cmd=(ctr -n "$ctr_namespace" images pull)
     if [[ -n "$ctr_platform" ]]; then
       cmd+=(--platform "$ctr_platform")
@@ -114,6 +122,11 @@ engine_pull() {
     fi
     cmd+=("$image")
     "${cmd[@]}"
+    ctr_source_pulled=1
+    return
+  fi
+  if ! is_truthy "${AE_CRI_IMAGE_MIRROR_ALWAYS_PULL:-0}" && engine_has_image "$image"; then
+    echo "[cri-image-mirror] source already cached: ${image}"
     return
   fi
   if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
@@ -234,7 +247,17 @@ ctr_prepare_push_ref() {
   fi
   ctr_delete_target_ref "pre-convert"
   echo "[cri-image-mirror] normalizing ctr source to ${ctr_platform}: ${target_image}"
-  ctr -n "$ctr_namespace" images convert --platform "$ctr_platform" "$source" "$target_image"
+  if ctr -n "$ctr_namespace" images convert --platform "$ctr_platform" "$source" "$target_image"; then
+    return
+  fi
+  if (( ctr_source_pulled == 0 )); then
+    echo "[cri-image-mirror] refreshing ctr source content for ${source}" >&2
+    AE_CRI_IMAGE_MIRROR_ALWAYS_PULL=1 engine_pull "$source"
+    ctr_delete_target_ref "retry-convert"
+    ctr -n "$ctr_namespace" images convert --platform "$ctr_platform" "$source" "$target_image"
+    return
+  fi
+  return 1
 }
 
 if ! has_registry_prefix "$target_image"; then

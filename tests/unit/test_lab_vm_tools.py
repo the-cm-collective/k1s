@@ -2691,6 +2691,11 @@ def test_cri_seed_lock_contains_core_and_edge_images() -> None:
     assert "docker.io/library/caddy:2.8" in payload["images"]["core"]
 
 
+def test_image_seed_bundle_all_profile_includes_bootstrap_core_and_edge() -> None:
+    text = CRI_SEED_BUNDLE_SCRIPT.read_text(encoding="utf-8")
+    assert '[.images.bootstrap[]?, .images.core[]?, .images.edge[]?] | unique[]' in text
+
+
 def test_cri_seed_lock_covers_default_ha_core_preload_images() -> None:
     payload = json.loads(CRI_SEED_LOCK_FILE.read_text(encoding="utf-8"))
     core_images = set(payload["images"]["core"])

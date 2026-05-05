@@ -42,7 +42,7 @@ class ValidationConfig:
     inventory: Path | None
     ssh_user: str
     ssh_key: str | None
-    guest_repo: str
+    guest_repo: str | None
     expected_gpu: str
     min_vram_gib: int
     expected_pci_bus_id: str | None
@@ -94,8 +94,8 @@ def add_target_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--guest-repo",
-        default=DEFAULT_GUEST_REPO,
-        help="Repo mount or checkout path inside the guest.",
+        default=None,
+        help="Repo mount or checkout path inside the guest. Defaults to inventory metadata or /mnt/host.",
     )
     parser.add_argument("--expected-gpu", default=DEFAULT_EXPECTED_GPU)
     parser.add_argument("--min-vram-gib", type=int, default=DEFAULT_MIN_VRAM_GIB)
@@ -138,6 +138,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def make_config(args: argparse.Namespace) -> ValidationConfig:
     ssh_key = str(args.ssh_key or "").strip() or None
+    guest_repo = None
+    if args.guest_repo is not None:
+        guest_repo = str(args.guest_repo).strip() or None
     return ValidationConfig(
         run_id=str(args.run_id),
         runs_dir=Path(args.runs_dir),
@@ -146,7 +149,7 @@ def make_config(args: argparse.Namespace) -> ValidationConfig:
         inventory=Path(args.inventory) if args.inventory else None,
         ssh_user=str(args.ssh_user or DEFAULT_SSH_USER).strip() or DEFAULT_SSH_USER,
         ssh_key=ssh_key,
-        guest_repo=str(args.guest_repo or DEFAULT_GUEST_REPO).strip() or DEFAULT_GUEST_REPO,
+        guest_repo=guest_repo,
         expected_gpu=str(args.expected_gpu or DEFAULT_EXPECTED_GPU).strip() or DEFAULT_EXPECTED_GPU,
         min_vram_gib=int(args.min_vram_gib),
         expected_pci_bus_id=str(args.expected_pci_bus_id or "").strip() or None,
@@ -265,21 +268,30 @@ def run_guest_command(
     return runner.run([*ssh_base_command(config, guest_ip), command])
 
 
-def resolve_guest_ip(config: ValidationConfig) -> str:
-    if config.guest_ip:
-        return config.guest_ip
-    if not config.vm_name:
-        raise ValidationError("either --guest-ip or --vm-name is required")
+def _normalized_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
-    inventory_paths: list[Path] = []
+
+def _inventory_search_paths(config: ValidationConfig) -> list[Path]:
     if config.inventory is not None:
-        inventory_paths.append(config.inventory)
-    else:
-        inventory_paths.extend(
-            sorted((ROOT / "state" / "lab-vm").glob("*/inventory.json"), reverse=True)
-        )
+        return [config.inventory]
+    if not config.vm_name:
+        return []
+    host_a_inventory = ROOT / "state" / "libvirt-host-a" / config.vm_name / "inventory.json"
+    return [
+        host_a_inventory,
+        *sorted((ROOT / "state" / "lab-vm").glob("*/inventory.json"), reverse=True),
+    ]
 
-    for inventory_path in inventory_paths:
+
+def _resolve_inventory_entry(
+    config: ValidationConfig,
+) -> tuple[Path | None, dict[str, Any] | None]:
+    if not config.vm_name:
+        return (config.inventory if config.inventory and config.inventory.is_file() else None, None)
+
+    for inventory_path in _inventory_search_paths(config):
         if not inventory_path.is_file():
             continue
         try:
@@ -291,16 +303,29 @@ def resolve_guest_ip(config: ValidationConfig) -> str:
         for entry in payload:
             if not isinstance(entry, dict):
                 continue
-            if str(entry.get("name") or "").strip() != config.vm_name:
+            if _normalized_text(entry.get("name")) != config.vm_name:
                 continue
-            guest_ip = str(entry.get("ip") or "").strip()
-            if guest_ip:
-                return guest_ip
+            return inventory_path, entry
+    return (config.inventory if config.inventory and config.inventory.is_file() else None, None)
 
-    raise ValidationError(
-        f"unable to resolve guest IP for vm_name={config.vm_name!r}; "
-        "pass --guest-ip or a matching --inventory path"
-    )
+
+def resolve_guest_target(config: ValidationConfig) -> dict[str, Any]:
+    inventory_path, inventory_entry = _resolve_inventory_entry(config)
+    guest_ip = config.guest_ip or _normalized_text((inventory_entry or {}).get("ip"))
+    if not guest_ip:
+        if not config.vm_name:
+            raise ValidationError("either --guest-ip or --vm-name is required")
+        raise ValidationError(
+            f"unable to resolve guest IP for vm_name={config.vm_name!r}; "
+            "pass --guest-ip or a matching --inventory path"
+        )
+    guest_repo = config.guest_repo or _normalized_text((inventory_entry or {}).get("guest_repo"))
+    return {
+        "guest_ip": guest_ip,
+        "guest_repo": guest_repo or DEFAULT_GUEST_REPO,
+        "inventory": inventory_path,
+        "inventory_entry": inventory_entry,
+    }
 
 
 def artifacts_for(config: ValidationConfig) -> dict[str, str]:
@@ -326,7 +351,7 @@ def build_plan(config: ValidationConfig) -> dict[str, Any]:
             "inventory": str(config.inventory) if config.inventory else None,
             "ssh_user": config.ssh_user,
             "ssh_key": config.ssh_key,
-            "guest_repo": config.guest_repo,
+            "guest_repo": config.guest_repo or DEFAULT_GUEST_REPO,
         },
         "expected": {
             "gpu_family": config.expected_gpu,
@@ -498,9 +523,12 @@ def run_validation(
     if config.min_vram_gib <= 0:
         raise ValidationError("--min-vram-gib must be > 0")
     runner = runner or SubprocessRunner()
-    guest_ip = resolve_guest_ip(config)
+    guest_target = resolve_guest_target(config)
+    guest_ip = str(guest_target["guest_ip"])
+    guest_repo_path = str(guest_target["guest_repo"])
+    resolved_inventory = guest_target["inventory"]
     artifacts = artifacts_for(config)
-    guest_repo = PurePosixPath(config.guest_repo)
+    guest_repo = PurePosixPath(guest_repo_path)
     preflight_path = str(guest_repo / "scripts" / "cri_preflight.sh")
     compute_smoke_path = str(guest_repo / "scripts" / "cri_cuda_vectoradd_smoke.sh")
 
@@ -568,8 +596,8 @@ def run_validation(
         "guest": {
             "guest_ip": guest_ip,
             "vm_name": config.vm_name,
-            "inventory": str(config.inventory) if config.inventory else None,
-            "guest_repo": config.guest_repo,
+            "inventory": str(resolved_inventory) if resolved_inventory else None,
+            "guest_repo": guest_repo_path,
         },
         "expected": {
             "gpu_family": config.expected_gpu,

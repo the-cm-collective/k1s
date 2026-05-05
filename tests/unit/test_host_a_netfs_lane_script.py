@@ -95,10 +95,18 @@ def test_build_controller_start_command_includes_nfs_env(tmp_path: Path) -> None
 
     command = host_a_netfs_lane.build_controller_start_command(config, "192.168.29.178")
 
+    assert "nohup sudo env -i " in command
+    assert "sudo -E" not in command
+    assert "HOME=/root" in command
+    assert "LOGNAME=root" in command
+    assert f"PATH={host_a_netfs_lane.shlex.quote(host_a_netfs_lane.ROOT_COMMAND_PATH)}" in command
+    assert "USER=root" in command
+    assert "AE_INFERENCE_EXPERIMENTAL=1" in command
+    assert "AE_REMOTE_RUNTIME_ENSURE_TIMEOUT=180" in command
     assert "AE_STORAGE_NFS_SERVER=192.168.29.178" in command
     assert "AE_STORAGE_NFS_PATH=/netfs" in command
     assert f"AE_STORAGE_NFS_HOSTPATH={host_a_netfs_lane.shlex.quote(str(config.nfs_export_path))}" in command
-    assert "make k1s-core-cri" in command
+    assert "bash ./scripts/dev/run_profile.sh k1s-core" in command
 
 
 def test_build_guest_bootstrap_script_includes_expected_node_env(tmp_path: Path) -> None:
@@ -124,8 +132,24 @@ def test_build_guest_bootstrap_script_includes_expected_node_env(tmp_path: Path)
     assert "pgrep -f unattended-upgrades" not in script
     assert "AE_ENABLE_NETFS=1" in script
     assert 'AE_NODE_ID=core-a--hub' in script
+    assert 'AE_NODE_ADVERTISE_IP="${guest_ip}"' in script
     assert 'AE_AGENT_ENDPOINT="http://${guest_ip}:9111"' in script
     assert "make k1s-core-node > /home/ae/k1s-core-node.log" in script
+
+
+def test_build_guest_presync_cleanup_script_targets_stale_inference_images() -> None:
+    script = host_a_netfs_lane.build_guest_presync_cleanup_script()
+
+    assert "rm -f /tmp/*-core-seed-cri-seed-images.oci.tar" in script
+    assert 'sudo crictl ps -a --image "$image" -q' in script
+    assert 'sudo crictl rm -f $ids' in script
+    assert 'sudo ctr -n k8s.io images rm --sync "$image"' in script
+    assert 'avail_kb="$(df -Pk / | awk \'NR==2 {print $4}\')"' in script
+    assert 'sudo crictl ps -a -q 2>/dev/null || true' in script
+    assert 'sudo ctr -n k8s.io images ls -q 2>/dev/null || true' in script
+    assert "docker.io/vllm/vllm-openai:latest" in script
+    assert "docker.io/vllm/vllm-openai:v0.6.2" in script
+    assert "docker.io/rayproject/ray:latest" in script
 
 
 def test_wait_for_guest_bootstrap_ready_checks_cloud_init_and_apt_idle(monkeypatch, tmp_path: Path) -> None:
@@ -340,6 +364,66 @@ def test_do_resume_restart_controller_waits_for_shutdown_before_restart(monkeypa
         "ensure_nfs",
         "start_controller",
         "wait_health",
+    ]
+
+
+def test_do_resume_runs_presync_cleanup_before_rsync(monkeypatch, tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    calls: list[str] = []
+
+    monkeypatch.setattr(host_a_netfs_lane, "load_config", lambda _args: config)
+    monkeypatch.setattr(host_a_netfs_lane, "ensure_lane_dirs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(host_a_netfs_lane, "require_cmd", lambda _name: None)
+    monkeypatch.setattr(host_a_netfs_lane, "resolve_controller_host_ip", lambda _args: "192.168.29.178")
+    monkeypatch.setattr(host_a_netfs_lane, "start_vm", lambda *_args, **_kwargs: calls.append("start_vm"))
+    monkeypatch.setattr(
+        host_a_netfs_lane,
+        "wait_for_guest_ip",
+        lambda *_args, **_kwargs: calls.append("wait_guest_ip") or "192.168.29.105",
+    )
+    monkeypatch.setattr(host_a_netfs_lane, "ensure_nfs_export", lambda *_args, **_kwargs: calls.append("ensure_nfs"))
+    monkeypatch.setattr(host_a_netfs_lane, "controller_healthy", lambda: True)
+    monkeypatch.setattr(
+        host_a_netfs_lane,
+        "presync_guest_cleanup",
+        lambda *_args, **_kwargs: calls.append("presync_cleanup"),
+    )
+    monkeypatch.setattr(
+        host_a_netfs_lane,
+        "sync_repo",
+        lambda *_args, **_kwargs: calls.append("sync_repo"),
+    )
+
+    rc = host_a_netfs_lane.do_resume(
+        argparse.Namespace(
+            env_file=tmp_path / "missing.env",
+            guest_key=tmp_path / "id_rsa",
+            guest_port=22,
+            apishim_env=tmp_path / "apishim.env",
+            controller_env=tmp_path / "controller.env",
+            server="https://127.0.0.1:8445",
+            restart_controller=False,
+            skip_controller=False,
+            skip_sync=False,
+            skip_node=True,
+            smoke=False,
+            dry_run=False,
+            guest_ip=None,
+            guest_ip_timeout=150,
+            controller_health_timeout=30,
+            node_ready_timeout=30,
+            overlay_timeout=30,
+            controller_host_ip=None,
+        )
+    )
+
+    assert rc == 0
+    assert calls == [
+        "start_vm",
+        "wait_guest_ip",
+        "ensure_nfs",
+        "presync_cleanup",
+        "sync_repo",
     ]
 
 

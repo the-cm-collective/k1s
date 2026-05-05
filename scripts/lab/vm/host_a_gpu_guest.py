@@ -955,6 +955,8 @@ def inventory_payload(config: GuestConfig, ip_report: dict[str, Any]) -> list[di
             "management_ip": ip_report.get("management_ip"),
             "interfaces": ip_report.get("interfaces", []),
             "execution_model": "linux_guest_passthrough",
+            "guest_repo": config.guest_repo,
+            "guest_user": config.guest_user,
         }
     ]
 

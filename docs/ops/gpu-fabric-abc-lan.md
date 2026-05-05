@@ -86,8 +86,6 @@ scripts/lab/vm/labctl.sh host-a-gpu ips --json
 python scripts/dev/gpu_guest_passthrough_validate.py validate \
   --run-id "$RUN_ID" \
   --vm-name k1s-core-a-gpu \
-  --inventory "state/libvirt-host-a/k1s-core-a-gpu/inventory.json" \
-  --guest-repo /home/ae/k1s \
   --expected-gpu "TITAN RTX" \
   --min-vram-gib 24
 ```
