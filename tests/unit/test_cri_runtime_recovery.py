@@ -28,6 +28,26 @@ def _manifest() -> AppManifest:
     )
 
 
+def _manifest_with_sidecar() -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "docker.io/library/demo-shell:latest",
+                "replicas": 1,
+                "containers": [
+                    {
+                        "name": "sidecar",
+                        "image": "docker.io/library/demo-sidecar:latest",
+                    }
+                ],
+            },
+        }
+    )
+
+
 class _FakeGrpcError(grpc.RpcError if grpc is not None else Exception):  # type: ignore[misc]
     def __init__(self, code, details: str) -> None:
         super().__init__()
@@ -292,6 +312,82 @@ def test_cri_runtime_prefers_advertised_host_port_endpoint(
     assert endpoint == "192.168.29.148:32080"
 
 
+def test_cri_runtime_service_ready_for_manifest_uses_http_readiness(monkeypatch) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "docker.io/library/demo-shell:latest",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 18080}],
+                "health": {"readiness": {"httpGet": {"path": "/health", "port": 18080}}},
+                "service": {"port": 18080, "targetPort": 18080},
+            },
+        }
+    )
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(cri_runtime_module, "urlopen", lambda *_args, **_kwargs: _Resp())
+
+    assert runtime._service_ready_for_manifest(manifest, "192.168.29.148:32080") is True
+
+
+def test_cri_runtime_build_states_marks_running_service_not_ready_when_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "docker.io/library/demo-shell:latest",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 18080}],
+                "health": {"readiness": {"httpGet": {"path": "/health", "port": 18080}}},
+                "service": {"port": 18080, "targetPort": 18080},
+            },
+        }
+    )
+    pod = SimpleNamespace(id="pod-1")
+    container = SimpleNamespace(id="ctr-1")
+    status = SimpleNamespace(
+        state="running",
+        started_at=None,
+        finished_at=None,
+        exit_code=None,
+    )
+
+    monkeypatch.setattr(runtime, "_list_pods", lambda _app=None: [pod])
+    monkeypatch.setattr(runtime, "_pod_labels", lambda _pod: {runtime.REVISION_LABEL: "1"})
+    monkeypatch.setattr(runtime, "_pod_name", lambda _pod: "default/demo-rev1-0")
+    monkeypatch.setattr(runtime, "_pod_status", lambda _pod_id: SimpleNamespace(network=SimpleNamespace(ip="10.42.0.14")))
+    monkeypatch.setattr(runtime, "_find_container", lambda _pod_id, container_label="main": container)
+    monkeypatch.setattr(runtime, "_container_status", lambda _container_id: status)
+    monkeypatch.setattr(runtime, "_container_state_name", lambda _status: "running")
+    monkeypatch.setattr(runtime, "_timestamp_dt", lambda _value: None)
+    monkeypatch.setattr(runtime, "_endpoint_for_manifest", lambda *_args, **_kwargs: "192.168.29.148:32080")
+    monkeypatch.setattr(runtime, "_service_ready_for_manifest", lambda _manifest, _endpoint: False)
+
+    states = runtime._build_states(manifest, 1)
+
+    assert len(states) == 1
+    assert states[0].status == "running"
+    assert states[0].ready is False
+
+
 def test_run_pod_recovers_once_from_stale_sandbox(monkeypatch) -> None:
     runtime = CRIRuntime(node_id="hub-1")
     manifest = _manifest()
@@ -329,6 +425,49 @@ def test_run_pod_recovers_once_from_stale_sandbox(monkeypatch) -> None:
 
     assert removed == ["pod-1"]
     assert created_for == ["pod-1", "pod-2"]
+
+
+def test_create_main_container_request_includes_log_directory_and_log_path(
+    monkeypatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest()
+    create_req = None
+    pod_meta = SimpleNamespace(
+        name="default/demo-rev1-0",
+        namespace="default",
+        uid="uid-123",
+        attempt=0,
+    )
+
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(
+        runtime,
+        "_container_config",
+        lambda *_args, **_kwargs: SimpleNamespace(log_path="main/0.log"),
+    )
+    monkeypatch.setattr(runtime, "_pod_status", lambda _pod_id: SimpleNamespace(metadata=pod_meta))
+
+    def _runtime_call(method, req):
+        nonlocal create_req
+        if method == "CreateContainer":
+            create_req = req
+            return SimpleNamespace(container_id="ctr-1")
+        if method == "StartContainer":
+            return None
+        raise AssertionError(f"unexpected runtime call: {method}")
+
+    monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
+
+    runtime._create_main_container(manifest, "pod-1", "default/demo-rev1-0", 1)
+
+    assert create_req is not None
+    assert str(create_req.config.log_path) == "main/0.log"
+    assert str(create_req.sandbox_config.log_directory) == runtime._pod_log_dir(
+        "default",
+        "default/demo-rev1-0",
+        "uid-123",
+    )
 
 
 def test_create_main_container_maps_removing_state_start_error_to_recoverable_pod_error(
@@ -501,6 +640,50 @@ def test_create_main_container_maps_reserved_name_error_to_reserved_container_er
 
     assert excinfo.value.container_id == "ctr-1"
     assert excinfo.value.container_name == "main_demo-rev1-0_default_uid_0"
+
+
+def test_ensure_sidecars_request_includes_log_directory_and_log_path(monkeypatch) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest_with_sidecar()
+    create_req = None
+    pod_meta = SimpleNamespace(
+        name="default/demo-rev1-0",
+        namespace="default",
+        uid="uid-123",
+        attempt=0,
+    )
+
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(runtime, "_pod_status", lambda _pod_id: SimpleNamespace(metadata=pod_meta))
+    monkeypatch.setattr(runtime, "_ensure_image", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runtime,
+        "_container_config_for_spec",
+        lambda *_args, **_kwargs: SimpleNamespace(log_path="sidecar/0.log"),
+    )
+
+    def _runtime_call(method, req):
+        nonlocal create_req
+        if method == "ListContainers":
+            return SimpleNamespace(containers=[])
+        if method == "CreateContainer":
+            create_req = req
+            return SimpleNamespace(container_id="ctr-sidecar")
+        if method == "StartContainer":
+            return None
+        raise AssertionError(f"unexpected runtime call: {method}")
+
+    monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
+
+    runtime._ensure_sidecars(manifest, "pod-1", "default/demo-rev1-0", 1)
+
+    assert create_req is not None
+    assert str(create_req.config.log_path) == "sidecar/0.log"
+    assert str(create_req.sandbox_config.log_directory) == runtime._pod_log_dir(
+        "default",
+        "default/demo-rev1-0",
+        "uid-123",
+    )
 
 
 def test_run_pod_recovers_from_reserved_sandbox_name_with_backoff(monkeypatch) -> None:

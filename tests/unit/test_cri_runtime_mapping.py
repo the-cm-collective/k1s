@@ -47,8 +47,13 @@ def test_cri_container_config_separates_command_args_and_mounts():
     main_cfg = runtime._container_config(manifest, "demo-rev1-0", 1, attempt=0)
     assert list(main_cfg.command) == ["/bin/app"]
     assert list(main_cfg.args) == ["--main"]
+    assert str(main_cfg.log_path) == "main/0.log"
+    assert not str(main_cfg.log_path).startswith("/")
     assert main_cfg.labels.get("ae.container") == "main"
     assert main_cfg.image.image == "docker.io/library/alpine:3.20"
+
+    retry_cfg = runtime._container_config(manifest, "demo-rev1-0", 1, attempt=2)
+    assert str(retry_cfg.log_path) == "main/2.log"
 
     sidecar = manifest.spec.containers[0]
     side_cfg = runtime._container_config_for_spec(
@@ -62,6 +67,8 @@ def test_cri_container_config_separates_command_args_and_mounts():
     )
     assert list(side_cfg.command) == ["/bin/side"]
     assert list(side_cfg.args) == ["--flag"]
+    assert str(side_cfg.log_path) == "sidecar/0.log"
+    assert not str(side_cfg.log_path).startswith("/")
     assert side_cfg.labels.get("ae.container") == "sidecar"
     assert side_cfg.image.image == "docker.io/library/alpine:3.20"
 
@@ -113,3 +120,8 @@ def test_run_pod_sets_runtime_handler_from_runtime_class_name(monkeypatch) -> No
     req = captured.get("req")
     assert req is not None
     assert str(getattr(req, "runtime_handler", "")) == "nvidia"
+    assert str(getattr(req.config, "log_directory", "")) == runtime._pod_log_dir(
+        "default",
+        "gpu-demo-rev1-0",
+        runtime._pod_uid("gpu-demo-rev1-0", "default"),
+    )

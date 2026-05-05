@@ -15,6 +15,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+from urllib.request import urlopen
 
 try:
     import grpc
@@ -2039,6 +2041,36 @@ class CRIRuntime(RuntimeAdapter):
             )
         return pod_meta
 
+    def _pod_sandbox_config_for_container_request(
+        self,
+        manifest: AppManifest,
+        pod_id: str,
+        replica_id: str,
+        *,
+        attempt: int = 0,
+    ) -> Any:
+        pb2 = self._pb2()
+        pod_meta = self._pod_metadata_for_container_request(
+            manifest,
+            pod_id,
+            replica_id,
+            attempt=attempt,
+        )
+        pod_name = str(getattr(pod_meta, "name", None) or replica_id)
+        namespace = str(getattr(pod_meta, "namespace", None) or DEFAULT_NAMESPACE)
+        uid = str(getattr(pod_meta, "uid", None) or self._pod_uid(pod_name, namespace))
+        return pb2.PodSandboxConfig(
+            metadata=pod_meta,
+            log_directory=self._pod_log_dir(namespace, pod_name, uid),
+        )
+
+    def _container_log_path(self, container_name: str, *, attempt: int = 0) -> str:
+        try:
+            attempt_value = int(attempt)
+        except Exception:
+            attempt_value = 0
+        return f"{container_name}/{attempt_value}.log"
+
     def _containerd_container_name(self, container_name: str, pod_meta: Any) -> str | None:
         pod_name = getattr(pod_meta, "name", None)
         namespace = getattr(pod_meta, "namespace", None)
@@ -2665,21 +2697,12 @@ class CRIRuntime(RuntimeAdapter):
                 attempt=0,
                 is_main=False,
             )
-            pod_meta = None
-            with contextlib.suppress(Exception):
-                pod_status = self._pod_status(str(pod_id))
-                pod_meta = getattr(pod_status, "metadata", None)
-            if not pod_meta or not getattr(pod_meta, "uid", None):
-                app_name = app_key_for_manifest(manifest)
-                ns, _ = split_app_key(app_name)
-                pod_uid = self._pod_uid(replica_id, ns)
-                pod_meta = pb2.PodSandboxMetadata(
-                    name=replica_id,
-                    namespace=ns or DEFAULT_NAMESPACE,
-                    uid=str(pod_uid),
-                    attempt=0,
-                )
-            pod_config = pb2.PodSandboxConfig(metadata=pod_meta)
+            pod_config = self._pod_sandbox_config_for_container_request(
+                manifest,
+                pod_id,
+                replica_id,
+                attempt=0,
+            )
             req = pb2.CreateContainerRequest(
                 pod_sandbox_id=str(pod_id),
                 config=config,
@@ -2704,14 +2727,12 @@ class CRIRuntime(RuntimeAdapter):
     ) -> None:
         pb2 = self._pb2()
         config = self._container_config(manifest, replica_id, revision, attempt=attempt)
-        pod_meta = self._pod_metadata_for_container_request(
+        pod_config = self._pod_sandbox_config_for_container_request(
             manifest,
             pod_id,
             replica_id,
             attempt=attempt,
         )
-        # containerd expects sandbox_config.metadata to be present.
-        pod_config = pb2.PodSandboxConfig(metadata=pod_meta)
         req = pb2.CreateContainerRequest(
             pod_sandbox_id=str(pod_id),
             config=config,
@@ -2828,6 +2849,7 @@ class CRIRuntime(RuntimeAdapter):
             "args": args,
             "envs": envs,
             "working_dir": str(working_dir or ""),
+            "log_path": self._container_log_path(str(name), attempt=attempt),
             "labels": labels,
             "mounts": mounts,
         }
@@ -2990,6 +3012,8 @@ class CRIRuntime(RuntimeAdapter):
                     exit_code == 0 and status == "exited" if is_job else status == "running"
                 )
             endpoint = self._endpoint_for_manifest(manifest, pod_ip, replica_id=str(pod_name))
+            if c_status and status == "running" and not is_job:
+                ready = self._service_ready_for_manifest(manifest, endpoint)
             states.append(
                 PodState(
                     pod_name=str(pod_name),
@@ -3016,6 +3040,41 @@ class CRIRuntime(RuntimeAdapter):
         if state == pb2.ContainerState.CONTAINER_CREATED:
             return "created"
         return "unknown"
+
+    def _service_ready_for_manifest(self, manifest: AppManifest, endpoint: str | None) -> bool:
+        health = getattr(manifest.spec, "health", None)
+        readiness = getattr(health, "readiness", None) if health is not None else None
+        if readiness is None:
+            return True
+        endpoint_text = str(endpoint or "").strip()
+        if not endpoint_text:
+            return False
+        timeout = max(1, int(getattr(readiness, "timeout_seconds", 1) or 1))
+        try:
+            if getattr(readiness, "http_get", None) is not None:
+                probe = readiness.http_get
+                raw = endpoint_text if "://" in endpoint_text else f"http://{endpoint_text}"
+                parts = urlsplit(raw)
+                scheme = parts.scheme or "http"
+                netloc = parts.netloc or parts.path
+                path = str(getattr(probe, "path", "/") or "/")
+                if not path.startswith("/"):
+                    path = f"/{path}"
+                with urlopen(f"{scheme}://{netloc}{path}", timeout=timeout) as resp:  # noqa: S310
+                    return 200 <= int(getattr(resp, "status", 0) or 0) < 300
+            if getattr(readiness, "tcp_socket", None) is not None:
+                probe = readiness.tcp_socket
+                raw = endpoint_text if "://" in endpoint_text else f"tcp://{endpoint_text}"
+                parts = urlsplit(raw)
+                host = parts.hostname
+                port = int(getattr(probe, "port", 0) or 0)
+                if not host or port <= 0:
+                    return False
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+        except Exception:
+            return False
+        return True
 
     def _is_container_running(self, status: Any) -> bool:
         pb2 = self._pb2()
