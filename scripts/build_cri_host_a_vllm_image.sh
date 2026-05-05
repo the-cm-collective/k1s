@@ -3,14 +3,14 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/build_cri_apishim_image.sh [options]
+Usage: scripts/build_cri_host_a_vllm_image.sh [options]
 
-Build apishim image locally, push to registry, and optionally CRI pull for verification.
+Build the Host A custom vLLM image locally, push to registry, and optionally CRI pull for verification.
 
 Options:
-  --image <ref>              Target image reference (default: AE_APISHIM_IMAGE or docker.io/library/k1s-apishim:dev)
+  --image <ref>              Target image reference (default: AE_HOST_A_VLLM_IMAGE or docker.io/library/k1s-vllm-openai:host-a-cu121-v2)
   --registry <host:port>     Registry host override (default: AE_CRI_REGISTRY or AE_REGISTRY_HOST)
-  --tag <name:tag>           Tag/path when --image is omitted (default: docker.io/library/k1s-apishim:dev)
+  --tag <name:tag>           Tag/path when --image is omitted (default: k1s-vllm-openai:host-a-cu121-v2)
   --engine <name>            Build/push backend (nerdctl|podman|docker)
   --push                     Push target image after build (default: enabled)
   --no-push                  Disable push
@@ -20,14 +20,21 @@ Options:
   -h, --help                 Show this help
 
 Environment:
-  AE_CRI_IMAGE_BUILD_BACKEND  Preferred build backend (nerdctl|podman|docker)
-  AE_CRI_LOCAL_BUILD_BACKEND  Legacy shared backend override (nerdctl|podman|docker)
+  AE_CRI_IMAGE_BUILD_BACKEND     Preferred build backend (nerdctl|podman|docker)
+  AE_CRI_LOCAL_BUILD_BACKEND     Legacy shared backend override (nerdctl|podman|docker)
+  AE_HOST_A_VLLM_BASE_IMAGE      Dockerfile base image (default: nvidia/cuda:12.1.0-devel-ubuntu22.04)
+  AE_HOST_A_VLLM_TORCH_VERSION   PyTorch version (default: 2.4.0)
+  AE_HOST_A_VLLM_TORCHVISION_VERSION torchvision version (default: 0.19.0)
+  AE_HOST_A_VLLM_TORCHAUDIO_VERSION torchaudio version (default: 2.4.0)
+  AE_HOST_A_VLLM_VERSION         vLLM package version (default: 0.6.2)
+  AE_HOST_A_TRANSFORMERS_VERSION transformers package version (default: 4.45.0)
+  AE_HOST_A_VLLM_GIT_REF         Legacy alias; leading "v" is stripped when deriving the package version
 USAGE
 }
 
-image="${AE_APISHIM_IMAGE:-}"
+image="${AE_HOST_A_VLLM_IMAGE:-}"
 registry="${AE_CRI_REGISTRY:-${AE_REGISTRY_HOST:-}}"
-tag="docker.io/library/k1s-apishim:dev"
+tag="docker.io/library/k1s-vllm-openai:host-a-cu121-v2"
 engine=""
 push=1
 pull_cri=1
@@ -137,27 +144,38 @@ resolve_engine() {
 }
 
 engine_push() {
-  local image="$1"
+  local target="$1"
   if is_truthy "${AE_CRI_REGISTRY_INSECURE:-0}"; then
     case "$engine" in
-      nerdctl) "$engine" --insecure-registry push "$image"; return ;;
-      podman) "$engine" push --tls-verify=false "$image"; return ;;
+      nerdctl) "$engine" --insecure-registry push "$target"; return ;;
+      podman) "$engine" push --tls-verify=false "$target"; return ;;
       docker) ;;
     esac
   fi
-  "$engine" push "$image"
+  "$engine" push "$target"
 }
 
 engine_build() {
-  local image="$1"
-  local dockerfile="${root_dir}/ops/images/apishim.Dockerfile"
+  local target="$1"
+  local dockerfile="${root_dir}/ops/images/host-a-vllm-openai.Dockerfile"
+  local vllm_version="${AE_HOST_A_VLLM_VERSION:-${AE_HOST_A_VLLM_GIT_REF:-0.6.2}}"
+  local transformers_version="${AE_HOST_A_TRANSFORMERS_VERSION:-4.45.0}"
+  vllm_version="${vllm_version#v}"
+  local -a build_args=(
+    --build-arg "BASE_IMAGE=${AE_HOST_A_VLLM_BASE_IMAGE:-nvidia/cuda:12.1.0-devel-ubuntu22.04}"
+    --build-arg "TORCH_VERSION=${AE_HOST_A_VLLM_TORCH_VERSION:-2.4.0}"
+    --build-arg "TORCHVISION_VERSION=${AE_HOST_A_VLLM_TORCHVISION_VERSION:-0.19.0}"
+    --build-arg "TORCHAUDIO_VERSION=${AE_HOST_A_VLLM_TORCHAUDIO_VERSION:-2.4.0}"
+    --build-arg "VLLM_VERSION=${vllm_version}"
+    --build-arg "TRANSFORMERS_VERSION=${transformers_version}"
+  )
   case "$engine" in
     podman|docker)
-      echo "[build-cri-apishim] using host networking for ${engine} build"
-      "$engine" build --network host -f "$dockerfile" -t "$image" "$root_dir"
+      echo "[build-host-a-vllm] using host networking for ${engine} build"
+      "$engine" build --network host -f "$dockerfile" -t "$target" "${build_args[@]}" "$root_dir"
       ;;
     *)
-      "$engine" build -f "$dockerfile" -t "$image" "$root_dir"
+      "$engine" build -f "$dockerfile" -t "$target" "${build_args[@]}" "$root_dir"
       ;;
   esac
 }
@@ -186,17 +204,17 @@ if [[ "$image" == localhost/* && "$image" != localhost:*/* ]]; then
 fi
 
 resolve_engine
-echo "[build-cri-apishim] backend=${engine} target=${image}"
+echo "[build-host-a-vllm] backend=${engine} target=${image}"
 
-if [[ ! -f "${root_dir}/ops/images/apishim.Dockerfile" ]]; then
-  echo "Missing Dockerfile: ${root_dir}/ops/images/apishim.Dockerfile" >&2
+if [[ ! -f "${root_dir}/ops/images/host-a-vllm-openai.Dockerfile" ]]; then
+  echo "Missing Dockerfile: ${root_dir}/ops/images/host-a-vllm-openai.Dockerfile" >&2
   exit 1
 fi
 
 engine_build "$image"
 
 if (( push == 1 )); then
-  echo "[build-cri-apishim] pushing ${image}"
+  echo "[build-host-a-vllm] pushing ${image}"
   engine_push "$image"
 fi
 
@@ -205,8 +223,8 @@ if (( pull_cri == 1 )); then
     echo "crictl not found; cannot perform CRI pull verification" >&2
     exit 1
   fi
-  echo "[build-cri-apishim] CRI pull verify ${image}"
+  echo "[build-host-a-vllm] CRI pull verify ${image}"
   crictl --runtime-endpoint "$cri_endpoint" pull "$image" >/dev/null
 fi
 
-echo "[build-cri-apishim] ready ${image}"
+echo "[build-host-a-vllm] ready ${image}"

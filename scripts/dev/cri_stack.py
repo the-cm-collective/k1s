@@ -952,7 +952,7 @@ def _start_apishim(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
-    image = os.getenv("AE_APISHIM_IMAGE", "localhost/k1s-apishim:dev")
+    image = os.getenv("AE_APISHIM_IMAGE", "docker.io/library/k1s-apishim:dev")
     rollout_key = _ensure_apishim_image_fresh(profile, image)
     cert_mount = "/etc/ae/apishim/tls.crt"
     key_mount = "/etc/ae/apishim/tls.key"

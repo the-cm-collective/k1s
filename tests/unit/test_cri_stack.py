@@ -607,7 +607,7 @@ def test_start_apishim_uses_expected_component_and_entrypoint(monkeypatch, tmp_p
     assert env["AE_APISHIM_ALLOW_ANON"] == "0"
     assert env["AE_APISHIM_ENABLE"] == "1"
     assert env["AE_APISHIM_SERVER"] == "https://127.0.0.1:8445"
-    assert fresh_calls == [("k1s-core", "localhost/k1s-apishim:dev")]
+    assert fresh_calls == [("k1s-core", "docker.io/library/k1s-apishim:dev")]
 
 
 def test_ensure_apishim_image_fresh_rebuilds_and_records_stamp(monkeypatch, tmp_path) -> None:
@@ -642,7 +642,7 @@ def test_ensure_apishim_image_fresh_rebuilds_and_records_stamp(monkeypatch, tmp_
 
     rollout_key = cri_stack._ensure_apishim_image_fresh(
         "k1s-core",
-        "localhost:5001/k1s-apishim:dev",
+        "docker.io/library/k1s-apishim:dev",
     )
 
     assert rollout_key == "rollout-5678"
@@ -651,8 +651,8 @@ def test_ensure_apishim_image_fresh_rebuilds_and_records_stamp(monkeypatch, tmp_
             "bash",
             "build.sh",
             "k1s-core-apishim",
-            "localhost:5001/k1s-apishim:dev",
-            "localhost:5001/k1s-apishim:dev",
+            "docker.io/library/k1s-apishim:dev",
+            "docker.io/library/k1s-apishim:dev",
         ]
     ]
     stamp_path = (
@@ -665,7 +665,7 @@ def test_ensure_apishim_image_fresh_rebuilds_and_records_stamp(monkeypatch, tmp_
         / "image-build.json"
     )
     payload = json.loads(stamp_path.read_text(encoding="utf-8"))
-    assert payload["image"] == "localhost:5001/k1s-apishim:dev"
+    assert payload["image"] == "docker.io/library/k1s-apishim:dev"
     assert payload["rollout_key"] == "rollout-5678"
 
 
@@ -728,11 +728,11 @@ def test_ensure_image_fail_policy_errors_without_pull(monkeypatch) -> None:
     monkeypatch.setenv("AE_CRI_IMAGE_POLICY", "fail")
     monkeypatch.setattr(cri_stack, "_image_exists", lambda _image: False)
     with pytest.raises(RuntimeError, match="required image is missing"):
-        cri_stack._ensure_image("localhost/k1s-apishim:dev", "k1s-core-apishim")
+        cri_stack._ensure_image("docker.io/library/k1s-apishim:dev", "k1s-core-apishim")
 
 
 def test_ensure_image_build_choice_runs_local_build_push(monkeypatch) -> None:
-    app_image = "localhost/k1s-apishim:dev"
+    app_image = "docker.io/library/k1s-apishim:dev"
     pull_calls: list[str] = []
     state = {"app_built": False}
 

@@ -92,9 +92,9 @@ def _make_config(tmp_path: Path, **overrides: object) -> host_a_gpu_guest.GuestC
         "machine": "pc-q35-5.1",
         "memory_mib": 16 * 1024,
         "hard_limit_mib": 18 * 1024,
-        "vcpus": 8,
+        "vcpus": 6,
         "cpu_sockets": 1,
-        "cpu_cores": 4,
+        "cpu_cores": 3,
         "cpu_threads": 2,
         "iothreads": 1,
         "hugepages_kib": 2048,
@@ -170,7 +170,7 @@ def test_render_domain_xml_emits_required_profile_and_hostdevs(tmp_path: Path) -
     assert cpu.attrib["mode"] == "host-passthrough"
     topology = root.find("./cpu/topology")
     assert topology is not None
-    assert topology.attrib == {"sockets": "1", "cores": "4", "threads": "2"}
+    assert topology.attrib == {"sockets": "1", "cores": "3", "threads": "2"}
 
     hard_limit = root.find("./memtune/hard_limit")
     assert hard_limit is not None
@@ -488,6 +488,17 @@ def test_env_sample_documents_required_local_keys() -> None:
     assert "HOST_A_GPU_GPU_PCI" in text
     assert "HOST_A_GPU_GPU_AUDIO_PCI" in text
     assert "state/host-a-gpu.env" in text
+    assert "# HOST_A_GPU_VCPUS=6" in text
+    assert "# HOST_A_GPU_CPU_CORES=3" in text
+
+
+def test_default_guest_shape_matches_conservative_host_a_profile() -> None:
+    assert host_a_gpu_guest.CONFIG_SPECS["memory_mib"].default == 16 * 1024
+    assert host_a_gpu_guest.CONFIG_SPECS["hard_limit_mib"].default == 18 * 1024
+    assert host_a_gpu_guest.CONFIG_SPECS["vcpus"].default == 6
+    assert host_a_gpu_guest.CONFIG_SPECS["cpu_sockets"].default == 1
+    assert host_a_gpu_guest.CONFIG_SPECS["cpu_cores"].default == 3
+    assert host_a_gpu_guest.CONFIG_SPECS["cpu_threads"].default == 2
 
 
 def test_labctl_exposes_host_a_gpu_entrypoint() -> None:

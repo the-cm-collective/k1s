@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -166,6 +167,11 @@ def make_config(args: argparse.Namespace) -> ValidationConfig:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _progress(message: str) -> None:
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(f"[egpu] {stamp} {message}", file=sys.stderr, flush=True)
 
 
 def _expected_vram_mib(min_vram_gib: int) -> int:
@@ -523,6 +529,7 @@ def run_validation(
     if config.min_vram_gib <= 0:
         raise ValidationError("--min-vram-gib must be > 0")
     runner = runner or SubprocessRunner()
+    _progress(f"egpu: resolving guest target run_id={config.run_id}")
     guest_target = resolve_guest_target(config)
     guest_ip = str(guest_target["guest_ip"])
     guest_repo_path = str(guest_target["guest_repo"])
@@ -531,7 +538,9 @@ def run_validation(
     guest_repo = PurePosixPath(guest_repo_path)
     preflight_path = str(guest_repo / "scripts" / "cri_preflight.sh")
     compute_smoke_path = str(guest_repo / "scripts" / "cri_cuda_vectoradd_smoke.sh")
+    _progress(f"egpu: guest resolved guest_ip={guest_ip} guest_repo={guest_repo_path}")
 
+    _progress("egpu: running attach check via nvidia-smi")
     attach_result = run_guest_command(
         runner,
         config=config,
@@ -539,7 +548,16 @@ def run_validation(
         command="nvidia-smi --query-gpu=name,memory.total,pci.bus_id --format=csv,noheader",
     )
     attach_check = build_attach_check(config=config, guest_ip=guest_ip, result=attach_result)
+    detected_gpu = next(iter((attach_check.get("detected") or {}).get("gpus") or []), None)
+    _progress(
+        "egpu: attach check "
+        f"status={attach_check['status']} "
+        f"gpu={((detected_gpu or {}).get('name') if isinstance(detected_gpu, dict) else None) or 'unknown'} "
+        f"vram_mib={((detected_gpu or {}).get('memory_total_mib') if isinstance(detected_gpu, dict) else None) or 'unknown'} "
+        f"pci={((detected_gpu or {}).get('pci_bus_id') if isinstance(detected_gpu, dict) else None) or 'unknown'}"
+    )
 
+    _progress("egpu: running CRI runtime preflight")
     runtime_result = run_guest_command(
         runner,
         config=config,
@@ -559,7 +577,15 @@ def run_validation(
         result=runtime_result,
         script_path=preflight_path,
     )
+    _progress(
+        "egpu: runtime preflight "
+        f"status={runtime_check['status']} "
+        f"runtime_ready={runtime_check.get('runtime_ready')} "
+        f"handler={config.runtime_handler} "
+        f"available={','.join(runtime_check.get('available_runtime_handlers') or []) or 'unknown'}"
+    )
 
+    _progress("egpu: running CUDA compute smoke")
     compute_result = run_guest_command(
         runner,
         config=config,
@@ -578,6 +604,12 @@ def run_validation(
         guest_ip=guest_ip,
         result=compute_result,
         script_path=compute_smoke_path,
+    )
+    _progress(
+        "egpu: compute smoke "
+        f"status={compute_check['status']} "
+        f"image={config.compute_image} "
+        f"handler={config.runtime_handler}"
     )
 
     summary = {
@@ -626,6 +658,7 @@ def run_validation(
         _write_json(Path(artifacts["cri_runtime"]), runtime_check)
         _write_json(Path(artifacts["compute_smoke"]), compute_check)
         _write_json(Path(artifacts["summary"]), summary)
+    _progress(f"egpu: complete status={summary['status']}")
     return summary
 
 

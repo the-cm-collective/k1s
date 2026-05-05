@@ -12,9 +12,13 @@ CNI_BIN_BOOTSTRAP_SCRIPT = ROOT / "scripts" / "cni_bin_bootstrap.sh"
 CRI_PREFLIGHT_SCRIPT = ROOT / "scripts" / "cri_preflight.sh"
 CRI_IMAGE_MIRROR_SCRIPT = ROOT / "scripts" / "dev" / "cri_image_mirror.sh"
 BUILD_CRI_APISHIM_IMAGE_SCRIPT = ROOT / "scripts" / "build_cri_apishim_image.sh"
+BUILD_HOST_A_VLLM_IMAGE_SCRIPT = ROOT / "scripts" / "build_cri_host_a_vllm_image.sh"
 PROFILE_STATE_OWNERSHIP_SCRIPT = ROOT / "scripts" / "dev" / "profile_state_ownership.sh"
+RUN_HOST_A_VLLM_VALIDATE_CAPTURE_SCRIPT = ROOT / "scripts" / "dev" / "run_host_a_vllm_validate_capture.sh"
 CRI_SMOKE_SCRIPT = ROOT / "scripts" / "cri_smoke.sh"
 CRI_CUDA_VECTORADD_SMOKE_SCRIPT = ROOT / "scripts" / "cri_cuda_vectoradd_smoke.sh"
+CRI_TORCH_CUDA_PROBE_SCRIPT = ROOT / "scripts" / "cri_torch_cuda_probe.sh"
+CRI_VLLM_STARTUP_PROBE_SCRIPT = ROOT / "scripts" / "cri_vllm_startup_probe.sh"
 CRI_CI_SETUP_SCRIPT = ROOT / "scripts" / "cri_ci_setup.sh"
 COMMON_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "common-bootstrap.sh"
 GPU_BOOTSTRAP_SCRIPT = ROOT / "lab" / "packer" / "http" / "gpu-bootstrap.sh"
@@ -71,6 +75,54 @@ def test_cri_cuda_vectoradd_smoke_uses_seeded_image_and_success_signal() -> None
     assert 'CONTAINER_EXITED' in text
 
 
+def test_cri_torch_cuda_probe_uses_seeded_image_and_reports_torch_cuda_state() -> None:
+    text = CRI_TORCH_CUDA_PROBE_SCRIPT.read_text(encoding="utf-8")
+    assert 'image="${AE_CRI_PROBE_IMAGE:-}"' in text
+    assert 'runtime_handler="${AE_CRI_RUNTIME_HANDLER:-nvidia}"' in text
+    assert 'probe_timeout="${AE_CRI_PROBE_TIMEOUT:-180s}"' in text
+    assert 'inspecti "$image"' in text
+    assert '"command": ["python3"]' in text
+    assert '"args": ["-c", ${python_probe_json}]' in text
+    assert 'payload["cuda_is_available"]' in text
+    assert 'payload["cuda_tensor_ok"]' in text
+    assert 'elapsed_ms" >&2' in text
+    assert 'extract_hex_id()' in text
+    assert 'extract_numeric_exit_code()' in text
+    assert 'TEXT="$text"' in text
+    assert 'extract_json_payload "$logs_output"' in text
+    assert '--since "$probe_started_journal"' in text
+    assert 'CUDA image probe OK' in text
+
+
+def test_cri_vllm_startup_probe_mounts_model_and_waits_for_ready_signal() -> None:
+    text = CRI_VLLM_STARTUP_PROBE_SCRIPT.read_text(encoding="utf-8")
+    assert 'image="${AE_CRI_PROBE_IMAGE:-}"' in text
+    assert 'model_path="${AE_CRI_MODEL_PATH:-}"' in text
+    assert 'dtype="${AE_CRI_VLLM_DTYPE:-}"' in text
+    assert 'api_port="${AE_CRI_VLLM_API_PORT:-8000}"' in text
+    assert 'inspecti "$image"' in text
+    assert '"command": ["python3"]' in text
+    assert '"vllm.entrypoints.openai.api_server"' in text
+    assert '"container_path": os.environ["MODEL_PATH"]' in text
+    assert '"host_path": os.environ["MODEL_PATH"]' in text
+    assert '"readonly": True' in text
+    assert 'args.extend(["--dtype", dtype])' in text
+    assert 'grep -F -- "Application startup complete"' in text
+    assert 'grep -F -- "Uvicorn running on"' in text
+    assert 'logs "$container_id"' in text
+    assert 'capture_debug_snapshot' in text
+    assert 'vLLM startup probe OK' in text
+
+
+def test_run_host_a_vllm_validate_capture_wraps_transcript_and_uses_rc() -> None:
+    text = RUN_HOST_A_VLLM_VALIDATE_CAPTURE_SCRIPT.read_text(encoding="utf-8")
+    assert 'image="docker.io/library/k1s-vllm-openai:host-a-cu121-v2"' in text
+    assert 'script -qefc "$script_cmd" "$transcript"' in text
+    assert "rc=0" in text
+    assert "status=$?" not in text
+    assert '--test-vllm-image "$image"' in text
+
+
 def test_cni_init_honors_version_override(tmp_path: Path) -> None:
     conf_dir = tmp_path / "cni"
     conf_dir.mkdir()
@@ -90,6 +142,54 @@ def test_cni_init_honors_version_override(tmp_path: Path) -> None:
 
     bridge = (conf_dir / "10-k1s-bridge.conflist").read_text(encoding="utf-8")
     assert '"cniVersion": "1.0.0"' in bridge
+
+
+def test_cni_init_prunes_stale_legacy_bridge_when_forcing_cni0(tmp_path: Path) -> None:
+    conf_dir = tmp_path / "cni"
+    conf_dir.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    ip_log = tmp_path / "ip.log"
+
+    _write_executable(
+        fake_bin / "sudo",
+        '#!/usr/bin/env bash\nexec "$@"\n',
+    )
+    _write_executable(
+        fake_bin / "ip",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{ip_log}"
+if [[ "$1" == "link" && "$2" == "show" && "$3" == "cni0" ]]; then
+  exit 1
+fi
+if [[ "$1" == "link" && "$2" == "show" && "$3" == "ae0" ]]; then
+  exit 0
+fi
+if [[ "$1" == "link" && "$2" == "del" && "$3" == "ae0" ]]; then
+  exit 0
+fi
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["CNI_CONF_DIR"] = str(conf_dir)
+    env["AE_CNI_FORCE"] = "1"
+    env["AE_CNI_BRIDGE_NAME"] = "cni0"
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    proc = subprocess.run(
+        ["bash", str(CNI_INIT_SCRIPT)],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert "link show ae0" in ip_log.read_text(encoding="utf-8")
+    assert "link del ae0" in ip_log.read_text(encoding="utf-8")
+    assert "Removed stale legacy bridge ae0" in proc.stdout
 
 
 def test_cni_init_skips_existing_configs_without_rewriting(tmp_path: Path) -> None:
@@ -1241,7 +1341,7 @@ exit 0
             "bash",
             str(BUILD_CRI_APISHIM_IMAGE_SCRIPT),
             "--image",
-            "localhost:5001/k1s-apishim:dev",
+            "docker.io/library/k1s-apishim:dev",
         ],
         check=True,
         text=True,
@@ -1252,11 +1352,11 @@ exit 0
     build_lines = build_log.read_text(encoding="utf-8").splitlines()
     crictl_lines = crictl_log.read_text(encoding="utf-8").splitlines()
     assert build_lines == [
-        f"build --network host -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t localhost:5001/k1s-apishim:dev {ROOT}",
-        "push localhost:5001/k1s-apishim:dev",
+        f"build --network host -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t docker.io/library/k1s-apishim:dev {ROOT}",
+        "push docker.io/library/k1s-apishim:dev",
     ]
     assert crictl_lines == [
-        "--runtime-endpoint unix:///tmp/fake-containerd.sock pull localhost:5001/k1s-apishim:dev"
+        "--runtime-endpoint unix:///tmp/fake-containerd.sock pull docker.io/library/k1s-apishim:dev"
     ]
     assert "[build-cri-apishim] backend=podman" in proc.stdout
     assert "[build-cri-apishim] using host networking for podman build" in proc.stdout
@@ -1294,7 +1394,7 @@ exit 1
             "bash",
             str(BUILD_CRI_APISHIM_IMAGE_SCRIPT),
             "--image",
-            "localhost:5001/k1s-apishim:dev",
+            "docker.io/library/k1s-apishim:dev",
             "--no-pull-cri",
         ],
         check=True,
@@ -1305,8 +1405,8 @@ exit 1
 
     build_lines = build_log.read_text(encoding="utf-8").splitlines()
     assert build_lines == [
-        f"build --network host -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t localhost:5001/k1s-apishim:dev {ROOT}",
-        "push localhost:5001/k1s-apishim:dev",
+        f"build --network host -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t docker.io/library/k1s-apishim:dev {ROOT}",
+        "push docker.io/library/k1s-apishim:dev",
     ]
     assert "[build-cri-apishim] backend=docker" in proc.stdout
     assert "[build-cri-apishim] using host networking for docker build" in proc.stdout
@@ -1355,7 +1455,7 @@ exit 1
             "bash",
             str(BUILD_CRI_APISHIM_IMAGE_SCRIPT),
             "--image",
-            "localhost:5001/k1s-apishim:dev",
+            "docker.io/library/k1s-apishim:dev",
             "--no-pull-cri",
         ],
         check=True,
@@ -1366,8 +1466,8 @@ exit 1
 
     build_lines = build_log.read_text(encoding="utf-8").splitlines()
     assert build_lines == [
-        f"build -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t localhost:5001/k1s-apishim:dev {ROOT}",
-        "push localhost:5001/k1s-apishim:dev",
+        f"build -f {ROOT / 'ops' / 'images' / 'apishim.Dockerfile'} -t docker.io/library/k1s-apishim:dev {ROOT}",
+        "push docker.io/library/k1s-apishim:dev",
     ]
     assert "[build-cri-apishim] backend=nerdctl" in proc.stdout
     assert "using host networking" not in proc.stdout
@@ -1382,7 +1482,7 @@ def test_build_cri_apishim_image_rejects_ctr_backend(tmp_path: Path) -> None:
             "bash",
             str(BUILD_CRI_APISHIM_IMAGE_SCRIPT),
             "--image",
-            "localhost:5001/k1s-apishim:dev",
+            "docker.io/library/k1s-apishim:dev",
             "--no-pull-cri",
         ],
         check=False,
@@ -1394,6 +1494,105 @@ def test_build_cri_apishim_image_rejects_ctr_backend(tmp_path: Path) -> None:
     assert proc.returncode == 1
     assert "Requested build backend 'ctr' is invalid" in proc.stderr
     assert "AE_CRI_IMAGE_BUILD_BACKEND=podman|docker|nerdctl" in proc.stderr
+
+
+def test_build_cri_host_a_vllm_image_prefers_build_backend_env(tmp_path: Path) -> None:
+    build_log = tmp_path / "build.log"
+    crictl_log = tmp_path / "crictl.log"
+
+    fake_podman = tmp_path / "podman"
+    _write_executable(
+        fake_podman,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_BUILD_LOG"
+exit 0
+""",
+    )
+    fake_docker = tmp_path / "docker"
+    _write_executable(
+        fake_docker,
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "docker should not be used" >&2
+exit 1
+""",
+    )
+    fake_crictl = tmp_path / "crictl"
+    _write_executable(
+        fake_crictl,
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_CRICTL_LOG"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}:{env['PATH']}"
+    env["FAKE_BUILD_LOG"] = str(build_log)
+    env["FAKE_CRICTL_LOG"] = str(crictl_log)
+    env["AE_CRI_IMAGE_BUILD_BACKEND"] = "podman"
+    env["AE_HOST_A_VLLM_VERSION"] = "0.6.2"
+    env["AE_HOST_A_TRANSFORMERS_VERSION"] = "4.45.0"
+    env["AE_CRI_ENDPOINT"] = "unix:///tmp/fake-containerd.sock"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(BUILD_HOST_A_VLLM_IMAGE_SCRIPT),
+            "--image",
+            "docker.io/library/k1s-vllm-openai:host-a-cu121-v2",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    build_lines = build_log.read_text(encoding="utf-8").splitlines()
+    crictl_lines = crictl_log.read_text(encoding="utf-8").splitlines()
+    assert build_lines == [
+        (
+            f"build --network host -f {ROOT / 'ops' / 'images' / 'host-a-vllm-openai.Dockerfile'} "
+            "-t docker.io/library/k1s-vllm-openai:host-a-cu121-v2 "
+            "--build-arg BASE_IMAGE=nvidia/cuda:12.1.0-devel-ubuntu22.04 "
+            "--build-arg TORCH_VERSION=2.4.0 "
+            "--build-arg TORCHVISION_VERSION=0.19.0 "
+            "--build-arg TORCHAUDIO_VERSION=2.4.0 "
+            "--build-arg VLLM_VERSION=0.6.2 "
+            "--build-arg TRANSFORMERS_VERSION=4.45.0 "
+            f"{ROOT}"
+        ),
+        "push docker.io/library/k1s-vllm-openai:host-a-cu121-v2",
+    ]
+    assert crictl_lines == [
+        "--runtime-endpoint unix:///tmp/fake-containerd.sock pull docker.io/library/k1s-vllm-openai:host-a-cu121-v2"
+    ]
+    assert "[build-host-a-vllm] backend=podman" in proc.stdout
+    assert "[build-host-a-vllm] using host networking for podman build" in proc.stdout
+
+
+def test_build_cri_host_a_vllm_image_rejects_ctr_backend(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["AE_CRI_IMAGE_BUILD_BACKEND"] = "ctr"
+
+    proc = subprocess.run(
+        [
+            "bash",
+            str(BUILD_HOST_A_VLLM_IMAGE_SCRIPT),
+            "--image",
+            "docker.io/library/k1s-vllm-openai:host-a-cu121-v2",
+            "--no-pull-cri",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert proc.returncode == 1
+    assert "Requested build backend 'ctr' is invalid" in proc.stderr
 
 
 def test_cri_preflight_reports_path_only_cni_plugins(tmp_path: Path) -> None:
