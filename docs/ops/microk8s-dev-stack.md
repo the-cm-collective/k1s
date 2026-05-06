@@ -25,19 +25,36 @@ This lane packages `k1s` into a namespace-scoped MicroK8s dev stack on Host B wh
 
 ## Image Prep
 
-Build and push the four images the charts expect before installing the stack.
+When `global.registryHost` is set, the chart rewrites all image pulls through that registry.
+Build the repo-local images there first, then mirror the upstream runtime images the chart also uses.
 
 ```bash
 export REGISTRY_HOST=registry.k1s.home.arpa:32000
 export TAG=dev
 
-docker build -f ops/images/controller.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-core:${TAG} .
-docker build -f ops/images/apishim.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-apishim:${TAG} .
-docker build -f ops/images/node.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-core-node:${TAG} .
+podman build -f ops/images/controller.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-core:${TAG} .
+podman build -f ops/images/apishim.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-apishim:${TAG} .
+podman build -f ops/images/node.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-core-node:${TAG} .
+podman build -f ops/images/rathole.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-rathole:${TAG} .
 
-docker push ${REGISTRY_HOST}/k1s/k1s-core:${TAG}
-docker push ${REGISTRY_HOST}/k1s/k1s-apishim:${TAG}
-docker push ${REGISTRY_HOST}/k1s/k1s-core-node:${TAG}
+podman push --tls-verify=false ${REGISTRY_HOST}/k1s/k1s-core:${TAG}
+podman push --tls-verify=false ${REGISTRY_HOST}/k1s/k1s-apishim:${TAG}
+podman push --tls-verify=false ${REGISTRY_HOST}/k1s/k1s-core-node:${TAG}
+podman push --tls-verify=false ${REGISTRY_HOST}/k1s/k1s-rathole:${TAG}
+```
+
+Mirror the upstream runtime images into the same registry if you keep `global.registryHost` enabled:
+
+```bash
+for src in \
+  quay.io/coreos/etcd:v3.5.14 \
+  docker.io/nats:2.10.18-alpine \
+  docker.io/envoyproxy/envoy:v1.29-latest
+do
+  podman pull ${src}
+  podman tag ${src} ${REGISTRY_HOST}/${src}
+  podman push --tls-verify=false ${REGISTRY_HOST}/${src}
+done
 ```
 
 If you need the Host A edge gateway image in the same registry for other flows, build and push `ops/images/gateway.Dockerfile` separately.
@@ -60,6 +77,7 @@ Edit at least these fields before install:
   - `stack.name`
   - `stack.domain`
   - `global.registryHost`
+  - `controller.runtimeHostSocketPath`
   - `bootstrap.controller.hostOverride`
   - `bootstrap.natsLeaf.hostOverride`
   - `bootstrap.rathole.hostOverride`
@@ -67,7 +85,18 @@ Edit at least these fields before install:
 - `.local/helm/k1s-dev-a.node.yaml`
   - `target.namespace`
   - `target.controllerReleaseName`
+  - `node.runtimeHostSocketPath`
   - `node.nodeSelector`
+
+On MicroK8s, set both runtime socket host paths to:
+
+```yaml
+controller:
+  runtimeHostSocketPath: /var/snap/microk8s/common/run/containerd.sock
+
+node:
+  runtimeHostSocketPath: /var/snap/microk8s/common/run/containerd.sock
+```
 
 ### 2. Preflight shared addons
 
@@ -109,12 +138,32 @@ Core validation after install:
 kubectl -n k1s-dev-a get pods -o wide
 kubectl -n k1s-dev-a get ingress
 kubectl -n k1s-dev-a get servicemonitors,prometheusrules
-kubectl -n k1s-dev-a port-forward svc/k1s-dev-a-k1s-core-ha-controller 9108:9108 &
-curl -fsS http://127.0.0.1:9108/healthz
+kubectl -n k1s-dev-a port-forward svc/k1s-dev-a-k1s-core-ha-controller 9108:9108 9110:9110 &
+curl -fsS http://127.0.0.1:9110/healthz
 curl -fsS http://127.0.0.1:9108/metrics | rg 'ae_controller_authority_healthy|ae_controller_is_leader'
 ```
 
 Expect exactly one leader and three controller pods.
+
+### 3a. Validate local ingress for docs and dash
+
+The ingress hosts must be usable on Host B for local testing, not only present in the manifest.
+If lab DNS does not already resolve them, add temporary local mappings for the ingress IP:
+
+```bash
+echo "192.168.29.15 dash.k1s-dev-a.home.arpa docs.k1s-dev-a.home.arpa" | sudo tee -a /etc/hosts
+```
+
+Then validate through `ingress-nginx` using the real hosts:
+
+```bash
+curl -fsS -H 'Host: dash.k1s-dev-a.home.arpa' http://192.168.29.15/
+curl -fsS -H 'Host: docs.k1s-dev-a.home.arpa' http://192.168.29.15/
+curl -fsS http://dash.k1s-dev-a.home.arpa/
+curl -fsS http://docs.k1s-dev-a.home.arpa/
+```
+
+Treat `dash` and `docs` ingress reachability as a required validation gate for this lane.
 
 ### 4. Render the Host A bootstrap bundle
 

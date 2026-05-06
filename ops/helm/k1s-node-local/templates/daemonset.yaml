@@ -94,7 +94,7 @@ spec:
             {{- toYaml .Values.node.resources | nindent 12 }}
           volumeMounts:
             - name: containerd-sock
-              mountPath: /run/containerd/containerd.sock
+              mountPath: {{ trimPrefix "unix://" .Values.node.runtimeEndpoint | quote }}
             - name: ae-data
               mountPath: /var/lib/ae
             - name: tmp
@@ -102,7 +102,7 @@ spec:
       volumes:
         - name: containerd-sock
           hostPath:
-            path: /run/containerd/containerd.sock
+            path: {{ .Values.node.runtimeHostSocketPath | quote }}
             type: Socket
         - name: ae-data
           hostPath:

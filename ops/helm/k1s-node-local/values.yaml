@@ -20,6 +20,7 @@ node:
     pullPolicy: IfNotPresent
   agentPort: 9109
   runtimeEndpoint: unix:///run/containerd/containerd.sock
+  runtimeHostSocketPath: /run/containerd/containerd.sock
   hostDataPath: /var/lib/ae
   hostNetwork: true
   dnsPolicy: ClusterFirstWithHostNet

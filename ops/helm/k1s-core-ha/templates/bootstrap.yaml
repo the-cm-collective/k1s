@@ -4,12 +4,13 @@ metadata:
   name: {{ include "k1s-core-ha.bootstrapConfigMapName" . }}
   labels:
     {{- include "k1s-core-ha.labels" . | nindent 4 }}
+{{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled }}
 data:
   stack_name: {{ .Values.stack.name | quote }}
   stack_domain: {{ .Values.stack.domain | quote }}
   wildcard_apps_domain: {{ printf "*.%s" (include "k1s-core-ha.appsDomain" .) | quote }}
-  dash_url: {{ printf "https://%s/" (include "k1s-core-ha.dashHost" .) | quote }}
-  docs_url: {{ printf "https://%s/" (include "k1s-core-ha.docsHost" .) | quote }}
+  dash_url: {{ printf "%s://%s/" $scheme (include "k1s-core-ha.dashHost" .) | quote }}
+  docs_url: {{ printf "%s://%s/" $scheme (include "k1s-core-ha.docsHost" .) | quote }}
   controller_external_service: {{ include "k1s-core-ha.controllerExternalServiceName" . | quote }}
   controller_external_host_hint: {{ include "k1s-core-ha.controllerBootstrapHost" . | quote }}
   controller_external_port: {{ .Values.controller.agentPort | quote }}

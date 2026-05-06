@@ -7,6 +7,7 @@ stack:
 
 controller:
   replicas: 3
+  runtimeHostSocketPath: /var/snap/microk8s/common/run/containerd.sock
   siteIds:
     - host-a
   persistence:
@@ -30,6 +31,11 @@ etcd:
 nats:
   storageClassName: microk8s-hostpath
   storageSize: 5Gi
+
+edgeProxy:
+  ratholeImage:
+    repository: k1s/k1s-rathole
+    tag: dev
 
 bootstrap:
   controller:

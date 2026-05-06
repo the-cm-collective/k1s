@@ -54,6 +54,14 @@ spec:
               value: "1"
             - name: AE_STATE_BACKEND
               value: etcd
+            - name: AE_RUNTIME_BACKEND
+              value: {{ .Values.controller.runtimeBackend | quote }}
+            - name: AE_INFRA_BACKEND
+              value: {{ .Values.controller.infraBackend | quote }}
+            - name: AE_CRI_ENDPOINT
+              value: {{ .Values.controller.runtimeEndpoint | quote }}
+            - name: AE_CRI_RUNTIME_HANDLER
+              value: {{ .Values.controller.runtimeHandler | quote }}
             - name: AE_ETCD_ENDPOINTS
               value: http://{{ include "k1s-core-ha.etcdClientServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.etcd.clientPort }}
             - name: AE_ETCD_PREFIX
@@ -144,13 +152,13 @@ spec:
           readinessProbe:
             httpGet:
               path: /healthz
-              port: metrics
+              port: agent
             initialDelaySeconds: 15
             periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
-              port: metrics
+              port: agent
             initialDelaySeconds: 30
             periodSeconds: 10
           resources:
@@ -167,6 +175,9 @@ spec:
               mountPath: /specs
             - name: tmp
               mountPath: /tmp
+            - name: containerd-sock
+              mountPath: {{ trimPrefix "unix://" .Values.controller.runtimeEndpoint | quote }}
+              readOnly: true
         {{- if .Values.edgeProxy.enabled }}
         - name: edge-proxy-envoy
           image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.edgeProxy.envoyImage) }}
@@ -267,3 +278,7 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        - name: containerd-sock
+          hostPath:
+            path: {{ .Values.controller.runtimeHostSocketPath | quote }}
+            type: Socket

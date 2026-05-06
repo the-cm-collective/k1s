@@ -9,6 +9,7 @@ node:
   image:
     repository: k1s/k1s-core-node
     tag: dev
+  runtimeHostSocketPath: /var/snap/microk8s/common/run/containerd.sock
   nodeSelector:
     nvidia.com/gpu.present: "true"
   labels:
