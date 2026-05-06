@@ -49,6 +49,7 @@ Mirror the upstream runtime images into the same registry if you keep `global.re
 for src in \
   quay.io/coreos/etcd:v3.5.14 \
   docker.io/nats:2.10.18-alpine \
+  docker.io/natsio/prometheus-nats-exporter:0.19.2 \
   docker.io/envoyproxy/envoy:v1.29-latest
 do
   podman pull ${src}
@@ -138,12 +139,22 @@ Core validation after install:
 kubectl -n k1s-dev-a get pods -o wide
 kubectl -n k1s-dev-a get ingress
 kubectl -n k1s-dev-a get servicemonitors,prometheusrules
+kubectl -n k1s-dev-a get svc | rg 'metrics|nats'
 kubectl -n k1s-dev-a port-forward svc/k1s-dev-a-k1s-core-ha-controller 9108:9108 9110:9110 &
 curl -fsS http://127.0.0.1:9110/healthz
 curl -fsS http://127.0.0.1:9108/metrics | rg 'ae_controller_authority_healthy|ae_controller_is_leader'
 ```
 
 Expect exactly one leader and three controller pods.
+
+Prometheus validation after install:
+
+```bash
+kubectl -n monitoring port-forward svc/kube-prom-prometheus 9090:9090 &
+curl -fsS 'http://127.0.0.1:9090/api/v1/targets?state=active' | rg 'k1s-dev-a-k1s-core-ha-(controller|etcd|nats)'
+```
+
+Expect controller, etcd, and NATS targets to be `up` without duplicate headless-service scrapes.
 
 ### 3a. Validate local ingress for docs and dash
 
@@ -206,8 +217,12 @@ Validate local node registration:
 
 ```bash
 kubectl -n k1s-dev-a rollout status ds/k1s-dev-a-node-k1s-node-local
-kubectl -n k1s-dev-a get pods -o wide
+kubectl -n k1s-dev-a get ds,pods -o wide
 kubectl -n k1s-dev-a logs ds/k1s-dev-a-node-k1s-node-local --tail=100
+curl -fsS http://127.0.0.1:9110/v1/nodes | python3 -m json.tool
+AGENT_TOKEN="$(kubectl -n k1s-dev-a get secret k1s-dev-a-k1s-core-ha-auth -o jsonpath='{.data.agent-token}' | base64 -d)"
+curl -fsS -H "X-Agent-Token: ${AGENT_TOKEN}" http://127.0.0.1:9110/v1/nodes/c3rb3rus/overlay | python3 -m json.tool
+curl -fsS http://127.0.0.1:9108/metrics | rg 'ae_nodes_total|ae_nodes_ready|ae_nodes_stale'
 ```
 
 The chart is cluster-exclusive on purpose. A second `k1s-node-local` install should fail while the first exists.

@@ -292,19 +292,42 @@ class CRIRuntime(RuntimeAdapter):
     def list_workload_metrics(self) -> list[WorkloadMetricSample]:
         self._ensure_clients()
         pb2 = self._pb2()
-        req = pb2.ListPodSandboxStatsRequest()
-        resp = self._runtime_call("ListPodSandboxStats", req)
-        items = getattr(resp, "stats", None)
-        if items is None:
-            items = getattr(resp, "items", None)
         node_id = str(
             self._current_node_id or os.getenv("AE_NODE_ID") or socket.gethostname() or "unknown-node"
         )
         collected_at = datetime.now(UTC)
         aggregates: dict[str, dict[str, object]] = {}
-        for item in list(items or []):
+        for pod in self._list_pods(ready_only=True):
+            pod_labels = self._pod_labels(pod)
+            app_name = str(pod_labels.get(self.APP_LABEL) or "").strip()
+            if not app_name:
+                continue
+            pod_id = getattr(pod, "id", None) or getattr(pod, "pod_sandbox_id", None)
+            if not pod_id:
+                continue
+            try:
+                resp = self._runtime_call(
+                    "PodSandboxStats",
+                    pb2.PodSandboxStatsRequest(pod_sandbox_id=str(pod_id)),
+                )
+            except Exception as exc:
+                if self._is_stale_pod_sandbox_error(exc):
+                    LOGGER.debug(
+                        "CRI workload metrics skipping stale sandbox pod_id=%s: %s",
+                        pod_id,
+                        self._grpc_error_details(exc),
+                    )
+                    continue
+                raise
+            item = getattr(resp, "stats", None)
+            if item is None:
+                items = getattr(resp, "items", None)
+                if items:
+                    item = list(items)[0]
+            if item is None:
+                continue
             labels = self._stats_labels(item)
-            app_name = str(labels.get(self.APP_LABEL) or "").strip()
+            app_name = str(labels.get(self.APP_LABEL) or app_name).strip()
             if not app_name:
                 continue
             aggregate = aggregates.setdefault(
@@ -837,10 +860,17 @@ class CRIRuntime(RuntimeAdapter):
         except Exception:
             return 6
 
-    def _list_pods(self, app_name: str | None = None) -> list[Any]:
+    def _list_pods(self, app_name: str | None = None, *, ready_only: bool = False) -> list[Any]:
         pb2 = self._pb2()
         selector = {self.APP_LABEL: app_name} if app_name else {}
-        flt = pb2.PodSandboxFilter(label_selector=selector) if selector else pb2.PodSandboxFilter()
+        filter_kwargs: dict[str, Any] = {}
+        if selector:
+            filter_kwargs["label_selector"] = selector
+        if ready_only:
+            ready_state = getattr(getattr(pb2, "PodSandboxState", None), "SANDBOX_READY", None)
+            if ready_state is not None:
+                filter_kwargs["state"] = pb2.PodSandboxStateValue(state=ready_state)
+        flt = pb2.PodSandboxFilter(**filter_kwargs) if filter_kwargs else pb2.PodSandboxFilter()
         req = pb2.ListPodSandboxRequest(filter=flt)
         resp = self._runtime_call("ListPodSandbox", req)
         items = getattr(resp, "items", None)
@@ -1578,6 +1608,7 @@ class CRIRuntime(RuntimeAdapter):
             "failed to find sandbox id",
             "can't find shim for sandbox",
             "no running task found",
+            "not in ready state",
             "podsandbox not found",
             "pod sandbox not found",
             "sandbox not found",

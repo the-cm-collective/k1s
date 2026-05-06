@@ -95,6 +95,16 @@ nats:
     domain: K1S
   resources: {}
 
+natsExporter:
+  enabled: true
+  image:
+    registry: ""
+    repository: docker.io/natsio/prometheus-nats-exporter
+    tag: 0.19.2
+    pullPolicy: IfNotPresent
+  port: 7777
+  resources: {}
+
 edgeProxy:
   enabled: true
   envoyImage:

@@ -41,6 +41,23 @@ spec:
       port: {{ .Values.etcd.metricsPort }}
       targetPort: metrics
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.etcdMetricsServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+    k1s.dev/metrics-target: etcd
+spec:
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+  ports:
+    - name: metrics
+      port: {{ .Values.etcd.metricsPort }}
+      targetPort: metrics
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

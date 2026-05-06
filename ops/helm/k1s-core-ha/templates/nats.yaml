@@ -44,6 +44,23 @@ spec:
       port: {{ .Values.nats.monitorPort }}
       targetPort: monitor
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.natsMetricsServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+    k1s.dev/metrics-target: nats
+spec:
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+  ports:
+    - name: metrics
+      port: {{ .Values.natsExporter.port }}
+      targetPort: metrics
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -152,6 +169,29 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+        {{- if .Values.natsExporter.enabled }}
+        - name: nats-exporter
+          image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.natsExporter.image) }}
+          imagePullPolicy: {{ .Values.natsExporter.image.pullPolicy }}
+          args:
+            - -port
+            - {{ .Values.natsExporter.port | quote }}
+            - -varz
+            - -connz
+            - -routez
+            - -subz
+            - -leafz
+            - -healthz
+            - -jsz
+            - all
+            - -use_internal_server_name
+            - http://127.0.0.1:{{ .Values.nats.monitorPort }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.natsExporter.port }}
+          resources:
+            {{- toYaml .Values.natsExporter.resources | nindent 12 }}
+        {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data

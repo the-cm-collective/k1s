@@ -46,6 +46,23 @@ spec:
       port: {{ .Values.controller.agentPort }}
       targetPort: agent
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.controllerMetricsServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+    k1s.dev/metrics-target: controller
+spec:
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - name: metrics
+      port: {{ .Values.controller.metricsPort }}
+      targetPort: metrics
+---
 {{- if .Values.edgeProxy.enabled }}
 apiVersion: v1
 kind: Service

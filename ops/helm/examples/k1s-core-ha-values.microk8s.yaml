@@ -32,6 +32,11 @@ nats:
   storageClassName: microk8s-hostpath
   storageSize: 5Gi
 
+natsExporter:
+  image:
+    repository: docker.io/natsio/prometheus-nats-exporter
+    tag: 0.19.2
+
 edgeProxy:
   ratholeImage:
     repository: k1s/k1s-rathole

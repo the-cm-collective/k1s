@@ -49,6 +49,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-controller-external" (include "k1s-core-ha.fullname" .) -}}
 {{- end -}}
 
+{{- define "k1s-core-ha.controllerMetricsServiceName" -}}
+{{- printf "%s-controller-metrics" (include "k1s-core-ha.fullname" .) -}}
+{{- end -}}
+
 {{- define "k1s-core-ha.edgeProxyServiceName" -}}
 {{- printf "%s-edge-proxy" (include "k1s-core-ha.fullname" .) -}}
 {{- end -}}
@@ -77,6 +81,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-etcd" (include "k1s-core-ha.fullname" .) -}}
 {{- end -}}
 
+{{- define "k1s-core-ha.etcdMetricsServiceName" -}}
+{{- printf "%s-etcd-metrics" (include "k1s-core-ha.fullname" .) -}}
+{{- end -}}
+
 {{- define "k1s-core-ha.natsName" -}}
 {{- printf "%s-nats" (include "k1s-core-ha.fullname" .) -}}
 {{- end -}}
@@ -87,6 +95,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "k1s-core-ha.natsClientServiceName" -}}
 {{- printf "%s-nats" (include "k1s-core-ha.fullname" .) -}}
+{{- end -}}
+
+{{- define "k1s-core-ha.natsMetricsServiceName" -}}
+{{- printf "%s-nats-metrics" (include "k1s-core-ha.fullname" .) -}}
 {{- end -}}
 
 {{- define "k1s-core-ha.natsLeafExternalServiceName" -}}

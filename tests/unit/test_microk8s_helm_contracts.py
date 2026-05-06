@@ -51,6 +51,9 @@ def test_core_chart_renders_expected_resources() -> None:
     assert ("Service", "k1s-dev-a-k1s-core-ha-controller-external") in kinds
     assert ("Service", "k1s-dev-a-k1s-core-ha-nats-leaf") in kinds
     assert ("Service", "k1s-dev-a-k1s-core-ha-rathole") in kinds
+    assert ("Service", "k1s-dev-a-k1s-core-ha-controller-metrics") in kinds
+    assert ("Service", "k1s-dev-a-k1s-core-ha-etcd-metrics") in kinds
+    assert ("Service", "k1s-dev-a-k1s-core-ha-nats-metrics") in kinds
     assert ("Ingress", "k1s-dev-a-k1s-core-ha") in kinds
     assert ("Ingress", "k1s-dev-a-k1s-core-ha-dash") in kinds
     assert ("ServiceMonitor", "k1s-dev-a-k1s-core-ha-controller") in kinds
@@ -102,6 +105,12 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
 
     controller = next(item for item in docs if item["kind"] == "Deployment" and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-controller")
     controller_container = controller["spec"]["template"]["spec"]["containers"][0]
+    controller_metrics_service = next(
+        item
+        for item in docs
+        if item["kind"] == "Service"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-controller-metrics"
+    )
     controller_env = {
         item["name"]: item.get("value")
         for item in controller_container["env"]
@@ -125,6 +134,39 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
     )
     assert controller_container["readinessProbe"]["httpGet"]["port"] == "agent"
     assert controller_container["livenessProbe"]["httpGet"]["port"] == "agent"
+    assert controller_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"] == "controller"
+
+    etcd_metrics_service = next(
+        item
+        for item in docs
+        if item["kind"] == "Service"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-etcd-metrics"
+    )
+    assert etcd_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"] == "etcd"
+
+    nats = next(item for item in docs if item["kind"] == "StatefulSet" and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-nats")
+    nats_exporter = next(
+        container for container in nats["spec"]["template"]["spec"]["containers"] if container["name"] == "nats-exporter"
+    )
+    nats_metrics_service = next(
+        item
+        for item in docs
+        if item["kind"] == "Service"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-nats-metrics"
+    )
+    nats_service_monitor = next(
+        item
+        for item in docs
+        if item["kind"] == "ServiceMonitor"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-nats"
+    )
+    assert nats_exporter["image"].endswith("/docker.io/natsio/prometheus-nats-exporter:0.19.2")
+    assert "-varz" in nats_exporter["args"]
+    assert "-jsz" in nats_exporter["args"]
+    assert "all" in nats_exporter["args"]
+    assert nats_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"] == "nats"
+    assert nats_service_monitor["spec"]["selector"]["matchLabels"]["k1s.dev/metrics-target"] == "nats"
+    assert nats_service_monitor["spec"]["endpoints"][0]["port"] == "metrics"
     rathole = next(
         container
         for container in controller["spec"]["template"]["spec"]["containers"]
