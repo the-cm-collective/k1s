@@ -1,0 +1,269 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k1s-core-ha.controllerName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "k1s-core-ha.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+        {{- with .Values.controller.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "k1s-core-ha.controllerName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: controller
+          image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.controller.image) }}
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              export AE_NATS_URL="nats://${NATS_CONTROLLER_USER}:${NATS_CONTROLLER_PASSWORD}@{{ include "k1s-core-ha.natsClientServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.nats.clientPort }}"
+              exec python -m ae.controller --loop --specs /specs --metrics-port {{ .Values.controller.metricsPort }} --watch
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: AE_HA_MODE
+              value: "1"
+            - name: AE_STATE_BACKEND
+              value: etcd
+            - name: AE_ETCD_ENDPOINTS
+              value: http://{{ include "k1s-core-ha.etcdClientServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.etcd.clientPort }}
+            - name: AE_ETCD_PREFIX
+              value: k1s/stacks/{{ .Release.Namespace }}/{{ .Release.Name }}
+            - name: AE_TRANSPORT_BACKEND
+              value: nats-js
+            - name: AE_JS_DOMAIN
+              value: {{ .Values.nats.jetstream.domain | quote }}
+            - name: AE_JS_REPLICAS
+              value: {{ .Values.nats.replicas | quote }}
+            - name: AE_NODE_PROFILE
+              value: {{ .Values.controller.nodeProfile | quote }}
+            - name: AE_REGISTER_LOCAL_NODE
+              value: {{ ternary "1" "0" .Values.controller.registerLocalNode | quote }}
+            - name: AE_CONTROLLER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: AE_CONTROLLER_ADVERTISE_ADDR
+              value: http://$(POD_NAME).{{ include "k1s-core-ha.controllerHeadlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.controller.metricsPort }}
+            - name: AE_AGENT_API_PORT
+              value: {{ .Values.controller.agentPort | quote }}
+            - name: AE_AGENT_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: agent-token
+            - name: AE_APISHIM_SERVER
+              value: http://{{ include "k1s-core-ha.apishimServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.apishim.port }}
+            - name: AE_APISHIM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: apishim-admin-token
+            - name: EDGE_INGRESS_MODE
+              value: core-proxy
+            - name: AE_EDGE_INGRESS_CORE_PROXY
+              value: "1"
+            - name: AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS
+              value: "1"
+            - name: AE_EDGE_INGRESS_CONFIG_DIR
+              value: /var/run/k1s-edge
+            - name: AE_EDGE_INGRESS_ENVOY_CONFIG
+              value: /var/run/k1s-edge/envoy.yaml
+            - name: AE_EDGE_INGRESS_SITE_DOMAIN_SUFFIX
+              value: {{ include "k1s-core-ha.appsDomain" . | quote }}
+            - name: AE_EDGE_INGRESS_LOCAL_ADDR
+              value: {{ .Values.edgeProxy.localAddr | quote }}
+            - name: AE_EDGE_INGRESS_HTTP_PORT
+              value: {{ .Values.edgeProxy.httpPort | quote }}
+            - name: AE_CORE_PROXY_PORT_MIN
+              value: {{ .Values.edgeProxy.proxyPortMin | quote }}
+            - name: AE_RATHOLE_SERVER_CONFIG
+              value: /var/run/k1s-edge/rathole-server.toml
+            - name: AE_RATHOLE_CLIENT_DIR
+              value: /var/run/k1s-edge/clients
+            - name: AE_RATHOLE_BIND_ADDR
+              value: 0.0.0.0:2333
+            - name: AE_RATHOLE_SERVER_ADDR
+              value: {{ printf "%s:%d" (include "k1s-core-ha.ratholeBootstrapHost" .) 2333 | quote }}
+            - name: AE_RATHOLE_DEFAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: rathole-token
+            - name: NATS_CONTROLLER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: nats-controller-user
+            - name: NATS_CONTROLLER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: nats-controller-password
+            {{- if .Values.controller.siteIds }}
+            - name: AE_SITE_IDS
+              value: {{ join "," .Values.controller.siteIds | quote }}
+            {{- end }}
+            {{- with .Values.controller.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.controller.metricsPort }}
+            - name: agent
+              containerPort: {{ .Values.controller.agentPort }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/ae
+              {{- if .Values.controller.persistence.enabled }}
+              subPathExpr: $(POD_NAME)
+              {{- end }}
+            - name: edge-ingress
+              mountPath: /var/run/k1s-edge
+            - name: specs
+              mountPath: /specs
+            - name: tmp
+              mountPath: /tmp
+        {{- if .Values.edgeProxy.enabled }}
+        - name: edge-proxy-envoy
+          image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.edgeProxy.envoyImage) }}
+          imagePullPolicy: {{ .Values.edgeProxy.envoyImage.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              last=""
+              child=""
+              start_child() {
+                if [ ! -s /var/run/k1s-edge/envoy.yaml ]; then
+                  return
+                fi
+                if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+                  kill "$child" || true
+                  wait "$child" || true
+                fi
+                envoy -c /var/run/k1s-edge/envoy.yaml --log-level info &
+                child="$!"
+              }
+              trap 'if [ -n "$child" ]; then kill "$child" || true; wait "$child" || true; fi' EXIT INT TERM
+              while true; do
+                if [ -s /var/run/k1s-edge/envoy.yaml ]; then
+                  now="$(sha256sum /var/run/k1s-edge/envoy.yaml | awk "{print \$1}")"
+                  if [ "$now" != "$last" ]; then
+                    last="$now"
+                    start_child
+                  fi
+                fi
+                if [ -n "$child" ] && ! kill -0 "$child" 2>/dev/null; then
+                  start_child
+                fi
+                sleep 3
+              done
+          ports:
+            - name: edge-http
+              containerPort: {{ .Values.edgeProxy.httpPort }}
+          resources:
+            {{- toYaml .Values.edgeProxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: edge-ingress
+              mountPath: /var/run/k1s-edge
+        - name: edge-proxy-rathole
+          image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.edgeProxy.ratholeImage) }}
+          imagePullPolicy: {{ .Values.edgeProxy.ratholeImage.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              last=""
+              child=""
+              start_child() {
+                if [ ! -s /var/run/k1s-edge/rathole-server.toml ]; then
+                  return
+                fi
+                if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+                  kill "$child" || true
+                  wait "$child" || true
+                fi
+                rathole --server /var/run/k1s-edge/rathole-server.toml &
+                child="$!"
+              }
+              trap 'if [ -n "$child" ]; then kill "$child" || true; wait "$child" || true; fi' EXIT INT TERM
+              while true; do
+                if [ -s /var/run/k1s-edge/rathole-server.toml ]; then
+                  now="$(sha256sum /var/run/k1s-edge/rathole-server.toml | awk "{print \$1}")"
+                  if [ "$now" != "$last" ]; then
+                    last="$now"
+                    start_child
+                  fi
+                fi
+                if [ -n "$child" ] && ! kill -0 "$child" 2>/dev/null; then
+                  start_child
+                fi
+                sleep 3
+              done
+          ports:
+            - name: rathole
+              containerPort: 2333
+          resources:
+            {{- toYaml .Values.edgeProxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: edge-ingress
+              mountPath: /var/run/k1s-edge
+        {{- end }}
+      volumes:
+        - name: edge-ingress
+          emptyDir: {}
+        - name: specs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: state
+          {{- if .Values.controller.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "k1s-core-ha.controllerPvcName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

@@ -1,0 +1,56 @@
+global:
+  registryHost: registry.k1s.home.arpa:32000
+
+stack:
+  name: k1s-dev-a
+  domain: k1s-dev-a.home.arpa
+
+controller:
+  replicas: 3
+  siteIds:
+    - host-a
+  persistence:
+    enabled: true
+    storageClassName: microk8s-hostpath
+    size: 5Gi
+  image:
+    repository: k1s/k1s-core
+    tag: dev
+
+apishim:
+  enabled: true
+  image:
+    repository: k1s/k1s-apishim
+    tag: dev
+
+etcd:
+  storageClassName: microk8s-hostpath
+  storageSize: 5Gi
+
+nats:
+  storageClassName: microk8s-hostpath
+  storageSize: 5Gi
+
+bootstrap:
+  controller:
+    hostOverride: 192.168.29.15
+  natsLeaf:
+    hostOverride: 192.168.29.15
+  rathole:
+    hostOverride: 192.168.29.15
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: kube-prometheus-stack
+
+prometheusRule:
+  enabled: true
+  additionalLabels:
+    release: kube-prometheus-stack

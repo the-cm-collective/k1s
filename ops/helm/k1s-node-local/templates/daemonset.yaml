@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "k1s-node-local.fullname" . }}
+  labels:
+    {{- include "k1s-node-local.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "k1s-node-local.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k1s-node-local.selectorLabels" . | nindent 8 }}
+    spec:
+      hostNetwork: {{ .Values.node.hostNetwork }}
+      dnsPolicy: {{ .Values.node.dnsPolicy }}
+      serviceAccountName: {{ include "k1s-node-local.fullname" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        {{- toYaml .Values.node.tolerations | nindent 8 }}
+      containers:
+        - name: k1s-node
+          image: {{ include "k1s-node-local.image" (dict "root" . "image" .Values.node.image) }}
+          imagePullPolicy: {{ .Values.node.image.pullPolicy }}
+          args:
+            - --runtime-backend
+            - cri
+            - --port
+            - {{ .Values.node.agentPort | quote }}
+          env:
+            - name: AE_HA_MODE
+              value: "1"
+            - name: AE_RUNTIME_BACKEND
+              value: cri
+            - name: AE_CRI_ENDPOINT
+              value: {{ .Values.node.runtimeEndpoint | quote }}
+            - name: AE_CONTROLLER_URL
+              value: {{ include "k1s-node-local.controllerUrl" . | quote }}
+            - name: AE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-node-local.agentTokenSecretName" . }}
+                  key: {{ .Values.target.agentTokenSecretKey }}
+            - name: AE_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: AE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: AE_AGENT_ENDPOINT
+              value: http://$(NODE_IP):{{ .Values.node.agentPort }}
+            - name: AE_AGENT_HEARTBEAT_SECONDS
+              value: {{ .Values.node.heartbeatSeconds | quote }}
+            - name: AE_NODE_LABELS
+              value: {{ include "k1s-node-local.nodeLabelsCsv" . | quote }}
+            {{- if .Values.node.serviceProxy.enabled }}
+            - name: AE_AGENT_SERVICE_PROXY
+              value: "1"
+            - name: AE_AGENT_SERVICE_PROXY_URL
+              value: {{ include "k1s-node-local.controllerUrl" . | quote }}
+            - name: AE_AGENT_SERVICE_PROXY_DB
+              value: {{ .Values.node.serviceProxy.dbPath | quote }}
+            {{- end }}
+            {{- with .Values.node.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: agent
+              containerPort: {{ .Values.node.agentPort }}
+              hostPort: {{ .Values.node.agentPort }}
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            {{- if .Values.node.serviceProxy.enabled }}
+            capabilities:
+              add:
+                - NET_ADMIN
+            {{- end }}
+          resources:
+            {{- toYaml .Values.node.resources | nindent 12 }}
+          volumeMounts:
+            - name: containerd-sock
+              mountPath: /run/containerd/containerd.sock
+            - name: ae-data
+              mountPath: /var/lib/ae
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: containerd-sock
+          hostPath:
+            path: /run/containerd/containerd.sock
+            type: Socket
+        - name: ae-data
+          hostPath:
+            path: {{ .Values.node.hostDataPath }}
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {}

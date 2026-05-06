@@ -1,0 +1,155 @@
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  registryHost: ""
+
+stack:
+  name: dev
+  domain: dev.home.arpa
+
+auth:
+  existingSecret: ""
+  create: true
+  agentToken: changeme-agent
+  ratholeToken: changeme-rathole
+  apishimAdminToken: changeme-apishim-admin
+  apishimReadToken: changeme-apishim-read
+  apishimMintToken: changeme-apishim-mint
+  apishimSessionSecret: changeme-apishim-session
+  natsControllerUser: hub-controller
+  natsControllerPassword: dev
+  natsLeafUser: site-uplink
+  natsLeafPassword: dev
+
+controller:
+  replicas: 3
+  image:
+    registry: ""
+    repository: k1s/k1s-core
+    tag: 0.1.5.dev0
+    pullPolicy: IfNotPresent
+  metricsPort: 9108
+  agentPort: 9110
+  nodeProfile: k1s-ha-core
+  registerLocalNode: false
+  siteIds: []
+  resources: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  persistence:
+    enabled: true
+    storageClassName: ""
+    size: 5Gi
+  extraEnv: []
+
+apishim:
+  enabled: true
+  replicas: 1
+  image:
+    registry: ""
+    repository: k1s/k1s-apishim
+    tag: 0.1.5.dev0
+    pullPolicy: IfNotPresent
+  port: 8445
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+etcd:
+  replicas: 3
+  image:
+    registry: ""
+    repository: quay.io/coreos/etcd
+    tag: v3.5.14
+    pullPolicy: IfNotPresent
+  clientPort: 2379
+  peerPort: 2380
+  metricsPort: 2381
+  storageClassName: ""
+  storageSize: 5Gi
+  resources: {}
+
+nats:
+  replicas: 3
+  image:
+    registry: ""
+    repository: docker.io/nats
+    tag: 2.10.18-alpine
+    pullPolicy: IfNotPresent
+  clientPort: 4222
+  clusterPort: 6222
+  leafPort: 7422
+  monitorPort: 8222
+  storageClassName: ""
+  storageSize: 5Gi
+  jetstream:
+    domain: K1S
+  resources: {}
+
+edgeProxy:
+  enabled: true
+  envoyImage:
+    registry: ""
+    repository: docker.io/envoyproxy/envoy
+    tag: v1.29-latest
+    pullPolicy: IfNotPresent
+  ratholeImage:
+    registry: ""
+    repository: docker.io/rapiz1/rathole
+    tag: v0.5.0
+    pullPolicy: IfNotPresent
+  httpPort: 10080
+  localAddr: 127.0.0.1:18081
+  siteDomainSuffix: ""
+  proxyPortMin: 18080
+  resources: {}
+
+bootstrap:
+  controller:
+    hostOverride: ""
+    loadBalancerIP: ""
+    annotations: {}
+    externalTrafficPolicy: Cluster
+  natsLeaf:
+    hostOverride: ""
+    loadBalancerIP: ""
+    annotations: {}
+    externalTrafficPolicy: Cluster
+  rathole:
+    hostOverride: ""
+    loadBalancerIP: ""
+    annotations: {}
+    externalTrafficPolicy: Cluster
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  additionalLabels: {}
+
+prometheusRule:
+  enabled: true
+  additionalLabels: {}
+
+controllerPdb:
+  enabled: true
+  minAvailable: 2
+
+etcdPdb:
+  enabled: true
+  minAvailable: 2
+
+natsPdb:
+  enabled: true
+  minAvailable: 2

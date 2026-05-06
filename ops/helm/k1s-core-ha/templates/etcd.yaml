@@ -1,0 +1,127 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.etcdHeadlessServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+  ports:
+    - name: client
+      port: {{ .Values.etcd.clientPort }}
+      targetPort: client
+    - name: peer
+      port: {{ .Values.etcd.peerPort }}
+      targetPort: peer
+    - name: metrics
+      port: {{ .Values.etcd.metricsPort }}
+      targetPort: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.etcdClientServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+spec:
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+  ports:
+    - name: client
+      port: {{ .Values.etcd.clientPort }}
+      targetPort: client
+    - name: metrics
+      port: {{ .Values.etcd.metricsPort }}
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "k1s-core-ha.etcdName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+spec:
+  serviceName: {{ include "k1s-core-ha.etcdHeadlessServiceName" . }}
+  replicas: {{ .Values.etcd.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: etcd
+  template:
+    metadata:
+      labels:
+        {{- include "k1s-core-ha.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: etcd
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: etcd
+          image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.etcd.image) }}
+          imagePullPolicy: {{ .Values.etcd.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              exec etcd \
+                --name="${POD_NAME}" \
+                --data-dir=/var/lib/etcd \
+                --listen-client-urls="http://0.0.0.0:{{ .Values.etcd.clientPort }}" \
+                --advertise-client-urls="http://${POD_NAME}.{{ include "k1s-core-ha.etcdHeadlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.etcd.clientPort }}" \
+                --listen-peer-urls="http://0.0.0.0:{{ .Values.etcd.peerPort }}" \
+                --initial-advertise-peer-urls="http://${POD_NAME}.{{ include "k1s-core-ha.etcdHeadlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.etcd.peerPort }}" \
+                --listen-metrics-urls="http://0.0.0.0:{{ .Values.etcd.metricsPort }}" \
+                --initial-cluster-token="{{ include "k1s-core-ha.etcdName" . }}" \
+                --initial-cluster="{{- range $i, $_ := until (int .Values.etcd.replicas) }}{{- if gt $i 0 }},{{ end }}{{ include "k1s-core-ha.etcdName" $ }}-{{ $i }}=http://{{ include "k1s-core-ha.etcdName" $ }}-{{ $i }}.{{ include "k1s-core-ha.etcdHeadlessServiceName" $ }}.{{ $.Release.Namespace }}.svc.cluster.local:{{ $.Values.etcd.peerPort }}{{- end }}" \
+                --initial-cluster-state=new
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: client
+              containerPort: {{ .Values.etcd.clientPort }}
+            - name: peer
+              containerPort: {{ .Values.etcd.peerPort }}
+            - name: metrics
+              containerPort: {{ .Values.etcd.metricsPort }}
+          readinessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.etcd.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/etcd
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "k1s-core-ha.labels" . | nindent 10 }}
+          app.kubernetes.io/component: etcd
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.etcd.storageSize }}
+        {{- if .Values.etcd.storageClassName }}
+        storageClassName: {{ .Values.etcd.storageClassName | quote }}
+        {{- end }}

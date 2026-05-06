@@ -1,0 +1,17 @@
+{{- if .Values.controller.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "k1s-core-ha.controllerPvcName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.controller.persistence.size }}
+  {{- if .Values.controller.persistence.storageClassName }}
+  storageClassName: {{ .Values.controller.persistence.storageClassName | quote }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,57 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "k1s-core-ha.fullname" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  rules:
+    {{- if .Values.edgeProxy.enabled }}
+    - host: {{ printf "*.%s" (include "k1s-core-ha.appsDomain" .) | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "k1s-core-ha.edgeProxyServiceName" . }}
+                port:
+                  name: http
+    {{- end }}
+    - host: {{ include "k1s-core-ha.dashHost" . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "k1s-core-ha.controllerServiceName" . }}
+                port:
+                  name: metrics
+    - host: {{ include "k1s-core-ha.docsHost" . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "k1s-core-ha.controllerServiceName" . }}
+                port:
+                  name: metrics
+  {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.secretName }}
+  tls:
+    - secretName: {{ .Values.ingress.tls.secretName | quote }}
+      hosts:
+        {{- if .Values.edgeProxy.enabled }}
+        - {{ printf "*.%s" (include "k1s-core-ha.appsDomain" .) | quote }}
+        {{- end }}
+        - {{ include "k1s-core-ha.dashHost" . | quote }}
+        - {{ include "k1s-core-ha.docsHost" . | quote }}
+  {{- end }}
+{{- end }}

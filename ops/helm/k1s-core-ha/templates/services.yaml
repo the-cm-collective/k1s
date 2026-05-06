@@ -1,0 +1,142 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.controllerHeadlessServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - name: metrics
+      port: {{ .Values.controller.metricsPort }}
+      targetPort: metrics
+    - name: agent
+      port: {{ .Values.controller.agentPort }}
+      targetPort: agent
+    {{- if .Values.edgeProxy.enabled }}
+    - name: edge-http
+      port: {{ .Values.edgeProxy.httpPort }}
+      targetPort: edge-http
+    - name: rathole
+      port: 2333
+      targetPort: rathole
+    {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.controllerServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - name: metrics
+      port: {{ .Values.controller.metricsPort }}
+      targetPort: metrics
+    - name: agent
+      port: {{ .Values.controller.agentPort }}
+      targetPort: agent
+---
+{{- if .Values.edgeProxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.edgeProxyServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge-proxy
+spec:
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - name: http
+      port: {{ .Values.edgeProxy.httpPort }}
+      targetPort: edge-http
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.controllerExternalServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller-external
+  {{- with .Values.bootstrap.controller.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  {{- if .Values.bootstrap.controller.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.bootstrap.controller.loadBalancerIP | quote }}
+  {{- end }}
+  externalTrafficPolicy: {{ .Values.bootstrap.controller.externalTrafficPolicy }}
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - name: agent
+      port: {{ .Values.controller.agentPort }}
+      targetPort: agent
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.natsLeafExternalServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats-leaf
+  {{- with .Values.bootstrap.natsLeaf.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  {{- if .Values.bootstrap.natsLeaf.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.bootstrap.natsLeaf.loadBalancerIP | quote }}
+  {{- end }}
+  externalTrafficPolicy: {{ .Values.bootstrap.natsLeaf.externalTrafficPolicy }}
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+  ports:
+    - name: leaf
+      port: {{ .Values.nats.leafPort }}
+      targetPort: leaf
+---
+{{- if .Values.edgeProxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.ratholeExternalServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rathole
+  {{- with .Values.bootstrap.rathole.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  {{- if .Values.bootstrap.rathole.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.bootstrap.rathole.loadBalancerIP | quote }}
+  {{- end }}
+  externalTrafficPolicy: {{ .Values.bootstrap.rathole.externalTrafficPolicy }}
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - name: rathole
+      port: 2333
+      targetPort: rathole
+{{- end }}

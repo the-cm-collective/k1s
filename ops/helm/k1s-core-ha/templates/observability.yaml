@@ -1,0 +1,143 @@
+{{- if .Values.controllerPdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "k1s-core-ha.controllerName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.controllerPdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+---
+{{- end }}
+{{- if and .Values.etcdPdb.enabled (gt (int .Values.etcd.replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "k1s-core-ha.etcdName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.etcdPdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: etcd
+---
+{{- end }}
+{{- if and .Values.natsPdb.enabled (gt (int .Values.nats.replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "k1s-core-ha.natsName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.natsPdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nats
+---
+{{- end }}
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "k1s-core-ha.controllerName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.labels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "k1s-core-ha.etcdName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.labels" . | nindent 6 }}
+      app.kubernetes.io/component: etcd
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "k1s-core-ha.natsName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.labels" . | nindent 6 }}
+      app.kubernetes.io/component: nats
+  endpoints:
+    - port: monitor
+      interval: {{ .Values.serviceMonitor.interval }}
+      path: /metrics
+{{- end }}
+{{- if .Values.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "k1s-core-ha.fullname" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ include "k1s-core-ha.fullname" . }}.availability
+      rules:
+        - alert: K1sControllerAuthorityUnhealthy
+          expr: max(ae_controller_authority_healthy{namespace="{{ .Release.Namespace }}"}) < 1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: k1s controller authority is unhealthy
+            description: No healthy k1s controller leader is currently visible in {{ .Release.Namespace }}.
+        - alert: K1sEtcdReplicaLoss
+          expr: kube_statefulset_status_replicas_ready{namespace="{{ .Release.Namespace }}",statefulset="{{ include "k1s-core-ha.etcdName" . }}"} < {{ .Values.etcd.replicas }}
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: k1s etcd quorum is degraded
+            description: The namespaced etcd StatefulSet for {{ .Release.Name }} has fewer ready replicas than expected.
+        - alert: K1sNatsReplicaLoss
+          expr: kube_statefulset_status_replicas_ready{namespace="{{ .Release.Namespace }}",statefulset="{{ include "k1s-core-ha.natsName" . }}"} < {{ .Values.nats.replicas }}
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: k1s NATS transport is degraded
+            description: The namespaced NATS StatefulSet for {{ .Release.Name }} has fewer ready replicas than expected.
+{{- end }}

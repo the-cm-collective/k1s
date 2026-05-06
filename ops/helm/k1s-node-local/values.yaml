@@ -1,0 +1,46 @@
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  registryHost: ""
+
+target:
+  namespace: ""
+  controllerReleaseName: ""
+  controllerServiceName: ""
+  controllerUrl: ""
+  agentTokenSecretName: ""
+  agentTokenSecretKey: agent-token
+
+node:
+  image:
+    registry: ""
+    repository: k1s/k1s-core-node
+    tag: 0.1.5.dev0
+    pullPolicy: IfNotPresent
+  agentPort: 9109
+  runtimeEndpoint: unix:///run/containerd/containerd.sock
+  hostDataPath: /var/lib/ae
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  serviceProxy:
+    enabled: false
+    dbPath: /var/lib/ae/agent-services.db
+  heartbeatSeconds: 10
+  nodeSelector: {}
+  tolerations:
+    - operator: Exists
+  resources: {}
+  extraEnv: []
+  labels:
+    role: worker
+    profile: k1s-ha-core
+    site: host-b
+    gpu: "true"
+
+exclusive:
+  enabled: true
+
+secret:
+  create: false
+  agentToken: changeme-agent

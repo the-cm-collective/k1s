@@ -1,0 +1,19 @@
+global:
+  registryHost: registry.k1s.home.arpa:32000
+
+target:
+  namespace: k1s-dev-a
+  controllerReleaseName: k1s-dev-a
+
+node:
+  image:
+    repository: k1s/k1s-core-node
+    tag: dev
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
+  labels:
+    role: worker
+    profile: k1s-ha-core
+    site: host-b
+    accelerator: nvidia
+    gpu: "true"
