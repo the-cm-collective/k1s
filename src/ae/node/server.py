@@ -164,6 +164,26 @@ def _ha_mode_enabled() -> bool:
     return str(os.getenv("AE_HA_MODE", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_bool_env(name: str) -> bool | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    token = raw.strip().lower()
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _runtime_prefers_pod_ip_portforward(runtime: RuntimeAdapter) -> bool:
+    override = _optional_bool_env("AE_AGENT_PORTFORWARD_PREFER_POD_IP")
+    if override is not None:
+        return override
+    runtime_name = runtime.__class__.__name__.lower()
+    return "containerd" in runtime_name or "criruntime" in runtime_name
+
+
 def _agent_fence_db_path() -> Path:
     raw = os.getenv("AE_AGENT_FENCE_DB")
     if raw:
@@ -736,7 +756,10 @@ class AgentHandler(BaseHTTPRequestHandler):
         host_ports = target.get("host_ports") or target.get("hostPorts") or []
         port_map = target.get("port_map") or target.get("portMap") or {}
         target_port = int(port)
-        # Prefer an advertised host-port mapping when the runtime provides one.
+        if _runtime_prefers_pod_ip_portforward(self.runtime) and pod_ip:
+            return (str(pod_ip), target_port)
+        # Host ports remain the default for Podman/Docker, where the mapping is
+        # the most portable controller-facing path.
         if isinstance(port_map, dict):
             if port in port_map:
                 target_port = int(port_map.get(port) or port)

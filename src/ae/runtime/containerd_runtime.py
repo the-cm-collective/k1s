@@ -27,6 +27,13 @@ from .registry import RegistryAuthProvider
 LOGGER = logging.getLogger(__name__)
 
 
+def _prefer_direct_endpoint_default() -> bool:
+    raw = os.getenv("AE_CONTAINERD_ENDPOINT_PREFER_DIRECT")
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 class ContainerdRuntime(PodmanRuntime):
     """Containerd-backed runtime adapter using nerdctl."""
 
@@ -59,10 +66,7 @@ class ContainerdRuntime(PodmanRuntime):
         self._network_name = os.getenv("AE_CONTAINERD_NETWORK") or os.getenv(
             "AE_NETWORK_NAME", "ae-net"
         )
-        self._prefer_direct_endpoint = (
-            os.getenv("AE_CONTAINERD_ENDPOINT_PREFER_DIRECT", "").strip().lower()
-            in {"1", "true", "yes"}
-        )
+        self._prefer_direct_endpoint = _prefer_direct_endpoint_default()
         self._serial_service_rollout = os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") == "1"
         self._podman_retry_max = 0
         self._podman_retry_delay = 0.0

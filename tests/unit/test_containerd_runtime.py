@@ -10,6 +10,43 @@ from ae.controller.spec import AppManifest
 from ae.runtime.containerd_runtime import ContainerdRuntime
 
 
+def _manifest_with_service() -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "store", "namespace": "workerbee-poc"},
+            "spec": {
+                "image": "localhost/workerbee-poc-store:test",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 8080}],
+                "service": {"port": 19080, "targetPort": 8080},
+                "health": {"readiness": {"httpGet": {"path": "/healthz", "port": 8080}}},
+            },
+        }
+    )
+
+
+def _container_with_ports() -> dict:
+    return {
+        "Id": "container-1",
+        "Name": "/ae-workerbee-poc-store-rev1-0",
+        "Config": {
+            "Labels": {
+                ContainerdRuntime.APP_LABEL: "workerbee-poc/store",
+                ContainerdRuntime.POD_LABEL: "workerbee-poc--store-rev1-0",
+                ContainerdRuntime.REVISION_LABEL: "1",
+            }
+        },
+        "State": {"Status": "running"},
+        "NetworkSettings": {
+            "IPAddress": "10.210.227.3",
+            "Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "19080"}]},
+            "Networks": {"ae-net": {"IPAddress": "10.210.227.3"}},
+        },
+    }
+
+
 def test_containerd_runtime_run_ok_injects_global_flags(monkeypatch) -> None:
     runtime = ContainerdRuntime(
         address="unix:///run/test-containerd.sock",
@@ -267,6 +304,45 @@ def test_containerd_runtime_non_hostnet_declared_ports_do_not_publish_all(monkey
     assert run_argv[run_argv.index("--net") + 1] == "ae-net"
     assert "-P" not in run_argv
     assert "-p" not in run_argv
+
+
+def test_containerd_runtime_prefers_direct_endpoint_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("AE_CONTAINERD_ENDPOINT_PREFER_DIRECT", raising=False)
+    runtime = ContainerdRuntime(namespace="ae-test")
+
+    endpoint = runtime._endpoint_from_container(
+        _manifest_with_service(),
+        _container_with_ports(),
+        preferred=8080,
+    )
+
+    assert endpoint == "10.210.227.3:8080"
+
+
+def test_containerd_runtime_can_prefer_published_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTAINERD_ENDPOINT_PREFER_DIRECT", "false")
+    runtime = ContainerdRuntime(namespace="ae-test")
+
+    endpoint = runtime._endpoint_from_container(
+        _manifest_with_service(),
+        _container_with_ports(),
+        preferred=8080,
+    )
+
+    assert endpoint == "127.0.0.1:19080"
+
+
+def test_containerd_runtime_explicit_true_prefers_direct_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTAINERD_ENDPOINT_PREFER_DIRECT", "on")
+    runtime = ContainerdRuntime(namespace="ae-test")
+
+    endpoint = runtime._endpoint_from_container(
+        _manifest_with_service(),
+        _container_with_ports(),
+        preferred=8080,
+    )
+
+    assert endpoint == "10.210.227.3:8080"
 
 
 def test_containerd_runtime_ensure_network_uses_configured_subnet(monkeypatch) -> None:

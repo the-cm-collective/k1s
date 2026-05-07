@@ -111,6 +111,28 @@ class _RuntimeStub:
         return list(self.app_containers)
 
 
+class _ContainerdRuntimeStub(_RuntimeStub):
+    pass
+
+
+class _CRIRuntimeStub(_RuntimeStub):
+    pass
+
+
+def _portforward_container_info() -> dict:
+    return {
+        "name": "cell-a-single-ray-launcher-rev1-0",
+        "labels": {
+            "ae.pod_name": "cell-a-single-ray-launcher-rev1-0",
+            "ae.namespace": "default",
+        },
+        "pod_ip": "10.42.0.14",
+        "host_ip": "192.168.29.148",
+        "host_ports": [32080],
+        "port_map": {18080: 32080},
+    }
+
+
 def test_result_to_dict_preserves_revision_on_pod_and_replica_states() -> None:
     result = RuntimeResult(
         revision=3,
@@ -133,21 +155,61 @@ def test_result_to_dict_preserves_revision_on_pod_and_replica_states() -> None:
     assert payload["replica_states"][0]["revision"] == 3
 
 
-def test_resolve_portforward_target_prefers_host_port_mapping() -> None:
+def test_resolve_portforward_target_prefers_host_port_mapping(monkeypatch) -> None:
+    monkeypatch.delenv("AE_AGENT_PORTFORWARD_PREFER_POD_IP", raising=False)
     runtime = _RuntimeStub()
-    runtime.list_containers_info = lambda: [  # type: ignore[method-assign]
-        {
-            "name": "cell-a-single-ray-launcher-rev1-0",
-            "labels": {
-                "ae.pod_name": "cell-a-single-ray-launcher-rev1-0",
-                "ae.namespace": "default",
-            },
-            "pod_ip": "10.42.0.14",
-            "host_ip": "192.168.29.148",
-            "host_ports": [32080],
-            "port_map": {18080: 32080},
-        }
-    ]
+    runtime.list_containers_info = lambda: [_portforward_container_info()]  # type: ignore[method-assign]
+    handler = type("H", (), {"runtime": runtime})()
+
+    target = AgentHandler._resolve_portforward_target(
+        handler,
+        pod_id=None,
+        pod_name="cell-a-single-ray-launcher-rev1-0",
+        namespace="default",
+        port=18080,
+    )
+
+    assert target == ("192.168.29.148", 32080)
+
+
+def test_resolve_portforward_target_prefers_pod_ip_for_containerd(monkeypatch) -> None:
+    monkeypatch.delenv("AE_AGENT_PORTFORWARD_PREFER_POD_IP", raising=False)
+    runtime = _ContainerdRuntimeStub()
+    runtime.list_containers_info = lambda: [_portforward_container_info()]  # type: ignore[method-assign]
+    handler = type("H", (), {"runtime": runtime})()
+
+    target = AgentHandler._resolve_portforward_target(
+        handler,
+        pod_id=None,
+        pod_name="cell-a-single-ray-launcher-rev1-0",
+        namespace="default",
+        port=18080,
+    )
+
+    assert target == ("10.42.0.14", 18080)
+
+
+def test_resolve_portforward_target_prefers_pod_ip_for_cri(monkeypatch) -> None:
+    monkeypatch.delenv("AE_AGENT_PORTFORWARD_PREFER_POD_IP", raising=False)
+    runtime = _CRIRuntimeStub()
+    runtime.list_containers_info = lambda: [_portforward_container_info()]  # type: ignore[method-assign]
+    handler = type("H", (), {"runtime": runtime})()
+
+    target = AgentHandler._resolve_portforward_target(
+        handler,
+        pod_id=None,
+        pod_name="cell-a-single-ray-launcher-rev1-0",
+        namespace="default",
+        port=18080,
+    )
+
+    assert target == ("10.42.0.14", 18080)
+
+
+def test_resolve_portforward_target_env_can_disable_pod_ip_preference(monkeypatch) -> None:
+    monkeypatch.setenv("AE_AGENT_PORTFORWARD_PREFER_POD_IP", "0")
+    runtime = _ContainerdRuntimeStub()
+    runtime.list_containers_info = lambda: [_portforward_container_info()]  # type: ignore[method-assign]
     handler = type("H", (), {"runtime": runtime})()
 
     target = AgentHandler._resolve_portforward_target(

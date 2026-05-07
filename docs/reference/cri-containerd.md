@@ -471,6 +471,23 @@ export AE_APISHIM_CRI_PORTFORWARD=1
 export AE_APISHIM_CRI_PORTFORWARD_FORCE=1
 ```
 
+For node-agent port-forward, direct containerd/CRI nodes prefer the pod IP and
+requested container port by default. This keeps readiness and agent-local
+port-forward on the CNI path instead of depending on host-port publication. Set
+`AE_AGENT_PORTFORWARD_PREFER_POD_IP=0` to force the older host-port-first
+behavior for a specific site.
+
+Containerd runtime endpoint selection follows the same default: when
+`AE_CONTAINERD_ENDPOINT_PREFER_DIRECT` is unset, k1s records pod-IP endpoints for
+non-host-network pods. Set `AE_CONTAINERD_ENDPOINT_PREFER_DIRECT=0` to prefer
+published host ports instead.
+
+Readiness and liveness probes remain pod/container probes. A manifest
+`httpGet` probe uses plain HTTP against the selected pod endpoint or the
+agent-local port-forward fallback. TLS ingress checks are a separate external
+smoke-test surface and should target the configured ingress URL instead of the
+runtime readiness path.
+
 ## Service VIP + NodePort (iptables)
 
 For Kubernetes-style ClusterIP/NodePort behavior on CRI nodes, enable the
