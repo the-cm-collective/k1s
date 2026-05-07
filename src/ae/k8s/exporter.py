@@ -106,6 +106,27 @@ def _selector_labels(m: AppManifest) -> Dict[str, Any]:
     return {k: labels[k] for k in selector_keys if k in labels}
 
 
+def _resource_quantity_dict(raw: Any) -> Dict[str, str]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(key): str(value) for key, value in raw.items() if value is not None}
+    quantity_map = getattr(raw, "quantity_map", None)
+    if callable(quantity_map):
+        data = quantity_map()
+    else:
+        model_dump = getattr(raw, "model_dump", None)
+        data = model_dump(exclude_none=True) if callable(model_dump) else None
+    if isinstance(data, dict):
+        return {str(key): str(value) for key, value in data.items() if value is not None}
+    out: Dict[str, str] = {}
+    for field in ("cpu", "memory"):
+        value = getattr(raw, field, None)
+        if value is not None:
+            out[field] = str(value)
+    return out
+
+
 def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str, Any]:
     spec = m.spec
     c: Dict[str, Any] = {
@@ -174,20 +195,11 @@ def _container_from_manifest(m: AppManifest, *, opts: ExportOptions) -> Dict[str
     if spec.resources:
         res: Dict[str, Any] = {}
         if spec.resources.requests:
-            req: Dict[str, Any] = {}
-            if spec.resources.requests.cpu is not None:
-                # K8s expects millicores or cores; pass through as string
-                req["cpu"] = str(spec.resources.requests.cpu)
-            if spec.resources.requests.memory is not None:
-                req["memory"] = str(spec.resources.requests.memory)
+            req = _resource_quantity_dict(spec.resources.requests)
             if req:
                 res["requests"] = req
         if spec.resources.limits:
-            lim: Dict[str, Any] = {}
-            if spec.resources.limits.cpu is not None:
-                lim["cpu"] = str(spec.resources.limits.cpu)
-            if spec.resources.limits.memory is not None:
-                lim["memory"] = str(spec.resources.limits.memory)
+            lim = _resource_quantity_dict(spec.resources.limits)
             if lim:
                 res["limits"] = lim
         if res:
@@ -343,19 +355,11 @@ def _container_from_spec(
         rs = _gf(csp, "resources")
         res: Dict[str, Any] = {}
         if rs.requests:
-            req = {}
-            if rs.requests.cpu is not None:
-                req["cpu"] = str(rs.requests.cpu)
-            if rs.requests.memory is not None:
-                req["memory"] = str(rs.requests.memory)
+            req = _resource_quantity_dict(rs.requests)
             if req:
                 res["requests"] = req
         if rs.limits:
-            lim = {}
-            if rs.limits.cpu is not None:
-                lim["cpu"] = str(rs.limits.cpu)
-            if rs.limits.memory is not None:
-                lim["memory"] = str(rs.limits.memory)
+            lim = _resource_quantity_dict(rs.limits)
             if lim:
                 res["limits"] = lim
         if res:

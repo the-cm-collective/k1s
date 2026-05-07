@@ -19,15 +19,49 @@ node:
     tag: 0.1.5.dev0
     pullPolicy: IfNotPresent
   agentPort: 9109
+  runtimeBackend: cri
   runtimeEndpoint: unix:///run/containerd/containerd.sock
   runtimeHostSocketPath: /run/containerd/containerd.sock
+  runtimeStateDir: /run/containerd
+  runtimeStateHostPath: /run/containerd
+  runtimeDataDir: /var/lib/containerd
+  runtimeDataHostPath: /var/lib/containerd
+  runtimeNamespace: ae
+  networkName: ae-net
+  networkSubnet: ""
+  dataRoot: /var/lib/ae/nerdctl
+  cniBinDir: /opt/cni/bin
+  cniBinHostPath: /opt/cni/bin
+  cniBinRuntimeDir: /var/lib/ae/cni/bin
+  cniConfDir: /etc/cni/net.d
+  cniConfHostPath: /etc/cni/net.d
+  cniConfRuntimeDir: /var/lib/ae/cni/net.d
+  cniStateDir: /var/lib/cni
+  cniStateHostPath: /var/lib/cni
   hostDataPath: /var/lib/ae
   hostNetwork: true
+  hostPID: false
   dnsPolicy: ClusterFirstWithHostNet
+  privileged: false
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfileType: RuntimeDefault
   serviceProxy:
     enabled: false
     dbPath: /var/lib/ae/agent-services.db
   heartbeatSeconds: 10
+  gpuRuntime:
+    enabled: false
+    toolkitRootHostPath: /usr/local/nvidia
+    toolkitRootMountPath: /usr/local/nvidia
+    toolkitBinDir: /usr/local/nvidia/toolkit
+    configHostPath: /etc/nvidia-container-runtime
+    configMountPath: /etc/nvidia-container-runtime
+    driverLibHostPath: /usr/lib/x86_64-linux-gnu
+    driverLibSourceMountPath: /host-libs/x86_64-linux-gnu
+    driverLibRuntimeDir: /var/lib/ae/nvidia-libs
+    smiHostPath: /usr/bin/nvidia-smi
+    smiMountPath: /var/lib/ae/nvidia-smi
   nodeSelector: {}
   tolerations:
     - operator: Exists

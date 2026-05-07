@@ -1,13 +1,17 @@
 """Runtime factory backend selection tests."""
 
-import pytest
-
 from ae.cli.__main__ import runtime_factory
-from ae.runtime import CRIRuntime
+from ae.runtime import CRIRuntime, ContainerdRuntime
 
 
-@pytest.mark.parametrize("backend", ["cri", "containerd"])
-def test_runtime_factory_cri_backend(monkeypatch, backend):
-    monkeypatch.setenv("AE_RUNTIME_BACKEND", backend)
+def test_runtime_factory_cri_backend(monkeypatch):
+    monkeypatch.setenv("AE_RUNTIME_BACKEND", "cri")
     runtime = runtime_factory()
     assert isinstance(runtime, CRIRuntime)
+
+
+def test_runtime_factory_containerd_backend(monkeypatch):
+    monkeypatch.setenv("AE_RUNTIME_BACKEND", "containerd")
+    monkeypatch.setenv("AE_NERDCTL_BIN", "/usr/bin/nerdctl")
+    runtime = runtime_factory()
+    assert isinstance(runtime, ContainerdRuntime)

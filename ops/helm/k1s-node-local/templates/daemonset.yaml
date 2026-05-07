@@ -14,6 +14,7 @@ spec:
         {{- include "k1s-node-local.selectorLabels" . | nindent 8 }}
     spec:
       hostNetwork: {{ .Values.node.hostNetwork }}
+      hostPID: {{ .Values.node.hostPID }}
       dnsPolicy: {{ .Values.node.dnsPolicy }}
       serviceAccountName: {{ include "k1s-node-local.fullname" . }}
       automountServiceAccountToken: false
@@ -29,16 +30,44 @@ spec:
           imagePullPolicy: {{ .Values.node.image.pullPolicy }}
           args:
             - --runtime-backend
-            - cri
+            - {{ .Values.node.runtimeBackend | quote }}
             - --port
             - {{ .Values.node.agentPort | quote }}
           env:
             - name: AE_HA_MODE
               value: "1"
             - name: AE_RUNTIME_BACKEND
-              value: cri
+              value: {{ .Values.node.runtimeBackend | quote }}
             - name: AE_CRI_ENDPOINT
+              {{- if eq .Values.node.runtimeBackend "containerd" }}
+              value: {{ printf "unix://%s" .Values.node.runtimeHostSocketPath | quote }}
+              {{- else }}
               value: {{ .Values.node.runtimeEndpoint | quote }}
+              {{- end }}
+            {{- if eq .Values.node.runtimeBackend "containerd" }}
+            - name: AE_CONTAINERD_ADDRESS
+              value: {{ printf "unix://%s" .Values.node.runtimeHostSocketPath | quote }}
+            - name: AE_CONTAINERD_NAMESPACE
+              value: {{ .Values.node.runtimeNamespace | quote }}
+            - name: AE_CONTAINERD_NETWORK
+              value: {{ .Values.node.networkName | quote }}
+            {{- if .Values.node.networkSubnet }}
+            - name: AE_CONTAINERD_NETWORK_SUBNET
+              value: {{ .Values.node.networkSubnet | quote }}
+            {{- end }}
+            - name: AE_CONTAINERD_DATA_ROOT
+              value: {{ .Values.node.dataRoot | quote }}
+            - name: AE_NERDCTL_BIN
+              value: "/var/lib/ae/nerdctl-bin/nerdctl"
+            - name: AE_CONTAINERD_CNI_BIN_DIR
+              value: {{ .Values.node.cniBinRuntimeDir | quote }}
+            - name: AE_CONTAINERD_CNI_BIN_SOURCE_DIR
+              value: {{ .Values.node.cniBinDir | quote }}
+            - name: AE_CONTAINERD_CNI_CONF_DIR
+              value: {{ .Values.node.cniConfRuntimeDir | quote }}
+            - name: AE_CONTAINERD_CNI_CONF_SOURCE_DIR
+              value: {{ .Values.node.cniConfDir | quote }}
+            {{- end }}
             - name: AE_CONTROLLER_URL
               value: {{ include "k1s-node-local.controllerUrl" . | quote }}
             - name: AE_AGENT_TOKEN
@@ -64,6 +93,24 @@ spec:
               value: {{ .Values.node.heartbeatSeconds | quote }}
             - name: AE_NODE_LABELS
               value: {{ include "k1s-node-local.nodeLabelsCsv" . | quote }}
+            {{- if .Values.node.gpuRuntime.enabled }}
+            - name: AE_NVIDIA_TOOLKIT_DIR
+              value: {{ .Values.node.gpuRuntime.toolkitBinDir | quote }}
+            - name: AE_NVIDIA_LIBRARY_DIRS
+              value: {{ printf "%s:%s" .Values.node.gpuRuntime.toolkitBinDir .Values.node.gpuRuntime.driverLibRuntimeDir | quote }}
+            - name: AE_NVIDIA_HOST_LIB_SOURCE_DIR
+              value: {{ .Values.node.gpuRuntime.driverLibSourceMountPath | quote }}
+            - name: AE_NVIDIA_LIBRARY_DIR
+              value: {{ .Values.node.gpuRuntime.driverLibRuntimeDir | quote }}
+            - name: AE_NVIDIA_CONTAINER_CLI_BIN
+              value: {{ printf "%s/nvidia-container-cli" .Values.node.gpuRuntime.toolkitBinDir | quote }}
+            - name: AE_NVIDIA_CONTAINER_RUNTIME_BIN
+              value: {{ printf "%s/nvidia-container-runtime" .Values.node.gpuRuntime.toolkitBinDir | quote }}
+            - name: AE_NVIDIA_RUNTIME_CONFIG_DIR
+              value: {{ .Values.node.gpuRuntime.configMountPath | quote }}
+            - name: AE_NVIDIA_SMI_BIN
+              value: {{ .Values.node.gpuRuntime.smiMountPath | quote }}
+            {{- end }}
             {{- if .Values.node.serviceProxy.enabled }}
             - name: AE_AGENT_SERVICE_PROXY
               value: "1"
@@ -81,10 +128,13 @@ spec:
               hostPort: {{ .Values.node.agentPort }}
               protocol: TCP
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: {{ .Values.node.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.node.readOnlyRootFilesystem }}
+            {{- if .Values.node.privileged }}
+            privileged: true
+            {{- end }}
             seccompProfile:
-              type: RuntimeDefault
+              type: {{ .Values.node.seccompProfileType }}
             {{- if .Values.node.serviceProxy.enabled }}
             capabilities:
               add:
@@ -94,19 +144,97 @@ spec:
             {{- toYaml .Values.node.resources | nindent 12 }}
           volumeMounts:
             - name: containerd-sock
+              {{- if eq .Values.node.runtimeBackend "containerd" }}
+              mountPath: {{ dir .Values.node.runtimeHostSocketPath | quote }}
+              {{- else }}
               mountPath: {{ trimPrefix "unix://" .Values.node.runtimeEndpoint | quote }}
+              {{- end }}
             - name: ae-data
               mountPath: /var/lib/ae
+            {{- if eq .Values.node.runtimeBackend "containerd" }}
+            - name: cni-bin
+              mountPath: {{ .Values.node.cniBinDir | quote }}
+              readOnly: true
+            - name: cni-conf
+              mountPath: {{ .Values.node.cniConfDir | quote }}
+              readOnly: true
+            - name: cni-state
+              mountPath: {{ .Values.node.cniStateDir | quote }}
+            - name: containerd-state
+              mountPath: {{ .Values.node.runtimeStateDir | quote }}
+            - name: containerd-data
+              mountPath: {{ .Values.node.runtimeDataDir | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.node.gpuRuntime.enabled }}
+            - name: nvidia-toolkit
+              mountPath: {{ .Values.node.gpuRuntime.toolkitRootMountPath | quote }}
+              readOnly: true
+            - name: nvidia-runtime-config
+              mountPath: {{ .Values.node.gpuRuntime.configMountPath | quote }}
+              readOnly: true
+            - name: nvidia-driver-lib
+              mountPath: {{ .Values.node.gpuRuntime.driverLibSourceMountPath | quote }}
+              readOnly: true
+            - name: nvidia-smi
+              mountPath: {{ .Values.node.gpuRuntime.smiMountPath | quote }}
+              readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
       volumes:
         - name: containerd-sock
           hostPath:
+            {{- if eq .Values.node.runtimeBackend "containerd" }}
+            path: {{ dir .Values.node.runtimeHostSocketPath | quote }}
+            type: Directory
+            {{- else }}
             path: {{ .Values.node.runtimeHostSocketPath | quote }}
             type: Socket
+            {{- end }}
         - name: ae-data
           hostPath:
             path: {{ .Values.node.hostDataPath }}
             type: DirectoryOrCreate
+        {{- if .Values.node.gpuRuntime.enabled }}
+        - name: nvidia-toolkit
+          hostPath:
+            path: {{ .Values.node.gpuRuntime.toolkitRootHostPath | quote }}
+            type: Directory
+        - name: nvidia-runtime-config
+          hostPath:
+            path: {{ .Values.node.gpuRuntime.configHostPath | quote }}
+            type: Directory
+        - name: nvidia-driver-lib
+          hostPath:
+            path: {{ .Values.node.gpuRuntime.driverLibHostPath | quote }}
+            type: Directory
+        - name: nvidia-smi
+          hostPath:
+            path: {{ .Values.node.gpuRuntime.smiHostPath | quote }}
+            type: File
+        {{- end }}
+        {{- if eq .Values.node.runtimeBackend "containerd" }}
+        - name: cni-bin
+          hostPath:
+            path: {{ .Values.node.cniBinHostPath | quote }}
+            type: Directory
+        - name: cni-conf
+          hostPath:
+            path: {{ .Values.node.cniConfHostPath | quote }}
+            type: Directory
+        - name: cni-state
+          hostPath:
+            path: {{ .Values.node.cniStateHostPath | quote }}
+            type: DirectoryOrCreate
+        - name: containerd-state
+          hostPath:
+            path: {{ .Values.node.runtimeStateHostPath | quote }}
+            type: Directory
+        - name: containerd-data
+          hostPath:
+            path: {{ .Values.node.runtimeDataHostPath | quote }}
+            type: Directory
+        {{- end }}
         - name: tmp
           emptyDir: {}

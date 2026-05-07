@@ -9,7 +9,33 @@ node:
   image:
     repository: k1s/k1s-core-node
     tag: dev
+  runtimeBackend: containerd
   runtimeHostSocketPath: /var/snap/microk8s/common/run/containerd.sock
+  runtimeStateDir: /run/containerd
+  runtimeStateHostPath: /run/containerd
+  runtimeDataDir: /var/snap/microk8s/common/var/lib/containerd
+  runtimeDataHostPath: /var/snap/microk8s/common/var/lib/containerd
+  networkSubnet: 10.241.0.0/16
+  cniBinHostPath: /var/snap/microk8s/current/opt/cni/bin
+  cniConfHostPath: /var/snap/microk8s/current/args/cni-network
+  cniStateHostPath: /var/snap/microk8s/current/var/lib/cni
+  hostPID: true
+  gpuRuntime:
+    enabled: true
+    toolkitRootHostPath: /usr/local/nvidia
+    toolkitRootMountPath: /usr/local/nvidia
+    toolkitBinDir: /usr/local/nvidia/toolkit
+    configHostPath: /etc/nvidia-container-runtime
+    configMountPath: /etc/nvidia-container-runtime
+    driverLibHostPath: /usr/lib/x86_64-linux-gnu
+    driverLibSourceMountPath: /host-libs/x86_64-linux-gnu
+    driverLibRuntimeDir: /var/lib/ae/nvidia-libs
+    smiHostPath: /usr/bin/nvidia-smi
+    smiMountPath: /var/lib/ae/nvidia-smi
+  privileged: true
+  allowPrivilegeEscalation: true
+  readOnlyRootFilesystem: false
+  seccompProfileType: Unconfined
   nodeSelector:
     nvidia.com/gpu.present: "true"
   labels:

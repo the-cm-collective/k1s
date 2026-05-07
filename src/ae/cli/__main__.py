@@ -49,6 +49,7 @@ from ae.observability import MetricsService
 from ae.observability.logging import configure_logging
 from ae.runtime import (
     CRIRuntime,
+    ContainerdRuntime,
     DockerRuntime,
     PodmanRuntime,
     RegistryAuthProvider,
@@ -1062,8 +1063,10 @@ def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> Runtim
     backend = os.getenv("AE_RUNTIME_BACKEND", "podman").lower()
     if backend == "stub":
         return StubRuntime()
-    if backend in {"cri", "containerd"}:
+    if backend == "cri":
         return CRIRuntime(registry_auth=registry_auth)
+    if backend == "containerd":
+        return ContainerdRuntime(registry_auth=registry_auth)
     if backend in {"podman", "oci"}:
         try:
             # quick availability check

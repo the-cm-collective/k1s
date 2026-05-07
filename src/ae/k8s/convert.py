@@ -167,6 +167,29 @@ def probe_from_k8s(raw: dict | None, ports_by_name: dict[str, int]) -> dict | No
     return out or None
 
 
+def _resource_quantity_dict(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(key): value for key, value in raw.items() if value is not None}
+    quantity_map = getattr(raw, "quantity_map", None)
+    if callable(quantity_map):
+        data = quantity_map()
+        if isinstance(data, dict):
+            return {str(key): value for key, value in data.items() if value is not None}
+    model_dump = getattr(raw, "model_dump", None)
+    if callable(model_dump):
+        data = model_dump(exclude_none=True)
+        if isinstance(data, dict):
+            return {str(key): value for key, value in data.items() if value is not None}
+    out: dict[str, Any] = {}
+    for field in ("cpu", "memory"):
+        value = getattr(raw, field, None)
+        if value is not None:
+            out[field] = value
+    return out
+
+
 def manifest_from_k8s_workload(
     obj: Any,
     *,
@@ -264,11 +287,13 @@ def manifest_from_k8s_workload(
         if res.get("requests") or res.get("limits"):
             resources = {}
             if res.get("requests"):
-                req = res.get("requests") or {}
-                resources["requests"] = {k: v for k, v in req.items() if k in {"cpu", "memory"}}
+                req = _resource_quantity_dict(res.get("requests") or {})
+                if req:
+                    resources["requests"] = req
             if res.get("limits"):
-                lim = res.get("limits") or {}
-                resources["limits"] = {k: v for k, v in lim.items() if k in {"cpu", "memory"}}
+                lim = _resource_quantity_dict(res.get("limits") or {})
+                if lim:
+                    resources["limits"] = lim
             if resources.get("requests") == {}:
                 resources.pop("requests", None)
             if resources.get("limits") == {}:
@@ -331,6 +356,22 @@ def manifest_from_k8s_workload(
         serviceAccountName=(
             tpl.get("serviceAccountName") or tpl.get("serviceAccount") or None
         ),
+        runtimeClassName=(tpl.get("runtimeClassName") or None),
+        nodeSelector=(
+            {str(key): str(value) for key, value in (tpl.get("nodeSelector") or {}).items()}
+            if isinstance(tpl.get("nodeSelector"), dict)
+            else {}
+        ),
+        tolerations=[
+            dict(item) for item in (tpl.get("tolerations") or []) if isinstance(item, dict)
+        ],
+        affinity=dict(tpl.get("affinity") or {}) if isinstance(tpl.get("affinity"), dict) else None,
+        priorityClassName=(tpl.get("priorityClassName") or None),
+        hostNetwork=(
+            bool(tpl.get("hostNetwork")) if tpl.get("hostNetwork") is not None else None
+        ),
+        hostPID=bool(tpl.get("hostPID")) if tpl.get("hostPID") is not None else None,
+        hostIPC=bool(tpl.get("hostIPC")) if tpl.get("hostIPC") is not None else None,
     )
     if service_spec is not None:
         app_spec = app_spec.model_copy(update={"service": service_spec})

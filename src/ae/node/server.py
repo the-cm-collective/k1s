@@ -17,7 +17,7 @@ from ae.accelerators import (
     merge_projected_gpu_labels,
 )
 from ae.config.transport import TransportConfig, check_nats_connectivity
-from ae.controller.spec import AppManifest
+from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.ha.fencing import SQLiteFenceStore, parse_envelope
 from ae.observability.http_api import record_ha_fence_event
 from ae.runtime import PodState, RuntimeAdapter, RuntimeResult
@@ -56,6 +56,108 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict) -> 
 
 def _parse_manifest(payload: dict) -> AppManifest:
     return AppManifest.model_validate(payload)
+
+
+def _pod_state_from_container_record(record: dict) -> PodState | None:
+    labels = (record.get("Config") or {}).get("Labels") or {}
+    pod_name = (
+        labels.get("ae.pod_name")
+        or labels.get("ae.replica_id")
+        or labels.get("ae.replica")
+        or ""
+    )
+    if not pod_name:
+        return None
+    state = record.get("State") or {}
+    status = str(state.get("Status") or "").strip() or "unknown"
+    revision_raw = labels.get("ae.revision")
+    revision = int(revision_raw) if str(revision_raw or "").isdigit() else None
+    exit_code = None
+    try:
+        raw_exit = state.get("ExitCode", None)
+        exit_code = int(raw_exit) if raw_exit is not None else None
+    except Exception:
+        exit_code = None
+    ready = status == "running"
+    return PodState(
+        pod_name=str(pod_name),
+        ready=ready,
+        status=status,
+        revision=revision,
+        exit_code=exit_code,
+    )
+
+
+def _duplicate_runtime_result(
+    runtime: RuntimeAdapter,
+    manifest: AppManifest,
+    revision: int,
+    *,
+    pod_names: list[str] | None = None,
+) -> RuntimeResult:
+    desired = {str(name) for name in (pod_names or []) if name}
+    app_name = app_key_for_manifest(manifest)
+    states: list[PodState] = []
+
+    list_app = getattr(runtime, "_list_app_containers", None)
+    if callable(list_app):
+        try:
+            containers = list_app(app_name)
+        except Exception:
+            containers = []
+        for item in containers or []:
+            if not isinstance(item, dict):
+                continue
+            pod = _pod_state_from_container_record(item)
+            if pod is None:
+                continue
+            if desired and pod.pod_name not in desired:
+                continue
+            states.append(pod)
+        return RuntimeResult(
+            revision=int(revision),
+            created=0,
+            updated=0,
+            removed=0,
+            pod_states=states,
+        )
+
+    try:
+        container_infos = runtime.list_containers_info()
+    except Exception:
+        container_infos = []
+    for item in container_infos or []:
+        if not isinstance(item, dict):
+            continue
+        labels = item.get("labels") or {}
+        if str(labels.get("ae.app") or "") != app_name:
+            continue
+        pod_name = (
+            labels.get("ae.pod_name")
+            or labels.get("ae.replica_id")
+            or labels.get("ae.replica")
+            or ""
+        )
+        if desired and pod_name not in desired:
+            continue
+        revision_raw = labels.get("ae.revision")
+        item_revision = int(revision_raw) if str(revision_raw or "").isdigit() else None
+        running = bool(item.get("running"))
+        states.append(
+            PodState(
+                pod_name=str(pod_name),
+                ready=running,
+                status="running" if running else "exited",
+                revision=item_revision,
+            )
+        )
+    return RuntimeResult(
+        revision=int(revision),
+        created=0,
+        updated=0,
+        removed=0,
+        pod_states=states,
+    )
 
 
 def _ha_mode_enabled() -> bool:
@@ -267,24 +369,23 @@ class AgentHandler(BaseHTTPRequestHandler):
                 status, envelope, _decision = self._begin_mutation(payload, scope)
                 if status == "reject":
                     return
+                manifest = _parse_manifest(payload.get("manifest", {}))
+                pod_names = payload.get("pod_names") or payload.get("replica_ids")
                 if status == "duplicate":
+                    duplicate_result = _duplicate_runtime_result(
+                        self.runtime,
+                        manifest,
+                        int(payload.get("revision", 0)),
+                        pod_names=[str(name) for name in pod_names if name]
+                        if isinstance(pod_names, list)
+                        else None,
+                    )
                     _json_response(
                         self,
                         200,
-                        {
-                            "revision": int(payload.get("revision", 0)),
-                            "created": 0,
-                            "updated": 0,
-                            "removed": 0,
-                            "pod_states": [],
-                            "replica_states": [],
-                            "ok": True,
-                            "duplicate": True,
-                        },
+                        _result_to_dict(duplicate_result) | {"ok": True, "duplicate": True},
                     )
                     return
-                manifest = _parse_manifest(payload.get("manifest", {}))
-                pod_names = payload.get("pod_names") or payload.get("replica_ids")
                 replica_id = None
                 if isinstance(pod_names, list) and len(pod_names) == 1:
                     replica_id = pod_names[0]
@@ -1067,10 +1168,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
 
-    from ae.runtime import CRIRuntime, DockerRuntime, PodmanRuntime
+    from ae.runtime import CRIRuntime, ContainerdRuntime, DockerRuntime, PodmanRuntime
 
-    if args.runtime_backend in {"cri", "containerd"}:
+    if args.runtime_backend == "cri":
         runtime = CRIRuntime()
+    elif args.runtime_backend == "containerd":
+        runtime = ContainerdRuntime()
     else:
         runtime = PodmanRuntime() if args.runtime_backend == "podman" else DockerRuntime()
     node_id = os.getenv("AE_NODE_ID", socket.gethostname())

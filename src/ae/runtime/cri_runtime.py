@@ -1388,6 +1388,12 @@ class CRIRuntime(RuntimeAdapter):
             log_directory=self._pod_log_dir(ns, replica_id, pod_uid),
             port_mappings=port_mappings,
         )
+        linux_cfg = self._pod_sandbox_linux_config(manifest)
+        if linux_cfg is not None:
+            try:
+                pod_config.linux.CopyFrom(linux_cfg)
+            except Exception:
+                pod_config.linux = linux_cfg
         runtime_handler = getattr(manifest.spec, "runtime_class_name", None)
         req = pb2.RunPodSandboxRequest(config=pod_config)
         if runtime_handler:
@@ -3139,6 +3145,10 @@ class CRIRuntime(RuntimeAdapter):
             if host_port:
                 host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
                 return f"{host}:{int(host_port)}"
+        if bool(getattr(manifest.spec, "host_network", False)):
+            endpoint = self._endpoint_for_host_network(manifest, preferred_port)
+            if endpoint:
+                return endpoint
         if not pod_ip:
             return None
         if preferred_port is None:
@@ -3147,6 +3157,8 @@ class CRIRuntime(RuntimeAdapter):
 
     def _port_mappings(self, manifest: AppManifest) -> tuple[list[Any], dict[int, int]]:
         pb2 = self._pb2()
+        if bool(getattr(manifest.spec, "host_network", False)):
+            return [], {}
         svc = getattr(manifest.spec, "service", None)
         if not svc or manifest.spec.replicas != 1:
             return [], {}
@@ -3204,6 +3216,50 @@ class CRIRuntime(RuntimeAdapter):
                     add_mapping(int(target), int(host_port), "TCP")
 
         return mappings, port_map
+
+    def _endpoint_for_host_network(
+        self, manifest: AppManifest, preferred: int | None = None
+    ) -> str | None:
+        port = preferred
+        if port is None and getattr(manifest.spec, "ports", None):
+            try:
+                port = int(manifest.spec.ports[0].container_port)
+            except Exception:
+                port = None
+        if port is None and getattr(manifest.spec, "service", None):
+            svc = manifest.spec.service
+            try:
+                target = getattr(svc, "target_port", None)
+                raw_port = target if target is not None else getattr(svc, "port", None)
+                port = int(raw_port) if raw_port is not None else None
+            except Exception:
+                port = None
+        if port is None:
+            return None
+        host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+        return f"{host}:{int(port)}"
+
+    def _pod_sandbox_linux_config(self, manifest: AppManifest):
+        host_network = bool(getattr(manifest.spec, "host_network", False))
+        host_pid = bool(getattr(manifest.spec, "host_pid", False))
+        host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+        if not any((host_network, host_pid, host_ipc)):
+            return None
+        pb2 = self._pb2()
+        namespace_options = pb2.NamespaceOption()
+        node_mode = pb2.NamespaceMode.NODE
+        if host_network:
+            namespace_options.network = node_mode
+        if host_pid:
+            namespace_options.pid = node_mode
+        if host_ipc:
+            namespace_options.ipc = node_mode
+        linux_cfg = pb2.LinuxPodSandboxConfig()
+        try:
+            linux_cfg.security_context.namespace_options.CopyFrom(namespace_options)
+        except Exception:
+            linux_cfg.security_context.namespace_options = namespace_options
+        return linux_cfg
 
     def _pod_uid(self, replica_id: str, namespace: str | None) -> str:
         ns = namespace or DEFAULT_NAMESPACE

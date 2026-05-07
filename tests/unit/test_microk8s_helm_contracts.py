@@ -189,10 +189,53 @@ def test_node_chart_renders_daemonset_against_target_release() -> None:
         if "hostPath" in item
     }
     assert daemonset["spec"]["template"]["spec"]["hostNetwork"] is True
+    assert daemonset["spec"]["template"]["spec"]["hostPID"] is True
+    assert container["args"][1] == "containerd"
+    assert env["AE_RUNTIME_BACKEND"] == "containerd"
     assert env["AE_CONTROLLER_URL"] == "http://k1s-dev-a-k1s-core-ha-controller.k1s-dev-a.svc.cluster.local:9110"
-    assert env["AE_CRI_ENDPOINT"] == "unix:///run/containerd/containerd.sock"
-    assert mounts["containerd-sock"] == "/run/containerd/containerd.sock"
-    assert volumes["containerd-sock"] == "/var/snap/microk8s/common/run/containerd.sock"
+    assert env["AE_CRI_ENDPOINT"] == "unix:///var/snap/microk8s/common/run/containerd.sock"
+    assert env["AE_CONTAINERD_ADDRESS"] == "unix:///var/snap/microk8s/common/run/containerd.sock"
+    assert env["AE_CONTAINERD_NAMESPACE"] == "ae"
+    assert env["AE_CONTAINERD_NETWORK"] == "ae-net"
+    assert env["AE_CONTAINERD_NETWORK_SUBNET"] == "10.241.0.0/16"
+    assert env["AE_CONTAINERD_DATA_ROOT"] == "/var/lib/ae/nerdctl"
+    assert env["AE_NERDCTL_BIN"] == "/var/lib/ae/nerdctl-bin/nerdctl"
+    assert env["AE_CONTAINERD_CNI_BIN_DIR"] == "/var/lib/ae/cni/bin"
+    assert env["AE_CONTAINERD_CNI_BIN_SOURCE_DIR"] == "/opt/cni/bin"
+    assert env["AE_CONTAINERD_CNI_CONF_DIR"] == "/var/lib/ae/cni/net.d"
+    assert env["AE_CONTAINERD_CNI_CONF_SOURCE_DIR"] == "/etc/cni/net.d"
+    assert env["AE_NVIDIA_TOOLKIT_DIR"] == "/usr/local/nvidia/toolkit"
+    assert env["AE_NVIDIA_LIBRARY_DIRS"] == "/usr/local/nvidia/toolkit:/var/lib/ae/nvidia-libs"
+    assert env["AE_NVIDIA_HOST_LIB_SOURCE_DIR"] == "/host-libs/x86_64-linux-gnu"
+    assert env["AE_NVIDIA_LIBRARY_DIR"] == "/var/lib/ae/nvidia-libs"
+    assert env["AE_NVIDIA_CONTAINER_CLI_BIN"] == "/usr/local/nvidia/toolkit/nvidia-container-cli"
+    assert env["AE_NVIDIA_CONTAINER_RUNTIME_BIN"] == "/usr/local/nvidia/toolkit/nvidia-container-runtime"
+    assert env["AE_NVIDIA_RUNTIME_CONFIG_DIR"] == "/etc/nvidia-container-runtime"
+    assert env["AE_NVIDIA_SMI_BIN"] == "/var/lib/ae/nvidia-smi"
+    assert mounts["containerd-sock"] == "/var/snap/microk8s/common/run"
+    assert mounts["containerd-state"] == "/run/containerd"
+    assert mounts["containerd-data"] == "/var/snap/microk8s/common/var/lib/containerd"
+    assert mounts["cni-bin"] == "/opt/cni/bin"
+    assert mounts["cni-conf"] == "/etc/cni/net.d"
+    assert mounts["cni-state"] == "/var/lib/cni"
+    assert mounts["nvidia-toolkit"] == "/usr/local/nvidia"
+    assert mounts["nvidia-runtime-config"] == "/etc/nvidia-container-runtime"
+    assert mounts["nvidia-driver-lib"] == "/host-libs/x86_64-linux-gnu"
+    assert mounts["nvidia-smi"] == "/var/lib/ae/nvidia-smi"
+    assert volumes["containerd-sock"] == "/var/snap/microk8s/common/run"
+    assert volumes["containerd-state"] == "/run/containerd"
+    assert volumes["containerd-data"] == "/var/snap/microk8s/common/var/lib/containerd"
+    assert volumes["cni-bin"] == "/var/snap/microk8s/current/opt/cni/bin"
+    assert volumes["cni-conf"] == "/var/snap/microk8s/current/args/cni-network"
+    assert volumes["cni-state"] == "/var/snap/microk8s/current/var/lib/cni"
+    assert volumes["nvidia-toolkit"] == "/usr/local/nvidia"
+    assert volumes["nvidia-runtime-config"] == "/etc/nvidia-container-runtime"
+    assert volumes["nvidia-driver-lib"] == "/usr/lib/x86_64-linux-gnu"
+    assert volumes["nvidia-smi"] == "/usr/bin/nvidia-smi"
+    assert container["securityContext"]["privileged"] is True
+    assert container["securityContext"]["allowPrivilegeEscalation"] is True
+    assert container["securityContext"]["readOnlyRootFilesystem"] is False
+    assert container["securityContext"]["seccompProfile"]["type"] == "Unconfined"
     assert env["AE_NODE_LABELS"]
 
 

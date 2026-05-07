@@ -4,6 +4,8 @@ from ae.controller.spec import (
     HTTPGetProbe,
     PortSpec,
     ProbeSpec,
+    ResourceQuantities,
+    ResourcesSpec,
     ServiceSpec,
     TCPSocketProbe,
     load_manifest,
@@ -709,6 +711,35 @@ def test_pod_small_pass_throughs() -> None:
     dep3 = next(d for d in docs3 if d["kind"] == "Deployment")
     pod3 = dep3["spec"]["template"]["spec"]
     assert pod3.get("hostPID") is True and pod3.get("hostIPC") is False
+
+
+def test_export_preserves_extended_resources() -> None:
+    man = load_manifest(Path("specs/examples/echo.yaml"))
+    man = man.model_copy(
+        update={
+            "spec": man.spec.model_copy(
+                update={
+                    "runtime_class_name": "nvidia",
+                    "resources": ResourcesSpec(
+                        requests=ResourceQuantities.model_validate(
+                            {"memory": "256Mi", "nvidia.com/gpu": 1}
+                        ),
+                        limits=ResourceQuantities.model_validate(
+                            {"memory": "512Mi", "nvidia.com/gpu": 1}
+                        ),
+                    ),
+                }
+            )
+        }
+    )
+    docs = export_k8s_docs(man, options=ExportOptions(namespace="demo"))
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    pod = dep["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    assert pod.get("runtimeClassName") == "nvidia"
+    assert container["resources"]["requests"]["memory"] == "256Mi"
+    assert container["resources"]["requests"]["nvidia.com/gpu"] == "1"
+    assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
 
 
 def test_statefulset_carries_startup_probe_and_pull_secrets() -> None:

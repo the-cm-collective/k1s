@@ -125,3 +125,41 @@ def test_run_pod_sets_runtime_handler_from_runtime_class_name(monkeypatch) -> No
         "gpu-demo-rev1-0",
         runtime._pod_uid("gpu-demo-rev1-0", "default"),
     )
+
+
+def test_run_pod_sets_host_network_namespace_mode(monkeypatch) -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "hostnet-demo", "namespace": "default"},
+            "spec": {
+                "image": "busybox:1.36",
+                "replicas": 1,
+                "hostNetwork": True,
+                "ports": [{"name": "http", "containerPort": 8080}],
+            },
+        }
+    )
+    runtime = CRIRuntime()
+    captured: dict[str, object] = {}
+
+    def fake_runtime_call(method: str, req):
+        captured["method"] = method
+        captured["req"] = req
+        return SimpleNamespace(pod_sandbox_id="pod-1")
+
+    monkeypatch.setattr(runtime, "_runtime_call", fake_runtime_call)
+    monkeypatch.setattr(runtime, "_create_main_container", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_ensure_sidecars", lambda *_args, **_kwargs: None)
+
+    runtime._run_pod(manifest, "hostnet-demo-rev1-0", 1)
+
+    req = captured.get("req")
+    assert req is not None
+    assert int(req.config.linux.security_context.namespace_options.network) == 2
+    assert runtime._endpoint_for_manifest(
+        manifest,
+        None,
+        replica_id="hostnet-demo-rev1-0",
+    ) == "127.0.0.1:8080"

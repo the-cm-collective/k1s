@@ -77,6 +77,7 @@ class _RuntimeStub:
         self.remove_calls = 0
         self.remove_old_calls = 0
         self.workload_metrics: list[WorkloadMetricSample] = []
+        self.app_containers: list[dict] = []
 
     def exec_resize(
         self,
@@ -105,6 +106,9 @@ class _RuntimeStub:
 
     def list_workload_metrics(self) -> list[WorkloadMetricSample]:
         return list(self.workload_metrics)
+
+    def _list_app_containers(self, _app_name: str) -> list[dict]:
+        return list(self.app_containers)
 
 
 def test_result_to_dict_preserves_revision_on_pod_and_replica_states() -> None:
@@ -213,7 +217,9 @@ def test_exec_inspect_ignores_client_disconnect_without_error_log(caplog) -> Non
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
-def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeypatch) -> None:
+def test_ensure_app_duplicate_rehydrates_current_state_after_restart(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     fence_path = tmp_path / "fence.db"
     AgentHandler.fence_store = SQLiteFenceStore(fence_path)
@@ -226,6 +232,20 @@ def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeyp
     AgentHandler.fence_store.init()
 
     runtime = _RuntimeStub()
+    runtime.app_containers = [
+        {
+            "Name": "ae-demo-rev3-0",
+            "Config": {
+                "Labels": {
+                    "ae.app": "default/demo",
+                    "ae.pod_name": "default/demo-rev3-0",
+                    "ae.replica_id": "default/demo-rev3-0",
+                    "ae.revision": "3",
+                }
+            },
+            "State": {"Status": "running", "ExitCode": 0},
+        }
+    ]
     wfile = io.BytesIO()
     handler = _JsonBodyHandler(
         path="/v1/ensure_app",
@@ -233,7 +253,7 @@ def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeyp
             "manifest": {
                 "apiVersion": "ae.dev/v1alpha1",
                 "kind": "Deployment",
-                "metadata": {"name": "demo"},
+                "metadata": {"name": "demo", "namespace": "default"},
                 "spec": {"image": "alpine:3.20", "replicas": 1},
             },
             "revision": 3,
@@ -241,6 +261,7 @@ def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeyp
             "controller_id": "ctrl-a",
             "controller_epoch": 7,
             "operation_id": "ensure:demo:3:node-test",
+            "pod_names": ["default/demo-rev3-0"],
         },
         wfile=wfile,
         runtime=runtime,
@@ -251,6 +272,16 @@ def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeyp
     assert runtime.ensure_calls == 0
     body = json.loads(wfile.getvalue().decode("utf-8"))
     assert body["duplicate"] is True
+    assert body["pod_states"] == [
+        {
+            "pod_name": "default/demo-rev3-0",
+            "replica_id": "default/demo-rev3-0",
+            "ready": True,
+            "status": "running",
+            "revision": 3,
+            "endpoint": None,
+        }
+    ]
     assert handler.status_codes == [200]
 
 

@@ -226,6 +226,13 @@ class ResourceQuantities(BaseModel):
             raise ValueError("memory must be a number optionally suffixed by K/M/G or KiB/MiB/GiB")
         return s
 
+    model_config = {"extra": "allow"}
+
+    def quantity_map(self) -> dict[str, object]:
+        """Return the quantity payload including extended resource keys."""
+        data = self.model_dump(exclude_none=True)
+        return {str(key): value for key, value in data.items() if value is not None}
+
 
 class ResourcesSpec(BaseModel):
     """Resource requests and limits (limits used for Docker flags)."""
