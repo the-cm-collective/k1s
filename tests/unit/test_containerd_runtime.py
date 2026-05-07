@@ -161,6 +161,80 @@ def test_containerd_runtime_create_container_uses_configured_network_for_non_hos
     assert run_argv[run_argv.index("--net") + 1] == "ae-net"
 
 
+def test_containerd_runtime_sanitizes_namespaced_runtime_object_names(monkeypatch) -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "store", "namespace": "workerbee-poc"},
+            "spec": {
+                "image": "localhost/workerbee-poc-store:test",
+                "replicas": 1,
+                "command": ["/bin/sh", "-lc"],
+                "args": ["sleep 60"],
+            },
+        }
+    )
+    runtime = ContainerdRuntime(namespace="ae-test")
+    calls: list[list[str]] = []
+
+    def fake_run_ok(argv, *, allow_fail=False):
+        _ = allow_fail
+        calls.append(list(argv))
+        return SimpleNamespace(code=0, out="", err="")
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+    monkeypatch.setattr(runtime, "_container_exists", lambda _name: False)
+
+    runtime._create_container(manifest, "workerbee-poc--store-rev1-0", 1)
+
+    run_argv = calls[-1]
+    container_name = run_argv[run_argv.index("--name") + 1]
+    assert container_name.startswith("ae-workerbee-poc-store-rev1-0-")
+    assert "--" not in container_name
+    assert ".." not in container_name
+    assert runtime._storage_volume_name("api", "data") == "ae-api-data"
+    assert runtime._storage_volume_name("workerbee-poc--store", "data").startswith(
+        "ae-workerbee-poc-store-data-"
+    )
+
+
+def test_containerd_runtime_uses_localhost_image_ref_when_only_that_exists(monkeypatch) -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "api", "namespace": "workerbee-poc"},
+            "spec": {
+                "image": "workerbee-poc-api:test",
+                "replicas": 1,
+                "command": ["/bin/sh", "-lc"],
+                "args": ["sleep 60"],
+            },
+        }
+    )
+    runtime = ContainerdRuntime(namespace="ae-test")
+    calls: list[list[str]] = []
+
+    def fake_run_ok(argv, *, allow_fail=False):
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[1:3] == ["image", "inspect"]:
+            image = argv[-1]
+            code = 0 if image == "localhost/workerbee-poc-api:test" else 1
+            return SimpleNamespace(code=code, out="", err="")
+        return SimpleNamespace(code=0, out="", err="")
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+    monkeypatch.setattr(runtime, "_container_exists", lambda _name: False)
+
+    runtime._create_container(manifest, "workerbee-poc--api-rev1-0", 1)
+
+    run_argv = calls[-1]
+    assert "localhost/workerbee-poc-api:test" in run_argv
+    assert "workerbee-poc-api:test" not in run_argv
+
+
 def test_containerd_runtime_non_hostnet_declared_ports_do_not_publish_all(monkeypatch) -> None:
     manifest = AppManifest.model_validate(
         {
@@ -215,6 +289,41 @@ def test_containerd_runtime_ensure_network_uses_configured_subnet(monkeypatch) -
         ([runtime._bin, "network", "inspect", "ae-net"], True),
         ([runtime._bin, "network", "create", "--subnet", "10.241.0.0/16", "ae-net"], False),
     ]
+
+
+def test_containerd_runtime_volume_create_handles_stale_existing_path(monkeypatch) -> None:
+    runtime = ContainerdRuntime(namespace="ae-test")
+    calls: list[list[str]] = []
+
+    def fake_run_ok(argv, *, allow_fail=False):
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[1:3] == ["volume", "create"]:
+            return SimpleNamespace(code=1, out="", err="failed to create volume: file exists")
+        return SimpleNamespace(code=1, out="", err="missing")
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+
+    runtime.ensure_storage_volumes("workerbee-poc--store", [{"name": "data"}])
+
+    assert any(call[1:3] == ["volume", "create"] for call in calls)
+
+
+def test_containerd_runtime_volume_exists_parses_ndjson(monkeypatch) -> None:
+    runtime = ContainerdRuntime(namespace="ae-test")
+    volume = runtime._storage_volume_name("workerbee-poc--store", "data")
+
+    def fake_run_ok(argv, *, allow_fail=False):
+        _ = allow_fail
+        if argv[1:3] == ["volume", "inspect"]:
+            return SimpleNamespace(code=1, out="", err="missing")
+        if argv[1:3] == ["volume", "ls"]:
+            return SimpleNamespace(code=0, out=f'{{"Name":"{volume}"}}\n', err="")
+        return SimpleNamespace(code=1, out="", err="unexpected")
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+
+    assert runtime._volume_exists(volume)
 
 
 def test_containerd_runtime_validates_exactly_one_gpu_request() -> None:

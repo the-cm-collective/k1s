@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+from contextlib import suppress
 from decimal import Decimal, InvalidOperation
 
-from ae.controller.spec import AppManifest, app_key_for_manifest, runtime_labels_for_manifest
+from ae.controller.spec import (
+    DEFAULT_NAMESPACE,
+    AppManifest,
+    app_key_for_manifest,
+    runtime_labels_for_manifest,
+    split_app_key,
+)
 
-from .base import PodState, RuntimeResult
+from .base import RuntimeResult
 from .podman_runtime import PodmanRuntime, _RunResult
 from .registry import RegistryAuthProvider
 
@@ -21,6 +29,8 @@ LOGGER = logging.getLogger(__name__)
 
 class ContainerdRuntime(PodmanRuntime):
     """Containerd-backed runtime adapter using nerdctl."""
+
+    _NERDCTL_NAME_MAX = 120
 
     def __init__(
         self,
@@ -70,6 +80,20 @@ class ContainerdRuntime(PodmanRuntime):
         self._exec_procs: dict[str, subprocess.Popen[bytes]] = {}
         self._exec_exit_codes: dict[str, int] = {}
         self._gpu_preflight_ready = False
+
+    def _nerdctl_safe_name(self, *parts: object, prefix: str = "ae") -> str:
+        raw = "-".join(str(part or "").strip() for part in parts if str(part or "").strip())
+        raw = raw or "item"
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw)
+        safe = re.sub(r"[._-]+", "-", safe).strip("-._") or "item"
+        max_body = max(1, self._NERDCTL_NAME_MAX - len(prefix) - 1)
+        if safe == raw and len(safe) <= max_body:
+            return f"{prefix}-{safe}"
+
+        digest = hashlib.blake2s(raw.encode("utf-8"), digest_size=5).hexdigest()
+        max_body = max(1, self._NERDCTL_NAME_MAX - len(prefix) - len(digest) - 2)
+        body = safe[:max_body].strip("-._") or "item"
+        return f"{prefix}-{body}-{digest}"
 
     def ensure_app(
         self,
@@ -173,7 +197,7 @@ class ContainerdRuntime(PodmanRuntime):
     ) -> None:
         app = app_key_for_manifest(manifest)
         suffix = replica_id.split("-")[-1]
-        name = f"ae-{app}-rev{revision}-{suffix}"
+        name = self._nerdctl_safe_name(app, f"rev{revision}", suffix)
         if self._container_exists(name):
             self._stop_and_remove(name)
 
@@ -384,10 +408,7 @@ class ContainerdRuntime(PodmanRuntime):
         if getattr(manifest.spec, "working_dir", None):
             cmd += ["--workdir", str(manifest.spec.working_dir)]
 
-        image = manifest.spec.image
-        if "/" not in image and not self._image_exists(image) and self._image_exists(f"localhost/{image}"):
-            image = f"localhost/{image}"
-        cmd += [image]
+        cmd += [self._runtime_image_ref(str(manifest.spec.image))]
         combined: list[str] = []
         if getattr(manifest.spec, "command", None):
             combined += [str(x) for x in (manifest.spec.command or [])]
@@ -396,7 +417,123 @@ class ContainerdRuntime(PodmanRuntime):
         if combined:
             cmd += combined
 
-        self._run_ok(cmd)
+        try:
+            self._run_ok(cmd)
+        except RuntimeError:
+            with suppress(Exception):
+                self._stop_and_remove(name)
+            raise
+
+    def _storage_volume_name(self, app_name: str, vol_name: str) -> str:
+        return self._nerdctl_safe_name(app_name, vol_name)
+
+    def ensure_storage_volumes(self, app_name: str, volumes: list[dict]) -> None:  # type: ignore[override]
+        ns, base = split_app_key(app_name)
+        std_labels = {
+            "app": base,
+            "app.kubernetes.io/name": base,
+            "app.kubernetes.io/instance": base,
+            "app.kubernetes.io/managed-by": "k1s",
+            "ae.app": app_name,
+            "ae.namespace": ns or DEFAULT_NAMESPACE,
+        }
+        for v in volumes or []:
+            name = (v or {}).get("name")
+            if not name:
+                continue
+            vol = self._storage_volume_name(app_name, str(name))
+            if self._volume_exists(vol):
+                continue
+            labels = [f"{k}={value}" for k, value in std_labels.items()]
+            labels.append(f"ae.volume={name}")
+            node_label = getattr(self, "_current_node_id", None)
+            if node_label:
+                labels.append(f"ae.node={node_label}")
+            res = self._run_ok(
+                [
+                    self._bin,
+                    "volume",
+                    "create",
+                    *sum([["--label", lbl] for lbl in labels], []),
+                    vol,
+                ],
+                allow_fail=True,
+            )
+            if res.code == 0 or self._volume_exists(vol):
+                continue
+            detail = (res.err or res.out or "").strip()
+            lowered = detail.lower()
+            if "file exists" in lowered or "already exists" in lowered:
+                LOGGER.warning(
+                    "containerd volume %s exists on disk but is not listed by nerdctl; reusing it",
+                    vol,
+                )
+                continue
+            raise RuntimeError(f"nerdctl failed: volume create {vol} => {detail}")
+
+    def list_storage_volumes(self, app_name: str | None = None) -> list[dict]:  # type: ignore[override]
+        out: list[dict] = []
+        r = self._run_ok([self._bin, "volume", "ls", "--format", "json"], allow_fail=True)
+        for it in self._parse_nerdctl_json_items(r.out):
+            labels = it.get("Labels") or {}
+            app = labels.get(self.APP_LABEL) if isinstance(labels, dict) else None
+            if app_name is not None:
+                if app != app_name:
+                    continue
+            elif not app:
+                continue
+            out.append(
+                {
+                    "name": it.get("Name", ""),
+                    "labels": labels if isinstance(labels, dict) else {},
+                    "driver": it.get("Driver", ""),
+                    "mountpoint": it.get("Mountpoint", ""),
+                }
+            )
+        return out
+
+    def _volume_exists(self, name: str) -> bool:
+        if self._run_ok([self._bin, "volume", "inspect", name], allow_fail=True).code == 0:
+            return True
+        ls = self._run_ok([self._bin, "volume", "ls", "--format", "json"], allow_fail=True)
+        return any(
+            str(item.get("Name") or "") == name
+            for item in self._parse_nerdctl_json_items(ls.out)
+        )
+
+    def _parse_nerdctl_json_items(self, text: str) -> list[dict]:
+        raw = (text or "").strip()
+        if not raw:
+            return []
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            items: list[dict] = []
+            for line in raw.splitlines():
+                item = None
+                with suppress(Exception):
+                    item = json.loads(line)
+                if isinstance(item, dict):
+                    items.append(item)
+            return items
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            volumes = payload.get("Volumes")
+            if isinstance(volumes, list):
+                return [item for item in volumes if isinstance(item, dict)]
+            return [payload]
+        return []
+
+    def _runtime_image_ref(self, image: str) -> str:
+        if "/" not in image and not self._image_ref_exists_exact(image):
+            local = f"localhost/{image}"
+            if self._image_ref_exists_exact(local):
+                return local
+        return image
+
+    def _image_ref_exists_exact(self, name: str) -> bool:
+        return self._run_ok([self._bin, "image", "inspect", name], allow_fail=True).code == 0
 
     def _list_app_containers(self, app: str) -> list[dict]:
         ids = self._list_container_ids(label_filters=[f"{self.APP_LABEL}={app}"])
