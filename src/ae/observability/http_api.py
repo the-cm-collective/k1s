@@ -30,8 +30,7 @@ from pathlib import Path
 from ae import build_info as AE_BUILD_INFO
 from ae.accelerators import preferred_gpu_count, preferred_gpu_models
 from ae.controller.authority import AuthorityConfig, NotLeaderError
-from ae.controller.state import RegistryConflictError
-from ae.controller.state import SQLiteStateStore
+from ae.controller.state import AppStatus, RegistryConflictError, SQLiteStateStore
 from ae.observability.metrics import MetricsService
 from ae.resources import loader as resource_loader
 
@@ -2312,14 +2311,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self._handle_nodes()
             return
         if path_only.startswith("/status/"):
-            # Enforce read scope for single-app read if configured
-            app = self.path.split("/", 2)[2].split("?", 1)[0]
-            import os as _os
-
-            if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", app):
-                self._deny(403)
-                return
-            self._handle_status_single(self.path.split("/", 2)[2])
+            self._handle_status_single(self._decode_app_segment("/status/"))
             return
         if path_only.startswith("/events/"):
             app = self.path.split("/", 2)[2].split("?", 1)[0]
@@ -5300,24 +5292,68 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             )
         self._json_ok({"nodes": items, "count": len(items), "stale_after_seconds": grace})
 
-    def _handle_status_single(self, app: str) -> None:
-        # Support optional query on the path segment (e.g., "<app>?details=1")
+    def _parse_query(self) -> dict[str, list[str]]:
         import urllib.parse as _up
 
+        return _up.parse_qs(_up.urlsplit(self.path).query)
+
+    def _decode_app_segment(self, prefix: str) -> str:
+        import urllib.parse as _up
+
+        path = _up.urlsplit(self.path).path
+        return _up.unquote(path[len(prefix) :].strip("/"))
+
+    def _resolve_status_for_app(self, raw_app: str) -> AppStatus | None:
+        import urllib.parse as _up
+
+        from ae.controller.spec import app_key, parse_app_ref, split_app_key
+
+        raw = str(raw_app or "").strip()
+        decoded = _up.unquote(raw)
+        candidates: list[str] = []
+
+        def add(value: str | None) -> None:
+            value = str(value or "").strip()
+            if value and value not in candidates:
+                candidates.append(value)
+
+        add(raw)
+        add(decoded)
+
+        for ref in (decoded, raw):
+            try:
+                ns, name = parse_app_ref(ref)
+                add(app_key(name, ns))
+            except Exception:
+                pass
+
+        for candidate in candidates:
+            status = self.store.get_status(candidate)
+            if status is not None:
+                return status
+
+        statuses = list(self.store.list_status())
+        for candidate in candidates:
+            for status in statuses:
+                if status.app_name == candidate:
+                    return status
+
+        short_matches = []
+        if decoded and "--" not in decoded and "/" not in decoded:
+            for status in statuses:
+                _ns, name = split_app_key(status.app_name)
+                if name == decoded:
+                    short_matches.append(status)
+        if len(short_matches) == 1:
+            return short_matches[0]
+
+        return None
+
+    def _status_payload(self, s: AppStatus, want_details: bool) -> dict[str, object]:
         from ae.controller.spec import split_app_key
 
-        if "?" in app:
-            app, query = app.split("?", 1)
-            params = _up.parse_qs(query)
-        else:
-            params = {}
-        s = self.store.get_status(app)
-        if s is None:
-            self.send_response(404)
-            self.end_headers()
-            return
         ns, name = split_app_key(s.app_name)
-        data = {
+        data: dict[str, object] = {
             "app_name": s.app_name,
             "name": name,
             "namespace": ns,
@@ -5337,8 +5373,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             "overlap_ready_replicas": s.overlap_ready_replicas,
             "overlap_live_replicas": s.overlap_live_replicas,
         }
-        # If details requested, include manifest and replica summaries
-        want_details = str(params.get("details", ["0"])[0]).lower() in {"1", "true", "yes"}
         if want_details:
             try:
                 manifest = self.store.get_revision_manifest(s.app_name, s.revision)
@@ -5378,6 +5412,32 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     pass
             except Exception:
                 pass
+        return data
+
+    def _handle_status_single(self, app: str) -> None:
+        # Support optional query on the path segment (e.g., "<app>?details=1")
+        import os as _os
+        import urllib.parse as _up
+
+        app_ref = str(app or "")
+        params = self._parse_query()
+        if "?" in app_ref:
+            app_ref, query = app_ref.split("?", 1)
+            if query:
+                params = _up.parse_qs(query)
+
+        status = self._resolve_status_for_app(app_ref)
+        if status is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        if _os.getenv("AE_API_READ_SCOPE") and not self._scope_allows("read", status.app_name):
+            self._deny(403)
+            return
+
+        want_details = str(params.get("details", ["0"])[0]).lower() in {"1", "true", "yes"}
+        data = self._status_payload(status, want_details)
         self._json_ok(data)
 
     def _handle_events(self, app_and_query: str) -> None:
