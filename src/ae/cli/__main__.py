@@ -2737,6 +2737,17 @@ def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
     return 0
 
 
+def _http_timeout(default: float = 10.0) -> float:
+    raw = os.getenv("AE_CLI_HTTP_TIMEOUT", "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(0.1, value)
+
+
 def _http_get_json(base: str, path: str, token: str | None = None):
     import requests
 
@@ -2744,7 +2755,12 @@ def _http_get_json(base: str, path: str, token: str | None = None):
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.get(url, headers=headers, timeout=10, verify=_apishim_requests_verify())
+    r = requests.get(
+        url,
+        headers=headers,
+        timeout=_http_timeout(),
+        verify=_apishim_requests_verify(),
+    )
     r.raise_for_status()
     return r.json()
 
@@ -2756,7 +2772,13 @@ def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.post(url, headers=headers, json=body, timeout=10, verify=_apishim_requests_verify())
+    r = requests.post(
+        url,
+        headers=headers,
+        json=body,
+        timeout=_http_timeout(),
+        verify=_apishim_requests_verify(),
+    )
     r.raise_for_status()
     return r.json()
 
