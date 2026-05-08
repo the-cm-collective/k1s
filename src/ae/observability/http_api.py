@@ -1684,6 +1684,10 @@ def _dashboard_bootstrap_token() -> str:
     tokens in HA/core/site-aware lanes.
     """
 
+    explicit = str(os.getenv("AE_DASHBOARD_BOOTSTRAP_TOKEN") or "").strip()
+    if explicit:
+        return explicit
+
     if _truthy_flag(os.getenv("AE_HA_MODE")):
         return ""
 
@@ -5571,7 +5575,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         apishim_base = ""
         try:
             apishim_base = (
-                os.getenv("AE_APISHIM_SERVER") or os.getenv("AE_APISHIM_BASE") or ""
+                os.getenv("AE_APISHIM_PUBLIC_BASE")
+                or os.getenv("AE_APISHIM_BASE")
+                or os.getenv("AE_APISHIM_SERVER")
+                or ""
             ).strip()
         except Exception:
             apishim_base = ""

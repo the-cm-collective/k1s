@@ -1832,8 +1832,8 @@ Connection: close
 
       function normalizeBase(val){
         var base = String(val||'').trim();
-        if (!base) base = localStorage.getItem('ae_apishim_base') || '';
         if (!base && apishimBase) base = String(apishimBase || '').trim();
+        if (!base) base = localStorage.getItem('ae_apishim_base') || '';
         if (!base) base = location.origin;
         base = base.replace(/\/$/, '');
         function isLoopbackHost(h){
@@ -2206,6 +2206,10 @@ Connection: close
         if (!shellModal) return;
         var sel = document.getElementById('shell-pod');
         fillReplicaSelect(sel);
+        try {
+          var baseInput = document.getElementById('shell-base');
+          if (baseInput && !baseInput.value) baseInput.value = normalizeBase('');
+        } catch(e){}
         if (!shellTerm && window.Terminal) {
           shellTerm = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', theme: { background: '#0b0f14' } });
           ensureShellFitAddon();
@@ -2527,6 +2531,10 @@ Connection: close
         if (!pfModal) return;
         var sel = document.getElementById('pf-pod');
         fillReplicaSelect(sel);
+        try {
+          var baseInput = document.getElementById('pf-base');
+          if (baseInput && !baseInput.value) baseInput.value = normalizeBase('');
+        } catch(e){}
         pfSetStatus('idle', 'muted');
         var resp = document.getElementById('pf-response');
         if (resp) resp.value = '';

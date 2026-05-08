@@ -72,6 +72,11 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert "function bootstrapDashboardToken()" in html
     assert "return dashboardToken || labsToken || '';" in html
     assert "return labsToken || activeToken() || '';" in html
+    assert "function normalizeBase(val)" in html
+    assert html.index("if (!base && apishimBase)") < html.index(
+        "if (!base) base = localStorage.getItem('ae_apishim_base') || '';"
+    )
+    assert "if (baseInput && !baseInput.value) baseInput.value = normalizeBase('');" in html
     assert "siteDetails && Object.keys(siteDetails).length" not in html
     assert "imported from specs/" not in html
     assert "var edgeInsetStart = 0.48;" in html
