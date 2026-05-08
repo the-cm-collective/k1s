@@ -144,6 +144,35 @@ def test_status_detail_resolves_encoded_display_ref(tmp_path: Path) -> None:
     assert len(payload["pods"]) == 2
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/status/k1s-prof-workload--backend?details=1",
+        "/status/k1s-prof-workload%2Fbackend?details=1",
+        "/status/k1s-prof-workload/backend?details=1",
+    ],
+)
+def test_status_detail_route_decodes_namespaced_refs(
+    tmp_path: Path,
+    path: str,
+) -> None:
+    store = _seed_store(tmp_path)
+    handler, captured, responses = _handler(store, path=path)
+
+    app_segment = _ApiHandler._decode_app_segment(  # type: ignore[arg-type]
+        handler,
+        "/status/",
+    )
+    _ApiHandler._handle_status_single(handler, app_segment)  # type: ignore[arg-type]
+
+    assert responses == []
+    payload = captured["payload"]
+    assert payload["app_name"] == "k1s-prof-workload--backend"
+    assert payload["namespace"] == "k1s-prof-workload"
+    assert payload["name"] == "backend"
+    assert payload["manifest"]["metadata"]["name"] == "backend"
+
+
 def test_status_detail_resolves_unique_short_name(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
     handler, captured, _responses = _handler(store, path="/status/backend?details=1")
