@@ -309,6 +309,47 @@ def test_containerd_runtime_create_container_uses_configured_network_for_non_hos
     assert run_argv[run_argv.index("--net") + 1] == "ae-net"
 
 
+def test_containerd_runtime_retries_transient_name_store_conflict(monkeypatch) -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "minio", "namespace": "rawform-poc-dev-ad9ec5062e"},
+            "spec": {
+                "image": "docker.io/minio/minio:latest",
+                "replicas": 1,
+                "command": ["minio"],
+                "args": ["server", "/data"],
+            },
+        }
+    )
+    runtime = ContainerdRuntime(namespace="ae-test")
+    run_calls: list[list[str]] = []
+    removed: list[str] = []
+
+    def fake_run_ok(argv, *, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        if "run" in argv:
+            run_calls.append(list(argv))
+            if len(run_calls) == 1:
+                raise RuntimeError(
+                    'nerdctl failed: run => name-store error\n'
+                    'name "ae-rawform-poc-dev-ad9ec5062e-minio-rev1-0-93887185b7" '
+                    'is already used by ID "stale-container-id"'
+                )
+        return SimpleNamespace(code=0, out="", err="")
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+    monkeypatch.setattr(runtime, "_container_exists", lambda _name: False)
+    monkeypatch.setattr(runtime, "_inspect_many", lambda _ids: [])
+    monkeypatch.setattr(runtime, "_stop_and_remove", lambda cid: removed.append(cid))
+
+    runtime._create_container(manifest, "rawform-poc-dev-ad9ec5062e--minio-rev1-0", 1)
+
+    assert len(run_calls) == 2
+    assert "stale-container-id" in removed
+
+
 def test_containerd_runtime_sanitizes_namespaced_runtime_object_names(monkeypatch) -> None:
     manifest = AppManifest.model_validate(
         {

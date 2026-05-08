@@ -377,7 +377,8 @@ class Reconciler:
     def reconcile(self, manifest: AppManifest) -> ReconcileReport:
         """Reconcile the runtime to match the manifest."""
 
-        spec_hash = self._compute_spec_hash(manifest)
+        revision_manifest = self._with_direct_containerd_service_aliases(self._runtime, manifest)
+        spec_hash = self._compute_spec_hash(revision_manifest)
         revision, _ = self._state_store.prepare_revision(manifest, spec_hash)
         app_name = app_key_for_manifest(manifest)
 

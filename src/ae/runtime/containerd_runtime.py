@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from contextlib import suppress
 from decimal import Decimal, InvalidOperation
 
@@ -421,12 +422,30 @@ class ContainerdRuntime(PodmanRuntime):
         if combined:
             cmd += combined
 
-        try:
-            self._run_ok(cmd)
-        except RuntimeError:
-            with suppress(Exception):
-                self._stop_and_remove(name)
-            raise
+        for run_attempt in range(2):
+            try:
+                self._run_ok(cmd)
+                return
+            except RuntimeError as exc:
+                if run_attempt == 0 and self._is_containerd_name_conflict(str(exc)):
+                    labels = self._container_labels(name)
+                    if (
+                        labels.get(self.APP_LABEL) == app
+                        and labels.get(self.REVISION_LABEL) == str(revision)
+                        and self._container_running(name)
+                    ):
+                        return
+                    conflict_ids = self._containerd_conflict_ids(str(exc))
+                    with suppress(Exception):
+                        self._stop_and_remove(name)
+                    for conflict_id in conflict_ids:
+                        with suppress(Exception):
+                            self._stop_and_remove(conflict_id)
+                    time.sleep(0.2)
+                    continue
+                with suppress(Exception):
+                    self._stop_and_remove(name)
+                raise
 
     def _storage_volume_name(self, app_name: str, vol_name: str) -> str:
         return self._nerdctl_safe_name(app_name, vol_name)
@@ -577,6 +596,39 @@ class ContainerdRuntime(PodmanRuntime):
 
     def _container_exists(self, name: str) -> bool:
         return self._run_ok([self._bin, "inspect", name], allow_fail=True).code == 0
+
+    def _container_labels(self, name_or_id: str) -> dict[str, str]:
+        inspected = self._inspect_many([name_or_id])
+        if not inspected:
+            return {}
+        labels = ((inspected[0].get("Config") or {}).get("Labels") or {})
+        if not isinstance(labels, dict):
+            return {}
+        return {str(key): str(value) for key, value in labels.items()}
+
+    def _container_running(self, name_or_id: str) -> bool:
+        inspected = self._inspect_many([name_or_id])
+        if not inspected:
+            return False
+        state = inspected[0].get("State") or {}
+        if not isinstance(state, dict):
+            return False
+        return str(state.get("Status") or "").lower() == "running" or bool(state.get("Running"))
+
+    def _containerd_conflict_ids(self, stderr: str) -> list[str]:
+        return list(dict.fromkeys(re.findall(r'used by ID "([^"]+)"', stderr or "")))
+
+    def _is_containerd_name_conflict(self, stderr: str) -> bool:
+        lowered = (stderr or "").lower()
+        return (
+            "name" in lowered
+            and (
+                "name-store error" in lowered
+                or "already used by id" in lowered
+                or "already in use" in lowered
+                or "conflict" in lowered
+            )
+        )
 
     def _list_container_ids(self, *, label_filters: list[str] | None = None) -> list[str]:
         argv = [self._bin, "ps", "-a", "-q"]

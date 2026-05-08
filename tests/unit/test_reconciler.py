@@ -85,6 +85,7 @@ class CapturingContainerdRuntime(ContainerdRuntime):
     def __init__(self) -> None:
         super().__init__(namespace="ae-test")
         self.last_manifest: AppManifest | None = None
+        self.revisions: list[int] = []
 
     def ensure_app(
         self,
@@ -98,6 +99,7 @@ class CapturingContainerdRuntime(ContainerdRuntime):
     ) -> RuntimeResult:  # type: ignore[override]
         _ = (keep_old, limit_create, node_id)
         self.last_manifest = manifest
+        self.revisions.append(revision)
         pod_name = pod_names[0] if pod_names else f"{manifest.metadata.name}-rev{revision}-0"
         return RuntimeResult(
             revision=revision,
@@ -599,6 +601,51 @@ def test_direct_containerd_reconcile_injects_ready_service_host_aliases(
     }
     all_names = {name for alias in aliases for name in alias.hostnames}
     assert "redis" not in all_names
+
+
+def test_direct_containerd_service_aliases_are_revision_affecting(
+    tmp_path: Path,
+) -> None:
+    state = SQLiteStateStore(tmp_path / "state.db")
+    runtime = CapturingContainerdRuntime()
+    reconciler = Reconciler(runtime=runtime, state_store=state)
+    namespace = "rawform-poc-dev-ad9ec5062e"
+    minio_app = f"{namespace}--minio"
+    ports = {"ports": [{"name": "http", "port": 9000, "targetPort": 9000, "protocol": "TCP"}]}
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="api", namespace=namespace),
+        spec=AppSpec(image="alpine:3.20"),
+    )
+
+    first = reconciler.reconcile(manifest)
+    assert first.revision == 1
+    assert runtime.last_manifest is not None
+    assert not runtime.last_manifest.spec.host_aliases
+
+    state.upsert_service(minio_app, "10.241.0.20", ports)
+    state.upsert_service_endpoints(
+        minio_app,
+        [
+            ServiceEndpoint(
+                app_name=minio_app,
+                port=9000,
+                ip="10.210.0.12",
+                target_port=9000,
+                ready=True,
+            )
+        ],
+    )
+
+    second = reconciler.reconcile(manifest)
+
+    assert second.revision == 2
+    assert runtime.revisions == [1, 2]
+    assert runtime.last_manifest is not None
+    aliases = runtime.last_manifest.spec.host_aliases
+    assert aliases and aliases[0].ip == "10.210.0.12"
+    assert "minio" in aliases[0].hostnames
 
 
 def test_reconciler_applies_secrets(tmp_path: Path, monkeypatch) -> None:

@@ -1832,14 +1832,24 @@ Connection: close
 
       function normalizeBase(val){
         var base = String(val||'').trim();
-        if (!base && apishimBase) base = String(apishimBase || '').trim();
-        if (!base) base = localStorage.getItem('ae_apishim_base') || '';
-        if (!base) base = location.origin;
-        base = base.replace(/\/$/, '');
         function isLoopbackHost(h){
           var host = String(h || '').toLowerCase();
           return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
         }
+        function isLoopbackBase(value){
+          try { return isLoopbackHost(new URL(String(value || '')).hostname || ''); } catch(e) { return false; }
+        }
+        function isWorkerBeeHost(h){
+          var host = String(h || '').toLowerCase();
+          return host === 'workerbee.localhost' || /\.workerbee\.localhost$/.test(host);
+        }
+        var publicBase = String(apishimBase || '').trim();
+        if (publicBase && isWorkerBeeHost(location.hostname) && (!base || isLoopbackBase(base))) base = publicBase;
+        if (!base && publicBase) base = publicBase;
+        if (!base) base = localStorage.getItem('ae_apishim_base') || '';
+        if (publicBase && isWorkerBeeHost(location.hostname) && isLoopbackBase(base)) base = publicBase;
+        if (!base) base = location.origin;
+        base = base.replace(/\/$/, '');
         function caddyPortFallback(proto){
           // Typical local Caddy ports used by dev profile.
           if (proto === 'https:') return '8443';
