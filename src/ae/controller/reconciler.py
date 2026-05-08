@@ -15,6 +15,7 @@ from typing import Any
 
 from ae.controller.health import HealthManager, HealthReport, PodHealth
 from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, load_manifest
+from ae.controller.spec import HostAlias, split_app_key
 from ae.runtime import RuntimeAdapter, RuntimeResult
 from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
 
@@ -243,6 +244,7 @@ class Reconciler:
         node_id: str | None,
     ) -> RuntimeResult:
         """Call ensure_app with backward-compatible fallbacks for older runtimes."""
+        manifest = self._with_direct_containerd_service_aliases(runtime, manifest)
         try:
             return runtime.ensure_app(  # type: ignore[arg-type]
                 manifest,
@@ -263,6 +265,108 @@ class Reconciler:
                 )
             except TypeError:
                 return runtime.ensure_app(manifest, revision)  # type: ignore[arg-type]
+
+    def _with_direct_containerd_service_aliases(
+        self,
+        runtime: RuntimeAdapter,
+        manifest: AppManifest,
+    ) -> AppManifest:
+        if not self._is_direct_containerd_runtime(runtime):
+            return manifest
+
+        current_app = app_key_for_manifest(manifest)
+        current_ns, _current_name = split_app_key(current_app)
+        explicit_aliases = list(getattr(manifest.spec, "host_aliases", []) or [])
+        used_hostnames = self._host_alias_hostnames(explicit_aliases)
+        generated: list[HostAlias] = []
+
+        try:
+            services = self._state_store.list_services()
+        except Exception:
+            services = []
+
+        for service in services:
+            service_app = str(getattr(service, "app_name", "") or "").strip()
+            if not service_app or service_app == current_app:
+                continue
+            service_ns, service_name = split_app_key(service_app)
+            if service_ns != current_ns or not service_name:
+                continue
+            endpoint_ip = self._ready_service_endpoint_ip(service_app)
+            if not endpoint_ip:
+                continue
+            hostnames = [
+                service_name,
+                f"{service_name}.{service_ns}",
+                f"{service_name}.{service_ns}.svc",
+                f"{service_name}.{service_ns}.svc.cluster.local",
+            ]
+            filtered = [name for name in hostnames if name not in used_hostnames]
+            if not filtered:
+                continue
+            used_hostnames.update(filtered)
+            generated.append(HostAlias(ip=endpoint_ip, hostnames=filtered))
+
+        if not generated:
+            return manifest
+        updated_spec = manifest.spec.model_copy(
+            update={"host_aliases": [*explicit_aliases, *generated]}
+        )
+        return manifest.model_copy(update={"spec": updated_spec})
+
+    def _is_direct_containerd_runtime(self, runtime: RuntimeAdapter) -> bool:
+        try:
+            from ae.runtime.containerd_runtime import ContainerdRuntime
+
+            local_runtime = getattr(runtime, "_local", runtime)
+            return isinstance(local_runtime, ContainerdRuntime)
+        except Exception:
+            return False
+
+    def _host_alias_hostnames(self, aliases: list[object]) -> set[str]:
+        names: set[str] = set()
+        for alias in aliases:
+            if isinstance(alias, dict):
+                values = alias.get("hostnames") or alias.get("hostNames") or []
+            else:
+                values = getattr(alias, "hostnames", None) or []
+            for value in values or []:
+                text = str(value or "").strip()
+                if text:
+                    names.add(text)
+        return names
+
+    def _ready_service_endpoint_ip(self, service_app: str) -> str | None:
+        try:
+            endpoints = list(self._state_store.list_service_endpoints(service_app))
+        except Exception:
+            return None
+        ready = [
+            endpoint
+            for endpoint in endpoints
+            if bool(getattr(endpoint, "ready", False))
+            and self._service_endpoint_ip_allowed(str(getattr(endpoint, "ip", "") or ""))
+        ]
+        if not ready:
+            return None
+        ready.sort(
+            key=lambda endpoint: (
+                int(getattr(endpoint, "port", 0) or 0),
+                str(getattr(endpoint, "ip", "") or ""),
+                int(getattr(endpoint, "target_port", 0) or 0),
+            )
+        )
+        return str(getattr(ready[0], "ip", "") or "").strip() or None
+
+    def _service_endpoint_ip_allowed(self, ip: str) -> bool:
+        ip = str(ip or "").strip()
+        if not ip:
+            return False
+        if ip in {"localhost", "::1", "0.0.0.0"}:
+            return False
+        if ip.startswith("127."):
+            return False
+        return True
 
     def reconcile_manifest_path(self, path: Path) -> ReconcileReport:
         """Load a manifest from disk and reconcile it."""

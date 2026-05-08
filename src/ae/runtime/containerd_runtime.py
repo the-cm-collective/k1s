@@ -787,11 +787,13 @@ class ContainerdRuntime(PodmanRuntime):
             args += ["--cni-netconfpath", self._cni_netconfpath]
         return args
 
+    def _runtime_cmd(self, cmd: list[str]) -> list[str]:
+        if cmd and cmd[0] == self._bin:
+            return [*self._global_args(), *cmd[1:]]
+        return [*self._global_args(), *cmd]
+
     def _run_ok(self, argv: list[str], *, allow_fail: bool = False) -> _RunResult:
-        if argv and argv[0] == self._bin:
-            cmd = [*self._global_args(), *argv[1:]]
-        else:
-            cmd = [*self._global_args(), *argv]
+        cmd = self._runtime_cmd(argv)
         try:
             cp = subprocess.run(
                 cmd,

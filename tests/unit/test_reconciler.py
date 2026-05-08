@@ -7,6 +7,7 @@ from ae.controller.reconciler import Reconciler, ReconcileReport
 from ae.controller.spec import (
     AppManifest,
     AppSpec,
+    HostAlias,
     IngressSpec,
     Metadata,
     SecretEnvMapping,
@@ -15,6 +16,7 @@ from ae.controller.spec import (
 )
 from ae.controller.state import ServiceEndpoint, SQLiteStateStore
 from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
+from ae.runtime.containerd_runtime import ContainerdRuntime
 
 
 class StubRuntime(RuntimeAdapter):
@@ -77,6 +79,40 @@ class StubDockerIngressRuntime(StubRuntime):
                 "running": True,
             }
         ]
+
+
+class CapturingContainerdRuntime(ContainerdRuntime):
+    def __init__(self) -> None:
+        super().__init__(namespace="ae-test")
+        self.last_manifest: AppManifest | None = None
+
+    def ensure_app(
+        self,
+        manifest: AppManifest,
+        revision: int,
+        *,
+        keep_old: bool = False,
+        limit_create: int | None = None,
+        pod_names: list[str] | None = None,
+        node_id: str | None = None,
+    ) -> RuntimeResult:  # type: ignore[override]
+        _ = (keep_old, limit_create, node_id)
+        self.last_manifest = manifest
+        pod_name = pod_names[0] if pod_names else f"{manifest.metadata.name}-rev{revision}-0"
+        return RuntimeResult(
+            revision=revision,
+            created=1,
+            updated=0,
+            removed=0,
+            pod_states=[
+                PodState(
+                    pod_name=pod_name,
+                    ready=True,
+                    status="running",
+                    endpoint="10.210.0.44:8080",
+                )
+            ],
+        )
 
 
 class FailingLivenessRuntime(RuntimeAdapter):
@@ -487,6 +523,82 @@ def test_select_upstreams_prefers_service_vip(tmp_path: Path) -> None:
 
     upstreams = reconciler._select_upstreams(manifest, runtime_result, health_report)
     assert upstreams == ["10.241.0.10:8080"]
+
+
+def test_direct_containerd_reconcile_injects_ready_service_host_aliases(
+    tmp_path: Path,
+) -> None:
+    state = SQLiteStateStore(tmp_path / "state.db")
+    runtime = CapturingContainerdRuntime()
+    reconciler = Reconciler(runtime=runtime, state_store=state)
+    namespace = "rawform-poc-dev-ad9ec5062e"
+    minio_app = f"{namespace}--minio"
+    other_app = "other--redis"
+
+    ports = {"ports": [{"name": "http", "port": 9000, "targetPort": 9000, "protocol": "TCP"}]}
+    state.upsert_service(minio_app, "10.241.0.20", ports)
+    state.upsert_service_endpoints(
+        minio_app,
+        [
+            ServiceEndpoint(
+                app_name=minio_app,
+                port=9000,
+                ip="10.210.0.12",
+                target_port=9000,
+                ready=True,
+            ),
+            ServiceEndpoint(
+                app_name=minio_app,
+                port=9000,
+                ip="10.210.0.11",
+                target_port=9000,
+                ready=False,
+            ),
+        ],
+    )
+    state.upsert_service(other_app, "10.241.0.21", ports)
+    state.upsert_service_endpoints(
+        other_app,
+        [
+            ServiceEndpoint(
+                app_name=other_app,
+                port=6379,
+                ip="10.210.0.22",
+                target_port=6379,
+                ready=True,
+            )
+        ],
+    )
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="api", namespace=namespace),
+        spec=AppSpec(
+            image="alpine:3.20",
+            host_aliases=[
+                HostAlias(
+                    ip="192.0.2.10",
+                    hostnames=[f"minio.{namespace}.svc", "explicit.local"],
+                )
+            ],
+        ),
+    )
+
+    reconciler.reconcile(manifest)
+
+    assert runtime.last_manifest is not None
+    aliases = runtime.last_manifest.spec.host_aliases
+    explicit = next(alias for alias in aliases if alias.ip == "192.0.2.10")
+    generated = next(alias for alias in aliases if alias.ip == "10.210.0.12")
+    assert set(explicit.hostnames) == {f"minio.{namespace}.svc", "explicit.local"}
+    assert set(generated.hostnames) == {
+        "minio",
+        f"minio.{namespace}",
+        f"minio.{namespace}.svc.cluster.local",
+    }
+    all_names = {name for alias in aliases for name in alias.hostnames}
+    assert "redis" not in all_names
 
 
 def test_reconciler_applies_secrets(tmp_path: Path, monkeypatch) -> None:

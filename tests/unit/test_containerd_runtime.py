@@ -8,6 +8,25 @@ import pytest
 
 from ae.controller.spec import AppManifest
 from ae.runtime.containerd_runtime import ContainerdRuntime
+from ae.runtime.podman_runtime import PodmanRuntime
+
+
+class _FakeLogProc:
+    def __init__(self, lines: list[str] | None = None) -> None:
+        self.stdout = iter(lines or ["hello\n"])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+def _assert_containerd_global_args(argv: list[str]) -> None:
+    assert "--address" in argv
+    assert "--namespace" in argv
+    assert "--data-root" in argv
+    assert "--cni-netconfpath" in argv
 
 
 def _manifest_with_service() -> AppManifest:
@@ -80,6 +99,98 @@ def test_containerd_runtime_run_ok_injects_global_flags(monkeypatch) -> None:
         "ps",
         "-a",
     ]
+
+
+def test_podman_runtime_cmd_is_identity() -> None:
+    runtime = PodmanRuntime()
+    cmd = [runtime._bin, "logs", "cid"]
+
+    assert runtime._runtime_cmd(cmd) is cmd
+
+
+def test_containerd_runtime_read_logs_follow_wraps_runtime_command(monkeypatch) -> None:
+    runtime = ContainerdRuntime(
+        address="unix:///run/test-containerd.sock",
+        namespace="ae-test",
+        data_root="/var/lib/ae/nerdctl-test",
+        cni_path="/opt/cni/bin",
+        cni_netconfpath="/etc/cni/net.d",
+    )
+    captured: dict[str, list[str]] = {}
+
+    monkeypatch.setattr(runtime, "_find_by_label", lambda _key, _value: "cid123")
+
+    def fake_popen(argv, **_kwargs):  # noqa: ANN001
+        captured["argv"] = list(argv)
+        return _FakeLogProc()
+
+    monkeypatch.setattr("ae.runtime.podman_runtime.subprocess.Popen", fake_popen)
+
+    assert list(runtime.read_logs("workerbee-poc--api-rev1-0", follow=True, tail=5)) == ["hello"]
+    argv = captured["argv"]
+    _assert_containerd_global_args(argv)
+    logs_idx = argv.index("logs")
+    assert argv[logs_idx : logs_idx + 4] == ["logs", "--tail", "5", "-f"]
+    assert argv[-1] == "cid123"
+
+
+def test_containerd_runtime_read_logs_for_container_follow_wraps_runtime_command(
+    monkeypatch,
+) -> None:
+    runtime = ContainerdRuntime(
+        address="unix:///run/test-containerd.sock",
+        namespace="ae-test",
+        data_root="/var/lib/ae/nerdctl-test",
+        cni_path="/opt/cni/bin",
+        cni_netconfpath="/etc/cni/net.d",
+    )
+    captured: dict[str, list[str]] = {}
+
+    def fake_run_ok(_argv, *, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        return SimpleNamespace(code=0, out="cid456\n", err="")
+
+    def fake_popen(argv, **_kwargs):  # noqa: ANN001
+        captured["argv"] = list(argv)
+        return _FakeLogProc()
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+    monkeypatch.setattr("ae.runtime.podman_runtime.subprocess.Popen", fake_popen)
+
+    lines = list(runtime.read_logs_for_container("workerbee-poc--api", "main", follow=True))
+
+    assert lines == ["hello"]
+    argv = captured["argv"]
+    _assert_containerd_global_args(argv)
+    assert argv[-3:] == ["logs", "-f", "cid456"]
+
+
+def test_containerd_runtime_exec_for_container_wraps_runtime_command(monkeypatch) -> None:
+    runtime = ContainerdRuntime(
+        address="unix:///run/test-containerd.sock",
+        namespace="ae-test",
+        data_root="/var/lib/ae/nerdctl-test",
+        cni_path="/opt/cni/bin",
+        cni_netconfpath="/etc/cni/net.d",
+    )
+    captured: dict[str, list[str]] = {}
+
+    def fake_run_ok(_argv, *, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        return SimpleNamespace(code=0, out="cid789\n", err="")
+
+    def fake_run(argv, check, stdout, stderr, text, timeout):  # noqa: ANN001
+        _ = (check, stdout, stderr, text, timeout)
+        captured["argv"] = list(argv)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+    monkeypatch.setattr("ae.runtime.podman_runtime.subprocess.run", fake_run)
+
+    assert runtime.exec_for_container("workerbee-poc--api", "main", ["sh", "-lc", "true"]) == 0
+    argv = captured["argv"]
+    _assert_containerd_global_args(argv)
+    assert argv[-5:] == ["exec", "cid789", "sh", "-lc", "true"]
 
 
 def test_containerd_runtime_create_container_preserves_hostnet_runtime_and_gpu(monkeypatch) -> None:

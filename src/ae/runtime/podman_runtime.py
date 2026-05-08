@@ -539,7 +539,11 @@ class PodmanRuntime(RuntimeAdapter):
         if follow:
             try:
                 with subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                    self._runtime_cmd(cmd),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
                 ) as proc:  # type: ignore
                     if proc.stdout is not None:
                         for line in proc.stdout:
@@ -596,7 +600,11 @@ class PodmanRuntime(RuntimeAdapter):
         if follow:
             try:
                 with subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                    self._runtime_cmd(cmd),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
                 ) as proc:  # type: ignore
                     if proc.stdout is not None:
                         for line in proc.stdout:
@@ -637,7 +645,7 @@ class PodmanRuntime(RuntimeAdapter):
         cmd = [self._bin, "exec", cid[0], *[str(x) for x in (command or [])]]
         try:
             cp = subprocess.run(
-                cmd,
+                self._runtime_cmd(cmd),
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -719,7 +727,7 @@ class PodmanRuntime(RuntimeAdapter):
         argv.extend([str(x) for x in command])
         try:
             proc = subprocess.Popen(
-                argv,
+                self._runtime_cmd(argv),
                 stdin=slave,
                 stdout=slave,
                 stderr=slave,
@@ -1016,7 +1024,7 @@ class PodmanRuntime(RuntimeAdapter):
             # Execute with optional timeout
             try:
                 cp = subprocess.run(
-                    argv,
+                    self._runtime_cmd(argv),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -1759,13 +1767,20 @@ class PodmanRuntime(RuntimeAdapter):
             and "container" in lowered
         )
 
+    def _runtime_cmd(self, cmd: list[str]) -> list[str]:
+        return cmd
+
     def _run_ok(self, argv: list[str], *, allow_fail: bool = False) -> _RunResult:
         retries = self._podman_retry_max if not allow_fail else 0
         attempt = 0
         while True:
             try:
                 cp = subprocess.run(
-                    argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                    self._runtime_cmd(argv),
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
                 )
             except FileNotFoundError as exc:
                 raise RuntimeError(
@@ -2220,14 +2235,16 @@ class PodmanRuntime(RuntimeAdapter):
 
     def _podman_login(self, registry: str, username: str, password: str) -> None:
         cp = subprocess.run(
-            [
-                self._bin,
-                "login",
-                "--username",
-                str(username),
-                "--password-stdin",
-                str(registry),
-            ],
+            self._runtime_cmd(
+                [
+                    self._bin,
+                    "login",
+                    "--username",
+                    str(username),
+                    "--password-stdin",
+                    str(registry),
+                ]
+            ),
             input=str(password),
             text=True,
             stdout=subprocess.PIPE,
