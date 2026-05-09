@@ -106,6 +106,7 @@ class Reconciler:
         self._runtime_cache: dict[tuple[str, str], RuntimeAdapter] = {}
         self._base_runtime = getattr(runtime, "_local", runtime)
         self._mutation_authority = authority
+        self._direct_containerd_alias_refresh_depth = 0
         # Inject exec callback for exec probes
         try:
             self._health_manager.set_exec_callback(self._exec_across_runtimes)
@@ -367,6 +368,72 @@ class Reconciler:
         if ip.startswith("127."):
             return False
         return True
+
+    def _refresh_direct_containerd_service_alias_dependents(
+        self,
+        service_manifest: AppManifest,
+        health_report: HealthReport,
+    ) -> None:
+        if self._direct_containerd_alias_refresh_depth > 0:
+            return
+        if not self._is_direct_containerd_runtime(self._runtime):
+            return
+        if not getattr(service_manifest.spec, "service", None):
+            return
+        if int(getattr(health_report, "ready_replicas", 0) or 0) < 1:
+            return
+        service_app = app_key_for_manifest(service_manifest)
+        if not self._ready_service_endpoint_ip(service_app):
+            return
+        service_ns, _service_name = split_app_key(service_app)
+        try:
+            registered = list(self._state_store.list_registered_apps())
+        except Exception:
+            return
+        dependents: list[tuple[str, AppManifest]] = []
+        for entry in registered:
+            dep_app = str(getattr(entry, "app_name", "") or "").strip()
+            if not dep_app or dep_app == service_app:
+                continue
+            dep_ns, _dep_name = split_app_key(dep_app)
+            if dep_ns != service_ns:
+                continue
+            dep_manifest = getattr(entry, "manifest", None)
+            if dep_manifest is None:
+                try:
+                    dep_manifest = self._state_store.get_registered_manifest(dep_app)
+                except Exception:
+                    dep_manifest = None
+            if dep_manifest is None:
+                continue
+            refreshed = self._with_direct_containerd_service_aliases(self._runtime, dep_manifest)
+            refreshed_hash = self._compute_spec_hash(refreshed)
+            try:
+                latest = self._state_store.list_revisions(dep_app, limit=1)
+            except Exception:
+                latest = []
+            if latest and str(latest[0].spec_hash) == refreshed_hash:
+                continue
+            dependents.append((dep_app, dep_manifest))
+        if not dependents:
+            return
+        self._direct_containerd_alias_refresh_depth += 1
+        try:
+            for dep_app, dep_manifest in dependents:
+                try:
+                    latest = self._state_store.list_revisions(dep_app, limit=1)
+                    revision = int(latest[0].revision) if latest else 0
+                    self._state_store.record_event(
+                        dep_app,
+                        revision,
+                        "ServiceAliasRefreshQueued",
+                        f"Refreshing direct-containerd aliases after {service_app} became ready",
+                    )
+                except Exception:
+                    pass
+                self.reconcile(dep_manifest)
+        finally:
+            self._direct_containerd_alias_refresh_depth -= 1
 
     def reconcile_manifest_path(self, path: Path) -> ReconcileReport:
         """Load a manifest from disk and reconcile it."""
@@ -693,6 +760,10 @@ class Reconciler:
         if self._service_controller:
             try:
                 self._service_controller.reconcile(manifest_for_runtime, result, health_report)
+                self._refresh_direct_containerd_service_alias_dependents(
+                    manifest_for_runtime,
+                    health_report,
+                )
             except Exception as exc:
                 logging.getLogger(__name__).warning(
                     "service reconcile failed for %s: %s", app_name, exc

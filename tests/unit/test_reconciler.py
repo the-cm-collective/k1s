@@ -86,6 +86,7 @@ class CapturingContainerdRuntime(ContainerdRuntime):
         super().__init__(namespace="ae-test")
         self.last_manifest: AppManifest | None = None
         self.revisions: list[int] = []
+        self.apps: list[str] = []
 
     def ensure_app(
         self,
@@ -100,6 +101,7 @@ class CapturingContainerdRuntime(ContainerdRuntime):
         _ = (keep_old, limit_create, node_id)
         self.last_manifest = manifest
         self.revisions.append(revision)
+        self.apps.append(f"{manifest.metadata.namespace}--{manifest.metadata.name}")
         pod_name = pod_names[0] if pod_names else f"{manifest.metadata.name}-rev{revision}-0"
         return RuntimeResult(
             revision=revision,
@@ -289,6 +291,7 @@ class StubHealthManager:
         return None
 
     def evaluate(self, manifest: AppManifest, result: RuntimeResult) -> HealthReport:
+        _ = manifest
         pods = [
             PodHealth(
                 pod_name=state.pod_name,
@@ -643,6 +646,80 @@ def test_direct_containerd_service_aliases_are_revision_affecting(
     assert second.revision == 2
     assert runtime.revisions == [1, 2]
     assert runtime.last_manifest is not None
+    aliases = runtime.last_manifest.spec.host_aliases
+    assert aliases and aliases[0].ip == "10.210.0.12"
+    assert "minio" in aliases[0].hostnames
+
+
+def test_direct_containerd_service_ready_refreshes_registered_dependents(
+    tmp_path: Path,
+) -> None:
+    state = SQLiteStateStore(tmp_path / "state.db")
+    runtime = CapturingContainerdRuntime()
+    namespace = "rawform-poc-dev-ad9ec5062e"
+    ports = {"ports": [{"name": "http", "port": 9000, "targetPort": 9000, "protocol": "TCP"}]}
+
+    class FakeServiceController:
+        def reconcile(
+            self,
+            manifest: AppManifest,
+            _result: RuntimeResult,
+            _health_report: HealthReport,
+        ) -> str | None:
+            if manifest.metadata.name != "minio":
+                return None
+            app_name = f"{manifest.metadata.namespace}--{manifest.metadata.name}"
+            state.upsert_service(app_name, "10.241.0.20", ports)
+            state.upsert_service_endpoints(
+                app_name,
+                [
+                    ServiceEndpoint(
+                        app_name=app_name,
+                        port=9000,
+                        ip="10.210.0.12",
+                        target_port=9000,
+                        ready=True,
+                    )
+                ],
+            )
+            return "10.241.0.20"
+
+    reconciler = Reconciler(
+        runtime=runtime,
+        state_store=state,
+        service_controller=FakeServiceController(),
+    )
+    api_manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="api", namespace=namespace),
+        spec=AppSpec(image="workerbee-api:dev"),
+    )
+    minio_manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="minio", namespace=namespace),
+        spec=AppSpec(image="minio/minio:latest", service=ServiceSpec(port=9000)),
+    )
+
+    state.register_app(api_manifest)
+    first = reconciler.reconcile(api_manifest)
+    assert first.revision == 1
+    assert runtime.last_manifest is not None
+    assert runtime.last_manifest.metadata.name == "api"
+    assert not runtime.last_manifest.spec.host_aliases
+
+    state.register_app(minio_manifest)
+    reconciler.reconcile(minio_manifest)
+
+    assert runtime.apps == [
+        f"{namespace}--api",
+        f"{namespace}--minio",
+        f"{namespace}--api",
+    ]
+    assert runtime.revisions == [1, 1, 2]
+    assert runtime.last_manifest is not None
+    assert runtime.last_manifest.metadata.name == "api"
     aliases = runtime.last_manifest.spec.host_aliases
     assert aliases and aliases[0].ip == "10.210.0.12"
     assert "minio" in aliases[0].hostnames
