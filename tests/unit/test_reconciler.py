@@ -651,6 +651,92 @@ def test_direct_containerd_service_aliases_are_revision_affecting(
     assert "minio" in aliases[0].hostnames
 
 
+def test_direct_containerd_service_aliases_fallback_to_ready_service_pods(
+    tmp_path: Path,
+) -> None:
+    state = SQLiteStateStore(tmp_path / "state.db")
+    runtime = CapturingContainerdRuntime()
+    reconciler = Reconciler(
+        runtime=runtime,
+        state_store=state,
+        health_manager=StubHealthManager(),
+    )
+    namespace = "rawform-poc-dev-ad9ec5062e"
+    minio_manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="minio", namespace=namespace),
+        spec=AppSpec(image="minio/minio:latest", service=ServiceSpec(port=9000)),
+    )
+    api_manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="api", namespace=namespace),
+        spec=AppSpec(image="workerbee-api:dev"),
+    )
+
+    state.register_app(minio_manifest)
+    reconciler.reconcile(minio_manifest)
+    state.register_app(api_manifest)
+    reconciler.reconcile(api_manifest)
+
+    assert state.list_services() == []
+    assert runtime.last_manifest is not None
+    assert runtime.last_manifest.metadata.name == "api"
+    aliases = runtime.last_manifest.spec.host_aliases
+    assert aliases and aliases[0].ip == "10.210.0.44"
+    assert "minio" in aliases[0].hostnames
+    assert f"minio.{namespace}.svc" in aliases[0].hostnames
+
+
+def test_direct_containerd_service_ready_refreshes_dependents_without_service_proxy(
+    tmp_path: Path,
+) -> None:
+    state = SQLiteStateStore(tmp_path / "state.db")
+    runtime = CapturingContainerdRuntime()
+    reconciler = Reconciler(
+        runtime=runtime,
+        state_store=state,
+        health_manager=StubHealthManager(),
+    )
+    namespace = "rawform-poc-dev-ad9ec5062e"
+    api_manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="api", namespace=namespace),
+        spec=AppSpec(image="workerbee-api:dev"),
+    )
+    minio_manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="minio", namespace=namespace),
+        spec=AppSpec(image="minio/minio:latest", service=ServiceSpec(port=9000)),
+    )
+
+    state.register_app(api_manifest)
+    first = reconciler.reconcile(api_manifest)
+    assert first.revision == 1
+    assert runtime.last_manifest is not None
+    assert runtime.last_manifest.metadata.name == "api"
+    assert not runtime.last_manifest.spec.host_aliases
+
+    state.register_app(minio_manifest)
+    reconciler.reconcile(minio_manifest)
+
+    assert state.list_services() == []
+    assert runtime.apps == [
+        f"{namespace}--api",
+        f"{namespace}--minio",
+        f"{namespace}--api",
+    ]
+    assert runtime.revisions == [1, 1, 2]
+    assert runtime.last_manifest is not None
+    assert runtime.last_manifest.metadata.name == "api"
+    aliases = runtime.last_manifest.spec.host_aliases
+    assert aliases and aliases[0].ip == "10.210.0.44"
+    assert "minio" in aliases[0].hostnames
+
+
 def test_direct_containerd_service_ready_refreshes_registered_dependents(
     tmp_path: Path,
 ) -> None:

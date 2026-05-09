@@ -107,6 +107,7 @@ class Reconciler:
         self._base_runtime = getattr(runtime, "_local", runtime)
         self._mutation_authority = authority
         self._direct_containerd_alias_refresh_depth = 0
+        self._direct_containerd_refresh_service_ips: dict[str, str] = {}
         # Inject exec callback for exec probes
         try:
             self._health_manager.set_exec_callback(self._exec_across_runtimes)
@@ -271,31 +272,22 @@ class Reconciler:
         self,
         runtime: RuntimeAdapter,
         manifest: AppManifest,
+        *,
+        service_ips: dict[str, str] | None = None,
     ) -> AppManifest:
         if not self._is_direct_containerd_runtime(runtime):
             return manifest
 
         current_app = app_key_for_manifest(manifest)
-        current_ns, _current_name = split_app_key(current_app)
         explicit_aliases = list(getattr(manifest.spec, "host_aliases", []) or [])
         used_hostnames = self._host_alias_hostnames(explicit_aliases)
         generated: list[HostAlias] = []
 
-        try:
-            services = self._state_store.list_services()
-        except Exception:
-            services = []
-
-        for service in services:
-            service_app = str(getattr(service, "app_name", "") or "").strip()
-            if not service_app or service_app == current_app:
-                continue
-            service_ns, service_name = split_app_key(service_app)
-            if service_ns != current_ns or not service_name:
-                continue
-            endpoint_ip = self._ready_service_endpoint_ip(service_app)
-            if not endpoint_ip:
-                continue
+        merged_service_ips = dict(self._direct_containerd_refresh_service_ips)
+        merged_service_ips.update(service_ips or {})
+        for _service_app, service_ns, service_name, endpoint_ip in (
+            self._direct_containerd_service_alias_sources(current_app, service_ips=merged_service_ips)
+        ):
             hostnames = [
                 service_name,
                 f"{service_name}.{service_ns}",
@@ -314,6 +306,63 @@ class Reconciler:
             update={"host_aliases": [*explicit_aliases, *generated]}
         )
         return manifest.model_copy(update={"spec": updated_spec})
+
+    def _direct_containerd_service_alias_sources(
+        self,
+        current_app: str,
+        *,
+        service_ips: dict[str, str] | None = None,
+    ) -> list[tuple[str, str, str, str]]:
+        current_ns, _current_name = split_app_key(current_app)
+        explicit_ips = {
+            str(app or "").strip(): str(ip or "").strip()
+            for app, ip in (service_ips or {}).items()
+            if str(app or "").strip() and self._service_endpoint_ip_allowed(str(ip or ""))
+        }
+        sources: list[tuple[str, str, str, str]] = []
+        seen: set[str] = set()
+
+        try:
+            services = list(self._state_store.list_services())
+        except Exception:
+            services = []
+        for service in services:
+            service_app = str(getattr(service, "app_name", "") or "").strip()
+            if not service_app or service_app == current_app:
+                continue
+            service_ns, service_name = split_app_key(service_app)
+            if service_ns != current_ns or not service_name:
+                continue
+            endpoint_ip = (
+                explicit_ips.get(service_app)
+                or self._ready_service_endpoint_ip(service_app)
+                or self._ready_service_pod_ip(service_app)
+            )
+            if endpoint_ip:
+                sources.append((service_app, service_ns, service_name, endpoint_ip))
+                seen.add(service_app)
+
+        try:
+            registered = list(self._state_store.list_registered_apps())
+        except Exception:
+            registered = []
+        for entry in registered:
+            service_app = str(getattr(entry, "app_name", "") or "").strip()
+            if not service_app or service_app == current_app or service_app in seen:
+                continue
+            service_ns, service_name = split_app_key(service_app)
+            if service_ns != current_ns or not service_name:
+                continue
+            manifest = getattr(entry, "manifest", None)
+            if manifest is None or not getattr(getattr(manifest, "spec", None), "service", None):
+                continue
+            endpoint_ip = explicit_ips.get(service_app) or self._ready_service_pod_ip(service_app)
+            if not endpoint_ip:
+                continue
+            sources.append((service_app, service_ns, service_name, endpoint_ip))
+            seen.add(service_app)
+
+        return sources
 
     def _is_direct_containerd_runtime(self, runtime: RuntimeAdapter) -> bool:
         try:
@@ -359,6 +408,54 @@ class Reconciler:
         )
         return str(getattr(ready[0], "ip", "") or "").strip() or None
 
+    def _ready_service_pod_ip(self, service_app: str) -> str | None:
+        try:
+            pods = list(self._state_store.list_pods(service_app))
+        except Exception:
+            return None
+        ready = []
+        for pod in pods:
+            if not bool(getattr(pod, "ready", False)) or not bool(getattr(pod, "live", False)):
+                continue
+            ip = self._endpoint_ip(str(getattr(pod, "endpoint", "") or ""))
+            if self._service_endpoint_ip_allowed(ip):
+                ready.append(ip)
+        if not ready:
+            return None
+        ready.sort()
+        return ready[0]
+
+    def _ready_runtime_result_ip(self, runtime_result: RuntimeResult) -> str | None:
+        ready = []
+        for state in getattr(runtime_result, "pod_states", []) or []:
+            if not bool(getattr(state, "ready", False)):
+                continue
+            ip = self._endpoint_ip(str(getattr(state, "endpoint", "") or ""))
+            if self._service_endpoint_ip_allowed(ip):
+                ready.append(ip)
+        if not ready:
+            return None
+        ready.sort()
+        return ready[0]
+
+    def _endpoint_ip(self, endpoint: str) -> str:
+        raw = str(endpoint or "").strip()
+        if not raw:
+            return ""
+        if "://" in raw:
+            try:
+                from urllib.parse import urlparse
+
+                return str(urlparse(raw).hostname or "").strip()
+            except Exception:
+                return ""
+        if raw.startswith("["):
+            return raw[1:].split("]", 1)[0].strip()
+        host = raw.split("/", 1)[0].strip()
+        if host.count(":") == 1:
+            return host.rsplit(":", 1)[0].strip()
+        return host
+
     def _service_endpoint_ip_allowed(self, ip: str) -> bool:
         ip = str(ip or "").strip()
         if not ip:
@@ -373,6 +470,7 @@ class Reconciler:
         self,
         service_manifest: AppManifest,
         health_report: HealthReport,
+        runtime_result: RuntimeResult,
     ) -> None:
         if self._direct_containerd_alias_refresh_depth > 0:
             return
@@ -383,7 +481,12 @@ class Reconciler:
         if int(getattr(health_report, "ready_replicas", 0) or 0) < 1:
             return
         service_app = app_key_for_manifest(service_manifest)
-        if not self._ready_service_endpoint_ip(service_app):
+        service_ip = (
+            self._ready_service_endpoint_ip(service_app)
+            or self._ready_runtime_result_ip(runtime_result)
+            or self._ready_service_pod_ip(service_app)
+        )
+        if not service_ip:
             return
         service_ns, _service_name = split_app_key(service_app)
         try:
@@ -406,7 +509,11 @@ class Reconciler:
                     dep_manifest = None
             if dep_manifest is None:
                 continue
-            refreshed = self._with_direct_containerd_service_aliases(self._runtime, dep_manifest)
+            refreshed = self._with_direct_containerd_service_aliases(
+                self._runtime,
+                dep_manifest,
+                service_ips={service_app: service_ip},
+            )
             refreshed_hash = self._compute_spec_hash(refreshed)
             try:
                 latest = self._state_store.list_revisions(dep_app, limit=1)
@@ -418,6 +525,8 @@ class Reconciler:
         if not dependents:
             return
         self._direct_containerd_alias_refresh_depth += 1
+        previous_service_ips = dict(self._direct_containerd_refresh_service_ips)
+        self._direct_containerd_refresh_service_ips[service_app] = service_ip
         try:
             for dep_app, dep_manifest in dependents:
                 try:
@@ -433,6 +542,7 @@ class Reconciler:
                     pass
                 self.reconcile(dep_manifest)
         finally:
+            self._direct_containerd_refresh_service_ips = previous_service_ips
             self._direct_containerd_alias_refresh_depth -= 1
 
     def reconcile_manifest_path(self, path: Path) -> ReconcileReport:
@@ -756,18 +866,20 @@ class Reconciler:
             pod_states=aggregate_states,
         )
         health_report = self._health_manager.evaluate(manifest, result)
-        # Service/IPAM: prefer Service VIPs when controller is available
+        # Service/IPAM: prefer Service VIPs when controller is available. Direct containerd still
+        # refreshes same-namespace service aliases from ready pod endpoints without Service VIPs.
         if self._service_controller:
             try:
                 self._service_controller.reconcile(manifest_for_runtime, result, health_report)
-                self._refresh_direct_containerd_service_alias_dependents(
-                    manifest_for_runtime,
-                    health_report,
-                )
             except Exception as exc:
                 logging.getLogger(__name__).warning(
                     "service reconcile failed for %s: %s", app_name, exc
                 )
+        self._refresh_direct_containerd_service_alias_dependents(
+            manifest_for_runtime,
+            health_report,
+            result,
+        )
         # Record probe backoff metrics from messages
         try:
             from ae.observability.http_api import record_probe_backoff  # type: ignore
