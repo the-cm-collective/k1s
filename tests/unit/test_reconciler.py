@@ -581,6 +581,7 @@ def test_direct_containerd_reconcile_injects_ready_service_host_aliases(
         metadata=Metadata(name="api", namespace=namespace),
         spec=AppSpec(
             image="alpine:3.20",
+            env=[{"name": "S3_ENDPOINT", "value": "http://minio:9000"}],
             host_aliases=[
                 HostAlias(
                     ip="192.0.2.10",
@@ -619,7 +620,10 @@ def test_direct_containerd_service_aliases_are_revision_affecting(
         apiVersion="ae.dev/v1alpha1",
         kind="Deployment",
         metadata=Metadata(name="api", namespace=namespace),
-        spec=AppSpec(image="alpine:3.20"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            env=[{"name": "S3_ENDPOINT", "value": "http://minio:9000"}],
+        ),
     )
 
     first = reconciler.reconcile(manifest)
@@ -672,7 +676,10 @@ def test_direct_containerd_service_aliases_fallback_to_ready_service_pods(
         apiVersion="ae.dev/v1alpha1",
         kind="Deployment",
         metadata=Metadata(name="api", namespace=namespace),
-        spec=AppSpec(image="workerbee-api:dev"),
+        spec=AppSpec(
+            image="workerbee-api:dev",
+            env=[{"name": "S3_ENDPOINT", "value": "http://minio:9000"}],
+        ),
     )
 
     state.register_app(minio_manifest)
@@ -704,7 +711,10 @@ def test_direct_containerd_service_ready_refreshes_dependents_without_service_pr
         apiVersion="ae.dev/v1alpha1",
         kind="Deployment",
         metadata=Metadata(name="api", namespace=namespace),
-        spec=AppSpec(image="workerbee-api:dev"),
+        spec=AppSpec(
+            image="workerbee-api:dev",
+            env=[{"name": "S3_ENDPOINT", "value": "http://minio:9000"}],
+        ),
     )
     minio_manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
@@ -807,7 +817,11 @@ def test_direct_containerd_service_alias_refresh_removes_old_revision_before_cre
         apiVersion="ae.dev/v1alpha1",
         kind="Deployment",
         metadata=Metadata(name="api", namespace=namespace),
-        spec=AppSpec(image="workerbee-api:dev", service=ServiceSpec(port=8000)),
+        spec=AppSpec(
+            image="workerbee-api:dev",
+            env=[{"name": "S3_ENDPOINT", "value": "http://minio:9000"}],
+            service=ServiceSpec(port=8000),
+        ),
     )
     minio_manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
@@ -836,6 +850,13 @@ def test_direct_containerd_service_alias_refresh_removes_old_revision_before_cre
         if item.get("labels", {}).get(runtime.APP_LABEL) == f"{namespace}--api"
     ]
     assert [item["labels"][runtime.REVISION_LABEL] for item in api_containers] == ["2"]
+
+    before_events = list(runtime.events)
+    reconciler.reconcile(api_manifest)
+    new_events = runtime.events[len(before_events) :]
+    assert not any(
+        event[0] == "ensure" and event[1] == f"{namespace}--minio" for event in new_events
+    )
 
 
 def test_direct_containerd_service_ready_refreshes_registered_dependents(
@@ -880,7 +901,10 @@ def test_direct_containerd_service_ready_refreshes_registered_dependents(
         apiVersion="ae.dev/v1alpha1",
         kind="Deployment",
         metadata=Metadata(name="api", namespace=namespace),
-        spec=AppSpec(image="workerbee-api:dev"),
+        spec=AppSpec(
+            image="workerbee-api:dev",
+            env=[{"name": "S3_ENDPOINT", "value": "http://minio:9000"}],
+        ),
     )
     minio_manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",

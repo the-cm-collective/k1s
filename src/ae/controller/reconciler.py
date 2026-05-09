@@ -287,7 +287,11 @@ class Reconciler:
         merged_service_ips = dict(self._direct_containerd_refresh_service_ips)
         merged_service_ips.update(service_ips or {})
         for _service_app, service_ns, service_name, endpoint_ip in (
-            self._direct_containerd_service_alias_sources(current_app, service_ips=merged_service_ips)
+            self._direct_containerd_service_alias_sources(
+                manifest,
+                current_app,
+                service_ips=merged_service_ips,
+            )
         ):
             hostnames = [
                 service_name,
@@ -310,11 +314,15 @@ class Reconciler:
 
     def _direct_containerd_service_alias_sources(
         self,
+        manifest: AppManifest,
         current_app: str,
         *,
         service_ips: dict[str, str] | None = None,
     ) -> list[tuple[str, str, str, str]]:
         current_ns, _current_name = split_app_key(current_app)
+        referenced_hosts = self._manifest_reference_hosts(manifest)
+        if not referenced_hosts:
+            return []
         explicit_ips = {
             str(app or "").strip(): str(ip or "").strip()
             for app, ip in (service_ips or {}).items()
@@ -333,6 +341,8 @@ class Reconciler:
                 continue
             service_ns, service_name = split_app_key(service_app)
             if service_ns != current_ns or not service_name:
+                continue
+            if not self._service_reference_matches(referenced_hosts, service_ns, service_name):
                 continue
             endpoint_ip = (
                 explicit_ips.get(service_app)
@@ -353,6 +363,8 @@ class Reconciler:
                 continue
             service_ns, service_name = split_app_key(service_app)
             if service_ns != current_ns or not service_name:
+                continue
+            if not self._service_reference_matches(referenced_hosts, service_ns, service_name):
                 continue
             manifest = getattr(entry, "manifest", None)
             if manifest is None or not getattr(getattr(manifest, "spec", None), "service", None):
@@ -386,6 +398,108 @@ class Reconciler:
                 if text:
                     names.add(text)
         return names
+
+    def _manifest_references_service(
+        self,
+        manifest: AppManifest,
+        service_ns: str,
+        service_name: str,
+    ) -> bool:
+        return self._service_reference_matches(
+            self._manifest_reference_hosts(manifest),
+            service_ns,
+            service_name,
+        )
+
+    def _service_reference_matches(
+        self,
+        referenced_hosts: set[str],
+        service_ns: str,
+        service_name: str,
+    ) -> bool:
+        service_ns = str(service_ns or "").strip().lower()
+        service_name = str(service_name or "").strip().lower()
+        if not service_ns or not service_name:
+            return False
+        candidates = {
+            service_name,
+            f"{service_name}.{service_ns}",
+            f"{service_name}.{service_ns}.svc",
+            f"{service_name}.{service_ns}.svc.cluster.local",
+        }
+        return bool(referenced_hosts & candidates)
+
+    def _manifest_reference_hosts(self, manifest: AppManifest) -> set[str]:
+        hosts: set[str] = set()
+        for text in self._manifest_reference_texts(manifest):
+            hosts.update(self._reference_hosts_from_text(text))
+        return hosts
+
+    def _manifest_reference_texts(self, manifest: AppManifest) -> list[str]:
+        spec = getattr(manifest, "spec", None)
+        if spec is None:
+            return []
+        texts: list[str] = []
+        texts.extend(str(value) for value in (getattr(spec, "command", None) or []))
+        texts.extend(str(value) for value in (getattr(spec, "args", None) or []))
+        texts.extend(self._env_reference_texts(getattr(spec, "env", None) or []))
+        for container in list(getattr(spec, "containers", None) or []) + list(
+            getattr(spec, "init_containers", None) or []
+        ):
+            if isinstance(container, dict):
+                texts.extend(str(value) for value in (container.get("command") or []))
+                texts.extend(str(value) for value in (container.get("args") or []))
+                texts.extend(self._env_reference_texts(container.get("env") or []))
+            else:
+                texts.extend(str(value) for value in (getattr(container, "command", None) or []))
+                texts.extend(str(value) for value in (getattr(container, "args", None) or []))
+                texts.extend(self._env_reference_texts(getattr(container, "env", None) or []))
+        return [text for text in texts if text]
+
+    def _env_reference_texts(self, env: list[object]) -> list[str]:
+        texts: list[str] = []
+        for item in env or []:
+            if isinstance(item, dict):
+                value = item.get("value")
+            else:
+                value = getattr(item, "value", None)
+            if value is not None:
+                texts.append(str(value))
+        return texts
+
+    def _reference_hosts_from_text(self, text: str) -> set[str]:
+        raw = str(text or "").strip()
+        if not raw:
+            return set()
+        hosts: set[str] = set()
+        scrubbed_parts: list[str] = []
+        cursor = 0
+        for match in re.finditer(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>]+", raw):
+            scrubbed_parts.append(raw[cursor : match.start()])
+            scrubbed_parts.append(" ")
+            cursor = match.end()
+            try:
+                from urllib.parse import urlparse
+
+                host = str(urlparse(match.group(0)).hostname or "").strip().lower().rstrip(".")
+            except Exception:
+                host = ""
+            if host:
+                hosts.add(host)
+        scrubbed_parts.append(raw[cursor:])
+        scrubbed = "".join(scrubbed_parts)
+        host_port = re.compile(
+            r"(?<![A-Za-z0-9_.-])"
+            r"([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+            r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)"
+            r":\d{1,5}"
+            r"(?![A-Za-z0-9_.-])"
+        )
+        for match in host_port.finditer(scrubbed):
+            host = str(match.group(1) or "").strip().lower().rstrip(".")
+            if host:
+                hosts.add(host)
+        return hosts
 
     def _ready_service_endpoint_ip(self, service_app: str) -> str | None:
         try:
@@ -489,7 +603,7 @@ class Reconciler:
         )
         if not service_ip:
             return
-        service_ns, _service_name = split_app_key(service_app)
+        service_ns, service_name = split_app_key(service_app)
         try:
             registered = list(self._state_store.list_registered_apps())
         except Exception:
@@ -509,6 +623,8 @@ class Reconciler:
                 except Exception:
                     dep_manifest = None
             if dep_manifest is None:
+                continue
+            if not self._manifest_references_service(dep_manifest, service_ns, service_name):
                 continue
             refreshed = self._with_direct_containerd_service_aliases(
                 self._runtime,
