@@ -737,6 +737,107 @@ def test_direct_containerd_service_ready_refreshes_dependents_without_service_pr
     assert "minio" in aliases[0].hostnames
 
 
+def test_direct_containerd_service_alias_refresh_removes_old_revision_before_create(
+    tmp_path: Path,
+) -> None:
+    state = SQLiteStateStore(tmp_path / "state.db")
+    namespace = "rawform-poc-dev-ad9ec5062e"
+
+    class NoOverlapRuntime(CapturingContainerdRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.events: list[tuple[str, str, int | list[str]]] = []
+            self.containers: list[dict] = []
+
+        def ensure_app(
+            self,
+            manifest: AppManifest,
+            revision: int,
+            *,
+            keep_old: bool = False,
+            limit_create: int | None = None,
+            pod_names: list[str] | None = None,
+            node_id: str | None = None,
+        ) -> RuntimeResult:  # type: ignore[override]
+            app = f"{manifest.metadata.namespace}--{manifest.metadata.name}"
+            self.events.append(("ensure", app, revision))
+            result = super().ensure_app(
+                manifest,
+                revision,
+                keep_old=keep_old,
+                limit_create=limit_create,
+                pod_names=pod_names,
+                node_id=node_id,
+            )
+            pod_name = result.pod_states[0].pod_name
+            self.containers.append(
+                {
+                    "name": pod_name,
+                    "labels": {
+                        self.APP_LABEL: app,
+                        self.POD_LABEL: pod_name,
+                        self.REVISION_LABEL: str(revision),
+                    },
+                    "running": True,
+                }
+            )
+            return result
+
+        def list_containers_info(self) -> list[dict]:
+            return list(self.containers)
+
+        def remove_replicas(self, app_name: str, replica_ids: list[str]) -> int:
+            self.events.append(("remove", app_name, list(replica_ids)))
+            targets = set(replica_ids)
+            before = len(self.containers)
+            self.containers = [
+                item
+                for item in self.containers
+                if item.get("labels", {}).get(self.POD_LABEL) not in targets
+            ]
+            return before - len(self.containers)
+
+    runtime = NoOverlapRuntime()
+    reconciler = Reconciler(
+        runtime=runtime,
+        state_store=state,
+        health_manager=StubHealthManager(),
+    )
+    api_manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="api", namespace=namespace),
+        spec=AppSpec(image="workerbee-api:dev", service=ServiceSpec(port=8000)),
+    )
+    minio_manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="minio", namespace=namespace),
+        spec=AppSpec(image="minio/minio:latest", service=ServiceSpec(port=9000)),
+    )
+
+    state.register_app(api_manifest)
+    reconciler.reconcile(api_manifest)
+    state.register_app(minio_manifest)
+    reconciler.reconcile(minio_manifest)
+
+    remove_index = runtime.events.index(
+        (
+            "remove",
+            f"{namespace}--api",
+            [f"{namespace}--api-rev1-0"],
+        )
+    )
+    ensure_refresh_index = runtime.events.index(("ensure", f"{namespace}--api", 2))
+    assert remove_index < ensure_refresh_index
+    api_containers = [
+        item
+        for item in runtime.containers
+        if item.get("labels", {}).get(runtime.APP_LABEL) == f"{namespace}--api"
+    ]
+    assert [item["labels"][runtime.REVISION_LABEL] for item in api_containers] == ["2"]
+
+
 def test_direct_containerd_service_ready_refreshes_registered_dependents(
     tmp_path: Path,
 ) -> None:

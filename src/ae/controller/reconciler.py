@@ -108,6 +108,7 @@ class Reconciler:
         self._mutation_authority = authority
         self._direct_containerd_alias_refresh_depth = 0
         self._direct_containerd_refresh_service_ips: dict[str, str] = {}
+        self._direct_containerd_alias_refresh_no_overlap = 0
         # Inject exec callback for exec probes
         try:
             self._health_manager.set_exec_callback(self._exec_across_runtimes)
@@ -525,6 +526,7 @@ class Reconciler:
         if not dependents:
             return
         self._direct_containerd_alias_refresh_depth += 1
+        self._direct_containerd_alias_refresh_no_overlap += 1
         previous_service_ips = dict(self._direct_containerd_refresh_service_ips)
         self._direct_containerd_refresh_service_ips[service_app] = service_ip
         try:
@@ -543,6 +545,7 @@ class Reconciler:
                 self.reconcile(dep_manifest)
         finally:
             self._direct_containerd_refresh_service_ips = previous_service_ips
+            self._direct_containerd_alias_refresh_no_overlap -= 1
             self._direct_containerd_alias_refresh_depth -= 1
 
     def reconcile_manifest_path(self, path: Path) -> ReconcileReport:
@@ -693,6 +696,12 @@ class Reconciler:
         if until > now_ts:
             limit_create = 0
         keep_old = True
+        direct_containerd_alias_refresh_no_overlap = (
+            self._direct_containerd_alias_refresh_no_overlap > 0
+            and self._is_direct_containerd_runtime(self._runtime)
+            and strategy != "canary"
+            and int(getattr(manifest_for_runtime.spec, "replicas", 1) or 1) == 1
+        )
         try:
             import os as _os
 
@@ -709,7 +718,7 @@ class Reconciler:
                 )
             )
             if (
-                serial_service_rollout
+                (serial_service_rollout or direct_containerd_alias_refresh_no_overlap)
                 and strategy != "canary"
                 and getattr(manifest_for_runtime.spec, "replicas", 1) == 1
                 and fixed_service_port
@@ -737,8 +746,12 @@ class Reconciler:
                 revision,
                 desired_pod_names,
             )
-            old_not_running = [item for item in old_replicas if not item.running]
-            old_running = [item for item in old_replicas if item.running]
+            if direct_containerd_alias_refresh_no_overlap:
+                old_not_running = list(old_replicas)
+                old_running = []
+            else:
+                old_not_running = [item for item in old_replicas if not item.running]
+                old_running = [item for item in old_replicas if item.running]
             min_available = max(0, desired - max_unavail)
             available_replicas = len(current_ready_ids) + len(old_running)
             available_headroom = max(0, available_replicas - min_available)
@@ -1258,7 +1271,11 @@ class Reconciler:
             or labels.get("app.kubernetes.io/name")
             or ""
         ).strip()
-        if app_label != str(manifest.metadata.name):
+        expected = {
+            str(manifest.metadata.name),
+            app_key_for_manifest(manifest),
+        }
+        if app_label not in expected:
             return False
         namespace = str(getattr(manifest.metadata, "namespace", "default") or "default").strip()
         label_namespace = str(labels.get("ae.namespace") or "").strip()
