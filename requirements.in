@@ -1,6 +1,5 @@
 pydantic>=2.9
 PyYAML>=6.0
-huggingface_hub>=0.30
 docker>=7.1
 requests>=2.32
 psycopg[binary]>=3.1
