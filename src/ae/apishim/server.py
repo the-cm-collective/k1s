@@ -40,6 +40,7 @@ from ae.controller.state import (
     state_store_from_env,
 )
 from ae.runtime import (
+    ContainerdRuntime,
     CRIRuntime,
     DockerRuntime,
     PodmanRuntime,
@@ -12687,8 +12688,10 @@ def _node_obj(record, status, rv: int) -> dict[str, Any]:
 def _runtime_from_env_base(backend: str) -> RuntimeAdapter:
     if backend in {"stub", "test"}:
         return StubRuntime()
-    if backend in {"cri", "containerd"}:
+    if backend == "cri":
         return CRIRuntime()
+    if backend == "containerd":
+        return ContainerdRuntime()
     if backend in {"podman", "oci"}:
         try:
             return PodmanRuntime()
