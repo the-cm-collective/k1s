@@ -206,6 +206,8 @@ Ingress and TLS
 - Environment:
   - AE_TLS_DIR (default: state/tls)
   - AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT
+  - AE_CADDY_PREFER_HOST_PORT_UPSTREAMS=1 for external Caddy containers that
+    should route through published host ports instead of workload-network DNS
 
 Ingress validation lanes (CRI, mode-isolated)
 - Preflight before long lanes:

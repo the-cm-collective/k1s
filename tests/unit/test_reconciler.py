@@ -424,6 +424,32 @@ def test_reconciler_with_docker_network_ingress_prefers_container_dns(tmp_path: 
     assert ingress_service.reload_count == 1
 
 
+def test_reconciler_workerbee_ingress_prefers_host_port_upstreams(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AE_CADDY_PREFER_HOST_PORT_UPSTREAMS", "1")
+    runtime = StubDockerIngressRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+    ingress_service = StubIngressService()
+    reconciler = Reconciler(runtime=runtime, state_store=state, ingress_service=ingress_service)
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            ports=[{"name": "http", "containerPort": 8080}],  # type: ignore[list-item]
+            ingress=IngressSpec(host="demo.local", path="/"),
+        ),
+    )
+
+    reconciler.reconcile(manifest)
+
+    assert ingress_service.applied == [("demo", "127.0.0.1:32000")]
+    assert ingress_service.reload_count == 1
+
+
 def test_reconciler_registers_portforward_callback(tmp_path: Path) -> None:
     runtime = StubRuntime()
     state = SQLiteStateStore(tmp_path / "state.db")
@@ -528,6 +554,76 @@ def test_select_upstreams_prefers_service_vip(tmp_path: Path) -> None:
 
     upstreams = reconciler._select_upstreams(manifest, runtime_result, health_report)
     assert upstreams == ["10.241.0.10:8080"]
+
+
+def test_select_upstreams_prefers_workerbee_host_port_over_service_vip(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AE_CADDY_PREFER_HOST_PORT_UPSTREAMS", "1")
+    runtime = StubDockerIngressRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+    reconciler = Reconciler(runtime=runtime, state_store=state)
+
+    app = "demo"
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name=app),
+        spec=AppSpec(
+            image="alpine:3.20",
+            ports=[{"name": "http", "containerPort": 8080}],  # type: ignore[list-item]
+            service=ServiceSpec(port=8080),
+            ingress=IngressSpec(host="demo.local", path="/"),
+        ),
+    )
+    state.upsert_service(
+        app,
+        "10.241.0.10",
+        {"ports": [{"name": "http", "port": 8080, "targetPort": 8080, "protocol": "TCP"}]},
+    )
+    state.upsert_service_endpoints(
+        app,
+        [
+            ServiceEndpoint(
+                app_name=app,
+                port=8080,
+                ip="10.42.0.12",
+                target_port=8080,
+                ready=True,
+            )
+        ],
+    )
+
+    runtime_result = RuntimeResult(
+        revision=1,
+        created=0,
+        updated=0,
+        removed=0,
+        pod_states=[
+            PodState(
+                pod_name="demo-rev1-0",
+                ready=True,
+                status="running",
+                endpoint="10.42.0.12:8080",
+            )
+        ],
+    )
+    health_report = HealthReport(
+        ready_replicas=1,
+        live_replicas=1,
+        pods=[
+            PodHealth(
+                pod_name="demo-rev1-0",
+                ready=True,
+                live=True,
+                readiness_message="ok",
+                liveness_message="ok",
+            )
+        ],
+    )
+
+    upstreams = reconciler._select_upstreams(manifest, runtime_result, health_report)
+    assert upstreams == ["127.0.0.1:32000"]
 
 
 def test_direct_containerd_reconcile_injects_ready_service_host_aliases(

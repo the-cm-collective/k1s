@@ -1611,32 +1611,15 @@ class Reconciler:
         health_report: HealthReport,
     ) -> list[str]:
         app_name = app_key_for_manifest(manifest)
-        # Prefer Service VIP when recorded and ready backends exist
-        try:
-            svc = self._state_store.get_service(app_name)
-        except Exception:
-            svc = None
-
-        if svc and manifest.spec.service:
-            svc_port = None
-            try:
-                if manifest.spec.service.ports:
-                    svc_port = int(manifest.spec.service.ports[0].port)
-                elif manifest.spec.service.port:
-                    svc_port = int(manifest.spec.service.port)
-            except Exception:
-                svc_port = None
-            if svc_port:
-                try:
-                    eps = self._state_store.list_service_endpoints(app_name)
-                except Exception:
-                    eps = []
-                if any(ep.ready for ep in eps):
-                    return [f"{svc.cluster_ip}:{svc_port}"]
-
+        prefer_host_ports = self._caddy_prefers_host_port_upstreams()
         states_by_id = {state.pod_name: state for state in result.pod_states}
         preferred_port = self._preferred_container_port(manifest)
         container_infos_by_pod = self._container_infos_by_pod()
+
+        if not prefer_host_ports:
+            service_upstreams = self._select_service_vip_upstreams(app_name, manifest)
+            if service_upstreams:
+                return service_upstreams
 
         # Prefer only ready endpoints; defer ingress changes until at least one
         # replica is ready to avoid transient 502s during warm-up.
@@ -1696,7 +1679,13 @@ class Reconciler:
             ready_eps.sort()
             return ready_eps
 
-        # Fallback: allow loopback endpoints when nothing else is ready (useful for local/stub runtimes)
+        if prefer_host_ports:
+            service_upstreams = self._select_service_vip_upstreams(app_name, manifest)
+            if service_upstreams:
+                return service_upstreams
+
+        # Fallback: allow loopback endpoints when nothing else is ready
+        # (useful for local/stub runtimes).
         for pod in health_report.pods:
             if not pod.ready:
                 continue
@@ -1707,6 +1696,33 @@ class Reconciler:
                     return [f"{host}:{port}"]
 
         # No ready endpoints yet: return empty to keep previous ingress configuration intact.
+        return []
+
+    def _select_service_vip_upstreams(
+        self, app_name: str, manifest: AppManifest
+    ) -> list[str]:
+        # Prefer Service VIP when recorded and ready backends exist
+        try:
+            svc = self._state_store.get_service(app_name)
+        except Exception:
+            svc = None
+
+        if svc and manifest.spec.service:
+            svc_port = None
+            try:
+                if manifest.spec.service.ports:
+                    svc_port = int(manifest.spec.service.ports[0].port)
+                elif manifest.spec.service.port:
+                    svc_port = int(manifest.spec.service.port)
+            except Exception:
+                svc_port = None
+            if svc_port:
+                try:
+                    eps = self._state_store.list_service_endpoints(app_name)
+                except Exception:
+                    eps = []
+                if any(ep.ready for ep in eps):
+                    return [f"{svc.cluster_ip}:{svc_port}"]
         return []
 
     def _split_host_port(self, endpoint: str) -> tuple[str | None, int | None]:
@@ -1751,8 +1767,14 @@ class Reconciler:
             and bool(getattr(runtime, "_network_name", None))
         )
 
+    def _caddy_prefers_host_port_upstreams(self) -> bool:
+        value = os.getenv("AE_CADDY_PREFER_HOST_PORT_UPSTREAMS", "")
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
     def _container_infos_by_pod(self) -> dict[str, dict]:
-        if not self._docker_container_dns_enabled():
+        if not (
+            self._docker_container_dns_enabled() or self._caddy_prefers_host_port_upstreams()
+        ):
             return {}
         try:
             items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
@@ -1769,16 +1791,41 @@ class Reconciler:
     def _endpoint_from_container_info(
         self, info: dict, port_hint: int | None
     ) -> tuple[str, int] | None:
+        port_map = (info or {}).get("port_map") or {}
+        host_ports = list((info or {}).get("host_ports") or [])
+        host_ip = (info or {}).get("host_ip") or "127.0.0.1"
+        if self._caddy_prefers_host_port_upstreams():
+            target = self._host_port_endpoint_from_container_info(
+                port_hint,
+                host_ip=str(host_ip),
+                port_map=port_map,
+                host_ports=host_ports,
+            )
+            if target:
+                return target
+            return None
         if self._docker_container_dns_enabled() and port_hint is not None:
             name = str((info or {}).get("name") or "").strip()
             if name:
                 return name, int(port_hint)
         pod_ip = (info or {}).get("pod_ip")
-        host_ip = (info or {}).get("host_ip") or "127.0.0.1"
-        port_map = (info or {}).get("port_map") or {}
-        host_ports = list((info or {}).get("host_ports") or [])
         if pod_ip and port_hint:
             return str(pod_ip), int(port_hint)
+        return self._host_port_endpoint_from_container_info(
+            port_hint,
+            host_ip=str(host_ip),
+            port_map=port_map,
+            host_ports=host_ports,
+        )
+
+    def _host_port_endpoint_from_container_info(
+        self,
+        port_hint: int | None,
+        *,
+        host_ip: str,
+        port_map: dict,
+        host_ports: list,
+    ) -> tuple[str, int] | None:
         if port_hint is not None and port_map:
             try:
                 if port_hint in port_map:

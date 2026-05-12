@@ -40,6 +40,8 @@ Caddy-rendered app ingress:
 - `AE_CONTAINER_CLI`: `podman` or `docker`.
 - `AE_CADDY_RELOAD_TIMEOUT`: seconds to wait on reload (default: `10`).
 - `AE_CADDY_ACTIVE_HEALTH=1`: enable active Caddy health checks when the manifest exposes a readiness probe.
+- `AE_CADDY_PREFER_HOST_PORT_UPSTREAMS=1`: prefer published host ports for
+  app upstreams when Caddy runs outside the workload runtime network.
 
 Edge-local gateway rendering:
 
