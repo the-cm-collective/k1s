@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="media/style/logo-pack/icons/bg-black/icon-512x512.png" alt="k1s logo" width="260" />
+  <img src="media/style/web-logos/k1s-killa-bee-refresh-0526.png" alt="k1s logo" width="260" />
 </p>
 
 # k1s Minimal Application Engine
