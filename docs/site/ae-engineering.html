@@ -2,9 +2,9 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
-    
+
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Architecture</title>
+    <title>Ae Engineering</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
     <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
     <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
@@ -712,7 +712,7 @@
         }
       })();
     </script>
-    
+
   </head>
   <body>
     <nav>
@@ -757,353 +757,25 @@
       </svg>
     </button>
     <div class="container">
-    <h1 id="k1s-architecture-and-technical-reference">k1s Architecture and Technical Reference</h1>
-<p>This document describes k1s in depth: components, data model, reconcile algorithms, interfaces, and operational behavior. It is intentionally verbose.</p>
-<p>For source-local package and module inventories, see <a href="ae-engineering.html">ae Engineering Documentation</a>.</p>
-<h2 id="scope-and-principles">Scope and Principles</h2>
+    <h1 id="ae-engineering-documentation-index">ae Engineering Documentation Index</h1>
+<p>This page is the published navigation point for the source-local engineering documentation under <code>src/ae</code>.</p>
+<p>The detailed docs are intentionally kept beside the code they describe so maintainers can update architecture notes while changing a subsystem. The published site keeps this compact index and points readers to the canonical source paths.</p>
+<h2 id="canonical-source-local-docs">Canonical Source-Local Docs</h2>
 <ul>
-<li>Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable, and CRI/containerd is supported where needed.</li>
-<li>Declarative spec → idempotent reconcile. The controller continuously applies desired state and converges.</li>
-<li>Small surface. Prefer composition over features; leave seams to extend later.</li>
-<li>Fail well. A crash restarts cleanly; reconcile rebuilds reality from runtime state plus persisted control-plane data.</li>
+<li>Top-level engineering map: <code>src/ae/README.md</code></li>
+<li>Top-level module reviews: <code>src/ae/docs/*.md</code></li>
+<li>Package summaries: <code>src/ae/&lt;package&gt;/README.md</code></li>
+<li>Package module reviews: <code>src/ae/&lt;package&gt;/docs/*.md</code></li>
 </ul>
-<h2 id="components">Components</h2>
+<h2 id="package-index">Package Index</h2>
+<table><thead><tr><th>Package</th><th>Canonical doc</th><th>Responsibilities</th></tr></thead><tbody><tr><td>apishim</td><td><code>src/ae/apishim/README.md</code></td><td>Kubernetes-compatible API shim, storage adapters, HA authority bridge, and kubectl/Helm compatibility surface.</td></tr><tr><td>cli</td><td><code>src/ae/cli/README.md</code></td><td>Primary <code>ae</code> command-line interface for apply/status/logs/exec/export/auth/profile-oriented operations.</td></tr><tr><td>config</td><td><code>src/ae/config/README.md</code></td><td>Configuration reference loading, transport configuration parsing, and shared environment-derived settings.</td></tr><tr><td>controller</td><td><code>src/ae/controller/README.md</code></td><td>Core control plane: manifest loading, reconcile loop, state stores, scheduling, HA authority, and workload controllers.</td></tr><tr><td>gateway</td><td><code>src/ae/gateway/README.md</code></td><td>Site gateway process for NATS-mediated work delivery, result spooling, and edge/core transport bridging.</td></tr><tr><td>ha</td><td><code>src/ae/ha/README.md</code></td><td>High-availability support code for authority operations, fencing decisions, dashboard probes, and operational helpers.</td></tr><tr><td>ingress</td><td><code>src/ae/ingress/README.md</code></td><td>Ingress rendering and synchronization for Caddy, Envoy, edge-local/core-proxy routing, TLS, and tunnel helpers.</td></tr><tr><td>k8s</td><td><code>src/ae/k8s/README.md</code></td><td>Kubernetes import/export/check layer that translates between k1s manifests and Kubernetes-style resources.</td></tr><tr><td>kctl</td><td><code>src/ae/kctl/README.md</code></td><td>Small kubectl-like wrapper around k1s native commands and resource references.</td></tr><tr><td>network</td><td><code>src/ae/network/README.md</code></td><td>Service VIP allocation, pod CIDR allocation, bridge/iptables/overlay network providers, and overlay health checks.</td></tr><tr><td>node</td><td><code>src/ae/node/README.md</code></td><td>Node agent HTTP server, runtime proxying, heartbeat loop, local network helper, and Rosenpass/WireGuard support.</td></tr><tr><td>observability</td><td><code>src/ae/observability/README.md</code></td><td>Controller HTTP API, dashboard/static assets, Prometheus metrics snapshotting, and logging setup.</td></tr><tr><td>resources</td><td><code>src/ae/resources/README.md</code></td><td>Package data loader plus bundled SQL, dashboard/docs HTML, and ingress templates.</td></tr><tr><td>runtime</td><td><code>src/ae/runtime/README.md</code></td><td>Runtime adapter interface and Docker, Podman, direct-containerd, strict CRI, remote, and stub implementations.</td></tr><tr><td>secrets</td><td><code>src/ae/secrets/README.md</code></td><td>Secret reference resolution and SOPS/age integration for environment and file projections.</td></tr><tr><td>security</td><td><code>src/ae/security/README.md</code></td><td>Local CA issuance/revocation helpers and signed token issue/verify helpers.</td></tr><tr><td>storage</td><td><code>src/ae/storage/README.md</code></td><td>Storage classes, PVC/PV authority, NetFS/CSI integration, node volume management, and storage state adapters.</td></tr><tr><td>transport</td><td><code>src/ae/transport/README.md</code></td><td>NATS/JetStream client, subject naming, controller ingress, telemetry, outbox, and route-bundle publishing.</td></tr><tr><td>worker_stub</td><td><code>src/ae/worker_stub/README.md</code></td><td>Development/test worker process for exercising transport and work delivery paths.</td></tr></tbody></table>
+<h2 id="maintenance-rules">Maintenance Rules</h2>
 <ul>
-<li>Controller (src/ae/controller): orchestrates reconcile, scheduling, service VIPs, state, and events.</li>
-<li>Scheduler (src/ae/controller/scheduler.py): chooses Ready nodes honoring <code>nodeSelector</code>, taints/tolerations, topology spread, and storage pinning.</li>
-<li>Node agent (src/ae/node): exposes runtime ensure/logs/exec/probes for the controller over HTTP/mTLS; reports heartbeats.</li>
-<li>Runtime (src/ae/runtime): pluggable adapters; Podman/OCI is default, Docker fallback, CRI/containerd supported; RemoteRuntime client proxies to agents.</li>
-<li>Transport/gateway (src/ae/gateway + NATS): controller-to-agent work can run through <code>direct</code>, NATS Core (<code>nats-core</code>), or NATS + JetStream (<code>nats-js</code>) transport lanes depending on profile and topology. HA keeps transport as a delivery plane behind <code>etcd</code> authority.</li>
-<li>Service/overlay (src/ae/network): allocates Service CIDR VIPs and wires overlay providers (HAProxy overlay or bridge).</li>
-<li>Ingress (src/ae/ingress): writes Caddy site fragments and triggers reloads (prefers Service VIP upstreams).</li>
-<li>Health (src/ae/controller/health.py): readiness/liveness/exec/tcp evaluation (startup probe aware).</li>
-<li>State store (src/ae/controller/state.py): SQLite backs the lightweight local controller snapshot, shared-authority HA and strict-CRI paths use <code>etcd</code>, and externalized Postgres/store wiring remains available where deployments need compatibility or integration plumbing.</li>
-<li>Secrets (src/ae/secrets) and Configs (src/ae/config): SOPS/age integration, env and file projection.</li>
-<li>API shim (src/ae/apishim): Kubernetes-compatible API for kubectl/helm with SSA/patch and port-forward.</li>
-<li>Inference fabric (src/ae/controller/inference_cell + node fabric endpoints): experimental distributed-inference lane with stage placement, admission budgets, fabric-session orchestration, and cell lifecycle control. The formal roadmap targets AI Max+ 395 cells behind a provider-facing HA edge, with an exact public node baseline documented separately.</li>
-<li>Observability (src/ae/observability): metrics snapshot, HTTP API, dashboard, logging helpers.</li>
-<li>CLI (src/ae/cli) + kubectl‑like wrapper (src/ae/kctl).</li>
+<li>Update the folder README when subsystem ownership, public behavior, or module boundaries change.</li>
+<li>Update the per-module doc when a module gains/removes entrypoints, environment variables, persistence, subprocess, network, or compatibility behavior.</li>
+<li>Keep generated protobufs, vendored browser assets, SQL files, and static templates summarized unless handwritten code changes their contract.</li>
+<li>Use <code>make docs-verify</code> after changing this published index or related docs-site mappings.</li>
 </ul>
-<h2 id="state-store-notes">State Store Notes</h2>
-<ul>
-<li>State-model changes should document how they map across the local SQLite snapshot, shared-authority <code>etcd</code> keys, and any externalized compatibility stores.</li>
-<li>For implementation details, see <code>src/ae/controller/state.py</code> and related ADRs.</li>
-</ul>
-<h2 id="reconcile-loop">Reconcile Loop</h2>
-<p>Triggers</p>
-<ul>
-<li>Periodic polling (<code>--interval</code> seconds)</li>
-<li>Optional file watching (<code>--watch</code>) via watchdog; changes are debounced (<code>--debounce-ms</code>).</li>
-<li>Manual apply (<code>ae apply -f ...</code>), which directly runs a reconcile for the manifest.</li>
-</ul>
-<p>Ordering</p>
-<ul>
-<li>Load manifests (YAML → Pydantic models).</li>
-<li>Inject configs/secrets into env; project selected keys into files mounted read‑only.</li>
-<li>Compute revision: hash the spec; reuse the latest revision if hash unchanged; otherwise increment.</li>
-<li>Plan placements: scheduler picks Ready nodes that match selectors/tolerations/topology; storage pinning keeps retained volumes on one node; falls back to local runtime if none are eligible.</li>
-<li>Runtime ensure: create/update/remove containers on each placement (respect rollout policy) via node agent RemoteRuntime.</li>
-<li>Health gate: evaluate readiness/liveness/exec/tcp; decide revision status ready/progressing/degraded/paused.</li>
-<li>Ingress: prefer Service VIP upstreams; optional canary weight/auto progression; remove ingress when omitted.</li>
-<li>Persist: write app status, pods, probe history, canary state, and revision record; emit events.</li>
-</ul>
-<p>Idempotency &amp; Diff</p>
-<ul>
-<li>Spec hash drives revisions; reconciler tracks created/updated/removed per pass.</li>
-<li>Docker containers are labeled with app/pod/revision; runtime lists by labels.</li>
-<li>Old revision containers are removed when the new revision becomes live.</li>
-</ul>
-<p>Pseudocode (as implemented in src/ae/controller/reconciler.py)</p>
-<pre><code>for manifest in manifests:
-  manifest = apply_configs_and_secrets(manifest)
-  projection_root = prepare_file_projections(manifest, rev)
-  rev = store.prepare_revision(spec_hash)
-  placements, warnings = scheduler.plan(manifest, rev)
-  aggregate = []
-  for placement in placements:
-    res = runtime.ensure_app(
-      manifest, rev, keep_old=True,
-      limit_create=..., pod_names=placement.pod_names,
-      node_id=placement.node.node_id if placement.node else None
-    )
-    aggregate.append(res)
-  result = merge_results(aggregate)
-  health = health.evaluate(manifest, result)
-  ingress.apply/remove based on health/spec (+ canary weight; prefers Service VIPs)
-  store.record_snapshot(manifest, result, health, rev, status, placements, warnings)
-  events.emit(ApplyCompleted)</code></pre>
-<p>Sequence Diagram</p>
-<pre class="mermaid">sequenceDiagram
-  participant CLI as ae CLI
-  participant C as Controller
-  participant SCH as Scheduler
-  participant T as Transport
-  participant A as Node Agent
-  participant R as Runtime (Podman/Docker/CRI)
-  participant H as Health
-  participant I as Ingress
-  participant S as State Store
-
-  CLI-&gt;&gt;C: apply(manifest)
-  C-&gt;&gt;SCH: plan placements(nodeSelector/tolerations/storage)
-  SCH--&gt;&gt;C: placements (+warnings)
-  C-&gt;&gt;T: dispatch ensure/logs/exec work
-  T-&gt;&gt;A: deliver runtime work
-  A-&gt;&gt;R: ensure/exec/logs
-  R--&gt;&gt;A: RuntimeResult(pod states)
-  A--&gt;&gt;T: pod states + heartbeats
-  T--&gt;&gt;C: pod states + heartbeats
-  C-&gt;&gt;H: evaluate(manifest, result)
-  H--&gt;&gt;C: HealthReport(ready/live)
-  C-&gt;&gt;S: record snapshot, revisions, events
-  alt ingress configured
-    C-&gt;&gt;I: apply(upstream), reload()
-  else no ingress
-    C-&gt;&gt;I: remove(app), reload()
-  end
-  C--&gt;&gt;CLI: report(created/updated/removed, status)</pre>
-<h2 id="inference-fabric-experimental">Inference Fabric (Experimental)</h2>
-<p>The repo also includes a controller-owned distributed-inference lane built around <code>InferenceCell</code> and <code>InferenceCellSet</code>.</p>
-<p>Current behavior:</p>
-<ul>
-<li>explicit member selection and stage placement</li>
-<li>boundary and budget admission checks</li>
-<li>GPU, port, and optional node-lock reservation</li>
-<li>fabric-session creation before worker and leader launch</li>
-<li>controller-tracked cell lifecycle with restart and teardown handling</li>
-</ul>
-<p>The formal roadmap turns this lane into an AI Max+ 395-first fabric program. The near-term deployment shape is a provider-facing HA edge in front of a <code>k1s</code> AMD cell fabric; the current <code>InferenceCell</code> implementation is the controller-owned precursor to that model.</p>
-<p>The current lane is documented in <code>docs/reference/inference-fabric.md</code>. The current Nvidia development baseline is documented in <code>docs/reference/nvidia-development-baseline.md</code>. The current node baseline and cluster-prep sequence are documented in <code>docs/reference/ai-max-395-hardware-baseline.md</code> and <code>docs/ops/ai-max-395-cluster-prep.md</code>. The backend HA authority model that precedes provider-edge work is documented in <code>docs/roadmap/high-availability-control-plane.md</code>. The formal authority split and provider model are documented in <code>docs/design/fabric-control-plane.md</code>. The target deployment layout is documented in <code>docs/design/fabric-deployment-topology.md</code>. The staged development path is documented in <code>docs/roadmap/distributed-compute-fabric.md</code>.</p>
-<h2 id="spec-ae-dev-v1alpha1">Spec (ae.dev/v1alpha1)</h2>
-<p>Top‑level</p>
-<ul>
-<li><code>apiVersion: ae.dev/v1alpha1</code></li>
-<li><code>kind: Deployment</code></li>
-<li><code>metadata: { name }</code></li>
-<li><code>spec</code>: see below</li>
-</ul>
-<p>Spec fields (src/ae/controller/spec.py)</p>
-<ul>
-<li><code>image</code>, <code>command</code>, <code>args</code>, <code>env[]</code>, <code>envFrom</code> (via config/secret refs)</li>
-<li><code>replicas: int&gt;=1</code>; <code>ports: [{name, containerPort}]</code></li>
-<li><code>service</code>: single <code>port/targetPort</code> or <code>ports[]</code> plus <code>type</code> (ClusterIP/NodePort/LoadBalancer), <code>nodePort</code>, <code>externalIPs</code>, and optional <code>sessionAffinity</code>; runtime uses Service VIPs when available.</li>
-<li><code>health.readiness|liveness|startup</code>: HTTP/TCP/Exec probes with thresholds/periods; startup gates other probes.</li>
-<li><code>lifecycle</code>: postStart/preStop handlers (exec/http/tcp).</li>
-<li><code>ingress</code>: <code>host</code>, <code>path</code> or <code>paths[]</code>, <code>tls</code>, <code>tlsSecretName</code>, <code>tlsCertPath</code>, <code>tlsKeyPath</code>, <code>ingressClassName</code>.</li>
-<li><code>secretRefs|configRefs</code>: env, file projections, and optional <code>envFrom</code>; supports SOPS/age.</li>
-<li><code>rollout</code>: strategy ordered|parallel|canary, surge/unavailable, pause, weight, auto canary ramp (<code>start/step/intervalSeconds/max</code>).</li>
-<li><code>security</code>: runAsUser/runAsGroup/fsGroup, readOnlyRootFilesystem, dropCapabilities, seccomp/AppArmor.</li>
-<li><code>resources</code>: requests/limits for cpu/memory.</li>
-<li><code>volumes</code>: hostPath bind mounts; <code>storage</code>: named volumes with <code>retention</code>; <code>emptyDirs</code> with medium selection.</li>
-<li><code>imagePullPolicy</code>, <code>imagePullSecrets[]</code>.</li>
-<li><code>runtimeClassName</code> (maps to CRI runtime handler and passes through in K8s export).</li>
-<li>Scheduling: <code>nodeSelector</code>, <code>tolerations[]</code>, <code>affinity</code>, <code>topologySpreadConstraints</code>, <code>priorityClassName</code>.</li>
-<li>Policy/export: <code>networkPolicy</code>, <code>podSecurity</code>, <code>dnsPolicy/config</code>, <code>hostname</code>, <code>subdomain</code>, <code>hostAliases</code>, <code>enableServiceLinks</code>, <code>shareProcessNamespace</code>, <code>hostNetwork|PID|IPC</code>, <code>setHostnameAsFQDN</code>.</li>
-<li><code>terminationGracePeriodSeconds</code> (default 10).</li>
-</ul>
-<p>Notes</p>
-<ul>
-<li>CPU limits map to Docker <code>nano_cpus</code>; memory to <code>mem_limit</code> (K/M/G, KiB/MiB/GiB supported).</li>
-<li>Volumes map to bind mounts with ro/rw; retained storage is bound to the node that first creates it.</li>
-<li>Service VIPs are allocated from <code>AE_SERVICE_IP_POOL</code> and backed by the overlay provider; hostPorts remain for single-node use or when VIPs are disabled.</li>
-</ul>
-<p>Example</p>
-<pre><code>apiVersion: ae.dev/v1alpha1
-kind: Deployment
-metadata: { name: echo }
-spec:
-  image: alpine:3.20
-  replicas: 1
-  ports: [{ name: http, containerPort: 8080 }]
-  health:
-    readiness: { httpGet: { path: /, port: 8080 }, initialDelaySeconds: 5 }
-  ingress: { host: echo.localtest.me, path: /, tls: false }
-  resources: { limits: { cpu: 0.25, memory: 256Mi } }
-  volumes: [{ hostPath: /tmp, mountPath: /host-tmp, readOnly: false }]</code></pre>
-<h2 id="controller-state-model">Controller State Model</h2>
-<p>The table model below describes the controller&#x27;s local relational snapshot (SQLite default, Postgres-compatible where configured). Shared-authority HA and strict-CRI lanes persist the same logical controller entities in <code>etcd</code>, while externalized stores remain optional deployment plumbing rather than the HA authority path.</p>
-<p>Tables (created in src/ae/controller/state.py)</p>
-<ul>
-<li>app_status(app_name PK, desired_replicas, ready_replicas, live_replicas, revision, revision_status, image, created, updated, removed, ingress_host, ingress_path)</li>
-<li>app_registry(app_name PK, spec_hash, spec_json, source, labels, updated_at)</li>
-<li>app_revisions(app_name, revision, spec_hash, spec_json, image, created_at, status) [PK (app_name, revision)]</li>
-<li>app_events(id PK, app_name, revision, event_type, message, created_at)</li>
-<li>pod_status(app_name, pod_name, ready, live, status, readiness_message, liveness_message, exit_code, finished_at) [PK (app_name, pod_name)]</li>
-<li>pod_nodes(app_name, pod_name, node_id, updated_at) [PK (app_name, pod_name)]</li>
-<li>probe_history(id PK, app_name, pod_name, check_time, ready, live, readiness_message, liveness_message) [kept to 50 per pod]</li>
-<li>rollout_canary(app_name PK, weight, next_step_at, step, max, updated_at)</li>
-<li>nodes(node_id PK, name, labels json, taints json, backend, endpoint, pod_cidr, wg_pubkey, cordoned, created_at, updated_at)</li>
-<li>node_heartbeats(node_id PK, status, seen_at)</li>
-<li>services(app_name PK, cluster_ip, ports json, created_at)</li>
-<li>service_endpoints(app_name, port, ip, target_port, ready) [PK (app_name, port, ip)]</li>
-<li>volume_attachments(app_name, volume_name, node_id, retention, created_at) [PK (app_name, volume_name)]</li>
-</ul>
-<p>Query surfaces</p>
-<ul>
-<li><code>list_status()</code>, <code>get_status(app)</code></li>
-<li><code>list_pods(app)</code>, <code>get_probe_history(app, N)</code></li>
-<li><code>list_revisions(app)</code>, <code>get_revision_manifest(app, rev)</code></li>
-<li><code>list_events(app, limit)</code></li>
-</ul>
-<h2 id="runtime-container-engine-podman-docker-cri">Runtime: Container Engine (Podman/Docker/CRI)</h2>
-<p>The controller talks to local Podman/Docker when no nodes are eligible; in multi-node runs it proxies through RemoteRuntime to each node agent endpoint. Agents enforce auth via <code>AE_AGENT_API_TOKEN</code> and optionally mTLS. CRI/containerd nodes are supported via <code>AE_RUNTIME_BACKEND=cri</code> and use the CRI gRPC API; exec/attach/port-forward use <code>crictl</code> on the node.</p>
-<p>Labels</p>
-<ul>
-<li><code>ae.app=&lt;name&gt;</code></li>
-<li><code>ae.pod_name=&lt;name&gt;-rev&lt;rev&gt;-&lt;index&gt;</code> (alias: <code>ae.replica_id</code>)</li>
-<li><code>ae.revision=&lt;rev&gt;</code></li>
-</ul>
-<p>Ensure flow (Docker/Podman runtimes)</p>
-<ul>
-<li>List existing containers by <code>ae.app</code> label.</li>
-<li>Partition by current revision vs old; keep old during surge.</li>
-<li>Pull image only when needed; prefer local <code>localhost/&lt;image&gt;</code> on Podman when present.</li>
-<li>Create missing pods with labels, env, ports, security, volumes/storage, restart policy.</li>
-<li>Remove old revision containers after readiness thresholds.</li>
-<li>Build <code>PodState</code> from inspection (status, startedAt) and endpoints.</li>
-</ul>
-<p>Resources/Volumes</p>
-<ul>
-<li><code>limits.cpu</code> → container CLI flag (<code>--cpus</code> on Podman/Docker); Docker uses <code>nano_cpus=int(cpu*1e9)</code> internally.</li>
-<li>Memory quantities map to bytes (K/M/G, KiB/MiB/GiB supported).</li>
-<li>Volumes: hostPath bind mounts ro/rw; <code>spec.storage</code> becomes named engine volumes per app.</li>
-</ul>
-<p>Logs</p>
-<ul>
-<li><code>read_logs(pod_name, follow, tail, since)</code> adapts to Docker SDK parameters (replica_id alias supported).</li>
-</ul>
-<p>Auth</p>
-<ul>
-<li><code>RegistryAuthProvider</code> reads <code>~/.config/ae/registries.yaml</code> and calls <code>client.login(...)</code> before pulls.</li>
-</ul>
-<h2 id="ingress-caddy">Ingress: Caddy</h2>
-<ul>
-<li>Each app with <code>spec.ingress</code> gets a small site block written to <code>ops/dev/caddy/sites/&lt;app&gt;.caddy</code> (or configured root).</li>
-<li>Reloads via <code>caddy reload --config &lt;file|dir&gt;</code>, optionally inside a container via <code>docker|podman exec</code> (controlled by <code>AE_CONTAINER_CLI</code>).</li>
-<li>When Caddy runs in a container, loopback upstreams are rewritten to the host alias: <code>host.docker.internal</code> (Docker) or <code>host.containers.internal</code> (Podman).</li>
-<li>Optional active health checks can be enabled with <code>AE_CADDY_ACTIVE_HEALTH=1</code> when readiness probe is configured.</li>
-<li>With Service VIPs enabled (<code>AE_SERVICE_PROVIDER=overlay</code>), site fragments upstream to the ClusterIP; ensure the Caddy host/container is attached to the overlay network or has routes to the Service CIDR.</li>
-</ul>
-<h2 id="health">Health</h2>
-<ul>
-<li>HTTP probe: GET <code>http://&lt;pod.endpoint&gt;&lt;path&gt;</code>; success is 2xx.</li>
-<li>TCP probe: attempts a TCP connection to the declared port.</li>
-<li>Exec probe: runs a command inside the container and checks exit code 0.</li>
-<li>Initial delay honored using container <code>StartedAt</code>.</li>
-<li>Liveness defaults to true when unspecified; readiness defaults to container state when unspecified.</li>
-<li><code>HealthReport</code> aggregates per‑pod <code>ready/live</code> and messages.</li>
-</ul>
-<p>Revision status</p>
-<ul>
-<li>ready: <code>ready_replicas &gt;= desired</code></li>
-<li>progressing: <code>live_replicas &gt;= desired</code> but not all ready</li>
-<li>degraded: otherwise</li>
-</ul>
-<h2 id="rollouts-and-rollback">Rollouts and Rollback</h2>
-<ul>
-<li>spec hash (SHA‑256 of normalized JSON) creates a new revision when changed.</li>
-<li>Rolling replace with <code>maxUnavailable=0, maxSurge=1</code> semantics at single‑app scale.</li>
-<li>Pause/resume: <code>ae rollout pause|resume &lt;app&gt;</code> toggles rollout without touching runtime.</li>
-<li>Canary: set <code>rollout.strategy: canary</code> and <code>rollout.weight</code> to bias routing; optional <code>rollout.auto{start,step,intervalSeconds,max}</code> for controller‑tracked ramp up.</li>
-<li><code>ae rollback &lt;app&gt; [--to &lt;rev&gt;]</code> fetches stored manifest and reconciles.</li>
-</ul>
-<h2 id="events">Events</h2>
-<ul>
-<li>Types: ApplyStarted, ApplyCompleted, IngressConfigured, IngressRemoved, plus future failure types.</li>
-<li>Indexed by app and descending id; surfaced in CLI and HTTP API.</li>
-</ul>
-<h2 id="metrics-and-api">Metrics and API</h2>
-<ul>
-<li>CLI snapshot: aggregated counts (apps ready/progressing/degraded, replicas).</li>
-<li>HTTP: <code>/metrics</code>, <code>/health</code>, <code>/status</code>, <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code>, <code>/logs/&lt;app&gt;</code>; <code>/openapi.json</code> documents the surface; <code>/docs</code> lists endpoints; <code>/dashboard</code> provides a live UI.</li>
-</ul>
-<h2 id="secrets">Secrets</h2>
-<ul>
-<li>Decrypts via <code>sops --decrypt</code> (external process); falls back to plaintext when <code>AE_ALLOW_PLAINTEXT_SECRETS=1</code>.</li>
-<li>Merges referenced keys into env map with stable ordering.</li>
-<li>Errors on missing secret keys referenced by <code>env</code> mappings.</li>
-</ul>
-<h2 id="file-watch">File Watch</h2>
-<ul>
-<li>Uses watchdog when <code>--watch</code> is set; falls back to interval polling when watchdog is unavailable.</li>
-<li>Debounce controlled by <code>--debounce-ms</code> (default 200 ms).</li>
-</ul>
-<h2 id="backup-and-restore">Backup and Restore</h2>
-<ul>
-<li><code>ae backup create --output backup.tar.gz</code> writes <code>state/controller.db</code> and <code>specs/</code>.</li>
-<li><code>ae backup list|verify|restore</code> list entries, check presence/integrity, and extract safely (guards against absolute paths and <code>..</code>).</li>
-</ul>
-<h2 id="security-ops-notes">Security &amp; Ops Notes</h2>
-<ul>
-<li>Local admin tool; not multi‑tenant.</li>
-<li>Store SOPS keys outside the repo; never commit plaintext secrets.</li>
-<li>Prefer TLS via Caddy/ACME for public hosts; development can use <code>localtest.me</code> and plain HTTP.</li>
-<li>Keep Docker resource limits conservative to protect the node.</li>
-</ul>
-<h2 id="extensibility-seams">Extensibility Seams</h2>
-<ul>
-<li>RuntimeAdapter protocol: implement <code>ensure_app</code> and <code>read_logs</code> for alternate engines.</li>
-<li>IngressManager: implement <code>apply/remove/reload</code> for nginx or other proxies.</li>
-<li>SecretManager: swap SOPS shell calls with a native decryptor if desired.</li>
-<li>Store backends are lane-aware: SQLite is the default local snapshot store, <code>etcd</code> backs shared authority in HA/strict-CRI lanes, and Postgres or other externalized stores remain available when deployments need compatibility plumbing.</li>
-</ul>
-<h2 id="environment-variables">Environment Variables</h2>
-<ul>
-<li>AE_STATE_DB (default: <code>state/controller.db</code>), AE_STATE_DSN (Postgres DSN), AE_SPECS_DIR (default: <code>specs</code>)</li>
-<li>AE_APISHIM_ETCD_ENDPOINTS (strict-CRI durable lane etcd endpoints)</li>
-<li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT</li>
-<li>AE_TLS_DIR (default: <code>state/tls</code>)</li>
-<li>AE_REGISTRY_CONFIG (default: <code>~/.config/ae/registries.yaml</code>)</li>
-<li>AE_SOPS_BIN, AE_ALLOW_PLAINTEXT_SECRETS</li>
-<li>AE_RUNTIME_BACKEND (&quot;podman&quot; [default], &quot;oci&quot; alias, &quot;docker&quot;, &quot;cri|containerd&quot;, &quot;stub&quot;)</li>
-<li>AE_PODMAN_BIN (default: podman), AE_PODMAN_NETWORK (shared network for multi-replica ingress)</li>
-<li>AE_DOCKER_NETWORK (shared network when using Docker), AE_DOCKER_BIN</li>
-<li>AE_ENABLE_SERVICE_PROXY, AE_SERVICE_PROVIDER, AE_OVERLAY_NET, AE_SERVICE_IP_POOL</li>
-<li>AE_APISHIM_ENABLE, AE_APISHIM_TOKEN, AE_APISHIM_READ_TOKEN, AE_APISHIM_EXEC_TOKEN, AE_APISHIM_PORTFORWARD_TOKEN</li>
-<li>AE_APISHIM_DSN / AE_APISHIM_DB, AE_APISHIM_ALLOW_ANON</li>
-<li>AE_APISHIM_CRI_PORTFORWARD / AE_APISHIM_CRI_PORTFORWARD_FORCE (enable/force CRI port-forward proxy)</li>
-<li>AE_API_READ_TOKEN / AE_API_SCALER_TOKEN / AE_API_ADMIN_TOKEN / AE_API_MUTATIONS</li>
-<li>AE_CRI_ENDPOINT (default: <code>unix:///run/containerd/containerd.sock</code>)</li>
-<li>AE_CRI_SANDBOX_IMAGE (default: <code>registry.k8s.io/pause:3.9</code>)</li>
-<li>CRICTL_BIN (path override for crictl; used for exec/attach/port-forward on CRI)</li>
-<li>AE_LOG_LEVEL</li>
-</ul>
-<h2 id="testing-strategy">Testing Strategy</h2>
-<ul>
-<li>Unit tests cover CLI commands, scheduler/health logic, apishim RBAC/patch paths, ingress/runtime adapters, and state store behavior.</li>
-<li>Integration tests run against local Podman/Docker for end‑to‑end and multi‑node agent validation (<code>pytest tests/integration/ --docker</code>).</li>
-<li>CRI integration tests run via <code>scripts/cri_ci_setup.sh</code> and <code>tests/integration/test_cri_*</code> (see <code>docs/ops/runbook.md</code>).</li>
-</ul>
-<h2 id="performance-footprint">Performance &amp; Footprint</h2>
-<ul>
-<li>Current memory and footprint measurements live in <a href="benchmarks.html">Benchmarks</a>.</li>
-<li>Runtime, ingress, transport, and HA topology materially change footprint, so keep exact numbers out of this reference page.</li>
-<li>Use the relevant runtime profile and validated procedure when sizing a concrete deployment or demo flow.</li>
-</ul>
-<h2 id="future-work">Future Work</h2>
-<ul>
-<li>Full Job/CronJob/DaemonSet/StatefulSet semantics in apishim (completion, one‑per‑node, PVC templates).</li>
-<li>Resource requests/QoS enforcement beyond container limits (cgroup tuning, priorities).</li>
-<li>Advanced ingress routing (header manipulation, rewrites/regex, richer traffic shaping).</li>
-<li>Broader K8s parity beyond the current HA baseline (metrics.k8s.io, admission/policy, CSI/CNI plugins).</li>
-</ul>
-<h3 id="configs-and-secrets-environment">Configs and Secrets → Environment</h3>
-<p>Apps can project values from config files and sealed secrets into environment variables. The merge order is: configRefs &lt; secretRefs &lt; spec.env (manifest wins last).</p>
-<p>Example:</p>
-<pre><code>spec:
-  configRefs:
-    - name: app-config
-      path: configs/app-config.yaml   # YAML or JSON
-      env:
-        - { name: APP_MODE,  key: mode }
-        - { name: APP_COLOR, key: color }
-  secretRefs:
-    - name: demo-secret
-      path: specs/demo-secret.sops.yaml
-      env:
-        - { name: API_TOKEN, key: token }
-  env:
-    - { name: APP_MODE, value: demo-override }  # overrides config/secret</code></pre>
     </div>
     <footer class="site-footer">
       <div class="container inner">

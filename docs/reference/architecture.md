@@ -2,6 +2,8 @@
 
 This document describes k1s in depth: components, data model, reconcile algorithms, interfaces, and operational behavior. It is intentionally verbose.
 
+For source-local package and module inventories, see [ae Engineering Documentation](ae-engineering.html).
+
 ## Scope and Principles
 
 - Multi-node first. Controller manages one or more nodes via agents; Podman (OCI) is preferred, Docker is the fallback when Podman is unavailable, and CRI/containerd is supported where needed.
