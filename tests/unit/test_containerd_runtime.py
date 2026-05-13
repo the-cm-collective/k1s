@@ -46,6 +46,26 @@ def _manifest_with_service() -> AppManifest:
     )
 
 
+def _manifest_with_command(
+    *,
+    command: list[str] | None = None,
+    args: list[str] | None = None,
+) -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "bucket-init"},
+            "spec": {
+                "image": "docker.io/minio/mc:latest",
+                "replicas": 1,
+                **({"command": command} if command is not None else {}),
+                **({"args": args} if args is not None else {}),
+            },
+        }
+    )
+
+
 def _container_with_ports() -> dict:
     return {
         "Id": "container-1",
@@ -106,6 +126,46 @@ def test_podman_runtime_cmd_is_identity() -> None:
     cmd = [runtime._bin, "logs", "cid"]
 
     assert runtime._runtime_cmd(cmd) is cmd
+
+
+def test_containerd_runtime_maps_kubernetes_command_args_to_entrypoint(monkeypatch) -> None:
+    cases = [
+        (
+            ["/bin/sh", "-c"],
+            ["mc alias set local http://minio:9000"],
+            ["/bin/sh"],
+            ["-c", "mc alias set local http://minio:9000"],
+        ),
+        (["python", "-m", "rawform.bootstrap"], None, ["python"], ["-m", "rawform.bootstrap"]),
+        (None, ["server", "/data"], None, ["server", "/data"]),
+        (None, None, None, []),
+    ]
+
+    for command, args, expected_entrypoint, expected_args in cases:
+        runtime = ContainerdRuntime(namespace="ae-test")
+        calls: list[list[str]] = []
+
+        def fake_run_ok(argv, *, allow_fail=False):  # noqa: ANN001
+            _ = allow_fail
+            calls.append(list(argv))
+            return SimpleNamespace(code=0, out="", err="")
+
+        monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+        monkeypatch.setattr(runtime, "_container_exists", lambda _name: False)
+
+        manifest = _manifest_with_command(command=command, args=args)
+        runtime._create_container(manifest, "bucket-init-rev1-0", 1)
+
+        run_call = next(c for c in calls if c[:2] == [runtime._bin, "run"])
+        image_index = run_call.index("docker.io/minio/mc:latest")
+        if expected_entrypoint:
+            assert run_call[image_index - 2 : image_index] == [
+                "--entrypoint",
+                expected_entrypoint[0],
+            ]
+        else:
+            assert "--entrypoint" not in run_call[:image_index]
+        assert run_call[image_index + 1 :] == expected_args
 
 
 def test_containerd_runtime_read_logs_follow_wraps_runtime_command(monkeypatch) -> None:

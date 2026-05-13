@@ -21,6 +21,7 @@ from ae.controller.spec import (
     runtime_labels_for_manifest,
     split_app_key,
 )
+from ae.runtime.command_args import kubernetes_command_parts
 from ae.runtime.ports import choose_host_port
 
 from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
@@ -876,16 +877,10 @@ class DockerRuntime(RuntimeAdapter):
             run_fn = self._client.containers.run
             # Build standard kwargs. Do NOT filter by signature; docker-py forwards **kwargs.
             # Filtering here accidentally dropped 'ports', preventing host port publishing.
-            # Build command/args following K8s semantics:
-            # - If both command and args are set, pass command + args
-            # - If only args are set, pass args (ENTRYPOINT receives them)
-            _cmd: list[str] | None = None
-            if getattr(manifest.spec, "command", None) and getattr(manifest.spec, "args", None):
-                _cmd = list(manifest.spec.command) + list(manifest.spec.args)
-            elif getattr(manifest.spec, "command", None):
-                _cmd = list(manifest.spec.command)
-            elif getattr(manifest.spec, "args", None):
-                _cmd = list(manifest.spec.args)
+            entrypoint, runtime_args = kubernetes_command_parts(
+                getattr(manifest.spec, "command", None),
+                getattr(manifest.spec, "args", None),
+            )
             is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
             labels = runtime_labels_for_manifest(manifest, app_name=app_name)
             labels.update(
@@ -900,7 +895,8 @@ class DockerRuntime(RuntimeAdapter):
             if is_job:
                 labels[self.JOB_ATTEMPT_LABEL] = str(int(attempt))
             kwargs = {
-                "command": _cmd or None,
+                "command": runtime_args,
+                "entrypoint": entrypoint,
                 "name": name,
                 "detach": True,
                 "environment": env if env else None,
@@ -1215,13 +1211,14 @@ class DockerRuntime(RuntimeAdapter):
                     name_suffix = replica_id.split("-")[-1]
                     full_name = f"ae-{app_name}-rev{revision}-{name_suffix}-{cname}"
                     try:
+                        entrypoint, runtime_args = kubernetes_command_parts(
+                            getattr(csp, "command", None),
+                            getattr(csp, "args", None),
+                        )
                         sc = self._client.containers.run(
                             getattr(csp, "image"),  # noqa: B009
-                            command=(
-                                list(getattr(csp, "command", []) or [])  # noqa: B009
-                                + list(getattr(csp, "args", []) or [])  # noqa: B009
-                            )
-                            or None,
+                            command=runtime_args,
+                            entrypoint=entrypoint,
                             name=full_name,
                             detach=True,
                             environment=env_map or None,
@@ -1741,9 +1738,11 @@ class DockerRuntime(RuntimeAdapter):
                 # best-effort pull; continue
                 pass
             try:
+                entrypoint, runtime_args = kubernetes_command_parts(command, args)
                 cont = self._client.containers.create(
                     image,
-                    command=(command + args) or None,
+                    command=runtime_args,
+                    entrypoint=entrypoint,
                     environment=env_map or None,
                     volumes=volumes or None,
                 )

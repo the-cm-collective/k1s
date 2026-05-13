@@ -20,6 +20,7 @@ from ae.controller.spec import (
     runtime_labels_for_manifest,
     split_app_key,
 )
+from ae.runtime.command_args import kubernetes_command_parts
 
 from .base import RuntimeResult
 from .podman_runtime import PodmanRuntime, _RunResult
@@ -413,14 +414,15 @@ class ContainerdRuntime(PodmanRuntime):
         if getattr(manifest.spec, "working_dir", None):
             cmd += ["--workdir", str(manifest.spec.working_dir)]
 
+        entrypoint, runtime_args = kubernetes_command_parts(
+            getattr(manifest.spec, "command", None),
+            getattr(manifest.spec, "args", None),
+        )
+        if entrypoint:
+            cmd += ["--entrypoint", entrypoint[0]]
         cmd += [self._runtime_image_ref(str(manifest.spec.image))]
-        combined: list[str] = []
-        if getattr(manifest.spec, "command", None):
-            combined += [str(x) for x in (manifest.spec.command or [])]
-        if getattr(manifest.spec, "args", None):
-            combined += [str(x) for x in (manifest.spec.args or [])]
-        if combined:
-            cmd += combined
+        if runtime_args:
+            cmd += runtime_args
 
         for run_attempt in range(2):
             try:

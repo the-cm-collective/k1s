@@ -61,17 +61,23 @@ class FakeContainerManager:
     def __init__(self, client: FakeDockerClient) -> None:
         self._client = client
 
-    def list(self, all: bool = True, filters: dict[str, str] | None = None) -> list[FakeContainer]:
+    def list(self, all: bool = True, filters: dict[str, object] | None = None) -> list[FakeContainer]:
         _ = all
         containers = list(self._client.containers_by_replica.values())
         if not filters:
             return containers
         label_filter = filters.get("label") if isinstance(filters, dict) else None
         if label_filter:
-            key, value = label_filter.split("=", maxsplit=1)
+            label_filters = label_filter if isinstance(label_filter, list) else [label_filter]
             filtered = []
             for container in containers:
-                if container.labels.get(key) == value:
+                matched = True
+                for item in label_filters:
+                    key, value = str(item).split("=", maxsplit=1)
+                    if container.labels.get(key) != value:
+                        matched = False
+                        break
+                if matched:
                     filtered.append(container)
             return filtered
         return containers
@@ -80,14 +86,26 @@ class FakeContainerManager:
         self,
         image: str,
         command=None,
+        entrypoint=None,
         name: str = "",
         detach: bool = True,
         environment=None,
+        volumes=None,
         labels=None,
         ports=None,
         restart_policy=None,
     ):  # noqa: ANN001,D401 - mimic docker
-        _ = (image, command, detach, environment, ports, restart_policy)
+        self._client.last_run = {
+            "image": image,
+            "command": command,
+            "entrypoint": entrypoint,
+            "name": name,
+            "detach": detach,
+            "environment": environment,
+            "volumes": volumes,
+            "ports": ports,
+            "restart_policy": restart_policy,
+        }
         pod_name = labels.get("ae.pod_name")
         host_port = self._client.allocate_port()
         container = FakeContainer(
@@ -123,6 +141,7 @@ class FakeDockerClient:
         self.containers_by_replica: dict[str, FakeContainer] = {}
         self._next_port = 32000
         self.logins: list[tuple[str, str, str]] = []
+        self.last_run: dict[str, object] = {}
 
     def allocate_port(self) -> int:
         port = self._next_port
@@ -165,6 +184,93 @@ def make_manifest(replica_count: int = 1, image: str = "alpine:3.20") -> AppMani
             ports=[PortSpec(name="http", containerPort=8080)],
         ),
     )
+
+
+def make_command_manifest(
+    *,
+    command: list[str] | None = None,
+    args: list[str] | None = None,
+) -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "bucket-init"},
+            "spec": {
+                "image": "docker.io/minio/mc:latest",
+                "replicas": 1,
+                **({"command": command} if command is not None else {}),
+                **({"args": args} if args is not None else {}),
+            },
+        }
+    )
+
+
+def make_sidecar_command_manifest(
+    *,
+    command: list[str] | None = None,
+    args: list[str] | None = None,
+) -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "bucket-init"},
+            "spec": {
+                "image": "alpine:3.20",
+                "replicas": 1,
+                "containers": [
+                    {
+                        "name": "init",
+                        "image": "docker.io/minio/mc:latest",
+                        **({"command": command} if command is not None else {}),
+                        **({"args": args} if args is not None else {}),
+                    }
+                ],
+            },
+        }
+    )
+
+
+def test_docker_runtime_maps_kubernetes_command_args_to_entrypoint() -> None:
+    cases = [
+        (
+            ["/bin/sh", "-c"],
+            ["mc alias set local http://minio:9000"],
+            ["/bin/sh"],
+            ["-c", "mc alias set local http://minio:9000"],
+        ),
+        (["python", "-m", "rawform.bootstrap"], None, ["python"], ["-m", "rawform.bootstrap"]),
+        (None, ["server", "/data"], None, ["server", "/data"]),
+        (None, None, None, None),
+    ]
+
+    for command, args, expected_entrypoint, expected_command in cases:
+        client = FakeDockerClient()
+        runtime = DockerRuntime(client=client)
+        manifest = make_command_manifest(command=command, args=args)
+
+        runtime._create_container(manifest, "bucket-init-rev1-0", 1)
+
+        assert client.last_run["entrypoint"] == expected_entrypoint
+        assert client.last_run["command"] == expected_command
+
+
+def test_docker_runtime_maps_sidecar_command_args_to_entrypoint() -> None:
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = make_sidecar_command_manifest(
+        command=["/bin/sh", "-c"],
+        args=["mc alias set local http://minio:9000"],
+    )
+
+    runtime._ensure_sidecars(manifest, "bucket-init-rev1-0", 1, {})
+
+    assert client.last_run["entrypoint"] == ["/bin/sh"]
+    assert client.last_run["command"] == [
+        "-c",
+        "mc alias set local http://minio:9000",
+    ]
 
 
 def test_docker_runtime_creates_missing_replicas():

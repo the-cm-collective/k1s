@@ -26,6 +26,7 @@ from ae.controller.spec import (
     runtime_labels_for_manifest,
     split_app_key,
 )
+from ae.runtime.command_args import kubernetes_command_parts
 
 from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 from .ports import choose_host_port
@@ -483,11 +484,15 @@ class PodmanRuntime(RuntimeAdapter):
                             cmd += ["-e", f"{item['name']}={item['value']}"]
                     # Image and command
                     img = getattr(csp, "image")  # noqa: B009
+                    entrypoint, runtime_args = kubernetes_command_parts(
+                        getattr(csp, "command", None),
+                        getattr(csp, "args", None),
+                    )
+                    if entrypoint:
+                        cmd += ["--entrypoint", entrypoint[0]]
                     cmd += [img]
-                    combined: list[str] = []
-                    combined += [str(x) for x in (getattr(csp, "command", []) or [])]  # noqa: B009
-                    combined += [str(x) for x in (getattr(csp, "args", []) or [])]  # noqa: B009
-                    cmd += combined
+                    if runtime_args:
+                        cmd += runtime_args
                     self._run_ok(cmd, allow_fail=True)
             except Exception:
                 continue
@@ -1012,6 +1017,9 @@ class PodmanRuntime(RuntimeAdapter):
                 pass
 
             # Image and command
+            entrypoint, runtime_args = kubernetes_command_parts(command, args)
+            if entrypoint:
+                argv += ["--entrypoint", entrypoint[0]]
             argv += [image]
             if (
                 "/" not in image
@@ -1019,7 +1027,8 @@ class PodmanRuntime(RuntimeAdapter):
                 and self._image_exists(f"localhost/{image}")
             ):
                 argv[-1] = f"localhost/{image}"
-            argv += command + args
+            if runtime_args:
+                argv += runtime_args
 
             # Execute with optional timeout
             try:
@@ -1511,6 +1520,12 @@ class PodmanRuntime(RuntimeAdapter):
             cmd += ["--workdir", str(manifest.spec.working_dir)]
 
         # Image and command
+        entrypoint, runtime_args = kubernetes_command_parts(
+            getattr(manifest.spec, "command", None),
+            getattr(manifest.spec, "args", None),
+        )
+        if entrypoint:
+            cmd += ["--entrypoint", entrypoint[0]]
         cmd += [manifest.spec.image]
         # If unqualified name missing but localhost/<name> exists, use that
         if (
@@ -1519,14 +1534,8 @@ class PodmanRuntime(RuntimeAdapter):
             and self._image_exists(f"localhost/{manifest.spec.image}")
         ):
             cmd[-1] = f"localhost/{manifest.spec.image}"
-        # Build command/args following K8s semantics
-        combined: list[str] = []
-        if getattr(manifest.spec, "command", None):
-            combined += [str(x) for x in (manifest.spec.command or [])]
-        if getattr(manifest.spec, "args", None):
-            combined += [str(x) for x in (manifest.spec.args or [])]
-        if combined:
-            cmd += combined
+        if runtime_args:
+            cmd += runtime_args
 
         # Respect AE_OCI_RUNTIME for container creation
         self._maybe_inject_runtime(cmd)
