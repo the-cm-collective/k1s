@@ -59,6 +59,7 @@ from ae.observability.http_api import (
 )
 from ae.ha.dashboard import HaDashboardProbeCache
 from ae.controller.agent_api import start_agent_api
+from ae.accelerators import detect_nvidia_accelerator_capabilities, merge_projected_gpu_labels
 from ae.observability.logging import configure_logging
 from ae.config.transport import (
     TransportConfig,
@@ -180,10 +181,13 @@ def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
         if profile:
             labels.setdefault("profile", profile)
         labels.setdefault("role", "controller")
+        capabilities = detect_nvidia_accelerator_capabilities()
+        labels = merge_projected_gpu_labels(labels, capabilities)
         store.upsert_node(
             node_id,
             name=name,
             labels=labels,
+            capabilities=capabilities,
             taints=[],
             backend=runtime_backend,
             endpoint=None,

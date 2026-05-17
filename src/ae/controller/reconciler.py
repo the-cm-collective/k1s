@@ -18,6 +18,7 @@ from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, lo
 from ae.controller.spec import HostAlias, split_app_key
 from ae.runtime import RuntimeAdapter, RuntimeResult
 from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
+from ae.accelerators import detect_nvidia_accelerator_capabilities, merge_projected_gpu_labels
 
 
 def _record_event_metric_safe(name: str) -> None:
@@ -33,6 +34,22 @@ def _record_event_metric_safe(name: str) -> None:
 def _truthy_env(name: str, default: str = "0") -> bool:
     raw = os.getenv(name, default)
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_labels(raw: str | None) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    if not raw:
+        return labels
+    for part in str(raw).split(","):
+        item = part.strip()
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            labels[key] = value
+    return labels
 
 
 from .state import SQLiteStateStore
@@ -198,12 +215,27 @@ class Reconciler:
             return str(env_backend).strip().lower()
         return self._runtime.__class__.__name__.lower()
 
+    def _local_node_metadata(
+        self,
+        current_labels: dict | None = None,
+    ) -> tuple[dict[str, str], dict]:
+        labels = {str(key): str(value) for key, value in dict(current_labels or {}).items()}
+        labels.update(_parse_labels(os.getenv("AE_NODE_LABELS")))
+        profile = (os.getenv("AE_NODE_PROFILE") or "").strip()
+        if profile:
+            labels.setdefault("profile", profile)
+        labels.setdefault("role", "controller")
+        capabilities = detect_nvidia_accelerator_capabilities()
+        labels = merge_projected_gpu_labels(labels, capabilities)
+        return labels, capabilities
+
     def _ensure_local_node(self) -> None:
         if not self._register_local_node:
             return
         try:
             node_id = os.getenv("AE_NODE_ID") or socket.gethostname()
             name = os.getenv("AE_NODE_NAME") or node_id
+            labels, capabilities = self._local_node_metadata()
             existing = None
             try:
                 existing = self._state_store.get_node(node_id)
@@ -218,7 +250,8 @@ class Reconciler:
                 self._state_store.upsert_node(
                     node_id,
                     name=name,
-                    labels={"role": "controller"},
+                    labels=labels,
+                    capabilities=capabilities,
                     taints=[],
                     backend=self._runtime_backend_name(),
                     endpoint=None,
@@ -231,6 +264,19 @@ class Reconciler:
             # Refresh heartbeat only for local/controller nodes (no endpoint or role label).
             labels = getattr(node, "labels", {}) or {}
             if getattr(node, "endpoint", None) is None or labels.get("role") == "controller":
+                merged_labels, capabilities = self._local_node_metadata(labels)
+                self._state_store.upsert_node(
+                    node_id,
+                    name=getattr(node, "name", None) or name,
+                    labels=merged_labels,
+                    capabilities=capabilities,
+                    taints=getattr(node, "taints", []) or [],
+                    backend=getattr(node, "backend", None) or self._runtime_backend_name(),
+                    endpoint=getattr(node, "endpoint", None),
+                    pod_cidr=getattr(node, "pod_cidr", None),
+                    wg_pubkey=getattr(node, "wg_pubkey", None),
+                    rp_pubkey=getattr(node, "rp_pubkey", None),
+                )
                 self._state_store.record_heartbeat(node_id, "Ready")
         except Exception:
             pass
