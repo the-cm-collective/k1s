@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from ae.cli.__main__ import handle_scale, main
+from ae.cli.__main__ import handle_history, handle_scale, main
 from ae.controller.spec import AppManifest, AppSpec, Metadata
 from ae.controller.state import RegistryConflictError, RegistryEntry, SQLiteStateStore
 
@@ -24,6 +24,26 @@ spec:
   replicas: 1
         """.strip()
     )
+
+
+def test_history_replica_alias_warns(tmp_path, capsys):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    args = argparse.Namespace(
+        name="echo",
+        namespace=None,
+        pod=None,
+        replica="echo-rev1-0",
+        limit=20,
+        since=None,
+        since_time=None,
+        json=False,
+    )
+    global_args = argparse.Namespace(server=None, token=None)
+
+    assert handle_history(args, store, global_args) == 0
+
+    captured = capsys.readouterr()
+    assert "history --replica is deprecated; use --pod" in captured.err
 
 
 def test_apply_and_status_commands(tmp_path, monkeypatch, capsys):

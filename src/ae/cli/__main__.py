@@ -8,15 +8,15 @@ import json
 import logging
 import os
 import shutil
+import sys
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
-from ae._utc import UTC
 from ae.accelerators import preferred_gpu_count, preferred_gpu_models
 from ae.config.manager import ConfigManager
 from ae.controller.health import HealthManager
@@ -48,8 +48,8 @@ from ae.k8s.validate import validate_documents
 from ae.observability import MetricsService
 from ae.observability.logging import configure_logging
 from ae.runtime import (
-    CRIRuntime,
     ContainerdRuntime,
+    CRIRuntime,
     DockerRuntime,
     PodmanRuntime,
     RegistryAuthProvider,
@@ -89,6 +89,10 @@ class CLIArgumentParser(argparse.ArgumentParser):
 
 def _ha_mode_enabled() -> bool:
     return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _warn_deprecated(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -424,7 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
     history_parser.add_argument("--pod", dest="pod", default=None, help="Filter by pod name")
     history_parser.add_argument(
         "--replica",
-        dest="pod",
+        dest="replica",
         default=None,
         help="Deprecated alias for --pod (filter by pod name)",
     )
@@ -6147,6 +6151,11 @@ def handle_history(
     args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
 ) -> int:
     app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
+    replica_alias = getattr(args, "replica", None)
+    if replica_alias:
+        _warn_deprecated("history --replica is deprecated; use --pod")
+        if not getattr(args, "pod", None):
+            args.pod = replica_alias
     # Server mode
     if getattr(global_args, "server", None):
         base = str(global_args.server)
@@ -6999,6 +7008,7 @@ def handle_k8s_check(args: argparse.Namespace) -> int:
     issues = k8s_portability_issues(man)
     policy = getattr(args, "policy", "baseline")
     if getattr(args, "strict", False):
+        _warn_deprecated("k8s-check --strict is deprecated; use --policy strict")
         policy = "strict"
     # Extra HPA validations based on assumptions
     if getattr(args, "assume_hpa", None):

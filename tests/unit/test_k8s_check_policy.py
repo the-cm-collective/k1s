@@ -62,6 +62,28 @@ spec:
     assert exit_code != 0
 
 
+def test_k8s_check_strict_alias_warns(tmp_path, capsys) -> None:
+    man_path = tmp_path / "echo.yaml"
+    man_path.write_text(
+        "\n".join(
+            [
+                "apiVersion: ae.dev/v1alpha1",
+                "kind: Deployment",
+                "metadata:",
+                "  name: echo",
+                "spec:",
+                "  image: alpine:3.20",
+            ]
+        )
+    )
+
+    exit_code = main(["k8s-check", "-f", str(man_path), "--strict"])
+
+    assert exit_code != 1
+    err = capsys.readouterr().err
+    assert "k8s-check --strict is deprecated; use --policy strict" in err
+
+
 def test_hpa_mem_value_invalid(tmp_path) -> None:
     man_path = tmp_path / "echo.yaml"
     content = "\n".join(
