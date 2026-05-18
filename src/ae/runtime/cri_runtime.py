@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import json
 import logging
 import os
 import re
@@ -12,7 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -25,7 +27,6 @@ except Exception as exc:  # pragma: no cover - optional dependency
     grpc = None
     _grpc_import_error = exc
 
-from ae._utc import UTC
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
