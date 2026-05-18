@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+NIGHTLY_APISHIM = ROOT / ".github" / "workflows" / "nightly-apishim.yml"
 NIGHTLY_RUNTIME = ROOT / ".github" / "workflows" / "nightly-runtime.yml"
 K8S_CONFORMANCE = ROOT / "scripts" / "ci" / "k8s-conformance.sh"
 K3S_CONFORMANCE = ROOT / "scripts" / "ci" / "k3s-conformance.sh"
@@ -15,6 +16,15 @@ def test_nightly_runtime_cri_smoke_preserves_selected_python_under_sudo() -> Non
     text = NIGHTLY_RUNTIME.read_text(encoding="utf-8")
 
     assert 'sudo -E env "PATH=$PATH" "$(command -v python)" -m pytest \\' in text
+
+
+def test_nightly_workflows_do_not_gate_scheduled_jobs_behind_server_guard() -> None:
+    for workflow in (NIGHTLY_APISHIM, NIGHTLY_RUNTIME):
+        text = workflow.read_text(encoding="utf-8")
+
+        assert "server-guard:" not in text
+        assert "needs: server-guard" not in text
+        assert "github.server_url != 'https://github.com'" in text
 
 
 def test_podman_job_targets_cli_tooling_compat_not_strict_policy() -> None:
