@@ -15,10 +15,8 @@ import json
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-
-from ae._utc import UTC
 
 DEFAULT_ROOT = Path("state/tls")
 CA_KEY = "agent-ca.key"

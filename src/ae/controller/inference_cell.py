@@ -7,27 +7,14 @@ import os
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from enum import Enum
-from urllib.parse import urlsplit, urlunsplit
-
-try:
-    from enum import StrEnum
-except ImportError:  # pragma: no cover - Python < 3.11 compatibility
-    class StrEnum(str, Enum):
-        """Backport-compatible StrEnum shim."""
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
-from ae._utc import UTC
 from ae.accelerators import has_accelerator_inventory, preferred_gpu_count
-from ae.ha.fencing import (
-    fabric_ensure_operation,
-    fabric_teardown_operation,
-    merge_envelope,
-    resolve_controller_identity,
-)
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
@@ -40,6 +27,12 @@ from ae.controller.spec import (
     app_key,
 )
 from ae.controller.state import InferenceCellRecord, InferenceCellSetRecord, SQLiteStateStore
+from ae.ha.fencing import (
+    fabric_ensure_operation,
+    fabric_teardown_operation,
+    merge_envelope,
+    resolve_controller_identity,
+)
 from ae.runtime import RemoteRuntime, RuntimeAdapter, StubRuntime
 
 _NO_UPDATE = object()

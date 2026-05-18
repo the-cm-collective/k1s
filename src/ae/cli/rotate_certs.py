@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
-from ae._utc import UTC
 from ae.security import issue_cert, issue_token
 
 

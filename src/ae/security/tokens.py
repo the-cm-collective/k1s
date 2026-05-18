@@ -11,10 +11,8 @@ import base64
 import hmac
 import os
 import secrets
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import sha256
-
-from ae._utc import UTC
 
 DEFAULT_SECRET = os.getenv("AE_AGENT_JOIN_SECRET", "")
 
