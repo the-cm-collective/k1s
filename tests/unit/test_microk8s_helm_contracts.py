@@ -4,6 +4,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -12,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _helm_template(chart: Path, values: Path, release: str, namespace: str) -> list[dict]:
     helm = shutil.which("helm")
-    assert helm, "helm binary is required for chart contract tests"
+    if not helm:
+        pytest.skip("helm binary is required for chart contract tests")
     proc = subprocess.run(
         [
             helm,
