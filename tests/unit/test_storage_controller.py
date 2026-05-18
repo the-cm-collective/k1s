@@ -725,7 +725,7 @@ def test_storage_controller_pv_delete_marks_pvc_lost(tmp_path):
     assert (pvc.status or {}).get("phase") == "Lost"
 
 
-def test_storage_controller_creates_volume_attachment_for_csi(tmp_path):
+def test_storage_controller_marks_csi_attachment_failed_without_registry(tmp_path):
     store = ObjectStore(db_path=tmp_path / "apishim.db")
     controller = StorageController(store)
     pvc_uid = "uid-csi"
@@ -759,10 +759,12 @@ def test_storage_controller_creates_volume_attachment_for_csi(tmp_path):
     assert (va.spec or {}).get("attacher") == "csi.example.com"
     source = (va.spec or {}).get("source") or {}
     assert source.get("persistentVolumeName") == "pv-csi"
-    assert (va.status or {}).get("attached") is True
+    assert (va.status or {}).get("attached") is False
+    error = (va.status or {}).get("attachError") or {}
+    assert "not registered" in error.get("message", "")
 
 
-def test_storage_controller_ha_mode_creates_volume_attachment_for_csi(tmp_path):
+def test_storage_controller_ha_mode_marks_csi_attachment_failed_without_registry(tmp_path):
     state, legacy, store = _make_ha_storage_store(tmp_path)
     controller = StorageController(store)
     pvc_uid = "uid-csi"
@@ -796,8 +798,115 @@ def test_storage_controller_ha_mode_creates_volume_attachment_for_csi(tmp_path):
     assert (va.spec or {}).get("attacher") == "csi.example.com"
     source = (va.spec or {}).get("source") or {}
     assert source.get("persistentVolumeName") == "pv-csi"
-    assert (va.status or {}).get("attached") is True
+    assert (va.status or {}).get("attached") is False
+    error = (va.status or {}).get("attachError") or {}
+    assert "not registered" in error.get("message", "")
     assert legacy.get("storage.k8s.io", "v1", "volumeattachments", None, va_name) is None
+
+
+def test_storage_controller_legacy_marker_attach_requires_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setenv("AE_STORAGE_ALLOW_LEGACY_MARKER_ATTACH", "1")
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    controller = StorageController(store)
+    pvc_uid = "uid-csi"
+    pv_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "persistentVolumeReclaimPolicy": "Retain",
+        "claimRef": {"namespace": "default", "name": "data", "uid": pvc_uid},
+        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-csi",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pvc_meta = {
+        "name": "data",
+        "namespace": "default",
+        "uid": pvc_uid,
+        "annotations": {"volume.kubernetes.io/selected-node": "node-a"},
+    }
+
+    store.upsert("", "v1", "persistentvolumes", None, "pv-csi", {"name": "pv-csi"}, pv_spec)
+    store.upsert("", "v1", "persistentvolumeclaims", "default", "data", pvc_meta, pvc_spec)
+
+    controller.reconcile_once()
+
+    va_name = controller._volume_attachment_name("pv-csi", "node-a")
+    va = store.get("storage.k8s.io", "v1", "volumeattachments", None, va_name)
+    assert va is not None
+    assert (va.status or {}).get("attached") is True
+
+
+def test_storage_controller_csi_attachment_uses_registered_provisioner(
+    tmp_path, monkeypatch
+):
+    store = ObjectStore(db_path=tmp_path / "apishim.db")
+    provisioners_path = tmp_path / "provisioners.yaml"
+    provisioners_path.write_text(
+        """
+provisioners:
+  - name: csi-fast
+    provisioner: csi.example.com
+    type: csi
+    controllerEndpoint: unix:///tmp/csi.sock
+    nodeEndpoint: unix:///tmp/csi.sock
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AE_STORAGE_PROVISIONERS", str(provisioners_path))
+    import ae.storage.controller as storage_controller
+
+    monkeypatch.setattr(storage_controller, "grpc", object())
+
+    class FakeResp:
+        publish_context = {"node": "node-a"}
+
+    class FakeClient:
+        def controller_publish(self, **_kwargs):  # noqa: ANN003
+            return FakeResp()
+
+    def fake_controller_client(_self, _driver, _sc_name):
+        return FakeClient()
+
+    monkeypatch.setattr(
+        StorageController,
+        "_csi_controller_client",
+        fake_controller_client,
+    )
+    controller = StorageController(store)
+    controller.sync()
+    pvc_uid = "uid-csi"
+    pv_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "persistentVolumeReclaimPolicy": "Retain",
+        "storageClassName": "csi-fast",
+        "claimRef": {"namespace": "default", "name": "data", "uid": pvc_uid},
+        "csi": {"driver": "csi.example.com", "volumeHandle": "vol-1"},
+    }
+    pvc_spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "volumeName": "pv-csi",
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    pvc_meta = {
+        "name": "data",
+        "namespace": "default",
+        "uid": pvc_uid,
+        "annotations": {"volume.kubernetes.io/selected-node": "node-a"},
+    }
+
+    store.upsert("", "v1", "persistentvolumes", None, "pv-csi", {"name": "pv-csi"}, pv_spec)
+    store.upsert("", "v1", "persistentvolumeclaims", "default", "data", pvc_meta, pvc_spec)
+
+    controller.reconcile_once()
+
+    va_name = controller._volume_attachment_name("pv-csi", "node-a")
+    va = store.get("storage.k8s.io", "v1", "volumeattachments", None, va_name)
+    assert va is not None
+    assert (va.status or {}).get("attached") is True
+    meta = (va.status or {}).get("attachmentMetadata") or {}
+    assert meta.get("publishContext") == {"node": "node-a"}
 
 
 def test_storage_controller_skips_attachment_when_attach_not_required(tmp_path):
@@ -886,10 +995,13 @@ provisioners:
         def create_volume(self, **_kwargs):  # noqa: ANN003
             return FakeResp()
 
+    def fake_controller_client(_self, _driver, _sc_name):
+        return FakeClient()
+
     monkeypatch.setattr(
         StorageController,
         "_csi_controller_client",
-        lambda self, driver, sc_name: FakeClient(),
+        fake_controller_client,
     )
 
     controller.reconcile_once()
@@ -945,10 +1057,13 @@ provisioners:
         def create_volume(self, **_kwargs):  # noqa: ANN003
             return FakeResp()
 
+    def fake_controller_client(_self, _driver, _sc_name):
+        return FakeClient()
+
     monkeypatch.setattr(
         StorageController,
         "_csi_controller_client",
-        lambda self, driver, sc_name: FakeClient(),
+        fake_controller_client,
     )
 
     controller.reconcile_once()

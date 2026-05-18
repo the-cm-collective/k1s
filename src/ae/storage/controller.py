@@ -11,11 +11,10 @@ import threading
 import time
 import uuid
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ae._utc import UTC
 from ae.apishim.store import ObjectStore
 
 try:  # pragma: no cover - optional dependency
@@ -30,8 +29,8 @@ from .config import (
     StorageProvisionerConfig,
     StorageProvisionerRegistry,
     StorageQuotaConfig,
-    load_storage_registry,
     load_storage_quotas,
+    load_storage_registry,
     select_default_class,
 )
 from .csi import CsiControllerClient, build_volume_capability
@@ -80,6 +79,12 @@ PVC_PROTECTION_FINALIZER = "kubernetes.io/pvc-protection"
 PV_PROTECTION_FINALIZER = "kubernetes.io/pv-protection"
 PVC_RESIZE_CONDITION = "Resizing"
 PVC_FS_RESIZE_PENDING_CONDITION = "FileSystemResizePending"
+LEGACY_MARKER_ATTACH_ENV = "AE_STORAGE_ALLOW_LEGACY_MARKER_ATTACH"
+LEGACY_MARKER_ATTACH_ANNOTATION = "storage.k1s.dev/allowLegacyMarkerAttach"
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class StorageController:
@@ -989,6 +994,15 @@ class StorageController:
         meta["finalizers"] = finalizers
         return meta, True
 
+    @staticmethod
+    def _legacy_marker_attach_allowed(sc) -> bool:  # noqa: ANN001
+        annotations = ((getattr(sc, "metadata", None) or {}).get("annotations") or {}) if sc else {}
+        if not isinstance(annotations, dict):
+            annotations = {}
+        return _truthy(os.getenv(LEGACY_MARKER_ATTACH_ENV)) or _truthy(
+            annotations.get(LEGACY_MARKER_ATTACH_ANNOTATION)
+        )
+
     def _reconcile_csi_attachment(self, pvc, pv) -> None:
         if not self._enable_csi:
             return
@@ -1056,9 +1070,16 @@ class StorageController:
             entry = self._provisioners.for_storage_class(sc_name) or self._provisioners.for_driver(
                 driver
             )
-            # If no registry entry exists, fall back to legacy marker-only behavior.
             if entry is None or entry.type != "csi":
-                publish_context = {}
+                if self._legacy_marker_attach_allowed(sc):
+                    publish_context = {}
+                    self._record_pvc_event(
+                        pvc,
+                        "LegacyMarkerAttach",
+                        f"CSI provisioner {driver} not registered; using marker-only attach",
+                    )
+                else:
+                    attach_error = f"CSI provisioner {driver} not registered"
             else:
                 controller_secret, controller_ref = self._csi_secret_data_from_params(
                     sc_spec, "controller-publish"
@@ -2620,12 +2641,6 @@ class StorageController:
     def _within_root(root: Path, path: Path) -> bool:
         try:
             return path.resolve().is_relative_to(root.resolve())
-        except AttributeError:  # pragma: no cover - py<3.9 fallback
-            try:
-                path.resolve().relative_to(root.resolve())
-                return True
-            except Exception:
-                return False
         except Exception:
             return False
 
