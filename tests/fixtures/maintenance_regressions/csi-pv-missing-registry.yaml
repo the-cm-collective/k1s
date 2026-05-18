@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-csi
+spec:
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: default
+    name: data
+    uid: uid-csi
+  csi:
+    driver: csi.example.com
+    volumeHandle: vol-1
