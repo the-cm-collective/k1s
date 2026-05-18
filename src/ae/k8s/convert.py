@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from typing import Any
 
@@ -16,6 +17,15 @@ from ae.controller.spec import (
     ServiceSpec,
     app_key,
 )
+
+UNRESOLVED_TARGETPORT_FALLBACK_ENV = "AE_APISHIM_ALLOW_UNRESOLVED_TARGETPORT_FALLBACK"
+UNRESOLVED_TARGETPORT_FALLBACK_ANNOTATION = (
+    "apishim.k1s.dev/allowUnresolvedTargetPortFallback"
+)
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def app_name_for_k8s(namespace: str | None, name: str) -> str:
@@ -31,6 +41,11 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
 def _metadata(obj: Any) -> dict[str, Any]:
     meta = _get(obj, "metadata", {}) or {}
     return meta if isinstance(meta, dict) else {}
+
+
+def _annotations(obj: Any) -> dict[str, Any]:
+    annotations = _metadata(obj).get("annotations") or {}
+    return annotations if isinstance(annotations, dict) else {}
 
 
 def _spec(obj: Any) -> dict[str, Any]:
@@ -133,6 +148,20 @@ def resolve_port_value(port: Any, ports_by_name: dict[str, int]) -> int | None:
         if port in ports_by_name:
             return ports_by_name[port]
     return None
+
+
+def allow_unresolved_target_port_fallback(obj: Any) -> bool:
+    annotations = _annotations(obj)
+    return _truthy(os.getenv(UNRESOLVED_TARGETPORT_FALLBACK_ENV)) or _truthy(
+        annotations.get(UNRESOLVED_TARGETPORT_FALLBACK_ANNOTATION)
+    )
+
+
+def unresolved_target_port_message(service_name: str, port_name: str, target_port: Any) -> str:
+    return (
+        f"service {service_name} targetPort {target_port!r} for port {port_name!r} "
+        "does not match a named container port"
+    )
 
 
 def probe_from_k8s(raw: dict | None, ports_by_name: dict[str, int]) -> dict | None:
@@ -415,6 +444,8 @@ def service_spec_from_k8s(
         tgt_raw = entry.get("targetPort", fallback_port)
         tgt_val = resolve_port_value(tgt_raw, ports_by_name)
         if tgt_val is None:
+            if not allow_unresolved_target_port_fallback(svc):
+                return None
             tgt_val = fallback_port
         svc_ports.append(
             ServiceSpec.ServicePort(

@@ -153,6 +153,75 @@ def test_apishim_ha_service_selector_must_be_unambiguous(tmp_path) -> None:
         raise AssertionError("expected ambiguous service selector to be rejected")
 
 
+def test_apishim_ha_service_rejects_unresolved_named_target_port(tmp_path) -> None:
+    _state, _legacy, store = _make_store(tmp_path)
+    store.upsert(
+        "apps",
+        "v1",
+        "deployments",
+        "default",
+        "demo",
+        metadata={"name": "demo", "namespace": "default"},
+        spec=_deployment_spec("demo"),
+        status={},
+    )
+
+    try:
+        store.upsert(
+            "",
+            "v1",
+            "services",
+            "default",
+            "demo-svc",
+            metadata={"name": "demo-svc", "namespace": "default"},
+            spec={
+                "selector": {"app": "demo"},
+                "ports": [{"name": "web", "port": 80, "targetPort": "missing"}],
+            },
+            status={},
+        )
+    except AuthorityMutationError as exc:
+        assert "does not match a named container port" in exc.message
+    else:
+        raise AssertionError("expected unresolved targetPort to be rejected")
+
+
+def test_apishim_ha_service_unresolved_named_target_port_fallback_opt_in(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AE_APISHIM_ALLOW_UNRESOLVED_TARGETPORT_FALLBACK", "1")
+    state, _legacy, store = _make_store(tmp_path)
+    store.upsert(
+        "apps",
+        "v1",
+        "deployments",
+        "default",
+        "demo",
+        metadata={"name": "demo", "namespace": "default"},
+        spec=_deployment_spec("demo"),
+        status={},
+    )
+
+    store.upsert(
+        "",
+        "v1",
+        "services",
+        "default",
+        "demo-svc",
+        metadata={"name": "demo-svc", "namespace": "default"},
+        spec={
+            "selector": {"app": "demo"},
+            "ports": [{"name": "web", "port": 80, "targetPort": "missing"}],
+        },
+        status={},
+    )
+
+    entry = state.get_registered_entry("demo")
+    assert entry is not None
+    assert entry.manifest.spec.service is not None
+    assert entry.manifest.spec.service.ports[0].target_port == 80
+
+
 def test_materialize_registry_manifests_expands_daemonset_replicas(tmp_path) -> None:
     state, _legacy, store = _make_store(tmp_path)
     store.upsert(

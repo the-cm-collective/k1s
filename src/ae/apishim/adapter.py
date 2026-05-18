@@ -10,11 +10,10 @@ import os
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ae._utc import UTC
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import (
     AppManifest,
@@ -37,6 +36,12 @@ from ae.runtime import (
 from .store import K8sObject, ObjectStore
 
 LOGGER = logging.getLogger(__name__)
+INVALID_CRON_FALLBACK_ENV = "AE_APISHIM_ALLOW_INVALID_CRON_FALLBACK"
+INVALID_CRON_FALLBACK_ANNOTATION = "cronjob.k1s.dev/allowInvalidScheduleFallback"
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _app_name(ns: str | None, name: str) -> str:
@@ -724,6 +729,7 @@ class AdapterWorker(threading.Thread):
         key = (cj.namespace, cj.name)
         last_schedule = None
         last_success = None
+        conditions: list[dict[str, str]] = []
         now = time.time()
         with self._lock:
             state = self._cronjob_jobs.get(key) or {}
@@ -749,10 +755,46 @@ class AdapterWorker(threading.Thread):
                     next_run = it.get_next(float)
                     if now >= next_run:
                         should_fire = True
-                except Exception:
-                    # fallback to 60s interval when cron expression invalid or croniter missing
-                    if now - last_ts >= 60:
-                        should_fire = True
+                except Exception as exc:  # noqa: BLE001
+                    allow_fallback = _truthy(os.getenv(INVALID_CRON_FALLBACK_ENV)) or _truthy(
+                        annotations.get(INVALID_CRON_FALLBACK_ANNOTATION)
+                    )
+                    if allow_fallback:
+                        conditions.append(
+                            {
+                                "type": "ScheduleValid",
+                                "status": "False",
+                                "reason": "InvalidScheduleFallback",
+                                "message": str(exc) or "invalid cron schedule",
+                            }
+                        )
+                        if now - last_ts >= 60:
+                            should_fire = True
+                    else:
+                        status = {
+                            "active": [],
+                            "lastScheduleTime": state.get("last_schedule"),
+                            "lastSuccessfulTime": state.get("last_success"),
+                            "conditions": [
+                                {
+                                    "type": "ScheduleValid",
+                                    "status": "False",
+                                    "reason": "InvalidSchedule",
+                                    "message": str(exc) or "invalid cron schedule",
+                                }
+                            ],
+                        }
+                        self._store.upsert(
+                            "batch",
+                            "v1",
+                            "cronjobs",
+                            cj.namespace,
+                            cj.name,
+                            cj.metadata,
+                            cj.spec,
+                            status=status,
+                        )
+                        return
             else:
                 if now - last_ts >= 60:
                     should_fire = True
@@ -784,12 +826,19 @@ class AdapterWorker(threading.Thread):
             last_schedule = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             last_success = last_schedule
             with self._lock:
-                self._cronjob_jobs[key] = {"job": fired_name, "last_run": now}
+                self._cronjob_jobs[key] = {
+                    "job": fired_name,
+                    "last_run": now,
+                    "last_schedule": last_schedule,
+                    "last_success": last_success,
+                }
         status = {
             "active": [],
             "lastScheduleTime": last_schedule or state.get("last_schedule"),
             "lastSuccessfulTime": last_success or state.get("last_success"),
         }
+        if conditions:
+            status["conditions"] = conditions
         self._store.upsert(
             "batch", "v1", "cronjobs", cj.namespace, cj.name, cj.metadata, cj.spec, status=status
         )
@@ -1644,6 +1693,52 @@ class AdapterWorker(threading.Thread):
         candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3], entry[4]))
         return candidates[0][4], candidates[0][5]
 
+    def _mark_service_invalid_target_port(
+        self, svc: K8sObject, target: str, entry: dict[str, Any], target_port: Any
+    ) -> None:
+        message = k8s_convert.unresolved_target_port_message(
+            svc.name,
+            str(entry.get("name") or entry.get("port") or ""),
+            target_port,
+        )
+        status = dict(svc.status or {})
+        conditions = [
+            cond
+            for cond in list(status.get("conditions") or [])
+            if isinstance(cond, dict) and cond.get("type") != "PortResolution"
+        ]
+        conditions.append(
+            {
+                "type": "PortResolution",
+                "status": "False",
+                "reason": "UnresolvedTargetPort",
+                "message": message,
+            }
+        )
+        status["conditions"] = conditions
+        try:
+            self._store.upsert(
+                "",
+                "v1",
+                "services",
+                svc.namespace,
+                svc.name,
+                svc.metadata,
+                svc.spec,
+                status=status,
+            )
+        except Exception:
+            pass
+        try:
+            self._state.record_event(
+                _app_name(svc.namespace, target),
+                0,
+                "ServiceTargetPortInvalid",
+                message,
+            )
+        except Exception:
+            pass
+
     def _service_spec_for(
         self, svc: K8sObject
     ) -> tuple[tuple[str | None, str], ServiceSpec] | None:
@@ -1677,7 +1772,9 @@ class AdapterWorker(threading.Thread):
             tgt_raw = entry.get("targetPort", fallback_port)
             tgt_val = _resolve_port_value(tgt_raw, ports_by_name)
             if tgt_val is None:
-                # Fallback: when targetPort is a named port (e.g., "http"), just reuse service port
+                if not k8s_convert.allow_unresolved_target_port_fallback(svc):
+                    self._mark_service_invalid_target_port(svc, target, entry, tgt_raw)
+                    return None
                 tgt_val = fallback_port
             host_port = node_port if node_port is not None and expose_host else None
             svc_ports.append(
