@@ -390,6 +390,7 @@ def test_do_resume_runs_presync_cleanup_before_rsync(monkeypatch, tmp_path: Path
     )
     monkeypatch.setattr(host_a_netfs_lane, "ensure_nfs_export", lambda *_args, **_kwargs: calls.append("ensure_nfs"))
     monkeypatch.setattr(host_a_netfs_lane, "controller_healthy", lambda: True)
+    monkeypatch.setattr(host_a_netfs_lane, "wait_for_controller_health", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         host_a_netfs_lane,
         "presync_guest_cleanup",
