@@ -21,7 +21,7 @@ kubectl-like CLI wrapper for ae (k1s). Defines explicit exports.
 `ae.cli.__main__`, `ae.controller.__main__`, `ae.controller.reconciler`, `ae.controller.spec`, `ae.controller.state`, `ae.ingress.service`, `ae.observability.logging`
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/unit/test_kctl.py`

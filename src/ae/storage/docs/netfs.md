@@ -22,8 +22,7 @@ NetFS manager scaffolding for network-backed volumes.
 - Side-effect surfaces: filesystem/state, network/API, subprocess/runtime command.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 382: `except AttributeError:  # pragma: no cover - py<3.9 fallback`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/test_agent_pvc_pending.py`

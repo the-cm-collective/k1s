@@ -81,31 +81,12 @@ Lightweight HTTP API for metrics, status, events, and previews.
 - Side-effect surfaces: filesystem/state, network/API, subprocess/runtime command.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 46: `# Prefixes to allow in demo-scoped dashboards (e.g., helm shim demo namespace).`
-- Line 117: `fallback = Path("state/profiles/labs/apishim.env")`
-- Line 118: `if fallback.exists():`
-- Line 119: `return str(fallback)`
-- Line 573: `# Avoid leaking a stale APISHIM_SERVER into the shim demo process.`
-- Line 596: `# Verify the shim endpoint is reachable; do not start a local shim.`
-- Line 619: `if "k1s-shim" not in body:`
-- Line 622: `raise RuntimeError(f"helm demo shim unreachable at {helm_server}: {exc}") from exc`
-- Line 633: `# Persist resolved shim endpoint + token for the controller mirror loop.`
-- Line 645: `"labs helm demo shim resolved: server=%s db=%s dsn=%s",`
-- Line 652: `# Allow shim demo apps to show up on demo-scoped dashboards.`
 - Line 1874: `"apply handler failed source=%s app=%s via legacy fallback",`
-- Line 2218: `title="k1s Swagger UI (API Shim)",`
-- Line 2237: `title="k1s ReDoc (API Shim)",`
 - Line 3169: `# Prefer tracked labs apps that match the session suffix; fallback to echo-<sess>`
 - Line 3187: `# Final fallback: delete base echo if present (covers non-session applies)`
-- Line 3212: `# Also clean up any helm shim demo apps by namespace prefix.`
-- Line 3262: `# Also remove shim objects in the helm demo namespace so the adapter`
-- Line 3263: `# doesn't reapply them after reset. Prefer the shim API so deletes`
-- Line 3313: `"labs reset using shim API at %s for namespace %s",`
-- Line 3361: `"labs reset removed %s shim objects via shim API in namespace %s",`
-- Line 3367: `"labs reset shim API reachable at %s; no shim objects removed for namespace %s",`
-- Line 3373: `"labs reset shim API unavailable at %s; falling back to direct store cleanup for namespace %s",`
-- Line 3399: `"labs reset found surviving shim objects in namespace %s after API cleanup: %s",`
+- Line 3581: `# Fallback to direct URL if all overrides fail`
+- Line 3622: `# Set canary weight on existing deployment manifest when possible; fallback to curated example`
+- Line 3680: `# Fallback to curated example`
 
 ## Related Tests And Docs
 - `tests/unit/test_helm_demo_stop.py`

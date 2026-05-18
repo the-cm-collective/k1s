@@ -24,7 +24,7 @@ Node agent package.
 `ae.accelerators`, `ae.apishim.store`, `ae.config.transport`, `ae.controller.spec`, `ae.controller.state`, `ae.ha.fencing`, `ae.network`, `ae.node.net_helper`, `ae.node.rosenpass`, `ae.node.server`, `ae.observability.http_api`, `ae.runtime`, `ae.storage`, `ae.storage.netfs`, `ae.storage.state`
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/integration/test_agent_pvc_pending.py`

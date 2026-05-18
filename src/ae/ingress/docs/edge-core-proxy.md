@@ -62,12 +62,7 @@ Core-proxy config renderer for Envoy + Rathole.
 - Side-effect surfaces: filesystem/state, network/API, subprocess/runtime command.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 859: `fallback = _ensure_fallback_tls(`
 - Line 865: `if fallback:`
-- Line 866: `crt_path, key_path = fallback`
-- Line 909: `crt = root / "envoy-fallback.crt"`
-- Line 910: `key = root / "envoy-fallback.key"`
 
 ## Related Tests And Docs
 - `tests/integration/test_envoy_core_local_ingress_tls.py`

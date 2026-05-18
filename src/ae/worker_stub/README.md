@@ -21,7 +21,7 @@ Stub worker for local NATS work dispatch testing. Defines explicit exports.
 `ae.controller.node_identity`, `ae.observability.logging`, `ae.transport`, `ae.transport.nats_client`
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/e2e/core_edge.py`

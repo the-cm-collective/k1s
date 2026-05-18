@@ -39,17 +39,13 @@ InferenceCell reconcile lane (experimental).
 | _make_condition | 651 | function | Internal helper. |
 
 ## Runtime And Data Flow
-- Internal dependencies: `ae._utc`, `ae.accelerators`, `ae.controller.spec`, `ae.controller.state`, `ae.ha.fencing`, `ae.runtime`
+- Internal dependencies: `ae.accelerators`, `ae.controller.spec`, `ae.controller.state`, `ae.ha.fencing`, `ae.runtime`
 - External libraries: `requests`
 - Environment inputs: `AE_AGENT_API_TOKEN`, `AE_AGENT_TOKEN`, `AE_INFERENCE_AGENT_TIMEOUT`, `AE_INFERENCE_AGENT_TOKEN`, `AE_INFERENCE_API_HEALTH_TIMEOUT`, `AE_INFERENCE_DEBUG_HOLD_ON_FAILURE`, `AE_INFERENCE_RUNTIME_CLASS`
 - Side-effect surfaces: network/API.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 16: `except ImportError:  # pragma: no cover - Python < 3.11 compatibility`
-- Line 18: `"""Backport-compatible StrEnum shim."""`
-- Line 630: `# Reserve mp rendezvous even for Ray when fallback is enabled.`
-- Line 1491: `worker_message = "runtime applied (fallback=mp)"`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_etcd_inference_state.py`

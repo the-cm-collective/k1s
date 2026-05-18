@@ -20,7 +20,7 @@ Pod placement planner for multi-node scheduling.
 - Side-effect surfaces: filesystem/state.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/test_multinode_agent_flow.py`

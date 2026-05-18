@@ -33,13 +33,10 @@ Storage primitives and NetFS scaffolding. Defines explicit exports.
 `AE_APISHIM_CA`, `AE_APISHIM_CA_BUNDLE`, `AE_APISHIM_HTTP_TIMEOUT_S`, `AE_APISHIM_READ_TOKEN`, `AE_APISHIM_SERVER`, `AE_APISHIM_TLS_CA`, `AE_APISHIM_TOKEN`, `AE_APISHIM_URL`, `AE_CSI_STAGE_ROOT`, `AE_CSI_TIMEOUT_SECONDS`, `AE_NETFS_CAPACITY_NAMESPACE`, `AE_NETFS_FS_RESIZE`, `AE_NETFS_MOUNT_TIMEOUT_SECONDS`, `AE_NETFS_ROOT`, `AE_NETFS_SELINUX_RECURSIVE`, `AE_NODE_ID`, `AE_STORAGE_LOCAL_CLASS`, `AE_STORAGE_NFS_CLASS`, `AE_STORAGE_NFS_HOSTPATH`, `AE_STORAGE_NFS_PATH`, `AE_STORAGE_NFS_SERVER`, `AE_STORAGE_ROOT`, `AE_STORAGE_SEED_DEFAULTS`
 
 ## Cross-Package Dependencies
-`.config`, `.csi`, `.netfs`, `.state`, `.types`, `ae._utc`, `ae.apishim.store`, `ae.controller.spec`
+`.config`, `.csi`, `.netfs`, `.state`, `.types`, `ae.apishim.store`, `ae.controller.spec`
 
 ## Maintenance Notes
-- `controller.py` line 1059: `# If no registry entry exists, fall back to legacy marker-only behavior.`
-- `controller.py` line 2623: `except AttributeError:  # pragma: no cover - py<3.9 fallback`
-- `netfs.py` line 382: `except AttributeError:  # pragma: no cover - py<3.9 fallback`
-- `node_manager.py` line 42: `# replica_id is accepted for compatibility with runtime/node call sites.`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/integration/test_agent_pvc_pending.py`

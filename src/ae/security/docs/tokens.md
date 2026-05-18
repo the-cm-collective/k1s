@@ -17,11 +17,11 @@ Join-token utilities for agent bootstrap.
 | verify_token | 42 | function | Entrypoint/helper without docstring. |
 
 ## Runtime And Data Flow
-- Internal dependencies: `ae._utc`
+- Internal dependencies:
 - Environment inputs: `AE_AGENT_JOIN_SECRET`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_cli.py`

@@ -27,10 +27,8 @@ Lightweight controller-side API for node agents (heartbeats, node info).
 - Side-effect surfaces: filesystem/state, network/API.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
 - Line 306: `def _peer_endpoint(labels: dict | None, fallback: str | None) -> str | None:`
 - Line 307: `if fallback:`
-- Line 308: `return fallback`
 
 ## Related Tests And Docs
 - `tests/unit/test_agent_api.py`

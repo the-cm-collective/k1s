@@ -21,7 +21,7 @@ Secrets package exports. Defines explicit exports.
 `ae.controller.spec`
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/integration/test_reconcile_flow.py`

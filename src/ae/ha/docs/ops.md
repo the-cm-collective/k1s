@@ -88,7 +88,7 @@ Provides classes EtcdLeaderRecord, EtcdMemberAddResult, EtcdRestoreMemberSpec, E
 - Side-effect surfaces: filesystem/state, network/API, subprocess/runtime command.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/e2e/core_edge.py`

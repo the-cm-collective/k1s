@@ -32,7 +32,7 @@ Network helpers for Service VIP and multi-node plumbing. Defines explicit export
 `.provider`, `ae.controller.health`, `ae.controller.spec`, `ae.controller.state`, `ae.network.overlay_health`, `ae.runtime`
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/integration/test_overlay_vip.py`

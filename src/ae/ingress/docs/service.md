@@ -20,9 +20,6 @@ Ingress orchestration service to manage Caddy configs per manifest.
 - Side-effect surfaces: filesystem/state.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 37: `# Back-compat in-memory state when no store is available`
-- Line 78: `# Create a temporary copy of the manifest spec with cert/key paths filled`
 - Line 163: `# fallback to in-memory when no store is present`
 
 ## Related Tests And Docs

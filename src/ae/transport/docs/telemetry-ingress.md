@@ -24,7 +24,7 @@ NATS ingress for site telemetry (status/logs/caps).
 - Side-effect surfaces: network/API.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - No direct test reference found by path/import search; rely on package-level and integration coverage.

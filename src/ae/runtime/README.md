@@ -39,18 +39,13 @@ Runtime adapters for container operations. Defines explicit exports.
 `AE_AGENT_CA_FILE`, `AE_AGENT_CERT_FILE`, `AE_AGENT_KEY_FILE`, `AE_APISHIM_DB`, `AE_APISHIM_DSN`, `AE_CONTAINERD_ADDRESS`, `AE_CONTAINERD_CNI_BIN_DIR`, `AE_CONTAINERD_CNI_CONF_DIR`, `AE_CONTAINERD_DATA_ROOT`, `AE_CONTAINERD_ENDPOINT_PREFER_DIRECT`, `AE_CONTAINERD_NAMESPACE`, `AE_CONTAINERD_NETWORK`, `AE_CONTAINERD_NETWORK_SUBNET`, `AE_CRI_ENDPOINT`, `AE_CRI_SANDBOX_IMAGE`, `AE_CRI_VOLUME_ROOT`, `AE_DOCKER_ENDPOINT_PREFER_NETWORK`, `AE_DOCKER_NETWORK`, `AE_ENABLE_NETFS`, `AE_HA_MODE`, `AE_NERDCTL_BIN`, `AE_NETWORK_NAME`, `AE_NETWORK_SUBNET`, `AE_NODE_ADVERTISE_IP`, `AE_NODE_ID`, `AE_NVIDIA_CONTAINER_CLI_BIN`, `AE_NVIDIA_CONTAINER_RUNTIME_BIN`, `AE_NVIDIA_RUNTIME_CONFIG_DIR`, `AE_NVIDIA_SMI_BIN`, `AE_NVIDIA_TOOLKIT_DIR`, `AE_OCI_RUNTIME`, `AE_PODMAN_BIN`, `AE_PODMAN_DEBUG`, `AE_PODMAN_ENDPOINT_PREFER_DIRECT`, `AE_PODMAN_NETWORK`, `AE_PODMAN_PORTFORWARD_TIMEOUT`, `AE_PODMAN_RETRY_DELAY`, `AE_PODMAN_RETRY_MAX`, `AE_POD_SANDBOX_IMAGE`, `AE_PROJECTION_ROOT`, `AE_REGISTRY_CONFIG`, `AE_REMOTE_RUNTIME_ENSURE_TIMEOUT`, `AE_SERIAL_SERVICE_ROLLOUT`, `AE_STUB_BACKEND_HOST`, `AE_STUB_BACKEND_PORT`, `AE_STUB_NAMESPACE`, `CNI_PATH`, `CRICTL_BIN`, `DOCKER_CERT_PATH`, `DOCKER_TLS_CERTDIR`, `NETCONFPATH`
 
 ## Cross-Package Dependencies
-`.base`, `.podman_runtime`, `.ports`, `.registry`, `ae._utc`, `ae.apishim.store`, `ae.controller.spec`, `ae.ha.fencing`, `ae.runtime.command_args`, `ae.runtime.cri.api.runtime.v1`, `ae.runtime.ports`, `ae.storage`, `ae.storage.netfs`, `ae.storage.state`
+`.base`, `.podman_runtime`, `.ports`, `.registry`, `ae.apishim.store`, `ae.controller.spec`, `ae.ha.fencing`, `ae.runtime.command_args`, `ae.runtime.cri.api.runtime.v1`, `ae.runtime.ports`, `ae.storage`, `ae.storage.netfs`, `ae.storage.state`
 
 ## Maintenance Notes
-- `cri_runtime.py` line 1217: `# Fallback: allow simple secrets with username/password/registry keys`
-- `cri_runtime.py` line 1605: `"failed to create shim task" in details`
-- `cri_runtime.py` line 1615: `"can't find shim for sandbox",`
-- `docker_runtime.py` line 1356: `# Fallback for legacy or mismatched labels: scan by name/alternate labels.`
-- `docker_runtime.py` line 1619: `# 3) Shared-network fallback using manifest-declared ports (same-host overlay only)`
-- `podman_runtime.py` line 511: `# Fallback: scan ps JSON and match Config.Labels`
-- `podman_runtime.py` line 525: `# Fallback to well-known container name if label lookup fails`
-- `podman_runtime.py` line 717: `# Fallback to stdio hijack via `podman exec --interactive --tty` and a pty.`
-- `remote_runtime.py` line 1: `"""Remote runtime shim that delegates RuntimeAdapter calls to an HTTP agent.`
+Detailed markers live in the per-module docs; direct module counts:
+- `cri_runtime.py`: 1 marker(s)
+- `docker_runtime.py`: 1 marker(s)
+- `podman_runtime.py`: 3 marker(s)
 
 ## Related Tests
 - `tests/integration/test_agent_pvc_pending.py`

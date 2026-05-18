@@ -26,7 +26,7 @@ Background HA dashboard probes for the integrated Hive dashboard.
 - Side-effect surfaces: network/API.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/test_docs_export_and_links.py`

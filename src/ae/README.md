@@ -40,10 +40,12 @@
 | File | Detailed doc | Functionality |
 | --- | --- | --- |
 | __main__.py | [docs/main.md](docs/main.md) | Top-level package launcher that delegates to the controller daemon entrypoint. |
-| _utc.py | [docs/utc.md](docs/utc.md) | Small UTC datetime compatibility helper used where timezone-aware timestamps are needed. |
 | accelerators.py | [docs/accelerators.md](docs/accelerators.md) | Normalizes accelerator/GPU inventory and exposes execution labels/capabilities used by scheduling and inference... |
 
 ## Documentation Policy
 - Folder `README.md` files provide subsystem summaries and module maps.
 - Per-module files under `docs/` summarize symbols, side effects, tests, and maintenance markers from static review.
 - Generated protobufs, vendored browser assets, SQL resources, and static templates are summarized at folder level unless handwritten code owns behavior.
+
+## Maintenance Notes
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.

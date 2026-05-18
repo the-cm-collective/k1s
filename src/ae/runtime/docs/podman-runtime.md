@@ -21,10 +21,9 @@ Podman-backed runtime adapter using OCI runtimes via Podman CLI.
 - Side-effect surfaces: filesystem/state, network/API, subprocess/runtime command.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
 - Line 511: `# Fallback: scan ps JSON and match Config.Labels`
 - Line 525: `# Fallback to well-known container name if label lookup fails`
-- Line 717: `# Fallback to stdio hijack via `podman exec --interactive --tty` and a pty.`
+- Line 717: `# Fallback to stdio hijack via 'podman exec --interactive --tty' and a pty.`
 
 ## Related Tests And Docs
 - `tests/unit/test_containerd_runtime.py`

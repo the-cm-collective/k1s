@@ -25,8 +25,7 @@ Remote runtime shim that delegates RuntimeAdapter calls to an HTTP agent.
 - Side-effect surfaces: network/API.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 1: `"""Remote runtime shim that delegates RuntimeAdapter calls to an HTTP agent.`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/test_agent_pvc_pending.py`

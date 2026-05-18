@@ -81,8 +81,7 @@ Declarative specification models for the ae application engine.
 - Side-effect surfaces: filesystem/state.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 160: `# Back-compat single-port fields (used by local runtime stable host port and`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/_profile_smoke.py`

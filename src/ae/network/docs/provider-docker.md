@@ -19,7 +19,7 @@ Docker bridge provider for Service VIPs.
 - Side-effect surfaces: filesystem/state, subprocess/runtime command.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/test_service_vip_routing.py`

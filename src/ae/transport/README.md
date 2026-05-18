@@ -32,7 +32,7 @@ Transport helpers for NATS/JetStream integration (Mode A). Defines explicit expo
 `ae.config.transport`, `ae.controller.node_identity`, `ae.controller.spec`, `ae.controller.state`, `ae.ha.fencing`, `ae.ingress.edge_docs`, `ae.observability.http_api`, `ae.transport.nats_client`, `ae.transport.subjects`
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/unit/test_gateway_service_fencing.py`

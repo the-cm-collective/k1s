@@ -120,22 +120,8 @@ HTTP server implementing a Kubernetes-compatible API for the shim.
 - Side-effect surfaces: filesystem/state, network/API, subprocess/runtime command.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 2: `"""HTTP server implementing a Kubernetes-compatible API for the shim."""`
-- Line 65: `"gitVersion": "v1.29.0-k1s-shim",`
-- Line 2184: `"Kubernetes-compatible API shim for local k1s development. "`
-- Line 2186: `"for kubectl/helm compatibility.\n\n"`
-- Line 2712: `use it as a fallback host in those cases. Otherwise, use the implicit`
-- Line 2713: `container fallback only when that host alias is actually resolvable.`
-- Line 3360: `# are configured. This keeps dev/test flows (like the helm shim smoke test)`
-- Line 3596: `# Static policy fallback`
 - Line 3674: `# fallback to static if no rules matched`
-- Line 5372: `"SPDY streamtype fallback sid=%s assigned=%s",`
 - Line 7273: `# fallback: single target_ip if map empty`
-- Line 7508: `# Events (lightweight list/watch sourced from controller events, empty fallback)`
-- Line 12487: `# fallback, shouldn't happen`
-- Line 12927: `raise RuntimeError("apishim disabled: set AE_APISHIM_ENABLE=1 to start the shim server")`
-- Line 12932: `"AE_APISHIM_TOKEN must be set (or --token) to start the shim server (or set AE_APISHIM_ALLOW_ANON=1 for dev)"`
 
 ## Related Tests And Docs
 - `tests/integration/test_apishim_agent_streaming.py`

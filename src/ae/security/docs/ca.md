@@ -22,12 +22,12 @@ Lightweight CA helper for agent mTLS bootstrap using openssl.
 | revoke_from_file | 231 | function | Entrypoint/helper without docstring. |
 
 ## Runtime And Data Flow
-- Internal dependencies: `ae._utc`
+- Internal dependencies:
 - External libraries: `shutil`
 - Side-effect surfaces: filesystem/state, subprocess/runtime command.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/test_envoy_core_local_ingress_tls.py`

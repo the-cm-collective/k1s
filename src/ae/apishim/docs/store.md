@@ -21,10 +21,7 @@ SQLite/Postgres-backed object store with watch support for the API shim.
 - Side-effect surfaces: filesystem/state.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 2: `"""SQLite/Postgres-backed object store with watch support for the API shim."""`
-- Line 104: `# Treat non-postgres DSN as sqlite path for compatibility`
-- Line 692: `lines.append("# HELP apishim_store_backend_info Backend in use for shim object store")`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/e2e/core_edge.py`

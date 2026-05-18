@@ -27,7 +27,7 @@ NATS ingress for controller-side lease/result handling (Phase 2).
 - Side-effect surfaces: network/API.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_transport_authority.py`

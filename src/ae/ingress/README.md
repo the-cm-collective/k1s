@@ -34,17 +34,9 @@ Ingress configuration writers and helpers. Defines explicit exports.
 `.caddy`, `.tls_sync`, `ae.controller.spec`, `ae.controller.state`, `ae.ingress.edge_docs`, `ae.ingress.envoy_core_proxy`, `ae.ingress.rathole`, `ae.ingress.tls_sync`, `ae.observability.http_api`, `ae.resources`
 
 ## Maintenance Notes
-- `caddy.py` line 106: `# CRI fallback`
-- `edge_core_proxy.py` line 859: `fallback = _ensure_fallback_tls(`
-- `edge_core_proxy.py` line 865: `if fallback:`
-- `edge_core_proxy.py` line 866: `crt_path, key_path = fallback`
-- `edge_core_proxy.py` line 909: `crt = root / "envoy-fallback.crt"`
-- `edge_core_proxy.py` line 910: `key = root / "envoy-fallback.key"`
-- `edge_local.py` line 337: `fallback = _dns_upstream_for_service(service_ref, namespace, config)`
-- `edge_local.py` line 338: `return [fallback] if fallback else []`
-- `service.py` line 37: `# Back-compat in-memory state when no store is available`
-- `service.py` line 78: `# Create a temporary copy of the manifest spec with cert/key paths filled`
-- `service.py` line 163: `# fallback to in-memory when no store is present`
+Detailed markers live in the per-module docs; direct module counts:
+- `edge_core_proxy.py`: 1 marker(s)
+- `service.py`: 1 marker(s)
 
 ## Related Tests
 - `tests/integration/test_envoy_core_local_ingress_tls.py`

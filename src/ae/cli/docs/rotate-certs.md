@@ -14,11 +14,11 @@ CLI helper to issue node certs and join tokens.
 | main | 13 | function | Entrypoint/helper without docstring. |
 
 ## Runtime And Data Flow
-- Internal dependencies: `ae._utc`, `ae.security`
+- Internal dependencies: `ae.security`
 - Environment inputs: `AE_AGENT_JOIN_SECRET`, `AE_NODE_ID`, `AE_TLS_DIR`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - No direct test reference found by path/import search; rely on package-level and integration coverage.

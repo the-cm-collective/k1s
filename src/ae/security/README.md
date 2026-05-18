@@ -19,10 +19,10 @@ mTLS and join-token helpers for node bootstrap security. Defines explicit export
 `AE_AGENT_JOIN_SECRET`
 
 ## Cross-Package Dependencies
-`ae._utc`
+
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - No direct package-level test reference found by static search.

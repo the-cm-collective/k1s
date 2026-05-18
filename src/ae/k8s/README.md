@@ -22,10 +22,8 @@ Kubernetes-related helpers (export, checks).
 `ae.controller.spec`, `ae.k8s.exporter`
 
 ## Maintenance Notes
-- `exporter.py` line 275: `# Fallback to dict keys when using raw dict updates in tests/tools`
-- `exporter.py` line 539: `# Back-compat single-port Service: map one HTTP port to the first container port`
-- `exporter.py` line 725: `# Add explicit per-ref volumes when items[] are present (additive for back-compat)`
-- `exporter.py` line 1301: `Backward-compat: we still keep the single projected volume; these are additive.`
+Detailed markers live in the per-module docs; direct module counts:
+- `exporter.py`: 1 marker(s)
 
 ## Related Tests
 - `tests/unit/test_cri_runtime_apishim_reads.py`

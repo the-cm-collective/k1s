@@ -16,7 +16,7 @@ Configuration reference loading, transport configuration parsing, and shared env
 `ae.controller.spec`
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/unit/test_config_manager.py`

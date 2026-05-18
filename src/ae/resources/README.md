@@ -22,7 +22,7 @@ Packaged text resources for the ae codebase.
 | sql | 77 | .sql:77 | Generated/vendor/static/resource subtree; summarized at folder level. |
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/unit/test_dashboard_template_ha.py`

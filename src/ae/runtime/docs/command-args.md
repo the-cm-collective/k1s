@@ -18,7 +18,7 @@ Kubernetes command/args translation helpers for runtime adapters.
 - No obvious external side-effect surface in static review.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_runtime_command_args.py`

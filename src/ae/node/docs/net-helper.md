@@ -23,7 +23,7 @@ Best-effort network helper for node agents (bridge/NAT/WireGuard).
 - Side-effect surfaces: filesystem/state, subprocess/runtime command.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_node_net_helper.py`

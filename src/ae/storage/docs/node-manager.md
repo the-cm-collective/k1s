@@ -19,8 +19,7 @@ Node-side volume manager for NetFS-backed PVC mounts.
 - Side-effect surfaces: network/API.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 42: `# replica_id is accepted for compatibility with runtime/node call sites.`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_node_volume_manager.py`

@@ -29,18 +29,13 @@ Shim adapter that reconciles Kubernetes objects into k1s runtime state.
 | build_adapter | 1893 | function | Entrypoint/helper without docstring. |
 
 ## Runtime And Data Flow
-- Internal dependencies: `.store`, `ae._utc`, `ae.controller.health`, `ae.controller.reconciler`, `ae.controller.spec`, `ae.controller.state`, `ae.k8s`, `ae.runtime`
+- Internal dependencies: `.store`, `ae.controller.health`, `ae.controller.reconciler`, `ae.controller.spec`, `ae.controller.state`, `ae.k8s`, `ae.runtime`
 - External libraries: `croniter`
 - Environment inputs: `AE_APISHIM_NODEPORT_MAX`, `AE_APISHIM_NODEPORT_MIN`, `AE_APISHIM_PORT_STATE`, `AE_APISHIM_PVC_REQUEUE_SECONDS`, `AE_APISHIM_PVC_RESCAN_SECONDS`, `AE_APISHIM_RUNTIME`, `AE_HPA_COOLDOWN_SECONDS`, `AE_RUNTIME_BACKEND`, `AE_STATE_DB`, `AE_STATE_DSN`
 - Side-effect surfaces: filesystem/state, subprocess/runtime command.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 2: `"""Shim adapter that reconciles Kubernetes objects into k1s runtime state."""`
-- Line 478: `# Desired replicas approximate to number of nodes; fallback to 1`
-- Line 753: `# fallback to 60s interval when cron expression invalid or croniter missing`
-- Line 808: `# Purge controller state so deleted shim objects don't linger in the dashboard.`
-- Line 1680: `# Fallback: when targetPort is a named port (e.g., "http"), just reuse service port`
+- Line 483: `# Desired replicas approximate to number of nodes; fallback to 1`
 
 ## Related Tests And Docs
 - `tests/integration/test_etcd_state_adapter.py`

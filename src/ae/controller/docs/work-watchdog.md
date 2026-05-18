@@ -18,7 +18,7 @@ Work ledger watchdogs for rescheduling stuck dispatches.
 - Internal dependencies: `ae.controller.state`, `ae.ha.fencing`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_work_ledger.py`

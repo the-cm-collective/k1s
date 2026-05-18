@@ -20,7 +20,7 @@ Iptables-based Service VIP provider (single-node, CRI-friendly).
 - Side-effect surfaces: subprocess/runtime command.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - No direct test reference found by path/import search; rely on package-level and integration coverage.

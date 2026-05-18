@@ -20,9 +20,7 @@ Docker-backed runtime adapter for managing application pods.
 - Side-effect surfaces: filesystem/state, network/API.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
 - Line 1356: `# Fallback for legacy or mismatched labels: scan by name/alternate labels.`
-- Line 1619: `# 3) Shared-network fallback using manifest-declared ports (same-host overlay only)`
 
 ## Related Tests And Docs
 - `tests/unit/test_runtime_docker.py`

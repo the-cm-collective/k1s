@@ -19,15 +19,13 @@ Storage controller for StorageClass seeding and PVC/PV reconciliation.
 | seed_storage_classes | 2969 | function | Helper to seed StorageClass definitions from config. |
 
 ## Runtime And Data Flow
-- Internal dependencies: `.config`, `.csi`, `ae._utc`, `ae.apishim.store`
+- Internal dependencies: `.config`, `.csi`, `ae.apishim.store`
 - External libraries: `binascii`, `grpc`, `shutil`
 - Environment inputs: `AE_CSI_TIMEOUT_SECONDS`, `AE_NETFS_CAPACITY_NAMESPACE`, `AE_NETFS_FS_RESIZE`, `AE_STORAGE_LOCAL_CLASS`, `AE_STORAGE_NFS_CLASS`, `AE_STORAGE_NFS_HOSTPATH`, `AE_STORAGE_NFS_PATH`, `AE_STORAGE_NFS_SERVER`, `AE_STORAGE_ROOT`, `AE_STORAGE_SEED_DEFAULTS`
 - Side-effect surfaces: filesystem/state, network/API.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 1059: `# If no registry entry exists, fall back to legacy marker-only behavior.`
-- Line 2623: `except AttributeError:  # pragma: no cover - py<3.9 fallback`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/e2e/core_edge.py`

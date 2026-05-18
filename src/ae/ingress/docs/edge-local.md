@@ -36,9 +36,7 @@ Edge-local ingress renderer (Caddyfile) driven by route bundles.
 - Side-effect surfaces: filesystem/state, subprocess/runtime command.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 337: `fallback = _dns_upstream_for_service(service_ref, namespace, config)`
-- Line 338: `return [fallback] if fallback else []`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_edge_local_ingress.py`

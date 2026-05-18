@@ -33,7 +33,7 @@ Kubernetes manifest conversion helpers for k1s.
 - Internal dependencies: `ae.controller.spec`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_cri_bootstrap_scripts.py`

@@ -17,7 +17,7 @@ Service controller that bridges manifests to the network provider.
 - Internal dependencies: `.provider`, `ae.controller.health`, `ae.controller.spec`, `ae.controller.state`, `ae.runtime`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/test_service_vip_routing.py`

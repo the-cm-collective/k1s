@@ -24,7 +24,7 @@ Helpers for projecting K8s ConfigMap/Secret volumes into host paths.
 - Side-effect surfaces: filesystem/state.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/e2e/core_edge.py`

@@ -18,7 +18,7 @@ Presets for export-k8s to speed up common profiles.
 - Internal dependencies: `ae.k8s.exporter`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_ingress_preset.py`

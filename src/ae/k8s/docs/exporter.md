@@ -54,11 +54,7 @@ Kubernetes exporter: convert AppManifest to upstream K8s YAML.
 - Side-effect surfaces: filesystem/state, network/API.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
 - Line 275: `# Fallback to dict keys when using raw dict updates in tests/tools`
-- Line 539: `# Back-compat single-port Service: map one HTTP port to the first container port`
-- Line 725: `# Add explicit per-ref volumes when items[] are present (additive for back-compat)`
-- Line 1301: `Backward-compat: we still keep the single projected volume; these are additive.`
 
 ## Related Tests And Docs
 - `tests/unit/test_cri_runtime_apishim_reads.py`

@@ -30,7 +30,7 @@ Leader-gated CronJob scheduling over shared HA authority state.
 - External libraries: `croniter`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_apishim_ha_passive_authority.py`

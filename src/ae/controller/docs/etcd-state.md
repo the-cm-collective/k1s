@@ -32,9 +32,7 @@ Provides classes EtcdHttpClient, EtcdStateStore within Core control plane: manif
 - Side-effect surfaces: network/API.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 214: `# Fallback probing is only for API discovery. If we already saw a`
-- Line 216: `# masking it with prefix fallback noise.`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/e2e/core_edge.py`

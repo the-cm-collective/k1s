@@ -20,7 +20,7 @@ Runtime adapter interfaces for container orchestration.
 - Internal dependencies: `ae.controller.spec`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/test_agent_streaming_proxy.py`

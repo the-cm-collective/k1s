@@ -54,13 +54,11 @@ HA-mode apishim store routing onto shared controller authority.
 - Environment inputs: `AE_APISHIM_HA_CRD_REFRESH_SEC`, `AE_APISHIM_HA_WATCH_POLL_SEC`
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 711: `"# HELP apishim_store_backend_info Backend in use for shim object store\n"`
-- Line 1433: `"""Route converged HA workload resources to controller state and everything else to legacy store."""`
-- Line 1439: `legacy: ObjectStore,`
-- Line 1444: `self._legacy = legacy`
-- Line 1450: `cls, state: SQLiteStateStore, legacy: ObjectStore`
-- Line 1464: `legacy,`
+- Line 1438: `"""Route converged HA workload resources to controller state and everything else to legacy store."""`
+- Line 1444: `legacy: ObjectStore,`
+- Line 1449: `self._legacy = legacy`
+- Line 1455: `cls, state: SQLiteStateStore, legacy: ObjectStore`
+- Line 1469: `legacy,`
 
 ## Related Tests And Docs
 - `tests/unit/test_apishim_ha_crd_authority.py`

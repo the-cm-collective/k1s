@@ -24,7 +24,6 @@ Leader-owned HA storage controller hosting for shared-authority storage resource
 - Side-effect surfaces: filesystem/state.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
 - Line 24: `legacy = ObjectStore(db_path=db_path, dsn=dsn)`
 - Line 25: `return MultiplexApishimStore.from_state_and_legacy(state, legacy)`
 

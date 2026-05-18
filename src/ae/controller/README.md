@@ -40,32 +40,15 @@ Controller reconciliation logic package.
 `AE_AGENT_API_CLIENT_CA`, `AE_AGENT_API_HOST`, `AE_AGENT_API_PORT`, `AE_AGENT_API_REQUIRE_CLIENT_CERT`, `AE_AGENT_API_TLS_CERT`, `AE_AGENT_API_TLS_KEY`, `AE_AGENT_API_TOKEN`, `AE_AGENT_PORT`, `AE_AGENT_TOKEN`, `AE_AGENT_TOKEN_EXPIRES`, `AE_AGENT_URL`, `AE_APISHIM_CA`, `AE_APISHIM_CA_BUNDLE`, `AE_APISHIM_DB`, `AE_APISHIM_DSN`, `AE_APISHIM_MIRROR`, `AE_APISHIM_NAMESPACE`, `AE_APISHIM_READ_TOKEN`, `AE_APISHIM_SERVER`, `AE_APISHIM_SOT`, `AE_APISHIM_TLS_CA`, `AE_APISHIM_TOKEN`, `AE_APPLY_RECONCILE_BURST`, `AE_APPLY_RECONCILE_DELAY_MS`, `AE_CADDY_PREFER_HOST_PORT_UPSTREAMS`, `AE_CONTROLLER_EPOCH`, `AE_CONTROLPLANE_API_HOST`, `AE_CONTROLPLANE_DASH_HOST`, `AE_CONTROLPLANE_DOCS_HOST`, `AE_CONTROLPLANE_PUBLIC_ENABLE`, `AE_CORE_PROXY_PORT_MAX`, `AE_CORE_PROXY_PORT_MIN`, `AE_CRASHLOOP_TTL`, `AE_CRONJOB_AUTHORITY_INTERVAL_S`, `AE_DOCKER_BIN`, `AE_DOCKER_NETWORK_SUBNET`, `AE_DOCS_PORT`, `AE_EDGE_INGRESS_APP_SITE`, `AE_EDGE_INGRESS_MODE`, `AE_EDGE_INGRESS_TRANSLATE_MODE`, `AE_ENABLE_SERVICE_PROXY`, `AE_ETCD_MAINTENANCE_INTERVAL_SEC`, `AE_ETCD_MAINTENANCE_THRESHOLD_PCT`, `AE_ETCD_QUOTA_BACKEND_BYTES`, `AE_ETCD_RETRY_BACKOFF`, `AE_ETCD_RETRY_JITTER`, `AE_ETCD_RETRY_MAX`, `AE_GATEWAY_JS_ACK_WAIT`, `AE_GATEWAY_JS_MAX_ACK_PENDING`, `AE_GATEWAY_JS_MAX_DELIVER`, `AE_GATEWAY_JS_MAX_WAITING`, `AE_HPA_COOLDOWN_SECONDS`, `AE_HPA_METRICS_MAX_AGE_SECONDS`, `AE_HPA_POLL_INTERVAL_SECONDS`, `AE_INFERENCE_AGENT_TIMEOUT`, `AE_INFERENCE_AGENT_TOKEN`, `AE_INFERENCE_API_HEALTH_TIMEOUT`, `AE_INFERENCE_DEBUG_HOLD_ON_FAILURE`, `AE_INFERENCE_RUNTIME_CLASS`, `AE_IPTABLES_BIN`, `AE_JS_MONITOR_INTERVAL_S`, `AE_JS_STORAGE`, `AE_JS_STREAM_NAME`, `AE_JS_WORK_SUBJECT`, `AE_LABS_HELM_NAMESPACE`, `AE_LABS_HELM_SERVER`, `AE_LABS_HELM_TOKEN`, `AE_NETWORK_NAME`, `AE_NETWORK_SUBNET`, `AE_NODE_ID`, `AE_NODE_LABELS`, `AE_NODE_NAME`, `AE_NODE_NOTREADY_AFTER`, `AE_NODE_PROFILE`, `AE_OUTBOX_PUBLISH_BATCH`, `AE_OUTBOX_PUBLISH_INTERVAL_S`, `AE_OVERLAY_HUB_ENDPOINT`, `AE_OVERLAY_HUB_SITE`, `AE_OVERLAY_MANAGE_NETWORK`, `AE_OVERLAY_NET`, ...
 
 ## Cross-Package Dependencies
-`.state`, `ae`, `ae._utc`, `ae.accelerators`, `ae.apishim.adapter`, `ae.apishim.ha_store`, `ae.apishim.store`, `ae.cli.__main__`, `ae.config.manager`, `ae.config.transport`, `ae.controller.agent_api`, `ae.controller.app_ingress`, `ae.controller.authority`, `ae.controller.cronjob_authority`, `ae.controller.etcd_lease_client`, `ae.controller.etcd_state`, `ae.controller.health`, `ae.controller.hpa_authority`, `ae.controller.reconciler`, `ae.controller.scheduler`, `ae.controller.spec`, `ae.controller.state`, `ae.controller.storage_authority`, `ae.controller.work_watchdog`, `ae.ha.dashboard`, `ae.ha.fencing`, `ae.ingress.edge_core_proxy`, `ae.ingress.service`, `ae.ingress.tls_sync`, `ae.k8s.convert`, `ae.network`, `ae.network.overlay_health`, `ae.network.pod_cidr`, `ae.observability.http_api`, `ae.observability.logging`, `ae.resources`, `ae.runtime`, `ae.runtime.containerd_runtime`, `ae.secrets`, `ae.secrets.manager`, `ae.security.ca`, `ae.security.tokens`, `ae.storage.config`, `ae.storage.controller`, `ae.transport.controller_ingress`, `ae.transport.jetstream_monitor`, `ae.transport.nats_client`, `ae.transport.outbox_publisher`, `ae.transport.route_bundle_publisher`, `ae.transport.telemetry_ingress`
+`.state`, `ae`, `ae.accelerators`, `ae.apishim.adapter`, `ae.apishim.ha_store`, `ae.apishim.store`, `ae.cli.__main__`, `ae.config.manager`, `ae.config.transport`, `ae.controller.agent_api`, `ae.controller.app_ingress`, `ae.controller.authority`, `ae.controller.cronjob_authority`, `ae.controller.etcd_lease_client`, `ae.controller.etcd_state`, `ae.controller.health`, `ae.controller.hpa_authority`, `ae.controller.reconciler`, `ae.controller.scheduler`, `ae.controller.spec`, `ae.controller.state`, `ae.controller.storage_authority`, `ae.controller.work_watchdog`, `ae.ha.dashboard`, `ae.ha.fencing`, `ae.ingress.edge_core_proxy`, `ae.ingress.service`, `ae.ingress.tls_sync`, `ae.k8s.convert`, `ae.network`, `ae.network.overlay_health`, `ae.network.pod_cidr`, `ae.observability.http_api`, `ae.observability.logging`, `ae.resources`, `ae.runtime`, `ae.runtime.containerd_runtime`, `ae.secrets`, `ae.secrets.manager`, `ae.security.ca`, `ae.security.tokens`, `ae.storage.config`, `ae.storage.controller`, `ae.transport.controller_ingress`, `ae.transport.jetstream_monitor`, `ae.transport.nats_client`, `ae.transport.outbox_publisher`, `ae.transport.route_bundle_publisher`, `ae.transport.telemetry_ingress`
 
 ## Maintenance Notes
-- `__main__.py` line 1073: `fallback = (`
-- `__main__.py` line 1076: `namespaces = [fallback] if fallback else ["demo-helm", "default"]`
-- `__main__.py` line 2113: `# Fallback to pod-name matching`
-- `__main__.py` line 2178: `# Fallback: run in a matching pod name`
-- `__main__.py` line 3031: `observer = None  # fallback to interval polling`
-- `agent_api.py` line 306: `def _peer_endpoint(labels: dict | None, fallback: str | None) -> str | None:`
-- `agent_api.py` line 307: `if fallback:`
-- `agent_api.py` line 308: `return fallback`
-- `etcd_state.py` line 214: `# Fallback probing is only for API discovery. If we already saw a`
-- `etcd_state.py` line 216: `# masking it with prefix fallback noise.`
-- `inference_cell.py` line 16: `except ImportError:  # pragma: no cover - Python < 3.11 compatibility`
-- `inference_cell.py` line 18: `"""Backport-compatible StrEnum shim."""`
-- `inference_cell.py` line 630: `# Reserve mp rendezvous even for Ray when fallback is enabled.`
-- `inference_cell.py` line 1491: `worker_message = "runtime applied (fallback=mp)"`
-- `reconciler.py` line 704: `# Fallback: continue without injecting secret/config env`
-- `reconciler.py` line 1489: `- exec: list[str] executed in the first ready replica (fallback to first replica)`
-- `reconciler.py` line 1687: `# Fallback: allow loopback endpoints when nothing else is ready`
-- `spec.py` line 160: `# Back-compat single-port fields (used by local runtime stable host port and`
-- `state.py` line 77: `"""Shared-authority shim object persisted outside the legacy apishim DB."""`
-- `state.py` line 449: `# Drop legacy replica tables now that pod naming is canonical.`
-- `state.py` line 3808: `# Compatibility helper for older callers/tests`
-- `storage_authority.py` line 24: `legacy = ObjectStore(db_path=db_path, dsn=dsn)`
-- `storage_authority.py` line 25: `return MultiplexApishimStore.from_state_and_legacy(state, legacy)`
+Detailed markers live in the per-module docs; direct module counts:
+- `__main__.py`: 3 marker(s)
+- `agent_api.py`: 2 marker(s)
+- `reconciler.py`: 2 marker(s)
+- `state.py`: 2 marker(s)
+- `storage_authority.py`: 2 marker(s)
 
 ## Related Tests
 - `tests/e2e/core_edge.py`

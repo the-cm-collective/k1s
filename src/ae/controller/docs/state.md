@@ -55,10 +55,8 @@ State persistence helpers backed by SQLite (default) or Postgres (optional).
 - Side-effect surfaces: filesystem/state.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
 - Line 77: `"""Shared-authority shim object persisted outside the legacy apishim DB."""`
 - Line 449: `# Drop legacy replica tables now that pod naming is canonical.`
-- Line 3808: `# Compatibility helper for older callers/tests`
 
 ## Related Tests And Docs
 - `tests/integration/test_agent_service_proxy.py`

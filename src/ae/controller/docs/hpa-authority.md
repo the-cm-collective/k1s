@@ -38,7 +38,7 @@ Leader-gated HPA control loop over shared HA authority state.
 - External libraries: `types`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_hpa_authority.py`

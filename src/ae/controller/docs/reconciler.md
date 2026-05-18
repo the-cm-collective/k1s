@@ -28,10 +28,8 @@ Reconcile loop coordinating manifests, runtime operations, and health.
 - Side-effect surfaces: filesystem/state, network/API.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 704: `# Fallback: continue without injecting secret/config env`
-- Line 1489: `- exec: list[str] executed in the first ready replica (fallback to first replica)`
-- Line 1687: `# Fallback: allow loopback endpoints when nothing else is ready`
+- Line 1532: `- exec: list[str] executed in the first ready replica (fallback to first replica)`
+- Line 1730: `# Fallback: allow loopback endpoints when nothing else is ready`
 
 ## Related Tests And Docs
 - `tests/integration/test_multinode_agent_flow.py`

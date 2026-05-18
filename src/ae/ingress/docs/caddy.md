@@ -20,8 +20,7 @@ Caddy ingress templating and reload helpers.
 - Side-effect surfaces: filesystem/state, subprocess/runtime command.
 
 ## Maintenance Notes
-Static review found lines worth revisiting during future refactors:
-- Line 106: `# CRI fallback`
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/integration/test_envoy_core_local_ingress_tls.py`

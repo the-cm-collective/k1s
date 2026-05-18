@@ -23,7 +23,7 @@ Site Gateway package. Defines explicit exports.
 `ae`, `ae.config.transport`, `ae.controller.node_identity`, `ae.gateway.service`, `ae.gateway.spool`, `ae.ha.fencing`, `ae.ingress.edge_local`, `ae.observability.http_api`, `ae.observability.logging`, `ae.transport`, `ae.transport.nats_client`
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/e2e/core_edge.py`

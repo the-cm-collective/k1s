@@ -34,7 +34,7 @@ Provides classes LeaseKeepAliveResult, GrpcEtcdLeaseClient within Core control p
 - Side-effect surfaces: filesystem/state, network/API.
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_etcd_lease_client.py`

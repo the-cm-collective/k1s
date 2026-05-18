@@ -17,7 +17,7 @@ Lightweight structural validator for exported K8s YAML.
 - External libraries: `yaml`
 
 ## Maintenance Notes
-No explicit deprecated/TODO/legacy/fallback markers were found in this module during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in this module during static review.
 
 ## Related Tests And Docs
 - `tests/unit/test_cli_split_export.py`

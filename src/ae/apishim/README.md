@@ -29,40 +29,13 @@ Kubernetes API shim for k1s. Defines explicit exports.
 `AE_AGENT_URL`, `AE_APISHIM_ADAPTER`, `AE_APISHIM_AGENT_URL`, `AE_APISHIM_ALLOW_ANON`, `AE_APISHIM_APP_ADMISSION`, `AE_APISHIM_CRI_PORTFORWARD`, `AE_APISHIM_CRI_PORTFORWARD_FORCE`, `AE_APISHIM_DB`, `AE_APISHIM_DSN`, `AE_APISHIM_ENABLE`, `AE_APISHIM_EXEC_TOKEN`, `AE_APISHIM_HA_CRD_REFRESH_SEC`, `AE_APISHIM_HA_WATCH_POLL_SEC`, `AE_APISHIM_MINT_TOKEN`, `AE_APISHIM_NODEPORT_MAX`, `AE_APISHIM_NODEPORT_MIN`, `AE_APISHIM_PATCH_DEBUG`, `AE_APISHIM_PF_DEBUG`, `AE_APISHIM_POD_STATE_CHECK`, `AE_APISHIM_POD_WATCH_CHECK`, `AE_APISHIM_POD_WATCH_TTL_SECONDS`, `AE_APISHIM_PORTFORWARD_TOKEN`, `AE_APISHIM_PORT_STATE`, `AE_APISHIM_PVC_REQUEUE_SECONDS`, `AE_APISHIM_PVC_RESCAN_SECONDS`, `AE_APISHIM_RBAC`, `AE_APISHIM_RBAC_EVAL`, `AE_APISHIM_READ_TOKEN`, `AE_APISHIM_RUNTIME`, `AE_APISHIM_SA_TOKEN_TTL`, `AE_APISHIM_SESSION_SECRET`, `AE_APISHIM_SESSION_TTL`, `AE_APISHIM_SESSION_TTL_MAX`, `AE_APISHIM_SOT`, `AE_APISHIM_SPDY_DEBUG`, `AE_APISHIM_SPDY_LOG`, `AE_APISHIM_STREAM_IDLE_SECONDS`, `AE_APISHIM_STREAM_MAX_BYTES`, `AE_APISHIM_STREAM_MAX_SECONDS`, `AE_APISHIM_TLS_CERT`, `AE_APISHIM_TLS_CLIENT_CA`, `AE_APISHIM_TLS_KEY`, `AE_APISHIM_TOKEN`, `AE_APISHIM_TOMBSTONE_TTL`, `AE_APISHIM_WATCH_OUTBOX_BATCH`, `AE_APISHIM_WATCH_OUTBOX_CLEANUP`, `AE_APISHIM_WATCH_OUTBOX_POLL`, `AE_APISHIM_WATCH_OUTBOX_TTL`, `AE_APISHIM_WATCH_QUEUE_SIZE`, `AE_CRI_ENDPOINT`, `AE_HA_MODE`, `AE_HPA_COOLDOWN_SECONDS`, `AE_NODE_ADVERTISE_IP`, `AE_RUNTIME_BACKEND`, `AE_STATE_DB`, `AE_STATE_DSN`, `AE_STUB_BACKEND_HOST`, `AE_STUB_BACKEND_PORT`, `CRICTL_BIN`
 
 ## Cross-Package Dependencies
-`.adapter`, `.ha_store`, `.server`, `.store`, `ae`, `ae._utc`, `ae.apishim.store`, `ae.controller.health`, `ae.controller.reconciler`, `ae.controller.spec`, `ae.controller.state`, `ae.k8s`, `ae.k8s.exporter`, `ae.observability.logging`, `ae.resources`, `ae.runtime`, `ae.storage.controller`
+`.adapter`, `.ha_store`, `.server`, `.store`, `ae`, `ae.apishim.store`, `ae.controller.health`, `ae.controller.reconciler`, `ae.controller.spec`, `ae.controller.state`, `ae.k8s`, `ae.k8s.exporter`, `ae.observability.logging`, `ae.resources`, `ae.runtime`, `ae.storage.controller`
 
 ## Maintenance Notes
-- `__main__.py` line 1: `"""CLI entry point for the Kubernetes API shim (serve, kubeconfig, migrate)."""`
-- `__main__.py` line 27: `raise SystemExit("AE_APISHIM_ENABLE=1 required to run the API shim")`
-- `__main__.py` line 102: `p = argparse.ArgumentParser(prog="python -m ae.apishim", description="k1s Kubernetes API shim")`
-- `__main__.py` line 105: `s = sub.add_parser("serve", help="Run the API shim server")`
-- `__main__.py` line 121: `k = sub.add_parser("kubeconfig", help="Emit a kubeconfig pointing to the shim")`
-- `__main__.py` line 125: `help="Shim server URL, e.g. https://127.0.0.1:8445 or http://...",`
-- `__main__.py` line 132: `m = sub.add_parser("migrate", help="Migrate shim storage between sqlite path and Postgres DSN")`
-- `adapter.py` line 2: `"""Shim adapter that reconciles Kubernetes objects into k1s runtime state."""`
-- `adapter.py` line 478: `# Desired replicas approximate to number of nodes; fallback to 1`
-- `adapter.py` line 753: `# fallback to 60s interval when cron expression invalid or croniter missing`
-- `adapter.py` line 808: `# Purge controller state so deleted shim objects don't linger in the dashboard.`
-- `adapter.py` line 1680: `# Fallback: when targetPort is a named port (e.g., "http"), just reuse service port`
-- `env.py` line 1: `"""Packaged API shim environment and TLS helper."""`
-- `env.py` line 25: `"""Write API shim token env and best-effort local TLS material.`
-- `ha_store.py` line 711: `"# HELP apishim_store_backend_info Backend in use for shim object store\n"`
-- `ha_store.py` line 1433: `"""Route converged HA workload resources to controller state and everything else to legacy store."""`
-- `ha_store.py` line 1439: `legacy: ObjectStore,`
-- `ha_store.py` line 1444: `self._legacy = legacy`
-- `ha_store.py` line 1450: `cls, state: SQLiteStateStore, legacy: ObjectStore`
-- `ha_store.py` line 1464: `legacy,`
-- `server.py` line 2: `"""HTTP server implementing a Kubernetes-compatible API for the shim."""`
-- `server.py` line 65: `"gitVersion": "v1.29.0-k1s-shim",`
-- `server.py` line 2184: `"Kubernetes-compatible API shim for local k1s development. "`
-- `server.py` line 2186: `"for kubectl/helm compatibility.\n\n"`
-- `server.py` line 2712: `use it as a fallback host in those cases. Otherwise, use the implicit`
-- `server.py` line 2713: `container fallback only when that host alias is actually resolvable.`
-- `server.py` line 3360: `# are configured. This keeps dev/test flows (like the helm shim smoke test)`
-- `server.py` line 3596: `# Static policy fallback`
-- `server.py` line 3674: `# fallback to static if no rules matched`
-- `server.py` line 5372: `"SPDY streamtype fallback sid=%s assigned=%s",`
-- Additional marker lines omitted from this folder summary; see per-module docs for full static-review notes.
+Detailed markers live in the per-module docs; direct module counts:
+- `adapter.py`: 1 marker(s)
+- `ha_store.py`: 5 marker(s)
+- `server.py`: 2 marker(s)
 
 ## Related Tests
 - `tests/e2e/ha_closeout.py`

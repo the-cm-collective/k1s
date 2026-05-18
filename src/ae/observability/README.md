@@ -33,30 +33,8 @@ Observability exports for metrics and logging. Defines explicit exports.
 `ae`, `ae.accelerators`, `ae.apishim`, `ae.apishim.store`, `ae.controller.authority`, `ae.controller.spec`, `ae.controller.state`, `ae.ingress.tls_sync`, `ae.k8s.exporter`, `ae.observability.metrics`, `ae.resources`, `ae.storage.config`
 
 ## Maintenance Notes
-- `http_api.py` line 46: `# Prefixes to allow in demo-scoped dashboards (e.g., helm shim demo namespace).`
-- `http_api.py` line 117: `fallback = Path("state/profiles/labs/apishim.env")`
-- `http_api.py` line 118: `if fallback.exists():`
-- `http_api.py` line 119: `return str(fallback)`
-- `http_api.py` line 573: `# Avoid leaking a stale APISHIM_SERVER into the shim demo process.`
-- `http_api.py` line 596: `# Verify the shim endpoint is reachable; do not start a local shim.`
-- `http_api.py` line 619: `if "k1s-shim" not in body:`
-- `http_api.py` line 622: `raise RuntimeError(f"helm demo shim unreachable at {helm_server}: {exc}") from exc`
-- `http_api.py` line 633: `# Persist resolved shim endpoint + token for the controller mirror loop.`
-- `http_api.py` line 645: `"labs helm demo shim resolved: server=%s db=%s dsn=%s",`
-- `http_api.py` line 652: `# Allow shim demo apps to show up on demo-scoped dashboards.`
-- `http_api.py` line 1874: `"apply handler failed source=%s app=%s via legacy fallback",`
-- `http_api.py` line 2218: `title="k1s Swagger UI (API Shim)",`
-- `http_api.py` line 2237: `title="k1s ReDoc (API Shim)",`
-- `http_api.py` line 3169: `# Prefer tracked labs apps that match the session suffix; fallback to echo-<sess>`
-- `http_api.py` line 3187: `# Final fallback: delete base echo if present (covers non-session applies)`
-- `http_api.py` line 3212: `# Also clean up any helm shim demo apps by namespace prefix.`
-- `http_api.py` line 3262: `# Also remove shim objects in the helm demo namespace so the adapter`
-- `http_api.py` line 3263: `# doesn't reapply them after reset. Prefer the shim API so deletes`
-- `http_api.py` line 3313: `"labs reset using shim API at %s for namespace %s",`
-- `http_api.py` line 3361: `"labs reset removed %s shim objects via shim API in namespace %s",`
-- `http_api.py` line 3367: `"labs reset shim API reachable at %s; no shim objects removed for namespace %s",`
-- `http_api.py` line 3373: `"labs reset shim API unavailable at %s; falling back to direct store cleanup for namespace %s",`
-- `http_api.py` line 3399: `"labs reset found surviving shim objects in namespace %s after API cleanup: %s",`
+Detailed markers live in the per-module docs; direct module counts:
+- `http_api.py`: 6 marker(s)
 
 ## Related Tests
 - `tests/integration/test_reconcile_flow.py`

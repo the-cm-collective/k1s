@@ -23,7 +23,7 @@ HA helpers shared across controller and executor surfaces. Defines explicit expo
 `ae.config.transport`, `ae.ha.ops`
 
 ## Maintenance Notes
-- No explicit deprecated/TODO/legacy/fallback markers were found in direct modules during static review.
+No explicit deprecated/TODO/legacy/fallback/workaround markers were found in direct modules during static review.
 
 ## Related Tests
 - `tests/e2e/ha_closeout.py`
