@@ -101,6 +101,10 @@ jobs:
         run: |
           source scripts/ci/lib.sh
           ci_install_project ".[dev]"
+      - name: Install Helm
+        run: |
+          source scripts/ci/lib.sh
+          ci_install_helm
       - name: Ruff advisory
         run: |
           echo "Repo-wide Ruff enforcement is deferred while existing lint debt is reduced."
