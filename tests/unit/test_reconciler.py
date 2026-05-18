@@ -1070,4 +1070,83 @@ def test_reconciler_applies_secrets(tmp_path: Path, monkeypatch) -> None:
     assert env_map["SECRET_VALUE"] == "hunter2"
 
 
+def test_reconciler_degrades_when_secret_injection_fails(tmp_path: Path) -> None:
+    runtime = StubRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+
+    class FailingSecrets:
+        def load_env(self, _refs):  # noqa: ANN001
+            raise RuntimeError("decrypt failed")
+
+    reconciler = Reconciler(
+        runtime=runtime,
+        state_store=state,
+        secret_manager=FailingSecrets(),
+    )
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            secret_refs=[
+                SecretRef(
+                    name="demo-secret",
+                    path="irrelevant",
+                    env=[SecretEnvMapping(name="SECRET_VALUE", key="SECRET_VALUE")],
+                )
+            ],
+        ),
+    )
+
+    report = reconciler.reconcile(manifest)
+
+    assert report.revision_status == "degraded"
+    assert runtime.last_manifest is None
+    events = state.list_events("demo")
+    assert any(event.event_type == "SecretError" for event in events)
+    assert any(event.event_type == "ApplyFailed" for event in events)
+
+
+def test_reconciler_secret_fallback_requires_explicit_opt_in(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AE_RECONCILE_ALLOW_CONFIG_SECRET_FALLBACK", "1")
+    runtime = StubRuntime()
+    state = SQLiteStateStore(tmp_path / "state.db")
+
+    class FailingSecrets:
+        def load_env(self, _refs):  # noqa: ANN001
+            raise RuntimeError("decrypt failed")
+
+    reconciler = Reconciler(
+        runtime=runtime,
+        state_store=state,
+        secret_manager=FailingSecrets(),
+    )
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="demo"),
+        spec=AppSpec(
+            image="alpine:3.20",
+            secret_refs=[
+                SecretRef(
+                    name="demo-secret",
+                    path="irrelevant",
+                    env=[SecretEnvMapping(name="SECRET_VALUE", key="SECRET_VALUE")],
+                )
+            ],
+        ),
+    )
+
+    report = reconciler.reconcile(manifest)
+
+    assert report.revision_status == "ready"
+    assert runtime.last_manifest is not None
+    assert runtime.last_manifest.spec.env == []
+    events = state.list_events("demo")
+    assert any(event.event_type == "SecretFallback" for event in events)
+
+
 # ruff: noqa: S105

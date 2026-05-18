@@ -68,6 +68,7 @@ PV_RESOURCE = "persistentvolumes"
 LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
 WAIT_FOR_FIRST_CONSUMER = "WaitForFirstConsumer"
 SELECTED_NODE_ANNOTATION = "volume.kubernetes.io/selected-node"
+CONFIG_SECRET_FALLBACK_ENV = "AE_RECONCILE_ALLOW_CONFIG_SECRET_FALLBACK"
 
 
 @dataclass(slots=True)
@@ -738,6 +739,7 @@ class Reconciler:
         try:
             manifest_with_env = self._apply_configs_and_secrets(manifest)
         except Exception as exc:  # noqa: BLE001
+            allow_fallback = _truthy_env(CONFIG_SECRET_FALLBACK_ENV)
             try:
                 self._state_store.record_event(
                     app_name,
@@ -747,7 +749,48 @@ class Reconciler:
                 )
             except Exception:
                 pass
-            # Fallback: continue without injecting secret/config env
+            if not allow_fallback:
+                health_report = HealthReport(ready_replicas=0, live_replicas=0, pods=[])
+                result = RuntimeResult(
+                    revision=revision, created=0, updated=0, removed=0, pod_states=[]
+                )
+                revision_status = "degraded"
+                try:
+                    self._state_store.record_snapshot(
+                        manifest=manifest,
+                        runtime_result=result,
+                        health_report=health_report,
+                        revision=revision,
+                        revision_status=revision_status,
+                    )
+                    self._state_store.record_event(
+                        app_name,
+                        revision,
+                        "ApplyFailed",
+                        f"secrets/config application failed: {exc}",
+                    )
+                except Exception:
+                    pass
+                return ReconcileReport(
+                    app_name=app_name,
+                    created=0,
+                    updated=0,
+                    removed=0,
+                    ready_replicas=0,
+                    live_replicas=0,
+                    revision=revision,
+                    revision_status=revision_status,
+                )
+            try:
+                self._state_store.record_event(
+                    app_name,
+                    revision,
+                    "SecretFallback",
+                    "continuing without injecting secret/config env because "
+                    f"{CONFIG_SECRET_FALLBACK_ENV}=1",
+                )
+            except Exception:
+                pass
             manifest_with_env = manifest
         # Prepare file projections and add a read-only volume mount if any files were written
         projection_root = self._prepare_file_projections(manifest, revision)
@@ -2016,8 +2059,8 @@ class Reconciler:
                             for m in ref.env:
                                 if m.key in data:
                                     env_map[m.name] = str(data[m.key])
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        raise RuntimeError(f"failed to load secret ref {ref.name}: {exc}") from exc
 
         # Manifest env wins last
         for item in manifest.spec.env:
