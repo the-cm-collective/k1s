@@ -36,6 +36,37 @@ def _prefer_direct_endpoint_default() -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _normalize_registry_host(raw: str) -> str:
+    value = (raw or "").strip().lower().strip("/")
+    if not value:
+        return ""
+    value = re.sub(r"^[a-z][a-z0-9+.-]*://", "", value)
+    return value.split("/", 1)[0]
+
+
+def _registry_host_from_ref(ref: str) -> str:
+    first = _normalize_registry_host(ref)
+    if not first:
+        return ""
+    if first == "localhost" or "." in first or ":" in first:
+        return first
+    return ""
+
+
+def _insecure_registry_hosts_from_env() -> set[str]:
+    raw = (
+        os.getenv("AE_CONTAINERD_INSECURE_REGISTRIES")
+        or os.getenv("AE_NERDCTL_INSECURE_REGISTRIES")
+        or ""
+    )
+    hosts: set[str] = set()
+    for item in re.split(r"[\s,]+", raw):
+        host = _normalize_registry_host(item)
+        if host:
+            hosts.add(host)
+    return hosts
+
+
 class ContainerdRuntime(PodmanRuntime):
     """Containerd-backed runtime adapter using nerdctl."""
 
@@ -86,6 +117,7 @@ class ContainerdRuntime(PodmanRuntime):
         self._exec_procs: dict[str, subprocess.Popen[bytes]] = {}
         self._exec_exit_codes: dict[str, int] = {}
         self._gpu_preflight_ready = False
+        self._insecure_registries = _insecure_registry_hosts_from_env()
 
     def _nerdctl_safe_name(self, *parts: object, prefix: str = "ae") -> str:
         raw = "-".join(str(part or "").strip() for part in parts if str(part or "").strip())
@@ -842,9 +874,23 @@ class ContainerdRuntime(PodmanRuntime):
         return args
 
     def _runtime_cmd(self, cmd: list[str]) -> list[str]:
+        subcommand = cmd[1:] if cmd and cmd[0] == self._bin else cmd
+        global_args = self._global_args()
+        if self._uses_insecure_registry(subcommand):
+            global_args.append("--insecure-registry")
         if cmd and cmd[0] == self._bin:
-            return [*self._global_args(), *cmd[1:]]
-        return [*self._global_args(), *cmd]
+            return [*global_args, *cmd[1:]]
+        return [*global_args, *cmd]
+
+    def _uses_insecure_registry(self, argv: list[str]) -> bool:
+        if not self._insecure_registries or not argv:
+            return False
+        command = argv[0]
+        if command not in {"login", "pull", "push"}:
+            return False
+        target = next((item for item in reversed(argv[1:]) if item and not item.startswith("-")), "")
+        host = _registry_host_from_ref(target)
+        return "*" in self._insecure_registries or bool(host and host in self._insecure_registries)
 
     def _run_ok(self, argv: list[str], *, allow_fail: bool = False) -> _RunResult:
         cmd = self._runtime_cmd(argv)

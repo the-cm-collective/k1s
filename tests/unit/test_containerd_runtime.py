@@ -121,6 +121,33 @@ def test_containerd_runtime_run_ok_injects_global_flags(monkeypatch) -> None:
     ]
 
 
+def test_containerd_runtime_scopes_insecure_registry_flag(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "AE_CONTAINERD_INSECURE_REGISTRIES",
+        "reg.microk8s.core.home.arpa:32000,localhost:5001",
+    )
+    runtime = ContainerdRuntime(
+        address="unix:///run/test-containerd.sock",
+        namespace="ae-test",
+        data_root="/var/lib/ae/nerdctl-test",
+        cni_path="/opt/cni/bin",
+        cni_netconfpath="/etc/cni/net.d",
+    )
+
+    insecure_cmd = runtime._runtime_cmd(
+        [
+            runtime._bin,
+            "pull",
+            "reg.microk8s.core.home.arpa:32000/content-tools-studio:dev",
+        ]
+    )
+    public_cmd = runtime._runtime_cmd([runtime._bin, "pull", "docker.io/library/alpine:3.20"])
+
+    assert "--insecure-registry" in insecure_cmd
+    assert insecure_cmd.index("--insecure-registry") < insecure_cmd.index("pull")
+    assert "--insecure-registry" not in public_cmd
+
+
 def test_podman_runtime_cmd_is_identity() -> None:
     runtime = PodmanRuntime()
     cmd = [runtime._bin, "logs", "cid"]

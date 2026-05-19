@@ -29,6 +29,7 @@ node:
   runtimeNamespace: ae
   networkName: ae-net
   networkSubnet: ""
+  insecureRegistries: []
   dataRoot: /var/lib/ae/nerdctl
   cniBinDir: /opt/cni/bin
   cniBinHostPath: /opt/cni/bin

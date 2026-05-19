@@ -1,5 +1,5 @@
 global:
-  registryHost: registry.k1s.home.arpa:32000
+  registryHost: reg.microk8s.core.home.arpa:32000
 
 target:
   namespace: k1s-dev-a
@@ -16,6 +16,8 @@ node:
   runtimeDataDir: /var/snap/microk8s/common/var/lib/containerd
   runtimeDataHostPath: /var/snap/microk8s/common/var/lib/containerd
   networkSubnet: 10.241.0.0/16
+  insecureRegistries:
+    - reg.microk8s.core.home.arpa:32000
   cniBinHostPath: /var/snap/microk8s/current/opt/cni/bin
   cniConfHostPath: /var/snap/microk8s/current/args/cni-network
   cniStateHostPath: /var/snap/microk8s/current/var/lib/cni
