@@ -84,14 +84,22 @@ def test_core_chart_ingress_uses_apps_dash_and_docs_hosts() -> None:
         rule["host"] for resource in ingresses for rule in resource["spec"].get("rules", [])
     ]
     assert "*.apps.k1s-dev-a.core.home.arpa" in hosts
+    assert "api.k1s-dev-a.core.home.arpa" in hosts
     assert "dash.k1s-dev-a.core.home.arpa" in hosts
     assert "docs.k1s-dev-a.core.home.arpa" in hosts
     assert ingress["spec"]["rules"][0]["host"] == "*.apps.k1s-dev-a.core.home.arpa"
+    api_rule = next(
+        rule for rule in ingress["spec"]["rules"] if rule["host"] == "api.k1s-dev-a.core.home.arpa"
+    )
+    api_backend = api_rule["http"]["paths"][0]["backend"]["service"]
+    assert api_backend["name"] == "k1s-dev-a-k1s-core-ha-apishim"
+    assert api_backend["port"]["name"] == "http"
     assert ingress["spec"]["tls"][0]["secretName"] == "k1s-dev-a-ingress-tls"
     assert dash_ingress["spec"]["tls"][0]["secretName"] == "k1s-dev-a-ingress-tls"
     assert dash_ingress["metadata"]["annotations"]["nginx.ingress.kubernetes.io/app-root"] == "/dashboard"
     assert bootstrap["data"]["dash_url"] == "https://dash.k1s-dev-a.core.home.arpa/"
     assert bootstrap["data"]["docs_url"] == "https://docs.k1s-dev-a.core.home.arpa/"
+    assert bootstrap["data"]["api_url"] == "https://api.k1s-dev-a.core.home.arpa/"
 
     certificate = next(
         item
@@ -103,6 +111,7 @@ def test_core_chart_ingress_uses_apps_dash_and_docs_hosts() -> None:
     assert certificate["spec"]["issuerRef"]["kind"] == "ClusterIssuer"
     assert set(certificate["spec"]["dnsNames"]) == {
         "*.apps.k1s-dev-a.core.home.arpa",
+        "api.k1s-dev-a.core.home.arpa",
         "dash.k1s-dev-a.core.home.arpa",
         "docs.k1s-dev-a.core.home.arpa",
     }
@@ -135,6 +144,11 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
         for item in controller_container["env"]
         if "name" in item and "value" in item
     }
+    controller_secret_env = {
+        item["name"]: item["valueFrom"]["secretKeyRef"]["key"]
+        for item in controller_container["env"]
+        if "name" in item and "valueFrom" in item and "secretKeyRef" in item["valueFrom"]
+    }
     controller_mounts = {
         item["name"]: item["mountPath"] for item in controller_container["volumeMounts"]
     }
@@ -146,6 +160,13 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
     assert controller_env["AE_RUNTIME_BACKEND"] == "cri"
     assert controller_env["AE_INFRA_BACKEND"] == "cri"
     assert controller_env["AE_CRI_ENDPOINT"] == "unix:///run/containerd/containerd.sock"
+    assert controller_env["AE_APISHIM_PUBLIC_BASE"] == "https://api.k1s-dev-a.core.home.arpa"
+    assert (
+        controller_secret_env["AE_APISHIM_SESSION_SECRET"] == "apishim-session-secret"  # noqa: S105
+    )
+    assert (
+        controller_secret_env["AE_DASHBOARD_BOOTSTRAP_TOKEN"] == "apishim-admin-token"  # noqa: S105
+    )
     assert controller_mounts["containerd-sock"] == "/run/containerd/containerd.sock"
     assert (
         controller_volumes["containerd-sock"]

@@ -129,6 +129,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "docs.%s" .Values.stack.domain -}}
 {{- end -}}
 
+{{- define "k1s-core-ha.apiHost" -}}
+{{- printf "api.%s" .Values.stack.domain -}}
+{{- end -}}
+
 {{- define "k1s-core-ha.ingressTlsSecretName" -}}
 {{- default (printf "%s-ingress-tls" (include "k1s-core-ha.fullname" .)) .Values.ingress.tls.secretName -}}
 {{- end -}}

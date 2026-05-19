@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ae.ingress._atomic import write_text_atomic
+
 
 @dataclass(frozen=True)
 class RatholeServerService:
@@ -64,15 +66,13 @@ def render_rathole_client(config: RatholeClientConfig) -> str:
 
 def write_rathole_server(path: Path, config: RatholeServerConfig) -> str:
     content = render_rathole_server(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    write_text_atomic(path, content)
     return content
 
 
 def write_rathole_client(path: Path, config: RatholeClientConfig) -> str:
     content = render_rathole_client(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    write_text_atomic(path, content)
     return content
 
 

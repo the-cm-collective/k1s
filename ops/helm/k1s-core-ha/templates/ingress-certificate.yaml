@@ -23,4 +23,7 @@ spec:
     {{- end }}
     - {{ include "k1s-core-ha.docsHost" . | quote }}
     - {{ include "k1s-core-ha.dashHost" . | quote }}
+    {{- if .Values.apishim.enabled }}
+    - {{ include "k1s-core-ha.apiHost" . | quote }}
+    {{- end }}
 {{- end }}

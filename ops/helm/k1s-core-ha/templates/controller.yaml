@@ -91,11 +91,18 @@ spec:
                   key: agent-token
             - name: AE_APISHIM_SERVER
               value: http://{{ include "k1s-core-ha.apishimServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.apishim.port }}
+            - name: AE_APISHIM_PUBLIC_BASE
+              value: {{ printf "%s://%s" (ternary "https" "http" .Values.ingress.tls.enabled) (include "k1s-core-ha.apiHost" .) | quote }}
             - name: AE_APISHIM_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "k1s-core-ha.authSecretName" . }}
                   key: apishim-admin-token
+            - name: AE_APISHIM_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: apishim-session-secret
             - name: EDGE_INGRESS_MODE
               value: core-proxy
             - name: AE_EDGE_INGRESS_CORE_PROXY

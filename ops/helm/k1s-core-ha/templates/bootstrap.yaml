@@ -11,6 +11,7 @@ data:
   wildcard_apps_domain: {{ printf "*.%s" (include "k1s-core-ha.appsDomain" .) | quote }}
   dash_url: {{ printf "%s://%s/" $scheme (include "k1s-core-ha.dashHost" .) | quote }}
   docs_url: {{ printf "%s://%s/" $scheme (include "k1s-core-ha.docsHost" .) | quote }}
+  api_url: {{ printf "%s://%s/" $scheme (include "k1s-core-ha.apiHost" .) | quote }}
   controller_external_service: {{ include "k1s-core-ha.controllerExternalServiceName" . | quote }}
   controller_external_host_hint: {{ include "k1s-core-ha.controllerBootstrapHost" . | quote }}
   controller_external_port: {{ .Values.controller.agentPort | quote }}

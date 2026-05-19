@@ -15,7 +15,7 @@ controller:
     mutationsEnabled: true
     adminTokenSecretKey: apishim-admin-token
     readTokenSecretKey: apishim-read-token
-    dashboardBootstrapTokenSecretKey: apishim-read-token
+    dashboardBootstrapTokenSecretKey: apishim-admin-token
   persistence:
     enabled: true
     storageClassName: microk8s-hostpath

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+from ae.ingress._atomic import write_text_atomic
+
 
 @dataclass(frozen=True)
 class CoreProxyRoute:
@@ -403,8 +405,7 @@ def write_envoy_config(
         ext_authz_config=ext_authz_config,
         enable_local_ratelimit=enable_local_ratelimit,
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    write_text_atomic(path, content)
     return content
 
 
