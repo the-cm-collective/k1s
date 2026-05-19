@@ -1,0 +1,26 @@
+{{- if and .Values.ingress.enabled .Values.ingress.tls.enabled .Values.ingress.tls.certificate.create }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "k1s-core-ha.ingressTlsCertificateName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "k1s-core-ha.ingressTlsSecretName" . | quote }}
+  issuerRef:
+    name: {{ required "ingress.tls.certificate.issuerRef.name is required when ingress.tls.certificate.create=true" .Values.ingress.tls.certificate.issuerRef.name | quote }}
+    kind: {{ default "ClusterIssuer" .Values.ingress.tls.certificate.issuerRef.kind | quote }}
+    group: {{ default "cert-manager.io" .Values.ingress.tls.certificate.issuerRef.group | quote }}
+  {{- if .Values.ingress.tls.certificate.duration }}
+  duration: {{ .Values.ingress.tls.certificate.duration | quote }}
+  {{- end }}
+  {{- if .Values.ingress.tls.certificate.renewBefore }}
+  renewBefore: {{ .Values.ingress.tls.certificate.renewBefore | quote }}
+  {{- end }}
+  dnsNames:
+    {{- if .Values.edgeProxy.enabled }}
+    - {{ printf "*.%s" (include "k1s-core-ha.appsDomain" .) | quote }}
+    {{- end }}
+    - {{ include "k1s-core-ha.docsHost" . | quote }}
+    - {{ include "k1s-core-ha.dashHost" . | quote }}
+{{- end }}

@@ -129,6 +129,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "docs.%s" .Values.stack.domain -}}
 {{- end -}}
 
+{{- define "k1s-core-ha.ingressTlsSecretName" -}}
+{{- default (printf "%s-ingress-tls" (include "k1s-core-ha.fullname" .)) .Values.ingress.tls.secretName -}}
+{{- end -}}
+
+{{- define "k1s-core-ha.ingressTlsCertificateName" -}}
+{{- default (include "k1s-core-ha.ingressTlsSecretName" .) .Values.ingress.tls.certificate.name -}}
+{{- end -}}
+
 {{- define "k1s-core-ha.controllerBootstrapHost" -}}
 {{- if .Values.bootstrap.controller.hostOverride -}}
 {{- .Values.bootstrap.controller.hostOverride -}}

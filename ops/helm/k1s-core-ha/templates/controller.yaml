@@ -141,6 +141,31 @@ spec:
             - name: AE_SITE_IDS
               value: {{ join "," .Values.controller.siteIds | quote }}
             {{- end }}
+            {{- if .Values.controller.api.mutationsEnabled }}
+            - name: AE_API_MUTATIONS
+              value: "1"
+            {{- end }}
+            {{- if .Values.controller.api.adminTokenSecretKey }}
+            - name: AE_API_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: {{ .Values.controller.api.adminTokenSecretKey }}
+            {{- end }}
+            {{- if .Values.controller.api.readTokenSecretKey }}
+            - name: AE_API_READ_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: {{ .Values.controller.api.readTokenSecretKey }}
+            {{- end }}
+            {{- if .Values.controller.api.dashboardBootstrapTokenSecretKey }}
+            - name: AE_DASHBOARD_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: {{ .Values.controller.api.dashboardBootstrapTokenSecretKey }}
+            {{- end }}
             {{- with .Values.controller.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

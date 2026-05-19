@@ -58,6 +58,7 @@ def test_core_chart_renders_expected_resources() -> None:
     assert ("Service", "k1s-dev-a-k1s-core-ha-nats-metrics") in kinds
     assert ("Ingress", "k1s-dev-a-k1s-core-ha") in kinds
     assert ("Ingress", "k1s-dev-a-k1s-core-ha-dash") in kinds
+    assert ("Certificate", "k1s-dev-a-ingress-tls") in kinds
     assert ("ServiceMonitor", "k1s-dev-a-k1s-core-ha-controller") in kinds
     assert ("PrometheusRule", "k1s-dev-a-k1s-core-ha") in kinds
 
@@ -82,13 +83,29 @@ def test_core_chart_ingress_uses_apps_dash_and_docs_hosts() -> None:
     hosts = [
         rule["host"] for resource in ingresses for rule in resource["spec"].get("rules", [])
     ]
-    assert "*.apps.k1s-dev-a.home.arpa" in hosts
-    assert "dash.k1s-dev-a.home.arpa" in hosts
-    assert "docs.k1s-dev-a.home.arpa" in hosts
-    assert ingress["spec"]["rules"][0]["host"] == "*.apps.k1s-dev-a.home.arpa"
+    assert "*.apps.k1s-dev-a.core.home.arpa" in hosts
+    assert "dash.k1s-dev-a.core.home.arpa" in hosts
+    assert "docs.k1s-dev-a.core.home.arpa" in hosts
+    assert ingress["spec"]["rules"][0]["host"] == "*.apps.k1s-dev-a.core.home.arpa"
+    assert ingress["spec"]["tls"][0]["secretName"] == "k1s-dev-a-ingress-tls"
+    assert dash_ingress["spec"]["tls"][0]["secretName"] == "k1s-dev-a-ingress-tls"
     assert dash_ingress["metadata"]["annotations"]["nginx.ingress.kubernetes.io/app-root"] == "/dashboard"
-    assert bootstrap["data"]["dash_url"] == "http://dash.k1s-dev-a.home.arpa/"
-    assert bootstrap["data"]["docs_url"] == "http://docs.k1s-dev-a.home.arpa/"
+    assert bootstrap["data"]["dash_url"] == "https://dash.k1s-dev-a.core.home.arpa/"
+    assert bootstrap["data"]["docs_url"] == "https://docs.k1s-dev-a.core.home.arpa/"
+
+    certificate = next(
+        item
+        for item in docs
+        if item["kind"] == "Certificate" and item["metadata"]["name"] == "k1s-dev-a-ingress-tls"
+    )
+    assert certificate["spec"]["secretName"] == "k1s-dev-a-ingress-tls"
+    assert certificate["spec"]["issuerRef"]["name"] == "org-ca"
+    assert certificate["spec"]["issuerRef"]["kind"] == "ClusterIssuer"
+    assert set(certificate["spec"]["dnsNames"]) == {
+        "*.apps.k1s-dev-a.core.home.arpa",
+        "dash.k1s-dev-a.core.home.arpa",
+        "docs.k1s-dev-a.core.home.arpa",
+    }
 
 
 def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:

@@ -34,9 +34,9 @@ spec:
                 name: {{ include "k1s-core-ha.controllerServiceName" . }}
                 port:
                   name: metrics
-  {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.secretName }}
+  {{- if .Values.ingress.tls.enabled }}
   tls:
-    - secretName: {{ .Values.ingress.tls.secretName | quote }}
+    - secretName: {{ include "k1s-core-ha.ingressTlsSecretName" . | quote }}
       hosts:
         {{- if .Values.edgeProxy.enabled }}
         - {{ printf "*.%s" (include "k1s-core-ha.appsDomain" .) | quote }}
@@ -68,9 +68,9 @@ spec:
                 name: {{ include "k1s-core-ha.controllerServiceName" . }}
                 port:
                   name: metrics
-  {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.secretName }}
+  {{- if .Values.ingress.tls.enabled }}
   tls:
-    - secretName: {{ .Values.ingress.tls.secretName | quote }}
+    - secretName: {{ include "k1s-core-ha.ingressTlsSecretName" . | quote }}
       hosts:
         - {{ include "k1s-core-ha.dashHost" . | quote }}
   {{- end }}

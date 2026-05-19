@@ -1,15 +1,21 @@
 global:
-  registryHost: registry.k1s.home.arpa:32000
+  registryHost: reg.microk8s.core.home.arpa:32000
 
 stack:
   name: k1s-dev-a
-  domain: k1s-dev-a.home.arpa
+  domain: k1s-dev-a.core.home.arpa
 
 controller:
   replicas: 3
   runtimeHostSocketPath: /var/snap/microk8s/common/run/containerd.sock
   siteIds:
     - host-a
+    - workerbee-edge
+  api:
+    mutationsEnabled: true
+    adminTokenSecretKey: apishim-admin-token
+    readTokenSecretKey: apishim-read-token
+    dashboardBootstrapTokenSecretKey: apishim-read-token
   persistence:
     enabled: true
     storageClassName: microk8s-hostpath
@@ -55,6 +61,14 @@ ingress:
   className: nginx
   annotations:
     nginx.ingress.kubernetes.io/backend-protocol: HTTP
+  tls:
+    enabled: true
+    secretName: k1s-dev-a-ingress-tls
+    certificate:
+      create: true
+      issuerRef:
+        name: org-ca
+        kind: ClusterIssuer
 
 serviceMonitor:
   enabled: true

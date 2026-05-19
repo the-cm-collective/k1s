@@ -39,6 +39,11 @@ controller:
   nodeProfile: k1s-ha-core
   registerLocalNode: false
   siteIds: []
+  api:
+    mutationsEnabled: false
+    adminTokenSecretKey: ""
+    readTokenSecretKey: ""
+    dashboardBootstrapTokenSecretKey: ""
   resources: {}
   podLabels: {}
   nodeSelector: {}
@@ -147,6 +152,15 @@ ingress:
   tls:
     enabled: false
     secretName: ""
+    certificate:
+      create: false
+      name: ""
+      issuerRef:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+      duration: ""
+      renewBefore: ""
 
 serviceMonitor:
   enabled: true
