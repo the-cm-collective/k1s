@@ -2,7 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
-    
+
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Runtime Profiles</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -712,7 +712,7 @@
         }
       })();
     </script>
-    
+
   </head>
   <body>
     <nav>
@@ -816,8 +816,7 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 </li>
 <li>local build backend order: <code>nerdctl</code>, then <code>podman</code>, then <code>docker</code>, then <code>ctr</code></li>
 <li>optional override: <code>AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr</code></li>
-<li>NixOS managed-registry TLS defaults mirror/preload to <code>podman</code> when unset, then falls back to <code>docker</code>, then <code>nerdctl</code></li>
-<li>explicit <code>AE_CRI_IMAGE_MIRROR_BACKEND=ctr</code> remains available for per-arch mirror/preload when you want it</li>
+<li>NixOS managed-registry TLS defaults mirror/preload to <code>podman</code> when unset, then falls back to <code>docker</code>, <code>nerdctl</code>, and finally <code>ctr</code> when <code>ctr images convert</code> is available</li>
 <li>when backend=<code>ctr</code>, mirror pushes are normalized to <code>AE_CTR_PLATFORM</code> (or the host-arch default) before pushing into the managed registry; treat that path as a per-arch preload cache, not a multi-arch publishing helper</li>
 </ul>
 </li>
@@ -839,6 +838,7 @@ make edge-site-cri SITE_ID=sea-edge-02 EDGE_PORT=4224 EDGE_HTTP_PORT=8224</code>
 <li>Optional containerd trust hook for strict CRI startup:
 <ul>
 <li>managed registry TLS (<code>AE_CRI_REGISTRY_MODE=managed</code>) defaults to secure trust wiring.</li>
+<li>helper backends inherit trust too: rootful Podman uses <code>/etc/containers/certs.d/&lt;registry&gt;/ca.crt</code>, rootless Podman uses <code>~/.config/containers/certs.d/&lt;registry&gt;/ca.crt</code>, and Docker uses <code>/etc/docker/certs.d/&lt;registry&gt;/ca.crt</code>.</li>
 <li>Debian/Ubuntu writes the managed registry CA into <code>/usr/local/share/ca-certificates</code>; NixOS writes it into <code>/var/lib/k1s-dev/certs</code> and reuses the existing bridge module + <code>nixos-rebuild</code> flow.</li>
 <li>Debian/Ubuntu and RHEL/Fedora bootstrap <code>/opt/cni/bin</code> automatically when the required CNI plugins are available in standard source dirs.</li>
 <li>NixOS strict CRI is declarative: install/import <code>ops/nixos/k1s-cri-host.nix</code>, rebuild, and strict startup will reuse the live containerd CNI paths instead of rewriting <code>/etc/cni/net.d</code>.</li>
@@ -1028,7 +1028,7 @@ make k1s-edge-core-cri</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-29 15:42:33</span>
+        <span>Built 2026-05-22 19:07:37</span>
       </div>
     </footer>
     <script>

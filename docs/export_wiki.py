@@ -39,6 +39,13 @@ TITLE_OVERRIDES = {
 }
 
 HERO_IMAGE = "static/k1s-logo-horizontal.svg"
+LOCAL_DOCS_SERVER_PREFIXES = (
+    "/dashboard",
+    "/openapi",
+    "/playground",
+    "/redoc",
+    "/swagger",
+)
 
 
 def _truthy_env(name: str) -> bool:
@@ -274,12 +281,26 @@ def _rewrite_dest(dest: str, html_to_slug: dict[str, str]) -> str:
     return dest
 
 
-def _rewrite_markdown_links(md_text: str, html_to_slug: dict[str, str]) -> str:
+def _is_local_docs_server_dest(dest: str) -> bool:
+    return any(
+        dest == prefix or dest.startswith(prefix)
+        for prefix in LOCAL_DOCS_SERVER_PREFIXES
+    )
+
+
+def _rewrite_markdown_links(
+    md_text: str,
+    html_to_slug: dict[str, str],
+    *,
+    include_interactive: bool,
+) -> str:
     md_link_re = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
     def repl(match: re.Match[str]) -> str:
         label = match.group(1)
         dest = match.group(2).strip()
+        if not include_interactive and _is_local_docs_server_dest(dest):
+            return f"{label} (`{dest}`)"
         return f"[{label}]({_rewrite_dest(dest, html_to_slug)})"
 
     return md_link_re.sub(repl, md_text)
@@ -307,8 +328,17 @@ def _rewrite_html_hrefs(md_text: str, html_to_slug: dict[str, str]) -> str:
     return href_re.sub(repl, md_text)
 
 
-def _rewrite_links(md_text: str, html_to_slug: dict[str, str]) -> str:
-    md_text = _rewrite_markdown_links(md_text, html_to_slug)
+def _rewrite_links(
+    md_text: str,
+    html_to_slug: dict[str, str],
+    *,
+    include_interactive: bool,
+) -> str:
+    md_text = _rewrite_markdown_links(
+        md_text,
+        html_to_slug,
+        include_interactive=include_interactive,
+    )
     md_text = _rewrite_reference_links(md_text, html_to_slug)
     md_text = _rewrite_html_hrefs(md_text, html_to_slug)
     return md_text
@@ -377,7 +407,11 @@ def main() -> None:
         if slug == "concepts-in-practice":
             md_text = _render_concepts_index(slug_to_title)
         md_text = _prepend_hero_block(md_text)
-        md_text = _rewrite_links(md_text, html_to_slug)
+        md_text = _rewrite_links(
+            md_text,
+            html_to_slug,
+            include_interactive=include_interactive,
+        )
         md_text = _sanitize_wiki_text(md_text)
         title = _sanitize_wiki_text(page["title"])
         out_path = OUT / f"{slug}.md"

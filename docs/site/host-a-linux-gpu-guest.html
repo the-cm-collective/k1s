@@ -2,7 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
-    
+
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Host A Linux Gpu Guest</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -712,7 +712,7 @@
         }
       })();
     </script>
-    
+
   </head>
   <body>
     <nav>
@@ -852,15 +852,13 @@ scripts/lab/vm/labctl.sh host-a-gpu start</code></pre>
 python scripts/dev/gpu_guest_passthrough_validate.py validate \
   --run-id &quot;$RUN_ID&quot; \
   --vm-name k1s-core-a-gpu \
-  --inventory state/libvirt-host-a/k1s-core-a-gpu/inventory.json \
-  --guest-repo /mnt/host \
   --expected-gpu &quot;TITAN RTX&quot; \
   --min-vram-gib 24</code></pre>
 <p>Current smoke-image baseline</p>
 <ul>
 <li>The validator default compute image is <code>nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1</code> for the current Host A guest driver stack.</li>
 </ul>
-<p>If the repo is not mounted at <code>/mnt/host</code>, pass the checked-out path that exists inside the guest with <code>--guest-repo</code>. A practical fallback is to sync <code>scripts/</code> into <code>/home/ae/k1s</code> and run the validator with <code>--guest-repo /home/ae/k1s</code>.</p>
+<p>The validator now prefers <code>state/libvirt-host-a/&lt;vm&gt;/inventory.json</code> automatically and uses the guest repo recorded there. Keep <code>--inventory</code> and <code>--guest-repo</code> for overrides or ad hoc guests. A practical fallback is to sync <code>scripts/</code> into <code>/home/ae/k1s</code> and run the validator with <code>--guest-repo /home/ae/k1s</code>.</p>
 <p>Do not continue to <code>make k1s-core-node</code> until this validator passes.</p>
 <h2 id="7-start-core-a-hub-inside-the-guest">7) Start <code>core-a--hub</code> inside the guest</h2>
 <p>Use the guest&#x27;s primary LAN IP for <code>AE_AGENT_ENDPOINT</code>, not the management NIC.</p>
@@ -904,7 +902,7 @@ python scripts/dev/gpu_guest_passthrough_validate.py validate \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-29 15:43:08</span>
+        <span>Built 2026-05-22 19:07:37</span>
       </div>
     </footer>
     <script>

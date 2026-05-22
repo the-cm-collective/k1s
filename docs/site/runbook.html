@@ -2,7 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
-    
+
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Runbook</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -712,7 +712,7 @@
         }
       })();
     </script>
-    
+
   </head>
   <body>
     <nav>
@@ -1091,6 +1091,7 @@
 <ul>
 <li>AE_TLS_DIR (default: state/tls)</li>
 <li>AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT</li>
+<li>AE_CADDY_PREFER_HOST_PORT_UPSTREAMS=1 for external Caddy containers that should route through published host ports instead of workload-network DNS</li>
 </ul>
 </li>
 </ul>
@@ -2211,7 +2212,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-29 15:42:33</span>
+        <span>Built 2026-05-22 19:07:37</span>
       </div>
     </footer>
     <script>

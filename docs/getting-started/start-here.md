@@ -234,7 +234,7 @@ Local dev and samples
 Docs, labs, and playground
 - `make docs`: combine snapshots (if present), regenerate charts, build docs.
 - `make docs-export`: build non-interactive HTML into `docs/export` (override with `DOCS_OUT_DIR=`).
-- `make docs-wiki-export`: export wiki-friendly HTML into `docs/wiki` (override with `WIKI_OUT=`).
+- `make docs-wiki-export`: export wiki-friendly Markdown into `docs/wiki` (override with `WIKI_OUT=`).
 - `make docs-watch`: rebuild docs when `combined/combined.csv` changes.
 - `make labs-up` / `make labs-down`: host-controller `dev-etcd` wrapper (CLI/API only; no docs/Caddy).
 - `make labs-aio-up` / `make labs-aio-down`: host-controller `dev-etcd` wrapper with Caddy/TLS and the dev-local helper defaults.

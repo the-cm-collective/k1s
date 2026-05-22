@@ -29,9 +29,11 @@ def _normalize_ref(base_dir: Path, raw_ref: str) -> Path | None:
 @pytest.mark.integration
 def test_docs_export_builds_expected_pages_and_resolves_relative_links(tmp_path: Path) -> None:
     out_dir = tmp_path / "site"
+    wiki_dir = tmp_path / "wiki"
     env = {
         **os.environ,
         "DOCS_OUT_DIR": str(out_dir),
+        "DOCS_WIKI_OUT_DIR": str(wiki_dir),
         "DOCS_API_BASE": "https://api.home.arpa:8443",
         "DOCS_DASHBOARD_URL": "https://dash.home.arpa:8443/dashboard",
         "DOCS_NON_INTERACTIVE": "1",
@@ -84,3 +86,21 @@ def test_docs_export_builds_expected_pages_and_resolves_relative_links(tmp_path:
                 failures.append(f"{html_path.relative_to(out_dir)} -> missing: {raw_ref}")
 
     assert not failures, "\n".join(failures[:50])
+
+    wiki = subprocess.run(
+        [sys.executable, "docs/export_wiki.py"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert wiki.returncode == 0, wiki.stderr or wiki.stdout
+    assert (wiki_dir / "Home.md").exists()
+    assert (wiki_dir / "_Sidebar.md").exists()
+    assert not (wiki_dir / "playground.md").exists()
+
+    markdown = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(wiki_dir.glob("*.md"))
+    )
+    assert not re.search(r"\]\(/(?:swagger|redoc|openapi|dashboard|playground)", markdown)
