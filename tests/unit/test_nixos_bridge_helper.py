@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # ruff: noqa: S603
+import os
 import subprocess
 from pathlib import Path
 
@@ -119,3 +120,49 @@ def test_containerd_registry_trust_help_mentions_nixos_bridge() -> None:
 
     assert res.returncode == 0, res.stderr
     assert "Linux/NixOS bridge" in res.stdout
+    assert "--podman-root" in res.stdout
+    assert "--docker" in res.stdout
+
+
+def test_containerd_registry_trust_writes_backend_ca_paths(tmp_path) -> None:
+    ca = tmp_path / "registry-ca.crt"
+    ca.write_text("unit-ca\n", encoding="utf-8")
+    containerd_root = tmp_path / "containerd-certs"
+    podman_root = tmp_path / "podman-certs"
+    docker_root = tmp_path / "docker-certs"
+    podman_home = tmp_path / "home" / "ae"
+
+    env = os.environ.copy()
+    env["K1S_REGISTRY_TRUST_ALLOW_UNPRIVILEGED"] = "1"
+    env["K1S_CONTAINERD_CERTS_DIR_ROOT"] = str(containerd_root)
+    env["K1S_PODMAN_CERTS_DIR_ROOT"] = str(podman_root)
+    env["K1S_DOCKER_CERTS_DIR_ROOT"] = str(docker_root)
+    env["K1S_CONTAINERD_CONFIG_FILE"] = str(tmp_path / "missing-config.toml")
+
+    res = subprocess.run(
+        [
+            str(REGISTRY_TRUST),
+            "--host",
+            "localhost:5001",
+            "--ca",
+            str(ca),
+            "--podman-root",
+            "--podman-user-home",
+            str(podman_home),
+            "--docker",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert res.returncode == 0, res.stderr
+    assert (containerd_root / "localhost:5001" / "ca.crt").read_text(encoding="utf-8") == "unit-ca\n"
+    assert (podman_root / "localhost:5001" / "ca.crt").read_text(encoding="utf-8") == "unit-ca\n"
+    assert (
+        podman_home / ".config" / "containers" / "certs.d" / "localhost:5001" / "ca.crt"
+    ).read_text(encoding="utf-8") == "unit-ca\n"
+    assert (docker_root / "localhost:5001" / "ca.crt").read_text(encoding="utf-8") == "unit-ca\n"
+    hosts_toml = (containerd_root / "localhost:5001" / "hosts.toml").read_text(encoding="utf-8")
+    assert f'ca = "{containerd_root}/localhost:5001/ca.crt"' in hosts_toml

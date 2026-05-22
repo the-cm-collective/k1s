@@ -793,6 +793,23 @@
 <li>one <code>fabric</code> is one or more cells managed by <code>k1s</code></li>
 <li>one <code>provider interface</code> is the lease- or marketplace-facing boundary that hands execution to the fabric through a provider-facing HA edge</li>
 </ul>
+<h2 id="secondary-nvidia-development-subtrack">Secondary Nvidia Development Subtrack</h2>
+<p>The public roadmap now also includes one bounded secondary development lane: <code>F0n-nvidia-dev</code>.</p>
+<p>That lane exists because accessible Nvidia hardware is available now while the AMD AI Max+ 395 systems are not yet in hand. The current mixed-host baseline for that lane is documented in <a href="nvidia-development-baseline.html">Nvidia Development Baseline</a>:</p>
+<ul>
+<li>NixOS workstation with a TITAN RTX 24 GB, used as <code>core-a</code> plus one Ubuntu guest that registers as <code>core-a--hub</code> through Linux GPU passthrough</li>
+<li>Ubuntu Server workstation with an RTX-8000 48 GB, used as <code>edge-b</code> plus GPU node <code>edge-b--gpu-1</code></li>
+</ul>
+<p>The exact development hardware details are published on purpose. That disclosure is meant to improve reproducibility and make the current workstation-specific substrate explicit, not to redefine the long-term target baseline. Keep the detailed machine notes in <a href="nvidia-development-baseline.html">Nvidia Development Baseline</a>.</p>
+<p>This subtrack is deliberately constrained:</p>
+<ul>
+<li>it advances substrate development and evidence only</li>
+<li>it stays on standard Ethernet</li>
+<li>it does not change the AMD-first phase order</li>
+<li>it does not satisfy <code>D0</code></li>
+<li>it does not make vGPU or TDM a current milestone requirement</li>
+</ul>
+<p>The intent is to keep controller, session, readiness, restart, and teardown work moving without turning temporary hardware availability into a rewritten public deployment story.</p>
 <h2 id="target-deployment-shape">Target Deployment Shape</h2>
 <p>The target near-term deployment shape is documented in <a href="fabric-deployment-topology.html">Fabric Deployment Topology</a>.</p>
 <pre class="mermaid">flowchart LR
@@ -834,10 +851,12 @@
 <p>Primary outcomes:</p>
 <ul>
 <li>typed node capability reporting</li>
+<li>typed accelerator facts that already account for <code>discrete_gpu</code>, <code>apu</code>, and <code>virtual_gpu</code></li>
 <li>typed storage and media reporting, including the baseline NVMe class and any later persistent-memory class</li>
 <li>typed link and topology telemetry</li>
 <li>typed RNIC and RDMA capability reporting, including negotiated PCIe state where relevant</li>
 <li>clear distinction between management, execution, and fabric identities</li>
+<li>current <code>gpu.*</code> labels retained only as a backward-compatibility projection while old flows migrate</li>
 <li>structured inputs for later planning engines</li>
 </ul>
 <h3 id="f2-chunk-and-cache-locality">F2: Chunk and cache locality</h3>
@@ -997,7 +1016,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-17 10:02:07</span>
+        <span>Built 2026-04-29 15:43:08</span>
       </div>
     </footer>
     <script>

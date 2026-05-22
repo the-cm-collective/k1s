@@ -1,0 +1,6 @@
+provisioners:
+  - name: csi-fast
+    provisioner: csi.example.com
+    type: csi
+    controllerEndpoint: unix:///tmp/csi.sock
+    nodeEndpoint: unix:///tmp/csi.sock

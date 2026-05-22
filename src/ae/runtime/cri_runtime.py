@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import json
 import logging
 import os
 import re
@@ -12,9 +14,11 @@ import subprocess
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+from urllib.request import urlopen
 
 try:
     import grpc
@@ -23,7 +27,6 @@ except Exception as exc:  # pragma: no cover - optional dependency
     grpc = None
     _grpc_import_error = exc
 
-from ae._utc import UTC
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
@@ -290,19 +293,42 @@ class CRIRuntime(RuntimeAdapter):
     def list_workload_metrics(self) -> list[WorkloadMetricSample]:
         self._ensure_clients()
         pb2 = self._pb2()
-        req = pb2.ListPodSandboxStatsRequest()
-        resp = self._runtime_call("ListPodSandboxStats", req)
-        items = getattr(resp, "stats", None)
-        if items is None:
-            items = getattr(resp, "items", None)
         node_id = str(
             self._current_node_id or os.getenv("AE_NODE_ID") or socket.gethostname() or "unknown-node"
         )
         collected_at = datetime.now(UTC)
         aggregates: dict[str, dict[str, object]] = {}
-        for item in list(items or []):
+        for pod in self._list_pods(ready_only=True):
+            pod_labels = self._pod_labels(pod)
+            app_name = str(pod_labels.get(self.APP_LABEL) or "").strip()
+            if not app_name:
+                continue
+            pod_id = getattr(pod, "id", None) or getattr(pod, "pod_sandbox_id", None)
+            if not pod_id:
+                continue
+            try:
+                resp = self._runtime_call(
+                    "PodSandboxStats",
+                    pb2.PodSandboxStatsRequest(pod_sandbox_id=str(pod_id)),
+                )
+            except Exception as exc:
+                if self._is_stale_pod_sandbox_error(exc):
+                    LOGGER.debug(
+                        "CRI workload metrics skipping stale sandbox pod_id=%s: %s",
+                        pod_id,
+                        self._grpc_error_details(exc),
+                    )
+                    continue
+                raise
+            item = getattr(resp, "stats", None)
+            if item is None:
+                items = getattr(resp, "items", None)
+                if items:
+                    item = list(items)[0]
+            if item is None:
+                continue
             labels = self._stats_labels(item)
-            app_name = str(labels.get(self.APP_LABEL) or "").strip()
+            app_name = str(labels.get(self.APP_LABEL) or app_name).strip()
             if not app_name:
                 continue
             aggregate = aggregates.setdefault(
@@ -546,17 +572,28 @@ class CRIRuntime(RuntimeAdapter):
         return
 
     def exec_exit_code(self, exec_id: str) -> int:
+        status = self.exec_status(exec_id)
+        if status is None:
+            return 0
+        _running, exit_code = status
+        return int(exit_code or 0)
+
+    def exec_status(self, exec_id: str) -> tuple[bool, int | None] | None:
         with self._exec_lock:
             if exec_id in self._exec_exit_codes:
-                return int(self._exec_exit_codes.get(exec_id, 0))
+                return False, int(self._exec_exit_codes.get(exec_id, 0))
             proc = self._exec_procs.get(exec_id)
         if proc is None:
-            return 0
+            return None
         try:
             rc = proc.poll()
-            return int(rc) if rc is not None else 0
+            if rc is None:
+                return True, None
+            with self._exec_lock:
+                self._exec_exit_codes.setdefault(exec_id, int(rc))
+            return False, int(rc)
         except Exception:
-            return 0
+            return None
 
     # Init containers --------------------------------------------------
     def run_init_containers(self, manifest: AppManifest):  # type: ignore[override]
@@ -824,10 +861,17 @@ class CRIRuntime(RuntimeAdapter):
         except Exception:
             return 6
 
-    def _list_pods(self, app_name: str | None = None) -> list[Any]:
+    def _list_pods(self, app_name: str | None = None, *, ready_only: bool = False) -> list[Any]:
         pb2 = self._pb2()
         selector = {self.APP_LABEL: app_name} if app_name else {}
-        flt = pb2.PodSandboxFilter(label_selector=selector) if selector else pb2.PodSandboxFilter()
+        filter_kwargs: dict[str, Any] = {}
+        if selector:
+            filter_kwargs["label_selector"] = selector
+        if ready_only:
+            ready_state = getattr(getattr(pb2, "PodSandboxState", None), "SANDBOX_READY", None)
+            if ready_state is not None:
+                filter_kwargs["state"] = pb2.PodSandboxStateValue(state=ready_state)
+        flt = pb2.PodSandboxFilter(**filter_kwargs) if filter_kwargs else pb2.PodSandboxFilter()
         req = pb2.ListPodSandboxRequest(filter=flt)
         resp = self._runtime_call("ListPodSandbox", req)
         items = getattr(resp, "items", None)
@@ -998,21 +1042,22 @@ class CRIRuntime(RuntimeAdapter):
 
     def _ensure_image(self, image_ref: str) -> None:
         pb2 = self._pb2()
-        spec = pb2.ImageSpec(image=str(image_ref))
+        normalized = self._normalize_image_ref(image_ref)
+        spec = pb2.ImageSpec(image=str(normalized))
         with contextlib.suppress(Exception):
             status = self._images_call(
                 "ImageStatus", pb2.ImageStatusRequest(image=spec, verbose=False)
             )
             if getattr(status, "image", None):
                 return
-        auth = self._image_pull_auth(image_ref)
+        auth = self._image_pull_auth(normalized)
         req = pb2.PullImageRequest(image=spec)
         if auth is not None:
             req.auth = auth
         try:
             self._images_call("PullImage", req)
         except Exception as exc:
-            raise RuntimeError(f"Failed to pull image {image_ref}: {exc}") from exc
+            raise RuntimeError(f"Failed to pull image {normalized}: {exc}") from exc
 
     def _image_pull_auth(self, image_ref: str):
         pb2 = self._pb2()
@@ -1294,6 +1339,19 @@ class CRIRuntime(RuntimeAdapter):
             return None
         return host
 
+    def _normalize_image_ref(self, image: str) -> str:
+        raw = str(image or "").strip()
+        if not raw:
+            return raw
+        if "/" not in raw:
+            return f"docker.io/library/{raw}"
+        host = raw.split("/", 1)[0]
+        if "." in host or ":" in host:
+            return raw
+        if raw.count("/") == 1:
+            return f"docker.io/{raw}"
+        return raw
+
     def _run_pod(
         self,
         manifest: AppManifest,
@@ -1331,6 +1389,12 @@ class CRIRuntime(RuntimeAdapter):
             log_directory=self._pod_log_dir(ns, replica_id, pod_uid),
             port_mappings=port_mappings,
         )
+        linux_cfg = self._pod_sandbox_linux_config(manifest)
+        if linux_cfg is not None:
+            try:
+                pod_config.linux.CopyFrom(linux_cfg)
+            except Exception:
+                pod_config.linux = linux_cfg
         runtime_handler = getattr(manifest.spec, "runtime_class_name", None)
         req = pb2.RunPodSandboxRequest(config=pod_config)
         if runtime_handler:
@@ -1404,6 +1468,7 @@ class CRIRuntime(RuntimeAdapter):
         replica_id = self._pod_labels(pod).get(self.REPLICA_LABEL, "")
         if not container:
             try:
+                self._ensure_image(manifest.spec.image)
                 self._create_main_container(
                     manifest,
                     pod_id,
@@ -1550,6 +1615,7 @@ class CRIRuntime(RuntimeAdapter):
             "failed to find sandbox id",
             "can't find shim for sandbox",
             "no running task found",
+            "not in ready state",
             "podsandbox not found",
             "pod sandbox not found",
             "sandbox not found",
@@ -2012,6 +2078,36 @@ class CRIRuntime(RuntimeAdapter):
                 attempt=int(attempt),
             )
         return pod_meta
+
+    def _pod_sandbox_config_for_container_request(
+        self,
+        manifest: AppManifest,
+        pod_id: str,
+        replica_id: str,
+        *,
+        attempt: int = 0,
+    ) -> Any:
+        pb2 = self._pb2()
+        pod_meta = self._pod_metadata_for_container_request(
+            manifest,
+            pod_id,
+            replica_id,
+            attempt=attempt,
+        )
+        pod_name = str(getattr(pod_meta, "name", None) or replica_id)
+        namespace = str(getattr(pod_meta, "namespace", None) or DEFAULT_NAMESPACE)
+        uid = str(getattr(pod_meta, "uid", None) or self._pod_uid(pod_name, namespace))
+        return pb2.PodSandboxConfig(
+            metadata=pod_meta,
+            log_directory=self._pod_log_dir(namespace, pod_name, uid),
+        )
+
+    def _container_log_path(self, container_name: str, *, attempt: int = 0) -> str:
+        try:
+            attempt_value = int(attempt)
+        except Exception:
+            attempt_value = 0
+        return f"{container_name}/{attempt_value}.log"
 
     def _containerd_container_name(self, container_name: str, pod_meta: Any) -> str | None:
         pod_name = getattr(pod_meta, "name", None)
@@ -2639,21 +2735,12 @@ class CRIRuntime(RuntimeAdapter):
                 attempt=0,
                 is_main=False,
             )
-            pod_meta = None
-            with contextlib.suppress(Exception):
-                pod_status = self._pod_status(str(pod_id))
-                pod_meta = getattr(pod_status, "metadata", None)
-            if not pod_meta or not getattr(pod_meta, "uid", None):
-                app_name = app_key_for_manifest(manifest)
-                ns, _ = split_app_key(app_name)
-                pod_uid = self._pod_uid(replica_id, ns)
-                pod_meta = pb2.PodSandboxMetadata(
-                    name=replica_id,
-                    namespace=ns or DEFAULT_NAMESPACE,
-                    uid=str(pod_uid),
-                    attempt=0,
-                )
-            pod_config = pb2.PodSandboxConfig(metadata=pod_meta)
+            pod_config = self._pod_sandbox_config_for_container_request(
+                manifest,
+                pod_id,
+                replica_id,
+                attempt=0,
+            )
             req = pb2.CreateContainerRequest(
                 pod_sandbox_id=str(pod_id),
                 config=config,
@@ -2678,14 +2765,12 @@ class CRIRuntime(RuntimeAdapter):
     ) -> None:
         pb2 = self._pb2()
         config = self._container_config(manifest, replica_id, revision, attempt=attempt)
-        pod_meta = self._pod_metadata_for_container_request(
+        pod_config = self._pod_sandbox_config_for_container_request(
             manifest,
             pod_id,
             replica_id,
             attempt=attempt,
         )
-        # containerd expects sandbox_config.metadata to be present.
-        pod_config = pb2.PodSandboxConfig(metadata=pod_meta)
         req = pb2.CreateContainerRequest(
             pod_sandbox_id=str(pod_id),
             config=config,
@@ -2778,7 +2863,7 @@ class CRIRuntime(RuntimeAdapter):
         if is_main and str(getattr(manifest.spec, "workload", "service")).lower() == "job":
             labels[self.JOB_ATTEMPT_LABEL] = str(int(attempt))
 
-        image = self._spec_value(spec, "image") or manifest.spec.image
+        image = self._normalize_image_ref(self._spec_value(spec, "image") or manifest.spec.image)
         command = list(self._spec_value(spec, "command") or [])
         args = list(self._spec_value(spec, "args") or [])
         env_items = self._spec_value(spec, "env") or []
@@ -2802,6 +2887,7 @@ class CRIRuntime(RuntimeAdapter):
             "args": args,
             "envs": envs,
             "working_dir": str(working_dir or ""),
+            "log_path": self._container_log_path(str(name), attempt=attempt),
             "labels": labels,
             "mounts": mounts,
         }
@@ -2963,7 +3049,9 @@ class CRIRuntime(RuntimeAdapter):
                 ready = (
                     exit_code == 0 and status == "exited" if is_job else status == "running"
                 )
-            endpoint = self._endpoint_for_manifest(manifest, pod_ip)
+            endpoint = self._endpoint_for_manifest(manifest, pod_ip, replica_id=str(pod_name))
+            if c_status and status == "running" and not is_job:
+                ready = self._service_ready_for_manifest(manifest, endpoint)
             states.append(
                 PodState(
                     pod_name=str(pod_name),
@@ -2991,13 +3079,52 @@ class CRIRuntime(RuntimeAdapter):
             return "created"
         return "unknown"
 
+    def _service_ready_for_manifest(self, manifest: AppManifest, endpoint: str | None) -> bool:
+        health = getattr(manifest.spec, "health", None)
+        readiness = getattr(health, "readiness", None) if health is not None else None
+        if readiness is None:
+            return True
+        endpoint_text = str(endpoint or "").strip()
+        if not endpoint_text:
+            return False
+        timeout = max(1, int(getattr(readiness, "timeout_seconds", 1) or 1))
+        try:
+            if getattr(readiness, "http_get", None) is not None:
+                probe = readiness.http_get
+                raw = endpoint_text if "://" in endpoint_text else f"http://{endpoint_text}"
+                parts = urlsplit(raw)
+                scheme = parts.scheme or "http"
+                netloc = parts.netloc or parts.path
+                path = str(getattr(probe, "path", "/") or "/")
+                if not path.startswith("/"):
+                    path = f"/{path}"
+                with urlopen(f"{scheme}://{netloc}{path}", timeout=timeout) as resp:  # noqa: S310
+                    return 200 <= int(getattr(resp, "status", 0) or 0) < 300
+            if getattr(readiness, "tcp_socket", None) is not None:
+                probe = readiness.tcp_socket
+                raw = endpoint_text if "://" in endpoint_text else f"tcp://{endpoint_text}"
+                parts = urlsplit(raw)
+                host = parts.hostname
+                port = int(getattr(probe, "port", 0) or 0)
+                if not host or port <= 0:
+                    return False
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+        except Exception:
+            return False
+        return True
+
     def _is_container_running(self, status: Any) -> bool:
         pb2 = self._pb2()
         return getattr(status, "state", None) == pb2.ContainerState.CONTAINER_RUNNING
 
-    def _endpoint_for_manifest(self, manifest: AppManifest, pod_ip: str | None) -> str | None:
-        if not pod_ip:
-            return None
+    def _endpoint_for_manifest(
+        self,
+        manifest: AppManifest,
+        pod_ip: str | None,
+        *,
+        replica_id: str | None = None,
+    ) -> str | None:
         preferred_port = None
         try:
             if manifest.spec.health and manifest.spec.health.readiness:
@@ -3013,12 +3140,26 @@ class CRIRuntime(RuntimeAdapter):
                 preferred_port = int(manifest.spec.ports[0].container_port)
             except Exception:
                 preferred_port = None
+        if preferred_port is not None and replica_id:
+            port_map = self._port_assignments.get(str(replica_id), {})
+            host_port = port_map.get(preferred_port)
+            if host_port:
+                host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+                return f"{host}:{int(host_port)}"
+        if bool(getattr(manifest.spec, "host_network", False)):
+            endpoint = self._endpoint_for_host_network(manifest, preferred_port)
+            if endpoint:
+                return endpoint
+        if not pod_ip:
+            return None
         if preferred_port is None:
             return None
         return f"{pod_ip}:{preferred_port}"
 
     def _port_mappings(self, manifest: AppManifest) -> tuple[list[Any], dict[int, int]]:
         pb2 = self._pb2()
+        if bool(getattr(manifest.spec, "host_network", False)):
+            return [], {}
         svc = getattr(manifest.spec, "service", None)
         if not svc or manifest.spec.replicas != 1:
             return [], {}
@@ -3076,6 +3217,50 @@ class CRIRuntime(RuntimeAdapter):
                     add_mapping(int(target), int(host_port), "TCP")
 
         return mappings, port_map
+
+    def _endpoint_for_host_network(
+        self, manifest: AppManifest, preferred: int | None = None
+    ) -> str | None:
+        port = preferred
+        if port is None and getattr(manifest.spec, "ports", None):
+            try:
+                port = int(manifest.spec.ports[0].container_port)
+            except Exception:
+                port = None
+        if port is None and getattr(manifest.spec, "service", None):
+            svc = manifest.spec.service
+            try:
+                target = getattr(svc, "target_port", None)
+                raw_port = target if target is not None else getattr(svc, "port", None)
+                port = int(raw_port) if raw_port is not None else None
+            except Exception:
+                port = None
+        if port is None:
+            return None
+        host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
+        return f"{host}:{int(port)}"
+
+    def _pod_sandbox_linux_config(self, manifest: AppManifest):
+        host_network = bool(getattr(manifest.spec, "host_network", False))
+        host_pid = bool(getattr(manifest.spec, "host_pid", False))
+        host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
+        if not any((host_network, host_pid, host_ipc)):
+            return None
+        pb2 = self._pb2()
+        namespace_options = pb2.NamespaceOption()
+        node_mode = pb2.NamespaceMode.NODE
+        if host_network:
+            namespace_options.network = node_mode
+        if host_pid:
+            namespace_options.pid = node_mode
+        if host_ipc:
+            namespace_options.ipc = node_mode
+        linux_cfg = pb2.LinuxPodSandboxConfig()
+        try:
+            linux_cfg.security_context.namespace_options.CopyFrom(namespace_options)
+        except Exception:
+            linux_cfg.security_context.namespace_options = namespace_options
+        return linux_cfg
 
     def _pod_uid(self, replica_id: str, namespace: str | None) -> str:
         ns = namespace or DEFAULT_NAMESPACE

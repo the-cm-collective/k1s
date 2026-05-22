@@ -8,9 +8,9 @@ Usage: scripts/build_cri_apishim_image.sh [options]
 Build apishim image locally, push to registry, and optionally CRI pull for verification.
 
 Options:
-  --image <ref>              Target image reference (default: AE_APISHIM_IMAGE or localhost/k1s-apishim:dev)
+  --image <ref>              Target image reference (default: AE_APISHIM_IMAGE or docker.io/library/k1s-apishim:dev)
   --registry <host:port>     Registry host override (default: AE_CRI_REGISTRY or AE_REGISTRY_HOST)
-  --tag <name:tag>           Tag/path when --image is omitted (default: k1s-apishim:dev)
+  --tag <name:tag>           Tag/path when --image is omitted (default: docker.io/library/k1s-apishim:dev)
   --engine <name>            Build/push backend (nerdctl|podman|docker)
   --push                     Push target image after build (default: enabled)
   --no-push                  Disable push
@@ -27,7 +27,7 @@ USAGE
 
 image="${AE_APISHIM_IMAGE:-}"
 registry="${AE_CRI_REGISTRY:-${AE_REGISTRY_HOST:-}}"
-tag="k1s-apishim:dev"
+tag="docker.io/library/k1s-apishim:dev"
 engine=""
 push=1
 pull_cri=1

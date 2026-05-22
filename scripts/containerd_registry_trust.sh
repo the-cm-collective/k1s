@@ -14,6 +14,9 @@ Options:
   --ca <path>          CA cert path (required for https unless --insecure)
   --scheme <http|https>  Scheme (default: https)
   --insecure           Skip TLS verification (writes skip_verify = true)
+  --podman-root        Install CA for rootful Podman under /etc/containers/certs.d
+  --podman-user-home <path>  Install CA for rootless Podman under <path>/.config/containers/certs.d
+  --docker             Install CA for Docker under /etc/docker/certs.d
   --system-trust       Install CA into system trust store (Linux/NixOS bridge)
   --restart            Restart containerd after writing hosts.toml
   -h, --help           Show this help
@@ -28,8 +31,18 @@ host=""
 ca=""
 scheme="https"
 insecure=0
+podman_root=0
+podman_user_home=""
+docker_trust=0
 system_trust=0
 restart=0
+
+is_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON|y|Y) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +54,12 @@ while [[ $# -gt 0 ]]; do
       scheme="${2:?missing scheme}"; shift ;;
     --insecure)
       insecure=1 ;;
+    --podman-root)
+      podman_root=1 ;;
+    --podman-user-home)
+      podman_user_home="${2:?missing podman user home}"; shift ;;
+    --docker)
+      docker_trust=1 ;;
     --system-trust)
       system_trust=1 ;;
     --restart)
@@ -74,8 +93,17 @@ if [[ $system_trust -eq 1 && -z "$ca" ]]; then
   exit 1
 fi
 
+CONTAINERD_CONFIG_FILE="${K1S_CONTAINERD_CONFIG_FILE:-/etc/containerd/config.toml}"
+CONTAINERD_CERTS_DIR_ROOT="${K1S_CONTAINERD_CERTS_DIR_ROOT:-/etc/containerd/certs.d}"
+PODMAN_CERTS_DIR_ROOT="${K1S_PODMAN_CERTS_DIR_ROOT:-/etc/containers/certs.d}"
+DOCKER_CERTS_DIR_ROOT="${K1S_DOCKER_CERTS_DIR_ROOT:-/etc/docker/certs.d}"
+ALLOW_UNPRIVILEGED=0
+if is_truthy "${K1S_REGISTRY_TRUST_ALLOW_UNPRIVILEGED:-0}"; then
+  ALLOW_UNPRIVILEGED=1
+fi
+
 SUDO=""
-if [[ "$EUID" -ne 0 ]]; then
+if [[ "$EUID" -ne 0 && "$ALLOW_UNPRIVILEGED" -eq 0 ]]; then
   SUDO="sudo"
 fi
 HAS_TTY=0
@@ -111,7 +139,7 @@ prompt_yes_no() {
 }
 
 run_priv() {
-  if [[ "$EUID" -eq 0 ]]; then
+  if [[ "$EUID" -eq 0 || "$ALLOW_UNPRIVILEGED" -eq 1 ]]; then
     "$@"
     return 0
   fi
@@ -119,7 +147,7 @@ run_priv() {
 }
 
 ensure_containerd_config_version_v2() {
-  local config_file="/etc/containerd/config.toml"
+  local config_file="$CONTAINERD_CONFIG_FILE"
   [[ -f "$config_file" ]] || return 1
 
   # Only normalize when file already uses v2-style plugin identifiers.
@@ -176,8 +204,8 @@ ensure_containerd_config_version_v2() {
 }
 
 ensure_containerd_registry_config_path() {
-  local config_file="/etc/containerd/config.toml"
-  local desired="/etc/containerd/certs.d"
+  local config_file="$CONTAINERD_CONFIG_FILE"
+  local desired="$CONTAINERD_CERTS_DIR_ROOT"
 
   if [[ ! -f "$config_file" ]]; then
     return 1
@@ -237,7 +265,7 @@ ensure_containerd_registry_config_path() {
 }
 
 ensure_containerd_runc_runtime() {
-  local config_file="/etc/containerd/config.toml"
+  local config_file="$CONTAINERD_CONFIG_FILE"
   [[ -f "$config_file" ]] || return 1
 
   if grep -Eq '^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"\.containerd\.runtimes\.runc\][[:space:]]*$' "$config_file"; then
@@ -317,15 +345,29 @@ sync_nixos_bridge_trust() {
   esac
 }
 
-cert_dir="/etc/containerd/certs.d/${host}"
-$SUDO mkdir -p "$cert_dir"
+install_backend_ca() {
+  local cert_dir="$1"
+  local cert_file="${cert_dir}/ca.crt"
+
+  run_priv mkdir -p "$cert_dir"
+  if [[ -n "$ca" ]]; then
+    if [[ ! -s "$ca" ]]; then
+      echo "CA file not found or empty: $ca" >&2
+      exit 1
+    fi
+    run_priv cp "$ca" "$cert_file"
+  fi
+}
+
+cert_dir="${CONTAINERD_CERTS_DIR_ROOT}/${host}"
+run_priv mkdir -p "$cert_dir"
 
 if [[ -n "$ca" ]]; then
   if [[ ! -s "$ca" ]]; then
     echo "CA file not found or empty: $ca" >&2
     exit 1
   fi
-  $SUDO cp "$ca" "$cert_dir/ca.crt"
+  run_priv cp "$ca" "$cert_dir/ca.crt"
 fi
 
 hosts_toml="$cert_dir/hosts.toml"
@@ -341,7 +383,19 @@ hosts_toml="$cert_dir/hosts.toml"
       echo "  ca = \"${cert_dir}/ca.crt\""
     fi
   fi
-} | $SUDO tee "$hosts_toml" >/dev/null
+} | ${SUDO:+$SUDO }tee "$hosts_toml" >/dev/null
+
+if [[ "$scheme" == "https" && $insecure -eq 0 && -n "$ca" ]]; then
+  if [[ $podman_root -eq 1 ]]; then
+    install_backend_ca "${PODMAN_CERTS_DIR_ROOT}/${host}"
+  fi
+  if [[ -n "$podman_user_home" ]]; then
+    install_backend_ca "${podman_user_home%/}/.config/containers/certs.d/${host}"
+  fi
+  if [[ $docker_trust -eq 1 ]]; then
+    install_backend_ca "${DOCKER_CERTS_DIR_ROOT}/${host}"
+  fi
+fi
 
 if [[ $system_trust -eq 1 ]]; then
   trust_name="registry-${host//[:\/]/_}.crt"
@@ -349,12 +403,12 @@ if [[ $system_trust -eq 1 ]]; then
     sync_nixos_bridge_trust "$trust_name"
   else
     trust_dest="/usr/local/share/ca-certificates/${trust_name}"
-    $SUDO mkdir -p "$(dirname "$trust_dest")"
-    $SUDO cp "$ca" "$trust_dest"
+    run_priv mkdir -p "$(dirname "$trust_dest")"
+    run_priv cp "$ca" "$trust_dest"
     if command -v update-ca-certificates >/dev/null 2>&1; then
-      $SUDO update-ca-certificates >/dev/null 2>&1 || true
+      run_priv update-ca-certificates >/dev/null 2>&1 || true
     elif command -v update-ca-trust >/dev/null 2>&1; then
-      $SUDO update-ca-trust extract >/dev/null 2>&1 || true
+      run_priv update-ca-trust extract >/dev/null 2>&1 || true
     fi
   fi
 fi
@@ -377,7 +431,7 @@ fi
 
 if [[ $restart -eq 1 ]]; then
   if command -v systemctl >/dev/null 2>&1; then
-    $SUDO systemctl restart containerd
+    run_priv systemctl restart containerd
   else
     echo "systemctl not found; restart containerd manually" >&2
   fi

@@ -556,11 +556,17 @@ def test_build_command_non_apishim_requires_distinct_source_and_target() -> None
 
 def test_start_apishim_uses_expected_component_and_entrypoint(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
+    fresh_calls: list[tuple[str, str]] = []
 
     def fake_start_component(**kwargs):
         captured.update(kwargs)
 
+    def fake_ensure_apishim_image_fresh(profile: str, image: str) -> str:
+        fresh_calls.append((profile, image))
+        return "rollout-1234"
+
     monkeypatch.setattr(cri_stack, "_start_component", fake_start_component)
+    monkeypatch.setattr(cri_stack, "_ensure_apishim_image_fresh", fake_ensure_apishim_image_fresh)
 
     env_file = tmp_path / "apishim.env"
     env_file.write_text("AE_APISHIM_ALLOW_ANON=0\n", encoding="utf-8")
@@ -583,6 +589,8 @@ def test_start_apishim_uses_expected_component_and_entrypoint(monkeypatch, tmp_p
     assert captured["component"] == "k1s-core-apishim"
     assert captured["runtime_handler"] == "runc"
     assert captured["recreate"] is True
+    assert captured["rollout_key"] == "rollout-1234"
+    assert captured["stable_seconds"] == 2
     assert captured["command"] == [
         "python",
         "-m",
@@ -599,6 +607,66 @@ def test_start_apishim_uses_expected_component_and_entrypoint(monkeypatch, tmp_p
     assert env["AE_APISHIM_ALLOW_ANON"] == "0"
     assert env["AE_APISHIM_ENABLE"] == "1"
     assert env["AE_APISHIM_SERVER"] == "https://127.0.0.1:8445"
+    assert fresh_calls == [("k1s-core", "docker.io/library/k1s-apishim:dev")]
+
+
+def test_ensure_apishim_image_fresh_rebuilds_and_records_stamp(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cri_stack, "ROOT", tmp_path)
+    monkeypatch.setattr(cri_stack, "_resolve_image_ref", lambda image: image)
+    monkeypatch.setattr(cri_stack, "_apishim_rollout_key", lambda _image: "rollout-5678")
+    monkeypatch.setattr(cri_stack, "_image_exists", lambda _image: False)
+    monkeypatch.setattr(
+        cri_stack,
+        "_build_command",
+        lambda component, *, source_image, target_image: [
+            "bash",
+            "build.sh",
+            component,
+            source_image,
+            target_image,
+        ],
+    )
+    run_cmds: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        run_cmds.append(list(cmd))
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Result()
+
+    monkeypatch.setattr(cri_stack, "_run", fake_run)
+
+    rollout_key = cri_stack._ensure_apishim_image_fresh(
+        "k1s-core",
+        "docker.io/library/k1s-apishim:dev",
+    )
+
+    assert rollout_key == "rollout-5678"
+    assert run_cmds == [
+        [
+            "bash",
+            "build.sh",
+            "k1s-core-apishim",
+            "docker.io/library/k1s-apishim:dev",
+            "docker.io/library/k1s-apishim:dev",
+        ]
+    ]
+    stamp_path = (
+        tmp_path
+        / "state"
+        / "profiles"
+        / "k1s-core"
+        / "cri"
+        / "k1s-core-apishim"
+        / "image-build.json"
+    )
+    payload = json.loads(stamp_path.read_text(encoding="utf-8"))
+    assert payload["image"] == "docker.io/library/k1s-apishim:dev"
+    assert payload["rollout_key"] == "rollout-5678"
 
 
 def test_start_registry_uses_upstream_image_without_registry_rewrite(monkeypatch) -> None:
@@ -660,11 +728,11 @@ def test_ensure_image_fail_policy_errors_without_pull(monkeypatch) -> None:
     monkeypatch.setenv("AE_CRI_IMAGE_POLICY", "fail")
     monkeypatch.setattr(cri_stack, "_image_exists", lambda _image: False)
     with pytest.raises(RuntimeError, match="required image is missing"):
-        cri_stack._ensure_image("localhost/k1s-apishim:dev", "k1s-core-apishim")
+        cri_stack._ensure_image("docker.io/library/k1s-apishim:dev", "k1s-core-apishim")
 
 
 def test_ensure_image_build_choice_runs_local_build_push(monkeypatch) -> None:
-    app_image = "localhost/k1s-apishim:dev"
+    app_image = "docker.io/library/k1s-apishim:dev"
     pull_calls: list[str] = []
     state = {"app_built": False}
 

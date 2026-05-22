@@ -59,6 +59,7 @@ from ae.observability.http_api import (
 )
 from ae.ha.dashboard import HaDashboardProbeCache
 from ae.controller.agent_api import start_agent_api
+from ae.accelerators import detect_nvidia_accelerator_capabilities, merge_projected_gpu_labels
 from ae.observability.logging import configure_logging
 from ae.config.transport import (
     TransportConfig,
@@ -180,10 +181,13 @@ def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
         if profile:
             labels.setdefault("profile", profile)
         labels.setdefault("role", "controller")
+        capabilities = detect_nvidia_accelerator_capabilities()
+        labels = merge_projected_gpu_labels(labels, capabilities)
         store.upsert_node(
             node_id,
             name=name,
             labels=labels,
+            capabilities=capabilities,
             taints=[],
             backend=runtime_backend,
             endpoint=None,
@@ -618,11 +622,18 @@ def _reconcile_edge_ingress(store: SQLiteStateStore, edge_renderer=None) -> None
             status=status,
         )
 
-    if edge_renderer is not None:
-        try:
-            edge_renderer.render()
-        except Exception:
-            pass
+    _render_edge_ingress_config(edge_renderer)
+
+
+def _render_edge_ingress_config(edge_renderer=None) -> None:
+    if edge_renderer is None:
+        return
+    try:
+        edge_renderer.render()
+    except Exception as exc:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning("edge ingress render failed: %s", exc)
 
 
 def _edge_local_policy_unsupported(spec: dict) -> list[str]:
@@ -2901,6 +2912,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     _logging.getLogger(__name__).info(
                         "HA standby/unknown authority in --once mode; skipping reconcile"
                     )
+                    _render_edge_ingress_config(_edge_renderer)
                     if _storage_authority is not None:
                         _storage_authority.stop()
                     if _cronjob_authority is not None:
@@ -2976,6 +2988,16 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
     if etcd_maintenance_interval <= 0:
         etcd_maintenance_enabled = False
     last_etcd_maintenance = 0.0
+    edge_passive_render_interval = 0.0
+    if authority_config.enabled and _edge_renderer is not None:
+        edge_passive_render_interval = max(
+            1.0,
+            _parse_duration_seconds(
+                os.getenv("AE_EDGE_INGRESS_PASSIVE_RENDER_INTERVAL_S", "5"),
+                default=5.0,
+            ),
+        )
+    last_edge_passive_render = 0.0
     if etcd_maintenance_enabled:
         import logging as _logging
 
@@ -3111,10 +3133,17 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 t1 = time.time()
                 set_reconcile_metrics(ts_seconds=t1, duration_seconds=(t1 - t0))
                 last_full = now
+                last_edge_passive_render = now
                 # debounce
                 changed = False
                 time.sleep(max(0.001, args.debounce_ms / 1000.0))
             else:
+                if (
+                    edge_passive_render_interval > 0
+                    and (now - last_edge_passive_render) >= edge_passive_render_interval
+                ):
+                    _render_edge_ingress_config(_edge_renderer)
+                    last_edge_passive_render = now
                 time.sleep(0.1)
     except KeyboardInterrupt:
         pass

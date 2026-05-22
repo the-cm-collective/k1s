@@ -12,14 +12,26 @@ from typing import Any
 
 import requests
 
+from ae.accelerators import normalize_capabilities
 from ae.controller.health import HealthReport
-from ae.controller.spec import AppManifest, app_key_for_manifest
+from ae.controller.spec import (
+    DEFAULT_NAMESPACE,
+    AppManifest,
+    InferenceCellManifest,
+    InferenceCellSetManifest,
+    app_key,
+    app_key_for_manifest,
+)
 from ae.controller.state import (
     AuthorityObjectEntry,
     AppEvent,
     AppStatus,
     EdgeIngressPolicyRecord,
     EdgeIngressRouteRecord,
+    FabricSessionRecord,
+    InferenceCellEvent,
+    InferenceCellRecord,
+    InferenceCellSetRecord,
     NodeLease,
     NodeRecord,
     NodeStatus,
@@ -39,6 +51,7 @@ from ae.controller.state import (
     WorkOutboxEntry,
     WorkQueueLease,
     SQLiteStateStore,
+    _UNSET,
     _outbox_publish_msg_id,
     _outbox_publish_subject,
 )
@@ -447,6 +460,7 @@ class EtcdStateStore(SQLiteStateStore):
             "node_id",
             "name",
             "labels",
+            "capabilities",
             "taints",
             "backend",
             "endpoint",
@@ -498,12 +512,519 @@ class EtcdStateStore(SQLiteStateStore):
             out.append((key, self._decode(value), mod_rev))
         return out
 
+    def _create_json_if_absent(self, key: str, payload: dict) -> bool:
+        compare = [{"key": _b64encode(key), "target": "CREATE", "createRevision": "0"}]
+        success = [
+            {
+                "requestPut": {
+                    "key": _b64encode(key),
+                    "value": _b64encode(self._encode(payload)),
+                }
+            }
+        ]
+        failure = [{"requestRange": {"key": _b64encode(key), "limit": 1}}]
+        resp = self._client.txn(compare, success, failure)
+        return bool(resp.get("succeeded"))
+
     def _manifest_hash(self, manifest: AppManifest) -> str:
         payload = json.dumps(
             manifest.model_dump(by_alias=True, exclude_none=True),
             sort_keys=True,
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
+
+    # --- Inference state --------------------------------------------------
+    def _inference_key(self, name: str, namespace: str | None) -> str:
+        ns = str(namespace or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+        return app_key(name, ns)
+
+    def _inference_cell_store_key(self, name: str, namespace: str | None) -> str:
+        ns = str(namespace or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+        return self._k("inference", "cells", ns, str(name))
+
+    def _inference_cell_event_prefix(self, name: str, namespace: str | None) -> str:
+        ns = str(namespace or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+        return self._k("inference", "cell_events", ns, str(name))
+
+    def _inference_cellset_store_key(self, name: str, namespace: str | None) -> str:
+        ns = str(namespace or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+        return self._k("inference", "cellsets", ns, str(name))
+
+    def _fabric_session_key(self, session_id: str) -> str:
+        return self._k("inference", "fabric_sessions", session_id)
+
+    def _inference_gpu_lease_key(self, node_id: str, gpu_index: int) -> str:
+        return self._k("inference", "gpu_leases", node_id, str(int(gpu_index)))
+
+    def _inference_port_lease_key(self, node_id: str, port: int) -> str:
+        return self._k("inference", "port_leases", node_id, str(int(port)))
+
+    def _inference_node_lock_key(self, node_id: str) -> str:
+        return self._k("inference", "node_locks", node_id)
+
+    @staticmethod
+    def _json_object(value: Any) -> dict:
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _json_list(value: Any) -> list:
+        return value if isinstance(value, list) else []
+
+    def _cell_record_from_payload(self, rec: dict[str, Any] | None) -> InferenceCellRecord | None:
+        if not rec:
+            return None
+        try:
+            manifest = InferenceCellManifest.model_validate(rec.get("spec") or {})
+        except Exception:
+            return None
+        return InferenceCellRecord(
+            cell_key=str(rec.get("cell_key", "")),
+            namespace=str(rec.get("namespace", DEFAULT_NAMESPACE)),
+            cell_id=str(rec.get("cell_id", "")),
+            manifest=manifest,
+            phase=str(rec.get("phase", "PENDING")),
+            tp=int(rec.get("tp", 0) or 0),
+            pp=int(rec.get("pp", 0) or 0),
+            executor_type=str(rec.get("executor_type", "")),
+            ray_scope=str(
+                rec.get("ray_scope")
+                or getattr(getattr(manifest.spec, "executor", None), "ray_scope", "")
+                or ""
+            ),
+            allocations=self._json_object(rec.get("allocations")),
+            admission=self._json_object(rec.get("admission")),
+            conditions=self._json_object(rec.get("conditions")),
+            restarts=int(rec.get("restarts", 0) or 0),
+            last_error=(
+                str(rec.get("last_error")) if rec.get("last_error") is not None else None
+            ),
+            source=str(rec.get("source", "unknown")),
+            updated_at=_dt_from_iso(
+                rec.get("updated_at"),
+                default=datetime.fromtimestamp(0, tz=timezone.utc),
+            )
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+        )
+
+    def _cellset_record_from_payload(
+        self, rec: dict[str, Any] | None
+    ) -> InferenceCellSetRecord | None:
+        if not rec:
+            return None
+        try:
+            manifest = InferenceCellSetManifest.model_validate(rec.get("spec") or {})
+        except Exception:
+            return None
+        return InferenceCellSetRecord(
+            set_key=str(rec.get("set_key", "")),
+            namespace=str(rec.get("namespace", DEFAULT_NAMESPACE)),
+            name=str(rec.get("name", "")),
+            manifest=manifest,
+            desired=int(rec.get("desired", 0) or 0),
+            current=int(rec.get("current", 0) or 0),
+            ready=int(rec.get("ready", 0) or 0),
+            last_error=(
+                str(rec.get("last_error")) if rec.get("last_error") is not None else None
+            ),
+            source=str(rec.get("source", "unknown")),
+            updated_at=_dt_from_iso(
+                rec.get("updated_at"),
+                default=datetime.fromtimestamp(0, tz=timezone.utc),
+            )
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+        )
+
+    def register_inference_cell(
+        self,
+        manifest: InferenceCellManifest,
+        *,
+        source: str | None = None,
+    ) -> None:
+        namespace = manifest.metadata.namespace or DEFAULT_NAMESPACE
+        cell_id = manifest.metadata.name
+        key = self._inference_cell_store_key(cell_id, namespace)
+        cell_key = self._inference_key(cell_id, namespace)
+        existing, _mod_rev = self._get_json(key)
+        now_iso = _now_iso()
+        payload = {
+            "cell_key": cell_key,
+            "namespace": namespace,
+            "cell_id": cell_id,
+            "spec": manifest.model_dump(by_alias=True),
+            "model_id": manifest.spec.model.model_id,
+            "tp": int(manifest.spec.parallelism.tp),
+            "pp": int(manifest.spec.parallelism.pp),
+            "executor_type": str(manifest.spec.executor.type),
+            "ray_scope": str(manifest.spec.executor.ray_scope),
+            "phase": str((existing or {}).get("phase") or "PENDING"),
+            "allocations": self._json_object((existing or {}).get("allocations")),
+            "admission": self._json_object((existing or {}).get("admission")),
+            "conditions": self._json_object((existing or {}).get("conditions")),
+            "restarts": int((existing or {}).get("restarts", 0) or 0),
+            "last_error": (existing or {}).get("last_error"),
+            "source": str(source or "unknown"),
+            "created_at": str((existing or {}).get("created_at") or now_iso),
+            "updated_at": now_iso,
+        }
+        self._put_json(key, payload)
+
+    def get_inference_cell(
+        self,
+        name: str,
+        namespace: str | None = None,
+    ) -> InferenceCellRecord | None:
+        rec, _mod_rev = self._get_json(self._inference_cell_store_key(name, namespace))
+        return self._cell_record_from_payload(rec)
+
+    def list_inference_cells(self, namespace: str | None = None) -> list[InferenceCellRecord]:
+        prefix = (
+            self._k("inference", "cells", str(namespace or DEFAULT_NAMESPACE))
+            if namespace
+            else self._k("inference", "cells")
+        )
+        rows = self._list_prefix(prefix)
+        items: list[InferenceCellRecord] = []
+        for _key, rec, _mod_rev in rows:
+            item = self._cell_record_from_payload(rec)
+            if item is not None:
+                items.append(item)
+        items.sort(key=lambda item: (item.namespace, item.cell_id))
+        return items
+
+    def update_inference_cell_status(
+        self,
+        name: str,
+        namespace: str | None = None,
+        *,
+        phase: str | None = None,
+        allocations: dict | None = None,
+        admission: dict | None = None,
+        conditions: dict | None = None,
+        restarts: int | None = None,
+        last_error: str | None | object = _UNSET,
+    ) -> bool:
+        key = self._inference_cell_store_key(name, namespace)
+        rec, _mod_rev = self._get_json(key)
+        if not rec:
+            return False
+        rec["phase"] = str(phase or rec.get("phase") or "PENDING")
+        rec["allocations"] = (
+            allocations if allocations is not None else self._json_object(rec.get("allocations"))
+        )
+        rec["admission"] = (
+            admission if admission is not None else self._json_object(rec.get("admission"))
+        )
+        rec["conditions"] = (
+            conditions if conditions is not None else self._json_object(rec.get("conditions"))
+        )
+        rec["restarts"] = int(restarts if restarts is not None else rec.get("restarts", 0) or 0)
+        if last_error is not _UNSET:
+            rec["last_error"] = last_error
+        rec["updated_at"] = _now_iso()
+        self._put_json(key, rec)
+        return True
+
+    def delete_inference_cell(self, name: str, namespace: str | None = None) -> None:
+        key = self._inference_cell_store_key(name, namespace)
+        rec, _mod_rev = self._get_json(key)
+        self._delete(key)
+        self._delete_prefix(self._inference_cell_event_prefix(name, namespace))
+        if not rec:
+            return
+        cell_key = str(rec.get("cell_key") or self._inference_key(name, namespace))
+        for session in self.list_fabric_sessions():
+            if session.cell_key == cell_key:
+                self.delete_fabric_session(session.session_id)
+        for lease_key, lease_rec, _rev in self._list_prefix(self._k("inference", "gpu_leases")):
+            if str(lease_rec.get("cell_key") or "") == cell_key:
+                self._delete(lease_key)
+        for lease_key, lease_rec, _rev in self._list_prefix(self._k("inference", "port_leases")):
+            if str(lease_rec.get("cell_key") or "") == cell_key:
+                self._delete(lease_key)
+        for lock_key, lock_rec, _rev in self._list_prefix(self._k("inference", "node_locks")):
+            if str(lock_rec.get("cell_key") or "") == cell_key:
+                self._delete(lock_key)
+
+    def record_inference_cell_event(
+        self, name: str, namespace: str | None, event_type: str, message: str
+    ) -> None:
+        created_at = _now_iso()
+        event_key = (
+            f"{self._inference_cell_event_prefix(name, namespace)}/{created_at}-{uuid.uuid4().hex}"
+        )
+        payload = {
+            "cell_key": self._inference_key(name, namespace),
+            "event_type": str(event_type),
+            "message": str(message),
+            "created_at": created_at,
+        }
+        self._put_json(event_key, payload)
+
+    def list_inference_cell_events(
+        self, name: str, namespace: str | None = None, limit: int = 20
+    ) -> list[InferenceCellEvent]:
+        rows = self._list_prefix(self._inference_cell_event_prefix(name, namespace))
+        items: list[InferenceCellEvent] = []
+        for _key, rec, _mod_rev in rows:
+            items.append(
+                InferenceCellEvent(
+                    cell_key=self._inference_key(name, namespace),
+                    event_type=str(rec.get("event_type", "")),
+                    message=str(rec.get("message", "")),
+                    created_at=_dt_from_iso(
+                        rec.get("created_at"),
+                        default=datetime.fromtimestamp(0, tz=timezone.utc),
+                    )
+                    or datetime.fromtimestamp(0, tz=timezone.utc),
+                )
+            )
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: int(limit)]
+
+    def register_inference_cellset(
+        self, manifest: InferenceCellSetManifest, *, source: str | None = None
+    ) -> None:
+        namespace = manifest.metadata.namespace or DEFAULT_NAMESPACE
+        name = manifest.metadata.name
+        key = self._inference_cellset_store_key(name, namespace)
+        existing, _mod_rev = self._get_json(key)
+        now_iso = _now_iso()
+        payload = {
+            "set_key": self._inference_key(name, namespace),
+            "namespace": namespace,
+            "name": name,
+            "spec": manifest.model_dump(by_alias=True),
+            "desired": int(manifest.spec.replicas),
+            "current": int((existing or {}).get("current", 0) or 0),
+            "ready": int((existing or {}).get("ready", 0) or 0),
+            "last_error": (existing or {}).get("last_error"),
+            "source": str(source or "unknown"),
+            "created_at": str((existing or {}).get("created_at") or now_iso),
+            "updated_at": now_iso,
+        }
+        self._put_json(key, payload)
+
+    def get_inference_cellset(
+        self, name: str, namespace: str | None = None
+    ) -> InferenceCellSetRecord | None:
+        rec, _mod_rev = self._get_json(self._inference_cellset_store_key(name, namespace))
+        return self._cellset_record_from_payload(rec)
+
+    def list_inference_cellsets(self, namespace: str | None = None) -> list[InferenceCellSetRecord]:
+        prefix = (
+            self._k("inference", "cellsets", str(namespace or DEFAULT_NAMESPACE))
+            if namespace
+            else self._k("inference", "cellsets")
+        )
+        rows = self._list_prefix(prefix)
+        items: list[InferenceCellSetRecord] = []
+        for _key, rec, _mod_rev in rows:
+            item = self._cellset_record_from_payload(rec)
+            if item is not None:
+                items.append(item)
+        items.sort(key=lambda item: (item.namespace, item.name))
+        return items
+
+    def update_inference_cellset_status(
+        self,
+        name: str,
+        namespace: str | None = None,
+        *,
+        desired: int | None = None,
+        current: int | None = None,
+        ready: int | None = None,
+        last_error: str | None | object = _UNSET,
+    ) -> bool:
+        key = self._inference_cellset_store_key(name, namespace)
+        rec, _mod_rev = self._get_json(key)
+        if not rec:
+            return False
+        rec["desired"] = int(desired if desired is not None else rec.get("desired", 0) or 0)
+        rec["current"] = int(current if current is not None else rec.get("current", 0) or 0)
+        rec["ready"] = int(ready if ready is not None else rec.get("ready", 0) or 0)
+        if last_error is not _UNSET:
+            rec["last_error"] = last_error
+        rec["updated_at"] = _now_iso()
+        self._put_json(key, rec)
+        return True
+
+    def upsert_fabric_session(
+        self,
+        *,
+        session_id: str,
+        cell_key: str,
+        policy_mode: str,
+        members: list[dict],
+        allowed_rules: list[dict],
+        status: str,
+        expires_at: datetime | None,
+    ) -> None:
+        key = self._fabric_session_key(session_id)
+        existing, _mod_rev = self._get_json(key)
+        now_iso = _now_iso()
+        payload = {
+            "session_id": session_id,
+            "cell_key": cell_key,
+            "policy_mode": policy_mode,
+            "members": list(members),
+            "allowed_rules": list(allowed_rules),
+            "status": status,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "created_at": str((existing or {}).get("created_at") or now_iso),
+            "updated_at": now_iso,
+        }
+        self._put_json(key, payload)
+
+    def delete_fabric_session(self, session_id: str) -> None:
+        self._delete(self._fabric_session_key(session_id))
+
+    def list_fabric_sessions(
+        self, cell_name: str | None = None, namespace: str | None = None
+    ) -> list[FabricSessionRecord]:
+        rows = self._list_prefix(self._k("inference", "fabric_sessions"))
+        wanted_cell_key = self._inference_key(cell_name, namespace) if cell_name else None
+        items: list[FabricSessionRecord] = []
+        for _key, rec, _mod_rev in rows:
+            cell_key = str(rec.get("cell_key", ""))
+            if wanted_cell_key and cell_key != wanted_cell_key:
+                continue
+            items.append(
+                FabricSessionRecord(
+                    session_id=str(rec.get("session_id", "")),
+                    cell_key=cell_key,
+                    policy_mode=str(rec.get("policy_mode", "")),
+                    members=self._json_list(rec.get("members")),
+                    allowed_rules=self._json_list(rec.get("allowed_rules")),
+                    status=str(rec.get("status", "")),
+                    expires_at=_dt_from_iso(rec.get("expires_at")),
+                    created_at=_dt_from_iso(
+                        rec.get("created_at"),
+                        default=datetime.fromtimestamp(0, tz=timezone.utc),
+                    )
+                    or datetime.fromtimestamp(0, tz=timezone.utc),
+                    updated_at=_dt_from_iso(
+                        rec.get("updated_at"),
+                        default=datetime.fromtimestamp(0, tz=timezone.utc),
+                    )
+                    or datetime.fromtimestamp(0, tz=timezone.utc),
+                )
+            )
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items
+
+    def acquire_inference_gpu_leases(
+        self,
+        *,
+        lease_id: str,
+        cell_key: str,
+        slots: list[tuple[str, int]],
+        ttl_seconds: int,
+    ) -> bool:
+        now = _now()
+        created_keys: list[str] = []
+        for node_id, gpu_idx in slots:
+            key = self._inference_gpu_lease_key(node_id, int(gpu_idx))
+            payload = {
+                "node_id": str(node_id),
+                "gpu_index": int(gpu_idx),
+                "lease_id": str(lease_id),
+                "cell_key": str(cell_key),
+                "expires_at": (now + timedelta(seconds=max(1, int(ttl_seconds)))).isoformat(),
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+            if not self._create_json_if_absent(key, payload):
+                for created_key in created_keys:
+                    self._delete(created_key)
+                return False
+            created_keys.append(key)
+        return True
+
+    def release_inference_gpu_leases(self, lease_id: str) -> None:
+        for key, rec, _mod_rev in self._list_prefix(self._k("inference", "gpu_leases")):
+            if str(rec.get("lease_id", "")) == str(lease_id):
+                self._delete(key)
+
+    def reserve_inference_port(
+        self,
+        *,
+        lease_id: str,
+        cell_key: str,
+        node_id: str,
+        port: int,
+        ttl_seconds: int,
+    ) -> bool:
+        now = _now()
+        payload = {
+            "node_id": str(node_id),
+            "port": int(port),
+            "lease_id": str(lease_id),
+            "cell_key": str(cell_key),
+            "expires_at": (now + timedelta(seconds=max(1, int(ttl_seconds)))).isoformat(),
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }
+        return self._create_json_if_absent(self._inference_port_lease_key(node_id, int(port)), payload)
+
+    def reserve_inference_port_from_range(
+        self,
+        *,
+        lease_id: str,
+        cell_key: str,
+        node_id: str,
+        start: int,
+        end: int,
+        ttl_seconds: int,
+    ) -> int | None:
+        lo = int(min(start, end))
+        hi = int(max(start, end))
+        for port in range(lo, hi + 1):
+            if self.reserve_inference_port(
+                lease_id=lease_id,
+                cell_key=cell_key,
+                node_id=node_id,
+                port=port,
+                ttl_seconds=ttl_seconds,
+            ):
+                return port
+        return None
+
+    def release_inference_port_leases(self, lease_id: str) -> None:
+        for key, rec, _mod_rev in self._list_prefix(self._k("inference", "port_leases")):
+            if str(rec.get("lease_id", "")) == str(lease_id):
+                self._delete(key)
+
+    def acquire_inference_node_locks(
+        self,
+        *,
+        lease_id: str,
+        cell_key: str,
+        node_ids: list[str],
+        ttl_seconds: int,
+    ) -> bool:
+        now = _now()
+        created_keys: list[str] = []
+        for node_id in node_ids:
+            key = self._inference_node_lock_key(node_id)
+            payload = {
+                "node_id": str(node_id),
+                "lease_id": str(lease_id),
+                "cell_key": str(cell_key),
+                "expires_at": (now + timedelta(seconds=max(1, int(ttl_seconds)))).isoformat(),
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+            if not self._create_json_if_absent(key, payload):
+                for created_key in created_keys:
+                    self._delete(created_key)
+                return False
+            created_keys.append(key)
+        return True
+
+    def release_inference_node_locks(self, lease_id: str) -> None:
+        for key, rec, _mod_rev in self._list_prefix(self._k("inference", "node_locks")):
+            if str(rec.get("lease_id", "")) == str(lease_id):
+                self._delete(key)
 
     # --- Status snapshots -------------------------------------------------
     def record_snapshot(
@@ -2207,6 +2728,7 @@ class EtcdStateStore(SQLiteStateStore):
         *,
         name: str | None = None,
         labels: dict | None = None,
+        capabilities: dict | None = None,
         taints: list | None = None,
         backend: str | None = None,
         endpoint: str | None = None,
@@ -2219,11 +2741,13 @@ class EtcdStateStore(SQLiteStateStore):
         existing, _ = self._get_json(node_key)
         if cordoned is None:
             cordoned = bool(existing.get("cordoned", False)) if existing else False
+        normalized_capabilities = normalize_capabilities(capabilities)
         created_at = existing.get("created_at") if existing else _now_iso()
         payload = {
             "node_id": node_id,
             "name": name,
             "labels": labels or {},
+            "capabilities": normalized_capabilities,
             "taints": taints or [],
             "backend": backend,
             "endpoint": endpoint,
@@ -2342,6 +2866,7 @@ class EtcdStateStore(SQLiteStateStore):
                 node_id=str(rec.get("node_id", "")),
                 name=rec.get("name"),
                 labels=rec.get("labels") or {},
+                capabilities=normalize_capabilities(rec.get("capabilities")),
                 taints=rec.get("taints") or [],
                 backend=rec.get("backend"),
                 endpoint=rec.get("endpoint"),
@@ -2370,6 +2895,7 @@ class EtcdStateStore(SQLiteStateStore):
             node_id=str(rec.get("node_id", "")),
             name=rec.get("name"),
             labels=rec.get("labels") or {},
+            capabilities=normalize_capabilities(rec.get("capabilities")),
             taints=rec.get("taints") or [],
             backend=rec.get("backend"),
             endpoint=rec.get("endpoint"),

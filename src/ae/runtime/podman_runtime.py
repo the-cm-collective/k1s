@@ -17,6 +17,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
@@ -25,6 +26,7 @@ from ae.controller.spec import (
     runtime_labels_for_manifest,
     split_app_key,
 )
+from ae.runtime.command_args import kubernetes_command_parts
 
 from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 from .ports import choose_host_port
@@ -78,6 +80,8 @@ class PodmanRuntime(RuntimeAdapter):
         self._apishim_store = None
         self._volume_manager_checked = False
         self._volume_manager = None
+        self._exec_procs: dict[str, subprocess.Popen[bytes]] = {}
+        self._exec_exit_codes: dict[str, int] = {}
 
     def _maybe_inject_runtime(self, argv: list[str]) -> None:
         """Inject --runtime into a `podman run` argv in-place when AE_OCI_RUNTIME is set."""
@@ -480,11 +484,15 @@ class PodmanRuntime(RuntimeAdapter):
                             cmd += ["-e", f"{item['name']}={item['value']}"]
                     # Image and command
                     img = getattr(csp, "image")  # noqa: B009
+                    entrypoint, runtime_args = kubernetes_command_parts(
+                        getattr(csp, "command", None),
+                        getattr(csp, "args", None),
+                    )
+                    if entrypoint:
+                        cmd += ["--entrypoint", entrypoint[0]]
                     cmd += [img]
-                    combined: list[str] = []
-                    combined += [str(x) for x in (getattr(csp, "command", []) or [])]  # noqa: B009
-                    combined += [str(x) for x in (getattr(csp, "args", []) or [])]  # noqa: B009
-                    cmd += combined
+                    if runtime_args:
+                        cmd += runtime_args
                     self._run_ok(cmd, allow_fail=True)
             except Exception:
                 continue
@@ -536,7 +544,11 @@ class PodmanRuntime(RuntimeAdapter):
         if follow:
             try:
                 with subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                    self._runtime_cmd(cmd),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
                 ) as proc:  # type: ignore
                     if proc.stdout is not None:
                         for line in proc.stdout:
@@ -593,7 +605,11 @@ class PodmanRuntime(RuntimeAdapter):
         if follow:
             try:
                 with subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                    self._runtime_cmd(cmd),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
                 ) as proc:  # type: ignore
                     if proc.stdout is not None:
                         for line in proc.stdout:
@@ -634,7 +650,7 @@ class PodmanRuntime(RuntimeAdapter):
         cmd = [self._bin, "exec", cid[0], *[str(x) for x in (command or [])]]
         try:
             cp = subprocess.run(
-                cmd,
+                self._runtime_cmd(cmd),
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -716,7 +732,7 @@ class PodmanRuntime(RuntimeAdapter):
         argv.extend([str(x) for x in command])
         try:
             proc = subprocess.Popen(
-                argv,
+                self._runtime_cmd(argv),
                 stdin=slave,
                 stdout=slave,
                 stderr=slave,
@@ -764,7 +780,9 @@ class PodmanRuntime(RuntimeAdapter):
                 except Exception:
                     pass
 
-        return _FDAsSocket(master, proc), f"{cid}:{proc.pid}"
+        exec_id = f"{cid}:{proc.pid}"
+        self._exec_procs[exec_id] = proc
+        return _FDAsSocket(master, proc), exec_id
 
     def exec_resize(
         self, exec_id: str, *, height: int | None = None, width: int | None = None
@@ -786,19 +804,40 @@ class PodmanRuntime(RuntimeAdapter):
             return
 
     def exec_exit_code(self, exec_id: str) -> int:
+        status = self.exec_status(exec_id)
+        if status is None:
+            return 0
+        _running, exit_code = status
+        return int(exit_code or 0)
+
+    def exec_status(self, exec_id: str) -> tuple[bool, int | None] | None:
+        if exec_id in self._exec_exit_codes:
+            return False, int(self._exec_exit_codes.get(exec_id, 0))
+        proc = self._exec_procs.get(exec_id)
+        if proc is not None:
+            try:
+                rc = proc.poll()
+            except Exception:
+                rc = None
+            if rc is None:
+                return True, None
+            self._exec_exit_codes.setdefault(exec_id, int(rc))
+            return False, int(rc)
         try:
             if ":" in exec_id:
                 _cid, pid_s = exec_id.split(":", 1)
                 pid = int(pid_s)
                 _, sts = os.waitpid(pid, os.WNOHANG)
                 if sts == 0:
-                    return 0
+                    return True, None
                 if os.WIFEXITED(sts):
-                    return int(os.WEXITSTATUS(sts))
-                return 0
+                    rc = int(os.WEXITSTATUS(sts))
+                    self._exec_exit_codes.setdefault(exec_id, rc)
+                    return False, rc
+                return False, 0
         except Exception:
-            return 0
-        return 0
+            return None
+        return None
 
     def remove_app(self, app_name: str) -> int:
         removed = 0
@@ -978,6 +1017,9 @@ class PodmanRuntime(RuntimeAdapter):
                 pass
 
             # Image and command
+            entrypoint, runtime_args = kubernetes_command_parts(command, args)
+            if entrypoint:
+                argv += ["--entrypoint", entrypoint[0]]
             argv += [image]
             if (
                 "/" not in image
@@ -985,12 +1027,13 @@ class PodmanRuntime(RuntimeAdapter):
                 and self._image_exists(f"localhost/{image}")
             ):
                 argv[-1] = f"localhost/{image}"
-            argv += command + args
+            if runtime_args:
+                argv += runtime_args
 
             # Execute with optional timeout
             try:
                 cp = subprocess.run(
-                    argv,
+                    self._runtime_cmd(argv),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -1477,6 +1520,12 @@ class PodmanRuntime(RuntimeAdapter):
             cmd += ["--workdir", str(manifest.spec.working_dir)]
 
         # Image and command
+        entrypoint, runtime_args = kubernetes_command_parts(
+            getattr(manifest.spec, "command", None),
+            getattr(manifest.spec, "args", None),
+        )
+        if entrypoint:
+            cmd += ["--entrypoint", entrypoint[0]]
         cmd += [manifest.spec.image]
         # If unqualified name missing but localhost/<name> exists, use that
         if (
@@ -1485,14 +1534,8 @@ class PodmanRuntime(RuntimeAdapter):
             and self._image_exists(f"localhost/{manifest.spec.image}")
         ):
             cmd[-1] = f"localhost/{manifest.spec.image}"
-        # Build command/args following K8s semantics
-        combined: list[str] = []
-        if getattr(manifest.spec, "command", None):
-            combined += [str(x) for x in (manifest.spec.command or [])]
-        if getattr(manifest.spec, "args", None):
-            combined += [str(x) for x in (manifest.spec.args or [])]
-        if combined:
-            cmd += combined
+        if runtime_args:
+            cmd += runtime_args
 
         # Respect AE_OCI_RUNTIME for container creation
         self._maybe_inject_runtime(cmd)
@@ -1733,13 +1776,20 @@ class PodmanRuntime(RuntimeAdapter):
             and "container" in lowered
         )
 
+    def _runtime_cmd(self, cmd: list[str]) -> list[str]:
+        return cmd
+
     def _run_ok(self, argv: list[str], *, allow_fail: bool = False) -> _RunResult:
         retries = self._podman_retry_max if not allow_fail else 0
         attempt = 0
         while True:
             try:
                 cp = subprocess.run(
-                    argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                    self._runtime_cmd(argv),
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
                 )
             except FileNotFoundError as exc:
                 raise RuntimeError(
@@ -2194,14 +2244,16 @@ class PodmanRuntime(RuntimeAdapter):
 
     def _podman_login(self, registry: str, username: str, password: str) -> None:
         cp = subprocess.run(
-            [
-                self._bin,
-                "login",
-                "--username",
-                str(username),
-                "--password-stdin",
-                str(registry),
-            ],
+            self._runtime_cmd(
+                [
+                    self._bin,
+                    "login",
+                    "--username",
+                    str(username),
+                    "--password-stdin",
+                    str(registry),
+                ]
+            ),
             input=str(password),
             text=True,
             stdout=subprocess.PIPE,

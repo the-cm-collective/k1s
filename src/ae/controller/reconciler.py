@@ -15,8 +15,10 @@ from typing import Any
 
 from ae.controller.health import HealthManager, HealthReport, PodHealth
 from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, load_manifest
+from ae.controller.spec import HostAlias, split_app_key
 from ae.runtime import RuntimeAdapter, RuntimeResult
 from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
+from ae.accelerators import detect_nvidia_accelerator_capabilities, merge_projected_gpu_labels
 
 
 def _record_event_metric_safe(name: str) -> None:
@@ -32,6 +34,22 @@ def _record_event_metric_safe(name: str) -> None:
 def _truthy_env(name: str, default: str = "0") -> bool:
     raw = os.getenv(name, default)
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_labels(raw: str | None) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    if not raw:
+        return labels
+    for part in str(raw).split(","):
+        item = part.strip()
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            labels[key] = value
+    return labels
 
 
 from .state import SQLiteStateStore
@@ -50,6 +68,7 @@ PV_RESOURCE = "persistentvolumes"
 LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
 WAIT_FOR_FIRST_CONSUMER = "WaitForFirstConsumer"
 SELECTED_NODE_ANNOTATION = "volume.kubernetes.io/selected-node"
+CONFIG_SECRET_FALLBACK_ENV = "AE_RECONCILE_ALLOW_CONFIG_SECRET_FALLBACK"
 
 
 @dataclass(slots=True)
@@ -105,6 +124,9 @@ class Reconciler:
         self._runtime_cache: dict[tuple[str, str], RuntimeAdapter] = {}
         self._base_runtime = getattr(runtime, "_local", runtime)
         self._mutation_authority = authority
+        self._direct_containerd_alias_refresh_depth = 0
+        self._direct_containerd_refresh_service_ips: dict[str, str] = {}
+        self._direct_containerd_alias_refresh_no_overlap = 0
         # Inject exec callback for exec probes
         try:
             self._health_manager.set_exec_callback(self._exec_across_runtimes)
@@ -194,12 +216,27 @@ class Reconciler:
             return str(env_backend).strip().lower()
         return self._runtime.__class__.__name__.lower()
 
+    def _local_node_metadata(
+        self,
+        current_labels: dict | None = None,
+    ) -> tuple[dict[str, str], dict]:
+        labels = {str(key): str(value) for key, value in dict(current_labels or {}).items()}
+        labels.update(_parse_labels(os.getenv("AE_NODE_LABELS")))
+        profile = (os.getenv("AE_NODE_PROFILE") or "").strip()
+        if profile:
+            labels.setdefault("profile", profile)
+        labels.setdefault("role", "controller")
+        capabilities = detect_nvidia_accelerator_capabilities()
+        labels = merge_projected_gpu_labels(labels, capabilities)
+        return labels, capabilities
+
     def _ensure_local_node(self) -> None:
         if not self._register_local_node:
             return
         try:
             node_id = os.getenv("AE_NODE_ID") or socket.gethostname()
             name = os.getenv("AE_NODE_NAME") or node_id
+            labels, capabilities = self._local_node_metadata()
             existing = None
             try:
                 existing = self._state_store.get_node(node_id)
@@ -214,7 +251,8 @@ class Reconciler:
                 self._state_store.upsert_node(
                     node_id,
                     name=name,
-                    labels={"role": "controller"},
+                    labels=labels,
+                    capabilities=capabilities,
                     taints=[],
                     backend=self._runtime_backend_name(),
                     endpoint=None,
@@ -227,6 +265,19 @@ class Reconciler:
             # Refresh heartbeat only for local/controller nodes (no endpoint or role label).
             labels = getattr(node, "labels", {}) or {}
             if getattr(node, "endpoint", None) is None or labels.get("role") == "controller":
+                merged_labels, capabilities = self._local_node_metadata(labels)
+                self._state_store.upsert_node(
+                    node_id,
+                    name=getattr(node, "name", None) or name,
+                    labels=merged_labels,
+                    capabilities=capabilities,
+                    taints=getattr(node, "taints", []) or [],
+                    backend=getattr(node, "backend", None) or self._runtime_backend_name(),
+                    endpoint=getattr(node, "endpoint", None),
+                    pod_cidr=getattr(node, "pod_cidr", None),
+                    wg_pubkey=getattr(node, "wg_pubkey", None),
+                    rp_pubkey=getattr(node, "rp_pubkey", None),
+                )
                 self._state_store.record_heartbeat(node_id, "Ready")
         except Exception:
             pass
@@ -243,6 +294,7 @@ class Reconciler:
         node_id: str | None,
     ) -> RuntimeResult:
         """Call ensure_app with backward-compatible fallbacks for older runtimes."""
+        manifest = self._with_direct_containerd_service_aliases(runtime, manifest)
         try:
             return runtime.ensure_app(  # type: ignore[arg-type]
                 manifest,
@@ -264,6 +316,401 @@ class Reconciler:
             except TypeError:
                 return runtime.ensure_app(manifest, revision)  # type: ignore[arg-type]
 
+    def _with_direct_containerd_service_aliases(
+        self,
+        runtime: RuntimeAdapter,
+        manifest: AppManifest,
+        *,
+        service_ips: dict[str, str] | None = None,
+    ) -> AppManifest:
+        if not self._is_direct_containerd_runtime(runtime):
+            return manifest
+
+        current_app = app_key_for_manifest(manifest)
+        explicit_aliases = list(getattr(manifest.spec, "host_aliases", []) or [])
+        used_hostnames = self._host_alias_hostnames(explicit_aliases)
+        generated: list[HostAlias] = []
+
+        merged_service_ips = dict(self._direct_containerd_refresh_service_ips)
+        merged_service_ips.update(service_ips or {})
+        for _service_app, service_ns, service_name, endpoint_ip in (
+            self._direct_containerd_service_alias_sources(
+                manifest,
+                current_app,
+                service_ips=merged_service_ips,
+            )
+        ):
+            hostnames = [
+                service_name,
+                f"{service_name}.{service_ns}",
+                f"{service_name}.{service_ns}.svc",
+                f"{service_name}.{service_ns}.svc.cluster.local",
+            ]
+            filtered = [name for name in hostnames if name not in used_hostnames]
+            if not filtered:
+                continue
+            used_hostnames.update(filtered)
+            generated.append(HostAlias(ip=endpoint_ip, hostnames=filtered))
+
+        if not generated:
+            return manifest
+        updated_spec = manifest.spec.model_copy(
+            update={"host_aliases": [*explicit_aliases, *generated]}
+        )
+        return manifest.model_copy(update={"spec": updated_spec})
+
+    def _direct_containerd_service_alias_sources(
+        self,
+        manifest: AppManifest,
+        current_app: str,
+        *,
+        service_ips: dict[str, str] | None = None,
+    ) -> list[tuple[str, str, str, str]]:
+        current_ns, _current_name = split_app_key(current_app)
+        referenced_hosts = self._manifest_reference_hosts(manifest)
+        if not referenced_hosts:
+            return []
+        explicit_ips = {
+            str(app or "").strip(): str(ip or "").strip()
+            for app, ip in (service_ips or {}).items()
+            if str(app or "").strip() and self._service_endpoint_ip_allowed(str(ip or ""))
+        }
+        sources: list[tuple[str, str, str, str]] = []
+        seen: set[str] = set()
+
+        try:
+            services = list(self._state_store.list_services())
+        except Exception:
+            services = []
+        for service in services:
+            service_app = str(getattr(service, "app_name", "") or "").strip()
+            if not service_app or service_app == current_app:
+                continue
+            service_ns, service_name = split_app_key(service_app)
+            if service_ns != current_ns or not service_name:
+                continue
+            if not self._service_reference_matches(referenced_hosts, service_ns, service_name):
+                continue
+            endpoint_ip = (
+                explicit_ips.get(service_app)
+                or self._ready_service_endpoint_ip(service_app)
+                or self._ready_service_pod_ip(service_app)
+            )
+            if endpoint_ip:
+                sources.append((service_app, service_ns, service_name, endpoint_ip))
+                seen.add(service_app)
+
+        try:
+            registered = list(self._state_store.list_registered_apps())
+        except Exception:
+            registered = []
+        for entry in registered:
+            service_app = str(getattr(entry, "app_name", "") or "").strip()
+            if not service_app or service_app == current_app or service_app in seen:
+                continue
+            service_ns, service_name = split_app_key(service_app)
+            if service_ns != current_ns or not service_name:
+                continue
+            if not self._service_reference_matches(referenced_hosts, service_ns, service_name):
+                continue
+            manifest = getattr(entry, "manifest", None)
+            if manifest is None or not getattr(getattr(manifest, "spec", None), "service", None):
+                continue
+            endpoint_ip = explicit_ips.get(service_app) or self._ready_service_pod_ip(service_app)
+            if not endpoint_ip:
+                continue
+            sources.append((service_app, service_ns, service_name, endpoint_ip))
+            seen.add(service_app)
+
+        return sources
+
+    def _is_direct_containerd_runtime(self, runtime: RuntimeAdapter) -> bool:
+        try:
+            from ae.runtime.containerd_runtime import ContainerdRuntime
+
+            local_runtime = getattr(runtime, "_local", runtime)
+            return isinstance(local_runtime, ContainerdRuntime)
+        except Exception:
+            return False
+
+    def _host_alias_hostnames(self, aliases: list[object]) -> set[str]:
+        names: set[str] = set()
+        for alias in aliases:
+            if isinstance(alias, dict):
+                values = alias.get("hostnames") or alias.get("hostNames") or []
+            else:
+                values = getattr(alias, "hostnames", None) or []
+            for value in values or []:
+                text = str(value or "").strip()
+                if text:
+                    names.add(text)
+        return names
+
+    def _manifest_references_service(
+        self,
+        manifest: AppManifest,
+        service_ns: str,
+        service_name: str,
+    ) -> bool:
+        return self._service_reference_matches(
+            self._manifest_reference_hosts(manifest),
+            service_ns,
+            service_name,
+        )
+
+    def _service_reference_matches(
+        self,
+        referenced_hosts: set[str],
+        service_ns: str,
+        service_name: str,
+    ) -> bool:
+        service_ns = str(service_ns or "").strip().lower()
+        service_name = str(service_name or "").strip().lower()
+        if not service_ns or not service_name:
+            return False
+        candidates = {
+            service_name,
+            f"{service_name}.{service_ns}",
+            f"{service_name}.{service_ns}.svc",
+            f"{service_name}.{service_ns}.svc.cluster.local",
+        }
+        return bool(referenced_hosts & candidates)
+
+    def _manifest_reference_hosts(self, manifest: AppManifest) -> set[str]:
+        hosts: set[str] = set()
+        for text in self._manifest_reference_texts(manifest):
+            hosts.update(self._reference_hosts_from_text(text))
+        return hosts
+
+    def _manifest_reference_texts(self, manifest: AppManifest) -> list[str]:
+        spec = getattr(manifest, "spec", None)
+        if spec is None:
+            return []
+        texts: list[str] = []
+        texts.extend(str(value) for value in (getattr(spec, "command", None) or []))
+        texts.extend(str(value) for value in (getattr(spec, "args", None) or []))
+        texts.extend(self._env_reference_texts(getattr(spec, "env", None) or []))
+        for container in list(getattr(spec, "containers", None) or []) + list(
+            getattr(spec, "init_containers", None) or []
+        ):
+            if isinstance(container, dict):
+                texts.extend(str(value) for value in (container.get("command") or []))
+                texts.extend(str(value) for value in (container.get("args") or []))
+                texts.extend(self._env_reference_texts(container.get("env") or []))
+            else:
+                texts.extend(str(value) for value in (getattr(container, "command", None) or []))
+                texts.extend(str(value) for value in (getattr(container, "args", None) or []))
+                texts.extend(self._env_reference_texts(getattr(container, "env", None) or []))
+        return [text for text in texts if text]
+
+    def _env_reference_texts(self, env: list[object]) -> list[str]:
+        texts: list[str] = []
+        for item in env or []:
+            if isinstance(item, dict):
+                value = item.get("value")
+            else:
+                value = getattr(item, "value", None)
+            if value is not None:
+                texts.append(str(value))
+        return texts
+
+    def _reference_hosts_from_text(self, text: str) -> set[str]:
+        raw = str(text or "").strip()
+        if not raw:
+            return set()
+        hosts: set[str] = set()
+        scrubbed_parts: list[str] = []
+        cursor = 0
+        for match in re.finditer(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>]+", raw):
+            scrubbed_parts.append(raw[cursor : match.start()])
+            scrubbed_parts.append(" ")
+            cursor = match.end()
+            try:
+                from urllib.parse import urlparse
+
+                host = str(urlparse(match.group(0)).hostname or "").strip().lower().rstrip(".")
+            except Exception:
+                host = ""
+            if host:
+                hosts.add(host)
+        scrubbed_parts.append(raw[cursor:])
+        scrubbed = "".join(scrubbed_parts)
+        host_port = re.compile(
+            r"(?<![A-Za-z0-9_.-])"
+            r"([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+            r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)"
+            r":\d{1,5}"
+            r"(?![A-Za-z0-9_.-])"
+        )
+        for match in host_port.finditer(scrubbed):
+            host = str(match.group(1) or "").strip().lower().rstrip(".")
+            if host:
+                hosts.add(host)
+        return hosts
+
+    def _ready_service_endpoint_ip(self, service_app: str) -> str | None:
+        try:
+            endpoints = list(self._state_store.list_service_endpoints(service_app))
+        except Exception:
+            return None
+        ready = [
+            endpoint
+            for endpoint in endpoints
+            if bool(getattr(endpoint, "ready", False))
+            and self._service_endpoint_ip_allowed(str(getattr(endpoint, "ip", "") or ""))
+        ]
+        if not ready:
+            return None
+        ready.sort(
+            key=lambda endpoint: (
+                int(getattr(endpoint, "port", 0) or 0),
+                str(getattr(endpoint, "ip", "") or ""),
+                int(getattr(endpoint, "target_port", 0) or 0),
+            )
+        )
+        return str(getattr(ready[0], "ip", "") or "").strip() or None
+
+    def _ready_service_pod_ip(self, service_app: str) -> str | None:
+        try:
+            pods = list(self._state_store.list_pods(service_app))
+        except Exception:
+            return None
+        ready = []
+        for pod in pods:
+            if not bool(getattr(pod, "ready", False)) or not bool(getattr(pod, "live", False)):
+                continue
+            ip = self._endpoint_ip(str(getattr(pod, "endpoint", "") or ""))
+            if self._service_endpoint_ip_allowed(ip):
+                ready.append(ip)
+        if not ready:
+            return None
+        ready.sort()
+        return ready[0]
+
+    def _ready_runtime_result_ip(self, runtime_result: RuntimeResult) -> str | None:
+        ready = []
+        for state in getattr(runtime_result, "pod_states", []) or []:
+            if not bool(getattr(state, "ready", False)):
+                continue
+            ip = self._endpoint_ip(str(getattr(state, "endpoint", "") or ""))
+            if self._service_endpoint_ip_allowed(ip):
+                ready.append(ip)
+        if not ready:
+            return None
+        ready.sort()
+        return ready[0]
+
+    def _endpoint_ip(self, endpoint: str) -> str:
+        raw = str(endpoint or "").strip()
+        if not raw:
+            return ""
+        if "://" in raw:
+            try:
+                from urllib.parse import urlparse
+
+                return str(urlparse(raw).hostname or "").strip()
+            except Exception:
+                return ""
+        if raw.startswith("["):
+            return raw[1:].split("]", 1)[0].strip()
+        host = raw.split("/", 1)[0].strip()
+        if host.count(":") == 1:
+            return host.rsplit(":", 1)[0].strip()
+        return host
+
+    def _service_endpoint_ip_allowed(self, ip: str) -> bool:
+        ip = str(ip or "").strip()
+        if not ip:
+            return False
+        if ip in {"localhost", "::1", "0.0.0.0"}:
+            return False
+        if ip.startswith("127."):
+            return False
+        return True
+
+    def _refresh_direct_containerd_service_alias_dependents(
+        self,
+        service_manifest: AppManifest,
+        health_report: HealthReport,
+        runtime_result: RuntimeResult,
+    ) -> None:
+        if self._direct_containerd_alias_refresh_depth > 0:
+            return
+        if not self._is_direct_containerd_runtime(self._runtime):
+            return
+        if not getattr(service_manifest.spec, "service", None):
+            return
+        if int(getattr(health_report, "ready_replicas", 0) or 0) < 1:
+            return
+        service_app = app_key_for_manifest(service_manifest)
+        service_ip = (
+            self._ready_service_endpoint_ip(service_app)
+            or self._ready_runtime_result_ip(runtime_result)
+            or self._ready_service_pod_ip(service_app)
+        )
+        if not service_ip:
+            return
+        service_ns, service_name = split_app_key(service_app)
+        try:
+            registered = list(self._state_store.list_registered_apps())
+        except Exception:
+            return
+        dependents: list[tuple[str, AppManifest]] = []
+        for entry in registered:
+            dep_app = str(getattr(entry, "app_name", "") or "").strip()
+            if not dep_app or dep_app == service_app:
+                continue
+            dep_ns, _dep_name = split_app_key(dep_app)
+            if dep_ns != service_ns:
+                continue
+            dep_manifest = getattr(entry, "manifest", None)
+            if dep_manifest is None:
+                try:
+                    dep_manifest = self._state_store.get_registered_manifest(dep_app)
+                except Exception:
+                    dep_manifest = None
+            if dep_manifest is None:
+                continue
+            if not self._manifest_references_service(dep_manifest, service_ns, service_name):
+                continue
+            refreshed = self._with_direct_containerd_service_aliases(
+                self._runtime,
+                dep_manifest,
+                service_ips={service_app: service_ip},
+            )
+            refreshed_hash = self._compute_spec_hash(refreshed)
+            try:
+                latest = self._state_store.list_revisions(dep_app, limit=1)
+            except Exception:
+                latest = []
+            if latest and str(latest[0].spec_hash) == refreshed_hash:
+                continue
+            dependents.append((dep_app, dep_manifest))
+        if not dependents:
+            return
+        self._direct_containerd_alias_refresh_depth += 1
+        self._direct_containerd_alias_refresh_no_overlap += 1
+        previous_service_ips = dict(self._direct_containerd_refresh_service_ips)
+        self._direct_containerd_refresh_service_ips[service_app] = service_ip
+        try:
+            for dep_app, dep_manifest in dependents:
+                try:
+                    latest = self._state_store.list_revisions(dep_app, limit=1)
+                    revision = int(latest[0].revision) if latest else 0
+                    self._state_store.record_event(
+                        dep_app,
+                        revision,
+                        "ServiceAliasRefreshQueued",
+                        f"Refreshing direct-containerd aliases after {service_app} became ready",
+                    )
+                except Exception:
+                    pass
+                self.reconcile(dep_manifest)
+        finally:
+            self._direct_containerd_refresh_service_ips = previous_service_ips
+            self._direct_containerd_alias_refresh_no_overlap -= 1
+            self._direct_containerd_alias_refresh_depth -= 1
+
     def reconcile_manifest_path(self, path: Path) -> ReconcileReport:
         """Load a manifest from disk and reconcile it."""
 
@@ -273,7 +720,8 @@ class Reconciler:
     def reconcile(self, manifest: AppManifest) -> ReconcileReport:
         """Reconcile the runtime to match the manifest."""
 
-        spec_hash = self._compute_spec_hash(manifest)
+        revision_manifest = self._with_direct_containerd_service_aliases(self._runtime, manifest)
+        spec_hash = self._compute_spec_hash(revision_manifest)
         revision, _ = self._state_store.prepare_revision(manifest, spec_hash)
         app_name = app_key_for_manifest(manifest)
 
@@ -291,6 +739,7 @@ class Reconciler:
         try:
             manifest_with_env = self._apply_configs_and_secrets(manifest)
         except Exception as exc:  # noqa: BLE001
+            allow_fallback = _truthy_env(CONFIG_SECRET_FALLBACK_ENV)
             try:
                 self._state_store.record_event(
                     app_name,
@@ -300,7 +749,48 @@ class Reconciler:
                 )
             except Exception:
                 pass
-            # Fallback: continue without injecting secret/config env
+            if not allow_fallback:
+                health_report = HealthReport(ready_replicas=0, live_replicas=0, pods=[])
+                result = RuntimeResult(
+                    revision=revision, created=0, updated=0, removed=0, pod_states=[]
+                )
+                revision_status = "degraded"
+                try:
+                    self._state_store.record_snapshot(
+                        manifest=manifest,
+                        runtime_result=result,
+                        health_report=health_report,
+                        revision=revision,
+                        revision_status=revision_status,
+                    )
+                    self._state_store.record_event(
+                        app_name,
+                        revision,
+                        "ApplyFailed",
+                        f"secrets/config application failed: {exc}",
+                    )
+                except Exception:
+                    pass
+                return ReconcileReport(
+                    app_name=app_name,
+                    created=0,
+                    updated=0,
+                    removed=0,
+                    ready_replicas=0,
+                    live_replicas=0,
+                    revision=revision,
+                    revision_status=revision_status,
+                )
+            try:
+                self._state_store.record_event(
+                    app_name,
+                    revision,
+                    "SecretFallback",
+                    "continuing without injecting secret/config env because "
+                    f"{CONFIG_SECRET_FALLBACK_ENV}=1",
+                )
+            except Exception:
+                pass
             manifest_with_env = manifest
         # Prepare file projections and add a read-only volume mount if any files were written
         projection_root = self._prepare_file_projections(manifest, revision)
@@ -411,6 +901,12 @@ class Reconciler:
         if until > now_ts:
             limit_create = 0
         keep_old = True
+        direct_containerd_alias_refresh_no_overlap = (
+            self._direct_containerd_alias_refresh_no_overlap > 0
+            and self._is_direct_containerd_runtime(self._runtime)
+            and strategy != "canary"
+            and int(getattr(manifest_for_runtime.spec, "replicas", 1) or 1) == 1
+        )
         try:
             import os as _os
 
@@ -427,7 +923,7 @@ class Reconciler:
                 )
             )
             if (
-                serial_service_rollout
+                (serial_service_rollout or direct_containerd_alias_refresh_no_overlap)
                 and strategy != "canary"
                 and getattr(manifest_for_runtime.spec, "replicas", 1) == 1
                 and fixed_service_port
@@ -455,8 +951,12 @@ class Reconciler:
                 revision,
                 desired_pod_names,
             )
-            old_not_running = [item for item in old_replicas if not item.running]
-            old_running = [item for item in old_replicas if item.running]
+            if direct_containerd_alias_refresh_no_overlap:
+                old_not_running = list(old_replicas)
+                old_running = []
+            else:
+                old_not_running = [item for item in old_replicas if not item.running]
+                old_running = [item for item in old_replicas if item.running]
             min_available = max(0, desired - max_unavail)
             available_replicas = len(current_ready_ids) + len(old_running)
             available_headroom = max(0, available_replicas - min_available)
@@ -584,7 +1084,8 @@ class Reconciler:
             pod_states=aggregate_states,
         )
         health_report = self._health_manager.evaluate(manifest, result)
-        # Service/IPAM: prefer Service VIPs when controller is available
+        # Service/IPAM: prefer Service VIPs when controller is available. Direct containerd still
+        # refreshes same-namespace service aliases from ready pod endpoints without Service VIPs.
         if self._service_controller:
             try:
                 self._service_controller.reconcile(manifest_for_runtime, result, health_report)
@@ -592,6 +1093,11 @@ class Reconciler:
                 logging.getLogger(__name__).warning(
                     "service reconcile failed for %s: %s", app_name, exc
                 )
+        self._refresh_direct_containerd_service_alias_dependents(
+            manifest_for_runtime,
+            health_report,
+            result,
+        )
         # Record probe backoff metrics from messages
         try:
             from ae.observability.http_api import record_probe_backoff  # type: ignore
@@ -970,7 +1476,11 @@ class Reconciler:
             or labels.get("app.kubernetes.io/name")
             or ""
         ).strip()
-        if app_label != str(manifest.metadata.name):
+        expected = {
+            str(manifest.metadata.name),
+            app_key_for_manifest(manifest),
+        }
+        if app_label not in expected:
             return False
         namespace = str(getattr(manifest.metadata, "namespace", "default") or "default").strip()
         label_namespace = str(labels.get("ae.namespace") or "").strip()
@@ -1190,32 +1700,15 @@ class Reconciler:
         health_report: HealthReport,
     ) -> list[str]:
         app_name = app_key_for_manifest(manifest)
-        # Prefer Service VIP when recorded and ready backends exist
-        try:
-            svc = self._state_store.get_service(app_name)
-        except Exception:
-            svc = None
-
-        if svc and manifest.spec.service:
-            svc_port = None
-            try:
-                if manifest.spec.service.ports:
-                    svc_port = int(manifest.spec.service.ports[0].port)
-                elif manifest.spec.service.port:
-                    svc_port = int(manifest.spec.service.port)
-            except Exception:
-                svc_port = None
-            if svc_port:
-                try:
-                    eps = self._state_store.list_service_endpoints(app_name)
-                except Exception:
-                    eps = []
-                if any(ep.ready for ep in eps):
-                    return [f"{svc.cluster_ip}:{svc_port}"]
-
+        prefer_host_ports = self._caddy_prefers_host_port_upstreams()
         states_by_id = {state.pod_name: state for state in result.pod_states}
         preferred_port = self._preferred_container_port(manifest)
         container_infos_by_pod = self._container_infos_by_pod()
+
+        if not prefer_host_ports:
+            service_upstreams = self._select_service_vip_upstreams(app_name, manifest)
+            if service_upstreams:
+                return service_upstreams
 
         # Prefer only ready endpoints; defer ingress changes until at least one
         # replica is ready to avoid transient 502s during warm-up.
@@ -1275,7 +1768,13 @@ class Reconciler:
             ready_eps.sort()
             return ready_eps
 
-        # Fallback: allow loopback endpoints when nothing else is ready (useful for local/stub runtimes)
+        if prefer_host_ports:
+            service_upstreams = self._select_service_vip_upstreams(app_name, manifest)
+            if service_upstreams:
+                return service_upstreams
+
+        # Fallback: allow loopback endpoints when nothing else is ready
+        # (useful for local/stub runtimes).
         for pod in health_report.pods:
             if not pod.ready:
                 continue
@@ -1286,6 +1785,33 @@ class Reconciler:
                     return [f"{host}:{port}"]
 
         # No ready endpoints yet: return empty to keep previous ingress configuration intact.
+        return []
+
+    def _select_service_vip_upstreams(
+        self, app_name: str, manifest: AppManifest
+    ) -> list[str]:
+        # Prefer Service VIP when recorded and ready backends exist
+        try:
+            svc = self._state_store.get_service(app_name)
+        except Exception:
+            svc = None
+
+        if svc and manifest.spec.service:
+            svc_port = None
+            try:
+                if manifest.spec.service.ports:
+                    svc_port = int(manifest.spec.service.ports[0].port)
+                elif manifest.spec.service.port:
+                    svc_port = int(manifest.spec.service.port)
+            except Exception:
+                svc_port = None
+            if svc_port:
+                try:
+                    eps = self._state_store.list_service_endpoints(app_name)
+                except Exception:
+                    eps = []
+                if any(ep.ready for ep in eps):
+                    return [f"{svc.cluster_ip}:{svc_port}"]
         return []
 
     def _split_host_port(self, endpoint: str) -> tuple[str | None, int | None]:
@@ -1330,8 +1856,14 @@ class Reconciler:
             and bool(getattr(runtime, "_network_name", None))
         )
 
+    def _caddy_prefers_host_port_upstreams(self) -> bool:
+        value = os.getenv("AE_CADDY_PREFER_HOST_PORT_UPSTREAMS", "")
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
     def _container_infos_by_pod(self) -> dict[str, dict]:
-        if not self._docker_container_dns_enabled():
+        if not (
+            self._docker_container_dns_enabled() or self._caddy_prefers_host_port_upstreams()
+        ):
             return {}
         try:
             items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
@@ -1348,16 +1880,41 @@ class Reconciler:
     def _endpoint_from_container_info(
         self, info: dict, port_hint: int | None
     ) -> tuple[str, int] | None:
+        port_map = (info or {}).get("port_map") or {}
+        host_ports = list((info or {}).get("host_ports") or [])
+        host_ip = (info or {}).get("host_ip") or "127.0.0.1"
+        if self._caddy_prefers_host_port_upstreams():
+            target = self._host_port_endpoint_from_container_info(
+                port_hint,
+                host_ip=str(host_ip),
+                port_map=port_map,
+                host_ports=host_ports,
+            )
+            if target:
+                return target
+            return None
         if self._docker_container_dns_enabled() and port_hint is not None:
             name = str((info or {}).get("name") or "").strip()
             if name:
                 return name, int(port_hint)
         pod_ip = (info or {}).get("pod_ip")
-        host_ip = (info or {}).get("host_ip") or "127.0.0.1"
-        port_map = (info or {}).get("port_map") or {}
-        host_ports = list((info or {}).get("host_ports") or [])
         if pod_ip and port_hint:
             return str(pod_ip), int(port_hint)
+        return self._host_port_endpoint_from_container_info(
+            port_hint,
+            host_ip=str(host_ip),
+            port_map=port_map,
+            host_ports=host_ports,
+        )
+
+    def _host_port_endpoint_from_container_info(
+        self,
+        port_hint: int | None,
+        *,
+        host_ip: str,
+        port_map: dict,
+        host_ports: list,
+    ) -> tuple[str, int] | None:
         if port_hint is not None and port_map:
             try:
                 if port_hint in port_map:
@@ -1502,8 +2059,8 @@ class Reconciler:
                             for m in ref.env:
                                 if m.key in data:
                                     env_map[m.name] = str(data[m.key])
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        raise RuntimeError(f"failed to load secret ref {ref.name}: {exc}") from exc
 
         # Manifest env wins last
         for item in manifest.spec.env:

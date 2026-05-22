@@ -802,9 +802,10 @@
 <li>drive worker and leader workloads through one controller-owned lifecycle</li>
 </ul>
 <p>The current lane is suitable for labs, controller development, and staged validation. It is not yet a production-grade multi-site fabric.</p>
+<p>Today the most accessible hardware-backed validation surface for that lane is the bounded Nvidia development track documented in <a href="nvidia-development-baseline.html">Nvidia Development Baseline</a>. The formal deployment mainline remains AMD-first.</p>
 <h2 id="how-this-maps-forward">How This Maps Forward</h2>
 <p>The formal roadmap targets AI Max+ 395-first execution cells behind a provider-facing HA edge. The current <code>InferenceCell</code> lane is the precursor to that path, not the finished deployment model.</p>
-<p>The target hardware baseline for that path is documented in <a href="ai-max-395-hardware-baseline.html">AI Max+ 395 Hardware Baseline</a>, with the actionable bring-up sequence in <a href="ai-max-395-cluster-prep.html">AI Max+ 395 Cluster Prep</a>.</p>
+<p>The current physical-host development baseline for accessible validation is documented in <a href="nvidia-development-baseline.html">Nvidia Development Baseline</a>. The target deployment hardware baseline for the formal mainline is documented in <a href="ai-max-395-hardware-baseline.html">AI Max+ 395 Hardware Baseline</a>, with the actionable bring-up sequence in <a href="ai-max-395-cluster-prep.html">AI Max+ 395 Cluster Prep</a>.</p>
 <p>Forward mapping:</p>
 <ul>
 <li><code>InferenceCell</code> is the current controller-owned precursor to a future cell session contract</li>
@@ -858,6 +859,7 @@
 <li>fabric session persistence in controller state</li>
 <li>VM and LAN validation workflows through:
 <ul>
+<li><a href="nvidia-development-baseline.html">Nvidia Development Baseline</a></li>
 <li><code>docs/ops/gpu-fabric-abc-lan.md</code></li>
 <li><a href="vm-variant-runbook.html">VM Variant Runbook</a></li>
 <li><code>docs/ops/vm-metrics-and-gates.md</code></li>
@@ -891,6 +893,11 @@
 <li>Host and LAN pattern:
 <ul>
 <li><code>docs/ops/gpu-fabric-abc-lan.md</code></li>
+</ul>
+</li>
+<li>Current Nvidia development baseline:
+<ul>
+<li><a href="nvidia-development-baseline.html">Nvidia Development Baseline</a></li>
 </ul>
 </li>
 <li>AI Max hardware contract:
@@ -951,7 +958,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-17 10:02:07</span>
+        <span>Built 2026-04-29 15:42:33</span>
       </div>
     </footer>
     <script>

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: k1s-core-ha
+description: Namespace-scoped k1s HA simulation stack for MicroK8s dev lanes.
+type: application
+version: 0.1.0
+appVersion: 0.1.5.dev0

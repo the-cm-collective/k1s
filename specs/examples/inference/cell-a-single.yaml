@@ -1,0 +1,29 @@
+apiVersion: ae.dev/v1alpha1
+kind: InferenceCell
+metadata:
+  name: cell-a-single
+  namespace: default
+spec:
+  model:
+    modelId: llama-3.1-8b
+    localPath: /models/llama-3.1-8b
+  parallelism:
+    tp: 1
+    pp: 1
+  executor:
+    type: ray
+    fallbackMode: mp_on_failure
+    rayImage: rayproject/ray:latest
+    mpImage: vllm/vllm-openai:latest
+    launcherImage: vllm/vllm-openai:latest
+    dtype: half
+    runtimeClassName: nvidia
+  fabric:
+    mode: lan_direct
+    policyMode: strict_membership
+    ttlSeconds: 300
+  members:
+    - siteId: core-a
+      nodeId: core-a--hub
+      gpuCount: 1
+  linkMetrics: []

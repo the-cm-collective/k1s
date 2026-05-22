@@ -1,0 +1,209 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.natsHeadlessServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+  ports:
+    - name: client
+      port: {{ .Values.nats.clientPort }}
+      targetPort: client
+    - name: cluster
+      port: {{ .Values.nats.clusterPort }}
+      targetPort: cluster
+    - name: leaf
+      port: {{ .Values.nats.leafPort }}
+      targetPort: leaf
+    - name: monitor
+      port: {{ .Values.nats.monitorPort }}
+      targetPort: monitor
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.natsClientServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+  ports:
+    - name: client
+      port: {{ .Values.nats.clientPort }}
+      targetPort: client
+    - name: monitor
+      port: {{ .Values.nats.monitorPort }}
+      targetPort: monitor
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.natsMetricsServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+    k1s.dev/metrics-target: nats
+spec:
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+  ports:
+    - name: metrics
+      port: {{ .Values.natsExporter.port }}
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "k1s-core-ha.natsName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  serviceName: {{ include "k1s-core-ha.natsHeadlessServiceName" . }}
+  replicas: {{ .Values.nats.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nats
+  template:
+    metadata:
+      labels:
+        {{- include "k1s-core-ha.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: nats
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: nats
+          image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.nats.image) }}
+          imagePullPolicy: {{ .Values.nats.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              cat >/tmp/nats.conf <<EOF
+              http: {{ .Values.nats.monitorPort }}
+              port: {{ .Values.nats.clientPort }}
+              server_name: ${POD_NAME}
+              jetstream {
+                store_dir: "/data/jetstream"
+                domain: "{{ .Values.nats.jetstream.domain }}"
+              }
+              authorization {
+                users = [
+                  {user: "${NATS_CONTROLLER_USER}", password: "${NATS_CONTROLLER_PASSWORD}"},
+                  {user: "${NATS_LEAF_USER}", password: "${NATS_LEAF_PASSWORD}"}
+                ]
+              }
+              leafnodes {
+                port: {{ .Values.nats.leafPort }}
+              }
+              cluster {
+                name: "{{ include "k1s-core-ha.natsName" . }}"
+                listen: 0.0.0.0:{{ .Values.nats.clusterPort }}
+                routes = [
+{{- range $i, $_ := until (int .Values.nats.replicas) }}
+                  "nats://{{ include "k1s-core-ha.natsName" $ }}-{{ $i }}.{{ include "k1s-core-ha.natsHeadlessServiceName" $ }}.{{ $.Release.Namespace }}.svc.cluster.local:{{ $.Values.nats.clusterPort }}",
+{{- end }}
+                ]
+              }
+              EOF
+              exec nats-server --config /tmp/nats.conf
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NATS_CONTROLLER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: nats-controller-user
+            - name: NATS_CONTROLLER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: nats-controller-password
+            - name: NATS_LEAF_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: nats-leaf-user
+            - name: NATS_LEAF_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: nats-leaf-password
+          ports:
+            - name: client
+              containerPort: {{ .Values.nats.clientPort }}
+            - name: cluster
+              containerPort: {{ .Values.nats.clusterPort }}
+            - name: leaf
+              containerPort: {{ .Values.nats.leafPort }}
+            - name: monitor
+              containerPort: {{ .Values.nats.monitorPort }}
+          readinessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.nats.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        {{- if .Values.natsExporter.enabled }}
+        - name: nats-exporter
+          image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.natsExporter.image) }}
+          imagePullPolicy: {{ .Values.natsExporter.image.pullPolicy }}
+          args:
+            - -port
+            - {{ .Values.natsExporter.port | quote }}
+            - -varz
+            - -connz
+            - -routez
+            - -subz
+            - -leafz
+            - -healthz
+            - -jsz
+            - all
+            - -use_internal_server_name
+            - http://127.0.0.1:{{ .Values.nats.monitorPort }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.natsExporter.port }}
+          resources:
+            {{- toYaml .Values.natsExporter.resources | nindent 12 }}
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "k1s-core-ha.labels" . | nindent 10 }}
+          app.kubernetes.io/component: nats
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.nats.storageSize }}
+        {{- if .Values.nats.storageClassName }}
+        storageClassName: {{ .Values.nats.storageClassName | quote }}
+        {{- end }}

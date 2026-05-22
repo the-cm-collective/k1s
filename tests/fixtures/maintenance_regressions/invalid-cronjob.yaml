@@ -1,0 +1,17 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: invalid-cron
+  namespace: default
+spec:
+  schedule: not a cron
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            job: invalid-cron
+        spec:
+          containers:
+            - name: job
+              image: busybox

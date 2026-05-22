@@ -959,6 +959,10 @@ def test_variant_up_uses_variant_aware_host_prepare() -> None:
     text = VARIANT_UP_SCRIPT.read_text(encoding="utf-8")
     assert 'CLOUD_INIT_WAIT_TIMEOUT="${CLOUD_INIT_WAIT_TIMEOUT:-300}"' in text
     assert '"$ROOT_DIR/scripts/lab/vm/host_prepare.sh" --variant "$VARIANT" --apply' in text
+    assert "package_update: false" in text
+    assert "package_upgrade: false" in text
+    assert "package_update: true" not in text
+    assert "python3-pip" not in text
     assert 'pod_route_rows="$(' in text
     assert 'select(.role=="k1s-core-node" and (.pod_cidr // "") != "")' in text
     assert 'render_guest_route_yaml() {' in text
@@ -1218,7 +1222,7 @@ def test_k1s_bootstrap_core_sets_cri_trust_and_preload_defaults() -> None:
     assert "AE_AGENT_API_TOKEN=${token}" in text
     assert "AE_APISHIM_ETCD_ENDPOINTS='${ha_etcd_endpoints}'" in text
     assert "AE_APISHIM_PRESEEDED=1" in text
-    assert "AE_APISHIM_IMAGE=\\${AE_APISHIM_IMAGE:-localhost:5001/k1s-apishim:dev}" in text
+    assert "AE_APISHIM_IMAGE=\\${AE_APISHIM_IMAGE:-docker.io/library/k1s-apishim:dev}" in text
     assert "AE_APISHIM_STARTUP_TIMEOUT=\\${AE_APISHIM_STARTUP_TIMEOUT:-60}" in text
     assert "APISHIM_HOST=\\${APISHIM_HOST:-0.0.0.0}" in text
     assert "APISHIM_CERT_SANS='${ha_apishim_cert_sans}'" in text
@@ -2321,6 +2325,8 @@ def test_cri_seed_bundle_script_accepts_run_id_and_profile() -> None:
     assert "AE_CRI_CACHE_SEED_ENGINE" in text
     assert "[cri-seed] source already cached: $image" in text
     assert "build_cri_apishim_image.sh" in text
+    assert "build_cri_host_a_vllm_image.sh" in text
+    assert "host-a vLLM image must be prebuilt before validation seed export" in text
     assert "samples/servers/shell-demo" in text
     assert "local seed image already cached" in text
     assert "images export" in text or "save -o" in text
@@ -2505,7 +2511,7 @@ def test_ha_dashboard_smoke_helper_wires_retained_refresh_and_reset_paths() -> N
     assert 'cmd_workload_smoke() {' in text
     assert 'purge_retained_artifacts\n  cmd_up' in text
     assert 'rm -rf "$run_path"' in text
-    assert "localhost:5001/k1s-apishim:dev" in text
+    assert "docker.io/library/k1s-apishim:dev" in text
     assert "docker.io/library/demo-shell:latest" in text
     assert 'retained_workload_smoke_manifest="${AE_RETAINED_WORKLOAD_SMOKE_MANIFEST:-$ROOT_DIR/docs/site/examples/ha-web-smoke.yaml}"' in text
     assert 'retained_workload_smoke_host="${AE_RETAINED_WORKLOAD_SMOKE_HOST:-ha-web-smoke.home.arpa}"' in text
@@ -2680,8 +2686,32 @@ def test_cri_seed_lock_contains_core_and_edge_images() -> None:
     assert "docker.io/library/nats:2.10" in payload["images"]["edge"]
     assert "docker.io/library/demo-shell:latest" in payload["images"]["core"]
     assert "docker.io/library/demo-shell:latest" in payload["images"]["edge"]
-    assert "localhost:5001/k1s-apishim:dev" in payload["images"]["core"]
+    assert "docker.io/library/busybox:1.36" in payload["images"]["core"]
+    assert "docker.io/library/busybox:1.36" in payload["images"]["edge"]
+    assert "docker.io/library/k1s-apishim:dev" in payload["images"]["core"]
+    assert "nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1" in payload["images"]["core"]
     assert "docker.io/library/caddy:2.8" in payload["images"]["core"]
+
+
+def test_image_seed_bundle_all_profile_includes_bootstrap_core_and_edge() -> None:
+    text = CRI_SEED_BUNDLE_SCRIPT.read_text(encoding="utf-8")
+    assert '[.images.bootstrap[]?, .images.core[]?, .images.edge[]?]' in text
+    assert 'unique_by(.ref)[]' in text
+
+
+def test_image_seed_bundle_uses_docker_archive_for_podman_multi_image_exports() -> None:
+    text = CRI_SEED_BUNDLE_SCRIPT.read_text(encoding="utf-8")
+    assert 'podman save --multi-image-archive --format docker-archive -o "$out" "${images[@]}"' in text
+    assert 'if [[ "${#images[@]}" -gt 1 ]]; then' in text
+
+
+def test_image_seed_bundle_derives_expected_ids_from_archive_metadata() -> None:
+    text = CRI_SEED_BUNDLE_SCRIPT.read_text(encoding="utf-8")
+    assert 'tar_read("index.json")' in text
+    assert 'tar_read("manifest.json").decode("utf-8")' in text
+    assert 'config_digest = str((manifest.get("config") or {}).get("digest") or "").strip()' in text
+    assert 'hashlib.sha256(config_bytes).hexdigest()' in text
+    assert 'rewrite_archive_image_metadata "$OUTPUT" "$archive_format"' in text
 
 
 def test_cri_seed_lock_covers_default_ha_core_preload_images() -> None:

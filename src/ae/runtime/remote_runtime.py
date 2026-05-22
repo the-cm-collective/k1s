@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import socket
 import ssl
 from datetime import datetime
@@ -44,12 +45,15 @@ class RemoteRuntime(RuntimeAdapter):
         self._local = local_runtime
         self._authority = authority
         self._node_id = str(node_id or "")
-        import os
 
         self._verify = os.getenv("AE_AGENT_CA_FILE") or True
         cert = os.getenv("AE_AGENT_CERT_FILE")
         key = os.getenv("AE_AGENT_KEY_FILE")
         self._cert = (cert, key) if cert and key else None
+        self._ensure_timeout = max(
+            1.0,
+            float(os.getenv("AE_REMOTE_RUNTIME_ENSURE_TIMEOUT", "30") or "30"),
+        )
 
     def _agent_target(self) -> tuple[str, str, int, str]:
         if not self._agent_url:
@@ -219,7 +223,12 @@ class RemoteRuntime(RuntimeAdapter):
             ),
             identity=identity,
         )
-        resp = self._request("POST", "/v1/ensure_app", json=payload, timeout=30)
+        resp = self._request(
+            "POST",
+            "/v1/ensure_app",
+            json=payload,
+            timeout=self._ensure_timeout,
+        )
         data = resp.json()
         return _runtime_result_from_json(data)
 
@@ -390,6 +399,21 @@ class RemoteRuntime(RuntimeAdapter):
             return self._local.exec_exit_code(exec_id)
         resp = self._request("POST", "/v1/exec_inspect", json={"exec_id": exec_id}, timeout=10)
         return int(resp.json().get("exit_code", 0))
+
+    def exec_status(self, exec_id: str) -> tuple[bool, int | None] | None:
+        if self._use_local():
+            if hasattr(self._local, "exec_status"):
+                return self._local.exec_status(exec_id)
+            return None
+        resp = self._request("POST", "/v1/exec_inspect", json={"exec_id": exec_id}, timeout=10)
+        data = resp.json()
+        if "running" not in data:
+            return None
+        running = bool(data.get("running"))
+        exit_code = data.get("exit_code")
+        if exit_code is not None:
+            exit_code = int(exit_code)
+        return running, exit_code
 
     def port_forward_socket(
         self,

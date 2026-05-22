@@ -60,8 +60,7 @@ Notes:
     - other strict-CRI managed images (etcd/nats/postgres/envoy/rathole/caddy): mirror source image into `AE_CRI_REGISTRY` + CRI pull verify
   - local build backend order: `nerdctl`, then `podman`, then `docker`, then `ctr`
   - optional override: `AE_CRI_LOCAL_BUILD_BACKEND=nerdctl|podman|docker|ctr`
-  - NixOS managed-registry TLS defaults mirror/preload to `podman` when unset, then falls back to `docker`, then `nerdctl`
-  - explicit `AE_CRI_IMAGE_MIRROR_BACKEND=ctr` remains available for per-arch mirror/preload when you want it
+  - NixOS managed-registry TLS defaults mirror/preload to `podman` when unset, then falls back to `docker`, `nerdctl`, and finally `ctr` when `ctr images convert` is available
   - when backend=`ctr`, mirror pushes are normalized to `AE_CTR_PLATFORM` (or the host-arch default) before pushing into the managed registry; treat that path as a per-arch preload cache, not a multi-arch publishing helper
 - Registry mapping in strict CRI:
   - `AE_CRI_REGISTRY=<host:port>` rewrites CRI-managed image refs to that registry
@@ -74,6 +73,7 @@ Notes:
   - optional preset: `AE_CRI_REGISTRY_PRESET=microk8s|local`
 - Optional containerd trust hook for strict CRI startup:
   - managed registry TLS (`AE_CRI_REGISTRY_MODE=managed`) defaults to secure trust wiring.
+  - helper backends inherit trust too: rootful Podman uses `/etc/containers/certs.d/<registry>/ca.crt`, rootless Podman uses `~/.config/containers/certs.d/<registry>/ca.crt`, and Docker uses `/etc/docker/certs.d/<registry>/ca.crt`.
   - Debian/Ubuntu writes the managed registry CA into `/usr/local/share/ca-certificates`; NixOS writes it into `/var/lib/k1s-dev/certs` and reuses the existing bridge module + `nixos-rebuild` flow.
   - Debian/Ubuntu and RHEL/Fedora bootstrap `/opt/cni/bin` automatically when the required CNI plugins are available in standard source dirs.
   - NixOS strict CRI is declarative: install/import `ops/nixos/k1s-cri-host.nix`, rebuild, and strict startup will reuse the live containerd CNI paths instead of rewriting `/etc/cni/net.d`.

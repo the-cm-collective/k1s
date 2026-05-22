@@ -9,6 +9,7 @@ Usage:
   $0 image build [args]
   $0 image verify [args]
   $0 image transfer [args]
+  $0 host-a-gpu <render|create-overlay|create-seed|define|start|stop|undefine|preflight|ips> [args]
   $0 host prepare [args]
   $0 smoke [args]
   $0 variant up [args]
@@ -39,6 +40,9 @@ case "$subject" in
       transfer) exec "$SCRIPT_DIR/image_transfer.sh" "$@" ;;
       *) usage; exit 2 ;;
     esac
+    ;;
+  host-a-gpu)
+    exec "$SCRIPT_DIR/host_a_gpu_guest.py" "$@"
     ;;
   host)
     action="${1:-}"

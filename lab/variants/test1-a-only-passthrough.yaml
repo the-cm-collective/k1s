@@ -23,11 +23,11 @@ hosts:
     node_id: core-a-gw
   - name: a-node-1
     ip: 192.168.152.11
-    role: k1s-edge-node
+    role: k1s-core-node
     gpu: true
     site_id: core-a
-    node_id: core-a--gpu-1
-    node_labels: role=worker,site=core-a,gpu.sku=rtx-8000
+    node_id: core-a--hub
+    node_labels: role=hub,site=core-a,gpu.sku=titan-rtx
     agent_port: 9111
 k1s:
   agent_token: devtoken

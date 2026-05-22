@@ -1,0 +1,139 @@
+{{- if .Values.apishim.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k1s-core-ha.apishimName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apishim
+spec:
+  replicas: {{ .Values.apishim.replicas }}
+  selector:
+    matchLabels:
+      {{- include "k1s-core-ha.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: apishim
+  template:
+    metadata:
+      labels:
+        {{- include "k1s-core-ha.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: apishim
+    spec:
+      serviceAccountName: {{ include "k1s-core-ha.apishimName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 15
+      {{- with .Values.apishim.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.apishim.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.apishim.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: apishim
+          image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.apishim.image) }}
+          imagePullPolicy: {{ .Values.apishim.image.pullPolicy }}
+          command:
+            - python
+            - -m
+            - ae.apishim
+            - serve
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ .Values.apishim.port | quote }}
+          env:
+            - name: AE_HA_MODE
+              value: "1"
+            - name: AE_APISHIM_ENABLE
+              value: "1"
+            - name: AE_APISHIM_RUNTIME
+              value: cri
+            - name: AE_APISHIM_ETCD_ENDPOINTS
+              value: http://{{ include "k1s-core-ha.etcdClientServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.etcd.clientPort }}
+            - name: AE_APISHIM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: apishim-admin-token
+            - name: AE_APISHIM_READ_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: apishim-read-token
+            - name: AE_APISHIM_MINT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: apishim-mint-token
+            - name: AE_APISHIM_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-core-ha.authSecretName" . }}
+                  key: apishim-session-secret
+            - name: AE_APISHIM_RBAC
+              value: "1"
+            - name: AE_APISHIM_RBAC_EVAL
+              value: "0"
+          ports:
+            - name: http
+              containerPort: {{ .Values.apishim.port }}
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import os
+                  import sys
+                  import urllib.request
+
+                  req = urllib.request.Request(
+                      "http://127.0.0.1:{{ .Values.apishim.port }}/healthz",
+                      headers={"Authorization": f"Bearer {os.environ['AE_APISHIM_READ_TOKEN']}"},
+                  )
+                  with urllib.request.urlopen(req, timeout=2) as resp:
+                      sys.exit(0 if resp.status == 200 else 1)
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import os
+                  import sys
+                  import urllib.request
+
+                  req = urllib.request.Request(
+                      "http://127.0.0.1:{{ .Values.apishim.port }}/healthz",
+                      headers={"Authorization": f"Bearer {os.environ['AE_APISHIM_READ_TOKEN']}"},
+                  )
+                  with urllib.request.urlopen(req, timeout=2) as resp:
+                      sys.exit(0 if resp.status == 200 else 1)
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.apishim.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k1s-core-ha.apishimServiceName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apishim
+spec:
+  selector:
+    {{- include "k1s-core-ha.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: apishim
+  ports:
+    - name: http
+      port: {{ .Values.apishim.port }}
+      targetPort: http
+{{- end }}

@@ -30,6 +30,52 @@ def _manifest_single(image: str = "localhost/demo-blue:latest") -> AppManifest:
     )
 
 
+def _manifest_with_command(
+    *,
+    command: list[str] | None = None,
+    args: list[str] | None = None,
+) -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "bucket-init"},
+            "spec": {
+                "image": "docker.io/minio/mc:latest",
+                "replicas": 1,
+                **({"command": command} if command is not None else {}),
+                **({"args": args} if args is not None else {}),
+            },
+        }
+    )
+
+
+def _manifest_with_sidecar_command(
+    *,
+    command: list[str] | None = None,
+    args: list[str] | None = None,
+) -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "bucket-init"},
+            "spec": {
+                "image": "alpine:3.20",
+                "replicas": 1,
+                "containers": [
+                    {
+                        "name": "init",
+                        "image": "docker.io/minio/mc:latest",
+                        **({"command": command} if command is not None else {}),
+                        **({"args": args} if args is not None else {}),
+                    }
+                ],
+            },
+        }
+    )
+
+
 def _container_with_ports(
     *,
     host_port: str = "32001",
@@ -109,6 +155,74 @@ def test_create_container_removes_existing(monkeypatch):
     assert any(" stop -t " in s and " ae-blue-rev3-0" in s for s in names)
     assert any(" rm -f ae-blue-rev3-0" in s for s in names)
     assert any(" run -d --name ae-blue-rev3-0" in s for s in names)
+
+
+def test_podman_runtime_maps_kubernetes_command_args_to_entrypoint(monkeypatch):
+    cases = [
+        (
+            ["/bin/sh", "-c"],
+            ["mc alias set local http://minio:9000"],
+            ["/bin/sh"],
+            ["-c", "mc alias set local http://minio:9000"],
+        ),
+        (["python", "-m", "rawform.bootstrap"], None, ["python"], ["-m", "rawform.bootstrap"]),
+        (None, ["server", "/data"], None, ["server", "/data"]),
+        (None, None, None, []),
+    ]
+
+    for command, args, expected_entrypoint, expected_args in cases:
+        rt = PodmanRuntime()
+        calls: list[list[str]] = []
+
+        def fake_run(argv, allow_fail=False):  # noqa: ANN001
+            _ = allow_fail
+            calls.append(list(argv))
+            if argv[:3] == [rt._bin, "container", "exists"]:
+                return DummyResult(1)
+            return DummyResult(0)
+
+        monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+        monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+        manifest = _manifest_with_command(command=command, args=args)
+        rt._create_container(manifest, "bucket-init-rev1-0", 1)
+
+        run_call = next(c for c in calls if c[:2] == [rt._bin, "run"])
+        image_index = run_call.index("docker.io/minio/mc:latest")
+        if expected_entrypoint:
+            assert run_call[image_index - 2 : image_index] == [
+                "--entrypoint",
+                expected_entrypoint[0],
+            ]
+        else:
+            assert "--entrypoint" not in run_call[:image_index]
+        assert run_call[image_index + 1 :] == expected_args
+
+
+def test_podman_runtime_maps_sidecar_command_args_to_entrypoint(monkeypatch):
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+
+    manifest = _manifest_with_sidecar_command(
+        command=["/bin/sh", "-c"],
+        args=["mc alias set local http://minio:9000"],
+    )
+    rt._ensure_sidecars(manifest, "bucket-init-rev1-0", 1)
+
+    run_call = next(c for c in calls if c[:2] == [rt._bin, "run"])
+    image_index = run_call.index("docker.io/minio/mc:latest")
+    assert run_call[image_index - 2 : image_index] == ["--entrypoint", "/bin/sh"]
+    assert run_call[image_index + 1 :] == [
+        "-c",
+        "mc alias set local http://minio:9000",
+    ]
 
 
 def test_podman_serial_service_rollout_removes_old(monkeypatch):

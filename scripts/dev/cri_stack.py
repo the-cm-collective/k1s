@@ -260,6 +260,76 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _apishim_build_inputs() -> list[Path]:
+    files: list[Path] = []
+    for path in [
+        ROOT / "ops" / "images" / "apishim.Dockerfile",
+        ROOT / "pyproject.toml",
+        ROOT / "requirements.in",
+        ROOT / "README.md",
+    ]:
+        if path.is_file():
+            files.append(path)
+    src_root = ROOT / "src"
+    if src_root.exists():
+        for path in sorted(src_root.rglob("*")):
+            if path.is_file():
+                files.append(path)
+    return files
+
+
+def _apishim_rollout_key(image: str) -> str:
+    parts = ["apishim-image", image]
+    for path in _apishim_build_inputs():
+        try:
+            rel = path.relative_to(ROOT)
+        except ValueError:
+            rel = path
+        parts.append(f"{rel}:{_file_sha256(path)}")
+    return _stable_hash(parts)
+
+
+def _apishim_build_stamp_path(profile: str) -> Path:
+    return ROOT / "state" / "profiles" / profile / "cri" / "k1s-core-apishim" / "image-build.json"
+
+
+def _ensure_apishim_image_fresh(profile: str, image: str) -> str:
+    resolved_image = _resolve_image_ref(image)
+    rollout_key = _apishim_rollout_key(resolved_image)
+    stamp_path = _apishim_build_stamp_path(profile)
+    stamp: dict[str, object] = {}
+    with contextlib.suppress(Exception):
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+
+    stamp_image = str(stamp.get("image") or "").strip()
+    stamp_key = str(stamp.get("rollout_key") or "").strip()
+    if stamp_image == resolved_image and stamp_key == rollout_key and _image_exists(resolved_image):
+        return rollout_key
+
+    build_cmd = _build_command(
+        "k1s-core-apishim",
+        source_image=image,
+        target_image=resolved_image,
+    )
+    if not build_cmd:
+        raise RuntimeError(f"no apishim build workflow available for {resolved_image}")
+    _run(build_cmd, check=True, capture=False)
+    stamp_path.parent.mkdir(parents=True, exist_ok=True)
+    stamp_path.write_text(
+        json.dumps(
+            {
+                "image": resolved_image,
+                "rollout_key": rollout_key,
+                "built_at": datetime.now(UTC).isoformat(),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return rollout_key
+
+
 def _rathole_server_has_services(config_path: Path) -> bool:
     try:
         text = config_path.read_text(encoding="utf-8")
@@ -882,6 +952,8 @@ def _start_apishim(
     runtime_handler: str | None = None,
     recreate: bool = False,
 ) -> None:
+    image = os.getenv("AE_APISHIM_IMAGE", "docker.io/library/k1s-apishim:dev")
+    rollout_key = _ensure_apishim_image_fresh(profile, image)
     cert_mount = "/etc/ae/apishim/tls.crt"
     key_mount = "/etc/ae/apishim/tls.key"
     cri_mounts: list[dict[str, object]] = []
@@ -900,7 +972,7 @@ def _start_apishim(
     _start_component(
         profile=profile,
         component="k1s-core-apishim",
-        image=os.getenv("AE_APISHIM_IMAGE", "localhost/k1s-apishim:dev"),
+        image=image,
         runtime_handler=runtime_handler,
         command=[
             "python",
@@ -921,6 +993,8 @@ def _start_apishim(
             *cri_mounts,
         ],
         recreate=recreate,
+        rollout_key=rollout_key,
+        stable_seconds=2,
     )
 
 

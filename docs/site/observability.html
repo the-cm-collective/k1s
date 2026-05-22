@@ -880,12 +880,12 @@
       &quot;controller_epoch&quot;: 19,
       &quot;member_count&quot;: 3,
       &quot;members&quot;: [
-        { &quot;controller_id&quot;: &quot;core-b&quot;, &quot;advertise_addr&quot;: &quot;https://core-b.example.net:9108&quot;, &quot;version&quot;: &quot;0.1.3.dev0&quot;, &quot;is_leader&quot;: true, &quot;is_local&quot;: false, &quot;role&quot;: &quot;leader&quot;, &quot;last_heartbeat_at&quot;: &quot;2026-03-24T19:20:05+00:00&quot;, &quot;last_heartbeat_age_s&quot;: 4.0, &quot;freshness&quot;: &quot;fresh&quot;, &quot;stale_after_seconds&quot;: 10.0 },
-        { &quot;controller_id&quot;: &quot;core-a&quot;, &quot;advertise_addr&quot;: &quot;https://core-a.example.net:9108&quot;, &quot;version&quot;: &quot;0.1.3.dev0&quot;, &quot;is_leader&quot;: false, &quot;is_local&quot;: true, &quot;role&quot;: &quot;standby&quot;, &quot;last_heartbeat_at&quot;: &quot;2026-03-24T19:19:48+00:00&quot;, &quot;last_heartbeat_age_s&quot;: 21.0, &quot;freshness&quot;: &quot;stale&quot;, &quot;stale_after_seconds&quot;: 10.0 },
+        { &quot;controller_id&quot;: &quot;core-b&quot;, &quot;advertise_addr&quot;: &quot;https://core-b.example.net:9108&quot;, &quot;version&quot;: &quot;0.1.5.dev0&quot;, &quot;is_leader&quot;: true, &quot;is_local&quot;: false, &quot;role&quot;: &quot;leader&quot;, &quot;last_heartbeat_at&quot;: &quot;2026-04-22T19:20:05+00:00&quot;, &quot;last_heartbeat_age_s&quot;: 4.0, &quot;freshness&quot;: &quot;fresh&quot;, &quot;stale_after_seconds&quot;: 10.0 },
+        { &quot;controller_id&quot;: &quot;core-a&quot;, &quot;advertise_addr&quot;: &quot;https://core-a.example.net:9108&quot;, &quot;version&quot;: &quot;0.1.5.dev0&quot;, &quot;is_leader&quot;: false, &quot;is_local&quot;: true, &quot;role&quot;: &quot;standby&quot;, &quot;last_heartbeat_at&quot;: &quot;2026-04-22T19:19:48+00:00&quot;, &quot;last_heartbeat_age_s&quot;: 21.0, &quot;freshness&quot;: &quot;stale&quot;, &quot;stale_after_seconds&quot;: 10.0 },
         { &quot;controller_id&quot;: &quot;core-c&quot;, &quot;advertise_addr&quot;: &quot;https://core-c.example.net:9108&quot;, &quot;version&quot;: &quot;0.1.2&quot;, &quot;is_leader&quot;: false, &quot;is_local&quot;: false, &quot;role&quot;: &quot;standby&quot;, &quot;last_heartbeat_at&quot;: null, &quot;last_heartbeat_age_s&quot;: null, &quot;freshness&quot;: &quot;unknown&quot;, &quot;stale_after_seconds&quot;: 10.0 }
       ]
     },
-    &quot;controller_build&quot;: { &quot;version&quot;: &quot;0.1.3.dev0&quot;, &quot;sha&quot;: &quot;abc123&quot;, &quot;date&quot;: &quot;2026-03-19&quot; },
+    &quot;controller_build&quot;: { &quot;version&quot;: &quot;0.1.5.dev0&quot;, &quot;sha&quot;: &quot;abc123&quot;, &quot;date&quot;: &quot;2026-04-22&quot; },
     &quot;etcd&quot;: { &quot;configured_endpoints&quot;: [&quot;http://10.0.0.11:2379&quot;, &quot;http://10.0.0.12:2379&quot;, &quot;http://10.0.0.13:2379&quot;], &quot;maintenance_runs_total&quot;: 0.0, &quot;maintenance_triggered_total&quot;: 0.0, &quot;healthy_endpoints&quot;: 3, &quot;unhealthy_endpoints&quot;: 0, &quot;members&quot;: [], &quot;last_probe_ts&quot;: 1710800000.0, &quot;probes_enabled&quot;: true },
     &quot;transport&quot;: { &quot;backend&quot;: &quot;nats-js&quot;, &quot;js_domain&quot;: &quot;K1S&quot;, &quot;site_summary&quot;: { &quot;seen&quot;: 2, &quot;stale&quot;: 0, &quot;fresh&quot;: 2, &quot;last_seen_age_s&quot;: 4.2 }, &quot;sites&quot;: [], &quot;jetstream&quot;: { &quot;stream_count&quot;: 1, &quot;consumer_count&quot;: 2, &quot;pending&quot;: 0.0, &quot;ack_pending&quot;: 1.0, &quot;redelivered&quot;: 0.0, &quot;waiting&quot;: 0.0, &quot;consumers&quot;: [], &quot;streams&quot;: [] }, &quot;gateway&quot;: { &quot;site_count&quot;: 2, &quot;result_replay_backlog&quot;: 0.0, &quot;sites&quot;: [] }, &quot;routes&quot;: { &quot;site_count&quot;: 2, &quot;pending_sites&quot;: 0.0, &quot;max_ack_age_s&quot;: 0.0, &quot;sites&quot;: [] }, &quot;fence&quot;: { &quot;surface_count&quot;: 2, &quot;stale_total&quot;: 0.0, &quot;duplicate_total&quot;: 0.0, &quot;epoch_advance_total&quot;: 0.0, &quot;surfaces&quot;: [] } },
     &quot;hpa&quot;: { &quot;reconcile_total&quot;: 0.0, &quot;scale_total&quot;: 0.0, &quot;metrics_stale_total&quot;: 0.0, &quot;metrics_missing_total&quot;: 0.0, &quot;snapshot_age_seconds&quot;: 0.0 },
@@ -919,7 +919,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-17 10:02:07</span>
+        <span>Built 2026-04-29 15:42:33</span>
       </div>
     </footer>
     <script>

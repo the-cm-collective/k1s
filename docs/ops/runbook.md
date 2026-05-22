@@ -27,8 +27,11 @@ Setup
   - Convenience for demos: run `./scripts/init_demo.sh --with-secrets-env` to export both `AE_ALLOW_PLAINTEXT_SECRETS=1` and `SOPS_AGE_KEY_FILE` automatically.
 
 VM GPU Fabric Lab
+- Host A libvirt passthrough guest: [Host A Linux GPU Guest](host-a-linux-gpu-guest.html)
+- Canonical Host A strict-CRI rebuild/start sequence: [Host A Strict-CRI Retest](host-a-strict-cri-retest.html)
 - Golden image build/verify/transfer: `docs/ops/vm-golden-image-pipeline.md`
 - Variant orchestration and bootstrap: [VM Variant Runbook](vm-variant-runbook.html)
+  - This is the local QEMU harness. It does not define the Host A passthrough guest with PCI hostdevs.
 - Baseline metrics and throughput gates: `docs/ops/vm-metrics-and-gates.md`
 - Remote GPU VM precursor (A+B, libvirt/QEMU): `docs/ops/gpu-vm-remote-host-validation.md`
 - Primary smoke entrypoint: `make lab-vm-smoke`
@@ -203,6 +206,8 @@ Ingress and TLS
 - Environment:
   - AE_TLS_DIR (default: state/tls)
   - AE_CADDY_SITES, AE_CADDY_BIN, AE_CADDY_FILE, AE_CADDY_CONTAINER, AE_CONTAINER_CLI, AE_CADDY_RELOAD_TIMEOUT
+  - AE_CADDY_PREFER_HOST_PORT_UPSTREAMS=1 for external Caddy containers that
+    should route through published host ports instead of workload-network DNS
 
 Ingress validation lanes (CRI, mode-isolated)
 - Preflight before long lanes:
@@ -421,8 +426,8 @@ HA core rolling upgrades (`H5b2a-core-upgrades`)
   - Kubernetes `/version` stays unchanged; the HA upgrade helper uses `/__ae/version`.
 - Upgrade helper surface:
   - Precheck: `PYTHONPATH=src python scripts/dev/ha_core_upgrade.py precheck --metrics-url http://127.0.0.1:9108/metrics`
-  - Per-node plan: `PYTHONPATH=src python scripts/dev/ha_core_upgrade.py node-plan --node-name core-a --expected-version 0.1.3.dev0 --expected-sha <target-sha>`
-  - Cluster verify: `PYTHONPATH=src python scripts/dev/ha_core_upgrade.py cluster-verify --node core-a=http://10.0.0.11:9108,https://10.0.0.11:8445 --node core-b=http://10.0.0.12:9108,https://10.0.0.12:8445 --node core-c=http://10.0.0.13:9108,https://10.0.0.13:8445 --expected-version 0.1.3.dev0 --expected-sha <target-sha>`
+  - Per-node plan: `PYTHONPATH=src python scripts/dev/ha_core_upgrade.py node-plan --node-name core-a --expected-version <target-version> --expected-sha <target-sha>`
+  - Cluster verify: `PYTHONPATH=src python scripts/dev/ha_core_upgrade.py cluster-verify --node core-a=http://10.0.0.11:9108,https://10.0.0.11:8445 --node core-b=http://10.0.0.12:9108,https://10.0.0.12:8445 --node core-c=http://10.0.0.13:9108,https://10.0.0.13:8445 --expected-version <target-version> --expected-sha <target-sha>`
 - Rolling procedure:
   - Run `ha_core_upgrade.py precheck` before touching any node. It validates one visible leader, controller authority health, shared etcd/NATS reachability, and transport backlog/route-ack thresholds.
   - For each follower node:
@@ -505,9 +510,9 @@ HA edge transport upgrades (`H5b2c-edge-transport-upgrades`)
   - Precheck:
     - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py precheck --site sea=http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b`
   - Per-gateway plan:
-    - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py gateway-plan --site-id sea --gateway-node edge-a --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version 0.1.3.dev0 --expected-sha <target-sha>`
+    - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py gateway-plan --site-id sea --gateway-node edge-a --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version <target-version> --expected-sha <target-sha>`
   - Site verify:
-    - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py site-verify --site sea=http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b --expected-edge-version <target-version> --expected-edge-commit <target-commit> --expected-gateway-version 0.1.3.dev0 --expected-gateway-sha <target-sha> --require-gateway-converged`
+    - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py site-verify --site sea=http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-gateway edge-a --expected-gateway edge-b --expected-edge-version <target-version> --expected-edge-commit <target-commit> --expected-gateway-version <target-version> --expected-gateway-sha <target-sha> --require-gateway-converged`
   - Leader plan:
     - `PYTHONPATH=src python scripts/dev/ha_edge_transport.py leader-plan --site-id sea --monitor-url http://10.0.1.21:8223 --controller-metrics-url http://10.0.0.11:9108/metrics --expected-version <target-version> --expected-commit <target-commit>`
   - Leader replacement plan:

@@ -379,12 +379,6 @@ class NetFSManager:
     def _within_root(root: Path, path: Path) -> bool:
         try:
             return path.resolve().is_relative_to(root.resolve())
-        except AttributeError:  # pragma: no cover - py<3.9 fallback
-            try:
-                path.resolve().relative_to(root.resolve())
-                return True
-            except Exception:
-                return False
         except Exception:
             return False
 

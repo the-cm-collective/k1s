@@ -4,18 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
+import sys
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
-from ae._utc import UTC
+from ae.accelerators import preferred_gpu_count, preferred_gpu_models
 from ae.config.manager import ConfigManager
 from ae.controller.health import HealthManager
 from ae.controller.inference_cell import InferenceCellController, InferenceCellSetController
@@ -46,6 +48,7 @@ from ae.k8s.validate import validate_documents
 from ae.observability import MetricsService
 from ae.observability.logging import configure_logging
 from ae.runtime import (
+    ContainerdRuntime,
     CRIRuntime,
     DockerRuntime,
     PodmanRuntime,
@@ -86,6 +89,10 @@ class CLIArgumentParser(argparse.ArgumentParser):
 
 def _ha_mode_enabled() -> bool:
     return str(os.getenv("AE_HA_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _warn_deprecated(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -274,6 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     nodes_parser = subparsers.add_parser("nodes", help="List or describe nodes")
     nodes_parser.add_argument("name", nargs="?", help="Node id to describe (omit to list)")
+    nodes_parser.add_argument("--json", action="store_true", help="Emit JSON output")
     nodes_parser.add_argument("--cordon", action="store_true", help="Mark node unschedulable")
     nodes_parser.add_argument("--uncordon", action="store_true", help="Clear cordon on node")
     nodes_parser.add_argument(
@@ -420,7 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
     history_parser.add_argument("--pod", dest="pod", default=None, help="Filter by pod name")
     history_parser.add_argument(
         "--replica",
-        dest="pod",
+        dest="replica",
         default=None,
         help="Deprecated alias for --pod (filter by pod name)",
     )
@@ -1059,8 +1067,10 @@ def runtime_factory(registry_auth: RegistryAuthProvider | None = None) -> Runtim
     backend = os.getenv("AE_RUNTIME_BACKEND", "podman").lower()
     if backend == "stub":
         return StubRuntime()
-    if backend in {"cri", "containerd"}:
+    if backend == "cri":
         return CRIRuntime(registry_auth=registry_auth)
+    if backend == "containerd":
+        return ContainerdRuntime(registry_auth=registry_auth)
     if backend in {"podman", "oci"}:
         try:
             # quick availability check
@@ -1953,9 +1963,46 @@ def _node_status_with_staleness(status, *, grace_seconds: int = 40) -> str:  # t
     return st
 
 
+def _node_json_item(node, status, *, grace_seconds: int) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    seen_at = status.seen_at if status else None
+    stale = False
+    if seen_at:
+        try:
+            stale = (datetime.now(UTC) - seen_at).total_seconds() > grace_seconds
+        except Exception:
+            stale = False
+    state = status.status if status else "Unknown"
+    if stale and state == "Ready":
+        state = "NotReady"
+    capabilities = getattr(node, "capabilities", {}) or {}
+    labels = node.labels or {}
+    return {
+        "node_id": node.node_id,
+        "name": node.name,
+        "backend": node.backend,
+        "endpoint": node.endpoint,
+        "pod_cidr": node.pod_cidr,
+        "wg_pubkey": node.wg_pubkey,
+        "rp_pubkey": getattr(node, "rp_pubkey", None),
+        "labels": labels,
+        "capabilities": capabilities,
+        "gpu_count": preferred_gpu_count(labels, capabilities),
+        "gpu_models": preferred_gpu_models(labels, capabilities),
+        "taints": node.taints,
+        "cordoned": bool(getattr(node, "cordoned", False)),
+        "status": state,
+        "seen_at": seen_at.isoformat() if seen_at else None,
+        "stale": stale,
+    }
+
+
 def handle_nodes(
     ns: argparse.Namespace, store: SQLiteStateStore, runtime: RuntimeAdapter | None = None
 ) -> int:
+    try:
+        grace = int(os.getenv("AE_NODE_NOTREADY_AFTER", "40") or 40)
+    except Exception:
+        grace = 40
     # Mutating operations: cordon/uncordon/drain
     if (
         getattr(ns, "cordon", False)
@@ -2008,6 +2055,13 @@ def handle_nodes(
             print(f"node {ns.name} not found")
             return 1
         node, status = res
+        if getattr(ns, "json", False):
+            payload = {
+                "node": _node_json_item(node, status, grace_seconds=grace),
+                "stale_after_seconds": grace,
+            }
+            print(json.dumps(payload, indent=2))
+            return 0
         print(f"node {node.node_id}")
         print(f"  name:     {node.name or '-'}")
         print(f"  backend:  {node.backend or '-'}")
@@ -2016,6 +2070,13 @@ def handle_nodes(
         print(f"  wgPubkey: {node.wg_pubkey or '-'}")
         print(f"  rpPubkey: {getattr(node, 'rp_pubkey', None) or '-'}")
         print(f"  labels:   {_fmt_labels(node.labels)}")
+        caps = getattr(node, "capabilities", {}) or {}
+        if caps:
+            print(
+                "  accelerators: "
+                f"{preferred_gpu_count(node.labels, caps) or 0} "
+                f"({preferred_gpu_models(node.labels, caps) or '-'})"
+            )
         print(f"  taints:   {_fmt_taints(node.taints)}")
         print(f"  cordoned: {'yes' if getattr(node, 'cordoned', False) else 'no'}")
         if status:
@@ -2026,6 +2087,14 @@ def handle_nodes(
         return 0
 
     rows = store.list_nodes()
+    if getattr(ns, "json", False):
+        payload = {
+            "nodes": [_node_json_item(node, status, grace_seconds=grace) for node, status in rows],
+            "count": len(rows),
+            "stale_after_seconds": grace,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
     if not rows:
         print("No nodes registered.")
         return 0
@@ -2672,6 +2741,17 @@ def handle_work(ns: argparse.Namespace, store: SQLiteStateStore) -> int:
     return 0
 
 
+def _http_timeout(default: float = 10.0) -> float:
+    raw = os.getenv("AE_CLI_HTTP_TIMEOUT", "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(0.1, value)
+
+
 def _http_get_json(base: str, path: str, token: str | None = None):
     import requests
 
@@ -2679,7 +2759,12 @@ def _http_get_json(base: str, path: str, token: str | None = None):
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.get(url, headers=headers, timeout=10)
+    r = requests.get(
+        url,
+        headers=headers,
+        timeout=_http_timeout(),
+        verify=_apishim_requests_verify(),
+    )
     r.raise_for_status()
     return r.json()
 
@@ -2691,7 +2776,13 @@ def _http_post_json(base: str, path: str, body: dict, token: str | None = None):
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.post(url, headers=headers, json=body, timeout=10)
+    r = requests.post(
+        url,
+        headers=headers,
+        json=body,
+        timeout=_http_timeout(),
+        verify=_apishim_requests_verify(),
+    )
     r.raise_for_status()
     return r.json()
 
@@ -2705,7 +2796,7 @@ def _apishim_base_url(base: str) -> str:
     return out.rstrip("/")
 
 
-def _apishim_requests_verify() -> bool | str:
+def _apishim_ca_bundle_path() -> str | None:
     ca_bundle = (
         os.getenv("AE_APISHIM_CA_BUNDLE")
         or os.getenv("AE_APISHIM_CA")
@@ -2713,7 +2804,28 @@ def _apishim_requests_verify() -> bool | str:
     )
     if ca_bundle:
         return str(ca_bundle)
+    return None
+
+
+def _apishim_requests_verify() -> bool | str:
+    ca_bundle = _apishim_ca_bundle_path()
+    if ca_bundle:
+        return ca_bundle
     return os.getenv("AE_APISHIM_INSECURE") != "1"
+
+
+def _apishim_ssl_context():
+    import ssl
+
+    ctx = ssl.create_default_context()
+    if os.getenv("AE_APISHIM_INSECURE") == "1":
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    ca_bundle = _apishim_ca_bundle_path()
+    if ca_bundle:
+        ctx.load_verify_locations(cafile=ca_bundle)
+    return ctx
 
 
 def _cli_labs_mint_fallback_enabled() -> bool:
@@ -4295,7 +4407,6 @@ def _exec_over_spdy(
     import shutil
     import signal
     import socket
-    import ssl
     import sys
     import threading
     import urllib.parse
@@ -4326,10 +4437,7 @@ def _exec_over_spdy(
 
     sock = socket.create_connection((host, port), timeout=timeout or 10)
     if scheme == "https":
-        ctx = ssl.create_default_context()
-        if os.getenv("AE_APISHIM_INSECURE") == "1":
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+        ctx = _apishim_ssl_context()
         sock = ctx.wrap_socket(sock, server_hostname=host)
 
     req_lines = [
@@ -4602,9 +4710,9 @@ def _exec_over_ws(
     import shutil
     import signal
     import socket
-    import ssl
     import sys
     import threading
+    import time
     import urllib.parse
     from contextlib import contextmanager
 
@@ -4630,12 +4738,12 @@ def _exec_over_ws(
     query = urllib.parse.urlencode(params, doseq=True)
     full_path = path + ("?" + query if query else "")
 
-    sock = socket.create_connection((host, port), timeout=timeout or 10)
+    connect_timeout = float(timeout or 10)
+    ws_read_timeout = 1.0
+    completion_grace_seconds = min(2.0, max(0.2, connect_timeout))
+    sock = socket.create_connection((host, port), timeout=connect_timeout)
     if scheme == "https":
-        ctx = ssl.create_default_context()
-        if os.getenv("AE_APISHIM_INSECURE") == "1":
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+        ctx = _apishim_ssl_context()
         sock = ctx.wrap_socket(sock, server_hostname=host)
 
     ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
@@ -4672,8 +4780,10 @@ def _exec_over_ws(
         status_code = 0
     if status_code != 101:
         raise RuntimeError(f"websocket upgrade failed: {status_code}")
+    sock.settimeout(ws_read_timeout)
 
     send_lock = threading.Lock()
+    ws_timeout = object()
 
     def _send_ws(payload: bytes, opcode: int = 0x2) -> None:
         mask_key = os.urandom(4)
@@ -4692,17 +4802,28 @@ def _exec_over_ws(
         with send_lock:
             sock.sendall(bytes(header) + mask_key + masked)
 
-    def _recv_exact(n: int) -> bytes | None:
+    def _recv_exact(n: int, *, allow_timeout: bool = False) -> bytes | None | object:
         buf = b""
+        deadline = time.monotonic() + ws_read_timeout
         while len(buf) < n:
-            chunk = sock.recv(n - len(buf))
+            try:
+                chunk = sock.recv(n - len(buf))
+            except socket.timeout:
+                if allow_timeout and not buf:
+                    return ws_timeout
+                if time.monotonic() >= deadline:
+                    raise
+                continue
             if not chunk:
                 return None
             buf += chunk
+            deadline = time.monotonic() + ws_read_timeout
         return buf
 
-    def _recv_ws() -> tuple[int, bytes] | None:
-        hdr = _recv_exact(2)
+    def _recv_ws() -> tuple[int, bytes] | None | object:
+        hdr = _recv_exact(2, allow_timeout=True)
+        if hdr is ws_timeout:
+            return ws_timeout
         if not hdr:
             return None
         opcode = hdr[0] & 0x0F
@@ -4725,6 +4846,9 @@ def _exec_over_ws(
     stop_event = threading.Event()
     exit_code = 0
     err_buf = b""
+    output_seen = False
+    status_seen = False
+    completion_deadline: float | None = None
 
     @contextmanager
     def _maybe_raw() -> None:
@@ -4780,23 +4904,46 @@ def _exec_over_ws(
             stdin_thread = threading.Thread(target=_pump_stdin, daemon=True)
             stdin_thread.start()
         while not stop_event.is_set():
-            msg = _recv_ws()
+            try:
+                msg = _recv_ws()
+            except socket.timeout:
+                msg = ws_timeout
+            if msg is ws_timeout:
+                if not output_seen:
+                    raise RuntimeError("The read operation timed out")
+                now = time.monotonic()
+                if completion_deadline is None:
+                    completion_deadline = now + completion_grace_seconds
+                    continue
+                if now < completion_deadline:
+                    continue
+                break
             if msg is None:
+                if output_seen:
+                    break
+                if not status_seen:
+                    raise RuntimeError("websocket closed before exec status")
                 break
             opcode, payload = msg
             if opcode == 0x8:
+                if not status_seen and not output_seen:
+                    raise RuntimeError("websocket closed before exec status")
                 break
             if not payload:
                 continue
+            completion_deadline = None
             ch = payload[0]
             data = payload[1:]
             if ch == 1 and stdout:
+                output_seen = True
                 sys.stdout.buffer.write(data)
                 sys.stdout.buffer.flush()
             elif ch == 2 and stderr and not tty:
+                output_seen = True
                 sys.stderr.buffer.write(data)
                 sys.stderr.buffer.flush()
             elif ch == 3:
+                status_seen = True
                 err_buf += data
                 try:
                     status = json.loads(err_buf.decode("utf-8", "ignore") or "{}")
@@ -4853,7 +5000,6 @@ def _portforward_over_ws(
     import os
     import signal
     import socket
-    import ssl
     import sys
     import threading
     import urllib.parse
@@ -4876,10 +5022,7 @@ def _portforward_over_ws(
     def _open_ws() -> socket.socket:
         sock = socket.create_connection((host, port), timeout=timeout or 10)
         if scheme == "https":
-            ctx = ssl.create_default_context()
-            if os.getenv("AE_APISHIM_INSECURE") == "1":
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
+            ctx = _apishim_ssl_context()
             sock = ctx.wrap_socket(sock, server_hostname=host)
         ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
         req_lines = [
@@ -5087,12 +5230,35 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
         ws_fallback = bool(
             getattr(args, "ws_fallback", False) or _os.getenv("AE_EXEC_WS_FALLBACK") == "1"
         )
+        exec_transport_report = _os.getenv("AE_EXEC_TRANSPORT_REPORT") == "1"
         explicit_token = getattr(gargs, "token", None) if gargs is not None else None
         role_token = _os.getenv("AE_APISHIM_EXEC_TOKEN")
         generic_token = _os.getenv("AE_APISHIM_TOKEN")
         mint_token = _os.getenv("AE_APISHIM_MINT_TOKEN")
         labs_server = getattr(gargs, "server", None) if gargs is not None else None
         labs_attempted = False
+
+        def _emit_exec_transport_report(
+            *,
+            primary: str,
+            final: str | None,
+            fallback_used: bool,
+            ok: bool,
+        ) -> None:
+            if not exec_transport_report:
+                return
+            import sys as _sys
+
+            report = "AE_EXEC_TRANSPORT_REPORT " + " ".join(
+                [
+                    f"primary={primary}",
+                    f"final={final or 'none'}",
+                    f"fallback={'1' if fallback_used else '0'}",
+                    f"status={'ok' if ok else 'error'}",
+                ]
+            )
+            print(report, file=_sys.stderr)
+
         if apishim_base:
             app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
             cmd = list(args.cmd or [])
@@ -5126,8 +5292,9 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                 generic_token=generic_token,
                 mint_token=mint_token,
             )
-            try:
-                return _exec_over_spdy(
+            def _call_exec_transport(kind: str) -> int:
+                fn = _exec_over_ws if kind == "websocket" else _exec_over_spdy
+                return fn(
                     apishim_base,
                     namespace=ns,
                     pod_name=pod_name,
@@ -5140,144 +5307,90 @@ def handle_exec(args: argparse.Namespace, store: SQLiteStateStore, runtime: Runt
                     token=token,
                     timeout=getattr(args, "timeout", None),
                 )
-            except Exception as exc:
-                if _extract_http_status(exc) == 401:
-                    refreshed = _resolve_apishim_stream_token(
-                        base=apishim_base,
-                        role="exec",
-                        scope=scope,
-                        explicit_token=explicit_token,
-                        role_token=role_token,
-                        generic_token=generic_token,
-                        mint_token=mint_token,
-                        force_refresh=True,
-                    )
-                    if refreshed and refreshed != token:
-                        token = refreshed
-                        try:
-                            return _exec_over_spdy(
-                                apishim_base,
-                                namespace=ns,
-                                pod_name=pod_name,
-                                command=cmd,
-                                container=container_name,
-                                stdin=want_stdin,
-                                stdout=True,
-                                stderr=want_stderr,
-                                tty=want_tty,
-                                token=token,
-                                timeout=getattr(args, "timeout", None),
-                            )
-                        except Exception as retry_exc:
-                            exc = retry_exc
-                if _extract_http_status(exc) == 401 and not labs_attempted:
-                    labs_attempted = True
-                    labs_token = _resolve_labs_stream_token(
-                        apishim_base=apishim_base,
-                        role="exec",
-                        scope=scope,
-                        global_server=str(labs_server) if labs_server else None,
-                    )
-                    if labs_token and labs_token != token:
-                        print("spdy exec got 401; trying labs session token fallback...")
-                        token = labs_token
-                        try:
-                            return _exec_over_spdy(
-                                apishim_base,
-                                namespace=ns,
-                                pod_name=pod_name,
-                                command=cmd,
-                                container=container_name,
-                                stdin=want_stdin,
-                                stdout=True,
-                                stderr=want_stderr,
-                                tty=want_tty,
-                                token=token,
-                                timeout=getattr(args, "timeout", None),
-                            )
-                        except Exception as retry_exc:
-                            exc = retry_exc
-                if ws_fallback:
-                    print(f"spdy exec failed ({exc}); trying websocket fallback...")
-                    try:
-                        return _exec_over_ws(
-                            apishim_base,
-                            namespace=ns,
-                            pod_name=pod_name,
-                            command=cmd,
-                            container=container_name,
-                            stdin=want_stdin,
-                            stdout=True,
-                            stderr=want_stderr,
-                            tty=want_tty,
-                            token=token,
-                            timeout=getattr(args, "timeout", None),
+
+            def _attempt_exec_transport(kind: str) -> int:
+                nonlocal token, labs_attempted
+                try:
+                    return _call_exec_transport(kind)
+                except Exception as exc:
+                    if _extract_http_status(exc) == 401:
+                        refreshed = _resolve_apishim_stream_token(
+                            base=apishim_base,
+                            role="exec",
+                            scope=scope,
+                            explicit_token=explicit_token,
+                            role_token=role_token,
+                            generic_token=generic_token,
+                            mint_token=mint_token,
+                            force_refresh=True,
                         )
-                    except Exception as exc2:
-                        if _extract_http_status(exc2) == 401:
-                            refreshed = _resolve_apishim_stream_token(
-                                base=apishim_base,
-                                role="exec",
-                                scope=scope,
-                                explicit_token=explicit_token,
-                                role_token=role_token,
-                                generic_token=generic_token,
-                                mint_token=mint_token,
-                                force_refresh=True,
-                            )
-                            if refreshed and refreshed != token:
-                                token = refreshed
-                                try:
-                                    return _exec_over_ws(
-                                        apishim_base,
-                                        namespace=ns,
-                                        pod_name=pod_name,
-                                        command=cmd,
-                                        container=container_name,
-                                        stdin=want_stdin,
-                                        stdout=True,
-                                        stderr=want_stderr,
-                                        tty=want_tty,
-                                        token=token,
-                                        timeout=getattr(args, "timeout", None),
-                                    )
-                                except Exception as retry_ws_exc:
-                                    exc2 = retry_ws_exc
-                        if _extract_http_status(exc2) == 401 and not labs_attempted:
-                            labs_attempted = True
-                            labs_token = _resolve_labs_stream_token(
-                                apishim_base=apishim_base,
-                                role="exec",
-                                scope=scope,
-                                global_server=str(labs_server) if labs_server else None,
-                            )
-                            if labs_token and labs_token != token:
-                                print(
-                                    "websocket exec got 401; trying labs session token fallback..."
-                                )
-                                token = labs_token
-                                try:
-                                    return _exec_over_ws(
-                                        apishim_base,
-                                        namespace=ns,
-                                        pod_name=pod_name,
-                                        command=cmd,
-                                        container=container_name,
-                                        stdin=want_stdin,
-                                        stdout=True,
-                                        stderr=want_stderr,
-                                        tty=want_tty,
-                                        token=token,
-                                        timeout=getattr(args, "timeout", None),
-                                    )
-                                except Exception as retry_ws_exc:
-                                    exc2 = retry_ws_exc
-                        print(f"websocket exec failed: {exc2}")
-                        return 1
-                if _looks_like_connection_refused(exc) and _is_local_apishim_server(apishim_base):
-                    _print_apishim_connection_refused_hint(apishim_base)
-                print(f"spdy exec failed: {exc}")
+                        if refreshed and refreshed != token:
+                            token = refreshed
+                            try:
+                                return _call_exec_transport(kind)
+                            except Exception as retry_exc:
+                                exc = retry_exc
+                    if _extract_http_status(exc) == 401 and not labs_attempted:
+                        labs_attempted = True
+                        labs_token = _resolve_labs_stream_token(
+                            apishim_base=apishim_base,
+                            role="exec",
+                            scope=scope,
+                            global_server=str(labs_server) if labs_server else None,
+                        )
+                        if labs_token and labs_token != token:
+                            print(f"{kind} exec got 401; trying labs session token fallback...")
+                            token = labs_token
+                            try:
+                                return _call_exec_transport(kind)
+                            except Exception as retry_exc:
+                                exc = retry_exc
+                    raise exc
+
+            transport_order = ["websocket", "spdy"] if not want_stdin and not want_tty else ["spdy"]
+            if ws_fallback and "websocket" not in transport_order:
+                transport_order.append("websocket")
+
+            last_exc: Exception | None = None
+            last_kind = transport_order[-1]
+            primary_kind = transport_order[0]
+            for idx, kind in enumerate(transport_order):
+                last_kind = kind
+                try:
+                    rc = _attempt_exec_transport(kind)
+                    _emit_exec_transport_report(
+                        primary=primary_kind,
+                        final=kind,
+                        fallback_used=idx > 0,
+                        ok=True,
+                    )
+                    return rc
+                except Exception as exc:
+                    last_exc = exc
+                    if idx + 1 < len(transport_order):
+                        print(
+                            f"{kind} exec failed ({exc}); trying {transport_order[idx + 1]} fallback..."
+                        )
+                        continue
+            if last_exc is not None and _looks_like_connection_refused(last_exc) and _is_local_apishim_server(apishim_base):
+                _print_apishim_connection_refused_hint(apishim_base)
+            if last_exc is not None:
+                _emit_exec_transport_report(
+                    primary=primary_kind,
+                    final=last_kind,
+                    fallback_used=last_kind != primary_kind,
+                    ok=False,
+                )
+                print(f"{last_kind} exec failed: {last_exc}")
                 return 1
+            _emit_exec_transport_report(
+                primary=primary_kind,
+                final=last_kind,
+                fallback_used=last_kind != primary_kind,
+                ok=False,
+            )
+            print(f"{last_kind} exec failed: unknown error")
+            return 1
         if gargs is not None and getattr(gargs, "server", None):
             return handle_exec_remote(args, gargs)
 
@@ -6038,6 +6151,11 @@ def handle_history(
     args: argparse.Namespace, store: SQLiteStateStore, global_args: argparse.Namespace
 ) -> int:
     app_name = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
+    replica_alias = getattr(args, "replica", None)
+    if replica_alias:
+        _warn_deprecated("history --replica is deprecated; use --pod")
+        if not getattr(args, "pod", None):
+            args.pod = replica_alias
     # Server mode
     if getattr(global_args, "server", None):
         base = str(global_args.server)
@@ -6890,6 +7008,7 @@ def handle_k8s_check(args: argparse.Namespace) -> int:
     issues = k8s_portability_issues(man)
     policy = getattr(args, "policy", "baseline")
     if getattr(args, "strict", False):
+        _warn_deprecated("k8s-check --strict is deprecated; use --policy strict")
         policy = "strict"
     # Extra HPA validations based on assumptions
     if getattr(args, "assume_hpa", None):

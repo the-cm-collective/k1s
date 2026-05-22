@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from ae.cli.__main__ import handle_scale, main
+from ae.cli.__main__ import handle_history, handle_scale, main
 from ae.controller.spec import AppManifest, AppSpec, Metadata
-from ae.controller.state import RegistryConflictError, RegistryEntry
+from ae.controller.state import RegistryConflictError, RegistryEntry, SQLiteStateStore
 
 
 def write_manifest(path: Path) -> None:
@@ -24,6 +24,26 @@ spec:
   replicas: 1
         """.strip()
     )
+
+
+def test_history_replica_alias_warns(tmp_path, capsys):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    args = argparse.Namespace(
+        name="echo",
+        namespace=None,
+        pod=None,
+        replica="echo-rev1-0",
+        limit=20,
+        since=None,
+        since_time=None,
+        json=False,
+    )
+    global_args = argparse.Namespace(server=None, token=None)
+
+    assert handle_history(args, store, global_args) == 0
+
+    captured = capsys.readouterr()
+    assert "history --replica is deprecated; use --pod" in captured.err
 
 
 def test_apply_and_status_commands(tmp_path, monkeypatch, capsys):
@@ -141,6 +161,48 @@ def test_logs_command(tmp_path, monkeypatch, capsys):
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "echo-rev1-0" in output
+
+
+def test_nodes_json_includes_typed_accelerators(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setenv("AE_STATE_DB", str(db_path))
+    monkeypatch.setenv("AE_RUNTIME_BACKEND", "stub")
+    monkeypatch.setenv("AE_CADDY_SITES", "")
+
+    store = SQLiteStateStore(db_path)
+    store.upsert_node(
+        "edge-b--gpu-1",
+        name="edge-b--gpu-1",
+        labels={"site": "edge-b"},
+        capabilities={
+            "accelerators": [
+                {
+                    "id": "gpu-0",
+                    "kind": "discrete_gpu",
+                    "vendor": "nvidia",
+                    "family": "RTX 8000",
+                    "device_count": 1,
+                    "memory_model": "dedicated",
+                    "memory_bytes_per_device": 49152 * 1024 * 1024,
+                    "runtime_handlers": ["nvidia"],
+                    "partitioning_mode": "none",
+                    "backing_device_id": None,
+                    "execution_role": "execution",
+                }
+            ]
+        },
+        endpoint="http://edge-b.lan:9112",
+    )
+    store.record_heartbeat("edge-b--gpu-1", "Ready")
+
+    exit_code = main(["nodes", "--json"])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count"] == 1
+    assert payload["nodes"][0]["node_id"] == "edge-b--gpu-1"
+    assert payload["nodes"][0]["gpu_count"] == 1
+    assert payload["nodes"][0]["gpu_models"] == "RTX 8000"
+    assert payload["nodes"][0]["capabilities"]["accelerators"][0]["vendor"] == "nvidia"
 
 
 def test_rollback_command(tmp_path, monkeypatch, capsys):

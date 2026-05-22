@@ -1,0 +1,92 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "k1s-core-ha.fullname" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  rules:
+    {{- if .Values.edgeProxy.enabled }}
+    - host: {{ printf "*.%s" (include "k1s-core-ha.appsDomain" .) | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "k1s-core-ha.edgeProxyServiceName" . }}
+                port:
+                  name: http
+    {{- end }}
+    - host: {{ include "k1s-core-ha.docsHost" . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "k1s-core-ha.controllerServiceName" . }}
+                port:
+                  name: metrics
+    {{- if .Values.apishim.enabled }}
+    - host: {{ include "k1s-core-ha.apiHost" . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "k1s-core-ha.apishimServiceName" . }}
+                port:
+                  name: http
+    {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - secretName: {{ include "k1s-core-ha.ingressTlsSecretName" . | quote }}
+      hosts:
+        {{- if .Values.edgeProxy.enabled }}
+        - {{ printf "*.%s" (include "k1s-core-ha.appsDomain" .) | quote }}
+        {{- end }}
+        - {{ include "k1s-core-ha.docsHost" . | quote }}
+        {{- if .Values.apishim.enabled }}
+        - {{ include "k1s-core-ha.apiHost" . | quote }}
+        {{- end }}
+  {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ printf "%s-dash" (include "k1s-core-ha.fullname" .) }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/app-root: /dashboard
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  rules:
+    - host: {{ include "k1s-core-ha.dashHost" . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "k1s-core-ha.controllerServiceName" . }}
+                port:
+                  name: metrics
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - secretName: {{ include "k1s-core-ha.ingressTlsSecretName" . | quote }}
+      hosts:
+        - {{ include "k1s-core-ha.dashHost" . | quote }}
+  {{- end }}
+{{- end }}

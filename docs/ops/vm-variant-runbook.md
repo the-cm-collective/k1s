@@ -3,6 +3,7 @@
 Purpose
 - Start, configure, and run k1s fabric test variants on local KVM/QEMU.
 - Canonical HA operator bootstrap sequence: [HA Cluster Bring-Up](ha-cluster-bring-up.html)
+- Host A Linux passthrough guest is out of scope for this harness. Use [Host A Linux GPU Guest](host-a-linux-gpu-guest.html) for the `k1s-core-a-gpu` libvirt `qemu:///system` lane; `variant_up.sh` does not render PCI hostdev passthrough.
 
 Reference variants
 - `lab/variants/test1-a-only-passthrough.yaml`

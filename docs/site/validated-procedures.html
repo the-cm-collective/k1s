@@ -765,11 +765,12 @@
 <li>Use the surrounding docs for context, rationale, topology details, and troubleshooting.</li>
 </ul>
 <p>Latest validation snapshot</p>
-<table><thead><tr><th>Procedure</th><th>Primary entrypoint</th><th>Success signal</th><th>Last validated</th></tr></thead><tbody><tr><td>Simple dashboard user test</td><td><code>make demo</code></td><td>docs + dashboard load on <code>:8443</code>, simple layout visible</td><td>2026-04-14</td></tr><tr><td>Advanced dashboard user test</td><td><code>make lab-vm-ha-attached-node-up</code></td><td>docs + dashboard load on <code>:10443</code>, HA section visible</td><td>2026-04-14</td></tr><tr><td>HA stage 1/2 validation</td><td><code>make lab-vm-ha-validation</code></td><td><code>stage1</code>, <code>retained</code>, <code>stage2</code>, <code>stage2-live</code> green</td><td>2026-04-14</td></tr><tr><td>Benchmark retained rebuild</td><td><code>make bench-retained-rebuild PROFILE=final STAMP=r20260421-223436-authoritative2 DELETE_DROPPED=1</code></td><td><code>combined/combined.csv</code> has <code>110</code> retained rows (<code>40</code> frozen legacy + <code>70</code> current)</td><td>2026-04-22</td></tr><tr><td>Full benchmark rerun</td><td>split baseline + CRI flow</td><td>fresh <code>STAMP</code> contributes <code>70</code> rows; retained publish set has <code>110</code> rows after rebuild</td><td>2026-04-22</td></tr></tbody></table>
+<table><thead><tr><th>Procedure</th><th>Primary entrypoint</th><th>Success signal</th><th>Last validated</th></tr></thead><tbody><tr><td>Host A strict-CRI retest</td><td><a href="host-a-strict-cri-retest.html">Host A Strict-CRI Retest</a></td><td>passthrough validation passes; <code>core-a--hub</code> is <code>Ready</code>; overlay <code>errors: []</code></td><td>2026-04-29</td></tr><tr><td>Simple dashboard user test</td><td><code>make demo</code></td><td>docs + dashboard load on <code>:8443</code>, simple layout visible</td><td>2026-04-14</td></tr><tr><td>Advanced dashboard user test</td><td><code>make lab-vm-ha-attached-node-up</code></td><td>docs + dashboard load on <code>:10443</code>, HA section visible</td><td>2026-04-14</td></tr><tr><td>HA stage 1/2 validation</td><td><code>make lab-vm-ha-validation</code></td><td><code>stage1</code>, <code>retained</code>, <code>stage2</code>, <code>stage2-live</code> green</td><td>2026-04-14</td></tr><tr><td>Benchmark retained rebuild</td><td><code>make bench-retained-rebuild PROFILE=final STAMP=r20260421-223436-authoritative2 DELETE_DROPPED=1</code></td><td><code>combined/combined.csv</code> has <code>110</code> retained rows (<code>40</code> frozen legacy + <code>70</code> current)</td><td>2026-04-22</td></tr><tr><td>Full benchmark rerun</td><td>split baseline + CRI flow</td><td>fresh <code>STAMP</code> contributes <code>70</code> rows; retained publish set has <code>110</code> rows after rebuild</td><td>2026-04-22</td></tr></tbody></table>
 <p>Current pre-tag release verification baseline</p>
 <ul>
 <li>Treat Debian and NixOS as pooled cross-host verification inputs for the current pre-tag pass; do not claim that each host independently passed the full release matrix.</li>
 <li>Standardize release verification on <code>AE_USE_REGISTRY_CACHE=0</code> on both hosts.</li>
+<li>Use <a href="host-a-strict-cri-retest.html">Host A Strict-CRI Retest</a> as the exact copy/paste source when re-running the current Host A GPU passthrough lane.</li>
 <li>Require the common baseline on both hosts:</li>
 </ul>
 <pre><code>cd /path/to/k1s
@@ -1165,7 +1166,7 @@ RUNS=&quot;1 2 3&quot; \
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-22 07:21:00</span>
+        <span>Built 2026-04-29 15:42:33</span>
       </div>
     </footer>
     <script>

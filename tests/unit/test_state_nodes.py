@@ -9,6 +9,23 @@ def test_upsert_and_get_node(tmp_path):
         "node-1",
         name="worker1",
         labels={"role": "worker"},
+        capabilities={
+            "accelerators": [
+                {
+                    "id": "gpu-0",
+                    "kind": "discrete_gpu",
+                    "vendor": "nvidia",
+                    "family": "RTX 8000",
+                    "device_count": 1,
+                    "memory_model": "dedicated",
+                    "memory_bytes_per_device": 49152 * 1024 * 1024,
+                    "runtime_handlers": ["nvidia"],
+                    "partitioning_mode": "none",
+                    "backing_device_id": None,
+                    "execution_role": "execution",
+                }
+            ]
+        },
         taints=[{"key": "dedicated", "effect": "NoSchedule"}],
         backend="podman",
         endpoint="127.0.0.1:9000",
@@ -24,6 +41,7 @@ def test_upsert_and_get_node(tmp_path):
     assert node.node_id == "node-1"
     assert node.name == "worker1"
     assert node.labels["role"] == "worker"
+    assert node.capabilities["accelerators"][0]["family"] == "RTX 8000"
     assert node.backend == "podman"
     assert node.endpoint == "127.0.0.1:9000"
     assert node.pod_cidr == "10.42.0.0/24"
@@ -41,6 +59,7 @@ def test_list_nodes_returns_status(tmp_path):
         "n1",
         name=None,
         labels=None,
+        capabilities=None,
         taints=None,
         backend=None,
         endpoint=None,

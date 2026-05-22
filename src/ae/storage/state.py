@@ -8,13 +8,11 @@ import os
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol
 from urllib.parse import quote
 
 import requests
-
-from ae._utc import UTC
 
 from .types import NetFSMount, PvcRef, PvRef
 

@@ -7,14 +7,17 @@ import json
 import logging
 import os
 import socket
-import subprocess
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from ae.accelerators import (
+    detect_nvidia_accelerator_capabilities,
+    merge_projected_gpu_labels,
+)
 from ae.config.transport import TransportConfig, check_nats_connectivity
-from ae.controller.spec import AppManifest
+from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.ha.fencing import SQLiteFenceStore, parse_envelope
 from ae.observability.http_api import record_ha_fence_event
 from ae.runtime import PodState, RuntimeAdapter, RuntimeResult
@@ -55,8 +58,130 @@ def _parse_manifest(payload: dict) -> AppManifest:
     return AppManifest.model_validate(payload)
 
 
+def _pod_state_from_container_record(record: dict) -> PodState | None:
+    labels = (record.get("Config") or {}).get("Labels") or {}
+    pod_name = (
+        labels.get("ae.pod_name")
+        or labels.get("ae.replica_id")
+        or labels.get("ae.replica")
+        or ""
+    )
+    if not pod_name:
+        return None
+    state = record.get("State") or {}
+    status = str(state.get("Status") or "").strip() or "unknown"
+    revision_raw = labels.get("ae.revision")
+    revision = int(revision_raw) if str(revision_raw or "").isdigit() else None
+    exit_code = None
+    try:
+        raw_exit = state.get("ExitCode", None)
+        exit_code = int(raw_exit) if raw_exit is not None else None
+    except Exception:
+        exit_code = None
+    ready = status == "running"
+    return PodState(
+        pod_name=str(pod_name),
+        ready=ready,
+        status=status,
+        revision=revision,
+        exit_code=exit_code,
+    )
+
+
+def _duplicate_runtime_result(
+    runtime: RuntimeAdapter,
+    manifest: AppManifest,
+    revision: int,
+    *,
+    pod_names: list[str] | None = None,
+) -> RuntimeResult:
+    desired = {str(name) for name in (pod_names or []) if name}
+    app_name = app_key_for_manifest(manifest)
+    states: list[PodState] = []
+
+    list_app = getattr(runtime, "_list_app_containers", None)
+    if callable(list_app):
+        try:
+            containers = list_app(app_name)
+        except Exception:
+            containers = []
+        for item in containers or []:
+            if not isinstance(item, dict):
+                continue
+            pod = _pod_state_from_container_record(item)
+            if pod is None:
+                continue
+            if desired and pod.pod_name not in desired:
+                continue
+            states.append(pod)
+        return RuntimeResult(
+            revision=int(revision),
+            created=0,
+            updated=0,
+            removed=0,
+            pod_states=states,
+        )
+
+    try:
+        container_infos = runtime.list_containers_info()
+    except Exception:
+        container_infos = []
+    for item in container_infos or []:
+        if not isinstance(item, dict):
+            continue
+        labels = item.get("labels") or {}
+        if str(labels.get("ae.app") or "") != app_name:
+            continue
+        pod_name = (
+            labels.get("ae.pod_name")
+            or labels.get("ae.replica_id")
+            or labels.get("ae.replica")
+            or ""
+        )
+        if desired and pod_name not in desired:
+            continue
+        revision_raw = labels.get("ae.revision")
+        item_revision = int(revision_raw) if str(revision_raw or "").isdigit() else None
+        running = bool(item.get("running"))
+        states.append(
+            PodState(
+                pod_name=str(pod_name),
+                ready=running,
+                status="running" if running else "exited",
+                revision=item_revision,
+            )
+        )
+    return RuntimeResult(
+        revision=int(revision),
+        created=0,
+        updated=0,
+        removed=0,
+        pod_states=states,
+    )
+
+
 def _ha_mode_enabled() -> bool:
     return str(os.getenv("AE_HA_MODE", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _optional_bool_env(name: str) -> bool | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    token = raw.strip().lower()
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _runtime_prefers_pod_ip_portforward(runtime: RuntimeAdapter) -> bool:
+    override = _optional_bool_env("AE_AGENT_PORTFORWARD_PREFER_POD_IP")
+    if override is not None:
+        return override
+    runtime_name = runtime.__class__.__name__.lower()
+    return "containerd" in runtime_name or "criruntime" in runtime_name
 
 
 def _agent_fence_db_path() -> Path:
@@ -264,24 +389,23 @@ class AgentHandler(BaseHTTPRequestHandler):
                 status, envelope, _decision = self._begin_mutation(payload, scope)
                 if status == "reject":
                     return
+                manifest = _parse_manifest(payload.get("manifest", {}))
+                pod_names = payload.get("pod_names") or payload.get("replica_ids")
                 if status == "duplicate":
+                    duplicate_result = _duplicate_runtime_result(
+                        self.runtime,
+                        manifest,
+                        int(payload.get("revision", 0)),
+                        pod_names=[str(name) for name in pod_names if name]
+                        if isinstance(pod_names, list)
+                        else None,
+                    )
                     _json_response(
                         self,
                         200,
-                        {
-                            "revision": int(payload.get("revision", 0)),
-                            "created": 0,
-                            "updated": 0,
-                            "removed": 0,
-                            "pod_states": [],
-                            "replica_states": [],
-                            "ok": True,
-                            "duplicate": True,
-                        },
+                        _result_to_dict(duplicate_result) | {"ok": True, "duplicate": True},
                     )
                     return
-                manifest = _parse_manifest(payload.get("manifest", {}))
-                pod_names = payload.get("pod_names") or payload.get("replica_ids")
                 replica_id = None
                 if isinstance(pod_names, list) and len(pod_names) == 1:
                     replica_id = pod_names[0]
@@ -501,6 +625,19 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/exec_inspect":
                 exec_id = payload.get("exec_id", "")
+                if hasattr(self.runtime, "exec_status"):
+                    try:
+                        status = self.runtime.exec_status(exec_id)
+                    except Exception:
+                        status = None
+                    if status is not None:
+                        running, exit_code = status
+                        _json_response(
+                            self,
+                            200,
+                            {"running": bool(running), "exit_code": exit_code},
+                        )
+                        return
                 code = 0
                 try:
                     code = int(self.runtime.exec_exit_code(exec_id))
@@ -619,18 +756,23 @@ class AgentHandler(BaseHTTPRequestHandler):
         host_ports = target.get("host_ports") or target.get("hostPorts") or []
         port_map = target.get("port_map") or target.get("portMap") or {}
         target_port = int(port)
-        if not pod_ip:
-            # If we only have host ports, try to map container port -> host port.
-            if isinstance(port_map, dict):
-                if port in port_map:
-                    target_port = int(port_map.get(port) or port)
-                elif str(port) in port_map:
-                    target_port = int(port_map.get(str(port)) or port)
-            if target_port == int(port) and host_ports:
-                try:
-                    target_port = int(host_ports[0])
-                except Exception:
-                    target_port = int(port)
+        if _runtime_prefers_pod_ip_portforward(self.runtime) and pod_ip:
+            return (str(pod_ip), target_port)
+        # Host ports remain the default for Podman/Docker, where the mapping is
+        # the most portable controller-facing path.
+        if isinstance(port_map, dict):
+            if port in port_map:
+                target_port = int(port_map.get(port) or port)
+                return (str(host_ip), int(target_port))
+            if str(port) in port_map:
+                target_port = int(port_map.get(str(port)) or port)
+                return (str(host_ip), int(target_port))
+        if host_ports:
+            try:
+                target_port = int(host_ports[0])
+                return (str(host_ip), int(target_port))
+            except Exception:
+                target_port = int(port)
         return (str(pod_ip) if pod_ip else str(host_ip), int(target_port))
 
 
@@ -680,35 +822,6 @@ def _parse_labels(raw: str | None) -> dict:
     return labels
 
 
-def _detect_gpu_labels() -> dict[str, str]:
-    if str(os.getenv("AE_GPU_DISCOVERY_DISABLE", "0")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        return {}
-    bin_name = str(os.getenv("AE_NVIDIA_SMI_BIN", "nvidia-smi")).strip() or "nvidia-smi"
-    try:
-        out = subprocess.check_output(  # noqa: S603
-            [bin_name, "--query-gpu=name", "--format=csv,noheader"],  # noqa: S603
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=3,
-        )
-        names = [line.strip() for line in out.splitlines() if line.strip()]
-        if not names:
-            return {"gpu.present": "false", "gpu.count": "0"}
-        models = sorted(set(names))
-        return {
-            "gpu.present": "true",
-            "gpu.count": str(len(names)),
-            "gpu.models": ",".join(models),
-        }
-    except Exception:
-        return {"gpu.present": "false", "gpu.count": "0"}
-
-
 def _start_heartbeat_loop(
     controller_url: str | None,
     node_id: str,
@@ -716,6 +829,7 @@ def _start_heartbeat_loop(
     backend: str,
     endpoint: str | None,
     labels: dict | None,
+    capabilities: dict | None,
     taints: list | None,
     token: str | None,
     interval: int,
@@ -738,6 +852,7 @@ def _start_heartbeat_loop(
                 "backend": backend,
                 "endpoint": endpoint,
                 "labels": labels or {},
+                "capabilities": capabilities or {},
                 "taints": taints or [],
                 "status": "Ready",
                 "pod_cidr": pod_cidr,
@@ -904,6 +1019,7 @@ def serve(
     node_id: str | None = None,
     node_name: str | None = None,
     node_labels: dict | None = None,
+    node_capabilities: dict | None = None,
     node_taints: list | None = None,
     heartbeat_interval: int = 10,
     node_endpoint: str | None = None,
@@ -912,7 +1028,7 @@ def serve(
     rp_pubkey: str | None = None,
     token: str | None = None,
     ensure_pod_net: bool = False,
-    pod_bridge: str = "ae0",
+    pod_bridge: str = "cni0",
     wg_iface: str = "wg0",
     wg_config: str | None = None,
     tls_cert: str | None = None,
@@ -940,6 +1056,7 @@ def serve(
         runtime.__class__.__name__.replace("Runtime", "").lower(),
         node_endpoint,
         node_labels,
+        node_capabilities,
         node_taints,
         token,
         heartbeat_interval,
@@ -980,7 +1097,7 @@ def serve(
         except Exception as exc:  # noqa: BLE001
             AgentHandler.volume_manager = None
             LOGGER.warning("failed to enable netfs volume manager: %s", exc)
-    server = HTTPServer((host, port), AgentHandler)
+    server = ThreadingHTTPServer((host, port), AgentHandler)
     if tls_cert and tls_key:
         import ssl
 
@@ -1038,7 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--pod-bridge",
-        default=os.getenv("AE_POD_BRIDGE", "ae0"),
+        default=os.getenv("AE_POD_BRIDGE", "cni0"),
         help="bridge device for pod CIDR (used when --ensure-pod-net)",
     )
     parser.add_argument("--tls-cert", default=os.getenv("AE_AGENT_TLS_CERT"))
@@ -1074,18 +1191,19 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
 
-    from ae.runtime import CRIRuntime, DockerRuntime, PodmanRuntime
+    from ae.runtime import CRIRuntime, ContainerdRuntime, DockerRuntime, PodmanRuntime
 
-    if args.runtime_backend in {"cri", "containerd"}:
+    if args.runtime_backend == "cri":
         runtime = CRIRuntime()
+    elif args.runtime_backend == "containerd":
+        runtime = ContainerdRuntime()
     else:
         runtime = PodmanRuntime() if args.runtime_backend == "podman" else DockerRuntime()
     node_id = os.getenv("AE_NODE_ID", socket.gethostname())
     node_name = os.getenv("AE_NODE_NAME", node_id)
     node_labels = _parse_labels(os.getenv("AE_NODE_LABELS"))
-    gpu_labels = _detect_gpu_labels()
-    for k, v in gpu_labels.items():
-        node_labels.setdefault(k, v)
+    node_capabilities = detect_nvidia_accelerator_capabilities()
+    node_labels = merge_projected_gpu_labels(node_labels, node_capabilities)
     node_taints = []
     token = os.getenv("AE_AGENT_TOKEN")
     endpoint = args.advertise_endpoint or f"http://{socket.gethostname()}:{args.port}"
@@ -1118,6 +1236,7 @@ def main(argv: list[str] | None = None) -> int:
                 "backend": backend,
                 "endpoint": endpoint,
                 "labels": node_labels,
+                "capabilities": node_capabilities,
                 "taints": node_taints,
                 "status": "Ready",
                 "pod_cidr": pod_cidr,
@@ -1157,6 +1276,7 @@ def main(argv: list[str] | None = None) -> int:
         node_id=node_id,
         node_name=node_name,
         node_labels=node_labels,
+        node_capabilities=node_capabilities,
         node_taints=node_taints,
         heartbeat_interval=args.heartbeat_interval,
         node_endpoint=endpoint,

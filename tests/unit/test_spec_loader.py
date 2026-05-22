@@ -53,12 +53,42 @@ kind: Deployment
 metadata:
   name: gpu-app
 spec:
-  image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda12.5.0
+  image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1
   runtimeClassName: nvidia
         """.strip(),
     )
     manifest = load_manifest(manifest_path)
     assert manifest.spec.runtime_class_name == "nvidia"
+
+
+def test_load_manifest_extended_resources(tmp_path: Path) -> None:
+    manifest_path = write_yaml(
+        tmp_path / "gpu-job.yaml",
+        """
+apiVersion: ae.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: gpu-job
+spec:
+  image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1
+  runtimeClassName: nvidia
+  resources:
+    requests:
+      memory: 256Mi
+      nvidia.com/gpu: 1
+    limits:
+      memory: 512Mi
+      nvidia.com/gpu: 1
+        """.strip(),
+    )
+    manifest = load_manifest(manifest_path)
+    assert manifest.spec.runtime_class_name == "nvidia"
+    assert manifest.spec.resources is not None
+    assert manifest.spec.resources.requests is not None
+    assert manifest.spec.resources.limits is not None
+    assert manifest.spec.resources.requests.memory == "256Mi"
+    assert manifest.spec.resources.requests.quantity_map()["nvidia.com/gpu"] == 1
+    assert manifest.spec.resources.limits.quantity_map()["nvidia.com/gpu"] == 1
 
 
 def test_load_manifest_validation_error(tmp_path: Path) -> None:

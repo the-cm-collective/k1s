@@ -77,6 +77,7 @@ class _RuntimeStub:
         self.remove_calls = 0
         self.remove_old_calls = 0
         self.workload_metrics: list[WorkloadMetricSample] = []
+        self.app_containers: list[dict] = []
 
     def exec_resize(
         self,
@@ -106,6 +107,31 @@ class _RuntimeStub:
     def list_workload_metrics(self) -> list[WorkloadMetricSample]:
         return list(self.workload_metrics)
 
+    def _list_app_containers(self, _app_name: str) -> list[dict]:
+        return list(self.app_containers)
+
+
+class _ContainerdRuntimeStub(_RuntimeStub):
+    pass
+
+
+class _CRIRuntimeStub(_RuntimeStub):
+    pass
+
+
+def _portforward_container_info() -> dict:
+    return {
+        "name": "cell-a-single-ray-launcher-rev1-0",
+        "labels": {
+            "ae.pod_name": "cell-a-single-ray-launcher-rev1-0",
+            "ae.namespace": "default",
+        },
+        "pod_ip": "10.42.0.14",
+        "host_ip": "192.168.29.148",
+        "host_ports": [32080],
+        "port_map": {18080: 32080},
+    }
+
 
 def test_result_to_dict_preserves_revision_on_pod_and_replica_states() -> None:
     result = RuntimeResult(
@@ -127,6 +153,74 @@ def test_result_to_dict_preserves_revision_on_pod_and_replica_states() -> None:
 
     assert payload["pod_states"][0]["revision"] == 3
     assert payload["replica_states"][0]["revision"] == 3
+
+
+def test_resolve_portforward_target_prefers_host_port_mapping(monkeypatch) -> None:
+    monkeypatch.delenv("AE_AGENT_PORTFORWARD_PREFER_POD_IP", raising=False)
+    runtime = _RuntimeStub()
+    runtime.list_containers_info = lambda: [_portforward_container_info()]  # type: ignore[method-assign]
+    handler = type("H", (), {"runtime": runtime})()
+
+    target = AgentHandler._resolve_portforward_target(
+        handler,
+        pod_id=None,
+        pod_name="cell-a-single-ray-launcher-rev1-0",
+        namespace="default",
+        port=18080,
+    )
+
+    assert target == ("192.168.29.148", 32080)
+
+
+def test_resolve_portforward_target_prefers_pod_ip_for_containerd(monkeypatch) -> None:
+    monkeypatch.delenv("AE_AGENT_PORTFORWARD_PREFER_POD_IP", raising=False)
+    runtime = _ContainerdRuntimeStub()
+    runtime.list_containers_info = lambda: [_portforward_container_info()]  # type: ignore[method-assign]
+    handler = type("H", (), {"runtime": runtime})()
+
+    target = AgentHandler._resolve_portforward_target(
+        handler,
+        pod_id=None,
+        pod_name="cell-a-single-ray-launcher-rev1-0",
+        namespace="default",
+        port=18080,
+    )
+
+    assert target == ("10.42.0.14", 18080)
+
+
+def test_resolve_portforward_target_prefers_pod_ip_for_cri(monkeypatch) -> None:
+    monkeypatch.delenv("AE_AGENT_PORTFORWARD_PREFER_POD_IP", raising=False)
+    runtime = _CRIRuntimeStub()
+    runtime.list_containers_info = lambda: [_portforward_container_info()]  # type: ignore[method-assign]
+    handler = type("H", (), {"runtime": runtime})()
+
+    target = AgentHandler._resolve_portforward_target(
+        handler,
+        pod_id=None,
+        pod_name="cell-a-single-ray-launcher-rev1-0",
+        namespace="default",
+        port=18080,
+    )
+
+    assert target == ("10.42.0.14", 18080)
+
+
+def test_resolve_portforward_target_env_can_disable_pod_ip_preference(monkeypatch) -> None:
+    monkeypatch.setenv("AE_AGENT_PORTFORWARD_PREFER_POD_IP", "0")
+    runtime = _ContainerdRuntimeStub()
+    runtime.list_containers_info = lambda: [_portforward_container_info()]  # type: ignore[method-assign]
+    handler = type("H", (), {"runtime": runtime})()
+
+    target = AgentHandler._resolve_portforward_target(
+        handler,
+        pod_id=None,
+        pod_name="cell-a-single-ray-launcher-rev1-0",
+        namespace="default",
+        port=18080,
+    )
+
+    assert target == ("192.168.29.148", 32080)
 
 
 def test_json_response_returns_false_on_broken_pipe() -> None:
@@ -185,7 +279,9 @@ def test_exec_inspect_ignores_client_disconnect_without_error_log(caplog) -> Non
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
-def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeypatch) -> None:
+def test_ensure_app_duplicate_rehydrates_current_state_after_restart(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     fence_path = tmp_path / "fence.db"
     AgentHandler.fence_store = SQLiteFenceStore(fence_path)
@@ -198,6 +294,20 @@ def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeyp
     AgentHandler.fence_store.init()
 
     runtime = _RuntimeStub()
+    runtime.app_containers = [
+        {
+            "Name": "ae-demo-rev3-0",
+            "Config": {
+                "Labels": {
+                    "ae.app": "default/demo",
+                    "ae.pod_name": "default/demo-rev3-0",
+                    "ae.replica_id": "default/demo-rev3-0",
+                    "ae.revision": "3",
+                }
+            },
+            "State": {"Status": "running", "ExitCode": 0},
+        }
+    ]
     wfile = io.BytesIO()
     handler = _JsonBodyHandler(
         path="/v1/ensure_app",
@@ -205,7 +315,7 @@ def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeyp
             "manifest": {
                 "apiVersion": "ae.dev/v1alpha1",
                 "kind": "Deployment",
-                "metadata": {"name": "demo"},
+                "metadata": {"name": "demo", "namespace": "default"},
                 "spec": {"image": "alpine:3.20", "replicas": 1},
             },
             "revision": 3,
@@ -213,6 +323,7 @@ def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeyp
             "controller_id": "ctrl-a",
             "controller_epoch": 7,
             "operation_id": "ensure:demo:3:node-test",
+            "pod_names": ["default/demo-rev3-0"],
         },
         wfile=wfile,
         runtime=runtime,
@@ -223,6 +334,16 @@ def test_ensure_app_duplicate_returns_noop_after_restart(tmp_path: Path, monkeyp
     assert runtime.ensure_calls == 0
     body = json.loads(wfile.getvalue().decode("utf-8"))
     assert body["duplicate"] is True
+    assert body["pod_states"] == [
+        {
+            "pod_name": "default/demo-rev3-0",
+            "replica_id": "default/demo-rev3-0",
+            "ready": True,
+            "status": "running",
+            "revision": 3,
+            "endpoint": None,
+        }
+    ]
     assert handler.status_codes == [200]
 
 

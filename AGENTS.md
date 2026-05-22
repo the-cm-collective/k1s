@@ -41,3 +41,12 @@
 - Configure registry credentials in `~/.config/ae/registries.yaml` (username/password) and list them via `ae registry list`; prefer short-lived tokens.
 - Set `AE_ALLOW_PLAINTEXT_SECRETS=1` only for local development to bypass SOPS; ensure CI leaves it unset.
 - Prefer `ae events <app>` for deployment audit trails and persist important findings in `docs/ops/runbook.md`.
+
+## Agent PBX Coordination
+- Use Agent PBX as the session coordination bus for status updates, planning choices, blockers, test results, deployment outcomes, and final reports.
+- Default PBX use is report mode: register a stable agent id such as `codex-agent-pbx-main` with project `k1s`, include the current `cwd`, task, and `metadata.pbx_mode="report"`, then send `pbx_report_turn` updates. Do not poll or ack queued commands in report mode.
+- Use `pbx_report_turn(status="working")` for meaningful milestones and at least every five minutes during long-running work. Keep summaries concise and put details, logs, and command results in the detail field.
+- When operator choice is required, send `pbx_report_turn(needs_input=true, plan_options=[...])` with concise, mutually exclusive options instead of burying choices in prose.
+- Treat `nohup` behavior as opt-in only. Use polling, command handling, ping keepalives, and `pbx_ack_command` only when the operator explicitly requests Agent PBX nohup mode, and only for the registered agent id.
+- Before a final `done` report for repository work, inspect `git status --short`. Report whether changes are clean, committed, staged, or unstaged; include the short status when changes remain and the commit hash when a commit was created.
+- If Agent PBX is unavailable, continue local work when possible, note the gap in the next report, and retry PBX reporting later.

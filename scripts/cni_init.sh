@@ -5,6 +5,7 @@ conf_dir="${CNI_CONF_DIR:-/etc/cni/net.d}"
 bridge_file="${CNI_BRIDGE_FILE:-$conf_dir/10-k1s-bridge.conflist}"
 loopback_file="${CNI_LOOPBACK_FILE:-$conf_dir/99-loopback.conf}"
 bridge_name="${AE_CNI_BRIDGE_NAME:-cni0}"
+legacy_bridge_name="${AE_CNI_LEGACY_BRIDGE_NAME:-ae0}"
 subnet="${AE_CNI_SUBNET:-10.88.0.0/16}"
 cni_version="${AE_CNI_VERSION:-0.4.0}"
 force="${AE_CNI_FORCE:-0}"
@@ -47,6 +48,11 @@ if [[ "$force" == "1" ]] && command -v ip >/dev/null 2>&1; then
   if run_cmd ip link show "$bridge_name" >/dev/null 2>&1; then
     run_cmd ip addr flush dev "$bridge_name" >/dev/null 2>&1 || true
     echo "Flushed existing bridge addresses on $bridge_name"
+  fi
+  if [[ "$legacy_bridge_name" != "$bridge_name" ]] \
+    && run_cmd ip link show "$legacy_bridge_name" >/dev/null 2>&1; then
+    run_cmd ip link del "$legacy_bridge_name" >/dev/null 2>&1 || true
+    echo "Removed stale legacy bridge $legacy_bridge_name"
   fi
 fi
 

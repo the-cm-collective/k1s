@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ae"
-version = "0.1.4"
+version = "0.1.5"
 description = "Minimal application engine controller prototype"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -25,6 +25,7 @@ dev = [
     "Pillow>=10.4",
     "pre-commit>=3.8",
     "jsonschema>=4.22",
+    "huggingface_hub>=0.30",
 ]
 watch = [
     "watchdog>=3.0",

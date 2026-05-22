@@ -47,11 +47,12 @@
         overflow-x:hidden;
         background-color:#0b0f14;
         background-image:
-          linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72)),
-          url('/static/dash-assets/page-background-3840x2160.png');
-        background-size: 100% 100%, auto 100%;
-        background-position: center, center top;
-        background-repeat: no-repeat, no-repeat;
+          radial-gradient(circle at 12% 8%, rgba(251,192,45,0.12), transparent 28%),
+          radial-gradient(circle at 84% 18%, rgba(20,184,166,0.10), transparent 26%),
+          linear-gradient(rgba(7,10,14,0.78), rgba(7,10,14,0.78));
+        background-size: 100% 100%;
+        background-position: center;
+        background-repeat: no-repeat;
       }
       header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:#0a0a0a10; position:sticky; top:0; backdrop-filter: blur(4px); z-index: 40; border-bottom:1px solid #8884; }
       header::after { content:""; position:absolute; left:14px; right:14px; bottom:0; height:2px; border-radius:999px; background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent); opacity:.5; pointer-events:none; }
@@ -107,7 +108,9 @@
         content: "";
         position: absolute;
         inset: 0;
-        background-image: url('/static/dash-assets/page-background-3840x2160.png');
+        background-image:
+          linear-gradient(135deg, rgba(251,192,45,0.10), rgba(20,184,166,0.06)),
+          radial-gradient(circle at 80% 0%, rgba(148,163,184,0.16), transparent 48%);
         background-size: cover;
         background-position: center;
         background-repeat: no-repeat;
@@ -195,10 +198,13 @@
         content:"";
         position:absolute;
         inset:0;
-        background-image: url('/static/dash-assets/system-graph-background-1920x1080.png');
+        background-image:
+          linear-gradient(rgba(148,163,184,0.10) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148,163,184,0.10) 1px, transparent 1px),
+          radial-gradient(circle at 50% 45%, rgba(20,184,166,0.18), transparent 55%);
         background-position: center;
-        background-size: cover;
-        background-repeat: no-repeat;
+        background-size: 44px 44px, 44px 44px, cover;
+        background-repeat: repeat, repeat, no-repeat;
         opacity: 0.45;
         z-index: 0;
         pointer-events:none;
@@ -238,7 +244,9 @@
         content:"";
         position:absolute;
         inset:0;
-        background-image: url('/static/dash-assets/page-background-1920x1080.png');
+        background-image:
+          radial-gradient(circle at 30% 10%, rgba(251,192,45,0.14), transparent 34%),
+          linear-gradient(135deg, rgba(15,23,42,0.55), rgba(2,6,23,0.35));
         background-size: cover;
         background-position: center;
         background-repeat: no-repeat;
@@ -250,7 +258,9 @@
         content:"";
         position:absolute;
         inset:0;
-        background-image: url('/static/dash-assets/page-background-tile-1024.png');
+        background-image:
+          linear-gradient(90deg, rgba(148,163,184,0.08) 1px, transparent 1px),
+          linear-gradient(rgba(148,163,184,0.08) 1px, transparent 1px);
         background-size: 520px 520px;
         background-position: center;
         background-repeat: repeat;
@@ -353,6 +363,7 @@
   <section id="apps"><div id="apps-list" class="scrollbar-hide"></div><button id="apps-pane-toggle" title="Collapse apps pane" aria-pressed="false" aria-label="Toggle apps panel"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="0" fill="none"/><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button></section>
       <section id="detail">
         <h2>Application</h2>
+        <div id="detail-error" class="banner err hidden" role="status" aria-live="polite"></div>
         <div class="row stretch">
           <div class="card detail-card" style="display:flex; flex-direction:column;">
             <div id="desc" class="scrollcap scrollbar-hide">
@@ -1053,6 +1064,23 @@ Connection: close
         console.error(err);
       }
 
+      function clearDetailError(){
+        var el = document.getElementById('detail-error');
+        if (!el) return;
+        el.textContent = '';
+        el.classList.add('hidden');
+      }
+
+      function showDetailError(app, err){
+        var el = document.getElementById('detail-error');
+        if (!el) return;
+        var detail = (err && err.status) ? ('status ' + err.status) : String((err && err.message) ? err.message : (err || 'error'));
+        el.textContent = 'Failed to load details for ' + String(app || '-') + ': ' + detail;
+        el.classList.remove('hidden');
+        el.classList.remove('warn', 'err');
+        el.classList.add('err');
+      }
+
       function fetchFragment(path, el, opts){
         if (!el) return Promise.resolve();
         return fetch(path, {headers: authHeaders()}).then(function(r){
@@ -1167,6 +1195,7 @@ Connection: close
       // Clear detail panels/logs when the selected app disappears
       function clearDetailPanels(){
         currentDetail = null;
+        clearDetailError();
         try { document.getElementById('d-app').textContent = '-'; } catch(e){}
         try { document.getElementById('d-namespace').textContent = '-'; } catch(e){}
         try { updateLegendNamespace(null); } catch(e){}
@@ -1279,7 +1308,10 @@ Connection: close
 
       function refreshDetail(){
         if(!current) return Promise.resolve();
-        return fetchJSON('/status/' + encodeURIComponent(current) + '?details=1').then(function(s){
+        var requested = current;
+        return fetchJSON('/status/' + encodeURIComponent(requested) + '?details=1').then(function(s){
+          if (requested !== current) return;
+          clearDetailError();
           currentDetail = s;
           document.getElementById('d-app').textContent = s.app_name;
           try {
@@ -1357,6 +1389,10 @@ Connection: close
           } catch(e) { console.error('replica table', e); }
           // Events are now streamed via SSE; keep logs HTMX config fresh
           updateLogsHTMX();
+        }).catch(function(err){
+          if (requested === current) {
+            showDetailError(requested, err);
+          }
         });
       }
 
@@ -1806,14 +1842,38 @@ Connection: close
 
       function normalizeBase(val){
         var base = String(val||'').trim();
-        if (!base) base = localStorage.getItem('ae_apishim_base') || '';
-        if (!base && apishimBase) base = String(apishimBase || '').trim();
-        if (!base) base = location.origin;
-        base = base.replace(/\/$/, '');
         function isLoopbackHost(h){
           var host = String(h || '').toLowerCase();
           return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
         }
+        function isLoopbackBase(value){
+          try { return isLoopbackHost(new URL(String(value || '')).hostname || ''); } catch(e) { return false; }
+        }
+        function isWorkerBeeHost(h){
+          var host = String(h || '').toLowerCase();
+          return host === 'workerbee.localhost' || /\.workerbee\.localhost$/.test(host);
+        }
+        function isClusterServiceHost(h){
+          var host = String(h || '').toLowerCase();
+          return /\.svc$/.test(host) || /\.svc\.cluster\.local$/.test(host);
+        }
+        var publicBase = String(apishimBase || '').trim();
+        if (publicBase && isWorkerBeeHost(location.hostname) && (!base || isLoopbackBase(base))) base = publicBase;
+        if (!base && publicBase) base = publicBase;
+        if (!base) base = localStorage.getItem('ae_apishim_base') || '';
+        if (publicBase && isWorkerBeeHost(location.hostname) && isLoopbackBase(base)) base = publicBase;
+        if (!base) base = location.origin;
+        try {
+          if (location.protocol === 'https:' && /^http:\/\//i.test(base)) {
+            var insecureBase = new URL(base);
+            if (publicBase && /^https:\/\//i.test(publicBase)) {
+              base = publicBase;
+            } else if (isClusterServiceHost(insecureBase.hostname || '')) {
+              base = location.origin;
+            }
+          }
+        } catch(e){}
+        base = base.replace(/\/$/, '');
         function caddyPortFallback(proto){
           // Typical local Caddy ports used by dev profile.
           if (proto === 'https:') return '8443';
@@ -2180,6 +2240,10 @@ Connection: close
         if (!shellModal) return;
         var sel = document.getElementById('shell-pod');
         fillReplicaSelect(sel);
+        try {
+          var baseInput = document.getElementById('shell-base');
+          if (baseInput && !baseInput.value) baseInput.value = normalizeBase('');
+        } catch(e){}
         if (!shellTerm && window.Terminal) {
           shellTerm = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', theme: { background: '#0b0f14' } });
           ensureShellFitAddon();
@@ -2501,6 +2565,10 @@ Connection: close
         if (!pfModal) return;
         var sel = document.getElementById('pf-pod');
         fillReplicaSelect(sel);
+        try {
+          var baseInput = document.getElementById('pf-base');
+          if (baseInput && !baseInput.value) baseInput.value = normalizeBase('');
+        } catch(e){}
         pfSetStatus('idle', 'muted');
         var resp = document.getElementById('pf-response');
         if (resp) resp.value = '';

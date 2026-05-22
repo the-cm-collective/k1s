@@ -18,6 +18,7 @@ try:  # Optional Postgres backend
 except Exception:  # pragma: no cover - optional dependency
     psycopg = None  # type: ignore
 
+from ae.accelerators import normalize_capabilities
 from ae.controller.health import HealthReport
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
@@ -333,6 +334,7 @@ class NodeRecord:
     node_id: str
     name: str | None
     labels: dict
+    capabilities: dict
     taints: list
     backend: str | None
     endpoint: str | None
@@ -472,6 +474,10 @@ class SQLiteStateStore:
                 self._ensure_column(conn, "nodes", "rp_pubkey", "TEXT")
             except Exception:
                 pass
+            try:
+                self._ensure_column(conn, "nodes", "capabilities_json", "TEXT")
+            except Exception:
+                pass
             needs_reset = not self._schema_matches(
                 conn,
                 "app_status",
@@ -583,6 +589,7 @@ class SQLiteStateStore:
                     "created_at",
                     "updated_at",
                     "rp_pubkey",
+                    "capabilities_json",
                 ],
             ):
                 conn.execute("DROP TABLE IF EXISTS nodes")
@@ -3818,6 +3825,7 @@ class SQLiteStateStore:
         *,
         name: str | None = None,
         labels: dict | None = None,
+        capabilities: dict | None = None,
         taints: list | None = None,
         backend: str | None = None,
         endpoint: str | None = None,
@@ -3828,6 +3836,7 @@ class SQLiteStateStore:
     ) -> None:
         if cordoned is None:
             cordoned = self._get_node_cordoned(node_id)
+        normalized_capabilities = normalize_capabilities(capabilities)
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
@@ -3836,6 +3845,7 @@ class SQLiteStateStore:
                     node_id,
                     name,
                     json.dumps(labels or {}, sort_keys=True),
+                    json.dumps(normalized_capabilities, sort_keys=True),
                     json.dumps(taints or [], sort_keys=True),
                     backend,
                     endpoint,
@@ -3884,44 +3894,51 @@ class SQLiteStateStore:
         result: list[tuple[NodeRecord, NodeStatus | None]] = []
         for row in rows:
             labels = {}
+            capabilities = {}
             taints = []
             try:
                 labels = json.loads(row[2] or "{}")
             except Exception:
                 labels = {}
             try:
-                taints = json.loads(row[3] or "[]")
+                capabilities = json.loads(row[3] or "{}")
+            except Exception:
+                capabilities = {}
+            capabilities = normalize_capabilities(capabilities)
+            try:
+                taints = json.loads(row[4] or "[]")
             except Exception:
                 taints = []
             try:
-                created = datetime.fromisoformat(row[9])
+                created = datetime.fromisoformat(row[10])
             except Exception:
                 created = datetime.fromtimestamp(0, tz=timezone.utc)
             try:
-                updated = datetime.fromisoformat(row[10])
+                updated = datetime.fromisoformat(row[11])
             except Exception:
                 updated = datetime.fromtimestamp(0, tz=timezone.utc)
             node = NodeRecord(
                 node_id=row[0],
                 name=row[1],
                 labels=labels,
+                capabilities=capabilities,
                 taints=taints,
-                backend=row[4],
-                endpoint=row[5],
-                pod_cidr=row[6],
-                wg_pubkey=row[7],
-                rp_pubkey=row[8],
-                cordoned=bool(row[11]),
+                backend=row[5],
+                endpoint=row[6],
+                pod_cidr=row[7],
+                wg_pubkey=row[8],
+                rp_pubkey=row[9],
+                cordoned=bool(row[12]),
                 created_at=created,
                 updated_at=updated,
             )
             status = None
-            if row[12] is not None:
+            if row[13] is not None:
                 try:
-                    seen_at = datetime.fromisoformat(row[13])
+                    seen_at = datetime.fromisoformat(row[14])
                 except Exception:
                     seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
-                status = NodeStatus(node_id=row[0], status=row[12], seen_at=seen_at)
+                status = NodeStatus(node_id=row[0], status=row[13], seen_at=seen_at)
             result.append((node, status))
         return result
 
@@ -3934,44 +3951,51 @@ class SQLiteStateStore:
         if row is None:
             return None
         labels = {}
+        capabilities = {}
         taints = []
         try:
             labels = json.loads(row[2] or "{}")
         except Exception:
             labels = {}
         try:
-            taints = json.loads(row[3] or "[]")
+            capabilities = json.loads(row[3] or "{}")
+        except Exception:
+            capabilities = {}
+        capabilities = normalize_capabilities(capabilities)
+        try:
+            taints = json.loads(row[4] or "[]")
         except Exception:
             taints = []
         try:
-            created = datetime.fromisoformat(row[9])
+            created = datetime.fromisoformat(row[10])
         except Exception:
             created = datetime.fromtimestamp(0, tz=timezone.utc)
         try:
-            updated = datetime.fromisoformat(row[10])
+            updated = datetime.fromisoformat(row[11])
         except Exception:
             updated = datetime.fromtimestamp(0, tz=timezone.utc)
         node = NodeRecord(
             node_id=row[0],
             name=row[1],
             labels=labels,
+            capabilities=capabilities,
             taints=taints,
-            backend=row[4],
-            endpoint=row[5],
-            pod_cidr=row[6],
-            wg_pubkey=row[7],
-            rp_pubkey=row[8],
-            cordoned=bool(row[11]),
+            backend=row[5],
+            endpoint=row[6],
+            pod_cidr=row[7],
+            wg_pubkey=row[8],
+            rp_pubkey=row[9],
+            cordoned=bool(row[12]),
             created_at=created,
             updated_at=updated,
         )
         status = None
-        if row[12] is not None:
+        if row[13] is not None:
             try:
-                seen_at = datetime.fromisoformat(row[13])
+                seen_at = datetime.fromisoformat(row[14])
             except Exception:
                 seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
-            status = NodeStatus(node_id=row[0], status=row[12], seen_at=seen_at)
+            status = NodeStatus(node_id=row[0], status=row[13], seen_at=seen_at)
         return node, status
 
     # --- Volume attachments --------------------------------------------

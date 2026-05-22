@@ -1,0 +1,12 @@
+{{- if .Values.exclusive.enabled }}
+{{- $self := include "k1s-node-local.fullname" . -}}
+{{- $existing := lookup "apps/v1" "DaemonSet" "" "" -}}
+{{- if $existing }}
+{{- range $item := $existing.items }}
+{{- $labels := default dict $item.metadata.labels -}}
+{{- if and (eq (index $labels "app.kubernetes.io/name") "k1s-node-local") (ne $item.metadata.name $self) }}
+{{- fail (printf "k1s-node-local is cluster-exclusive; found existing DaemonSet %s/%s" $item.metadata.namespace $item.metadata.name) -}}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,18 @@ class _Proc:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _docker_published_host() -> str:
+    explicit = (os.getenv("K1S_DOCKER_PUBLISHED_HOST") or "").strip()
+    if explicit:
+        return explicit
+    docker_host = (os.getenv("DOCKER_HOST") or "").strip()
+    if docker_host:
+        parsed = urllib.parse.urlparse(docker_host)
+        if parsed.hostname:
+            return parsed.hostname
+    return "127.0.0.1"
 
 
 def _wait_tcp(host: str, port: int, timeout_s: float = 30.0) -> None:
@@ -208,40 +221,53 @@ def run_core_edge_e2e() -> int:
     print(f"[e2e] workspace={base_dir}")
     _write_compose(compose_path, root, state_dir)
     edge_node_key = scoped_node_id(LOCAL_EDGE_SITE_ID, "edge-node-1")
+    published_host = _docker_published_host()
+    etcd_url = f"http://{published_host}:2379"
+    hub_nats_url = f"nats://hub-controller:dev@{published_host}:4222"
+    edge_nats_url = f"nats://worker:dev@{published_host}:4223"
+    gateway_nats_url = f"nats://gateway:dev@{published_host}:4223"
+    no_proxy_hosts = ",".join(dict.fromkeys(["127.0.0.1", "localhost", published_host]))
 
     compose_cmd = ["docker", "compose", "-f", str(compose_path)]
     subprocess.run([*compose_cmd, "up", "-d"], check=True)
 
     controller = gateway = worker = None
     try:
-        _wait_tcp("127.0.0.1", 2379, timeout_s=40)
-        _wait_tcp("127.0.0.1", 4222, timeout_s=40)
-        _wait_tcp("127.0.0.1", 4223, timeout_s=40)
-        _wait_etcd("http://127.0.0.1:2379", timeout_s=40)
-        _wait_nats_leaf("http://127.0.0.1:8222/leafz", timeout_s=40)
+        _wait_tcp(published_host, 2379, timeout_s=40)
+        _wait_tcp(published_host, 4222, timeout_s=40)
+        _wait_tcp(published_host, 4223, timeout_s=40)
+        _wait_etcd(etcd_url, timeout_s=40)
+        _wait_nats_leaf(f"http://{published_host}:8222/leafz", timeout_s=40)
 
         etcd_prefix = f"k1s/e2e/{run_id}"
         env_base = os.environ.copy()
         env_base.update(
             {
                 "AE_STATE_BACKEND": "etcd",
-                "AE_ETCD_ENDPOINTS": "http://127.0.0.1:2379",
+                "AE_ETCD_ENDPOINTS": etcd_url,
                 "AE_ETCD_PREFIX": etcd_prefix,
                 "AE_SITE_ID": "core",
                 "AE_TRANSPORT_BACKEND": "nats-js",
-                "AE_NATS_URL": "nats://hub-controller:dev@127.0.0.1:4222",
+                "AE_NATS_URL": hub_nats_url,
                 "AE_JS_DOMAIN": "K1S",
                 "AE_OUTBOX_PUBLISH_INTERVAL_S": "0.2",
                 "AE_LEASE_TTL_MS": "20000",
                 "AE_LEASE_RENEW_AFTER_MS": "5000",
                 "AE_PROJECTION_ROOT": str(base_dir / "projections"),
+                "K1S_DOCKER_PUBLISHED_HOST": published_host,
+                "NO_PROXY": no_proxy_hosts,
+                "no_proxy": no_proxy_hosts,
+                "HTTP_PROXY": "",
+                "http_proxy": "",
+                "HTTPS_PROXY": "",
+                "https_proxy": "",
                 "PYTHONUNBUFFERED": "1",
             }
         )
 
         os.environ.update(
             {
-                "AE_ETCD_ENDPOINTS": "http://127.0.0.1:2379",
+                "AE_ETCD_ENDPOINTS": etcd_url,
                 "AE_ETCD_PREFIX": etcd_prefix,
                 "AE_SITE_ID": "core",
             }
@@ -266,7 +292,7 @@ def run_core_edge_e2e() -> int:
         worker_env = env_base.copy()
         worker_env.update(
             {
-                "AE_NATS_URL": "nats://worker:dev@127.0.0.1:4223",
+                "AE_NATS_URL": edge_nats_url,
                 "AE_SITE_ID": LOCAL_EDGE_SITE_ID,
             }
         )
@@ -278,7 +304,7 @@ def run_core_edge_e2e() -> int:
                 "--node-id",
                 "edge-node-1",
                 "--nats-url",
-                "nats://worker:dev@127.0.0.1:4223",
+                edge_nats_url,
                 "--delay-ms",
                 "50",
                 "--progress-interval",
@@ -327,7 +353,7 @@ def run_core_edge_e2e() -> int:
         gateway_env = env_base.copy()
         gateway_env.update(
             {
-                "AE_NATS_URL": "nats://gateway:dev@127.0.0.1:4223",
+                "AE_NATS_URL": gateway_nats_url,
                 "AE_SITE_ID": LOCAL_EDGE_SITE_ID,
                 "AE_NODE_ID": "edge-node-1",
                 "AE_GATEWAY_SPOOL_PATH": str(base_dir / "gateway-spool.db"),

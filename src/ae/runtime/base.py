@@ -196,6 +196,11 @@ class RuntimeAdapter(Protocol):
         _ = exec_id
         return 0
 
+    def exec_status(self, exec_id: str) -> tuple[bool, int | None] | None:  # pragma: no cover
+        """Optionally return whether an exec is still running and its exit code."""
+        _ = exec_id
+        return None
+
     def port_forward_socket(
         self,
         *,

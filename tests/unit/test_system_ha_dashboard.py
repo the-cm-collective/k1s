@@ -453,6 +453,40 @@ def test_dashboard_bootstraps_admin_token_when_read_token_missing(
     assert 'var dashboardToken = "demo-admin-token";' in html
 
 
+def test_dashboard_bootstraps_explicit_token_for_local_tools(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    monkeypatch.setenv("AE_DASHBOARD_BOOTSTRAP_TOKEN", "workerbee-admin-token")  # noqa: S105
+    monkeypatch.setenv("AE_API_READ_TOKEN", "demo-read-token")  # noqa: S105
+
+    handler = _make_handler(tmp_path)
+
+    html = _read_dashboard_html(handler)
+
+    assert 'var dashboardToken = "workerbee-admin-token";' in html
+
+
+def test_dashboard_prefers_public_apishim_base_for_browser_tools(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AE_APISHIM_SERVER", "https://127.0.0.1:8445")
+    monkeypatch.setenv("AE_APISHIM_BASE", "https://internal.example.test")
+    monkeypatch.setenv(
+        "AE_APISHIM_PUBLIC_BASE",
+        "https://k1s-api.demo.workerbee.localhost:19443",
+    )
+
+    handler = _make_handler(tmp_path)
+
+    html = _read_dashboard_html(handler)
+
+    assert 'var apishimBase = "https://k1s-api.demo.workerbee.localhost:19443";' in html
+    assert "https://127.0.0.1:8445" not in html
+
+
 def test_dashboard_does_not_bootstrap_token_for_ha_site_profiles(
     tmp_path: Path,
     monkeypatch,

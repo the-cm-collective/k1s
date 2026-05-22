@@ -4,12 +4,24 @@ import yaml
 
 from ae.controller.spec import app_key
 from ae.controller.state import ServiceEndpoint, SQLiteStateStore
+from ae.ingress import _atomic as atomic_writes
 from ae.ingress.edge_core_proxy import (
     EdgeCoreProxyConfig,
     EdgeCoreProxyRenderer,
     _ensure_fallback_tls,
     build_core_proxy_config,
     render_core_proxy_bootstrap_from_env,
+)
+from ae.ingress.envoy_core_proxy import (
+    CoreProxyCluster,
+    CoreProxyRoute,
+    EnvoyRenderConfig,
+    write_envoy_config,
+)
+from ae.ingress.rathole import (
+    RatholeServerConfig,
+    RatholeServerService,
+    write_rathole_server,
 )
 
 
@@ -123,6 +135,48 @@ def test_build_core_proxy_config_normalizes_relative_tls_root(monkeypatch, tmp_p
 
     assert config is not None
     assert config.tls_root == (tmp_path / "state" / "tls").resolve()
+
+
+def test_core_proxy_config_writers_replace_targets_atomically(
+    tmp_path: Path, monkeypatch
+) -> None:
+    real_replace = atomic_writes.os.replace
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def fake_replace(src: str, dst: str) -> None:
+        src_path = Path(src)
+        dst_path = Path(dst)
+        assert src_path.parent == dst_path.parent
+        assert src_path.name.startswith(f".{dst_path.name}.")
+        assert src_path.read_text(encoding="utf-8")
+        replace_calls.append((src_path, dst_path))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(atomic_writes.os, "replace", fake_replace)
+
+    rathole_path = tmp_path / "edge" / "rathole-server.toml"
+    rathole_text = write_rathole_server(
+        rathole_path,
+        RatholeServerConfig(
+            bind_addr="0.0.0.0:2333",
+            default_token="dev",  # noqa: S106 - static test fixture token
+            services=[RatholeServerService(name="site-a", bind_addr="0.0.0.0:18080")],
+        ),
+    )
+    envoy_path = tmp_path / "edge" / "envoy.yaml"
+    envoy_text = write_envoy_config(
+        envoy_path,
+        [CoreProxyRoute(host="site-a.apps.local", path_prefix="/", cluster="site_a")],
+        [CoreProxyCluster(name="site_a", endpoints=[("127.0.0.1", 18080)])],
+        EnvoyRenderConfig(domain_suffix="apps.local"),
+    )
+
+    assert rathole_path.read_text(encoding="utf-8") == rathole_text
+    assert envoy_path.read_text(encoding="utf-8") == envoy_text
+    assert rathole_path.stat().st_mode & 0o777 == 0o644
+    assert envoy_path.stat().st_mode & 0o777 == 0o644
+    assert [dst for _, dst in replace_calls] == [rathole_path, envoy_path]
+    assert not list((tmp_path / "edge").glob(".*.tmp"))
 
 
 def test_core_proxy_policy_least_request_sets_cluster_lb_policy(tmp_path: Path) -> None:

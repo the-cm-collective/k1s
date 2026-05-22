@@ -144,6 +144,142 @@ def test_cronjob_fires_job_with_owner_reference(tmp_path):
     assert cj_status.get("lastScheduleTime") is not None
 
 
+def test_cronjob_invalid_schedule_does_not_fallback_to_interval(tmp_path):
+    store, _state, adapter = _make_adapter(tmp_path)
+    md = {"name": "cron", "namespace": "default"}
+    spec = {
+        "schedule": "not a cron",
+        "jobTemplate": {
+            "spec": {
+                "template": {
+                    "metadata": {"labels": {"job": "cron"}},
+                    "spec": {"containers": [{"name": "job", "image": "busybox"}]},
+                },
+            }
+        },
+    }
+    cj = K8sObject("batch", "v1", "cronjobs", "default", "cron", md, spec, {}, 1)
+
+    adapter._apply_cronjob(cj)
+
+    assert store.list("batch", "v1", "jobs", "default") == []
+    cj_status = store.get("batch", "v1", "cronjobs", "default", "cron").status
+    conditions = {item.get("type"): item for item in cj_status.get("conditions", [])}
+    assert conditions["ScheduleValid"]["status"] == "False"
+    assert conditions["ScheduleValid"]["reason"] == "InvalidSchedule"
+
+
+def test_cronjob_invalid_schedule_fallback_requires_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setenv("AE_APISHIM_ALLOW_INVALID_CRON_FALLBACK", "1")
+    store, _state, adapter = _make_adapter(tmp_path)
+    adapter._cronjob_jobs[("default", "cron")] = {"last_run": 0}
+    md = {"name": "cron", "namespace": "default"}
+    spec = {
+        "schedule": "not a cron",
+        "jobTemplate": {
+            "spec": {
+                "template": {
+                    "metadata": {"labels": {"job": "cron"}},
+                    "spec": {"containers": [{"name": "job", "image": "busybox"}]},
+                },
+            }
+        },
+    }
+    cj = K8sObject("batch", "v1", "cronjobs", "default", "cron", md, spec, {}, 1)
+
+    adapter._apply_cronjob(cj)
+
+    assert store.list("batch", "v1", "jobs", "default")
+    cj_status = store.get("batch", "v1", "cronjobs", "default", "cron").status
+    conditions = {item.get("type"): item for item in cj_status.get("conditions", [])}
+    assert conditions["ScheduleValid"]["reason"] == "InvalidScheduleFallback"
+
+
+def test_service_named_target_port_must_resolve(tmp_path):
+    store, _state, adapter = _make_adapter(tmp_path)
+    dep_spec = {
+        "selector": {"matchLabels": {"app": "demo"}},
+        "template": {
+            "metadata": {"labels": {"app": "demo"}},
+            "spec": {
+                "containers": [
+                    {
+                        "name": "demo",
+                        "image": "busybox",
+                        "ports": [{"name": "http", "containerPort": 8080}],
+                    }
+                ]
+            },
+        },
+    }
+    store.upsert(
+        "apps",
+        "v1",
+        "deployments",
+        "default",
+        "demo",
+        {"name": "demo", "namespace": "default"},
+        dep_spec,
+    )
+    svc = K8sObject(
+        "",
+        "v1",
+        "services",
+        "default",
+        "demo",
+        {"name": "demo", "namespace": "default"},
+        {"selector": {"app": "demo"}, "ports": [{"name": "web", "port": 80, "targetPort": "missing"}]},
+        {},
+        1,
+    )
+
+    assert adapter._service_spec_for(svc) is None
+    stored = store.get("", "v1", "services", "default", "demo")
+    assert stored is not None
+    conditions = {item.get("type"): item for item in stored.status.get("conditions", [])}
+    assert conditions["PortResolution"]["reason"] == "UnresolvedTargetPort"
+
+
+def test_service_unresolved_named_target_port_fallback_requires_opt_in(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AE_APISHIM_ALLOW_UNRESOLVED_TARGETPORT_FALLBACK", "1")
+    store, _state, adapter = _make_adapter(tmp_path)
+    dep_spec = {
+        "selector": {"matchLabels": {"app": "demo"}},
+        "template": {
+            "metadata": {"labels": {"app": "demo"}},
+            "spec": {"containers": [{"name": "demo", "image": "busybox"}]},
+        },
+    }
+    store.upsert(
+        "apps",
+        "v1",
+        "deployments",
+        "default",
+        "demo",
+        {"name": "demo", "namespace": "default"},
+        dep_spec,
+    )
+    svc = K8sObject(
+        "",
+        "v1",
+        "services",
+        "default",
+        "demo",
+        {"name": "demo", "namespace": "default"},
+        {"selector": {"app": "demo"}, "ports": [{"name": "web", "port": 80, "targetPort": "missing"}]},
+        {},
+        1,
+    )
+
+    result = adapter._service_spec_for(svc)
+
+    assert result is not None
+    _dep_key, svc_spec = result
+    assert svc_spec.ports[0].target_port == 80
+
+
 def test_statefulset_deleted_during_reconcile_is_not_recreated(tmp_path, monkeypatch):
     monkeypatch.setenv("AE_APISHIM_TOMBSTONE_TTL", "0")
     store, _state, adapter = _make_adapter(tmp_path)

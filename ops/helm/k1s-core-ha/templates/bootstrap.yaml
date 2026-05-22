@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "k1s-core-ha.bootstrapConfigMapName" . }}
+  labels:
+    {{- include "k1s-core-ha.labels" . | nindent 4 }}
+{{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled }}
+data:
+  stack_name: {{ .Values.stack.name | quote }}
+  stack_domain: {{ .Values.stack.domain | quote }}
+  wildcard_apps_domain: {{ printf "*.%s" (include "k1s-core-ha.appsDomain" .) | quote }}
+  dash_url: {{ printf "%s://%s/" $scheme (include "k1s-core-ha.dashHost" .) | quote }}
+  docs_url: {{ printf "%s://%s/" $scheme (include "k1s-core-ha.docsHost" .) | quote }}
+  api_url: {{ printf "%s://%s/" $scheme (include "k1s-core-ha.apiHost" .) | quote }}
+  controller_external_service: {{ include "k1s-core-ha.controllerExternalServiceName" . | quote }}
+  controller_external_host_hint: {{ include "k1s-core-ha.controllerBootstrapHost" . | quote }}
+  controller_external_port: {{ .Values.controller.agentPort | quote }}
+  nats_leaf_external_service: {{ include "k1s-core-ha.natsLeafExternalServiceName" . | quote }}
+  nats_leaf_host_hint: {{ include "k1s-core-ha.natsLeafBootstrapHost" . | quote }}
+  nats_leaf_port: {{ .Values.nats.leafPort | quote }}
+  rathole_external_service: {{ include "k1s-core-ha.ratholeExternalServiceName" . | quote }}
+  rathole_external_host_hint: {{ include "k1s-core-ha.ratholeBootstrapHost" . | quote }}
+  rathole_port: "2333"
+  registry_host: {{ .Values.global.registryHost | quote }}
+  auth_secret_name: {{ include "k1s-core-ha.authSecretName" . | quote }}

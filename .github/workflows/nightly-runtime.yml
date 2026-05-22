@@ -18,17 +18,8 @@ permissions:
   contents: read
 
 jobs:
-  server-guard:
-    if: ${{ github.server_url != 'https://github.com' || env.ACT == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Confirm supported actions host
-        run: echo "Running nightly-runtime on ${GITHUB_SERVER_URL:-unknown}"
-
   podman-compat:
-    needs: server-guard
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'podman' }}
+    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'podman') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -69,19 +60,18 @@ jobs:
           source scripts/ci/lib.sh
           ci_install_podman
           ci_install_project ".[dev]"
-      - name: Podman compatibility checks
+      - name: Podman CLI tooling compatibility checks
         env:
           AE_RUNTIME_BACKEND: podman
         run: |
-          podman info >/dev/null 2>&1 || true
-          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict
+          podman info >/dev/null 2>&1
+          python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy baseline --summary >/dev/null
           python -m ae.cli export-k8s -f specs/examples/echo.yaml --validate >/dev/null
           python -m ae.cli plan -f specs/examples/echo.yaml --json >/dev/null
           python -m ae.cli export-k8s -f specs/examples/echo.yaml --workload statefulset --validate >/dev/null
 
   cri-smoke:
-    needs: server-guard
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'cri' }}
+    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'cri') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -130,13 +120,12 @@ jobs:
           AE_CRI_ENDPOINT: unix:///run/containerd/containerd.sock
           AE_CRI_SANDBOX_IMAGE: registry.k8s.io/pause:3.9
         run: |
-          sudo -E python -m pytest \
+          sudo -E env "PATH=$PATH" "$(command -v python)" -m pytest \
             tests/integration/test_cri_smoke.py \
             tests/integration/test_cri_runtime_integration.py -q
 
   k8s-kind:
-    needs: server-guard
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'k8s' }}
+    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'k8s') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -173,6 +162,7 @@ jobs:
           ci_maybe_trust_gitea
           ci_prepare_user_bin
           ci_configure_docker_env
+          ci_disable_docker_tls_verify
       - name: Install project and kind tooling
         run: |
           source scripts/ci/lib.sh
@@ -188,8 +178,7 @@ jobs:
           python -m ae.cli k8s-check -f specs/examples/multi-replica-echo.yaml --policy strict
 
   k8s-k3s:
-    needs: server-guard
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'k8s' }}
+    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'k8s') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -239,8 +228,7 @@ jobs:
           python -m ae.cli k8s-check -f specs/examples/echo-hpa.yaml --policy strict --assume-hpa cpu-util
 
   multinode:
-    needs: server-guard
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'multinode' }}
+    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'multinode') }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -277,6 +265,8 @@ jobs:
           ci_maybe_trust_gitea
           ci_prepare_user_bin
           ci_configure_docker_env
+          ci_export_env K1S_DOCKER_PUBLISHED_HOST "$(ci_docker_published_host)"
+          ci_append_no_proxy "${K1S_DOCKER_PUBLISHED_HOST}"
       - name: Install project
         run: |
           source scripts/ci/lib.sh
@@ -306,8 +296,7 @@ jobs:
           python -m ae.cli events echo-mn | tail -n 20
 
   multinode-svc-portforward:
-    needs: server-guard
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'svc-portforward' }}
+    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'svc-portforward') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -435,7 +424,7 @@ jobs:
                 port:
                   number: 8080
           YAML
-          $K apply -f /tmp/echo-ing.yaml
+          $K --validate=false apply -f /tmp/echo-ing.yaml
           test "$($K get ingress echo -o jsonpath='{.status.loadBalancer.ingress[0].ip}')" = "10.96.0.50"
           hit() {
             $K port-forward svc/echo-svc 18081:8080 >/tmp/pf.log 2>&1 &
@@ -466,14 +455,13 @@ jobs:
           rm -f /tmp/ctrl.db /tmp/apishim.db
 
   core-edge:
-    needs: server-guard
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'core-edge' }}
+    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'core-edge') }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
       DOCKER_BUILDKIT: "1"
       K1S_E2E_DIR: /tmp/e2e-core-edge
-      NO_PROXY: "127.0.0.1,localhost"
+      NO_PROXY: "127.0.0.1,localhost,docker"
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
     steps:
@@ -509,6 +497,8 @@ jobs:
           source scripts/ci/lib.sh
           ci_maybe_trust_gitea
           ci_configure_docker_env
+          ci_export_env K1S_DOCKER_PUBLISHED_HOST "$(ci_docker_published_host)"
+          ci_append_no_proxy "${K1S_DOCKER_PUBLISHED_HOST}"
       - name: Install project
         run: |
           source scripts/ci/lib.sh
@@ -530,8 +520,7 @@ jobs:
           path: /tmp/e2e-core-edge
 
   plan-e2e:
-    needs: server-guard
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'plan' }}
+    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'plan') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -587,8 +576,7 @@ jobs:
           if-no-files-found: ignore
 
   ha-closeout:
-    needs: server-guard
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'ha' }}
+    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'ha') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

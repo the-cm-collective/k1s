@@ -9,7 +9,7 @@ source "$ROOT_DIR/scripts/lib/nixos_bridge.sh"
 
 DEFAULT_VARIANT="$ROOT_DIR/lab/variants/ha-control-plane-attached-node.yaml"
 DEFAULT_RUN_ID="ha-attached-node-local"
-DEFAULT_APISHIM_IMAGE="localhost:5001/k1s-apishim:dev"
+DEFAULT_APISHIM_IMAGE="docker.io/library/k1s-apishim:dev"
 DEFAULT_DEMO_SHELL_IMAGE="docker.io/library/demo-shell:latest"
 
 SUBCOMMAND="${1:-}"

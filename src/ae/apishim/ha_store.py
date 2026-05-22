@@ -475,10 +475,15 @@ def _service_spec_from_object(obj: K8sObject, manifest: AppManifest) -> ServiceS
         target_raw = entry.get("targetPort", svc_port)
         target = k8s_convert.resolve_port_value(target_raw, ports_by_name)
         if target is None:
-            try:
-                target = int(target_raw)
-            except Exception:
-                target = svc_port
+            if not k8s_convert.allow_unresolved_target_port_fallback(obj):
+                raise AuthorityMutationError(
+                    message=k8s_convert.unresolved_target_port_message(
+                        obj.name,
+                        str(entry.get("name") or entry.get("port") or ""),
+                        target_raw,
+                    )
+                )
+            target = svc_port
         node_port = entry.get("nodePort")
         try:
             node_port_val = int(node_port) if node_port is not None else None

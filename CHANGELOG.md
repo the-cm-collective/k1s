@@ -11,6 +11,30 @@
 ### Fixed
 - No user-facing changes yet.
 
+## 0.1.5 - 2026-05-22
+
+### Added
+- Accelerator-aware scheduling foundations, including typed accelerator node capabilities, local GPU labels, and inference cell examples for single-cell, pipeline-parallel, and Ray-backed layouts.
+- Host A and NVIDIA validation tooling for GPU passthrough, vLLM/OpenAI-compatible probes, CUDA/Torch runtime checks, strict CRI retests, and NetFS validation lanes.
+- MicroK8s development stack assets, HA ingress/API-auth wiring, and Helm chart skeletons for `k1s-core-ha` and `k1s-node-local`.
+- Direct containerd runtime coverage, WorkerBee runtime packaging helpers, containerd insecure registry support, and maintenance regression tooling for common operator failure cases.
+- Agent PBX coordination guidance for status reporting, planning options, and release/worktree reporting expectations.
+
+### Changed
+- Runtime command handling now maps Kubernetes commands to runtime entrypoints more consistently across Docker, Podman, CRI, direct containerd, and remote execution paths.
+- API shim, controller, and observability surfaces gained stronger HA/status detail behavior, safer runtime factory selection, and clearer module-level engineering references.
+- Containerd service alias refresh, health probing, runtime naming, CRI image bootstrap, and direct-containerd dashboard paths were tightened for repeatable local and MicroK8s development runs.
+- CLI remote transport behavior and request mocks were updated around timeout handling, websocket fallback, CA bundle usage, and deprecated alias warnings.
+- Generated documentation and runbooks were refreshed for inference fabric, Host A GPU workflows, strict CRI retests, MicroK8s operations, observability, and runtime profile guidance.
+
+### Fixed
+- HA core proxy routing and MicroK8s HA ingress/API authentication paths were corrected for the current dev stack.
+- Secret injection, unsafe API shim fallbacks, unregistered CSI attachments, and CRI auth codec imports now fail or degrade more predictably.
+- Containerd runtime recovery and service alias refreshes now avoid stale dependencies, overlap, and incorrect readiness targets.
+- Host A GPU, NetFS, inference API readiness, cloud-init image verification, and VM bootstrap flows were stabilized with stronger probes and retry behavior.
+- NixOS containerd CNI environment detection now selects a `tomllib`-capable Python interpreter when `python3` is too old.
+- Nightly runtime CI, helm contract tests, maintenance note generation, namespaced dashboard status details, exec transport reporting, and remote pod/log capture paths were hardened.
+
 ## 0.1.4 - 2026-04-22
 
 ### Added

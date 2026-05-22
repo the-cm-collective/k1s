@@ -103,11 +103,8 @@ users:
     shell: /bin/bash
     ssh_authorized_keys:
       - ${pubkey}
-package_update: true
-packages:
-  - qemu-guest-agent
-  - jq
-  - python3-pip
+package_update: false
+package_upgrade: false
 runcmd:
   - mkdir -p /mnt/host
   - mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host || true

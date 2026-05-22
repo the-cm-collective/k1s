@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from ae.controller.inference_cell import FabricSessionInfo, HttpFabricAgentClient
 from ae.controller.spec import AppManifest
 from ae.runtime import StubRuntime
@@ -69,6 +71,39 @@ def test_remote_runtime_includes_fencing_envelope_on_ensure() -> None:
     assert payload["controller_id"] == "ctrl-a"
     assert payload["controller_epoch"] == 11
     assert payload["operation_id"] == "ensure:demo:3:node-a"
+
+
+def test_remote_runtime_ensure_timeout_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("AE_REMOTE_RUNTIME_ENSURE_TIMEOUT", "180")
+    runtime = RemoteRuntime(
+        "http://agent:9112",
+        StubRuntime(),
+        authority=_Authority("ctrl-a", 11),
+        node_id="node-a",
+    )
+
+    def _fake_request(method: str, path: str, *, json=None, timeout: float = 30, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["timeout"] = timeout
+        captured["json"] = json
+        return SimpleNamespace(
+            json=lambda: {
+                "revision": 3,
+                "created": 1,
+                "updated": 0,
+                "removed": 0,
+                "pod_states": [],
+            }
+        )
+
+    runtime._request = _fake_request  # type: ignore[method-assign]
+    runtime.ensure_app(_manifest(), 3, node_id="node-a")
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/v1/ensure_app"
+    assert captured["timeout"] == 180.0
 
 
 def test_fabric_agent_client_includes_fencing_envelope(monkeypatch) -> None:
