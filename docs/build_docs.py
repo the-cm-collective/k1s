@@ -273,7 +273,9 @@ def render_template(
     t = t.replace("{__NAV__}", nav_html)
     t = t.replace("{__API_MODE_WIDGET__}", api_mode_widget)
     t = t.replace("{__API_MODE_SCRIPT__}", api_mode_script)
-    return t
+    return "\n".join(line.rstrip() for line in t.splitlines()) + (
+        "\n" if t.endswith("\n") else ""
+    )
 
 
 BUILD_STAMP_RE = re.compile(r"Built\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}")

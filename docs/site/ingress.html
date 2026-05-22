@@ -2,7 +2,7 @@
 <html data-theme="dark">
   <head>
     <meta charset="utf-8"/>
-    
+
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Ingress</title>
     <link rel="icon" href="static/favicon.ico" sizes="any"/>
@@ -712,7 +712,7 @@
         }
       })();
     </script>
-    
+
   </head>
   <body>
     <nav>
@@ -795,6 +795,7 @@
 <li><code>AE_CONTAINER_CLI</code>: <code>podman</code> or <code>docker</code>.</li>
 <li><code>AE_CADDY_RELOAD_TIMEOUT</code>: seconds to wait on reload (default: <code>10</code>).</li>
 <li><code>AE_CADDY_ACTIVE_HEALTH=1</code>: enable active Caddy health checks when the manifest exposes a readiness probe.</li>
+<li><code>AE_CADDY_PREFER_HOST_PORT_UPSTREAMS=1</code>: prefer published host ports for app upstreams when Caddy runs outside the workload runtime network.</li>
 </ul>
 <p>Edge-local gateway rendering:</p>
 <ul>
@@ -857,7 +858,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-04-29 15:42:33</span>
+        <span>Built 2026-05-22 19:07:37</span>
       </div>
     </footer>
     <script>
