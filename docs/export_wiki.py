@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ruff: noqa
-"""Export a curated set of docs/ markdown into a Codeberg-compatible wiki layout."""
+"""Export a curated set of docs/ markdown into a GitHub wiki-compatible layout."""
 
 from __future__ import annotations
 
@@ -363,6 +363,14 @@ def _copy_static_assets(out_dir: Path) -> None:
             shutil.copy2(p, static_out / p.name)
 
 
+def _cleanup_stale_wiki_pages(out_dir: Path, mapping: list[tuple[str, str]]) -> None:
+    expected = {"Home.md", "_Sidebar.md", "_Footer.md"}
+    expected.update(f"{Path(out_html).stem}.md" for _src, out_html in mapping)
+    for stale in out_dir.glob("*.md"):
+        if stale.name not in expected:
+            stale.unlink()
+
+
 def main() -> None:
     include_interactive = _include_interactive()
     mapping = _docs_mapping(include_interactive)
@@ -373,6 +381,7 @@ def main() -> None:
 
     OUT.mkdir(parents=True, exist_ok=True)
     _copy_static_assets(OUT)
+    _cleanup_stale_wiki_pages(OUT, mapping)
     if not include_interactive:
         for slug in excluded_slugs:
             stale = OUT / f"{slug}.md"

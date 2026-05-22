@@ -25,7 +25,7 @@
 - API shim, controller, and observability surfaces gained stronger HA/status detail behavior, safer runtime factory selection, and clearer module-level engineering references.
 - Containerd service alias refresh, health probing, runtime naming, CRI image bootstrap, and direct-containerd dashboard paths were tightened for repeatable local and MicroK8s development runs.
 - CLI remote transport behavior and request mocks were updated around timeout handling, websocket fallback, CA bundle usage, and deprecated alias warnings.
-- Generated documentation and runbooks were refreshed for inference fabric, Host A GPU workflows, strict CRI retests, MicroK8s operations, observability, and runtime profile guidance.
+- Generated documentation, wiki exports, and runbooks were refreshed for inference fabric, Host A GPU workflows, strict CRI retests, MicroK8s operations, observability, runtime profile guidance, and the GitHub-canonical/Codeberg-mirror project links.
 
 ### Fixed
 - HA core proxy routing and MicroK8s HA ingress/API authentication paths were corrected for the current dev stack.

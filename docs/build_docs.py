@@ -91,16 +91,19 @@ SWAGGER_UI_CONTROLLER_DEFAULT_URL = os.getenv(
     "http://localhost:8080/k1s/openapi.json",
 ).strip()
 
-RSS_FEED_URL = os.getenv("DOCS_RSS_FEED_URL", "https://codeberg.org/th3_4rchit3ct/k1s.rss").strip()
+RSS_FEED_URL = os.getenv(
+    "DOCS_RSS_FEED_URL",
+    "https://github.com/the-cm-collective/k1s/commits/main.atom",
+).strip()
 RSS_FEED_TITLE = "k1s Repo Activity"
 SOURCE_REPO_URL = os.getenv(
-    "DOCS_SOURCE_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
+    "DOCS_SOURCE_REPO_URL", "https://github.com/the-cm-collective/k1s"
 ).strip()
-SOURCE_REPO_LABEL = os.getenv("DOCS_SOURCE_REPO_LABEL", "Upstream Repository (CODEBERG)").strip()
+SOURCE_REPO_LABEL = os.getenv("DOCS_SOURCE_REPO_LABEL", "Project Repository (GitHub)").strip()
 COLLAB_REPO_URL = os.getenv(
-    "DOCS_COLLAB_REPO_URL", "https://github.com/the-cm-collective/k1s"
+    "DOCS_COLLAB_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
 ).strip()
-COLLAB_REPO_LABEL = os.getenv("DOCS_COLLAB_REPO_LABEL", "Issues & PRs / SPONSORS (GitHub)").strip()
+COLLAB_REPO_LABEL = os.getenv("DOCS_COLLAB_REPO_LABEL", "Mirror (Codeberg)").strip()
 
 INTERACTIVE_HREF_TOKENS = (
     "/swagger",
@@ -307,6 +310,18 @@ def _apply_stable_build_stamp(out_path: Path, html_text: str) -> str:
                 if prev_stamp:
                     return html_text.replace(BUILD_STAMP_PLACEHOLDER, prev_stamp)
     return html_text.replace(BUILD_STAMP_PLACEHOLDER, _current_build_stamp())
+
+
+def _cleanup_stale_top_level_html(out_dir: Path, mapping: dict[str, str]) -> None:
+    expected = {"index.html"}
+    expected.update(
+        out_name
+        for out_name in mapping.values()
+        if out_name.endswith(".html") and "/" not in out_name
+    )
+    for stale in out_dir.glob("*.html"):
+        if stale.name not in expected:
+            stale.unlink()
 
 
 def _load_ae_version() -> str:
@@ -2591,6 +2606,7 @@ def main() -> None:
     if EXPORT_NON_INTERACTIVE:
         for src in INTERACTIVE_SOURCES:
             mapping.pop(src, None)
+    _cleanup_stale_top_level_html(OUT, mapping)
 
     rss_feed_url = RSS_FEED_URL
     rss_feed_title = RSS_FEED_TITLE
@@ -2739,7 +2755,7 @@ def main() -> None:
         repo_section = "\n".join(
             [
                 '    <div class="hero-repo">',
-                '      <span class="hero-repo-label">Repositories</span>',
+                '      <span class="hero-repo-label">Project Links</span>',
                 '      <div class="hero-repo-list">',
                 "\n".join(repo_bits),
                 "      </div>",

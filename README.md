@@ -261,7 +261,7 @@ Local dev and samples:
 Docs, labs, and playground:
 - `make docs`: combine snapshots (if present), regenerate charts, build docs.
 - `make docs-export`: build non-interactive HTML into `docs/export` (`DOCS_OUT_DIR=` override).
-- `make docs-wiki-export`: export wiki-friendly HTML into `docs/wiki` (`WIKI_OUT=` override).
+- `make docs-wiki-export`: export wiki-friendly Markdown into `docs/wiki` (`WIKI_OUT=` override).
 - `make docs-watch`: rebuild docs when `combined/combined.csv` changes.
 - `make docs-local-ignore`: locally hide `docs/site` changes from git status.
 - `make docs-local-track`: re-enable tracking for `docs/site` updates before committing.
