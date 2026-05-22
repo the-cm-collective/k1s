@@ -132,11 +132,17 @@ k1s_containerd_cni_env() {
   local config_dump=""
 
   if [[ -z "$python_bin" ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-      python_bin="$(command -v python3)"
-    elif command -v python >/dev/null 2>&1; then
-      python_bin="$(command -v python)"
-    else
+    local candidate=""
+    for candidate in python3.12 python3.11 python3 python; do
+      if command -v "$candidate" >/dev/null 2>&1 && "$candidate" - <<'PY' >/dev/null 2>&1
+import tomllib
+PY
+      then
+        python_bin="$(command -v "$candidate")"
+        break
+      fi
+    done
+    if [[ -z "$python_bin" ]]; then
       return 1
     fi
   fi
