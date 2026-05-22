@@ -4870,7 +4870,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         )
         doc = {
             "openapi": "3.0.0",
-            "info": {"title": "k1s Controller API", "version": "0.1.5.dev0"},
+            "info": {"title": "k1s Controller API", "version": "0.1.6.dev0"},
             "components": {
                 "securitySchemes": {
                     "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}

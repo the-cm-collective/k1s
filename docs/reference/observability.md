@@ -111,12 +111,12 @@ You can also embed a single panel JSON (e.g., stat showing ready apps):
       "controller_epoch": 19,
       "member_count": 3,
       "members": [
-        { "controller_id": "core-b", "advertise_addr": "https://core-b.example.net:9108", "version": "0.1.5.dev0", "is_leader": true, "is_local": false, "role": "leader", "last_heartbeat_at": "2026-04-22T19:20:05+00:00", "last_heartbeat_age_s": 4.0, "freshness": "fresh", "stale_after_seconds": 10.0 },
-        { "controller_id": "core-a", "advertise_addr": "https://core-a.example.net:9108", "version": "0.1.5.dev0", "is_leader": false, "is_local": true, "role": "standby", "last_heartbeat_at": "2026-04-22T19:19:48+00:00", "last_heartbeat_age_s": 21.0, "freshness": "stale", "stale_after_seconds": 10.0 },
+        { "controller_id": "core-b", "advertise_addr": "https://core-b.example.net:9108", "version": "0.1.6.dev0", "is_leader": true, "is_local": false, "role": "leader", "last_heartbeat_at": "2026-04-22T19:20:05+00:00", "last_heartbeat_age_s": 4.0, "freshness": "fresh", "stale_after_seconds": 10.0 },
+        { "controller_id": "core-a", "advertise_addr": "https://core-a.example.net:9108", "version": "0.1.6.dev0", "is_leader": false, "is_local": true, "role": "standby", "last_heartbeat_at": "2026-04-22T19:19:48+00:00", "last_heartbeat_age_s": 21.0, "freshness": "stale", "stale_after_seconds": 10.0 },
         { "controller_id": "core-c", "advertise_addr": "https://core-c.example.net:9108", "version": "0.1.2", "is_leader": false, "is_local": false, "role": "standby", "last_heartbeat_at": null, "last_heartbeat_age_s": null, "freshness": "unknown", "stale_after_seconds": 10.0 }
       ]
     },
-    "controller_build": { "version": "0.1.5.dev0", "sha": "abc123", "date": "2026-04-22" },
+    "controller_build": { "version": "0.1.6.dev0", "sha": "abc123", "date": "2026-04-22" },
     "etcd": { "configured_endpoints": ["http://10.0.0.11:2379", "http://10.0.0.12:2379", "http://10.0.0.13:2379"], "maintenance_runs_total": 0.0, "maintenance_triggered_total": 0.0, "healthy_endpoints": 3, "unhealthy_endpoints": 0, "members": [], "last_probe_ts": 1710800000.0, "probes_enabled": true },
     "transport": { "backend": "nats-js", "js_domain": "K1S", "site_summary": { "seen": 2, "stale": 0, "fresh": 2, "last_seen_age_s": 4.2 }, "sites": [], "jetstream": { "stream_count": 1, "consumer_count": 2, "pending": 0.0, "ack_pending": 1.0, "redelivered": 0.0, "waiting": 0.0, "consumers": [], "streams": [] }, "gateway": { "site_count": 2, "result_replay_backlog": 0.0, "sites": [] }, "routes": { "site_count": 2, "pending_sites": 0.0, "max_ack_age_s": 0.0, "sites": [] }, "fence": { "surface_count": 2, "stale_total": 0.0, "duplicate_total": 0.0, "epoch_advance_total": 0.0, "surfaces": [] } },
     "hpa": { "reconcile_total": 0.0, "scale_total": 0.0, "metrics_stale_total": 0.0, "metrics_missing_total": 0.0, "snapshot_age_seconds": 0.0 },

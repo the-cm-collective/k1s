@@ -16,7 +16,7 @@ node:
   image:
     registry: ""
     repository: k1s/k1s-core-node
-    tag: 0.1.5.dev0
+    tag: 0.1.6.dev0
     pullPolicy: IfNotPresent
   agentPort: 9109
   runtimeBackend: cri

@@ -27,7 +27,7 @@ controller:
   image:
     registry: ""
     repository: k1s/k1s-core
-    tag: 0.1.5.dev0
+    tag: 0.1.6.dev0
     pullPolicy: IfNotPresent
   metricsPort: 9108
   agentPort: 9110
@@ -61,7 +61,7 @@ apishim:
   image:
     registry: ""
     repository: k1s/k1s-apishim
-    tag: 0.1.5.dev0
+    tag: 0.1.6.dev0
     pullPolicy: IfNotPresent
   port: 8445
   resources: {}

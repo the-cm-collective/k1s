@@ -3,4 +3,4 @@ name: k1s-node-local
 description: Cluster-exclusive Host B local GPU node DaemonSet for a selected k1s stack.
 type: application
 version: 0.1.0
-appVersion: 0.1.5.dev0
+appVersion: 0.1.6.dev0
