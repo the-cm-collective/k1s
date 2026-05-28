@@ -17,6 +17,7 @@ The controller exposes a controller-native HTTP API when started with `--metrics
 - `GET /health`
 - `GET /status` and `GET /status/<app>`
 - `GET /manifest/<app>`, `GET /events/<app>`, and `GET /history/<app>`
+- `GET /inference/cells`, `GET /inference/cells/<namespace>/<name>`, `GET /inference/cellsets`, and `GET /inference/cellsets/<namespace>/<name>`
 - `GET /nodes` and `GET /system`
 - `GET /logs/<app>` and `GET /logs/<app>/stream`
 - `GET /tls/verify`
@@ -26,7 +27,9 @@ The controller exposes a controller-native HTTP API when started with `--metrics
 - `POST /plan` and `POST /dashboard/plan` are read-only planner endpoints used by the dashboard and labs UI. They require READ access when tokens are configured.
 - `POST /k8s/preview` is a dev-only exporter preview and stays disabled unless `AE_API_DEV_EXPORT=1`.
 - `POST /scale/<app>` requires scale or admin access plus `AE_API_MUTATIONS=1`.
-- `POST /delete/<app>`, `POST /rollout/pause/<app>`, `POST /rollout/resume/<app>`, `POST /apply`, and `POST /exec/<app>` require admin access plus `AE_API_MUTATIONS=1`.
+- `POST /apply` accepts `Deployment`, `InferenceCell`, and `InferenceCellSet` manifests. The inference kinds are k1s-owned AI/ML resources, not Kubernetes scheduling primitives.
+- `POST /inference/delete/cells/<name>?namespace=<namespace>` and `POST /inference/delete/cellsets/<name>?namespace=<namespace>` delete inference resources.
+- `POST /delete/<app>`, `POST /rollout/pause/<app>`, `POST /rollout/resume/<app>`, `POST /apply`, `POST /inference/delete/*`, and `POST /exec/<app>` require admin access plus `AE_API_MUTATIONS=1`.
 
 ## Auth model
 - Public docs and schema surfaces remain reachable without a bearer token.

@@ -132,6 +132,8 @@ def test_inference_cellset_scale_to_zero(tmp_path):
         if (c.manifest.metadata.labels or {}).get("k1s.cellset") == "set-a"
     ]
     assert cells == []
+    set_ctrl.delete_cellset("set-a", namespace="default")
+    assert store.get_inference_cellset("set-a", namespace="default") is None
 
 
 def test_inference_cell_execution_mode_requires_registered_members(

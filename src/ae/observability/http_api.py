@@ -6,6 +6,8 @@ Endpoints:
 - GET /status/<app>       -> JSON object for app status (404 if missing)
 - GET /events/<app>?limit -> JSON list of recent events for app
 - GET /history/<app>?limit -> JSON list of recent probe evaluations (pod histories)
+- GET /inference/cells    -> JSON list of inference cells
+- GET /inference/cellsets -> JSON list of inference cellsets
 - POST /k8s/preview      -> Render K8s YAML for a manifest (dev only; gated by AE_API_DEV_EXPORT=1)
 """
 
@@ -1725,6 +1727,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     scale_fn = None  # type: ignore[var-annotated]
     delete_fn = None  # type: ignore[var-annotated]
     apply_fn = None  # type: ignore[var-annotated]
+    inference_delete_fn = None  # type: ignore[var-annotated]
     # Optional system info provider injected by controller
     system_info_fn = None  # type: ignore[var-annotated]
     authority_info_fn = None  # type: ignore[var-annotated]
@@ -2294,6 +2297,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 return
             self._handle_dashboard_js()
             return
+        if path_only in ("/inference/cells", "/inference/cells/"):
+            self._handle_inference_cells_list()
+            return
+        if path_only.startswith("/inference/cells/"):
+            self._handle_inference_cell_single()
+            return
+        if path_only in ("/inference/cellsets", "/inference/cellsets/"):
+            self._handle_inference_cellsets_list()
+            return
+        if path_only.startswith("/inference/cellsets/"):
+            self._handle_inference_cellset_single()
+            return
         if path_only.startswith("/manifest/"):
             # Return the latest stored manifest for the app
             app = self.path.split("/", 2)[2].split("?", 1)[0]
@@ -2549,6 +2564,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if self.path.startswith("/delete/") and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
+            if self.path.startswith("/inference/delete/") and not self._require_role("admin"):
+                self._deny(401 if not self.headers.get("Authorization") else 403)
+                return
             if (
                 self.path.startswith("/rollout/pause/") or self.path.startswith("/rollout/resume/")
             ) and not self._require_role("admin"):
@@ -2631,6 +2649,27 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "actual": exc.actual,
                     },
                 )
+            except Exception as exc:  # pragma: no cover - defensive
+                self._json_error(500, str(exc))
+            return
+
+        if self.path.startswith("/inference/delete/") and self.inference_delete_fn is not None:
+            try:
+                kind, namespace, name = self._parse_inference_delete_ref()
+                from ae.controller.spec import app_key
+
+                target = app_key(name, namespace)
+                role = self._presented_role()
+                if role != "admin" or not self._scope_allows("admin", target):
+                    self._json_error(403, "token scope denies inference delete")
+                    return
+                if not self._rbac_allows("delete", target):
+                    self._json_error(403, "rbac denies inference delete")
+                    return
+                result = self.inference_delete_fn(kind, name, namespace)  # type: ignore[misc]
+                self._json_ok(result)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
             except Exception as exc:  # pragma: no cover - defensive
                 self._json_error(500, str(exc))
             return
@@ -5301,6 +5340,94 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         return _up.parse_qs(_up.urlsplit(self.path).query)
 
+    def _parse_inference_ref(self, prefix: str) -> tuple[str, str]:
+        import urllib.parse as _up
+
+        from ae.controller.spec import DEFAULT_NAMESPACE, parse_app_ref
+
+        path = _up.urlsplit(self.path).path
+        suffix = _up.unquote(path[len(prefix) :].strip("/"))
+        params = self._parse_query()
+        namespace = (params.get("namespace") or [""])[0].strip()
+        if "/" in suffix:
+            parsed_ns, name = suffix.split("/", 1)
+            namespace = namespace or parsed_ns
+            return namespace or DEFAULT_NAMESPACE, name
+        parsed_ns, name = parse_app_ref(suffix)
+        return namespace or parsed_ns or DEFAULT_NAMESPACE, name
+
+    def _parse_inference_delete_ref(self) -> tuple[str, str, str]:
+        import urllib.parse as _up
+
+        path = _up.urlsplit(self.path).path
+        suffix = _up.unquote(path[len("/inference/delete/") :].strip("/"))
+        kind, _, _name = suffix.partition("/")
+        if not kind or not _name:
+            raise ValueError("expected /inference/delete/{cells|cellsets}/{name}")
+        namespace, name = self._parse_inference_ref(f"/inference/delete/{kind}/")
+        return kind, namespace, name
+
+    def _inference_read_allowed(self, key: str) -> bool:
+        import os as _os
+
+        if not _os.getenv("AE_API_READ_SCOPE"):
+            return True
+        return self._scope_allows("read", key)
+
+    def _handle_inference_cells_list(self) -> None:
+        from ae.controller.inference_api import cell_record_payload
+
+        params = self._parse_query()
+        namespace = (params.get("namespace") or [None])[0] or None
+        items = [
+            cell_record_payload(rec)
+            for rec in self.store.list_inference_cells(namespace=namespace)
+            if self._inference_read_allowed(rec.cell_key)
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_inference_cell_single(self) -> None:
+        from ae.controller.inference_api import cell_record_payload
+        from ae.controller.spec import app_key
+
+        namespace, name = self._parse_inference_ref("/inference/cells/")
+        key = app_key(name, namespace)
+        if not self._inference_read_allowed(key):
+            self._deny(403)
+            return
+        rec = self.store.get_inference_cell(name, namespace=namespace)
+        if rec is None:
+            self._json_error(404, "inference cell not found")
+            return
+        self._json_ok(cell_record_payload(rec))
+
+    def _handle_inference_cellsets_list(self) -> None:
+        from ae.controller.inference_api import cellset_record_payload
+
+        params = self._parse_query()
+        namespace = (params.get("namespace") or [None])[0] or None
+        items = [
+            cellset_record_payload(rec)
+            for rec in self.store.list_inference_cellsets(namespace=namespace)
+            if self._inference_read_allowed(rec.set_key)
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_inference_cellset_single(self) -> None:
+        from ae.controller.inference_api import cellset_record_payload
+        from ae.controller.spec import app_key
+
+        namespace, name = self._parse_inference_ref("/inference/cellsets/")
+        key = app_key(name, namespace)
+        if not self._inference_read_allowed(key):
+            self._deny(403)
+            return
+        rec = self.store.get_inference_cellset(name, namespace=namespace)
+        if rec is None:
+            self._json_error(404, "inference cellset not found")
+            return
+        self._json_ok(cellset_record_payload(rec))
+
     def _decode_app_segment(self, prefix: str) -> str:
         import urllib.parse as _up
 
@@ -5852,6 +5979,7 @@ def start_http_api(
     scale_fn=None,
     delete_fn=None,
     apply_fn=None,
+    inference_delete_fn=None,
     exec_fn=None,
     logs_fn=None,
     system_info_fn=None,
@@ -5873,6 +6001,9 @@ def start_http_api(
     handler_cls.scale_fn = staticmethod(scale_fn) if scale_fn is not None else None
     handler_cls.delete_fn = staticmethod(delete_fn) if delete_fn is not None else None
     handler_cls.apply_fn = staticmethod(apply_fn) if apply_fn is not None else None
+    handler_cls.inference_delete_fn = (
+        staticmethod(inference_delete_fn) if inference_delete_fn is not None else None
+    )
     handler_cls.exec_fn = staticmethod(exec_fn) if exec_fn is not None else None
     handler_cls.logs_fn = staticmethod(logs_fn) if logs_fn is not None else None
     handler_cls.system_info_fn = (

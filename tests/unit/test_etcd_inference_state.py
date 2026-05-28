@@ -225,3 +225,7 @@ def test_etcd_store_supports_inference_cellset_scale_to_zero(
         if (cell.manifest.metadata.labels or {}).get("k1s.cellset") == "set-a"
     ]
     assert cells == []
+
+    ctrl.delete_cellset("set-a", namespace="default")
+
+    assert store.get_inference_cellset("set-a", namespace="default") is None

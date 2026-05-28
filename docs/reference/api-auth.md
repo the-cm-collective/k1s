@@ -17,10 +17,10 @@ This page is the auth reference for the controller-native HTTP API and the optio
 
 - `AE_API_READ_TOKEN`: read-only operational access.
 - `AE_API_SCALER_TOKEN`: READ plus `/scale/<app>`.
-- `AE_API_ADMIN_TOKEN`: READ plus admin and mutation routes such as `/apply`, `/delete/<app>`, `/rollout/*`, and `/exec/<app>`.
+- `AE_API_ADMIN_TOKEN`: READ plus admin and mutation routes such as `/apply`, `/delete/<app>`, `/inference/delete/*`, `/rollout/*`, and `/exec/<app>`.
 - Optional expiry controls: `AE_API_ADMIN_TOKEN_EXPIRES`, `AE_API_SCALER_TOKEN_EXPIRES`, `AE_API_READ_TOKEN_EXPIRES`.
 - Optional scopes: `AE_API_ADMIN_SCOPE`, `AE_API_SCALER_SCOPE`, `AE_API_READ_SCOPE`.
-- Scope note: admin and scaler scopes gate app-targeted mutations. Read scope is only enforced on app-targeted read routes today, such as `/status/<app>`, `/events/<app>`, `/manifest/<app>`, `/history/<app>`, and `/logs/<app>`. Controller-wide list and system surfaces remain controller-wide.
+- Scope note: admin and scaler scopes gate app-targeted mutations. Inference mutations use the same namespace/name key format as apps, for example `ml--llama`. Read scope is enforced on app-targeted and inference-targeted read routes today, such as `/status/<app>`, `/events/<app>`, `/manifest/<app>`, `/history/<app>`, `/logs/<app>`, and `/inference/cells/<namespace>/<name>`. Controller-wide list and system surfaces remain controller-wide, though inference list responses are filtered when `AE_API_READ_SCOPE` is set.
 
 ## Common Controller Workflows
 

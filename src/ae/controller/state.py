@@ -2269,6 +2269,12 @@ class SQLiteStateStore:
             conn.commit()
         return True
 
+    def delete_inference_cellset(self, name: str, namespace: str | None = None) -> None:
+        set_key = self._inference_key(name, namespace)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM inference_cell_sets WHERE set_key = ?", (set_key,))
+            conn.commit()
+
     def upsert_fabric_session(
         self,
         *,

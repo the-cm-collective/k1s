@@ -848,6 +848,9 @@ class EtcdStateStore(SQLiteStateStore):
         self._put_json(key, rec)
         return True
 
+    def delete_inference_cellset(self, name: str, namespace: str | None = None) -> None:
+        self._client.delete(self._inference_cellset_store_key(name, namespace))
+
     def upsert_fabric_session(
         self,
         *,

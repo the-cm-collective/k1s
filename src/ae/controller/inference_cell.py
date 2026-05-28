@@ -1900,3 +1900,13 @@ class InferenceCellSetController:
         payload["spec"]["replicas"] = int(max(0, replicas))
         updated = InferenceCellSetManifest.model_validate(payload)
         return self.reconcile_manifest(updated, source="scale")
+
+    def delete_cellset(self, name: str, namespace: str | None = None) -> None:
+        rec = self._store.get_inference_cellset(name, namespace=namespace)
+        if rec is None:
+            return
+        ns = rec.namespace
+        for cell in list(self._store.list_inference_cells(namespace=ns)):
+            if (cell.manifest.metadata.labels or {}).get("k1s.cellset") == rec.name:
+                self._cells.delete_cell(cell.cell_id, namespace=ns)
+        self._store.delete_inference_cellset(name, namespace=ns)

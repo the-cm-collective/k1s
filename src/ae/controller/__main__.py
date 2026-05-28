@@ -50,6 +50,7 @@ from ae.controller.spec import (
     ManifestError,
     app_key_for_manifest,
     load_manifest,
+    parse_manifest_document,
     DEFAULT_NAMESPACE,
 )
 from ae.observability.http_api import (
@@ -2018,13 +2019,23 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
         def _apply(payload: dict, source: str | None = None, labels: dict | None = None):  # noqa: ANN001
             _require_mutation_authority()
-            # Accept a Deployment manifest JSON and reconcile
-            from ae.controller.spec import AppManifest
+            # Accept a Deployment or inference manifest JSON and reconcile.
+            from ae.controller.inference_api import apply_manifest_payload
+            from ae.controller.spec import InferenceCellManifest, InferenceCellSetManifest
 
             try:
-                manifest = AppManifest.model_validate(payload)
+                manifest = parse_manifest_document(payload, source="api payload")
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"invalid manifest: {exc}")
+            if isinstance(manifest, (InferenceCellManifest, InferenceCellSetManifest)):
+                return apply_manifest_payload(
+                    store,
+                    payload,
+                    source=source or "api",
+                    authority=authority,
+                )
+            if not isinstance(manifest, AppManifest):
+                raise RuntimeError(f"unsupported manifest type {type(manifest).__name__}")
             warnings: list[str] = []
             app_name = app_key_for_manifest(manifest)
             existing = store.get_registered_entry(app_name)
@@ -2072,6 +2083,18 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 "removed": report.removed,
                 **({"warnings": warnings} if warnings else {}),
             }
+
+        def _delete_inference(kind: str, name: str, namespace: str | None = None):  # noqa: ANN001
+            _require_mutation_authority()
+            from ae.controller.inference_api import delete_resource
+
+            return delete_resource(
+                store,
+                kind,
+                name,
+                namespace=namespace,
+                authority=authority,
+            )
 
         def _logs(
             app: str, container: str | None, tail: int | None, since: int | None, follow: bool
@@ -2879,6 +2902,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 scale_fn=_scale,
                 delete_fn=_delete,
                 apply_fn=_apply,
+                inference_delete_fn=_delete_inference,
                 exec_fn=_exec,
                 logs_fn=_logs,
                 system_info_fn=_system_info,

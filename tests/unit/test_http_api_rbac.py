@@ -1,12 +1,13 @@
-import logging
 import json
+import logging
 from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
 
 from ae.controller.authority import LeaderInfo, NotLeaderError
-from ae.controller.state import RegistryConflictError
+from ae.controller.inference_api import apply_manifest_payload
+from ae.controller.state import RegistryConflictError, SQLiteStateStore
 from ae.observability import http_api
 
 
@@ -285,6 +286,96 @@ def test_require_role_rejects_query_token_for_post(monkeypatch):
     handler.headers = {}
 
     assert handler._require_role("read") is False
+
+
+def test_inference_discovery_get_respects_read_scope(monkeypatch, tmp_path):
+    monkeypatch.setenv("AE_API_READ_TOKEN", "r")
+    monkeypatch.setenv("AE_API_READ_SCOPE", "ml--demo-cell")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    apply_manifest_payload(
+        store,
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "InferenceCell",
+            "metadata": {"name": "demo-cell", "namespace": "ml"},
+            "spec": {
+                "model": {"modelId": "llama", "localPath": "/models/llama"},
+                "members": [{"siteId": "site-a", "nodeId": "node-a", "gpuCount": 1}],
+            },
+        },
+        source="test",
+    )
+    req = make_handler(
+        "/inference/cells/ml/demo-cell",
+        method="GET",
+        headers={"Authorization": "Bearer r"},
+    )
+    monkeypatch.setattr(http_api._ApiHandler, "store", store, raising=False)
+    handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
+    handler.store = store
+    handler.path = "/inference/cells/ml/demo-cell"
+    handler.command = "GET"
+    handler.headers = {"Authorization": "Bearer r"}
+
+    handler.do_GET()
+
+    body = bytes(req._wbuf).decode("utf-8", errors="ignore")
+    assert 200 in req.responses
+    assert '"kind": "InferenceCell"' in body
+    assert '"name": "demo-cell"' in body
+
+
+def test_inference_delete_route_requires_admin(monkeypatch, tmp_path):
+    monkeypatch.setenv("AE_API_RBAC", "1")
+    monkeypatch.setenv("AE_API_ADMIN_TOKEN", "a")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    apply_manifest_payload(
+        store,
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "InferenceCell",
+            "metadata": {"name": "demo-cell", "namespace": "ml"},
+            "spec": {"model": {"modelId": "llama", "localPath": "/models/llama"}},
+        },
+        source="test",
+    )
+    req = make_handler(
+        "/inference/delete/cells/demo-cell?namespace=ml",
+        headers={"Authorization": "Bearer a"},
+    )
+    monkeypatch.setattr(http_api._ApiHandler, "store", store, raising=False)
+    monkeypatch.setattr(
+        http_api._ApiHandler,
+        "inference_delete_fn",
+        lambda kind, name, namespace: {
+            "kind": kind,
+            "name": name,
+            "namespace": namespace,
+            "removed": store.get_inference_cell(name, namespace=namespace) is not None,
+        },
+    )
+    handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
+    handler.store = store
+    handler.path = "/inference/delete/cells/demo-cell?namespace=ml"
+    handler.command = "POST"
+    handler.headers = {
+        "Authorization": "Bearer a",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
+    handler.rfile = BytesIO(req._payload)
+    handler.inference_delete_fn = lambda kind, name, namespace: {
+        "kind": kind,
+        "name": name,
+        "namespace": namespace,
+        "removed": store.get_inference_cell(name, namespace=namespace) is not None,
+    }
+
+    handler.do_POST()
+
+    body = bytes(req._wbuf).decode("utf-8", errors="ignore")
+    assert 200 in req.responses
+    assert '"removed": true' in body
 
 
 # ruff: noqa: E501
