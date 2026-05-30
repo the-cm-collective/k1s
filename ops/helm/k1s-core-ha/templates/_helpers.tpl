@@ -25,6 +25,14 @@ app.kubernetes.io/name: {{ include "k1s-core-ha.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{- define "k1s-core-ha.volumeClaimTemplateLabels" -}}
+app.kubernetes.io/name: {{ include "k1s-core-ha.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: k1s-microk8s-dev-stack
+k1s.dev/stack-name: {{ .Values.stack.name | quote }}
+{{- end -}}
+
 {{- define "k1s-core-ha.authSecretName" -}}
 {{- if .Values.auth.existingSecret -}}
 {{- .Values.auth.existingSecret -}}

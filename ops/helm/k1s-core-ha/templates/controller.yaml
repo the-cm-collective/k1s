@@ -39,6 +39,10 @@ spec:
         - name: controller
           image: {{ include "k1s-core-ha.image" (dict "root" . "image" .Values.controller.image) }}
           imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          {{- with .Values.controller.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command:
             - /bin/sh
             - -ec
@@ -54,6 +58,8 @@ spec:
               value: "1"
             - name: AE_STATE_BACKEND
               value: etcd
+            - name: AE_APISHIM_DB
+              value: {{ .Values.controller.apishimDbPath | quote }}
             - name: AE_RUNTIME_BACKEND
               value: {{ .Values.controller.runtimeBackend | quote }}
             - name: AE_INFRA_BACKEND
@@ -109,6 +115,8 @@ spec:
               value: "1"
             - name: AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS
               value: "1"
+            - name: AE_CADDY_SITES
+              value: {{ .Values.controller.caddySites | quote }}
             - name: AE_EDGE_INGRESS_CONFIG_DIR
               value: /var/run/k1s-edge
             - name: AE_EDGE_INGRESS_ENVOY_CONFIG

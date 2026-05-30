@@ -38,7 +38,14 @@ controller:
   runtimeHostSocketPath: /run/containerd/containerd.sock
   nodeProfile: k1s-ha-core
   registerLocalNode: false
+  caddySites: ""
+  apishimDbPath: /var/lib/ae/apishim.db
   siteIds: []
+  securityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
   api:
     mutationsEnabled: false
     adminTokenSecretKey: ""
@@ -81,6 +88,7 @@ etcd:
   metricsPort: 2381
   storageClassName: ""
   storageSize: 5Gi
+  preserveExistingVolumeClaimTemplate: true
   resources: {}
 
 nats:
@@ -96,6 +104,7 @@ nats:
   monitorPort: 8222
   storageClassName: ""
   storageSize: 5Gi
+  preserveExistingVolumeClaimTemplate: true
   jetstream:
     domain: K1S
   resources: {}

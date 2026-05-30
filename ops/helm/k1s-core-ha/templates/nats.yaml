@@ -61,6 +61,13 @@ spec:
       port: {{ .Values.natsExporter.port }}
       targetPort: metrics
 ---
+{{- $existingNatsStatefulSet := lookup "apps/v1" "StatefulSet" .Release.Namespace (include "k1s-core-ha.natsName" .) }}
+{{- $existingNatsVolumeClaimTemplate := dict }}
+{{- if and .Values.nats.preserveExistingVolumeClaimTemplate $existingNatsStatefulSet $existingNatsStatefulSet.spec.volumeClaimTemplates }}
+{{- $existingNatsVolumeClaimTemplate = index $existingNatsStatefulSet.spec.volumeClaimTemplates 0 }}
+{{- end }}
+{{- $existingNatsVolumeClaimTemplateLabels := dig "metadata" "labels" (dict) $existingNatsVolumeClaimTemplate }}
+{{- $existingNatsVolumeClaimTemplateSpec := dig "spec" (dict) $existingNatsVolumeClaimTemplate }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -196,14 +203,24 @@ spec:
     - metadata:
         name: data
         labels:
-          {{- include "k1s-core-ha.labels" . | nindent 10 }}
+          {{- if $existingNatsVolumeClaimTemplateLabels }}
+          {{- toYaml $existingNatsVolumeClaimTemplateLabels | nindent 10 }}
+          {{- else }}
+          {{- include "k1s-core-ha.volumeClaimTemplateLabels" . | nindent 10 }}
           app.kubernetes.io/component: nats
+          {{- end }}
+      {{- if $existingNatsVolumeClaimTemplateSpec }}
+      spec:
+        {{- toYaml $existingNatsVolumeClaimTemplateSpec | nindent 8 }}
+      {{- else }}
       spec:
         accessModes:
           - ReadWriteOnce
         resources:
           requests:
             storage: {{ .Values.nats.storageSize }}
+        volumeMode: Filesystem
         {{- if .Values.nats.storageClassName }}
         storageClassName: {{ .Values.nats.storageClassName | quote }}
         {{- end }}
+      {{- end }}

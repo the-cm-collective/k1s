@@ -8,6 +8,11 @@ stack:
 controller:
   replicas: 3
   runtimeHostSocketPath: /var/snap/microk8s/common/run/containerd.sock
+  securityContext:
+    runAsUser: 10001
+    runAsGroup: 1005
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
   siteIds:
     - host-a
     - workerbee-edge

@@ -58,6 +58,13 @@ spec:
       port: {{ .Values.etcd.metricsPort }}
       targetPort: metrics
 ---
+{{- $existingEtcdStatefulSet := lookup "apps/v1" "StatefulSet" .Release.Namespace (include "k1s-core-ha.etcdName" .) }}
+{{- $existingEtcdVolumeClaimTemplate := dict }}
+{{- if and .Values.etcd.preserveExistingVolumeClaimTemplate $existingEtcdStatefulSet $existingEtcdStatefulSet.spec.volumeClaimTemplates }}
+{{- $existingEtcdVolumeClaimTemplate = index $existingEtcdStatefulSet.spec.volumeClaimTemplates 0 }}
+{{- end }}
+{{- $existingEtcdVolumeClaimTemplateLabels := dig "metadata" "labels" (dict) $existingEtcdVolumeClaimTemplate }}
+{{- $existingEtcdVolumeClaimTemplateSpec := dig "spec" (dict) $existingEtcdVolumeClaimTemplate }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -129,14 +136,24 @@ spec:
     - metadata:
         name: data
         labels:
-          {{- include "k1s-core-ha.labels" . | nindent 10 }}
+          {{- if $existingEtcdVolumeClaimTemplateLabels }}
+          {{- toYaml $existingEtcdVolumeClaimTemplateLabels | nindent 10 }}
+          {{- else }}
+          {{- include "k1s-core-ha.volumeClaimTemplateLabels" . | nindent 10 }}
           app.kubernetes.io/component: etcd
+          {{- end }}
+      {{- if $existingEtcdVolumeClaimTemplateSpec }}
+      spec:
+        {{- toYaml $existingEtcdVolumeClaimTemplateSpec | nindent 8 }}
+      {{- else }}
       spec:
         accessModes:
           - ReadWriteOnce
         resources:
           requests:
             storage: {{ .Values.etcd.storageSize }}
+        volumeMode: Filesystem
         {{- if .Values.etcd.storageClassName }}
         storageClassName: {{ .Values.etcd.storageClassName | quote }}
         {{- end }}
+      {{- end }}

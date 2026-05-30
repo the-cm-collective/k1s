@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -15,7 +14,7 @@ def _helm_template(chart: Path, values: Path, release: str, namespace: str) -> l
     helm = shutil.which("helm")
     if not helm:
         pytest.skip("helm binary is required for chart contract tests")
-    proc = subprocess.run(
+    proc = subprocess.run(  # noqa: S603 - helm path is resolved by shutil.which; args are fixed.
         [
             helm,
             "template",
@@ -96,7 +95,10 @@ def test_core_chart_ingress_uses_apps_dash_and_docs_hosts() -> None:
     assert api_backend["port"]["name"] == "http"
     assert ingress["spec"]["tls"][0]["secretName"] == "k1s-dev-a-ingress-tls"
     assert dash_ingress["spec"]["tls"][0]["secretName"] == "k1s-dev-a-ingress-tls"
-    assert dash_ingress["metadata"]["annotations"]["nginx.ingress.kubernetes.io/app-root"] == "/dashboard"
+    assert (
+        dash_ingress["metadata"]["annotations"]["nginx.ingress.kubernetes.io/app-root"]
+        == "/dashboard"
+    )
     assert bootstrap["data"]["dash_url"] == "https://dash.k1s-dev-a.core.home.arpa/"
     assert bootstrap["data"]["docs_url"] == "https://docs.k1s-dev-a.core.home.arpa/"
     assert bootstrap["data"]["api_url"] == "https://api.k1s-dev-a.core.home.arpa/"
@@ -122,16 +124,31 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
     values = ROOT / "ops" / "helm" / "examples" / "k1s-core-ha-values.microk8s.yaml"
     docs = _helm_template(chart, values, "k1s-dev-a", "k1s-dev-a")
 
-    etcd = next(item for item in docs if item["kind"] == "StatefulSet" and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-etcd")
+    etcd = next(
+        item
+        for item in docs
+        if item["kind"] == "StatefulSet"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-etcd"
+    )
     etcd_container = etcd["spec"]["template"]["spec"]["containers"][0]
     assert etcd_container["command"] == ["etcd"]
 
-    apishim = next(item for item in docs if item["kind"] == "Deployment" and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-apishim")
+    apishim = next(
+        item
+        for item in docs
+        if item["kind"] == "Deployment"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-apishim"
+    )
     apishim_container = apishim["spec"]["template"]["spec"]["containers"][0]
     assert "exec" in apishim_container["readinessProbe"]
     assert "exec" in apishim_container["livenessProbe"]
 
-    controller = next(item for item in docs if item["kind"] == "Deployment" and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-controller")
+    controller = next(
+        item
+        for item in docs
+        if item["kind"] == "Deployment"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-controller"
+    )
     controller_container = controller["spec"]["template"]["spec"]["containers"][0]
     controller_metrics_service = next(
         item
@@ -160,6 +177,8 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
     assert controller_env["AE_RUNTIME_BACKEND"] == "cri"
     assert controller_env["AE_INFRA_BACKEND"] == "cri"
     assert controller_env["AE_CRI_ENDPOINT"] == "unix:///run/containerd/containerd.sock"
+    assert controller_env["AE_CADDY_SITES"] == ""
+    assert controller_env["AE_APISHIM_DB"] == "/var/lib/ae/apishim.db"
     assert controller_env["AE_APISHIM_PUBLIC_BASE"] == "https://api.k1s-dev-a.core.home.arpa"
     assert (
         controller_secret_env["AE_APISHIM_SESSION_SECRET"] == "apishim-session-secret"  # noqa: S105
@@ -174,7 +193,16 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
     )
     assert controller_container["readinessProbe"]["httpGet"]["port"] == "agent"
     assert controller_container["livenessProbe"]["httpGet"]["port"] == "agent"
-    assert controller_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"] == "controller"
+    assert controller_container["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "runAsGroup": 1005,
+        "runAsNonRoot": True,
+        "runAsUser": 10001,
+    }
+    assert (
+        controller_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"]
+        == "controller"
+    )
 
     etcd_metrics_service = next(
         item
@@ -184,9 +212,27 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
     )
     assert etcd_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"] == "etcd"
 
-    nats = next(item for item in docs if item["kind"] == "StatefulSet" and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-nats")
+    nats = next(
+        item
+        for item in docs
+        if item["kind"] == "StatefulSet"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-nats"
+    )
+    for statefulset, component in ((etcd, "etcd"), (nats, "nats")):
+        claim_template = statefulset["spec"]["volumeClaimTemplates"][0]
+        claim_labels = claim_template["metadata"]["labels"]
+        assert claim_labels["app.kubernetes.io/component"] == component
+        assert claim_labels["app.kubernetes.io/name"] == "k1s-core-ha"
+        assert claim_labels["app.kubernetes.io/instance"] == "k1s-dev-a"
+        assert "helm.sh/chart" not in claim_labels
+        assert "app.kubernetes.io/version" not in claim_labels
+        assert claim_template["spec"]["storageClassName"] == "microk8s-hostpath"
+        assert claim_template["spec"]["volumeMode"] == "Filesystem"
+
     nats_exporter = next(
-        container for container in nats["spec"]["template"]["spec"]["containers"] if container["name"] == "nats-exporter"
+        container
+        for container in nats["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "nats-exporter"
     )
     nats_metrics_service = next(
         item
@@ -200,12 +246,17 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
         if item["kind"] == "ServiceMonitor"
         and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-nats"
     )
-    assert nats_exporter["image"].endswith("/docker.io/natsio/prometheus-nats-exporter:0.19.2")
+    assert nats_exporter["image"].endswith(
+        "/docker.io/natsio/prometheus-nats-exporter:0.19.2"
+    )
     assert "-varz" in nats_exporter["args"]
     assert "-jsz" in nats_exporter["args"]
     assert "all" in nats_exporter["args"]
     assert nats_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"] == "nats"
-    assert nats_service_monitor["spec"]["selector"]["matchLabels"]["k1s.dev/metrics-target"] == "nats"
+    assert (
+        nats_service_monitor["spec"]["selector"]["matchLabels"]["k1s.dev/metrics-target"]
+        == "nats"
+    )
     assert nats_service_monitor["spec"]["endpoints"][0]["port"] == "metrics"
     rathole = next(
         container
@@ -232,7 +283,10 @@ def test_node_chart_renders_daemonset_against_target_release() -> None:
     assert daemonset["spec"]["template"]["spec"]["hostPID"] is True
     assert container["args"][1] == "containerd"
     assert env["AE_RUNTIME_BACKEND"] == "containerd"
-    assert env["AE_CONTROLLER_URL"] == "http://k1s-dev-a-k1s-core-ha-controller.k1s-dev-a.svc.cluster.local:9110"
+    assert (
+        env["AE_CONTROLLER_URL"]
+        == "http://k1s-dev-a-k1s-core-ha-controller.k1s-dev-a.svc.cluster.local:9110"
+    )
     assert env["AE_CRI_ENDPOINT"] == "unix:///var/snap/microk8s/common/run/containerd.sock"
     assert env["AE_CONTAINERD_ADDRESS"] == "unix:///var/snap/microk8s/common/run/containerd.sock"
     assert env["AE_CONTAINERD_NAMESPACE"] == "ae"
@@ -248,8 +302,14 @@ def test_node_chart_renders_daemonset_against_target_release() -> None:
     assert env["AE_NVIDIA_LIBRARY_DIRS"] == "/usr/local/nvidia/toolkit:/var/lib/ae/nvidia-libs"
     assert env["AE_NVIDIA_HOST_LIB_SOURCE_DIR"] == "/host-libs/x86_64-linux-gnu"
     assert env["AE_NVIDIA_LIBRARY_DIR"] == "/var/lib/ae/nvidia-libs"
-    assert env["AE_NVIDIA_CONTAINER_CLI_BIN"] == "/usr/local/nvidia/toolkit/nvidia-container-cli"
-    assert env["AE_NVIDIA_CONTAINER_RUNTIME_BIN"] == "/usr/local/nvidia/toolkit/nvidia-container-runtime"
+    assert (
+        env["AE_NVIDIA_CONTAINER_CLI_BIN"]
+        == "/usr/local/nvidia/toolkit/nvidia-container-cli"
+    )
+    assert (
+        env["AE_NVIDIA_CONTAINER_RUNTIME_BIN"]
+        == "/usr/local/nvidia/toolkit/nvidia-container-runtime"
+    )
     assert env["AE_NVIDIA_RUNTIME_CONFIG_DIR"] == "/etc/nvidia-container-runtime"
     assert env["AE_NVIDIA_SMI_BIN"] == "/var/lib/ae/nvidia-smi"
     assert mounts["containerd-sock"] == "/var/snap/microk8s/common/run"
