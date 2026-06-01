@@ -200,6 +200,13 @@ The substrate phases remain the primary dependency chain:
 | F4 | F2, F3 | Acceleration is only safe after correctness and policy guardrails exist. |
 | F5 | F2, F3 | Knowledge cells depend on locality semantics and bounded policy behavior. |
 
+The dependency order is also available as an executable assurance contract in
+[Fabric Phase Assurance](fabric-phase-assurance.html). That contract records
+phase evidence as `present` or `missing` and keeps later gates blocked until the
+earlier roadmap evidence is present. It is intentionally separate from roadmap
+status: a green phase report is supporting evidence, not a status change by
+itself.
+
 The deployment milestones are secondary and deliberately coupled to the substrate:
 
 | Milestone | Depends on | Why |
