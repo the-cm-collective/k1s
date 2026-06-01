@@ -76,6 +76,34 @@ def test_list_nodes_returns_status(tmp_path):
     assert status.status == "NotReady"
 
 
+def test_node_capability_helpers_return_f1_facts(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    store.upsert_node(
+        "node-a",
+        labels={"site": "site-a"},
+        capabilities={
+            "networkInterfaces": [
+                {
+                    "name": "enp1s0",
+                    "linkMetrics": [
+                        {
+                            "fromSite": "site-a",
+                            "toSite": "site-b",
+                            "rttP95Ms": 6.0,
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    capabilities = store.get_node_capabilities("node-a")
+    assert capabilities["network_interfaces"][0]["name"] == "enp1s0"
+    assert store.list_node_capabilities()["node-a"]["network_interfaces"][0]["name"] == "enp1s0"
+    assert store.list_fabric_link_metrics()[0]["from_site"] == "site-a"
+    assert store.list_fabric_link_metrics()[0]["rtt_p95_ms"] == 6.0
+
+
 def test_volume_attachments_roundtrip(tmp_path):
     store = SQLiteStateStore(tmp_path / "state.db")
     store.upsert_volume_attachment("app", "data", "node-a", retention="Retain")

@@ -22,9 +22,14 @@ per phase:
   phases are `present`
 - `gate.blocked_by`: dependency phases that prevent the gate from opening
 - `present` and `missing`: the specific evidence keys used for the assessment
+- `evidence`: the normalized values used to decide those keys
 
 The `F0n-nvidia-dev` subtrack is included so development-substrate evidence can
 be recorded without satisfying `F0` or `D0`.
+
+For `F1`, controller node records can be converted into evidence with
+`ae.fabric.phase_assurance.f1_evidence_from_nodes(...)`. That helper preserves
+typed node fact details while keeping `F0` as the readiness gate for `F1`.
 
 ## Evidence Keys
 
@@ -103,4 +108,3 @@ The main substrate dependency chain remains:
 This means an experimental `F3` Hyperon advisory report can be stored and
 evaluated while its gate remains blocked until typed facts and locality evidence
 are present.
-

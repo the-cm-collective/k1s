@@ -8,6 +8,10 @@ Endpoints:
 - GET /history/<app>?limit -> JSON list of recent probe evaluations (pod histories)
 - GET /inference/cells    -> JSON list of inference cells
 - GET /inference/cellsets -> JSON list of inference cellsets
+- GET /fabric/chunks      -> JSON list of content-addressed fabric chunks
+- GET /fabric/residencies -> JSON list of chunk residency records
+- GET /fabric/movements   -> JSON list of controlled chunk movement records
+- GET /fabric/advisory/traces -> JSON list of advisory decision traces
 - POST /k8s/preview      -> Render K8s YAML for a manifest (dev only; gated by AE_API_DEV_EXPORT=1)
 """
 
@@ -2308,6 +2312,24 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return
         if path_only.startswith("/inference/cellsets/"):
             self._handle_inference_cellset_single()
+            return
+        if path_only in ("/fabric/chunks", "/fabric/chunks/"):
+            self._handle_fabric_chunks_list()
+            return
+        if path_only in ("/fabric/residencies", "/fabric/residencies/"):
+            self._handle_fabric_residencies_list()
+            return
+        if path_only in ("/fabric/movements", "/fabric/movements/"):
+            self._handle_fabric_movements_list()
+            return
+        if path_only in ("/fabric/advisory/requests", "/fabric/advisory/requests/"):
+            self._handle_fabric_advisory_requests_list()
+            return
+        if path_only in ("/fabric/advisory/responses", "/fabric/advisory/responses/"):
+            self._handle_fabric_advisory_responses_list()
+            return
+        if path_only in ("/fabric/advisory/traces", "/fabric/advisory/traces/"):
+            self._handle_fabric_advisory_traces_list()
             return
         if path_only.startswith("/manifest/"):
             # Return the latest stored manifest for the app
@@ -5340,6 +5362,14 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         return _up.parse_qs(_up.urlsplit(self.path).query)
 
+    @staticmethod
+    def _bounded_int(raw: str | None, *, default: int, minimum: int = 1, maximum: int = 500) -> int:
+        try:
+            value = int(str(raw or "").strip())
+        except Exception:
+            value = int(default)
+        return max(minimum, min(maximum, value))
+
     def _parse_inference_ref(self, prefix: str) -> tuple[str, str]:
         import urllib.parse as _up
 
@@ -5368,6 +5398,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         return kind, namespace, name
 
     def _inference_read_allowed(self, key: str) -> bool:
+        import os as _os
+
+        if not _os.getenv("AE_API_READ_SCOPE"):
+            return True
+        return self._scope_allows("read", key)
+
+    def _fabric_read_allowed(self, key: str) -> bool:
         import os as _os
 
         if not _os.getenv("AE_API_READ_SCOPE"):
@@ -5427,6 +5464,94 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self._json_error(404, "inference cellset not found")
             return
         self._json_ok(cellset_record_payload(rec))
+
+    def _handle_fabric_chunks_list(self) -> None:
+        from ae.fabric.locality import chunk_record_payload
+
+        params = self._parse_query()
+        namespace = (params.get("namespace") or [None])[0] or None
+        items = [
+            chunk_record_payload(rec)
+            for rec in self.store.list_fabric_chunks(namespace=namespace)
+            if self._fabric_read_allowed(f"fabric/chunks/{rec.chunk_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_residencies_list(self) -> None:
+        from ae.fabric.locality import residency_record_payload
+
+        params = self._parse_query()
+        chunk_id = (params.get("chunk_id") or [None])[0] or None
+        node_id = (params.get("node_id") or [None])[0] or None
+        items = [
+            residency_record_payload(rec)
+            for rec in self.store.list_fabric_residencies(chunk_id=chunk_id, node_id=node_id)
+            if self._fabric_read_allowed(f"fabric/residencies/{rec.chunk_id}/{rec.node_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_movements_list(self) -> None:
+        from ae.fabric.locality import movement_record_payload
+
+        params = self._parse_query()
+        chunk_id = (params.get("chunk_id") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            movement_record_payload(rec)
+            for rec in self.store.list_fabric_movements(chunk_id=chunk_id, limit=limit)
+            if self._fabric_read_allowed(f"fabric/movements/{rec.movement_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_advisory_requests_list(self) -> None:
+        from ae.fabric.locality import advisory_request_payload
+
+        params = self._parse_query()
+        subject_type = (params.get("subject_type") or [None])[0] or None
+        subject_id = (params.get("subject_id") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            advisory_request_payload(rec)
+            for rec in self.store.list_fabric_advisory_requests(
+                subject_type=subject_type,
+                subject_id=subject_id,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/advisory/requests/{rec.request_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_advisory_responses_list(self) -> None:
+        from ae.fabric.locality import advisory_response_payload
+
+        params = self._parse_query()
+        request_id = (params.get("request_id") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            advisory_response_payload(rec)
+            for rec in self.store.list_fabric_advisory_responses(
+                request_id=request_id,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/advisory/responses/{rec.request_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_advisory_traces_list(self) -> None:
+        from ae.fabric.locality import decision_trace_payload
+
+        params = self._parse_query()
+        request_id = (params.get("request_id") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            decision_trace_payload(rec)
+            for rec in self.store.list_fabric_decision_traces(
+                request_id=request_id,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/advisory/traces/{rec.trace_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
 
     def _decode_app_segment(self, prefix: str) -> str:
         import urllib.parse as _up

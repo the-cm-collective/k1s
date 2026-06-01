@@ -251,7 +251,13 @@ class BoundaryBudgetAdmission:
         )[0]
 
     @classmethod
-    def evaluate(cls, spec: InferenceCellSpec, placements: list[StagePlacement]) -> AdmissionReport:
+    def evaluate(
+        cls,
+        spec: InferenceCellSpec,
+        placements: list[StagePlacement],
+        *,
+        link_metrics: list[LinkMetricSample] | None = None,
+    ) -> AdmissionReport:
         reasons: list[str] = []
         ordered = sorted(placements, key=lambda p: p.stage)
         if len(ordered) < 2:
@@ -300,7 +306,7 @@ class BoundaryBudgetAdmission:
         max_jitter = 0.0
         max_loss = 0.0
         required_rows: list[dict] = []
-        metrics = list(spec.link_metrics or [])
+        metrics = list(link_metrics if link_metrics is not None else spec.link_metrics or [])
         for edge in required:
             metric = cls._metric_lookup(metrics, edge.from_site, edge.to_site)
             if metric is None:
@@ -969,6 +975,29 @@ class InferenceCellController:
                 )
         return errors
 
+    def _link_metrics_for_admission(self, spec: InferenceCellSpec) -> list[LinkMetricSample]:
+        controller_metrics: list[LinkMetricSample] = []
+        list_metrics = getattr(self._store, "list_fabric_link_metrics", None)
+        if callable(list_metrics):
+            with suppress(Exception):
+                for item in list_metrics():
+                    if not isinstance(item, dict):
+                        continue
+                    controller_metrics.append(LinkMetricSample.model_validate(item))
+        manifest_metrics = list(spec.link_metrics or [])
+        if not manifest_metrics:
+            return controller_metrics
+        override_pairs = {
+            tuple(sorted((str(metric.from_site), str(metric.to_site))))
+            for metric in manifest_metrics
+        }
+        filtered = [
+            metric
+            for metric in controller_metrics
+            if tuple(sorted((str(metric.from_site), str(metric.to_site)))) not in override_pairs
+        ]
+        return [*filtered, *manifest_metrics]
+
     def _active_executor(self, manifest: InferenceCellManifest, alloc: dict) -> str:
         raw = (
             str(alloc.get("active_executor") or manifest.spec.executor.type or "ray")
@@ -1288,7 +1317,11 @@ class InferenceCellController:
                     last_error="ADMISSION_PLACEMENT_FAILED",
                 )
 
-            report = BoundaryBudgetAdmission.evaluate(manifest.spec, placements)
+            report = BoundaryBudgetAdmission.evaluate(
+                manifest.spec,
+                placements,
+                link_metrics=self._link_metrics_for_admission(manifest.spec),
+            )
             alloc["placements"] = [p.to_dict() for p in placements]
             alloc["gpu_slots"] = [
                 {"node_id": node_id, "gpu_index": gpu_idx}

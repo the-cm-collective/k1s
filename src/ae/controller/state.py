@@ -18,7 +18,7 @@ try:  # Optional Postgres backend
 except Exception:  # pragma: no cover - optional dependency
     psycopg = None  # type: ignore
 
-from ae.accelerators import normalize_capabilities
+from ae.accelerators import link_metric_inventory, normalize_capabilities
 from ae.controller.health import HealthReport
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
@@ -27,6 +27,27 @@ from ae.controller.spec import (
     InferenceCellSetManifest,
     app_key,
     app_key_for_manifest,
+)
+from ae.fabric.locality import (
+    FabricAdvisoryRequestRecord,
+    FabricAdvisoryResponseRecord,
+    FabricChunkRecord,
+    FabricDecisionTraceRecord,
+    FabricMovementRecord,
+    FabricResidencyRecord,
+    advisory_request_from_payload,
+    advisory_request_payload,
+    advisory_response_from_payload,
+    advisory_response_payload,
+    chunk_record_from_payload,
+    chunk_record_payload,
+    decision_trace_from_payload,
+    decision_trace_payload,
+    movement_record_from_payload,
+    movement_record_payload,
+    normalize_chunk_id,
+    residency_record_from_payload,
+    residency_record_payload,
 )
 from ae.ha.fencing import parse_envelope, work_operation
 from ae.resources import loader as resource_loader
@@ -860,6 +881,120 @@ class SQLiteStateStore:
                   created_at TEXT NOT NULL
                 )
                 """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_chunks (
+                  chunk_id TEXT PRIMARY KEY,
+                  namespace TEXT NOT NULL,
+                  name TEXT NOT NULL,
+                  digest TEXT NOT NULL,
+                  size_bytes INTEGER NOT NULL DEFAULT 0,
+                  source_kind TEXT NOT NULL,
+                  source_ref TEXT NOT NULL,
+                  labels_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_chunks_namespace ON fabric_chunks(namespace, name)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_residencies (
+                  chunk_id TEXT NOT NULL,
+                  node_id TEXT NOT NULL,
+                  storage_device_id TEXT NOT NULL,
+                  path TEXT NOT NULL,
+                  state TEXT NOT NULL,
+                  integrity_state TEXT NOT NULL,
+                  epoch INTEGER NOT NULL DEFAULT 0,
+                  digest TEXT NOT NULL,
+                  verified_at TEXT,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY (chunk_id, node_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_residencies_node ON fabric_residencies(node_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_movements (
+                  movement_id TEXT PRIMARY KEY,
+                  chunk_id TEXT NOT NULL,
+                  direction TEXT NOT NULL,
+                  source_node_id TEXT NOT NULL,
+                  target_node_id TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  requested_by TEXT NOT NULL,
+                  digest TEXT NOT NULL,
+                  epoch INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  started_at TEXT,
+                  finished_at TEXT,
+                  error TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_movements_chunk ON fabric_movements(chunk_id, created_at)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_advisory_requests (
+                  request_id TEXT PRIMARY KEY,
+                  subject_type TEXT NOT NULL,
+                  subject_id TEXT NOT NULL,
+                  intent TEXT NOT NULL,
+                  facts_ref TEXT NOT NULL,
+                  locality_snapshot_ref TEXT NOT NULL,
+                  max_candidates INTEGER NOT NULL DEFAULT 0,
+                  time_budget_ms INTEGER NOT NULL DEFAULT 0,
+                  policy_mode TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_advisory_requests_subject ON fabric_advisory_requests(subject_type, subject_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_advisory_responses (
+                  request_id TEXT PRIMARY KEY,
+                  provider TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  recommendation TEXT NOT NULL,
+                  confidence REAL,
+                  evidence_refs_json TEXT NOT NULL,
+                  authoritative INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_decision_traces (
+                  trace_id TEXT PRIMARY KEY,
+                  request_id TEXT NOT NULL,
+                  deterministic_baseline_json TEXT NOT NULL,
+                  advisory_response_json TEXT NOT NULL,
+                  accepted INTEGER,
+                  divergence_reason TEXT,
+                  replay_status TEXT NOT NULL,
+                  continuity_signals_json TEXT NOT NULL,
+                  coherence_signals_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_decision_traces_request ON fabric_decision_traces(request_id, created_at)"
             )
             conn.commit()
 
@@ -2380,6 +2515,529 @@ class SQLiteStateStore:
                 )
             )
         return out
+
+    @staticmethod
+    def _json_dict(raw: str | None) -> dict:
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except Exception:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _json_list(raw: str | None) -> list:
+        if not raw:
+            return []
+        try:
+            value = json.loads(raw)
+        except Exception:
+            return []
+        return value if isinstance(value, list) else []
+
+    def upsert_fabric_chunk(self, record: FabricChunkRecord) -> None:
+        payload = chunk_record_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_chunks (
+                  chunk_id, namespace, name, digest, size_bytes, source_kind,
+                  source_ref, labels_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chunk_id) DO UPDATE SET
+                  namespace = excluded.namespace,
+                  name = excluded.name,
+                  digest = excluded.digest,
+                  size_bytes = excluded.size_bytes,
+                  source_kind = excluded.source_kind,
+                  source_ref = excluded.source_ref,
+                  labels_json = excluded.labels_json,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    payload["chunk_id"],
+                    payload["namespace"],
+                    payload["name"],
+                    payload["digest"],
+                    int(payload["size_bytes"]),
+                    payload["source_kind"],
+                    payload["source_ref"],
+                    json.dumps(payload["labels"], sort_keys=True),
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_chunk_from_row(self, row) -> FabricChunkRecord | None:
+        try:
+            return chunk_record_from_payload(
+                {
+                    "chunk_id": row[0],
+                    "namespace": row[1],
+                    "name": row[2],
+                    "digest": row[3],
+                    "size_bytes": row[4],
+                    "source_kind": row[5],
+                    "source_ref": row[6],
+                    "labels": self._json_dict(row[7]),
+                    "created_at": row[8],
+                    "updated_at": row[9],
+                }
+            )
+        except ValueError:
+            return None
+
+    def get_fabric_chunk(self, chunk_id: str) -> FabricChunkRecord | None:
+        try:
+            normalized = normalize_chunk_id(chunk_id)
+        except ValueError:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT chunk_id, namespace, name, digest, size_bytes, source_kind,
+                       source_ref, labels_json, created_at, updated_at
+                FROM fabric_chunks
+                WHERE chunk_id = ?
+                """,
+                (normalized,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._fabric_chunk_from_row(row)
+
+    def list_fabric_chunks(self, namespace: str | None = None) -> list[FabricChunkRecord]:
+        with self._connect() as conn:
+            if namespace:
+                rows = conn.execute(
+                    """
+                    SELECT chunk_id, namespace, name, digest, size_bytes, source_kind,
+                           source_ref, labels_json, created_at, updated_at
+                    FROM fabric_chunks
+                    WHERE namespace = ?
+                    ORDER BY name, chunk_id
+                    """,
+                    (str(namespace),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT chunk_id, namespace, name, digest, size_bytes, source_kind,
+                           source_ref, labels_json, created_at, updated_at
+                    FROM fabric_chunks
+                    ORDER BY namespace, name, chunk_id
+                    """
+                ).fetchall()
+        return [item for row in rows if (item := self._fabric_chunk_from_row(row)) is not None]
+
+    def upsert_fabric_residency(self, record: FabricResidencyRecord) -> None:
+        payload = residency_record_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_residencies (
+                  chunk_id, node_id, storage_device_id, path, state, integrity_state,
+                  epoch, digest, verified_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chunk_id, node_id) DO UPDATE SET
+                  storage_device_id = excluded.storage_device_id,
+                  path = excluded.path,
+                  state = excluded.state,
+                  integrity_state = excluded.integrity_state,
+                  epoch = excluded.epoch,
+                  digest = excluded.digest,
+                  verified_at = excluded.verified_at,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    payload["chunk_id"],
+                    payload["node_id"],
+                    payload["storage_device_id"],
+                    payload["path"],
+                    payload["state"],
+                    payload["integrity_state"],
+                    int(payload["epoch"]),
+                    payload["digest"],
+                    payload["verified_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_residency_from_row(self, row) -> FabricResidencyRecord | None:
+        try:
+            return residency_record_from_payload(
+                {
+                    "chunk_id": row[0],
+                    "node_id": row[1],
+                    "storage_device_id": row[2],
+                    "path": row[3],
+                    "state": row[4],
+                    "integrity_state": row[5],
+                    "epoch": row[6],
+                    "digest": row[7],
+                    "verified_at": row[8],
+                    "updated_at": row[9],
+                }
+            )
+        except ValueError:
+            return None
+
+    def list_fabric_residencies(
+        self,
+        *,
+        chunk_id: str | None = None,
+        node_id: str | None = None,
+    ) -> list[FabricResidencyRecord]:
+        clauses: list[str] = []
+        params: list[str] = []
+        if chunk_id:
+            try:
+                params.append(normalize_chunk_id(chunk_id))
+            except ValueError:
+                return []
+            clauses.append("chunk_id = ?")
+        if node_id:
+            params.append(str(node_id))
+            clauses.append("node_id = ?")
+        sql = """
+            SELECT chunk_id, node_id, storage_device_id, path, state, integrity_state,
+                   epoch, digest, verified_at, updated_at
+            FROM fabric_residencies
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY node_id, chunk_id"
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [
+            item for row in rows if (item := self._fabric_residency_from_row(row)) is not None
+        ]
+
+    def upsert_fabric_movement(self, record: FabricMovementRecord) -> None:
+        payload = movement_record_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_movements (
+                  movement_id, chunk_id, direction, source_node_id, target_node_id,
+                  status, requested_by, digest, epoch, created_at, updated_at,
+                  started_at, finished_at, error
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(movement_id) DO UPDATE SET
+                  chunk_id = excluded.chunk_id,
+                  direction = excluded.direction,
+                  source_node_id = excluded.source_node_id,
+                  target_node_id = excluded.target_node_id,
+                  status = excluded.status,
+                  requested_by = excluded.requested_by,
+                  digest = excluded.digest,
+                  epoch = excluded.epoch,
+                  updated_at = excluded.updated_at,
+                  started_at = excluded.started_at,
+                  finished_at = excluded.finished_at,
+                  error = excluded.error
+                """,
+                (
+                    payload["movement_id"],
+                    payload["chunk_id"],
+                    payload["direction"],
+                    payload["source_node_id"],
+                    payload["target_node_id"],
+                    payload["status"],
+                    payload["requested_by"],
+                    payload["digest"],
+                    int(payload["epoch"]),
+                    payload["created_at"],
+                    payload["updated_at"],
+                    payload["started_at"],
+                    payload["finished_at"],
+                    payload["error"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_movement_from_row(self, row) -> FabricMovementRecord | None:
+        try:
+            return movement_record_from_payload(
+                {
+                    "movement_id": row[0],
+                    "chunk_id": row[1],
+                    "direction": row[2],
+                    "source_node_id": row[3],
+                    "target_node_id": row[4],
+                    "status": row[5],
+                    "requested_by": row[6],
+                    "digest": row[7],
+                    "epoch": row[8],
+                    "created_at": row[9],
+                    "updated_at": row[10],
+                    "started_at": row[11],
+                    "finished_at": row[12],
+                    "error": row[13],
+                }
+            )
+        except ValueError:
+            return None
+
+    def list_fabric_movements(
+        self,
+        *,
+        chunk_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricMovementRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if chunk_id:
+            try:
+                params.append(normalize_chunk_id(chunk_id))
+            except ValueError:
+                return []
+            clauses.append("chunk_id = ?")
+        sql = """
+            SELECT movement_id, chunk_id, direction, source_node_id, target_node_id,
+                   status, requested_by, digest, epoch, created_at, updated_at,
+                   started_at, finished_at, error
+            FROM fabric_movements
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [item for row in rows if (item := self._fabric_movement_from_row(row)) is not None]
+
+    def record_fabric_advisory_request(self, record: FabricAdvisoryRequestRecord) -> None:
+        payload = advisory_request_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_advisory_requests (
+                  request_id, subject_type, subject_id, intent, facts_ref,
+                  locality_snapshot_ref, max_candidates, time_budget_ms,
+                  policy_mode, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(request_id) DO UPDATE SET
+                  subject_type = excluded.subject_type,
+                  subject_id = excluded.subject_id,
+                  intent = excluded.intent,
+                  facts_ref = excluded.facts_ref,
+                  locality_snapshot_ref = excluded.locality_snapshot_ref,
+                  max_candidates = excluded.max_candidates,
+                  time_budget_ms = excluded.time_budget_ms,
+                  policy_mode = excluded.policy_mode
+                """,
+                (
+                    payload["request_id"],
+                    payload["subject_type"],
+                    payload["subject_id"],
+                    payload["intent"],
+                    payload["facts_ref"],
+                    payload["locality_snapshot_ref"],
+                    int(payload["max_candidates"]),
+                    int(payload["time_budget_ms"]),
+                    payload["policy_mode"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_advisory_request_from_row(self, row) -> FabricAdvisoryRequestRecord:
+        return advisory_request_from_payload(
+            {
+                "request_id": row[0],
+                "subject_type": row[1],
+                "subject_id": row[2],
+                "intent": row[3],
+                "facts_ref": row[4],
+                "locality_snapshot_ref": row[5],
+                "max_candidates": row[6],
+                "time_budget_ms": row[7],
+                "policy_mode": row[8],
+                "created_at": row[9],
+            }
+        )
+
+    def list_fabric_advisory_requests(
+        self,
+        *,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricAdvisoryRequestRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if subject_type:
+            clauses.append("subject_type = ?")
+            params.append(str(subject_type))
+        if subject_id:
+            clauses.append("subject_id = ?")
+            params.append(str(subject_id))
+        sql = """
+            SELECT request_id, subject_type, subject_id, intent, facts_ref,
+                   locality_snapshot_ref, max_candidates, time_budget_ms,
+                   policy_mode, created_at
+            FROM fabric_advisory_requests
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_advisory_request_from_row(row) for row in rows]
+
+    def record_fabric_advisory_response(self, record: FabricAdvisoryResponseRecord) -> None:
+        payload = advisory_response_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_advisory_responses (
+                  request_id, provider, status, recommendation, confidence,
+                  evidence_refs_json, authoritative, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(request_id) DO UPDATE SET
+                  provider = excluded.provider,
+                  status = excluded.status,
+                  recommendation = excluded.recommendation,
+                  confidence = excluded.confidence,
+                  evidence_refs_json = excluded.evidence_refs_json,
+                  authoritative = excluded.authoritative
+                """,
+                (
+                    payload["request_id"],
+                    payload["provider"],
+                    payload["status"],
+                    payload["recommendation"],
+                    payload["confidence"],
+                    json.dumps(payload["evidence_refs"], sort_keys=True),
+                    1 if payload["authoritative"] else 0,
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_advisory_response_from_row(self, row) -> FabricAdvisoryResponseRecord:
+        return advisory_response_from_payload(
+            {
+                "request_id": row[0],
+                "provider": row[1],
+                "status": row[2],
+                "recommendation": row[3],
+                "confidence": row[4],
+                "evidence_refs": self._json_list(row[5]),
+                "authoritative": bool(row[6]),
+                "created_at": row[7],
+            }
+        )
+
+    def list_fabric_advisory_responses(
+        self,
+        *,
+        request_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricAdvisoryResponseRecord]:
+        params: list[object] = []
+        sql = """
+            SELECT request_id, provider, status, recommendation, confidence,
+                   evidence_refs_json, authoritative, created_at
+            FROM fabric_advisory_responses
+        """
+        if request_id:
+            sql += " WHERE request_id = ?"
+            params.append(str(request_id))
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_advisory_response_from_row(row) for row in rows]
+
+    def record_fabric_decision_trace(self, record: FabricDecisionTraceRecord) -> None:
+        payload = decision_trace_payload(record)
+        accepted = payload["accepted"]
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_decision_traces (
+                  trace_id, request_id, deterministic_baseline_json,
+                  advisory_response_json, accepted, divergence_reason,
+                  replay_status, continuity_signals_json, coherence_signals_json,
+                  created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trace_id) DO UPDATE SET
+                  request_id = excluded.request_id,
+                  deterministic_baseline_json = excluded.deterministic_baseline_json,
+                  advisory_response_json = excluded.advisory_response_json,
+                  accepted = excluded.accepted,
+                  divergence_reason = excluded.divergence_reason,
+                  replay_status = excluded.replay_status,
+                  continuity_signals_json = excluded.continuity_signals_json,
+                  coherence_signals_json = excluded.coherence_signals_json
+                """,
+                (
+                    payload["trace_id"],
+                    payload["request_id"],
+                    json.dumps(payload["deterministic_baseline"], sort_keys=True),
+                    json.dumps(payload["advisory_response"], sort_keys=True),
+                    None if accepted is None else (1 if accepted else 0),
+                    payload["divergence_reason"],
+                    payload["replay_status"],
+                    json.dumps(payload["continuity_signals"], sort_keys=True),
+                    json.dumps(payload["coherence_signals"], sort_keys=True),
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_decision_trace_from_row(self, row) -> FabricDecisionTraceRecord:
+        accepted_raw = row[4]
+        accepted = None if accepted_raw is None else bool(accepted_raw)
+        return decision_trace_from_payload(
+            {
+                "trace_id": row[0],
+                "request_id": row[1],
+                "deterministic_baseline": self._json_dict(row[2]),
+                "advisory_response": self._json_dict(row[3]),
+                "accepted": accepted,
+                "divergence_reason": row[5],
+                "replay_status": row[6],
+                "continuity_signals": self._json_dict(row[7]),
+                "coherence_signals": self._json_dict(row[8]),
+                "created_at": row[9],
+            }
+        )
+
+    def list_fabric_decision_traces(
+        self,
+        *,
+        request_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricDecisionTraceRecord]:
+        params: list[object] = []
+        sql = """
+            SELECT trace_id, request_id, deterministic_baseline_json,
+                   advisory_response_json, accepted, divergence_reason,
+                   replay_status, continuity_signals_json, coherence_signals_json,
+                   created_at
+            FROM fabric_decision_traces
+        """
+        if request_id:
+            sql += " WHERE request_id = ?"
+            params.append(str(request_id))
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_decision_trace_from_row(row) for row in rows]
 
     def acquire_inference_gpu_leases(
         self,
@@ -4003,6 +4661,42 @@ class SQLiteStateStore:
                 seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
             status = NodeStatus(node_id=row[0], status=row[13], seen_at=seen_at)
         return node, status
+
+    def get_node_capabilities(self, node_id: str) -> dict:
+        """Return normalized capability facts for one node."""
+        rec = self.get_node(node_id)
+        if rec is None:
+            return {}
+        node, _status = rec
+        return normalize_capabilities(node.capabilities)
+
+    def list_node_capabilities(self) -> dict[str, dict]:
+        """Return normalized capability facts keyed by node id."""
+        return {
+            node.node_id: normalize_capabilities(node.capabilities)
+            for node, _status in self.list_nodes()
+        }
+
+    def list_fabric_link_metrics(self) -> list[dict]:
+        """Return controller-visible fabric link metric samples from node facts."""
+        samples: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+        for node, _status in self.list_nodes():
+            for metric in link_metric_inventory(node.capabilities):
+                item = dict(metric)
+                raw_source = str(item.get("source") or "").strip()
+                source = raw_source if raw_source and raw_source != "node-capability" else node.node_id
+                item["source"] = source
+                key = (
+                    str(item.get("from_site") or ""),
+                    str(item.get("to_site") or ""),
+                    source,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                samples.append(item)
+        return samples
 
     # --- Volume attachments --------------------------------------------
 

@@ -183,6 +183,59 @@ def test_inference_cell_execution_mode_accepts_typed_accelerators(
     assert errors == []
 
 
+def test_inference_cell_admission_uses_controller_link_metrics(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    store.upsert_node(
+        "observer-a",
+        labels={"site": "site-a"},
+        capabilities={
+            "linkMetrics": [
+                {
+                    "fromSite": "site-a",
+                    "toSite": "site-b",
+                    "rttP95Ms": 6.0,
+                    "jitterP95Ms": 0.3,
+                    "lossPct": 0.0,
+                }
+            ]
+        },
+    )
+    payload = _cell_manifest(name="controller-link-cell").model_dump(by_alias=True)
+    payload["spec"]["linkMetrics"] = []
+    manifest = InferenceCellManifest.model_validate(payload)
+
+    ctrl = InferenceCellController(store)
+    rec = ctrl.reconcile_manifest(manifest, source="test")
+
+    assert rec.phase == "READY"
+    assert rec.admission["required_edges"][0]["rtt_p95_ms"] == 6.0
+
+
+def test_inference_cell_manifest_link_metrics_override_controller_facts(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    store.upsert_node(
+        "observer-a",
+        labels={"site": "site-a"},
+        capabilities={
+            "linkMetrics": [
+                {
+                    "fromSite": "site-a",
+                    "toSite": "site-b",
+                    "rttP95Ms": 99.0,
+                    "jitterP95Ms": 0.3,
+                    "lossPct": 0.0,
+                }
+            ]
+        },
+    )
+
+    ctrl = InferenceCellController(store)
+    rec = ctrl.reconcile_manifest(_cell_manifest(name="manifest-link-cell"), source="test")
+
+    assert rec.phase == "READY"
+    assert rec.admission["required_edges"][0]["rtt_p95_ms"] == 5.0
+
+
 def test_inference_stage_manifest_sets_runtime_class(tmp_path):
     store = SQLiteStateStore(tmp_path / "state.db")
     ctrl = InferenceCellController(store)

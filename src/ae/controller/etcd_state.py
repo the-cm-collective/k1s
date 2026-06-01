@@ -12,7 +12,7 @@ from typing import Any
 
 import requests
 
-from ae.accelerators import normalize_capabilities
+from ae.accelerators import link_metric_inventory, normalize_capabilities
 from ae.controller.health import HealthReport
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
@@ -54,6 +54,27 @@ from ae.controller.state import (
     _UNSET,
     _outbox_publish_msg_id,
     _outbox_publish_subject,
+)
+from ae.fabric.locality import (
+    FabricAdvisoryRequestRecord,
+    FabricAdvisoryResponseRecord,
+    FabricChunkRecord,
+    FabricDecisionTraceRecord,
+    FabricMovementRecord,
+    FabricResidencyRecord,
+    advisory_request_from_payload,
+    advisory_request_payload,
+    advisory_response_from_payload,
+    advisory_response_payload,
+    chunk_record_from_payload,
+    chunk_record_payload,
+    decision_trace_from_payload,
+    decision_trace_payload,
+    movement_record_from_payload,
+    movement_record_payload,
+    normalize_chunk_id,
+    residency_record_from_payload,
+    residency_record_payload,
 )
 from ae.ha.fencing import parse_envelope, work_operation
 from ae.runtime import RuntimeResult
@@ -562,6 +583,24 @@ class EtcdStateStore(SQLiteStateStore):
     def _inference_node_lock_key(self, node_id: str) -> str:
         return self._k("inference", "node_locks", node_id)
 
+    def _fabric_chunk_key(self, chunk_id: str) -> str:
+        return self._k("fabric", "chunks", normalize_chunk_id(chunk_id))
+
+    def _fabric_residency_key(self, chunk_id: str, node_id: str) -> str:
+        return self._k("fabric", "residencies", normalize_chunk_id(chunk_id), str(node_id))
+
+    def _fabric_movement_key(self, movement_id: str) -> str:
+        return self._k("fabric", "movements", str(movement_id))
+
+    def _fabric_advisory_request_key(self, request_id: str) -> str:
+        return self._k("fabric", "advisory", "requests", str(request_id))
+
+    def _fabric_advisory_response_key(self, request_id: str) -> str:
+        return self._k("fabric", "advisory", "responses", str(request_id))
+
+    def _fabric_decision_trace_key(self, trace_id: str) -> str:
+        return self._k("fabric", "advisory", "traces", str(trace_id))
+
     @staticmethod
     def _json_object(value: Any) -> dict:
         return value if isinstance(value, dict) else {}
@@ -914,6 +953,172 @@ class EtcdStateStore(SQLiteStateStore):
             )
         items.sort(key=lambda item: item.created_at, reverse=True)
         return items
+
+    def upsert_fabric_chunk(self, record: FabricChunkRecord) -> None:
+        payload = chunk_record_payload(record)
+        key = self._fabric_chunk_key(payload["chunk_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def get_fabric_chunk(self, chunk_id: str) -> FabricChunkRecord | None:
+        try:
+            rec, _mod_rev = self._get_json(self._fabric_chunk_key(chunk_id))
+        except ValueError:
+            return None
+        if not rec:
+            return None
+        try:
+            return chunk_record_from_payload(rec)
+        except ValueError:
+            return None
+
+    def list_fabric_chunks(self, namespace: str | None = None) -> list[FabricChunkRecord]:
+        rows = self._list_prefix(self._k("fabric", "chunks"))
+        items: list[FabricChunkRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if namespace and str(rec.get("namespace") or "") != str(namespace):
+                continue
+            try:
+                items.append(chunk_record_from_payload(rec))
+            except ValueError:
+                continue
+        items.sort(key=lambda item: (item.namespace, item.name, item.chunk_id))
+        return items
+
+    def upsert_fabric_residency(self, record: FabricResidencyRecord) -> None:
+        payload = residency_record_payload(record)
+        self._put_json(
+            self._fabric_residency_key(payload["chunk_id"], payload["node_id"]),
+            payload,
+        )
+
+    def list_fabric_residencies(
+        self,
+        *,
+        chunk_id: str | None = None,
+        node_id: str | None = None,
+    ) -> list[FabricResidencyRecord]:
+        try:
+            wanted_chunk = normalize_chunk_id(chunk_id) if chunk_id else None
+        except ValueError:
+            return []
+        rows = self._list_prefix(self._k("fabric", "residencies"))
+        items: list[FabricResidencyRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if wanted_chunk and str(rec.get("chunk_id") or "") != wanted_chunk:
+                continue
+            if node_id and str(rec.get("node_id") or "") != str(node_id):
+                continue
+            try:
+                items.append(residency_record_from_payload(rec))
+            except ValueError:
+                continue
+        items.sort(key=lambda item: (item.node_id, item.chunk_id))
+        return items
+
+    def upsert_fabric_movement(self, record: FabricMovementRecord) -> None:
+        payload = movement_record_payload(record)
+        key = self._fabric_movement_key(payload["movement_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def list_fabric_movements(
+        self,
+        *,
+        chunk_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricMovementRecord]:
+        try:
+            wanted_chunk = normalize_chunk_id(chunk_id) if chunk_id else None
+        except ValueError:
+            return []
+        rows = self._list_prefix(self._k("fabric", "movements"))
+        items: list[FabricMovementRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if wanted_chunk and str(rec.get("chunk_id") or "") != wanted_chunk:
+                continue
+            try:
+                items.append(movement_record_from_payload(rec))
+            except ValueError:
+                continue
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def record_fabric_advisory_request(self, record: FabricAdvisoryRequestRecord) -> None:
+        payload = advisory_request_payload(record)
+        key = self._fabric_advisory_request_key(payload["request_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def list_fabric_advisory_requests(
+        self,
+        *,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricAdvisoryRequestRecord]:
+        rows = self._list_prefix(self._k("fabric", "advisory", "requests"))
+        items: list[FabricAdvisoryRequestRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if subject_type and str(rec.get("subject_type") or "") != str(subject_type):
+                continue
+            if subject_id and str(rec.get("subject_id") or "") != str(subject_id):
+                continue
+            items.append(advisory_request_from_payload(rec))
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def record_fabric_advisory_response(self, record: FabricAdvisoryResponseRecord) -> None:
+        payload = advisory_response_payload(record)
+        key = self._fabric_advisory_response_key(payload["request_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def list_fabric_advisory_responses(
+        self,
+        *,
+        request_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricAdvisoryResponseRecord]:
+        rows = self._list_prefix(self._k("fabric", "advisory", "responses"))
+        items: list[FabricAdvisoryResponseRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if request_id and str(rec.get("request_id") or "") != str(request_id):
+                continue
+            items.append(advisory_response_from_payload(rec))
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def record_fabric_decision_trace(self, record: FabricDecisionTraceRecord) -> None:
+        payload = decision_trace_payload(record)
+        key = self._fabric_decision_trace_key(payload["trace_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def list_fabric_decision_traces(
+        self,
+        *,
+        request_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricDecisionTraceRecord]:
+        rows = self._list_prefix(self._k("fabric", "advisory", "traces"))
+        items: list[FabricDecisionTraceRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if request_id and str(rec.get("request_id") or "") != str(request_id):
+                continue
+            items.append(decision_trace_from_payload(rec))
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
 
     def acquire_inference_gpu_leases(
         self,
@@ -2915,6 +3120,42 @@ class EtcdStateStore(SQLiteStateStore):
             seen = _dt_from_iso(status_rec.get("seen_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
             status = NodeStatus(node_id=node.node_id, status=str(status_rec.get("status", "")), seen_at=seen)
         return node, status
+
+    def get_node_capabilities(self, node_id: str) -> dict:
+        """Return normalized capability facts for one node."""
+        rec = self.get_node(node_id)
+        if rec is None:
+            return {}
+        node, _status = rec
+        return normalize_capabilities(node.capabilities)
+
+    def list_node_capabilities(self) -> dict[str, dict]:
+        """Return normalized capability facts keyed by node id."""
+        return {
+            node.node_id: normalize_capabilities(node.capabilities)
+            for node, _status in self.list_nodes()
+        }
+
+    def list_fabric_link_metrics(self) -> list[dict]:
+        """Return controller-visible fabric link metric samples from node facts."""
+        samples: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+        for node, _status in self.list_nodes():
+            for metric in link_metric_inventory(node.capabilities):
+                item = dict(metric)
+                raw_source = str(item.get("source") or "").strip()
+                source = raw_source if raw_source and raw_source != "node-capability" else node.node_id
+                item["source"] = source
+                key = (
+                    str(item.get("from_site") or ""),
+                    str(item.get("to_site") or ""),
+                    source,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                samples.append(item)
+        return samples
 
     # --- Volume attachments -------------------------------------------
     def upsert_volume_attachment(

@@ -86,7 +86,43 @@ def test_heartbeat_persists_typed_accelerators_and_projects_gpu_labels(tmp_path)
                             "backing_device_id": None,
                             "execution_role": "execution",
                         }
-                    ]
+                    ],
+                    "storageDevices": [
+                        {
+                            "id": "nvme0",
+                            "mediaType": "nvme",
+                            "sizeBytes": 1024,
+                            "roles": ["model-cache"],
+                        }
+                    ],
+                    "networkInterfaces": [
+                        {
+                            "name": "enp1s0",
+                            "siteId": "edge-b",
+                            "speedMbps": 25000,
+                            "roles": ["fabric"],
+                            "linkMetrics": [
+                                {
+                                    "fromSite": "edge-b",
+                                    "toSite": "edge-c",
+                                    "rttP95Ms": 5.5,
+                                }
+                            ],
+                        }
+                    ],
+                    "rdmaDevices": [
+                        {
+                            "name": "irdma0",
+                            "netDevice": "enp1s0",
+                            "rdmaProtocols": ["roce"],
+                            "pcieBusId": "0000:01:00.0",
+                        }
+                    ],
+                    "identityRoles": {
+                        "management": "spiffe://n-typed/management",
+                        "execution": "spiffe://n-typed/execution",
+                        "fabric": "spiffe://n-typed/fabric",
+                    },
                 },
                 "labels": {"site": "edge-b", "gpu.count": "99"},
             },
@@ -98,6 +134,10 @@ def test_heartbeat_persists_typed_accelerators_and_projects_gpu_labels(tmp_path)
         assert res is not None
         node, _status = res
         assert node.capabilities["accelerators"][0]["family"] == "RTX 8000"
+        assert node.capabilities["storage_devices"][0]["medium"] == "nvme"
+        assert node.capabilities["network_interfaces"][0]["link_metrics"][0]["to_site"] == "edge-c"
+        assert node.capabilities["rdma_devices"][0]["pcie"]["bus_id"] == "0000:01:00.0"
+        assert node.capabilities["identity_roles"]["fabric"]["id"] == "spiffe://n-typed/fabric"
         assert node.labels["site"] == "edge-b"
         assert node.labels["gpu.present"] == "true"
         assert node.labels["gpu.count"] == "1"
