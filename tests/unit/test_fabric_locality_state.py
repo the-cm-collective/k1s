@@ -11,9 +11,17 @@ from ae.fabric.locality import (
     FabricAdvisoryRequestRecord,
     FabricAdvisoryResponseRecord,
     FabricChunkRecord,
+    FabricCognitiveSignalRecord,
+    FabricDasCellBundleRecord,
+    FabricDasQueryTraceRecord,
+    FabricDasReplicationRecord,
     FabricDecisionTraceRecord,
+    FabricLandingZoneRecord,
     FabricMovementRecord,
     FabricResidencyRecord,
+    FabricTransferCapabilityRecord,
+    FabricTransferLeaseRecord,
+    FabricTransportAttemptRecord,
 )
 from ae.observability.http_api import _ApiHandler
 
@@ -115,6 +123,130 @@ def _seed_advisory(store: SQLiteStateStore) -> None:
     )
 
 
+def _seed_f4(store: SQLiteStateStore) -> None:
+    now = _now()
+    store.upsert_fabric_transfer_capability(
+        FabricTransferCapabilityRecord(
+            capability_id="cap-roce-node-a-node-b",
+            node_id="node-a",
+            peer_node_id="node-b",
+            transport="roce",
+            status="negotiated",
+            priority=100,
+            capabilities={"rnic": "e810", "path": "development"},
+            fallback_transport="lan_direct",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.upsert_fabric_landing_zone(
+        FabricLandingZoneRecord(
+            zone_id="zone-node-b-models",
+            node_id="node-b",
+            path="/srv/storage/landing/models",
+            capacity_bytes=10_000,
+            reserved_bytes=4096,
+            safety_state="ready",
+            cleanup_policy="lease_expiry",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.upsert_fabric_transfer_lease(
+        FabricTransferLeaseRecord(
+            lease_id="lease-qwen-0",
+            chunk_id=CHUNK_ID,
+            source_node_id="node-a",
+            target_node_id="node-b",
+            transport="roce",
+            status="active",
+            holder="controller",
+            landing_zone_id="zone-node-b-models",
+            digest=CHUNK_ID,
+            epoch=7,
+            expires_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.record_fabric_transport_attempt(
+        FabricTransportAttemptRecord(
+            attempt_id="attempt-qwen-0",
+            lease_id="lease-qwen-0",
+            chunk_id=CHUNK_ID,
+            transport="roce",
+            status="fallback",
+            fallback_used=True,
+            fallback_transport="lan_direct",
+            error="roce path not enabled in development lab",
+            started_at=now,
+            finished_at=now,
+            created_at=now,
+        )
+    )
+
+
+def _seed_f5(store: SQLiteStateStore) -> None:
+    now = _now()
+    store.upsert_fabric_das_cell_bundle(
+        FabricDasCellBundleRecord(
+            bundle_id="das-site-a-runtime",
+            site_id="site-a",
+            cell_id="runtime",
+            version="2026-06-01",
+            storage_ref="/srv/storage/k1s/ai-fabric-lab/das",
+            facts_ref="das://site-a/runtime/facts.jsonl",
+            status="ready",
+            labels={"lab": "ai-fabric"},
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.record_fabric_das_query_trace(
+        FabricDasQueryTraceRecord(
+            trace_id="das-query-0",
+            bundle_id="das-site-a-runtime",
+            site_id="site-a",
+            query_id="query-0",
+            query_kind="advisory",
+            local_first=True,
+            warmed_refs=["das://site-a/runtime/facts.jsonl"],
+            promoted_refs=["qdrant://ai_fabric_corpus/k1s"],
+            fallback_sites=[],
+            result_ref="trace://das-query-0",
+            created_at=now,
+        )
+    )
+    store.record_fabric_das_replication(
+        FabricDasReplicationRecord(
+            replication_id="replicate-das-site-a-site-b",
+            bundle_id="das-site-a-runtime",
+            source_site_id="site-a",
+            target_site_id="site-b",
+            mode="controlled",
+            status="planned",
+            approved_by="operator",
+            reason="warm secondary DAS cell",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.record_fabric_cognitive_signal(
+        FabricCognitiveSignalRecord(
+            signal_id="cog-signal-0",
+            subject_type="das-cell",
+            subject_id="das-site-a-runtime",
+            signal_kind="continuity",
+            continuity_ref="trace://das-query-0",
+            coherence_score=0.91,
+            overload_state="nominal",
+            review_gate="operator_review",
+            advisory_trace_id="trace-qwen-0",
+            created_at=now,
+        )
+    )
+
+
 def _make_handler(path: str, store: SQLiteStateStore) -> tuple[_ApiHandler, list[int]]:
     handler = object.__new__(_ApiHandler)
     statuses: list[int] = []
@@ -159,6 +291,38 @@ def test_sqlite_fabric_advisory_roundtrip(tmp_path: Path) -> None:
     assert traces[0].divergence_reason == "pending_operator_review"
 
 
+def test_sqlite_fabric_f4_roundtrip(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    _seed_f4(store)
+
+    capabilities = store.list_fabric_transfer_capabilities(node_id="node-a")
+    leases = store.list_fabric_transfer_leases(chunk_id=CHUNK_ID)
+    zones = store.list_fabric_landing_zones(node_id="node-b")
+    attempts = store.list_fabric_transport_attempts(lease_id="lease-qwen-0")
+
+    assert capabilities[0].transport == "roce"
+    assert capabilities[0].fallback_transport == "lan_direct"
+    assert leases[0].landing_zone_id == "zone-node-b-models"
+    assert zones[0].safety_state == "ready"
+    assert attempts[0].fallback_used is True
+
+
+def test_sqlite_fabric_f5_roundtrip(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    _seed_f5(store)
+
+    bundles = store.list_fabric_das_cell_bundles(site_id="site-a")
+    traces = store.list_fabric_das_query_traces(bundle_id="das-site-a-runtime")
+    replications = store.list_fabric_das_replications(bundle_id="das-site-a-runtime")
+    signals = store.list_fabric_cognitive_signals(subject_type="das-cell")
+
+    assert bundles[0].facts_ref == "das://site-a/runtime/facts.jsonl"
+    assert traces[0].local_first is True
+    assert traces[0].promoted_refs == ["qdrant://ai_fabric_corpus/k1s"]
+    assert replications[0].approved_by == "operator"
+    assert signals[0].review_gate == "operator_review"
+
+
 def test_fabric_read_api_lists_locality_and_advisory_payloads(tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "state.db")
     _seed_locality(store)
@@ -180,3 +344,29 @@ def test_fabric_read_api_lists_locality_and_advisory_payloads(tmp_path: Path) ->
     assert chunks["items"][0]["labels"]["lane"] == "coordinator"
     assert traces["items"][0]["trace_id"] == "trace-qwen-0"
     assert traces["items"][0]["replay_status"] == "recorded"
+
+
+def test_fabric_read_api_lists_f4_and_f5_payloads(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    _seed_f4(store)
+    _seed_f5(store)
+
+    leases_handler, lease_statuses = _make_handler(
+        "/fabric/transfer-leases?chunk_id=" + CHUNK_ID,
+        store,
+    )
+    _ApiHandler._handle_fabric_transfer_leases_list(leases_handler)  # type: ignore[arg-type]
+    das_handler, das_statuses = _make_handler(
+        "/fabric/das-query-traces?bundle_id=das-site-a-runtime",
+        store,
+    )
+    _ApiHandler._handle_fabric_das_query_traces_list(das_handler)  # type: ignore[arg-type]
+
+    leases = _payload(leases_handler)
+    traces = _payload(das_handler)
+    assert lease_statuses == [200]
+    assert das_statuses == [200]
+    assert leases["items"][0]["lease_id"] == "lease-qwen-0"
+    assert leases["items"][0]["transport"] == "roce"
+    assert traces["items"][0]["local_first"] is True
+    assert traces["items"][0]["warmed_refs"] == ["das://site-a/runtime/facts.jsonl"]

@@ -7,7 +7,7 @@ import os
 import random
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -23,9 +23,10 @@ from ae.controller.spec import (
     app_key_for_manifest,
 )
 from ae.controller.state import (
-    AuthorityObjectEntry,
+    _UNSET,
     AppEvent,
     AppStatus,
+    AuthorityObjectEntry,
     EdgeIngressPolicyRecord,
     EdgeIngressRouteRecord,
     FabricSessionRecord,
@@ -45,13 +46,12 @@ from ae.controller.state import (
     ServiceRecord,
     SiteIngressEndpoint,
     SiteIngressListItem,
+    SQLiteStateStore,
     VolumeAttachment,
-    WorkloadMetricsSnapshot,
     WorkLedgerEntry,
+    WorkloadMetricsSnapshot,
     WorkOutboxEntry,
     WorkQueueLease,
-    SQLiteStateStore,
-    _UNSET,
     _outbox_publish_msg_id,
     _outbox_publish_subject,
 )
@@ -59,22 +59,46 @@ from ae.fabric.locality import (
     FabricAdvisoryRequestRecord,
     FabricAdvisoryResponseRecord,
     FabricChunkRecord,
+    FabricCognitiveSignalRecord,
+    FabricDasCellBundleRecord,
+    FabricDasQueryTraceRecord,
+    FabricDasReplicationRecord,
     FabricDecisionTraceRecord,
+    FabricLandingZoneRecord,
     FabricMovementRecord,
     FabricResidencyRecord,
+    FabricTransferCapabilityRecord,
+    FabricTransferLeaseRecord,
+    FabricTransportAttemptRecord,
     advisory_request_from_payload,
     advisory_request_payload,
     advisory_response_from_payload,
     advisory_response_payload,
     chunk_record_from_payload,
     chunk_record_payload,
+    cognitive_signal_from_payload,
+    cognitive_signal_payload,
+    das_cell_bundle_from_payload,
+    das_cell_bundle_payload,
+    das_query_trace_from_payload,
+    das_query_trace_payload,
+    das_replication_from_payload,
+    das_replication_payload,
     decision_trace_from_payload,
     decision_trace_payload,
+    landing_zone_from_payload,
+    landing_zone_payload,
     movement_record_from_payload,
     movement_record_payload,
     normalize_chunk_id,
     residency_record_from_payload,
     residency_record_payload,
+    transfer_capability_from_payload,
+    transfer_capability_payload,
+    transfer_lease_from_payload,
+    transfer_lease_payload,
+    transport_attempt_from_payload,
+    transport_attempt_payload,
 )
 from ae.ha.fencing import parse_envelope, work_operation
 from ae.runtime import RuntimeResult
@@ -601,6 +625,30 @@ class EtcdStateStore(SQLiteStateStore):
     def _fabric_decision_trace_key(self, trace_id: str) -> str:
         return self._k("fabric", "advisory", "traces", str(trace_id))
 
+    def _fabric_transfer_capability_key(self, capability_id: str) -> str:
+        return self._k("fabric", "transfer_capabilities", str(capability_id))
+
+    def _fabric_transfer_lease_key(self, lease_id: str) -> str:
+        return self._k("fabric", "transfer_leases", str(lease_id))
+
+    def _fabric_landing_zone_key(self, zone_id: str) -> str:
+        return self._k("fabric", "landing_zones", str(zone_id))
+
+    def _fabric_transport_attempt_key(self, attempt_id: str) -> str:
+        return self._k("fabric", "transport_attempts", str(attempt_id))
+
+    def _fabric_das_cell_bundle_key(self, bundle_id: str) -> str:
+        return self._k("fabric", "das", "cell_bundles", str(bundle_id))
+
+    def _fabric_das_query_trace_key(self, trace_id: str) -> str:
+        return self._k("fabric", "das", "query_traces", str(trace_id))
+
+    def _fabric_das_replication_key(self, replication_id: str) -> str:
+        return self._k("fabric", "das", "replications", str(replication_id))
+
+    def _fabric_cognitive_signal_key(self, signal_id: str) -> str:
+        return self._k("fabric", "cognitive", "signals", str(signal_id))
+
     @staticmethod
     def _json_object(value: Any) -> dict:
         return value if isinstance(value, dict) else {}
@@ -1117,6 +1165,215 @@ class EtcdStateStore(SQLiteStateStore):
             if request_id and str(rec.get("request_id") or "") != str(request_id):
                 continue
             items.append(decision_trace_from_payload(rec))
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def upsert_fabric_transfer_capability(
+        self, record: FabricTransferCapabilityRecord
+    ) -> None:
+        payload = transfer_capability_payload(record)
+        key = self._fabric_transfer_capability_key(payload["capability_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def list_fabric_transfer_capabilities(
+        self,
+        *,
+        node_id: str | None = None,
+        peer_node_id: str | None = None,
+        transport: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricTransferCapabilityRecord]:
+        rows = self._list_prefix(self._k("fabric", "transfer_capabilities"))
+        items: list[FabricTransferCapabilityRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if node_id and str(rec.get("node_id") or "") != str(node_id):
+                continue
+            if peer_node_id and str(rec.get("peer_node_id") or "") != str(peer_node_id):
+                continue
+            if transport and str(rec.get("transport") or "") != str(transport):
+                continue
+            items.append(transfer_capability_from_payload(rec))
+        items.sort(key=lambda item: (item.priority, item.updated_at), reverse=True)
+        return items[: max(1, int(limit))]
+
+    def upsert_fabric_transfer_lease(self, record: FabricTransferLeaseRecord) -> None:
+        payload = transfer_lease_payload(record)
+        key = self._fabric_transfer_lease_key(payload["lease_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def list_fabric_transfer_leases(
+        self,
+        *,
+        chunk_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricTransferLeaseRecord]:
+        try:
+            wanted_chunk = normalize_chunk_id(chunk_id) if chunk_id else None
+        except ValueError:
+            return []
+        rows = self._list_prefix(self._k("fabric", "transfer_leases"))
+        items: list[FabricTransferLeaseRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if wanted_chunk and str(rec.get("chunk_id") or "") != wanted_chunk:
+                continue
+            if status and str(rec.get("status") or "") != str(status):
+                continue
+            try:
+                items.append(transfer_lease_from_payload(rec))
+            except ValueError:
+                continue
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def upsert_fabric_landing_zone(self, record: FabricLandingZoneRecord) -> None:
+        payload = landing_zone_payload(record)
+        key = self._fabric_landing_zone_key(payload["zone_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def list_fabric_landing_zones(
+        self,
+        *,
+        node_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricLandingZoneRecord]:
+        rows = self._list_prefix(self._k("fabric", "landing_zones"))
+        items: list[FabricLandingZoneRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if node_id and str(rec.get("node_id") or "") != str(node_id):
+                continue
+            items.append(landing_zone_from_payload(rec))
+        items.sort(key=lambda item: item.updated_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def record_fabric_transport_attempt(self, record: FabricTransportAttemptRecord) -> None:
+        payload = transport_attempt_payload(record)
+        self._put_json(self._fabric_transport_attempt_key(payload["attempt_id"]), payload)
+
+    def list_fabric_transport_attempts(
+        self,
+        *,
+        lease_id: str | None = None,
+        chunk_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricTransportAttemptRecord]:
+        try:
+            wanted_chunk = normalize_chunk_id(chunk_id) if chunk_id else None
+        except ValueError:
+            return []
+        rows = self._list_prefix(self._k("fabric", "transport_attempts"))
+        items: list[FabricTransportAttemptRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if lease_id and str(rec.get("lease_id") or "") != str(lease_id):
+                continue
+            if wanted_chunk and str(rec.get("chunk_id") or "") != wanted_chunk:
+                continue
+            try:
+                items.append(transport_attempt_from_payload(rec))
+            except ValueError:
+                continue
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def upsert_fabric_das_cell_bundle(self, record: FabricDasCellBundleRecord) -> None:
+        payload = das_cell_bundle_payload(record)
+        key = self._fabric_das_cell_bundle_key(payload["bundle_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def list_fabric_das_cell_bundles(
+        self,
+        *,
+        site_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricDasCellBundleRecord]:
+        rows = self._list_prefix(self._k("fabric", "das", "cell_bundles"))
+        items: list[FabricDasCellBundleRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if site_id and str(rec.get("site_id") or "") != str(site_id):
+                continue
+            items.append(das_cell_bundle_from_payload(rec))
+        items.sort(key=lambda item: (item.site_id, item.cell_id, item.version))
+        return items[: max(1, int(limit))]
+
+    def record_fabric_das_query_trace(self, record: FabricDasQueryTraceRecord) -> None:
+        payload = das_query_trace_payload(record)
+        self._put_json(self._fabric_das_query_trace_key(payload["trace_id"]), payload)
+
+    def list_fabric_das_query_traces(
+        self,
+        *,
+        bundle_id: str | None = None,
+        site_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricDasQueryTraceRecord]:
+        rows = self._list_prefix(self._k("fabric", "das", "query_traces"))
+        items: list[FabricDasQueryTraceRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if bundle_id and str(rec.get("bundle_id") or "") != str(bundle_id):
+                continue
+            if site_id and str(rec.get("site_id") or "") != str(site_id):
+                continue
+            items.append(das_query_trace_from_payload(rec))
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def record_fabric_das_replication(self, record: FabricDasReplicationRecord) -> None:
+        payload = das_replication_payload(record)
+        key = self._fabric_das_replication_key(payload["replication_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        self._put_json(key, payload)
+
+    def list_fabric_das_replications(
+        self,
+        *,
+        bundle_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricDasReplicationRecord]:
+        rows = self._list_prefix(self._k("fabric", "das", "replications"))
+        items: list[FabricDasReplicationRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if bundle_id and str(rec.get("bundle_id") or "") != str(bundle_id):
+                continue
+            if status and str(rec.get("status") or "") != str(status):
+                continue
+            items.append(das_replication_from_payload(rec))
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def record_fabric_cognitive_signal(self, record: FabricCognitiveSignalRecord) -> None:
+        payload = cognitive_signal_payload(record)
+        self._put_json(self._fabric_cognitive_signal_key(payload["signal_id"]), payload)
+
+    def list_fabric_cognitive_signals(
+        self,
+        *,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricCognitiveSignalRecord]:
+        rows = self._list_prefix(self._k("fabric", "cognitive", "signals"))
+        items: list[FabricCognitiveSignalRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if subject_type and str(rec.get("subject_type") or "") != str(subject_type):
+                continue
+            if subject_id and str(rec.get("subject_id") or "") != str(subject_id):
+                continue
+            items.append(cognitive_signal_from_payload(rec))
         items.sort(key=lambda item: item.created_at, reverse=True)
         return items[: max(1, int(limit))]
 

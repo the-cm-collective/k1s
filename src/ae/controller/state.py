@@ -32,22 +32,46 @@ from ae.fabric.locality import (
     FabricAdvisoryRequestRecord,
     FabricAdvisoryResponseRecord,
     FabricChunkRecord,
+    FabricCognitiveSignalRecord,
+    FabricDasCellBundleRecord,
+    FabricDasQueryTraceRecord,
+    FabricDasReplicationRecord,
     FabricDecisionTraceRecord,
+    FabricLandingZoneRecord,
     FabricMovementRecord,
     FabricResidencyRecord,
+    FabricTransferCapabilityRecord,
+    FabricTransferLeaseRecord,
+    FabricTransportAttemptRecord,
     advisory_request_from_payload,
     advisory_request_payload,
     advisory_response_from_payload,
     advisory_response_payload,
     chunk_record_from_payload,
     chunk_record_payload,
+    cognitive_signal_from_payload,
+    cognitive_signal_payload,
+    das_cell_bundle_from_payload,
+    das_cell_bundle_payload,
+    das_query_trace_from_payload,
+    das_query_trace_payload,
+    das_replication_from_payload,
+    das_replication_payload,
     decision_trace_from_payload,
     decision_trace_payload,
+    landing_zone_from_payload,
+    landing_zone_payload,
     movement_record_from_payload,
     movement_record_payload,
     normalize_chunk_id,
     residency_record_from_payload,
     residency_record_payload,
+    transfer_capability_from_payload,
+    transfer_capability_payload,
+    transfer_lease_from_payload,
+    transfer_lease_payload,
+    transport_attempt_from_payload,
+    transport_attempt_payload,
 )
 from ae.ha.fencing import parse_envelope, work_operation
 from ae.resources import loader as resource_loader
@@ -995,6 +1019,162 @@ class SQLiteStateStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_fabric_decision_traces_request ON fabric_decision_traces(request_id, created_at)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_transfer_capabilities (
+                  capability_id TEXT PRIMARY KEY,
+                  node_id TEXT NOT NULL,
+                  peer_node_id TEXT NOT NULL,
+                  transport TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  priority INTEGER NOT NULL DEFAULT 0,
+                  capabilities_json TEXT NOT NULL,
+                  fallback_transport TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_transfer_capabilities_node ON fabric_transfer_capabilities(node_id, peer_node_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_transfer_leases (
+                  lease_id TEXT PRIMARY KEY,
+                  chunk_id TEXT NOT NULL,
+                  source_node_id TEXT NOT NULL,
+                  target_node_id TEXT NOT NULL,
+                  transport TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  holder TEXT NOT NULL,
+                  landing_zone_id TEXT NOT NULL,
+                  digest TEXT NOT NULL,
+                  epoch INTEGER NOT NULL DEFAULT 0,
+                  expires_at TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_transfer_leases_chunk ON fabric_transfer_leases(chunk_id, created_at)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_landing_zones (
+                  zone_id TEXT PRIMARY KEY,
+                  node_id TEXT NOT NULL,
+                  path TEXT NOT NULL,
+                  capacity_bytes INTEGER NOT NULL DEFAULT 0,
+                  reserved_bytes INTEGER NOT NULL DEFAULT 0,
+                  safety_state TEXT NOT NULL,
+                  cleanup_policy TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_landing_zones_node ON fabric_landing_zones(node_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_transport_attempts (
+                  attempt_id TEXT PRIMARY KEY,
+                  lease_id TEXT NOT NULL,
+                  chunk_id TEXT NOT NULL,
+                  transport TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  fallback_used INTEGER NOT NULL DEFAULT 0,
+                  fallback_transport TEXT NOT NULL,
+                  error TEXT,
+                  started_at TEXT,
+                  finished_at TEXT,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_transport_attempts_lease ON fabric_transport_attempts(lease_id, created_at)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_das_cell_bundles (
+                  bundle_id TEXT PRIMARY KEY,
+                  site_id TEXT NOT NULL,
+                  cell_id TEXT NOT NULL,
+                  version TEXT NOT NULL,
+                  storage_ref TEXT NOT NULL,
+                  facts_ref TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  labels_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_das_cell_bundles_site ON fabric_das_cell_bundles(site_id, cell_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_das_query_traces (
+                  trace_id TEXT PRIMARY KEY,
+                  bundle_id TEXT NOT NULL,
+                  site_id TEXT NOT NULL,
+                  query_id TEXT NOT NULL,
+                  query_kind TEXT NOT NULL,
+                  local_first INTEGER NOT NULL DEFAULT 0,
+                  warmed_refs_json TEXT NOT NULL,
+                  promoted_refs_json TEXT NOT NULL,
+                  fallback_sites_json TEXT NOT NULL,
+                  result_ref TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_das_query_traces_bundle ON fabric_das_query_traces(bundle_id, created_at)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_das_replications (
+                  replication_id TEXT PRIMARY KEY,
+                  bundle_id TEXT NOT NULL,
+                  source_site_id TEXT NOT NULL,
+                  target_site_id TEXT NOT NULL,
+                  mode TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  approved_by TEXT NOT NULL,
+                  reason TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_das_replications_bundle ON fabric_das_replications(bundle_id, created_at)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_cognitive_signals (
+                  signal_id TEXT PRIMARY KEY,
+                  subject_type TEXT NOT NULL,
+                  subject_id TEXT NOT NULL,
+                  signal_kind TEXT NOT NULL,
+                  continuity_ref TEXT NOT NULL,
+                  coherence_score REAL,
+                  overload_state TEXT NOT NULL,
+                  review_gate TEXT NOT NULL,
+                  advisory_trace_id TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_cognitive_signals_subject ON fabric_cognitive_signals(subject_type, subject_id, created_at)"
             )
             conn.commit()
 
@@ -3038,6 +3218,666 @@ class SQLiteStateStore:
         with self._connect() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._fabric_decision_trace_from_row(row) for row in rows]
+
+    def upsert_fabric_transfer_capability(
+        self, record: FabricTransferCapabilityRecord
+    ) -> None:
+        payload = transfer_capability_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_transfer_capabilities (
+                  capability_id, node_id, peer_node_id, transport, status, priority,
+                  capabilities_json, fallback_transport, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(capability_id) DO UPDATE SET
+                  node_id = excluded.node_id,
+                  peer_node_id = excluded.peer_node_id,
+                  transport = excluded.transport,
+                  status = excluded.status,
+                  priority = excluded.priority,
+                  capabilities_json = excluded.capabilities_json,
+                  fallback_transport = excluded.fallback_transport,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    payload["capability_id"],
+                    payload["node_id"],
+                    payload["peer_node_id"],
+                    payload["transport"],
+                    payload["status"],
+                    int(payload["priority"]),
+                    json.dumps(payload["capabilities"], sort_keys=True),
+                    payload["fallback_transport"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_transfer_capability_from_row(self, row) -> FabricTransferCapabilityRecord:
+        return transfer_capability_from_payload(
+            {
+                "capability_id": row[0],
+                "node_id": row[1],
+                "peer_node_id": row[2],
+                "transport": row[3],
+                "status": row[4],
+                "priority": row[5],
+                "capabilities": self._json_dict(row[6]),
+                "fallback_transport": row[7],
+                "created_at": row[8],
+                "updated_at": row[9],
+            }
+        )
+
+    def list_fabric_transfer_capabilities(
+        self,
+        *,
+        node_id: str | None = None,
+        peer_node_id: str | None = None,
+        transport: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricTransferCapabilityRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if node_id:
+            clauses.append("node_id = ?")
+            params.append(str(node_id))
+        if peer_node_id:
+            clauses.append("peer_node_id = ?")
+            params.append(str(peer_node_id))
+        if transport:
+            clauses.append("transport = ?")
+            params.append(str(transport))
+        sql = """
+            SELECT capability_id, node_id, peer_node_id, transport, status, priority,
+                   capabilities_json, fallback_transport, created_at, updated_at
+            FROM fabric_transfer_capabilities
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY priority DESC, updated_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_transfer_capability_from_row(row) for row in rows]
+
+    def upsert_fabric_transfer_lease(self, record: FabricTransferLeaseRecord) -> None:
+        payload = transfer_lease_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_transfer_leases (
+                  lease_id, chunk_id, source_node_id, target_node_id, transport,
+                  status, holder, landing_zone_id, digest, epoch, expires_at,
+                  created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(lease_id) DO UPDATE SET
+                  chunk_id = excluded.chunk_id,
+                  source_node_id = excluded.source_node_id,
+                  target_node_id = excluded.target_node_id,
+                  transport = excluded.transport,
+                  status = excluded.status,
+                  holder = excluded.holder,
+                  landing_zone_id = excluded.landing_zone_id,
+                  digest = excluded.digest,
+                  epoch = excluded.epoch,
+                  expires_at = excluded.expires_at,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    payload["lease_id"],
+                    payload["chunk_id"],
+                    payload["source_node_id"],
+                    payload["target_node_id"],
+                    payload["transport"],
+                    payload["status"],
+                    payload["holder"],
+                    payload["landing_zone_id"],
+                    payload["digest"],
+                    int(payload["epoch"]),
+                    payload["expires_at"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_transfer_lease_from_row(self, row) -> FabricTransferLeaseRecord | None:
+        try:
+            return transfer_lease_from_payload(
+                {
+                    "lease_id": row[0],
+                    "chunk_id": row[1],
+                    "source_node_id": row[2],
+                    "target_node_id": row[3],
+                    "transport": row[4],
+                    "status": row[5],
+                    "holder": row[6],
+                    "landing_zone_id": row[7],
+                    "digest": row[8],
+                    "epoch": row[9],
+                    "expires_at": row[10],
+                    "created_at": row[11],
+                    "updated_at": row[12],
+                }
+            )
+        except ValueError:
+            return None
+
+    def list_fabric_transfer_leases(
+        self,
+        *,
+        chunk_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricTransferLeaseRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if chunk_id:
+            try:
+                params.append(normalize_chunk_id(chunk_id))
+            except ValueError:
+                return []
+            clauses.append("chunk_id = ?")
+        if status:
+            clauses.append("status = ?")
+            params.append(str(status))
+        sql = """
+            SELECT lease_id, chunk_id, source_node_id, target_node_id, transport,
+                   status, holder, landing_zone_id, digest, epoch, expires_at,
+                   created_at, updated_at
+            FROM fabric_transfer_leases
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [
+            item for row in rows if (item := self._fabric_transfer_lease_from_row(row)) is not None
+        ]
+
+    def upsert_fabric_landing_zone(self, record: FabricLandingZoneRecord) -> None:
+        payload = landing_zone_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_landing_zones (
+                  zone_id, node_id, path, capacity_bytes, reserved_bytes,
+                  safety_state, cleanup_policy, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(zone_id) DO UPDATE SET
+                  node_id = excluded.node_id,
+                  path = excluded.path,
+                  capacity_bytes = excluded.capacity_bytes,
+                  reserved_bytes = excluded.reserved_bytes,
+                  safety_state = excluded.safety_state,
+                  cleanup_policy = excluded.cleanup_policy,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    payload["zone_id"],
+                    payload["node_id"],
+                    payload["path"],
+                    int(payload["capacity_bytes"]),
+                    int(payload["reserved_bytes"]),
+                    payload["safety_state"],
+                    payload["cleanup_policy"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_landing_zone_from_row(self, row) -> FabricLandingZoneRecord:
+        return landing_zone_from_payload(
+            {
+                "zone_id": row[0],
+                "node_id": row[1],
+                "path": row[2],
+                "capacity_bytes": row[3],
+                "reserved_bytes": row[4],
+                "safety_state": row[5],
+                "cleanup_policy": row[6],
+                "created_at": row[7],
+                "updated_at": row[8],
+            }
+        )
+
+    def list_fabric_landing_zones(
+        self,
+        *,
+        node_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricLandingZoneRecord]:
+        params: list[object] = []
+        sql = """
+            SELECT zone_id, node_id, path, capacity_bytes, reserved_bytes,
+                   safety_state, cleanup_policy, created_at, updated_at
+            FROM fabric_landing_zones
+        """
+        if node_id:
+            sql += " WHERE node_id = ?"
+            params.append(str(node_id))
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_landing_zone_from_row(row) for row in rows]
+
+    def record_fabric_transport_attempt(self, record: FabricTransportAttemptRecord) -> None:
+        payload = transport_attempt_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_transport_attempts (
+                  attempt_id, lease_id, chunk_id, transport, status, fallback_used,
+                  fallback_transport, error, started_at, finished_at, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(attempt_id) DO UPDATE SET
+                  lease_id = excluded.lease_id,
+                  chunk_id = excluded.chunk_id,
+                  transport = excluded.transport,
+                  status = excluded.status,
+                  fallback_used = excluded.fallback_used,
+                  fallback_transport = excluded.fallback_transport,
+                  error = excluded.error,
+                  started_at = excluded.started_at,
+                  finished_at = excluded.finished_at
+                """,
+                (
+                    payload["attempt_id"],
+                    payload["lease_id"],
+                    payload["chunk_id"],
+                    payload["transport"],
+                    payload["status"],
+                    1 if payload["fallback_used"] else 0,
+                    payload["fallback_transport"],
+                    payload["error"],
+                    payload["started_at"],
+                    payload["finished_at"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_transport_attempt_from_row(self, row) -> FabricTransportAttemptRecord | None:
+        try:
+            return transport_attempt_from_payload(
+                {
+                    "attempt_id": row[0],
+                    "lease_id": row[1],
+                    "chunk_id": row[2],
+                    "transport": row[3],
+                    "status": row[4],
+                    "fallback_used": bool(row[5]),
+                    "fallback_transport": row[6],
+                    "error": row[7],
+                    "started_at": row[8],
+                    "finished_at": row[9],
+                    "created_at": row[10],
+                }
+            )
+        except ValueError:
+            return None
+
+    def list_fabric_transport_attempts(
+        self,
+        *,
+        lease_id: str | None = None,
+        chunk_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricTransportAttemptRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if lease_id:
+            clauses.append("lease_id = ?")
+            params.append(str(lease_id))
+        if chunk_id:
+            try:
+                params.append(normalize_chunk_id(chunk_id))
+            except ValueError:
+                return []
+            clauses.append("chunk_id = ?")
+        sql = """
+            SELECT attempt_id, lease_id, chunk_id, transport, status, fallback_used,
+                   fallback_transport, error, started_at, finished_at, created_at
+            FROM fabric_transport_attempts
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [
+            item
+            for row in rows
+            if (item := self._fabric_transport_attempt_from_row(row)) is not None
+        ]
+
+    def upsert_fabric_das_cell_bundle(self, record: FabricDasCellBundleRecord) -> None:
+        payload = das_cell_bundle_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_das_cell_bundles (
+                  bundle_id, site_id, cell_id, version, storage_ref, facts_ref,
+                  status, labels_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bundle_id) DO UPDATE SET
+                  site_id = excluded.site_id,
+                  cell_id = excluded.cell_id,
+                  version = excluded.version,
+                  storage_ref = excluded.storage_ref,
+                  facts_ref = excluded.facts_ref,
+                  status = excluded.status,
+                  labels_json = excluded.labels_json,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    payload["bundle_id"],
+                    payload["site_id"],
+                    payload["cell_id"],
+                    payload["version"],
+                    payload["storage_ref"],
+                    payload["facts_ref"],
+                    payload["status"],
+                    json.dumps(payload["labels"], sort_keys=True),
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_das_cell_bundle_from_row(self, row) -> FabricDasCellBundleRecord:
+        return das_cell_bundle_from_payload(
+            {
+                "bundle_id": row[0],
+                "site_id": row[1],
+                "cell_id": row[2],
+                "version": row[3],
+                "storage_ref": row[4],
+                "facts_ref": row[5],
+                "status": row[6],
+                "labels": self._json_dict(row[7]),
+                "created_at": row[8],
+                "updated_at": row[9],
+            }
+        )
+
+    def list_fabric_das_cell_bundles(
+        self,
+        *,
+        site_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricDasCellBundleRecord]:
+        params: list[object] = []
+        sql = """
+            SELECT bundle_id, site_id, cell_id, version, storage_ref, facts_ref,
+                   status, labels_json, created_at, updated_at
+            FROM fabric_das_cell_bundles
+        """
+        if site_id:
+            sql += " WHERE site_id = ?"
+            params.append(str(site_id))
+        sql += " ORDER BY site_id, cell_id, version LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_das_cell_bundle_from_row(row) for row in rows]
+
+    def record_fabric_das_query_trace(self, record: FabricDasQueryTraceRecord) -> None:
+        payload = das_query_trace_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_das_query_traces (
+                  trace_id, bundle_id, site_id, query_id, query_kind, local_first,
+                  warmed_refs_json, promoted_refs_json, fallback_sites_json,
+                  result_ref, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trace_id) DO UPDATE SET
+                  bundle_id = excluded.bundle_id,
+                  site_id = excluded.site_id,
+                  query_id = excluded.query_id,
+                  query_kind = excluded.query_kind,
+                  local_first = excluded.local_first,
+                  warmed_refs_json = excluded.warmed_refs_json,
+                  promoted_refs_json = excluded.promoted_refs_json,
+                  fallback_sites_json = excluded.fallback_sites_json,
+                  result_ref = excluded.result_ref
+                """,
+                (
+                    payload["trace_id"],
+                    payload["bundle_id"],
+                    payload["site_id"],
+                    payload["query_id"],
+                    payload["query_kind"],
+                    1 if payload["local_first"] else 0,
+                    json.dumps(payload["warmed_refs"], sort_keys=True),
+                    json.dumps(payload["promoted_refs"], sort_keys=True),
+                    json.dumps(payload["fallback_sites"], sort_keys=True),
+                    payload["result_ref"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_das_query_trace_from_row(self, row) -> FabricDasQueryTraceRecord:
+        return das_query_trace_from_payload(
+            {
+                "trace_id": row[0],
+                "bundle_id": row[1],
+                "site_id": row[2],
+                "query_id": row[3],
+                "query_kind": row[4],
+                "local_first": bool(row[5]),
+                "warmed_refs": self._json_list(row[6]),
+                "promoted_refs": self._json_list(row[7]),
+                "fallback_sites": self._json_list(row[8]),
+                "result_ref": row[9],
+                "created_at": row[10],
+            }
+        )
+
+    def list_fabric_das_query_traces(
+        self,
+        *,
+        bundle_id: str | None = None,
+        site_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricDasQueryTraceRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if bundle_id:
+            clauses.append("bundle_id = ?")
+            params.append(str(bundle_id))
+        if site_id:
+            clauses.append("site_id = ?")
+            params.append(str(site_id))
+        sql = """
+            SELECT trace_id, bundle_id, site_id, query_id, query_kind, local_first,
+                   warmed_refs_json, promoted_refs_json, fallback_sites_json,
+                   result_ref, created_at
+            FROM fabric_das_query_traces
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_das_query_trace_from_row(row) for row in rows]
+
+    def record_fabric_das_replication(self, record: FabricDasReplicationRecord) -> None:
+        payload = das_replication_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_das_replications (
+                  replication_id, bundle_id, source_site_id, target_site_id,
+                  mode, status, approved_by, reason, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(replication_id) DO UPDATE SET
+                  bundle_id = excluded.bundle_id,
+                  source_site_id = excluded.source_site_id,
+                  target_site_id = excluded.target_site_id,
+                  mode = excluded.mode,
+                  status = excluded.status,
+                  approved_by = excluded.approved_by,
+                  reason = excluded.reason,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    payload["replication_id"],
+                    payload["bundle_id"],
+                    payload["source_site_id"],
+                    payload["target_site_id"],
+                    payload["mode"],
+                    payload["status"],
+                    payload["approved_by"],
+                    payload["reason"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_das_replication_from_row(self, row) -> FabricDasReplicationRecord:
+        return das_replication_from_payload(
+            {
+                "replication_id": row[0],
+                "bundle_id": row[1],
+                "source_site_id": row[2],
+                "target_site_id": row[3],
+                "mode": row[4],
+                "status": row[5],
+                "approved_by": row[6],
+                "reason": row[7],
+                "created_at": row[8],
+                "updated_at": row[9],
+            }
+        )
+
+    def list_fabric_das_replications(
+        self,
+        *,
+        bundle_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricDasReplicationRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if bundle_id:
+            clauses.append("bundle_id = ?")
+            params.append(str(bundle_id))
+        if status:
+            clauses.append("status = ?")
+            params.append(str(status))
+        sql = """
+            SELECT replication_id, bundle_id, source_site_id, target_site_id,
+                   mode, status, approved_by, reason, created_at, updated_at
+            FROM fabric_das_replications
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_das_replication_from_row(row) for row in rows]
+
+    def record_fabric_cognitive_signal(self, record: FabricCognitiveSignalRecord) -> None:
+        payload = cognitive_signal_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_cognitive_signals (
+                  signal_id, subject_type, subject_id, signal_kind, continuity_ref,
+                  coherence_score, overload_state, review_gate, advisory_trace_id,
+                  created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(signal_id) DO UPDATE SET
+                  subject_type = excluded.subject_type,
+                  subject_id = excluded.subject_id,
+                  signal_kind = excluded.signal_kind,
+                  continuity_ref = excluded.continuity_ref,
+                  coherence_score = excluded.coherence_score,
+                  overload_state = excluded.overload_state,
+                  review_gate = excluded.review_gate,
+                  advisory_trace_id = excluded.advisory_trace_id
+                """,
+                (
+                    payload["signal_id"],
+                    payload["subject_type"],
+                    payload["subject_id"],
+                    payload["signal_kind"],
+                    payload["continuity_ref"],
+                    payload["coherence_score"],
+                    payload["overload_state"],
+                    payload["review_gate"],
+                    payload["advisory_trace_id"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_cognitive_signal_from_row(self, row) -> FabricCognitiveSignalRecord:
+        return cognitive_signal_from_payload(
+            {
+                "signal_id": row[0],
+                "subject_type": row[1],
+                "subject_id": row[2],
+                "signal_kind": row[3],
+                "continuity_ref": row[4],
+                "coherence_score": row[5],
+                "overload_state": row[6],
+                "review_gate": row[7],
+                "advisory_trace_id": row[8],
+                "created_at": row[9],
+            }
+        )
+
+    def list_fabric_cognitive_signals(
+        self,
+        *,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricCognitiveSignalRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if subject_type:
+            clauses.append("subject_type = ?")
+            params.append(str(subject_type))
+        if subject_id:
+            clauses.append("subject_id = ?")
+            params.append(str(subject_id))
+        sql = """
+            SELECT signal_id, subject_type, subject_id, signal_kind, continuity_ref,
+                   coherence_score, overload_state, review_gate, advisory_trace_id,
+                   created_at
+            FROM fabric_cognitive_signals
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_cognitive_signal_from_row(row) for row in rows]
 
     def acquire_inference_gpu_leases(
         self,

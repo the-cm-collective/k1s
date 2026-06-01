@@ -361,6 +361,169 @@ def f3_evidence_from_store(store: Any) -> dict[str, Any]:
     }
 
 
+def f4_evidence_from_store(store: Any) -> dict[str, Any]:
+    """Build F4 accelerated-movement readiness evidence from controller records."""
+
+    capabilities = _safe_list(store, "list_fabric_transfer_capabilities")
+    leases = _safe_list(store, "list_fabric_transfer_leases")
+    landing_zones = _safe_list(store, "list_fabric_landing_zones")
+    attempts = _safe_list(store, "list_fabric_transport_attempts")
+
+    negotiated = [
+        record
+        for record in capabilities
+        if _record_field(record, "node_id")
+        and _record_field(record, "peer_node_id")
+        and _record_field(record, "transport")
+        and str(_record_field(record, "status")).lower()
+        in {"negotiated", "ready", "advertised"}
+    ]
+    valid_leases = [
+        record
+        for record in leases
+        if is_content_addressed_chunk_id(_record_field(record, "chunk_id"))
+        and _record_field(record, "source_node_id")
+        and _record_field(record, "target_node_id")
+        and _record_field(record, "holder")
+        and _record_field(record, "transport")
+        and _has_digest_epoch(record)
+    ]
+    safe_zones = [
+        record
+        for record in landing_zones
+        if _record_field(record, "node_id")
+        and _record_field(record, "path")
+        and str(_record_field(record, "safety_state")).lower() in {"ready", "reserved", "safe"}
+        and _record_int(record, "capacity_bytes") >= _record_int(record, "reserved_bytes")
+        and _record_field(record, "cleanup_policy")
+    ]
+    roce_records = [
+        record
+        for record in capabilities
+        if str(_record_field(record, "transport")).lower() in {"roce", "rdma-roce"}
+        and str(_record_field(record, "status")).lower()
+        in {"documented", "development", "planned", "advertised", "negotiated", "ready"}
+        and _record_field(record, "fallback_transport")
+    ]
+    fallback_attempts = [
+        record
+        for record in attempts
+        if bool(_record_field(record, "fallback_used", False))
+        and _record_field(record, "fallback_transport")
+        and str(_record_field(record, "transport")).lower()
+        != str(_record_field(record, "fallback_transport")).lower()
+    ]
+
+    return {
+        "capability_negotiation": _detail(
+            negotiated,
+            capability_count=len(capabilities),
+            negotiated_count=len(negotiated),
+            transports=sorted({str(_record_field(record, "transport")) for record in negotiated}),
+        ),
+        "transfer_leases": _detail(
+            valid_leases,
+            lease_count=len(valid_leases),
+            statuses=sorted({str(_record_field(record, "status")) for record in valid_leases}),
+        ),
+        "landing_zone_safety": _detail(
+            safe_zones,
+            landing_zone_count=len(safe_zones),
+            node_ids=sorted({str(_record_field(record, "node_id")) for record in safe_zones}),
+        ),
+        "roce_development_path": _detail(
+            roce_records,
+            roce_record_count=len(roce_records),
+            fallback_transports=sorted(
+                {str(_record_field(record, "fallback_transport")) for record in roce_records}
+            ),
+        ),
+        "standard_transport_fallback": _detail(
+            fallback_attempts,
+            fallback_attempt_count=len(fallback_attempts),
+            fallback_transports=sorted(
+                {str(_record_field(record, "fallback_transport")) for record in fallback_attempts}
+            ),
+        ),
+    }
+
+
+def f5_evidence_from_store(store: Any) -> dict[str, Any]:
+    """Build F5 DAS-cell and cognitive-substrate evidence from controller records."""
+
+    bundles = _safe_list(store, "list_fabric_das_cell_bundles")
+    query_traces = _safe_list(store, "list_fabric_das_query_traces")
+    replications = _safe_list(store, "list_fabric_das_replications")
+    cognitive_signals = _safe_list(store, "list_fabric_cognitive_signals")
+
+    ready_bundles = [
+        record
+        for record in bundles
+        if _record_field(record, "bundle_id")
+        and _record_field(record, "site_id")
+        and _record_field(record, "storage_ref")
+        and _record_field(record, "facts_ref")
+        and str(_record_field(record, "status")).lower() in {"ready", "active", "published"}
+    ]
+    local_first_traces = [
+        record
+        for record in query_traces
+        if bool(_record_field(record, "local_first", False))
+        and _record_field(record, "bundle_id")
+        and (
+            bool(_record_field(record, "warmed_refs"))
+            or bool(_record_field(record, "promoted_refs"))
+        )
+    ]
+    controlled_replications = [
+        record
+        for record in replications
+        if _record_field(record, "bundle_id")
+        and _record_field(record, "source_site_id")
+        and _record_field(record, "target_site_id")
+        and _record_field(record, "approved_by")
+        and str(_record_field(record, "mode")).lower()
+        in {"controlled", "scheduled", "manual", "background"}
+    ]
+    substrate_signals = [
+        record
+        for record in cognitive_signals
+        if _record_field(record, "continuity_ref")
+        and _record_field(record, "coherence_score", None) is not None
+        and _record_field(record, "review_gate")
+        and _record_field(record, "advisory_trace_id")
+    ]
+
+    return {
+        "das_cell_bundles": _detail(
+            ready_bundles,
+            bundle_count=len(ready_bundles),
+            site_ids=sorted({str(_record_field(record, "site_id")) for record in ready_bundles}),
+        ),
+        "local_first_query_warming_promotion": _detail(
+            local_first_traces,
+            query_trace_count=len(local_first_traces),
+            bundle_ids=sorted(
+                {str(_record_field(record, "bundle_id")) for record in local_first_traces}
+            ),
+        ),
+        "controlled_cross_site_replication": _detail(
+            controlled_replications,
+            replication_count=len(controlled_replications),
+            modes=sorted(
+                {str(_record_field(record, "mode")) for record in controlled_replications}
+            ),
+        ),
+        "cognitive_fabric_substrate": _detail(
+            substrate_signals,
+            signal_count=len(substrate_signals),
+            review_gates=sorted(
+                {str(_record_field(record, "review_gate")) for record in substrate_signals}
+            ),
+        ),
+    }
+
+
 def _normalize_phases_mapping(source: Mapping[str, Any]) -> dict[PhaseId, dict[str, Any]]:
     normalized: dict[PhaseId, dict[str, Any]] = {phase_id: {} for phase_id in PHASE_ORDER}
     for phase_id in PHASE_ORDER:

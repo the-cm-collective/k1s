@@ -2331,6 +2331,30 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         if path_only in ("/fabric/advisory/traces", "/fabric/advisory/traces/"):
             self._handle_fabric_advisory_traces_list()
             return
+        if path_only in ("/fabric/transfer-capabilities", "/fabric/transfer-capabilities/"):
+            self._handle_fabric_transfer_capabilities_list()
+            return
+        if path_only in ("/fabric/transfer-leases", "/fabric/transfer-leases/"):
+            self._handle_fabric_transfer_leases_list()
+            return
+        if path_only in ("/fabric/landing-zones", "/fabric/landing-zones/"):
+            self._handle_fabric_landing_zones_list()
+            return
+        if path_only in ("/fabric/transport-attempts", "/fabric/transport-attempts/"):
+            self._handle_fabric_transport_attempts_list()
+            return
+        if path_only in ("/fabric/das-cells", "/fabric/das-cells/"):
+            self._handle_fabric_das_cells_list()
+            return
+        if path_only in ("/fabric/das-query-traces", "/fabric/das-query-traces/"):
+            self._handle_fabric_das_query_traces_list()
+            return
+        if path_only in ("/fabric/das-replications", "/fabric/das-replications/"):
+            self._handle_fabric_das_replications_list()
+            return
+        if path_only in ("/fabric/cognitive-signals", "/fabric/cognitive-signals/"):
+            self._handle_fabric_cognitive_signals_list()
+            return
         if path_only.startswith("/manifest/"):
             # Return the latest stored manifest for the app
             app = self.path.split("/", 2)[2].split("?", 1)[0]
@@ -5550,6 +5574,142 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 limit=limit,
             )
             if self._fabric_read_allowed(f"fabric/advisory/traces/{rec.trace_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_transfer_capabilities_list(self) -> None:
+        from ae.fabric.locality import transfer_capability_payload
+
+        params = self._parse_query()
+        node_id = (params.get("node_id") or [None])[0] or None
+        peer_node_id = (params.get("peer_node_id") or [None])[0] or None
+        transport = (params.get("transport") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            transfer_capability_payload(rec)
+            for rec in self.store.list_fabric_transfer_capabilities(
+                node_id=node_id,
+                peer_node_id=peer_node_id,
+                transport=transport,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/transfer-capabilities/{rec.capability_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_transfer_leases_list(self) -> None:
+        from ae.fabric.locality import transfer_lease_payload
+
+        params = self._parse_query()
+        chunk_id = (params.get("chunk_id") or [None])[0] or None
+        status = (params.get("status") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            transfer_lease_payload(rec)
+            for rec in self.store.list_fabric_transfer_leases(
+                chunk_id=chunk_id,
+                status=status,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/transfer-leases/{rec.lease_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_landing_zones_list(self) -> None:
+        from ae.fabric.locality import landing_zone_payload
+
+        params = self._parse_query()
+        node_id = (params.get("node_id") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            landing_zone_payload(rec)
+            for rec in self.store.list_fabric_landing_zones(node_id=node_id, limit=limit)
+            if self._fabric_read_allowed(f"fabric/landing-zones/{rec.zone_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_transport_attempts_list(self) -> None:
+        from ae.fabric.locality import transport_attempt_payload
+
+        params = self._parse_query()
+        lease_id = (params.get("lease_id") or [None])[0] or None
+        chunk_id = (params.get("chunk_id") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            transport_attempt_payload(rec)
+            for rec in self.store.list_fabric_transport_attempts(
+                lease_id=lease_id,
+                chunk_id=chunk_id,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/transport-attempts/{rec.attempt_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_das_cells_list(self) -> None:
+        from ae.fabric.locality import das_cell_bundle_payload
+
+        params = self._parse_query()
+        site_id = (params.get("site_id") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            das_cell_bundle_payload(rec)
+            for rec in self.store.list_fabric_das_cell_bundles(site_id=site_id, limit=limit)
+            if self._fabric_read_allowed(f"fabric/das-cells/{rec.bundle_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_das_query_traces_list(self) -> None:
+        from ae.fabric.locality import das_query_trace_payload
+
+        params = self._parse_query()
+        bundle_id = (params.get("bundle_id") or [None])[0] or None
+        site_id = (params.get("site_id") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            das_query_trace_payload(rec)
+            for rec in self.store.list_fabric_das_query_traces(
+                bundle_id=bundle_id,
+                site_id=site_id,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/das-query-traces/{rec.trace_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_das_replications_list(self) -> None:
+        from ae.fabric.locality import das_replication_payload
+
+        params = self._parse_query()
+        bundle_id = (params.get("bundle_id") or [None])[0] or None
+        status = (params.get("status") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            das_replication_payload(rec)
+            for rec in self.store.list_fabric_das_replications(
+                bundle_id=bundle_id,
+                status=status,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/das-replications/{rec.replication_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_cognitive_signals_list(self) -> None:
+        from ae.fabric.locality import cognitive_signal_payload
+
+        params = self._parse_query()
+        subject_type = (params.get("subject_type") or [None])[0] or None
+        subject_id = (params.get("subject_id") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            cognitive_signal_payload(rec)
+            for rec in self.store.list_fabric_cognitive_signals(
+                subject_type=subject_type,
+                subject_id=subject_id,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/cognitive-signals/{rec.signal_id}")
         ]
         self._json_ok({"items": items, "count": len(items)})
 

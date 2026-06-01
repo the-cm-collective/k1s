@@ -11,9 +11,17 @@ from ae.fabric.locality import (
     FabricAdvisoryRequestRecord,
     FabricAdvisoryResponseRecord,
     FabricChunkRecord,
+    FabricCognitiveSignalRecord,
+    FabricDasCellBundleRecord,
+    FabricDasQueryTraceRecord,
+    FabricDasReplicationRecord,
     FabricDecisionTraceRecord,
+    FabricLandingZoneRecord,
     FabricMovementRecord,
     FabricResidencyRecord,
+    FabricTransferCapabilityRecord,
+    FabricTransferLeaseRecord,
+    FabricTransportAttemptRecord,
 )
 from ae.fabric.phase_assurance import (
     PHASE_REQUIREMENTS,
@@ -21,6 +29,8 @@ from ae.fabric.phase_assurance import (
     f1_evidence_from_nodes,
     f2_evidence_from_store,
     f3_evidence_from_store,
+    f4_evidence_from_store,
+    f5_evidence_from_store,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -239,6 +249,189 @@ def test_f3_evidence_from_store_covers_advisory_trace_contracts(tmp_path: Path) 
     assert report["phases"]["F3"]["gate"]["ready"] is True
     assert report["phases"]["F3"]["evidence"]["advisory_contract"]["authoritative"] is False
     assert report["phases"]["F3"]["evidence"]["bounded_planning"]["bounded_request_count"] == 1
+
+
+def test_f4_evidence_from_store_covers_accelerated_movement_readiness(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    now = datetime.now(UTC)
+    chunk_id = "sha256:" + ("c" * 64)
+    store.upsert_fabric_transfer_capability(
+        FabricTransferCapabilityRecord(
+            capability_id="cap-node-a-node-b-roce",
+            node_id="node-a",
+            peer_node_id="node-b",
+            transport="roce",
+            status="negotiated",
+            priority=100,
+            capabilities={"rnic": "e810", "path": "development"},
+            fallback_transport="lan_direct",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.upsert_fabric_landing_zone(
+        FabricLandingZoneRecord(
+            zone_id="zone-node-b",
+            node_id="node-b",
+            path="/srv/storage/landing",
+            capacity_bytes=8192,
+            reserved_bytes=4096,
+            safety_state="ready",
+            cleanup_policy="lease_expiry",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.upsert_fabric_transfer_lease(
+        FabricTransferLeaseRecord(
+            lease_id="lease-1",
+            chunk_id=chunk_id,
+            source_node_id="node-a",
+            target_node_id="node-b",
+            transport="roce",
+            status="active",
+            holder="controller",
+            landing_zone_id="zone-node-b",
+            digest=chunk_id,
+            epoch=4,
+            expires_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.record_fabric_transport_attempt(
+        FabricTransportAttemptRecord(
+            attempt_id="attempt-1",
+            lease_id="lease-1",
+            chunk_id=chunk_id,
+            transport="roce",
+            status="fallback",
+            fallback_used=True,
+            fallback_transport="lan_direct",
+            error="roce path disabled in dev lab",
+            started_at=now,
+            finished_at=now,
+            created_at=now,
+        )
+    )
+
+    report = assess_fabric_phases(
+        {
+            "F0": _complete("F0")["F0"],
+            "F1": _complete("F1")["F1"],
+            "F2": _complete("F2")["F2"],
+            "F3": _complete("F3")["F3"],
+            "F4": f4_evidence_from_store(store),
+        }
+    )
+
+    assert report["phases"]["F4"]["status"] == "present"
+    assert report["phases"]["F4"]["gate"]["ready"] is True
+    f4_evidence = report["phases"]["F4"]["evidence"]
+    assert f4_evidence["capability_negotiation"]["negotiated_count"] == 1
+    assert f4_evidence["standard_transport_fallback"]["fallback_attempt_count"] == 1
+
+
+def test_f5_evidence_from_store_covers_das_cell_readiness(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    now = datetime.now(UTC)
+    store.upsert_fabric_das_cell_bundle(
+        FabricDasCellBundleRecord(
+            bundle_id="das-site-a-runtime",
+            site_id="site-a",
+            cell_id="runtime",
+            version="2026-06-01",
+            storage_ref="/srv/storage/k1s/ai-fabric-lab/das",
+            facts_ref="das://site-a/runtime/facts.jsonl",
+            status="ready",
+            labels={"lab": "ai-fabric"},
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.record_fabric_das_query_trace(
+        FabricDasQueryTraceRecord(
+            trace_id="query-trace-1",
+            bundle_id="das-site-a-runtime",
+            site_id="site-a",
+            query_id="query-1",
+            query_kind="advisory",
+            local_first=True,
+            warmed_refs=["das://site-a/runtime/facts.jsonl"],
+            promoted_refs=["qdrant://ai_fabric_corpus/k1s"],
+            fallback_sites=[],
+            result_ref="trace://query-trace-1",
+            created_at=now,
+        )
+    )
+    store.record_fabric_das_replication(
+        FabricDasReplicationRecord(
+            replication_id="replication-1",
+            bundle_id="das-site-a-runtime",
+            source_site_id="site-a",
+            target_site_id="site-b",
+            mode="controlled",
+            status="planned",
+            approved_by="operator",
+            reason="warm secondary DAS cell",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.record_fabric_cognitive_signal(
+        FabricCognitiveSignalRecord(
+            signal_id="signal-1",
+            subject_type="das-cell",
+            subject_id="das-site-a-runtime",
+            signal_kind="continuity",
+            continuity_ref="trace://query-trace-1",
+            coherence_score=0.87,
+            overload_state="nominal",
+            review_gate="operator_review",
+            advisory_trace_id="trace-1",
+            created_at=now,
+        )
+    )
+
+    report = assess_fabric_phases(
+        {
+            "F0": _complete("F0")["F0"],
+            "F1": _complete("F1")["F1"],
+            "F2": _complete("F2")["F2"],
+            "F3": _complete("F3")["F3"],
+            "F5": f5_evidence_from_store(store),
+        }
+    )
+
+    assert report["phases"]["F5"]["status"] == "present"
+    assert report["phases"]["F5"]["gate"]["ready"] is True
+    f5_evidence = report["phases"]["F5"]["evidence"]
+    assert f5_evidence["das_cell_bundles"]["bundle_count"] == 1
+    assert f5_evidence["cognitive_fabric_substrate"]["review_gates"] == ["operator_review"]
+
+
+def test_f4_and_f5_store_evidence_report_missing_keys_when_incomplete(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+
+    report = assess_fabric_phases(
+        {
+            "F0": _complete("F0")["F0"],
+            "F1": _complete("F1")["F1"],
+            "F2": _complete("F2")["F2"],
+            "F3": _complete("F3")["F3"],
+            "F4": f4_evidence_from_store(store),
+            "F5": f5_evidence_from_store(store),
+        }
+    )
+
+    assert report["phases"]["F4"]["status"] == "missing"
+    assert report["phases"]["F4"]["missing"] == list(PHASE_REQUIREMENTS["F4"])
+    assert report["phases"]["F5"]["status"] == "missing"
+    assert report["phases"]["F5"]["missing"] == list(PHASE_REQUIREMENTS["F5"])
 
 
 def test_assurance_script_emits_json_report(tmp_path: Path) -> None:

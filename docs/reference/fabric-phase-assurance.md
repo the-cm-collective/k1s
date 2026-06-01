@@ -30,6 +30,9 @@ be recorded without satisfying `F0` or `D0`.
 For `F1`, controller node records can be converted into evidence with
 `ae.fabric.phase_assurance.f1_evidence_from_nodes(...)`. That helper preserves
 typed node fact details while keeping `F0` as the readiness gate for `F1`.
+Controller-owned F2-F5 records can also be converted with
+`f2_evidence_from_store(...)`, `f3_evidence_from_store(...)`,
+`f4_evidence_from_store(...)`, and `f5_evidence_from_store(...)`.
 
 ## Evidence Keys
 
@@ -108,3 +111,28 @@ The main substrate dependency chain remains:
 This means an experimental `F3` Hyperon advisory report can be stored and
 evaluated while its gate remains blocked until typed facts and locality evidence
 are present.
+
+## Controller Evidence Surfaces
+
+F4 adds read-only controller surfaces for accelerated-movement readiness:
+
+- `/fabric/transfer-capabilities`
+- `/fabric/transfer-leases`
+- `/fabric/landing-zones`
+- `/fabric/transport-attempts`
+
+These records describe negotiated capability, bounded transfer leases, safe
+landing zones, and standard-transport fallback. RoCE is represented as a
+development-path capability; this phase does not require a live RoCE data path.
+
+F5 adds read-only controller surfaces for DAS-cell readiness:
+
+- `/fabric/das-cells`
+- `/fabric/das-query-traces`
+- `/fabric/das-replications`
+- `/fabric/cognitive-signals`
+
+These records describe per-site DAS bundles, local-first query warming and
+promotion, controlled cross-site replication intent, and cognitive-substrate
+continuity/coherence signals. WorkerBee lab evidence may populate compatible
+records, but k1s remains the authoritative phase gate.
