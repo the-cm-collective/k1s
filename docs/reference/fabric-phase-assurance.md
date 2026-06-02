@@ -136,3 +136,17 @@ These records describe per-site DAS bundles, local-first query warming and
 promotion, controlled cross-site replication intent, and cognitive-substrate
 continuity/coherence signals. WorkerBee lab evidence may populate compatible
 records, but k1s remains the authoritative phase gate.
+
+WorkerBee AI fabric lab runtime facts use source
+`workerbee.ai-fabric.runtime-facts/v1`, namespace `runtime`, and this shared
+relationship vocabulary:
+
+- `owns_service`
+- `depends_on`
+- `serves_model`
+- `requires_resource`
+- `produced_artifact`
+- `supports_advisory`
+
+Those facts can support F3/F5 advisory evaluation and DAS-cell evidence, but
+they do not change controller authority or open a phase gate by themselves.

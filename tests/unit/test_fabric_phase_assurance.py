@@ -32,6 +32,11 @@ from ae.fabric.phase_assurance import (
     f4_evidence_from_store,
     f5_evidence_from_store,
 )
+from ae.fabric.symbolic import (
+    SYMBOLIC_FACT_NAMESPACE,
+    SYMBOLIC_FACT_SOURCE_WORKERBEE_AI_FABRIC,
+    SYMBOLIC_RELATIONSHIP_PREDICATES,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "dev" / "fabric_phase_assurance.py"
@@ -42,6 +47,21 @@ def _complete(*phase_ids: str) -> dict[str, dict[str, bool]]:
         phase_id: dict.fromkeys(PHASE_REQUIREMENTS[phase_id], True)
         for phase_id in phase_ids
     }
+
+
+def test_symbolic_relationship_vocabulary_matches_workerbee_runtime_facts() -> None:
+    assert SYMBOLIC_FACT_NAMESPACE == "runtime"
+    assert SYMBOLIC_FACT_SOURCE_WORKERBEE_AI_FABRIC == (
+        "workerbee.ai-fabric.runtime-facts/v1"
+    )
+    assert SYMBOLIC_RELATIONSHIP_PREDICATES == (
+        "owns_service",
+        "depends_on",
+        "serves_model",
+        "requires_resource",
+        "produced_artifact",
+        "supports_advisory",
+    )
 
 
 def test_f3_is_blocked_until_f1_and_f2_are_present() -> None:
