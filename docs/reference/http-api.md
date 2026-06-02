@@ -29,7 +29,7 @@ The controller exposes a controller-native HTTP API when started with `--metrics
 - `POST /scale/<app>` requires scale or admin access plus `AE_API_MUTATIONS=1`.
 - `POST /apply` accepts `Deployment`, `InferenceCell`, and `InferenceCellSet` manifests. The inference kinds are k1s-owned AI/ML resources, not Kubernetes scheduling primitives.
 - `POST /inference/delete/cells/<name>?namespace=<namespace>` and `POST /inference/delete/cellsets/<name>?namespace=<namespace>` delete inference resources.
-- `POST /delete/<app>`, `POST /rollout/pause/<app>`, `POST /rollout/resume/<app>`, `POST /apply`, `POST /inference/delete/*`, and `POST /exec/<app>` require admin access plus `AE_API_MUTATIONS=1`.
+- `POST /delete/<app>`, `POST /rollout/pause/<app>`, `POST /rollout/resume/<app>`, `POST /rollout/restart/<app>`, `POST /apply`, `POST /inference/delete/*`, and `POST /exec/<app>` require admin access plus `AE_API_MUTATIONS=1`.
 
 ## Auth model
 - Public docs and schema surfaces remain reachable without a bearer token.

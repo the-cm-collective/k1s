@@ -45,6 +45,7 @@ from ae.controller.storage_authority import (
 )
 from ae.controller.state import SQLiteStateStore, state_store_from_env
 from ae.controller.reconciler import Reconciler
+from ae.controller.rollout import mutate_rollout_manifest
 from ae.controller.spec import (
     AppManifest,
     ManifestError,
@@ -2808,16 +2809,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     "ok": len(warnings) == 0,
                 }
 
-            def _rollout_pause(app: str) -> dict:
+            def _rollout_action(app: str, action: str) -> dict:
                 _require_mutation_authority()
                 revs = store.list_revisions(app, limit=1)
                 if not revs:
                     raise RuntimeError(f"no revisions recorded for {app}")
                 man = store.get_revision_manifest(app, revs[0].revision)
-                ro = dict(getattr(man.spec, "rollout", {}) or {})
-                ro["pause"] = True
-                new_spec = man.spec.model_copy(update={"rollout": ro})
-                updated = man.model_copy(update={"spec": new_spec})
+                updated, restart_at = mutate_rollout_manifest(man, action)  # type: ignore[arg-type]
                 existing = store.get_registered_entry(app)
                 src = existing.source if existing else "api"
                 lbls = existing.labels if existing else None
@@ -2828,13 +2826,22 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     expected_resource_version=(existing.resource_version if existing else None),
                 )
                 if authority_config.enabled:
-                    return {
+                    result = {
                         "app": app,
                         "status": "accepted",
                         "resourceVersion": resource_version,
                     }
+                    if restart_at:
+                        result["restartAt"] = restart_at
+                    return result
                 report = reconciler.reconcile(updated)
-                # Best-effort fast-follow burst to surface "paused" promptly
+                if action == "resume":
+                    try:
+                        store.record_event(app, report.revision, "RolloutResumed", "Rollout resumed")
+                    except Exception:
+                        pass
+                target_status = "paused" if action == "pause" else "ready"
+                # Best-effort fast-follow burst to surface the post-rollout state promptly
                 try:
                     import os as _os, time as _t
 
@@ -2842,59 +2849,34 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     delay_ms = int(_os.getenv("AE_ROLLOUT_RECONCILE_DELAY_MS", "300"))
                     burst = max(0, burst)
                     for _ in range(burst):
-                        if str(report.revision_status).lower() == "paused":
+                        if str(report.revision_status).lower() == target_status:
                             break
                         _t.sleep(max(0.001, delay_ms / 1000.0))
                         report = reconciler.reconcile(updated)
                 except Exception:
                     pass
-                return {"app": app, "revision": report.revision, "status": report.revision_status}
+                result = {"app": app, "revision": report.revision, "status": report.revision_status}
+                if restart_at:
+                    result.update(
+                        {
+                            "restartAt": restart_at,
+                            "created": report.created,
+                            "updated": report.updated,
+                            "removed": report.removed,
+                            "ready": report.ready_replicas,
+                            "desired": updated.spec.replicas,
+                        }
+                    )
+                return result
+
+            def _rollout_pause(app: str) -> dict:
+                return _rollout_action(app, "pause")
 
             def _rollout_resume(app: str) -> dict:
-                _require_mutation_authority()
-                revs = store.list_revisions(app, limit=1)
-                if not revs:
-                    raise RuntimeError(f"no revisions recorded for {app}")
-                man = store.get_revision_manifest(app, revs[0].revision)
-                ro = dict(getattr(man.spec, "rollout", {}) or {})
-                ro["pause"] = False
-                new_spec = man.spec.model_copy(update={"rollout": ro})
-                updated = man.model_copy(update={"spec": new_spec})
-                existing = store.get_registered_entry(app)
-                src = existing.source if existing else "api"
-                lbls = existing.labels if existing else None
-                resource_version = store.register_app(
-                    updated,
-                    source=src,
-                    labels=lbls,
-                    expected_resource_version=(existing.resource_version if existing else None),
-                )
-                if authority_config.enabled:
-                    return {
-                        "app": app,
-                        "status": "accepted",
-                        "resourceVersion": resource_version,
-                    }
-                report = reconciler.reconcile(updated)
-                try:
-                    store.record_event(app, report.revision, "RolloutResumed", "Rollout resumed")
-                except Exception:
-                    pass
-                # Best-effort fast-follow burst to surface "ready" promptly
-                try:
-                    import os as _os, time as _t
+                return _rollout_action(app, "resume")
 
-                    burst = int(_os.getenv("AE_ROLLOUT_RECONCILE_BURST", "2"))
-                    delay_ms = int(_os.getenv("AE_ROLLOUT_RECONCILE_DELAY_MS", "300"))
-                    burst = max(0, burst)
-                    for _ in range(burst):
-                        if str(report.revision_status).lower() == "ready":
-                            break
-                        _t.sleep(max(0.001, delay_ms / 1000.0))
-                        report = reconciler.reconcile(updated)
-                except Exception:
-                    pass
-                return {"app": app, "revision": report.revision, "status": report.revision_status}
+            def _rollout_restart(app: str) -> dict:
+                return _rollout_action(app, "restart")
 
             api_server, assigned, _ = start_http_api(
                 args.metrics_port,
@@ -2915,6 +2897,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 plan_fn=_plan,
                 rollout_pause_fn=_rollout_pause,
                 rollout_resume_fn=_rollout_resume,
+                rollout_restart_fn=_rollout_restart,
             )
             logging.getLogger(__name__).info("http api listening on port %s", assigned)
         except OSError as exc:

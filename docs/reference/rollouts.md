@@ -12,6 +12,7 @@ spec:
     maxSurge: 1                             # keep old replicas temporarily (default: 1)
     maxUnavailable: 0                       # allow up to N replicas unavailable (default: 0)
     pause: true|false                       # pause rollout without changing runtime
+    restartAt: "2026-06-02T00:00:00+00:00" # force a new revision for unchanged specs/tags
     # canary options
     weight: 1                               # bias first upstream Nx in ingress (canary)
     auto: { start: 1, step: 2, intervalSeconds: 60, max: 10 }  # controller‑tracked ramp
@@ -58,9 +59,16 @@ make demo-legacy ARGS="--demo-rollout -y -d"
 This applies `specs/examples/echo.yaml` then `specs/examples/echo-rollout.yaml`
 with rollout `{ strategy: ordered, maxSurge: 1, maxUnavailable: 0 }`.
 
-Pause/resume:
+Pause/resume/restart:
 
 ```
 ae rollout pause echo
 ae rollout resume echo
+ae rollout restart echo
 ```
+
+`restart` stamps `spec.rollout.restartAt`, which changes the desired-state hash
+and creates a new revision even when the manifest and local image tag are
+otherwise unchanged.
+For single-replica workloads with fixed service ports, restart runs without
+old/new overlap so the replacement revision can bind the same host port.

@@ -236,6 +236,34 @@ def test_serial_service_rollout_disables_keep_old_for_fixed_port_single_replica(
     assert limit == 1
 
 
+def test_restart_rollout_disables_keep_old_for_fixed_port_single_replica(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.delenv("AE_SERIAL_SERVICE_ROLLOUT", raising=False)
+    store = SQLiteStateStore(tmp_path / "state.db")
+    rt = DummyRuntime()
+    rec = Reconciler(rt, store, health_manager=HealthManager(), ingress_service=None)
+    base = _manifest("parallel", replicas=1)
+    m = base.model_copy(
+        update={
+            "spec": base.spec.model_copy(
+                update={
+                    "service": ServiceSpec(port=18080, targetPort=8080),
+                    "rollout": {
+                        "strategy": "parallel",
+                        "restartAt": "2026-06-02T00:00:00+00:00",
+                    },
+                }
+            )
+        }
+    )
+    rec.reconcile(m)
+    assert rt.calls, "ensure_app was not called"
+    keep_old, limit = rt.calls[0]
+    assert keep_old is False
+    assert limit == 1
+
+
 def test_parallel_rollout_respects_surge_zero_and_unavailable_one(tmp_path: Path):
     store = SQLiteStateStore(tmp_path / "state.db")
     rt = BudgetRuntime(old_replicas=5)

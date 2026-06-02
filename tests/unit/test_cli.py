@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from ae.cli.__main__ import handle_history, handle_scale, main
+from ae.cli.__main__ import handle_history, handle_rollout, handle_scale, main
 from ae.controller.spec import AppManifest, AppSpec, Metadata
 from ae.controller.state import RegistryConflictError, RegistryEntry, SQLiteStateStore
 
@@ -286,6 +286,33 @@ def test_apply_in_ha_mode_writes_registry_without_reconcile(tmp_path, monkeypatc
     assert store.list_status() == []
 
 
+def test_rollout_restart_creates_new_revision_for_unchanged_manifest(
+    tmp_path, monkeypatch, capsys
+):
+    manifest_path = tmp_path / "echo.yaml"
+    write_manifest(manifest_path)
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setenv("AE_STATE_DB", str(db_path))
+    monkeypatch.setenv("AE_RUNTIME_BACKEND", "stub")
+    monkeypatch.setenv("AE_CADDY_SITES", "")
+
+    assert main(["apply", "-f", str(manifest_path)]) == 0
+    capsys.readouterr()
+
+    assert main(["rollout", "restart", "echo"]) == 0
+    output = capsys.readouterr().out
+
+    assert "rollout restart default/echo: rev=2 status=ready" in output
+    assert "restartAt=" in output
+    store = SQLiteStateStore(db_path)
+    revisions = store.list_revisions("echo", limit=2)
+    assert [item.revision for item in revisions] == [2, 1]
+    latest = store.get_revision_manifest("echo", 2)
+    assert latest.spec.rollout is not None
+    assert latest.spec.rollout["restartAt"]
+
+
 def test_handle_scale_reports_registry_conflict(capsys):
     manifest = AppManifest(
         apiVersion="ae.dev/v1alpha1",
@@ -319,6 +346,41 @@ def test_handle_scale_reports_registry_conflict(capsys):
     result = handle_scale(args, _Store(), SimpleNamespace())
     assert result == 1
     assert "scale conflict" in capsys.readouterr().out
+
+
+def test_handle_rollout_restart_reports_registry_conflict(capsys):
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="echo"),
+        spec=AppSpec(image="alpine:3.20", replicas=1),
+    )
+
+    class _Store:
+        def list_revisions(self, _name, limit=1):
+            return [SimpleNamespace(revision=1)]
+
+        def get_revision_manifest(self, _name, _revision):
+            return manifest
+
+        def get_registered_entry(self, _name):
+            return RegistryEntry(
+                app_name="echo",
+                manifest=manifest,
+                spec_hash="hash",
+                source="cli",
+                labels={},
+                updated_at=datetime.now(timezone.utc),
+                resource_version=1,
+            )
+
+        def register_app(self, *_args, **_kwargs):
+            raise RegistryConflictError("echo", expected=1, actual=2)
+
+    args = argparse.Namespace(name="echo", rollout_cmd="restart", namespace=None)
+    result = handle_rollout(args, _Store(), SimpleNamespace())
+    assert result == 1
+    assert "rollout conflict" in capsys.readouterr().out
 
 
 def _write_fake_kubectl(path: Path, *, fail_probe: bool = False) -> Path:

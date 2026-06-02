@@ -268,6 +268,81 @@ def test_scale_returns_resource_version_conflict(monkeypatch):
     assert '"actual": 4' in body
 
 
+def test_rollout_restart_allowed_for_admin(monkeypatch):
+    monkeypatch.setenv("AE_API_RBAC", "1")
+    monkeypatch.setenv("AE_API_ADMIN_TOKEN", "a")
+    req = make_handler("/rollout/restart/app", headers={"Authorization": "Bearer a"})
+    handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
+    handler.headers = {
+        "Authorization": "Bearer a",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
+    handler.rfile = BytesIO(req._payload)
+    called = {}
+
+    def _restart(app):
+        called["app"] = app
+        return {"app": app, "status": "ready", "restartAt": "2026-06-02T00:00:00+00:00"}
+
+    handler.rollout_restart_fn = _restart
+    handler.do_POST()
+
+    body = bytes(req._wbuf).decode("utf-8", errors="ignore")
+    assert called["app"] == "app"
+    assert 200 in req.responses
+    assert '"restartAt": "2026-06-02T00:00:00+00:00"' in body
+
+
+def test_rollout_restart_denied_for_reader(monkeypatch):
+    monkeypatch.setenv("AE_API_RBAC", "1")
+    monkeypatch.setenv("AE_API_READ_TOKEN", "r")
+    req = make_handler("/rollout/restart/app", headers={"Authorization": "Bearer r"})
+    handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
+    handler.headers = {
+        "Authorization": "Bearer r",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
+    handler.rfile = BytesIO(req._payload)
+    called = {}
+
+    def _restart(app):
+        called["app"] = app
+        return {"ok": True}
+
+    handler.rollout_restart_fn = _restart
+    handler.do_POST()
+
+    assert called.get("app") is None
+    assert 403 in req.responses
+
+
+def test_rollout_restart_returns_resource_version_conflict(monkeypatch):
+    monkeypatch.setenv("AE_API_RBAC", "1")
+    monkeypatch.setenv("AE_API_ADMIN_TOKEN", "a")
+    req = make_handler("/rollout/restart/app", headers={"Authorization": "Bearer a"})
+    handler = http_api._ApiHandler(req, ("127.0.0.1", 0), None)
+    handler.headers = {
+        "Authorization": "Bearer a",
+        "Content-Length": str(len(req._payload)),
+        "Content-Type": "application/json",
+    }
+    handler.rfile = BytesIO(req._payload)
+
+    def _restart(_app):
+        raise RegistryConflictError("app", expected=5, actual=6)
+
+    handler.rollout_restart_fn = _restart
+    handler.do_POST()
+
+    body = bytes(req._wbuf).decode("utf-8", errors="ignore")
+    assert 409 in req.responses
+    assert '"error": "resource_version_conflict"' in body
+    assert '"expected": 5' in body
+    assert '"actual": 6' in body
+
+
 def test_require_role_accepts_query_token_for_get(monkeypatch):
     monkeypatch.setenv("AE_API_READ_TOKEN", "reader")
     handler = object.__new__(http_api._ApiHandler)

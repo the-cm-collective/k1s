@@ -922,8 +922,13 @@ class Reconciler:
                     or any(getattr(p, "node_port", None) is not None for p in svc_ports)
                 )
             )
+            restart_fixed_service_no_overlap = bool(rollout.get("restartAt")) and fixed_service_port
             if (
-                (serial_service_rollout or direct_containerd_alias_refresh_no_overlap)
+                (
+                    serial_service_rollout
+                    or direct_containerd_alias_refresh_no_overlap
+                    or restart_fixed_service_no_overlap
+                )
                 and strategy != "canary"
                 and getattr(manifest_for_runtime.spec, "replicas", 1) == 1
                 and fixed_service_port

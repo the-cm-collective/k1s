@@ -1739,6 +1739,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
     plan_fn = None  # type: ignore[var-annotated]
     rollout_pause_fn = None  # type: ignore[var-annotated]
     rollout_resume_fn = None  # type: ignore[var-annotated]
+    rollout_restart_fn = None  # type: ignore[var-annotated]
 
     def send_response(self, code: int, message=None):  # type: ignore[override]
         super().send_response(code, message)
@@ -2614,7 +2615,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
             if (
-                self.path.startswith("/rollout/pause/") or self.path.startswith("/rollout/resume/")
+                self.path.startswith("/rollout/pause/")
+                or self.path.startswith("/rollout/resume/")
+                or self.path.startswith("/rollout/restart/")
             ) and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
@@ -2793,6 +2796,33 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                     self._json_error(403, "rbac denies rollout resume")
                     return
                 out = self.rollout_resume_fn(app)  # type: ignore[misc]
+                self._json_ok(out)
+            except NotLeaderError as exc:
+                self._json_error_obj(409, exc.as_payload())
+            except RegistryConflictError as exc:
+                self._json_error_obj(
+                    409,
+                    {
+                        "error": "resource_version_conflict",
+                        "app": exc.app_name,
+                        "expected": exc.expected,
+                        "actual": exc.actual,
+                    },
+                )
+            except Exception as exc:  # pragma: no cover
+                self._json_error(500, str(exc))
+            return
+
+        if self.path.startswith("/rollout/restart/") and self.rollout_restart_fn is not None:
+            app = self.path.split("/", 3)[3] if self.path.count("/") >= 3 else ""
+            if not app:
+                self._json_error(400, "missing app name in path")
+                return
+            try:
+                if not self._rbac_allows("update", app):
+                    self._json_error(403, "rbac denies rollout restart")
+                    return
+                out = self.rollout_restart_fn(app)  # type: ignore[misc]
                 self._json_ok(out)
             except NotLeaderError as exc:
                 self._json_error_obj(409, exc.as_payload())
@@ -3688,12 +3718,16 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             except Exception as exc:  # pragma: no cover
                 self._json_error(500, str(exc))
             return
-        # Rollout helpers (pause/resume/canary)
+        # Rollout helpers (pause/resume/restart/canary)
         if path == "/labs/rollout":
             action = str(payload.get("action") or "").lower()
             app = str(payload.get("app") or "")
-            if action in {"pause", "resume"}:
-                fn = self.rollout_pause_fn if action == "pause" else self.rollout_resume_fn
+            if action in {"pause", "resume", "restart"}:
+                fn = {
+                    "pause": self.rollout_pause_fn,
+                    "resume": self.rollout_resume_fn,
+                    "restart": self.rollout_restart_fn,
+                }[action]
                 if fn is None:
                     self._json_error(404, f"rollout {action} not available")
                     return
@@ -5197,6 +5231,21 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "security": [{"bearerAuth": []}],
                     }
                 },
+                "/rollout/restart/{app}": {
+                    "post": {
+                        "summary": "Restart an app by creating a new rollout revision",
+                        "parameters": [
+                            {
+                                "name": "app",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
             },
         }
         # If tokens are configured, mark API as requiring bearer auth to surface the Authorize button in Swagger/ReDoc
@@ -6273,6 +6322,7 @@ def start_http_api(
     plan_fn=None,
     rollout_pause_fn=None,
     rollout_resume_fn=None,
+    rollout_restart_fn=None,
 ) -> tuple[socketserver.TCPServer, int, threading.Thread]:
     """Start the HTTP API on the given port.
 
@@ -6306,6 +6356,9 @@ def start_http_api(
     )
     handler_cls.rollout_resume_fn = (
         staticmethod(rollout_resume_fn) if rollout_resume_fn is not None else None
+    )
+    handler_cls.rollout_restart_fn = (
+        staticmethod(rollout_restart_fn) if rollout_restart_fn is not None else None
     )
 
     # Allow quick restarts by enabling SO_REUSEADDR to avoid TIME_WAIT bind errors

@@ -579,6 +579,21 @@ def build_controller_openapi_doc() -> dict[str, object]:
                     "security": [{"bearerAuth": []}],
                 }
             },
+            "/rollout/restart/{app}": {
+                "post": {
+                    "summary": "Restart an app by creating a new rollout revision",
+                    "parameters": [
+                        {
+                            "name": "app",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                    "security": [{"bearerAuth": []}],
+                }
+            },
         },
     }
     if tokens_configured:

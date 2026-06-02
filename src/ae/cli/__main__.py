@@ -22,6 +22,7 @@ from ae.config.manager import ConfigManager
 from ae.controller.health import HealthManager
 from ae.controller.inference_cell import InferenceCellController, InferenceCellSetController
 from ae.controller.reconciler import Reconciler, ReconcileReport
+from ae.controller.rollout import mutate_rollout_manifest
 from ae.controller.spec import (
     AppManifest,
     InferenceCellManifest,
@@ -825,8 +826,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout", type=int, default=180, help="Rollout wait timeout seconds for online apply"
     )
 
-    # rollout pause/resume
-    rollout_cmd = subparsers.add_parser("rollout", help="Control rollout behavior (pause/resume)")
+    # rollout pause/resume/restart
+    rollout_cmd = subparsers.add_parser(
+        "rollout", help="Control rollout behavior (pause/resume/restart)"
+    )
     rollout_sub = rollout_cmd.add_subparsers(dest="rollout_cmd", required=True)
     r_pause = rollout_sub.add_parser("pause", help="Pause rollout for a workload/app")
     _add_namespace_arg(r_pause)
@@ -834,6 +837,12 @@ def build_parser() -> argparse.ArgumentParser:
     r_resume = rollout_sub.add_parser("resume", help="Resume rollout for a workload/app")
     _add_namespace_arg(r_resume)
     r_resume.add_argument("name", help="Workload name")
+    r_restart = rollout_sub.add_parser(
+        "restart",
+        help="Restart a workload/app by creating a new revision even when the spec is unchanged",
+    )
+    _add_namespace_arg(r_restart)
+    r_restart.add_argument("name", help="Workload name")
 
     # api tokens helper
     api_cmd = subparsers.add_parser("api", help="HTTP API helpers")
@@ -3440,7 +3449,7 @@ def handle_status(
 def handle_rollout(
     args: argparse.Namespace, store: SQLiteStateStore, reconciler: Reconciler
 ) -> int:
-    if args.rollout_cmd not in {"pause", "resume"}:
+    if args.rollout_cmd not in {"pause", "resume", "restart"}:
         print("unsupported rollout command")
         return 2
     app = _resolve_app_name(args.name, getattr(args, "namespace", None)) or args.name
@@ -3449,10 +3458,8 @@ def handle_rollout(
         print(f"no revisions recorded for {_display_app_name(app)}")
         return 1
     man = store.get_revision_manifest(app, revs[0].revision)
-    rollout = dict(getattr(man.spec, "rollout", {}) or {})
-    rollout["pause"] = True if args.rollout_cmd == "pause" else False
-    new_spec = man.spec.model_copy(update={"rollout": rollout})
-    updated = man.model_copy(update={"spec": new_spec})
+    updated, restart_at = mutate_rollout_manifest(man, args.rollout_cmd)
+    new_spec = updated.spec
     try:
         existing = store.get_registered_entry(app)
         src = existing.source if existing else "cli"
@@ -3464,9 +3471,12 @@ def handle_rollout(
             expected_resource_version=(existing.resource_version if existing else None),
         )
         if _ha_mode_enabled():
+            detail = f"resourceVersion={rv}"
+            if restart_at:
+                detail += f" restartAt={restart_at}"
             print(
                 f"rollout {args.rollout_cmd} desired state for {_display_app_name(app)}: "
-                f"resourceVersion={rv}"
+                f"{detail}"
             )
             return 0
     except RegistryConflictError as exc:
@@ -3475,9 +3485,14 @@ def handle_rollout(
     except Exception:
         pass
     report = reconciler.reconcile(updated)
-    print(
-        f"rollout {args.rollout_cmd} {_display_app_name(app)}: rev={report.revision} status={report.revision_status} ready={report.ready_replicas}/{new_spec.replicas}"
+    detail = (
+        f"rollout {args.rollout_cmd} {_display_app_name(app)}: "
+        f"rev={report.revision} status={report.revision_status} "
+        f"ready={report.ready_replicas}/{new_spec.replicas}"
     )
+    if restart_at:
+        detail += f" restartAt={restart_at}"
+    print(detail)
     return 0
 
 
