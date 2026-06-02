@@ -26,6 +26,17 @@ SYMBOLIC_ADVISORY_DECISION_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "blocked_conditions",
     "authoritative",
 )
+SYMBOLIC_ADVISORY_DECISION_RISKS: Final[tuple[str, ...]] = (
+    "dependency_context_incomplete",
+    "fabric_phase_gate_blocked",
+    "lora_adapter_not_ready",
+    "missing_phase_evidence",
+    "missing_symbolic_evidence",
+    "phase_report_stale",
+    "relationship_context_sparse",
+    "symbolic_blocked_condition",
+    "validation_artifact_unhealthy",
+)
 SYMBOLIC_ADVISOR_SCENARIO_EVAL_API_VERSION: Final = (
     "workerbee.ai-fabric.advisor-scenario-eval/v1"
 )

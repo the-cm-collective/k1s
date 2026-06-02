@@ -158,6 +158,14 @@ WorkerBee DAS advisory decisions use
 non-authoritative evidence records for k1s review and do not replace controller
 phase gates.
 
+The shared advisory risk vocabulary currently includes
+`symbolic_blocked_condition`, `missing_symbolic_evidence`,
+`relationship_context_sparse`, `dependency_context_incomplete`,
+`validation_artifact_unhealthy`, `fabric_phase_gate_blocked`,
+`missing_phase_evidence`, `phase_report_stale`, and
+`lora_adapter_not_ready`. Phase and adapter risks describe review evidence from
+WorkerBee DAS scenarios; k1s remains the authority for opening fabric gates.
+
 WorkerBee advisor scenario evaluations use
 `workerbee.ai-fabric.advisor-scenario-eval/v1`. Required top-level artifact
 fields are `api_version`, `run_id`, `scenario_count`, `results`, and `ok`.

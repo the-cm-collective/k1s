@@ -35,6 +35,7 @@ from ae.fabric.phase_assurance import (
 from ae.fabric.symbolic import (
     SYMBOLIC_ADVISORY_DECISION_API_VERSION,
     SYMBOLIC_ADVISORY_DECISION_REQUIRED_FIELDS,
+    SYMBOLIC_ADVISORY_DECISION_RISKS,
     SYMBOLIC_ADVISOR_SCENARIO_EVAL_API_VERSION,
     SYMBOLIC_ADVISOR_SCENARIO_EVAL_REQUIRED_FIELDS,
     SYMBOLIC_ADVISOR_SCENARIO_RESULT_REQUIRED_FIELDS,
@@ -71,6 +72,17 @@ def test_symbolic_relationship_vocabulary_matches_workerbee_runtime_facts() -> N
         "risks",
         "blocked_conditions",
         "authoritative",
+    )
+    assert SYMBOLIC_ADVISORY_DECISION_RISKS == (
+        "dependency_context_incomplete",
+        "fabric_phase_gate_blocked",
+        "lora_adapter_not_ready",
+        "missing_phase_evidence",
+        "missing_symbolic_evidence",
+        "phase_report_stale",
+        "relationship_context_sparse",
+        "symbolic_blocked_condition",
+        "validation_artifact_unhealthy",
     )
     assert SYMBOLIC_ADVISOR_SCENARIO_EVAL_API_VERSION == (
         "workerbee.ai-fabric.advisor-scenario-eval/v1"
