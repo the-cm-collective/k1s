@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
 from docker.errors import NotFound
 
 from ae.controller.spec import AppManifest, AppSpec, Metadata, PortSpec, ServiceSpec
@@ -402,7 +403,7 @@ def test_port_mapping_with_multi_service_ports():
     assert svc_map.get(9090) == 9090
 
 
-def test_port_mapping_falls_back_when_port_busy():
+def test_port_mapping_raises_when_service_port_unavailable():
     client = FakeDockerClient()
     runtime = DockerRuntime(client=client)
 
@@ -419,20 +420,18 @@ def test_port_mapping_falls_back_when_port_busy():
 
     with (
         mock.patch.object(runtime, "_host_ports_in_use", return_value=set()),
-        mock.patch("ae.runtime.docker_runtime.choose_host_port", return_value=(18123, False)),
+        mock.patch("ae.runtime.docker_runtime.choose_host_port", return_value=(None, False)),
+        pytest.raises(RuntimeError, match="service.port 18080"),
     ):
-        mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
+        runtime._port_mapping(  # type: ignore[attr-defined]
             manifest.spec.ports,
             manifest.metadata.name,
             service_port=manifest.spec.service.port,  # type: ignore[arg-type]
             service_target=manifest.spec.service.target_port,  # type: ignore[arg-type]
         )
 
-    assert mapping.get("8080/tcp") == 18123
-    assert svc_map.get(8080) == 18123
 
-
-def test_port_mapping_skips_ports_already_in_use():
+def test_port_mapping_checks_blocked_ports_without_fallback():
     client = FakeDockerClient()
     runtime = DockerRuntime(client=client)
 
@@ -445,12 +444,11 @@ def test_port_mapping_skips_ports_already_in_use():
         }
     )
 
-    def fake_choose_host_port(port, **kwargs):  # noqa: ANN001
+    def fake_choose_host_port(_port, **kwargs):  # noqa: ANN001
         blocked = kwargs.get("blocked") or set()
+        assert kwargs.get("allow_fallback") is False
         assert 18080 in blocked
-        if port in blocked:
-            return port + 1, False
-        return port, True
+        return None, False
 
     with (
         mock.patch.object(runtime, "_host_ports_in_use", return_value={18080}),
@@ -458,16 +456,14 @@ def test_port_mapping_skips_ports_already_in_use():
             "ae.runtime.docker_runtime.choose_host_port",
             side_effect=fake_choose_host_port,
         ),
+        pytest.raises(RuntimeError, match="service.port 18080"),
     ):
-        mapping, svc_map = runtime._port_mapping(  # type: ignore[attr-defined]
+        runtime._port_mapping(  # type: ignore[attr-defined]
             manifest.spec.ports,
             manifest.metadata.name,
             service_port=manifest.spec.service.port,  # type: ignore[arg-type]
             service_target=manifest.spec.service.target_port,  # type: ignore[arg-type]
         )
-
-    assert mapping.get("8080/tcp") == 18081
-    assert svc_map.get(8080) == 18081
 
 
 def test_serial_service_rollout_removes_previous_revision(monkeypatch):
@@ -483,6 +479,10 @@ def test_serial_service_rollout_removes_previous_revision(monkeypatch):
                 update={"service": ServiceSpec(port=18080, targetPort=8080)}
             )
         }
+    )
+    monkeypatch.setattr(
+        "ae.runtime.docker_runtime.choose_host_port",
+        lambda preferred, **_kwargs: (preferred, True),
     )
 
     result = runtime.ensure_app(manifest, revision=1)

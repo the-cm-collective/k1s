@@ -170,7 +170,11 @@ class PodmanRuntime(RuntimeAdapter):
             if getattr(manifest.spec.service, "ports", None):
                 svc_ports_list = list(manifest.spec.service.ports)
 
-        strict_service = self._serial_service_rollout and not keep_old and svc_port is not None
+        strict_service = (
+            not keep_old
+            and manifest.spec.replicas == 1
+            and (svc_port is not None or bool(svc_ports_list))
+        )
         if strict_service and old:
             for c in list(old):
                 self._stop_and_remove(c.get("Id", ""))
@@ -1396,15 +1400,14 @@ class PodmanRuntime(RuntimeAdapter):
                         )
                     if portnum is not None and tgt is not None:
                         chosen, used_preferred = choose_host_port(
-                            int(portnum), reserved=reserved_ports
+                            int(portnum),
+                            reserved=reserved_ports,
+                            allow_fallback=False,
                         )
                         if chosen is None:
-                            LOGGER.warning(
-                                "service port %s for app %s is unavailable; skipping publish",
-                                portnum,
-                                app,
+                            raise RuntimeError(
+                                f"service.port {portnum} for app {app} is unavailable"
                             )
-                            continue
                         if not used_preferred:
                             LOGGER.warning(
                                 "service port %s for app %s already in use; assigning %s",
@@ -1418,13 +1421,13 @@ class PodmanRuntime(RuntimeAdapter):
                     continue
         elif svc_port is not None:
             target = int(svc_target) if svc_target is not None else int(svc_port)
-            chosen, used_preferred = choose_host_port(int(svc_port), reserved=reserved_ports)
+            chosen, used_preferred = choose_host_port(
+                int(svc_port),
+                reserved=reserved_ports,
+                allow_fallback=False,
+            )
             if chosen is None:
-                LOGGER.warning(
-                    "service port %s for app %s is unavailable; skipping publish",
-                    svc_port,
-                    app,
-                )
+                raise RuntimeError(f"service.port {svc_port} for app {app} is unavailable")
             else:
                 if not used_preferred:
                     LOGGER.warning(

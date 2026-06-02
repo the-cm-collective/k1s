@@ -48,6 +48,22 @@ def _manifest_with_sidecar() -> AppManifest:
     )
 
 
+def _manifest_with_service() -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "docker.io/library/demo-shell:latest",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 8080}],
+                "service": {"port": 18180, "targetPort": 8080},
+            },
+        }
+    )
+
+
 class _FakeGrpcError(grpc.RpcError if grpc is not None else Exception):  # type: ignore[misc]
     def __init__(self, code, details: str) -> None:
         super().__init__()
@@ -110,6 +126,10 @@ class _PB2:
         def __init__(self, **kwargs) -> None:
             self.__dict__.update(kwargs)
 
+    class PortMapping:
+        def __init__(self, **kwargs) -> None:
+            self.__dict__.update(kwargs)
+
     class RunPodSandboxRequest:
         def __init__(self, config) -> None:
             self.config = config
@@ -141,6 +161,68 @@ class _PodCleanupPB2(_PB2):
     class RemovePodSandboxRequest:
         def __init__(self, *, pod_sandbox_id: str) -> None:
             self.pod_sandbox_id = pod_sandbox_id
+
+
+def test_cri_runtime_service_port_mapping_is_exact(monkeypatch) -> None:
+    runtime = CRIRuntime()
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+
+    def fake_choose(preferred, **kwargs):  # noqa: ANN001
+        assert preferred == 18180
+        assert kwargs.get("allow_fallback") is False
+        return preferred, True
+
+    monkeypatch.setattr(cri_runtime_module, "choose_host_port", fake_choose)
+
+    mappings, port_map = runtime._port_mappings(_manifest_with_service())
+
+    assert len(mappings) == 1
+    assert mappings[0].container_port == 8080
+    assert mappings[0].host_port == 18180
+    assert port_map == {8080: 18180}
+
+
+def test_cri_runtime_service_port_mapping_raises_when_unavailable(monkeypatch) -> None:
+    runtime = CRIRuntime()
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(cri_runtime_module, "choose_host_port", lambda *_a, **_k: (None, False))
+
+    with pytest.raises(RuntimeError, match="service.port 18180"):
+        runtime._port_mappings(_manifest_with_service())
+
+
+def test_cri_runtime_service_rollout_removes_old_revision_before_create(monkeypatch) -> None:
+    runtime = CRIRuntime()
+    old_pod = SimpleNamespace(
+        id="old-pod",
+        labels={
+            runtime.APP_LABEL: "default/demo",
+            runtime.POD_LABEL: "default/demo-rev0-0",
+            runtime.REVISION_LABEL: "0",
+        },
+    )
+    events: list[str] = []
+
+    monkeypatch.setattr(runtime, "_ensure_clients", lambda: None)
+    monkeypatch.setattr(runtime, "_ensure_image", lambda _image: None)
+    monkeypatch.setattr(runtime, "_list_pods", lambda _app_name: [old_pod])
+    monkeypatch.setattr(runtime, "_build_states", lambda _manifest, _revision: [])
+    monkeypatch.setattr(
+        runtime,
+        "_stop_and_remove_pod",
+        lambda _manifest, _pod: events.append("remove-old"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_run_pod",
+        lambda *_args, **_kwargs: events.append("create-new"),
+    )
+
+    result = runtime.ensure_app(_manifest_with_service(), revision=1)
+
+    assert events == ["remove-old", "create-new"]
+    assert result.removed == 1
+    assert result.created == 1
 
 
 def test_cri_runtime_detects_stale_pod_sandbox_error() -> None:

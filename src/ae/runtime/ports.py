@@ -45,6 +45,7 @@ def choose_host_port(
     *,
     reserved: set[int] | None = None,
     blocked: set[int] | None = None,
+    allow_fallback: bool = True,
     search_span: int = _DEFAULT_SEARCH_SPAN,
 ) -> tuple[int | None, bool]:
     """Pick an available host port, preferring `preferred` when possible.
@@ -52,6 +53,7 @@ def choose_host_port(
     Returns (port, used_preferred). If no port could be reserved, returns (None, False).
     `reserved` tracks ports picked during in-process planning so we don't assign
     duplicates before containers actually bind to them.
+    When `allow_fallback` is false, only the preferred port is considered.
     """
 
     if preferred is None:
@@ -60,7 +62,12 @@ def choose_host_port(
     reserved_ports = reserved if reserved is not None else set()
     blocked_ports = blocked if blocked is not None else set()
 
-    for candidate in _port_candidates(int(preferred), search_span):
+    candidates = (
+        (int(preferred),)
+        if not allow_fallback
+        else _port_candidates(int(preferred), search_span)
+    )
+    for candidate in candidates:
         if candidate in reserved_ports or candidate in blocked_ports:
             continue
         if _port_is_free(candidate):

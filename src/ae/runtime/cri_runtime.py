@@ -149,6 +149,21 @@ class CRIRuntime(RuntimeAdapter):
 
         is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
         job_backoff_limit = self._job_backoff_limit(manifest) if is_job else None
+        svc = getattr(manifest.spec, "service", None)
+        strict_service = (
+            not keep_old
+            and manifest.spec.replicas == 1
+            and svc is not None
+            and (getattr(svc, "port", None) is not None or bool(getattr(svc, "ports", None)))
+        )
+        if strict_service and old:
+            for pod in list(old):
+                try:
+                    self._stop_and_remove_pod(manifest, pod)
+                    removed += 1
+                except Exception as exc:
+                    LOGGER.warning("Failed to remove old pod before service port rollout: %s", exc)
+            old = []
 
         for rid in desired_replica_ids:
             try:
@@ -3189,7 +3204,7 @@ class CRIRuntime(RuntimeAdapter):
 
         if getattr(svc, "ports", None):
             for sp in svc.ports:
-                with contextlib.suppress(Exception):
+                try:
                     target = getattr(sp, "target_port", None)
                     if target is None:
                         name = getattr(sp, "name", None)
@@ -3200,10 +3215,20 @@ class CRIRuntime(RuntimeAdapter):
                             target = ports_by_number.get(int(portnum))
                     if target is None or getattr(sp, "port", None) is None:
                         continue
-                    host_port, _ = choose_host_port(int(sp.port), reserved=reserved)
+                    host_port, _ = choose_host_port(
+                        int(sp.port),
+                        reserved=reserved,
+                        allow_fallback=False,
+                    )
                     if host_port is None:
-                        continue
+                        raise RuntimeError(
+                            f"service.port {sp.port} for app {app_key_for_manifest(manifest)} is unavailable"
+                        )
                     add_mapping(int(target), int(host_port), str(getattr(sp, "protocol", "TCP")))
+                except RuntimeError:
+                    raise
+                except Exception:
+                    continue
         elif getattr(svc, "port", None) is not None:
             target = getattr(svc, "target_port", None)
             if target is None:
@@ -3212,9 +3237,17 @@ class CRIRuntime(RuntimeAdapter):
                 except Exception:
                     target = None
             if target is not None:
-                host_port, _ = choose_host_port(int(svc.port), reserved=reserved)
+                host_port, _ = choose_host_port(
+                    int(svc.port),
+                    reserved=reserved,
+                    allow_fallback=False,
+                )
                 if host_port is not None:
                     add_mapping(int(target), int(host_port), "TCP")
+                else:
+                    raise RuntimeError(
+                        f"service.port {svc.port} for app {app_key_for_manifest(manifest)} is unavailable"
+                    )
 
         return mappings, port_map
 

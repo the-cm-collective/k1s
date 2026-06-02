@@ -339,14 +339,15 @@ class ContainerdRuntime(PodmanRuntime):
                                 by_num.get(int(portnum)) if portnum is not None else None
                             )
                         if portnum is not None and tgt is not None:
-                            chosen, used_preferred = self._choose_host_port(int(portnum), reserved_ports)
+                            chosen, used_preferred = self._choose_host_port(
+                                int(portnum),
+                                reserved_ports,
+                                allow_fallback=False,
+                            )
                             if chosen is None:
-                                LOGGER.warning(
-                                    "service port %s for app %s is unavailable; skipping publish",
-                                    portnum,
-                                    app,
+                                raise RuntimeError(
+                                    f"service.port {portnum} for app {app} is unavailable"
                                 )
-                                continue
                             if not used_preferred:
                                 LOGGER.warning(
                                     "service port %s for app %s already in use; assigning %s",
@@ -360,13 +361,13 @@ class ContainerdRuntime(PodmanRuntime):
                         continue
             elif svc_port is not None:
                 target = int(svc_target) if svc_target is not None else int(svc_port)
-                chosen, used_preferred = self._choose_host_port(int(svc_port), reserved_ports)
+                chosen, used_preferred = self._choose_host_port(
+                    int(svc_port),
+                    reserved_ports,
+                    allow_fallback=False,
+                )
                 if chosen is None:
-                    LOGGER.warning(
-                        "service port %s for app %s is unavailable; skipping publish",
-                        svc_port,
-                        app,
-                    )
+                    raise RuntimeError(f"service.port {svc_port} for app {app} is unavailable")
                 else:
                     if not used_preferred:
                         LOGGER.warning(
@@ -858,10 +859,20 @@ class ContainerdRuntime(PodmanRuntime):
             self._resource_quantity_value(manifest, "limits", "nvidia.com/gpu") is not None
         )
 
-    def _choose_host_port(self, preferred: int, reserved_ports: set[int]) -> tuple[int | None, bool]:
+    def _choose_host_port(
+        self,
+        preferred: int,
+        reserved_ports: set[int],
+        *,
+        allow_fallback: bool = True,
+    ) -> tuple[int | None, bool]:
         from ae.runtime.ports import choose_host_port
 
-        return choose_host_port(preferred, reserved=reserved_ports)
+        return choose_host_port(
+            preferred,
+            reserved=reserved_ports,
+            allow_fallback=allow_fallback,
+        )
 
     def _global_args(self) -> list[str]:
         args = [self._bin, "--address", self._address, "--namespace", self._namespace]

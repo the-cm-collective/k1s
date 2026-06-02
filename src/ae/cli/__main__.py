@@ -6109,41 +6109,177 @@ def handle_fabric(
     return 0
 
 
+def _service_ports_from_spec(svc: Any) -> dict[str, Any]:
+    ports: list[dict[str, Any]] = []
+    if getattr(svc, "ports", None):
+        for port in svc.ports:
+            try:
+                service_port = int(port.port)
+                ports.append(
+                    {
+                        "name": getattr(port, "name", "") or "",
+                        "port": service_port,
+                        "targetPort": int(getattr(port, "target_port", None) or service_port),
+                        "protocol": getattr(port, "protocol", "TCP") or "TCP",
+                    }
+                )
+            except Exception:
+                continue
+    elif getattr(svc, "port", None) is not None:
+        try:
+            service_port = int(svc.port)
+            ports.append(
+                {
+                    "name": "tcp",
+                    "port": service_port,
+                    "targetPort": int(getattr(svc, "target_port", None) or service_port),
+                    "protocol": "TCP",
+                }
+            )
+        except Exception:
+            pass
+    return {"ports": ports}
+
+
+def _endpoint_host_port(endpoint: str | None) -> int | None:
+    if not endpoint:
+        return None
+    try:
+        return int(str(endpoint).rsplit(":", 1)[1])
+    except Exception:
+        return None
+
+
+def _declared_host_ports(ports: dict[str, Any]) -> list[int]:
+    host_ports: set[int] = set()
+    for port in (ports or {}).get("ports", []):
+        if not isinstance(port, dict):
+            continue
+        try:
+            host_ports.add(int(port.get("port")))
+        except Exception:
+            continue
+    return sorted(host_ports)
+
+
+def _service_rows_from_status(
+    store: SQLiteStateStore,
+    *,
+    namespace: str | None,
+    known_apps: set[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for status in store.list_status():
+        if status.app_name in known_apps:
+            continue
+        if namespace and split_app_key(status.app_name)[0] != namespace:
+            continue
+        try:
+            manifest = store.get_revision_manifest(status.app_name, status.revision)
+        except Exception:
+            continue
+        svc = getattr(manifest.spec, "service", None)
+        if svc is None:
+            continue
+        ports = _service_ports_from_spec(svc)
+        if not ports.get("ports"):
+            continue
+        pods = store.list_pods(status.app_name)
+        endpoints = [
+            {
+                "pod_name": pod.pod_name,
+                "endpoint": pod.endpoint,
+                "ready": pod.ready,
+                "live": pod.live,
+            }
+            for pod in pods
+        ]
+        endpoint_ports = sorted(
+            {
+                host_port
+                for host_port in (_endpoint_host_port(pod.endpoint) for pod in pods)
+                if host_port is not None
+            }
+        )
+        rows.append(
+            {
+                "app_name": status.app_name,
+                "cluster_ip": None,
+                "ports": ports,
+                "host_ports": _declared_host_ports(ports),
+                "endpoint_ports": endpoint_ports,
+                "endpoints": endpoints,
+                "created_at": None,
+                "source": "declared",
+            }
+        )
+    return rows
+
+
 def handle_services(args: argparse.Namespace, store: SQLiteStateStore) -> int:
     ns_filter = normalize_namespace(getattr(args, "namespace", None))
     rows = store.list_services()
     if ns_filter:
         rows = [r for r in rows if split_app_key(r.app_name)[0] == ns_filter]
-    if args.json:
-        import json as _json
-
-        def _as_dict(s):
-            ports = getattr(s, "ports", None)
-            if ports is None:
-                detail = store.get_service(s.app_name)
-                ports = getattr(detail, "ports", {}) if detail else {}
-            return {
-                "app_name": s.app_name,
-                "cluster_ip": s.cluster_ip,
-                "ports": ports,
-                "created_at": getattr(s, "created_at", None),
-            }
-
-        print(_json.dumps([_as_dict(s) for s in rows], indent=2))
-        return 0
-    if not rows:
-        print("No services recorded.")
-        return 0
+    service_rows: list[dict[str, Any]] = []
+    known_apps = {row.app_name for row in rows}
     for svc in rows:
         ports = getattr(svc, "ports", None)
         if ports is None:
             detail = store.get_service(svc.app_name)
             ports = getattr(detail, "ports", {}) if detail else {}
+        pods = store.list_pods(svc.app_name)
+        endpoints = [
+            {
+                "pod_name": pod.pod_name,
+                "endpoint": pod.endpoint,
+                "ready": pod.ready,
+                "live": pod.live,
+            }
+            for pod in pods
+        ]
+        endpoint_ports = sorted(
+            {
+                host_port
+                for host_port in (_endpoint_host_port(pod.endpoint) for pod in pods)
+                if host_port is not None
+            }
+        )
+        service_rows.append(
+            {
+                "app_name": svc.app_name,
+                "cluster_ip": svc.cluster_ip,
+                "ports": ports,
+                "host_ports": _declared_host_ports(ports),
+                "endpoint_ports": endpoint_ports,
+                "endpoints": endpoints,
+                "created_at": getattr(svc, "created_at", None),
+                "source": "service-store",
+            }
+        )
+    service_rows.extend(
+        _service_rows_from_status(store, namespace=ns_filter, known_apps=known_apps)
+    )
+    if args.json:
+        import json as _json
+
+        print(_json.dumps(service_rows, indent=2))
+        return 0
+    if not service_rows:
+        print("No services recorded.")
+        return 0
+    for svc in service_rows:
+        ports = svc.get("ports") or {}
         port_str = ", ".join(
             f"{p.get('name', '')}:{p.get('port')}->{p.get('targetPort')}"
             for p in (ports or {}).get("ports", [])
         )
-        print(f"{_display_app_name(svc.app_name)}: ip={svc.cluster_ip} ports={port_str}")
+        host_ports = ",".join(str(port) for port in svc.get("host_ports", [])) or "-"
+        cluster_ip = svc.get("cluster_ip") or "-"
+        print(
+            f"{_display_app_name(svc['app_name'])}: ip={cluster_ip} "
+            f"ports={port_str} host_ports={host_ports}"
+        )
     return 0
 
 

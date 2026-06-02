@@ -545,6 +545,63 @@ def test_containerd_runtime_non_hostnet_declared_ports_do_not_publish_all(monkey
     assert "-p" not in run_argv
 
 
+def test_containerd_runtime_publishes_service_port_exactly(monkeypatch) -> None:
+    manifest = _manifest_with_service()
+    runtime = ContainerdRuntime(namespace="ae-test")
+    calls: list[list[str]] = []
+
+    def fake_run_ok(argv, *, allow_fail=False):
+        _ = allow_fail
+        calls.append(list(argv))
+        return SimpleNamespace(code=0, out="", err="")
+
+    def fake_choose(preferred, reserved_ports, *, allow_fallback=True):
+        assert preferred == 19080
+        assert allow_fallback is False
+        reserved_ports.add(preferred)
+        return preferred, True
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+    monkeypatch.setattr(runtime, "_container_exists", lambda _name: False)
+    monkeypatch.setattr(runtime, "_choose_host_port", fake_choose)
+
+    runtime._create_container(
+        manifest,
+        "workerbee-poc--store-rev1-0",
+        1,
+        service=(19080, 8080, None),
+    )
+
+    run_argv = calls[-1]
+    assert "-p" in run_argv
+    assert run_argv[run_argv.index("-p") + 1] == "19080:8080"
+
+
+def test_containerd_runtime_raises_when_service_port_unavailable(monkeypatch) -> None:
+    manifest = _manifest_with_service()
+    runtime = ContainerdRuntime(namespace="ae-test")
+
+    monkeypatch.setattr(
+        runtime,
+        "_run_ok",
+        lambda *_args, **_kwargs: SimpleNamespace(code=0, out="", err=""),
+    )
+    monkeypatch.setattr(runtime, "_container_exists", lambda _name: False)
+    monkeypatch.setattr(
+        runtime,
+        "_choose_host_port",
+        lambda *_args, **_kwargs: (None, False),
+    )
+
+    with pytest.raises(RuntimeError, match="service.port 19080"):
+        runtime._create_container(
+            manifest,
+            "workerbee-poc--store-rev1-0",
+            1,
+            service=(19080, 8080, None),
+        )
+
+
 def test_containerd_runtime_prefers_direct_endpoint_by_default(monkeypatch) -> None:
     monkeypatch.delenv("AE_CONTAINERD_ENDPOINT_PREFER_DIRECT", raising=False)
     runtime = ContainerdRuntime(namespace="ae-test")

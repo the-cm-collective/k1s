@@ -124,8 +124,7 @@ class DockerRuntime(RuntimeAdapter):
         created = updated = removed = 0
 
         strict_service = (
-            self._serial_service_rollout
-            and not keep_old
+            not keep_old
             and getattr(manifest.spec, "service", None)
             and manifest.spec.replicas == 1
         )
@@ -1495,15 +1494,15 @@ class DockerRuntime(RuntimeAdapter):
                         tgt = by_name.get(name) or by_num.get(int(portnum))
                     if tgt is not None and portnum is not None:
                         chosen, used_preferred = choose_host_port(
-                            int(portnum), reserved=reserved, blocked=blocked_ports
+                            int(portnum),
+                            reserved=reserved,
+                            blocked=blocked_ports,
+                            allow_fallback=False,
                         )
                         if chosen is None:
-                            LOGGER.warning(
-                                "service port %s for app %s is unavailable; skipping publish",
-                                portnum,
-                                app_name,
+                            raise RuntimeError(
+                                f"service.port {portnum} for app {app_name} is unavailable"
                             )
-                            continue
                         if not used_preferred:
                             LOGGER.warning(
                                 "service port %s for app %s already in use; assigning %s",
@@ -1512,6 +1511,8 @@ class DockerRuntime(RuntimeAdapter):
                                 chosen,
                             )
                         svc_map[int(tgt)] = int(chosen)
+                except RuntimeError:
+                    raise
                 except Exception:
                     continue
 
@@ -1527,13 +1528,14 @@ class DockerRuntime(RuntimeAdapter):
                 if port.container_port == target:
                     preferred = int(service_port)
                     chosen, used = choose_host_port(
-                        preferred, reserved=reserved, blocked=blocked_ports
+                        preferred,
+                        reserved=reserved,
+                        blocked=blocked_ports,
+                        allow_fallback=False,
                     )
                     if chosen is None:
-                        LOGGER.warning(
-                            "service port %s for app %s is unavailable; skipping publish",
-                            preferred,
-                            app_name,
+                        raise RuntimeError(
+                            f"service.port {preferred} for app {app_name} is unavailable"
                         )
                     else:
                         if not used:

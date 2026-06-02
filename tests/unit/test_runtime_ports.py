@@ -22,6 +22,24 @@ def test_choose_host_port_falls_back_when_busy(monkeypatch):
     assert checked[0] == 12345  # ensure preferred was attempted first
 
 
+def test_choose_host_port_strict_does_not_fallback(monkeypatch):
+    checked = []
+
+    def fake_port_free(port):
+        checked.append(port)
+        return port == 12347
+
+    monkeypatch.setattr(ports, "_port_is_free", fake_port_free)
+    chosen, used_preferred = ports.choose_host_port(
+        12345,
+        allow_fallback=False,
+        search_span=5,
+    )
+    assert chosen is None
+    assert used_preferred is False
+    assert checked == [12345]
+
+
 def test_choose_host_port_respects_reserved(monkeypatch):
     monkeypatch.setattr(ports, "_port_is_free", lambda _port: True)
     reserved = {12345}
