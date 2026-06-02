@@ -157,3 +157,11 @@ WorkerBee DAS advisory decisions use
 `risks`, `blocked_conditions`, and `authoritative`. These decisions remain
 non-authoritative evidence records for k1s review and do not replace controller
 phase gates.
+
+WorkerBee advisor scenario evaluations use
+`workerbee.ai-fabric.advisor-scenario-eval/v1`. Required top-level artifact
+fields are `api_version`, `run_id`, `scenario_count`, `results`, and `ok`.
+Required per-result fields are `id`, `kind`, `status`, `risks`,
+`blocked_conditions`, `checks`, and `ok`. These artifacts are repeatable
+validation evidence for advisory behavior; they do not import synthetic facts
+into k1s state and do not open a fabric phase gate by themselves.

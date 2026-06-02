@@ -26,3 +26,22 @@ SYMBOLIC_ADVISORY_DECISION_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "blocked_conditions",
     "authoritative",
 )
+SYMBOLIC_ADVISOR_SCENARIO_EVAL_API_VERSION: Final = (
+    "workerbee.ai-fabric.advisor-scenario-eval/v1"
+)
+SYMBOLIC_ADVISOR_SCENARIO_EVAL_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
+    "api_version",
+    "run_id",
+    "scenario_count",
+    "results",
+    "ok",
+)
+SYMBOLIC_ADVISOR_SCENARIO_RESULT_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
+    "id",
+    "kind",
+    "status",
+    "risks",
+    "blocked_conditions",
+    "checks",
+    "ok",
+)
