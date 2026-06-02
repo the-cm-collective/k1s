@@ -580,6 +580,8 @@ def test_containerd_runtime_publishes_service_port_exactly(monkeypatch) -> None:
 def test_containerd_runtime_raises_when_service_port_unavailable(monkeypatch) -> None:
     manifest = _manifest_with_service()
     runtime = ContainerdRuntime(namespace="ae-test")
+    runtime._SERVICE_PORT_RETRY_ATTEMPTS = 2
+    runtime._SERVICE_PORT_RETRY_DELAY_SECONDS = 0
 
     monkeypatch.setattr(
         runtime,
@@ -600,6 +602,52 @@ def test_containerd_runtime_raises_when_service_port_unavailable(monkeypatch) ->
             1,
             service=(19080, 8080, None),
         )
+
+
+def test_containerd_runtime_retries_service_port_after_same_container_removal(
+    monkeypatch,
+) -> None:
+    manifest = _manifest_with_service()
+    runtime = ContainerdRuntime(namespace="ae-test")
+    runtime._SERVICE_PORT_RETRY_ATTEMPTS = 3
+    runtime._SERVICE_PORT_RETRY_DELAY_SECONDS = 0
+    calls: list[list[str]] = []
+    events: list[str] = []
+
+    def fake_run_ok(argv, *, allow_fail=False):
+        _ = allow_fail
+        calls.append(list(argv))
+        return SimpleNamespace(code=0, out="", err="")
+
+    choose_attempts = 0
+
+    def fake_choose(preferred, reserved_ports, *, allow_fallback=True):
+        nonlocal choose_attempts
+        events.append("choose")
+        choose_attempts += 1
+        assert preferred == 19080
+        assert allow_fallback is False
+        if choose_attempts == 1:
+            return None, False
+        reserved_ports.add(preferred)
+        return preferred, True
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+    monkeypatch.setattr(runtime, "_container_exists", lambda _name: True)
+    monkeypatch.setattr(runtime, "_stop_and_remove", lambda _name: events.append("remove-old"))
+    monkeypatch.setattr(runtime, "_choose_host_port", fake_choose)
+
+    runtime._create_container(
+        manifest,
+        "workerbee-poc--store-rev1-0",
+        1,
+        service=(19080, 8080, None),
+    )
+
+    assert events == ["remove-old", "choose", "choose"]
+    run_argv = calls[-1]
+    assert "-p" in run_argv
+    assert run_argv[run_argv.index("-p") + 1] == "19080:8080"
 
 
 def test_containerd_runtime_prefers_direct_endpoint_by_default(monkeypatch) -> None:

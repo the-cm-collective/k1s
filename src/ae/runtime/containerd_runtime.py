@@ -71,6 +71,8 @@ class ContainerdRuntime(PodmanRuntime):
     """Containerd-backed runtime adapter using nerdctl."""
 
     _NERDCTL_NAME_MAX = 120
+    _SERVICE_PORT_RETRY_ATTEMPTS = 30
+    _SERVICE_PORT_RETRY_DELAY_SECONDS = 0.5
 
     def __init__(
         self,
@@ -339,10 +341,9 @@ class ContainerdRuntime(PodmanRuntime):
                                 by_num.get(int(portnum)) if portnum is not None else None
                             )
                         if portnum is not None and tgt is not None:
-                            chosen, used_preferred = self._choose_host_port(
+                            chosen, used_preferred = self._choose_service_host_port(
                                 int(portnum),
                                 reserved_ports,
-                                allow_fallback=False,
                             )
                             if chosen is None:
                                 raise RuntimeError(
@@ -361,10 +362,9 @@ class ContainerdRuntime(PodmanRuntime):
                         continue
             elif svc_port is not None:
                 target = int(svc_target) if svc_target is not None else int(svc_port)
-                chosen, used_preferred = self._choose_host_port(
+                chosen, used_preferred = self._choose_service_host_port(
                     int(svc_port),
                     reserved_ports,
-                    allow_fallback=False,
                 )
                 if chosen is None:
                     raise RuntimeError(f"service.port {svc_port} for app {app} is unavailable")
@@ -873,6 +873,24 @@ class ContainerdRuntime(PodmanRuntime):
             reserved=reserved_ports,
             allow_fallback=allow_fallback,
         )
+
+    def _choose_service_host_port(
+        self,
+        preferred: int,
+        reserved_ports: set[int],
+    ) -> tuple[int | None, bool]:
+        attempts = max(1, int(self._SERVICE_PORT_RETRY_ATTEMPTS))
+        for attempt in range(attempts):
+            chosen, used_preferred = self._choose_host_port(
+                preferred,
+                reserved_ports,
+                allow_fallback=False,
+            )
+            if chosen is not None:
+                return chosen, used_preferred
+            if attempt + 1 < attempts:
+                time.sleep(float(self._SERVICE_PORT_RETRY_DELAY_SECONDS))
+        return None, False
 
     def _global_args(self) -> list[str]:
         args = [self._bin, "--address", self._address, "--namespace", self._namespace]
