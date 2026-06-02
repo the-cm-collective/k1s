@@ -150,3 +150,10 @@ relationship vocabulary:
 
 Those facts can support F3/F5 advisory evaluation and DAS-cell evidence, but
 they do not change controller authority or open a phase gate by themselves.
+
+WorkerBee DAS advisory decisions use
+`workerbee.ai-fabric.advisory-decision/v1`. Required decision fields are
+`subject`, `intent`, `recommended_action`, `confidence`, `evidence_refs`,
+`risks`, `blocked_conditions`, and `authoritative`. These decisions remain
+non-authoritative evidence records for k1s review and do not replace controller
+phase gates.

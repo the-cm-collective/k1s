@@ -33,6 +33,8 @@ from ae.fabric.phase_assurance import (
     f5_evidence_from_store,
 )
 from ae.fabric.symbolic import (
+    SYMBOLIC_ADVISORY_DECISION_API_VERSION,
+    SYMBOLIC_ADVISORY_DECISION_REQUIRED_FIELDS,
     SYMBOLIC_FACT_NAMESPACE,
     SYMBOLIC_FACT_SOURCE_WORKERBEE_AI_FABRIC,
     SYMBOLIC_RELATIONSHIP_PREDICATES,
@@ -53,6 +55,19 @@ def test_symbolic_relationship_vocabulary_matches_workerbee_runtime_facts() -> N
     assert SYMBOLIC_FACT_NAMESPACE == "runtime"
     assert SYMBOLIC_FACT_SOURCE_WORKERBEE_AI_FABRIC == (
         "workerbee.ai-fabric.runtime-facts/v1"
+    )
+    assert SYMBOLIC_ADVISORY_DECISION_API_VERSION == (
+        "workerbee.ai-fabric.advisory-decision/v1"
+    )
+    assert SYMBOLIC_ADVISORY_DECISION_REQUIRED_FIELDS == (
+        "subject",
+        "intent",
+        "recommended_action",
+        "confidence",
+        "evidence_refs",
+        "risks",
+        "blocked_conditions",
+        "authoritative",
     )
     assert SYMBOLIC_RELATIONSHIP_PREDICATES == (
         "owns_service",
