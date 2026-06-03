@@ -36,6 +36,7 @@ from ae.controller.spec import (
     split_app_key,
 )
 from ae.controller.state import (
+    AIRuntimeProfileRecord,
     AppStatus,
     RegistryConflictError,
     SQLiteStateStore,
@@ -422,6 +423,42 @@ def build_parser() -> argparse.ArgumentParser:
     fabric_admission.add_argument("--profile", type=Path, required=True)
     fabric_admission.add_argument("--workerbee-status", type=Path, default=None)
     fabric_admission.add_argument("--json", action="store_true", help="Emit JSON output")
+    fabric_profile = fabric_sub.add_parser(
+        "runtime-profile",
+        help="Publish and inspect stored AI runtime profile evidence",
+    )
+    fabric_profile_sub = fabric_profile.add_subparsers(
+        dest="runtime_profile_cmd", required=True
+    )
+    fabric_profile_publish = fabric_profile_sub.add_parser(
+        "publish", help="Publish a non-authoritative AI runtime profile"
+    )
+    fabric_profile_publish.add_argument("--profile", type=Path, required=True)
+    fabric_profile_publish.add_argument("--workerbee-status", type=Path, default=None)
+    fabric_profile_publish.add_argument("--json", action="store_true", help="Emit JSON output")
+    fabric_profile_list = fabric_profile_sub.add_parser(
+        "list", help="List stored AI runtime profiles"
+    )
+    fabric_profile_list.add_argument("--track", default=None, help="Filter by profile track")
+    fabric_profile_list.add_argument("--json", action="store_true", help="Emit JSON output")
+    fabric_profile_show = fabric_profile_sub.add_parser(
+        "show", help="Show a stored AI runtime profile"
+    )
+    fabric_profile_show_ref = fabric_profile_show.add_mutually_exclusive_group(required=True)
+    fabric_profile_show_ref.add_argument("--run-id", default=None, help="Profile run id")
+    fabric_profile_show_ref.add_argument("--track", default=None, help="Profile track")
+    fabric_profile_show.add_argument(
+        "--latest",
+        action="store_true",
+        help="Show latest profile for --track",
+    )
+    fabric_profile_show.add_argument("--json", action="store_true", help="Emit JSON output")
+    fabric_profile_advisory = fabric_profile_sub.add_parser(
+        "advisory",
+        help="Report advisory runtime-profile evidence for an annotated manifest",
+    )
+    fabric_profile_advisory.add_argument("-f", "--file", type=Path, required=True)
+    fabric_profile_advisory.add_argument("--json", action="store_true", help="Emit JSON output")
 
     services_parser = subparsers.add_parser(
         "services", help="List Services (cluster IPs/endpoints)"
@@ -3344,6 +3381,18 @@ def handle_status(
                     if storage:
                         st_str = ", ".join(f"{s.name}:{s.mount_path}" for s in storage)
                         print(f"    storage: {st_str}")
+                    advisory = _runtime_profile_advisory_for_manifest(manifest, store)
+                    if advisory is not None:
+                        evidence = advisory.get("evidence")
+                        evidence = evidence if isinstance(evidence, dict) else {}
+                        findings = advisory.get("findings")
+                        finding_count = len(findings) if isinstance(findings, list) else 0
+                        print(
+                            "    runtime_profile_advisory: "
+                            f"track={advisory.get('track')} "
+                            f"promotion_ready={evidence.get('promotion_ready')} "
+                            f"warnings={finding_count}"
+                        )
                 except Exception:
                     pass
             pods = store.list_pods(app_name)
@@ -5687,6 +5736,9 @@ def _status_to_json(status: AppStatus, store: SQLiteStateStore, *, include_detai
                     }
                     for v in vols
                 ]
+            advisory = _runtime_profile_advisory_for_manifest(manifest, store)
+            if advisory is not None:
+                data["runtime_profile_advisory"] = advisory
         except Exception:
             pass
     return json.dumps(data, indent=2)
@@ -6090,6 +6142,8 @@ def handle_fabric(
 ) -> int:
     if args.fabric_cmd == "runtime-profile-admission":
         return _handle_fabric_runtime_profile_admission(args)
+    if args.fabric_cmd == "runtime-profile":
+        return _handle_fabric_runtime_profile(args, store)
     if args.fabric_cmd != "sessions":
         print(f"unsupported fabric command: {args.fabric_cmd}")
         return 2
@@ -6133,6 +6187,153 @@ def handle_fabric(
     return 0
 
 
+def _handle_fabric_runtime_profile(
+    args: argparse.Namespace, store: SQLiteStateStore
+) -> int:
+    cmd = getattr(args, "runtime_profile_cmd", None)
+    if cmd == "publish":
+        return _handle_fabric_runtime_profile_publish(args, store)
+    if cmd == "list":
+        return _handle_fabric_runtime_profile_list(args, store)
+    if cmd == "show":
+        return _handle_fabric_runtime_profile_show(args, store)
+    if cmd == "advisory":
+        return _handle_fabric_runtime_profile_advisory(args, store)
+    print(f"unsupported runtime-profile command: {cmd}")
+    return 2
+
+
+def _handle_fabric_runtime_profile_publish(
+    args: argparse.Namespace, store: SQLiteStateStore
+) -> int:
+    from ae.fabric.ai_runtime_profile import evaluate_ai_runtime_profile_admission
+
+    try:
+        profile = _load_json_object(Path(args.profile))
+        workerbee_status = _load_workerbee_status(
+            profile, explicit_path=getattr(args, "workerbee_status", None)
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"runtime-profile publish failed: {exc}", file=sys.stderr)
+        return 2
+
+    report = evaluate_ai_runtime_profile_admission(
+        profile, workerbee_status=workerbee_status
+    )
+    if not report.get("ok"):
+        if getattr(args, "json", False):
+            print(
+                json.dumps(
+                    {"ok": False, "stored": False, "admission": report},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print("runtime-profile publish blocked by structural admission errors")
+            _print_runtime_profile_findings(report)
+        return 1
+
+    record = store.upsert_ai_runtime_profile(
+        profile,
+        report,
+        workerbee_status=workerbee_status,
+    )
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "stored": True,
+                    "record": _runtime_profile_record_payload(record),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    print(
+        "runtime-profile published "
+        f"run_id={record.run_id} track={record.track} "
+        f"promotion_ready={str(record.promotion_ready).lower()} "
+        f"warnings={len(record.warning_codes)}"
+    )
+    return 0
+
+
+def _handle_fabric_runtime_profile_list(
+    args: argparse.Namespace, store: SQLiteStateStore
+) -> int:
+    records = store.list_ai_runtime_profiles(track=getattr(args, "track", None))
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                [_runtime_profile_record_summary(record) for record in records],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if not records:
+        print("no runtime profiles")
+        return 0
+    for record in records:
+        _print_runtime_profile_record_summary(record)
+    return 0
+
+
+def _handle_fabric_runtime_profile_show(
+    args: argparse.Namespace, store: SQLiteStateStore
+) -> int:
+    record: AIRuntimeProfileRecord | None = None
+    if getattr(args, "run_id", None):
+        record = store.get_ai_runtime_profile(str(args.run_id))
+    else:
+        if not getattr(args, "latest", False):
+            print("runtime-profile show --track requires --latest", file=sys.stderr)
+            return 2
+        record = store.latest_ai_runtime_profile(str(args.track))
+    if record is None:
+        print("runtime profile not found", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(_runtime_profile_record_payload(record), indent=2, sort_keys=True))
+        return 0
+    _print_runtime_profile_record_summary(record)
+    if record.warning_codes:
+        print(f"warning_codes={','.join(record.warning_codes)}")
+    return 0
+
+
+def _handle_fabric_runtime_profile_advisory(
+    args: argparse.Namespace, store: SQLiteStateStore
+) -> int:
+    try:
+        manifest = load_any_manifest(Path(args.file))
+    except Exception as exc:  # noqa: BLE001
+        print(f"runtime-profile advisory failed: {exc}", file=sys.stderr)
+        return 2
+
+    report = _runtime_profile_advisory_for_manifest(manifest, store)
+    if report is None:
+        from ae.fabric.ai_runtime_profile import evaluate_ai_runtime_profile_advisory
+
+        report = evaluate_ai_runtime_profile_advisory(track=None, latest_profile=None)
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    track = report.get("track") or "-"
+    profile_ref = report.get("profile_ref") if isinstance(report.get("profile_ref"), dict) else {}
+    print(
+        "runtime-profile advisory "
+        f"track={track} run_id={profile_ref.get('run_id') or '-'} "
+        f"promotion_ready={report.get('evidence', {}).get('promotion_ready')}"
+    )
+    _print_runtime_profile_findings(report)
+    return 0
+
+
 def _handle_fabric_runtime_profile_admission(args: argparse.Namespace) -> int:
     from ae.fabric.ai_runtime_profile import evaluate_ai_runtime_profile_admission
 
@@ -6165,6 +6366,67 @@ def _handle_fabric_runtime_profile_admission(args: argparse.Namespace) -> int:
                 f"{finding.get('level')}: {finding.get('code')}: {finding.get('message')}"
             )
     return 0 if report.get("ok") else 1
+
+
+def _runtime_profile_record_summary(record: AIRuntimeProfileRecord) -> dict[str, Any]:
+    return {
+        "run_id": record.run_id,
+        "track": record.track,
+        "admitted": record.admitted,
+        "promotion_ready": record.promotion_ready,
+        "warning_codes": list(record.warning_codes),
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+    }
+
+
+def _runtime_profile_record_payload(record: AIRuntimeProfileRecord) -> dict[str, Any]:
+    payload = _runtime_profile_record_summary(record)
+    payload.update(
+        {
+            "profile": record.profile,
+            "admission": record.admission,
+            "workerbee_status": record.workerbee_status,
+        }
+    )
+    return payload
+
+
+def _print_runtime_profile_record_summary(record: AIRuntimeProfileRecord) -> None:
+    print(
+        f"{record.run_id} track={record.track} admitted={str(record.admitted).lower()} "
+        f"promotion_ready={str(record.promotion_ready).lower()} "
+        f"warnings={len(record.warning_codes)} updated_at={record.updated_at.isoformat()}"
+    )
+
+
+def _print_runtime_profile_findings(report: dict[str, Any]) -> None:
+    for finding in report.get("findings", []):
+        if not isinstance(finding, dict):
+            continue
+        print(f"{finding.get('level')}: {finding.get('code')}: {finding.get('message')}")
+
+
+def _runtime_profile_advisory_for_manifest(
+    manifest: Any, store: SQLiteStateStore
+) -> dict[str, Any] | None:
+    from ae.fabric.ai_runtime_profile import (
+        evaluate_ai_runtime_profile_advisory,
+        runtime_profile_track_from_annotations,
+    )
+
+    metadata = getattr(manifest, "metadata", None)
+    annotations = getattr(metadata, "annotations", None)
+    track = runtime_profile_track_from_annotations(annotations)
+    if track is None:
+        return None
+    record = store.latest_ai_runtime_profile(track)
+    return evaluate_ai_runtime_profile_advisory(
+        track=track,
+        latest_profile=(
+            _runtime_profile_record_summary(record) if record is not None else None
+        ),
+    )
 
 
 def _load_json_object(path: Path) -> dict[str, Any]:

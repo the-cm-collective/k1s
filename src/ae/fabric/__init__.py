@@ -3,11 +3,16 @@
 from ae.fabric.ai_runtime_profile import (
     AI_RUNTIME_PROFILE_ADMISSION_API_VERSION,
     AI_RUNTIME_PROFILE_ADMISSION_KIND,
+    AI_RUNTIME_PROFILE_ADVISORY_API_VERSION,
+    AI_RUNTIME_PROFILE_ADVISORY_KIND,
     AI_RUNTIME_PROFILE_API_VERSION,
     AI_RUNTIME_PROFILE_KIND,
     AI_RUNTIME_PROFILE_REQUIRED_FIELDS,
     AI_RUNTIME_PROFILE_REQUIRED_LANES,
+    AI_RUNTIME_PROFILE_TRACK_ANNOTATION,
     evaluate_ai_runtime_profile_admission,
+    evaluate_ai_runtime_profile_advisory,
+    runtime_profile_track_from_annotations,
     validate_ai_runtime_profile,
 )
 from ae.fabric.symbolic import (
@@ -25,11 +30,16 @@ from ae.fabric.symbolic import (
 __all__ = [
     "AI_RUNTIME_PROFILE_ADMISSION_API_VERSION",
     "AI_RUNTIME_PROFILE_ADMISSION_KIND",
+    "AI_RUNTIME_PROFILE_ADVISORY_API_VERSION",
+    "AI_RUNTIME_PROFILE_ADVISORY_KIND",
     "AI_RUNTIME_PROFILE_API_VERSION",
     "AI_RUNTIME_PROFILE_KIND",
     "AI_RUNTIME_PROFILE_REQUIRED_FIELDS",
     "AI_RUNTIME_PROFILE_REQUIRED_LANES",
+    "AI_RUNTIME_PROFILE_TRACK_ANNOTATION",
     "evaluate_ai_runtime_profile_admission",
+    "evaluate_ai_runtime_profile_advisory",
+    "runtime_profile_track_from_annotations",
     "SYMBOLIC_ADVISORY_DECISION_API_VERSION",
     "SYMBOLIC_ADVISORY_DECISION_REQUIRED_FIELDS",
     "SYMBOLIC_ADVISORY_DECISION_RISKS",

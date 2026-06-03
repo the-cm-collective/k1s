@@ -147,6 +147,21 @@ This report is non-authoritative. It can expose structural profile errors and
 promotion warnings, but it does not change scheduler, controller, or reconcile
 behavior until a later enforcement design explicitly wires it into admission.
 
+The CLI can persist admitted dry-run evidence for later inspection:
+
+```bash
+ae fabric runtime-profile publish --profile ai-runtime-profile.json --workerbee-status workerbee-status.json
+ae fabric runtime-profile list --track baseline
+ae fabric runtime-profile show --track baseline --latest --json
+```
+
+Published profiles remain non-authoritative. Structural admission errors block
+publication; warning findings are stored and keep `promotion_ready=false`.
+Workloads may opt into advisory status evidence with
+`fabric.k1s.io/runtime-profile-track: baseline|quality|lora-adapter-smoke`.
+`ae status --json --wide` and `ae fabric runtime-profile advisory -f <manifest>`
+then include the latest stored profile for that track as advisory evidence only.
+
 ## Later Hyperon Path
 
 Hyperon belongs at the control-plane and fabric layer, but in a bounded sequence:

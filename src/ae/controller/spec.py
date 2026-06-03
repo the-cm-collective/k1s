@@ -23,6 +23,7 @@ class Metadata(BaseModel):
     name: str
     namespace: Optional[str] = Field(default=DEFAULT_NAMESPACE)
     labels: dict | None = None
+    annotations: dict | None = None
 
     @field_validator("namespace", mode="before")
     @classmethod

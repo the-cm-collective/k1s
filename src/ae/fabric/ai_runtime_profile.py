@@ -9,6 +9,11 @@ AI_RUNTIME_PROFILE_ADMISSION_API_VERSION: Final = (
     "k1s.fabric.ai-runtime-profile-admission/v1"
 )
 AI_RUNTIME_PROFILE_ADMISSION_KIND: Final = "AIFabricRuntimeProfileAdmissionReport"
+AI_RUNTIME_PROFILE_ADVISORY_API_VERSION: Final = (
+    "k1s.fabric.ai-runtime-profile-advisory/v1"
+)
+AI_RUNTIME_PROFILE_ADVISORY_KIND: Final = "AIFabricRuntimeProfileAdvisoryReport"
+AI_RUNTIME_PROFILE_TRACK_ANNOTATION: Final = "fabric.k1s.io/runtime-profile-track"
 AI_RUNTIME_PROFILE_SOAK_PROMOTION_DURATION_SECONDS: Final = 1800
 AI_RUNTIME_PROFILE_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "api_version",
@@ -107,6 +112,98 @@ def evaluate_ai_runtime_profile_admission(
         },
         "requirements": _profile_requirements(profile),
         "evidence": _profile_evidence(profile, workerbee_status=workerbee_status),
+        "findings": findings,
+    }
+
+
+def runtime_profile_track_from_annotations(
+    annotations: Mapping[str, Any] | None,
+) -> str | None:
+    """Return the requested advisory runtime-profile track from metadata annotations."""
+
+    if not isinstance(annotations, Mapping):
+        return None
+    track = annotations.get(AI_RUNTIME_PROFILE_TRACK_ANNOTATION)
+    if not isinstance(track, str):
+        return None
+    track = track.strip()
+    return track or None
+
+
+def evaluate_ai_runtime_profile_advisory(
+    *,
+    track: str | None,
+    latest_profile: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a non-authoritative advisory report for an annotated workload."""
+
+    track_value = str(track or "").strip()
+    findings: list[dict[str, str]] = []
+    if not track_value:
+        findings.append(
+            _finding(
+                "warning",
+                "AI_RUNTIME_PROFILE_TRACK_ANNOTATION_MISSING",
+                f"{AI_RUNTIME_PROFILE_TRACK_ANNOTATION} annotation is not set",
+            )
+        )
+    if track_value and latest_profile is None:
+        findings.append(
+            _finding(
+                "warning",
+                "AI_RUNTIME_PROFILE_TRACK_PROFILE_MISSING",
+                f"no stored AI runtime profile is available for track {track_value}",
+            )
+        )
+
+    profile_ref: dict[str, Any] | None = None
+    warning_codes: list[str] = []
+    admitted = None
+    promotion_ready = None
+    if latest_profile is not None:
+        profile_ref = {
+            "run_id": str(latest_profile.get("run_id") or ""),
+            "track": str(latest_profile.get("track") or track_value),
+            "updated_at": latest_profile.get("updated_at"),
+        }
+        admitted = bool(latest_profile.get("admitted"))
+        promotion_ready = bool(latest_profile.get("promotion_ready"))
+        raw_warning_codes = latest_profile.get("warning_codes")
+        if isinstance(raw_warning_codes, list):
+            warning_codes = [str(item) for item in raw_warning_codes if str(item)]
+        if warning_codes:
+            findings.append(
+                _finding(
+                    "warning",
+                    "AI_RUNTIME_PROFILE_ADVISORY_PROFILE_WARNINGS",
+                    "latest stored AI runtime profile has admission warnings",
+                )
+            )
+        if not promotion_ready:
+            findings.append(
+                _finding(
+                    "warning",
+                    "AI_RUNTIME_PROFILE_ADVISORY_NOT_PROMOTION_READY",
+                    "latest stored AI runtime profile is not promotion-ready",
+                )
+            )
+
+    return {
+        "api_version": AI_RUNTIME_PROFILE_ADVISORY_API_VERSION,
+        "kind": AI_RUNTIME_PROFILE_ADVISORY_KIND,
+        "ok": True,
+        "mode": "advisory",
+        "authoritative": False,
+        "controller_authority": "k1s",
+        "annotation": AI_RUNTIME_PROFILE_TRACK_ANNOTATION,
+        "track": track_value or None,
+        "profile_ref": profile_ref,
+        "evidence": {
+            "latest_profile_available": latest_profile is not None,
+            "admitted": admitted,
+            "promotion_ready": promotion_ready,
+            "warning_codes": warning_codes,
+        },
         "findings": findings,
     }
 

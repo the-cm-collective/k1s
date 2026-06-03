@@ -474,6 +474,22 @@ class FabricSessionRecord:
     updated_at: datetime
 
 
+@dataclass(slots=True)
+class AIRuntimeProfileRecord:
+    """Stored non-authoritative AI runtime profile evidence."""
+
+    run_id: str
+    track: str
+    profile: dict
+    admission: dict
+    workerbee_status: dict | None
+    warning_codes: list[str]
+    admitted: bool
+    promotion_ready: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 class SQLiteStateStore:
     """Minimal state store; sqlite by default, Postgres via AE_STATE_DSN or dsn=."""
 
@@ -862,6 +878,28 @@ class SQLiteStateStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_inference_fabric_sessions_cell ON inference_fabric_sessions(cell_key)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ai_runtime_profiles (
+                  run_id TEXT PRIMARY KEY,
+                  track TEXT NOT NULL,
+                  profile_json TEXT NOT NULL,
+                  admission_json TEXT NOT NULL,
+                  workerbee_status_json TEXT,
+                  warning_codes_json TEXT NOT NULL,
+                  admitted INTEGER NOT NULL,
+                  promotion_ready INTEGER NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_ai_runtime_profiles_track_updated
+                ON ai_runtime_profiles(track, updated_at DESC)
+                """
             )
             conn.execute(
                 """
@@ -2695,6 +2733,156 @@ class SQLiteStateStore:
                 )
             )
         return out
+
+    def upsert_ai_runtime_profile(
+        self,
+        profile: dict,
+        admission: dict,
+        *,
+        workerbee_status: dict | None = None,
+    ) -> AIRuntimeProfileRecord:
+        run_id = str(profile.get("run_id") or "").strip()
+        track = str(profile.get("track") or "").strip()
+        if not run_id:
+            raise ValueError("AI runtime profile run_id is required")
+        if not track:
+            raise ValueError("AI runtime profile track is required")
+        warning_codes = self._ai_runtime_profile_warning_codes(admission)
+        admitted = bool(admission.get("ok") and admission.get("admitted"))
+        promotion_ready = admitted and not warning_codes
+        now_iso = datetime.now(timezone.utc).isoformat()
+        created_at_iso = now_iso
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM ai_runtime_profiles WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if existing is not None and existing[0]:
+                created_at_iso = str(existing[0])
+            conn.execute(
+                """
+                INSERT INTO ai_runtime_profiles (
+                  run_id, track, profile_json, admission_json, workerbee_status_json,
+                  warning_codes_json, admitted, promotion_ready, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                  track = excluded.track,
+                  profile_json = excluded.profile_json,
+                  admission_json = excluded.admission_json,
+                  workerbee_status_json = excluded.workerbee_status_json,
+                  warning_codes_json = excluded.warning_codes_json,
+                  admitted = excluded.admitted,
+                  promotion_ready = excluded.promotion_ready,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    run_id,
+                    track,
+                    json.dumps(profile, sort_keys=True),
+                    json.dumps(admission, sort_keys=True),
+                    json.dumps(workerbee_status, sort_keys=True)
+                    if workerbee_status is not None
+                    else None,
+                    json.dumps(warning_codes, sort_keys=True),
+                    1 if admitted else 0,
+                    1 if promotion_ready else 0,
+                    created_at_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+        record = self.get_ai_runtime_profile(run_id)
+        if record is None:
+            raise RuntimeError(f"failed to read stored AI runtime profile {run_id}")
+        return record
+
+    def get_ai_runtime_profile(self, run_id: str) -> AIRuntimeProfileRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT run_id, track, profile_json, admission_json, workerbee_status_json,
+                       warning_codes_json, admitted, promotion_ready, created_at, updated_at
+                FROM ai_runtime_profiles
+                WHERE run_id = ?
+                """,
+                (str(run_id),),
+            ).fetchone()
+        return self._ai_runtime_profile_from_row(row)
+
+    def latest_ai_runtime_profile(self, track: str) -> AIRuntimeProfileRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT run_id, track, profile_json, admission_json, workerbee_status_json,
+                       warning_codes_json, admitted, promotion_ready, created_at, updated_at
+                FROM ai_runtime_profiles
+                WHERE track = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (str(track),),
+            ).fetchone()
+        return self._ai_runtime_profile_from_row(row)
+
+    def list_ai_runtime_profiles(self, track: str | None = None) -> list[AIRuntimeProfileRecord]:
+        with self._connect() as conn:
+            if track:
+                rows = conn.execute(
+                    """
+                    SELECT run_id, track, profile_json, admission_json, workerbee_status_json,
+                           warning_codes_json, admitted, promotion_ready, created_at, updated_at
+                    FROM ai_runtime_profiles
+                    WHERE track = ?
+                    ORDER BY updated_at DESC
+                    """,
+                    (str(track),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT run_id, track, profile_json, admission_json, workerbee_status_json,
+                           warning_codes_json, admitted, promotion_ready, created_at, updated_at
+                    FROM ai_runtime_profiles
+                    ORDER BY updated_at DESC
+                    """
+                ).fetchall()
+        return [
+            item for row in rows if (item := self._ai_runtime_profile_from_row(row)) is not None
+        ]
+
+    def _ai_runtime_profile_from_row(self, row) -> AIRuntimeProfileRecord | None:
+        if row is None:
+            return None
+        profile = self._json_dict(row[2])
+        admission = self._json_dict(row[3])
+        warning_codes = [str(item) for item in self._json_list(row[5])]
+        return AIRuntimeProfileRecord(
+            run_id=str(row[0]),
+            track=str(row[1]),
+            profile=profile,
+            admission=admission,
+            workerbee_status=self._json_dict(row[4]) if row[4] else None,
+            warning_codes=warning_codes,
+            admitted=bool(row[6]),
+            promotion_ready=bool(row[7]),
+            created_at=self._parse_iso_datetime(row[8]),
+            updated_at=self._parse_iso_datetime(row[9]),
+        )
+
+    @staticmethod
+    def _ai_runtime_profile_warning_codes(admission: dict) -> list[str]:
+        codes: list[str] = []
+        findings = admission.get("findings")
+        if not isinstance(findings, list):
+            return codes
+        for finding in findings:
+            if not isinstance(finding, dict) or finding.get("level") != "warning":
+                continue
+            code = str(finding.get("code") or "").strip()
+            if code and code not in codes:
+                codes.append(code)
+        return codes
 
     @staticmethod
     def _json_dict(raw: str | None) -> dict:
