@@ -14,12 +14,14 @@ from ae.fabric.ai_runtime_profile import (
 )
 
 
-def _valid_profile() -> dict[str, object]:
-    return {
+def _valid_profile(
+    *, track: str = "lora-adapter-smoke", soak: dict[str, object] | None = None
+) -> dict[str, object]:
+    profile: dict[str, object] = {
         "api_version": AI_RUNTIME_PROFILE_API_VERSION,
         "kind": AI_RUNTIME_PROFILE_KIND,
         "run_id": "acceptance-closeout-test",
-        "track": "lora-adapter-smoke",
+        "track": track,
         "model_lanes": {
             "coordinator": {
                 "model": "Qwen/Qwen2.5-3B-Instruct-AWQ",
@@ -54,6 +56,28 @@ def _valid_profile() -> dict[str, object]:
         },
         "authoritative": False,
         "controller_authority": "k1s",
+    }
+    if soak is not None:
+        evidence = profile["evidence"]
+        assert isinstance(evidence, dict)
+        evidence["soak"] = soak
+    return profile
+
+
+def _passing_soak(duration_seconds: int, *, track: str = "baseline") -> dict[str, object]:
+    return {
+        "suite": "mixed-soak",
+        "track": track,
+        "ok": True,
+        "duration_seconds": duration_seconds,
+        "workers": 3,
+        "request_count": 42,
+        "success_rate": 1.0,
+        "gpu_sample_count": 4,
+        "final_vram_growth_mib": 12,
+        "vram_growth_mib_max": 4096,
+        "promotion_duration_seconds": 1800,
+        "promotion_ready": duration_seconds >= 1800,
     }
 
 
@@ -113,7 +137,46 @@ def test_runtime_profile_admission_report_is_dry_run_and_non_authoritative() -> 
     assert report["requirements"]["adapter_hotset"][0]["claim_scope"] == "runtime-smoke-only"
     assert report["evidence"]["workerbee_status_ok"] is True
     assert "AI_RUNTIME_PROFILE_ADAPTER_SCOPE" in warning_codes
+    assert "AI_RUNTIME_PROFILE_SOAK_EVIDENCE" in warning_codes
     assert "AI_RUNTIME_PROFILE_WORKERBEE_STATUS" not in warning_codes
+
+
+def test_runtime_profile_admission_warns_when_baseline_soak_missing() -> None:
+    profile = _valid_profile(track="baseline")
+    profile["adapter_hotset"] = []
+
+    report = evaluate_ai_runtime_profile_admission(profile, workerbee_status={"ok": True})
+    codes = {item["code"] for item in report["findings"]}
+
+    assert report["ok"] is True
+    assert "AI_RUNTIME_PROFILE_SOAK_EVIDENCE" in codes
+    assert "AI_RUNTIME_PROFILE_SOAK_DURATION" not in codes
+
+
+def test_runtime_profile_admission_warns_when_baseline_soak_is_short() -> None:
+    profile = _valid_profile(track="baseline", soak=_passing_soak(60))
+    profile["adapter_hotset"] = []
+
+    report = evaluate_ai_runtime_profile_admission(profile, workerbee_status={"ok": True})
+    codes = {item["code"] for item in report["findings"]}
+
+    assert report["ok"] is True
+    assert report["evidence"]["soak"]["duration_seconds"] == 60
+    assert "AI_RUNTIME_PROFILE_SOAK_EVIDENCE" not in codes
+    assert "AI_RUNTIME_PROFILE_SOAK_DURATION" in codes
+
+
+def test_runtime_profile_admission_accepts_full_quality_soak_evidence() -> None:
+    profile = _valid_profile(track="quality", soak=_passing_soak(1800, track="quality"))
+    profile["adapter_hotset"] = []
+
+    report = evaluate_ai_runtime_profile_admission(profile, workerbee_status={"ok": True})
+    codes = {item["code"] for item in report["findings"]}
+
+    assert report["ok"] is True
+    assert report["evidence"]["soak"]["promotion_ready"] is True
+    assert "AI_RUNTIME_PROFILE_SOAK_EVIDENCE" not in codes
+    assert "AI_RUNTIME_PROFILE_SOAK_DURATION" not in codes
 
 
 def test_runtime_profile_admission_blocks_structural_errors_only() -> None:

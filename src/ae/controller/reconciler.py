@@ -908,28 +908,21 @@ class Reconciler:
             and int(getattr(manifest_for_runtime.spec, "replicas", 1) or 1) == 1
         )
         try:
-            import os as _os
-
-            serial_service_rollout = str(
-                _os.getenv("AE_SERIAL_SERVICE_ROLLOUT", "0") or "0"
-            ).strip().lower() in {"1", "true", "yes", "on"}
             svc = getattr(manifest_for_runtime.spec, "service", None)
             svc_ports = list(getattr(svc, "ports", None) or []) if svc is not None else []
             fixed_service_port = bool(
                 svc is not None
                 and (
                     getattr(svc, "port", None) is not None
-                    or any(getattr(p, "node_port", None) is not None for p in svc_ports)
+                    or any(
+                        getattr(p, "port", None) is not None
+                        or getattr(p, "node_port", None) is not None
+                        for p in svc_ports
+                    )
                 )
             )
-            restart_fixed_service_no_overlap = bool(rollout.get("restartAt")) and fixed_service_port
             if (
-                (
-                    serial_service_rollout
-                    or direct_containerd_alias_refresh_no_overlap
-                    or restart_fixed_service_no_overlap
-                )
-                and strategy != "canary"
+                strategy != "canary"
                 and getattr(manifest_for_runtime.spec, "replicas", 1) == 1
                 and fixed_service_port
             ):

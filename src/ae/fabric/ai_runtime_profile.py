@@ -9,6 +9,7 @@ AI_RUNTIME_PROFILE_ADMISSION_API_VERSION: Final = (
     "k1s.fabric.ai-runtime-profile-admission/v1"
 )
 AI_RUNTIME_PROFILE_ADMISSION_KIND: Final = "AIFabricRuntimeProfileAdmissionReport"
+AI_RUNTIME_PROFILE_SOAK_PROMOTION_DURATION_SECONDS: Final = 1800
 AI_RUNTIME_PROFILE_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "api_version",
     "kind",
@@ -189,6 +190,7 @@ def _profile_evidence(
     if not isinstance(evidence, Mapping):
         evidence = {}
     traces = evidence.get("advisory_trace_refs")
+    soak = evidence.get("soak")
     return {
         "runtime_validation_ref": evidence.get("runtime_validation_ref"),
         "workerbee_status_ref": evidence.get("workerbee_status_ref"),
@@ -200,6 +202,7 @@ def _profile_evidence(
         "das_fact_count": evidence.get("das_fact_count"),
         "das_f5_evidence_count": evidence.get("das_f5_evidence_count"),
         "retrieval_corpus_count": evidence.get("retrieval_corpus_count"),
+        "soak": dict(soak) if isinstance(soak, Mapping) else None,
     }
 
 
@@ -227,14 +230,7 @@ def _promotion_findings(
                     )
                 )
                 break
-    if str(profile.get("track") or "") not in {"baseline", "quality"}:
-        findings.append(
-            _finding(
-                "warning",
-                "AI_RUNTIME_PROFILE_SOAK_EVIDENCE",
-                "baseline or quality soak evidence is not present in this runtime profile",
-            )
-        )
+    findings.extend(_soak_findings(profile))
     if workerbee_status is None:
         findings.append(
             _finding(
@@ -252,6 +248,55 @@ def _promotion_findings(
             )
         )
     return findings
+
+
+def _soak_findings(profile: Mapping[str, Any]) -> list[dict[str, str]]:
+    track = str(profile.get("track") or "")
+    if track not in {"baseline", "quality"}:
+        return [
+            _finding(
+                "warning",
+                "AI_RUNTIME_PROFILE_SOAK_EVIDENCE",
+                "baseline or quality soak evidence is not present in this runtime profile",
+            )
+        ]
+    evidence = profile.get("evidence")
+    soak = evidence.get("soak") if isinstance(evidence, Mapping) else None
+    if (
+        not isinstance(soak, Mapping)
+        or soak.get("suite") != "mixed-soak"
+        or str(soak.get("track") or "") != track
+        or soak.get("ok") is not True
+    ):
+        return [
+            _finding(
+                "warning",
+                "AI_RUNTIME_PROFILE_SOAK_EVIDENCE",
+                "passing baseline or quality soak evidence is not present in this runtime profile",
+            )
+        ]
+    duration_seconds = _positive_int(soak.get("duration_seconds"))
+    promotion_duration_seconds = (
+        _positive_int(soak.get("promotion_duration_seconds"))
+        or AI_RUNTIME_PROFILE_SOAK_PROMOTION_DURATION_SECONDS
+    )
+    if duration_seconds < promotion_duration_seconds:
+        return [
+            _finding(
+                "warning",
+                "AI_RUNTIME_PROFILE_SOAK_DURATION",
+                (
+                    "baseline or quality soak duration "
+                    f"{duration_seconds}s is below promotion threshold "
+                    f"{promotion_duration_seconds}s"
+                ),
+            )
+        ]
+    return []
+
+
+def _positive_int(value: Any) -> int:
+    return value if type(value) is int and value > 0 else 0
 
 
 def _workerbee_status_ok(workerbee_status: Mapping[str, Any] | None) -> bool | None:
