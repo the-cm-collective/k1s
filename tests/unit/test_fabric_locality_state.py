@@ -361,6 +361,8 @@ def test_fabric_advisory_state_api_reports_empty_optional_state(tmp_path: Path) 
     assert payload["data_present"] is False
     assert payload["runtime_profiles"]["count"] == 0
     assert payload["hyperon"]["status"] == "disabled"
+    assert payload["hyperon"]["status_label"] == "opt-in inactive"
+    assert "k1s advisory-only data remains available" in payload["hyperon"]["status_message"]
     assert payload["warnings"] == []
 
 
@@ -382,6 +384,8 @@ def test_fabric_advisory_state_api_reports_runtime_profile_only(tmp_path: Path) 
     assert payload["runtime_profiles"]["promotion_ready_count"] == 1
     assert payload["runtime_profiles"]["tracks"][0]["track"] == "quality"
     assert payload["hyperon"]["status"] == "disabled"
+    assert payload["hyperon"]["status_label"] == "opt-in inactive"
+    assert "not enabled for this advisory state" in payload["hyperon"]["status_message"]
     assert payload["warnings"] == []
 
 
@@ -403,6 +407,8 @@ def test_fabric_advisory_state_api_reports_hyperon_das_evidence(tmp_path: Path) 
     assert payload["hyperon"]["enabled"] is True
     assert payload["hyperon"]["available"] is True
     assert payload["hyperon"]["status"] == "experimental"
+    assert payload["hyperon"]["status_label"] == "experimental active"
+    assert "k1s remains authoritative" in payload["hyperon"]["status_message"]
     assert payload["hyperon"]["latest_das_query_trace"]["query_kind"] == "advisory"
     assert "AI_RUNTIME_PROFILE_EVIDENCE_MISSING" in warning_codes
     assert "FABRIC_ADVISORY_PENDING_REVIEW" in warning_codes

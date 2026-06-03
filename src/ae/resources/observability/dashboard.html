@@ -414,7 +414,7 @@
               <div id="fabric-advisory-traces" class="ha-stack"></div>
             </div>
             <div class="ha-subcard">
-              <strong>Hyperon / DAS</strong>
+              <strong>Optional Hyperon / DAS</strong>
               <div id="fabric-advisory-hyperon" class="ha-stack"></div>
             </div>
           </div>
@@ -1595,14 +1595,18 @@ Connection: close
       function renderHyperonRows(hyperon){
         hyperon = hyperon || {};
         var status = String(hyperon.status || 'disabled');
+        var statusLabel = String(hyperon.status_label || (status === 'disabled' ? 'opt-in inactive' : status));
+        var statusMessage = String(hyperon.status_message || (status === 'disabled' ? 'Optional Hyperon/DAS enhancement is not enabled for this advisory state; k1s advisory-only data remains available.' : ''));
         var cls = status === 'experimental' ? 'ok' : (status === 'unavailable' ? 'bad' : '');
+        var evidenceMeta = 'cells=' + String(hyperon.das_cells_count || 0) +
+          ', ready=' + String(hyperon.ready_das_cells_count || 0) +
+          ', queries=' + String(hyperon.das_query_traces_count || 0) +
+          ', signals=' + String(hyperon.cognitive_signals_count || 0);
         var rows = [
           '<div class="ha-site">' +
-            '<div><strong>hyperon-das</strong> <span class="pill ' + cls + '">' + escapeHtml(status) + '</span></div>' +
-            '<div class="ha-meta">cells=' + escapeHtml(String(hyperon.das_cells_count || 0)) +
-              ', ready=' + escapeHtml(String(hyperon.ready_das_cells_count || 0)) +
-              ', queries=' + escapeHtml(String(hyperon.das_query_traces_count || 0)) +
-              ', signals=' + escapeHtml(String(hyperon.cognitive_signals_count || 0)) + '</div>' +
+            '<div><strong>hyperon-das</strong> <span class="pill ' + cls + '">' + escapeHtml(statusLabel) + '</span></div>' +
+            '<div class="ha-meta">' + escapeHtml(statusMessage) + '</div>' +
+            '<div class="ha-meta">' + escapeHtml(evidenceMeta) + '</div>' +
           '</div>'
         ];
         var latestQuery = hyperon.latest_das_query_trace || null;
@@ -1683,11 +1687,12 @@ Connection: close
         var advisory = state.advisory || {};
         var hyperon = state.hyperon || {};
         var hyperonCls = String(hyperon.status || '') === 'experimental' ? 'ok' : (String(hyperon.status || '') === 'unavailable' ? 'bad' : '');
+        var hyperonLabel = String(hyperon.status_label || (String(hyperon.status || '') === 'disabled' ? 'opt-in inactive' : (hyperon.status || 'opt-in inactive')));
         summaryEl.innerHTML = [
           badge('ok', 'k1s authoritative'),
           badge((profiles.promotion_ready_count || 0) ? 'ok' : 'warn', 'profiles ' + String(profiles.count || 0)),
           badge((advisory.pending_review_count || 0) ? 'warn' : 'ok', 'traces ' + String(advisory.traces_count || 0)),
-          badge(hyperonCls, 'Hyperon ' + String(hyperon.status || 'disabled'))
+          badge(hyperonCls, 'Hyperon ' + escapeHtml(hyperonLabel))
         ].join(' ');
         summaryEl.classList.remove('hidden');
         profilesEl.innerHTML = renderRuntimeProfileRows(profiles.tracks || []);

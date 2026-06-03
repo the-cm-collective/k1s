@@ -104,4 +104,6 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert "function renderFabricAdvisoryState(state, err)" in html
     assert "fetchJSON('/fabric/advisory/state')" in html
     assert "k1s authoritative" in html
-    assert "Hyperon " in html
+    assert "Optional Hyperon / DAS" in html
+    assert "opt-in inactive" in html
+    assert "k1s advisory-only data remains available" in html
