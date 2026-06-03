@@ -135,6 +135,18 @@ Current `gpu.*` labels may remain as a compatibility projection during the trans
 | `fabric.mode` | transport mode |
 | current fabric session metadata | precursor to a shared session record |
 
+## AI Runtime Profile Dry Run
+
+WorkerBee AI fabric closeout may produce `k1s.fabric.ai-runtime-profile/v1`
+as evidence about model lanes, context budgets, adapter hotsets, observed VRAM
+growth, and DAS/retrieval validation artifacts. The k1s-side
+`k1s.fabric.ai-runtime-profile-admission/v1` report consumes that profile only
+as dry-run admission evidence.
+
+This report is non-authoritative. It can expose structural profile errors and
+promotion warnings, but it does not change scheduler, controller, or reconcile
+behavior until a later enforcement design explicitly wires it into admission.
+
 ## Later Hyperon Path
 
 Hyperon belongs at the control-plane and fabric layer, but in a bounded sequence:

@@ -1,5 +1,15 @@
 """Fabric roadmap support contracts."""
 
+from ae.fabric.ai_runtime_profile import (
+    AI_RUNTIME_PROFILE_ADMISSION_API_VERSION,
+    AI_RUNTIME_PROFILE_ADMISSION_KIND,
+    AI_RUNTIME_PROFILE_API_VERSION,
+    AI_RUNTIME_PROFILE_KIND,
+    AI_RUNTIME_PROFILE_REQUIRED_FIELDS,
+    AI_RUNTIME_PROFILE_REQUIRED_LANES,
+    evaluate_ai_runtime_profile_admission,
+    validate_ai_runtime_profile,
+)
 from ae.fabric.symbolic import (
     SYMBOLIC_ADVISORY_DECISION_API_VERSION,
     SYMBOLIC_ADVISORY_DECISION_REQUIRED_FIELDS,
@@ -13,6 +23,13 @@ from ae.fabric.symbolic import (
 )
 
 __all__ = [
+    "AI_RUNTIME_PROFILE_ADMISSION_API_VERSION",
+    "AI_RUNTIME_PROFILE_ADMISSION_KIND",
+    "AI_RUNTIME_PROFILE_API_VERSION",
+    "AI_RUNTIME_PROFILE_KIND",
+    "AI_RUNTIME_PROFILE_REQUIRED_FIELDS",
+    "AI_RUNTIME_PROFILE_REQUIRED_LANES",
+    "evaluate_ai_runtime_profile_admission",
     "SYMBOLIC_ADVISORY_DECISION_API_VERSION",
     "SYMBOLIC_ADVISORY_DECISION_REQUIRED_FIELDS",
     "SYMBOLIC_ADVISORY_DECISION_RISKS",
@@ -22,4 +39,5 @@ __all__ = [
     "SYMBOLIC_FACT_NAMESPACE",
     "SYMBOLIC_FACT_SOURCE_WORKERBEE_AI_FABRIC",
     "SYMBOLIC_RELATIONSHIP_PREDICATES",
+    "validate_ai_runtime_profile",
 ]

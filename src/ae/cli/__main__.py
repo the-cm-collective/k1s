@@ -415,6 +415,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_namespace_arg(fabric_sessions)
     fabric_sessions.add_argument("--cell", default=None, help="Filter by cell name")
     fabric_sessions.add_argument("--json", action="store_true", help="Emit JSON output")
+    fabric_admission = fabric_sub.add_parser(
+        "runtime-profile-admission",
+        help="Evaluate an AI runtime profile as dry-run admission evidence",
+    )
+    fabric_admission.add_argument("--profile", type=Path, required=True)
+    fabric_admission.add_argument("--workerbee-status", type=Path, default=None)
+    fabric_admission.add_argument("--json", action="store_true", help="Emit JSON output")
 
     services_parser = subparsers.add_parser(
         "services", help="List Services (cluster IPs/endpoints)"
@@ -6081,6 +6088,8 @@ def handle_cellset(
 def handle_fabric(
     args: argparse.Namespace, store: SQLiteStateStore, _global_args: argparse.Namespace
 ) -> int:
+    if args.fabric_cmd == "runtime-profile-admission":
+        return _handle_fabric_runtime_profile_admission(args)
     if args.fabric_cmd != "sessions":
         print(f"unsupported fabric command: {args.fabric_cmd}")
         return 2
@@ -6122,6 +6131,66 @@ def handle_fabric(
             f"policy={row.policy_mode} status={row.status} members={members} expires_at={exp}"
         )
     return 0
+
+
+def _handle_fabric_runtime_profile_admission(args: argparse.Namespace) -> int:
+    from ae.fabric.ai_runtime_profile import evaluate_ai_runtime_profile_admission
+
+    try:
+        profile = _load_json_object(Path(args.profile))
+        workerbee_status = _load_workerbee_status(
+            profile, explicit_path=getattr(args, "workerbee_status", None)
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"runtime-profile-admission failed: {exc}", file=sys.stderr)
+        return 2
+
+    report = evaluate_ai_runtime_profile_admission(
+        profile, workerbee_status=workerbee_status
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        ref = report.get("profile_ref") if isinstance(report.get("profile_ref"), dict) else {}
+        status = "admitted" if report.get("admitted") else "blocked"
+        print(
+            "runtime-profile-admission "
+            f"{status} mode={report.get('mode')} run_id={ref.get('run_id')} "
+            f"track={ref.get('track')}"
+        )
+        for finding in report.get("findings", []):
+            if not isinstance(finding, dict):
+                continue
+            print(
+                f"{finding.get('level')}: {finding.get('code')}: {finding.get('message')}"
+            )
+    return 0 if report.get("ok") else 1
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    resolved = path.expanduser().resolve()
+    with resolved.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise TypeError(f"{resolved} must contain a JSON object")
+    return payload
+
+
+def _load_workerbee_status(
+    profile: dict[str, Any], *, explicit_path: Path | None = None
+) -> dict[str, Any] | None:
+    if explicit_path is not None:
+        return _load_json_object(explicit_path)
+    evidence = profile.get("evidence")
+    if not isinstance(evidence, dict):
+        return None
+    status_ref = evidence.get("workerbee_status_ref")
+    if not isinstance(status_ref, str) or not status_ref.strip():
+        return None
+    status_path = Path(status_ref).expanduser()
+    if not status_path.exists():
+        return None
+    return _load_json_object(status_path)
 
 
 def _service_ports_from_spec(svc: Any) -> dict[str, Any]:
