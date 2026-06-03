@@ -145,6 +145,29 @@ def test_runtime_profile_admission_warns_on_placeholder_workerbee_status() -> No
     assert "AI_RUNTIME_PROFILE_WORKERBEE_STATUS" in codes
 
 
+def test_runtime_profile_admission_accepts_workerbee_cli_status_wrapper() -> None:
+    report = evaluate_ai_runtime_profile_admission(
+        _valid_profile(),
+        workerbee_status={
+            "project": "k1s-workerbee-dev-2592c13f5e",
+            "mode": "start",
+            "project_status": {
+                "running": True,
+                "app_status": {
+                    "ready": True,
+                    "ready_workload_count": 8,
+                    "degraded_workload_count": 0,
+                },
+            },
+        },
+    )
+    codes = {item["code"] for item in report["findings"]}
+
+    assert report["ok"] is True
+    assert report["evidence"]["workerbee_status_ok"] is True
+    assert "AI_RUNTIME_PROFILE_WORKERBEE_STATUS" not in codes
+
+
 def test_runtime_profile_admission_cli_emits_json(tmp_path, capsys) -> None:
     from ae.cli.__main__ import main
 

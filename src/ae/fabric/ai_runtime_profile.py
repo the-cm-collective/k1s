@@ -193,7 +193,7 @@ def _profile_evidence(
         "runtime_validation_ref": evidence.get("runtime_validation_ref"),
         "workerbee_status_ref": evidence.get("workerbee_status_ref"),
         "workerbee_status_supplied": workerbee_status is not None,
-        "workerbee_status_ok": workerbee_status.get("ok") if workerbee_status is not None else None,
+        "workerbee_status_ok": _workerbee_status_ok(workerbee_status),
         "f5_evidence_ref": evidence.get("f5_evidence_ref"),
         "advisor_scenarios_ref": evidence.get("advisor_scenarios_ref"),
         "advisory_trace_count": len(traces) if isinstance(traces, list) else 0,
@@ -243,7 +243,7 @@ def _promotion_findings(
                 "WorkerBee project status was not supplied for promotion evidence",
             )
         )
-    elif workerbee_status.get("ok") is not True:
+    elif _workerbee_status_ok(workerbee_status) is not True:
         findings.append(
             _finding(
                 "warning",
@@ -252,6 +252,34 @@ def _promotion_findings(
             )
         )
     return findings
+
+
+def _workerbee_status_ok(workerbee_status: Mapping[str, Any] | None) -> bool | None:
+    if workerbee_status is None:
+        return None
+    if workerbee_status.get("ok") is True:
+        return True
+    if workerbee_status.get("ok") is False:
+        return False
+    project_status = workerbee_status.get("project_status")
+    if isinstance(project_status, Mapping):
+        return _workerbee_project_status_ok(project_status)
+    data = workerbee_status.get("data")
+    if isinstance(data, Mapping):
+        return _workerbee_project_status_ok(data)
+    return workerbee_status.get("ok") if workerbee_status.get("ok") is None else False
+
+
+def _workerbee_project_status_ok(status: Mapping[str, Any]) -> bool:
+    app_status = status.get("app_status")
+    if not isinstance(app_status, Mapping):
+        app_status = {}
+    degraded = app_status.get("degraded_workload_count")
+    return bool(
+        status.get("running")
+        and app_status.get("ready")
+        and (not isinstance(degraded, int) or degraded == 0)
+    )
 
 
 def _finding(level: str, code: str, message: str) -> dict[str, str]:
