@@ -11,6 +11,7 @@ Endpoints:
 - GET /fabric/chunks      -> JSON list of content-addressed fabric chunks
 - GET /fabric/residencies -> JSON list of chunk residency records
 - GET /fabric/movements   -> JSON list of controlled chunk movement records
+- GET /fabric/advisory/state -> JSON aggregate of advisory runtime state
 - GET /fabric/advisory/traces -> JSON list of advisory decision traces
 - POST /k8s/preview      -> Render K8s YAML for a manifest (dev only; gated by AE_API_DEV_EXPORT=1)
 """
@@ -32,6 +33,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from ae import build_info as AE_BUILD_INFO
 from ae.accelerators import preferred_gpu_count, preferred_gpu_models
@@ -41,6 +43,10 @@ from ae.observability.metrics import MetricsService
 from ae.resources import loader as resource_loader
 
 logger = logging.getLogger(__name__)
+
+FABRIC_ADVISORY_STATE_API_VERSION = "k1s.fabric.advisory-state/v1"
+FABRIC_ADVISORY_STATE_KIND = "FabricAdvisoryState"
+FABRIC_ADVISORY_STALE_AFTER_SECONDS = 24 * 60 * 60
 
 # Simple in-memory reconcile metrics updated by the controller loop.
 _LAST_RECONCILE_TS: float | None = None
@@ -1724,6 +1730,396 @@ def _dashboard_bootstrap_token() -> str:
     ).strip()
 
 
+def _build_fabric_advisory_state(store, fabric_read_allowed=None) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    runtime_profiles = _fabric_advisory_runtime_profile_state(store, now=now)
+    advisory = _fabric_advisory_trace_state(
+        store,
+        now=now,
+        fabric_read_allowed=fabric_read_allowed,
+    )
+    hyperon = _fabric_advisory_hyperon_state(
+        store,
+        now=now,
+        fabric_read_allowed=fabric_read_allowed,
+    )
+    latest_evidence_age = _latest_known_age_seconds(
+        runtime_profiles.get("latest_updated_at"),
+        advisory.get("latest_created_at"),
+        hyperon.get("latest_created_at"),
+        now=now,
+    )
+
+    data_present = bool(
+        runtime_profiles.get("count")
+        or advisory.get("requests_count")
+        or advisory.get("responses_count")
+        or advisory.get("traces_count")
+        or hyperon.get("enabled")
+    )
+    warnings: list[dict[str, str]] = []
+    if data_present and not runtime_profiles.get("count"):
+        warnings.append(
+            _fabric_advisory_warning(
+                "AI_RUNTIME_PROFILE_EVIDENCE_MISSING",
+                "no stored AI runtime profiles are available",
+            )
+        )
+    if runtime_profiles.get("count") and not runtime_profiles.get("promotion_ready_count"):
+        warnings.append(
+            _fabric_advisory_warning(
+                "AI_RUNTIME_PROFILE_PROMOTION_MISSING",
+                "no stored AI runtime profile is promotion-ready",
+            )
+        )
+    if advisory.get("pending_review_count"):
+        warnings.append(
+            _fabric_advisory_warning(
+                "FABRIC_ADVISORY_PENDING_REVIEW",
+                "one or more advisory traces are pending operator review",
+            )
+        )
+    if hyperon.get("enabled") and not hyperon.get("available"):
+        warnings.append(
+            _fabric_advisory_warning(
+                "HYPERON_DAS_UNAVAILABLE",
+                "Hyperon/DAS evidence exists but no ready DAS cell is recorded",
+            )
+        )
+    if (
+        latest_evidence_age is not None
+        and latest_evidence_age > FABRIC_ADVISORY_STALE_AFTER_SECONDS
+    ):
+        warnings.append(
+            _fabric_advisory_warning(
+                "FABRIC_ADVISORY_EVIDENCE_STALE",
+                "latest fabric advisory evidence is older than 24 hours",
+            )
+        )
+
+    return {
+        "api_version": FABRIC_ADVISORY_STATE_API_VERSION,
+        "kind": FABRIC_ADVISORY_STATE_KIND,
+        "ok": True,
+        "mode": "advisory_only",
+        "authoritative": False,
+        "controller_authority": "k1s",
+        "experimental_providers": ["hyperon-das"] if hyperon.get("enabled") else [],
+        "data_present": data_present,
+        "latest_evidence_age_seconds": latest_evidence_age,
+        "runtime_profiles": runtime_profiles,
+        "advisory": advisory,
+        "hyperon": hyperon,
+        "warnings": warnings,
+    }
+
+
+def _fabric_advisory_runtime_profile_state(store, *, now: datetime) -> dict[str, Any]:
+    records = _safe_store_list(store, "list_ai_runtime_profiles")
+    profiles = [_fabric_runtime_profile_summary(record, now=now) for record in records]
+    latest_updated_at = _latest_datetime([item.get("updated_at") for item in profiles])
+    return {
+        "count": len(profiles),
+        "promotion_ready_count": sum(1 for item in profiles if item.get("promotion_ready")),
+        "admitted_count": sum(1 for item in profiles if item.get("admitted")),
+        "warning_count": sum(1 for item in profiles if item.get("warning_codes")),
+        "tracks": profiles[:12],
+        "latest_updated_at": latest_updated_at,
+    }
+
+
+def _fabric_advisory_trace_state(
+    store,
+    *,
+    now: datetime,
+    fabric_read_allowed=None,
+) -> dict[str, Any]:
+    requests = [
+        item
+        for item in _safe_store_list(store, "list_fabric_advisory_requests", limit=50)
+        if _fabric_record_allowed(
+            fabric_read_allowed,
+            f"fabric/advisory/requests/{getattr(item, 'request_id', '')}",
+        )
+    ]
+    responses = [
+        item
+        for item in _safe_store_list(store, "list_fabric_advisory_responses", limit=50)
+        if _fabric_record_allowed(
+            fabric_read_allowed,
+            f"fabric/advisory/responses/{getattr(item, 'request_id', '')}",
+        )
+    ]
+    traces = [
+        item
+        for item in _safe_store_list(store, "list_fabric_decision_traces", limit=50)
+        if _fabric_record_allowed(
+            fabric_read_allowed,
+            f"fabric/advisory/traces/{getattr(item, 'trace_id', '')}",
+        )
+    ]
+    trace_summaries = [_fabric_decision_trace_summary(item, now=now) for item in traces]
+    response_summaries = [_fabric_advisory_response_summary(item, now=now) for item in responses]
+    request_summaries = [_fabric_advisory_request_summary(item, now=now) for item in requests]
+    latest_created_at = _latest_datetime(
+        [item.get("created_at") for item in trace_summaries]
+        + [item.get("created_at") for item in response_summaries]
+        + [item.get("created_at") for item in request_summaries]
+    )
+    return {
+        "requests_count": len(requests),
+        "responses_count": len(responses),
+        "traces_count": len(traces),
+        "pending_review_count": sum(
+            1
+            for item in trace_summaries
+            if item.get("accepted") is None or item.get("divergence_reason") == "pending_operator_review"
+        ),
+        "accepted_count": sum(1 for item in trace_summaries if item.get("accepted") is True),
+        "divergence_count": sum(1 for item in trace_summaries if item.get("accepted") is False),
+        "latest_trace": trace_summaries[0] if trace_summaries else None,
+        "latest_response": response_summaries[0] if response_summaries else None,
+        "latest_request": request_summaries[0] if request_summaries else None,
+        "traces": trace_summaries[:8],
+        "latest_created_at": latest_created_at,
+    }
+
+
+def _fabric_advisory_hyperon_state(
+    store,
+    *,
+    now: datetime,
+    fabric_read_allowed=None,
+) -> dict[str, Any]:
+    cells = [
+        item
+        for item in _safe_store_list(store, "list_fabric_das_cell_bundles", limit=50)
+        if _fabric_record_allowed(
+            fabric_read_allowed,
+            f"fabric/das-cells/{getattr(item, 'bundle_id', '')}",
+        )
+    ]
+    query_traces = [
+        item
+        for item in _safe_store_list(store, "list_fabric_das_query_traces", limit=50)
+        if _fabric_record_allowed(
+            fabric_read_allowed,
+            f"fabric/das-query-traces/{getattr(item, 'trace_id', '')}",
+        )
+    ]
+    signals = [
+        item
+        for item in _safe_store_list(store, "list_fabric_cognitive_signals", limit=50)
+        if _fabric_record_allowed(
+            fabric_read_allowed,
+            f"fabric/cognitive-signals/{getattr(item, 'signal_id', '')}",
+        )
+    ]
+    cell_summaries = [_fabric_das_cell_summary(item, now=now) for item in cells]
+    query_summaries = [_fabric_das_query_trace_summary(item, now=now) for item in query_traces]
+    signal_summaries = [_fabric_cognitive_signal_summary(item, now=now) for item in signals]
+    ready_count = sum(1 for item in cell_summaries if str(item.get("status") or "").lower() == "ready")
+    enabled = bool(cell_summaries or query_summaries or signal_summaries)
+    available = bool(ready_count)
+    status = "disabled"
+    if enabled:
+        status = "experimental" if available else "unavailable"
+    latest_created_at = _latest_datetime(
+        [item.get("updated_at") for item in cell_summaries]
+        + [item.get("created_at") for item in query_summaries]
+        + [item.get("created_at") for item in signal_summaries]
+    )
+    return {
+        "provider": "hyperon-das",
+        "enabled": enabled,
+        "available": available,
+        "experimental": enabled,
+        "status": status,
+        "das_cells_count": len(cell_summaries),
+        "ready_das_cells_count": ready_count,
+        "das_query_traces_count": len(query_summaries),
+        "cognitive_signals_count": len(signal_summaries),
+        "cells": cell_summaries[:8],
+        "latest_das_query_trace": query_summaries[0] if query_summaries else None,
+        "latest_cognitive_signal": signal_summaries[0] if signal_summaries else None,
+        "latest_created_at": latest_created_at,
+    }
+
+
+def _fabric_runtime_profile_summary(record, *, now: datetime) -> dict[str, Any]:
+    updated_at = _iso_or_none(getattr(record, "updated_at", None))
+    return {
+        "run_id": str(getattr(record, "run_id", "") or ""),
+        "track": str(getattr(record, "track", "") or ""),
+        "admitted": bool(getattr(record, "admitted", False)),
+        "promotion_ready": bool(getattr(record, "promotion_ready", False)),
+        "warning_codes": [str(item) for item in (getattr(record, "warning_codes", []) or [])],
+        "created_at": _iso_or_none(getattr(record, "created_at", None)),
+        "updated_at": updated_at,
+        "age_seconds": _age_seconds(updated_at, now=now),
+    }
+
+
+def _fabric_advisory_request_summary(record, *, now: datetime) -> dict[str, Any]:
+    created_at = _iso_or_none(getattr(record, "created_at", None))
+    return {
+        "request_id": str(getattr(record, "request_id", "") or ""),
+        "subject_type": str(getattr(record, "subject_type", "") or ""),
+        "subject_id": str(getattr(record, "subject_id", "") or ""),
+        "intent": str(getattr(record, "intent", "") or ""),
+        "policy_mode": str(getattr(record, "policy_mode", "") or ""),
+        "created_at": created_at,
+        "age_seconds": _age_seconds(created_at, now=now),
+    }
+
+
+def _fabric_advisory_response_summary(record, *, now: datetime) -> dict[str, Any]:
+    created_at = _iso_or_none(getattr(record, "created_at", None))
+    return {
+        "request_id": str(getattr(record, "request_id", "") or ""),
+        "provider": str(getattr(record, "provider", "") or ""),
+        "status": str(getattr(record, "status", "") or ""),
+        "recommendation": str(getattr(record, "recommendation", "") or ""),
+        "confidence": getattr(record, "confidence", None),
+        "authoritative": bool(getattr(record, "authoritative", False)),
+        "created_at": created_at,
+        "age_seconds": _age_seconds(created_at, now=now),
+    }
+
+
+def _fabric_decision_trace_summary(record, *, now: datetime) -> dict[str, Any]:
+    created_at = _iso_or_none(getattr(record, "created_at", None))
+    advisory_response = getattr(record, "advisory_response", {}) or {}
+    coherence = getattr(record, "coherence_signals", {}) or {}
+    return {
+        "trace_id": str(getattr(record, "trace_id", "") or ""),
+        "request_id": str(getattr(record, "request_id", "") or ""),
+        "accepted": getattr(record, "accepted", None),
+        "divergence_reason": getattr(record, "divergence_reason", None),
+        "replay_status": str(getattr(record, "replay_status", "") or ""),
+        "advisory_status": str(advisory_response.get("status") or ""),
+        "provider": str(advisory_response.get("provider") or ""),
+        "model_ok": bool(coherence.get("model_ok")) if "model_ok" in coherence else None,
+        "authoritative": False,
+        "created_at": created_at,
+        "age_seconds": _age_seconds(created_at, now=now),
+    }
+
+
+def _fabric_das_cell_summary(record, *, now: datetime) -> dict[str, Any]:
+    updated_at = _iso_or_none(getattr(record, "updated_at", None))
+    return {
+        "bundle_id": str(getattr(record, "bundle_id", "") or ""),
+        "site_id": str(getattr(record, "site_id", "") or ""),
+        "cell_id": str(getattr(record, "cell_id", "") or ""),
+        "version": str(getattr(record, "version", "") or ""),
+        "status": str(getattr(record, "status", "") or ""),
+        "facts_ref": str(getattr(record, "facts_ref", "") or ""),
+        "created_at": _iso_or_none(getattr(record, "created_at", None)),
+        "updated_at": updated_at,
+        "age_seconds": _age_seconds(updated_at, now=now),
+    }
+
+
+def _fabric_das_query_trace_summary(record, *, now: datetime) -> dict[str, Any]:
+    created_at = _iso_or_none(getattr(record, "created_at", None))
+    return {
+        "trace_id": str(getattr(record, "trace_id", "") or ""),
+        "bundle_id": str(getattr(record, "bundle_id", "") or ""),
+        "site_id": str(getattr(record, "site_id", "") or ""),
+        "query_id": str(getattr(record, "query_id", "") or ""),
+        "query_kind": str(getattr(record, "query_kind", "") or ""),
+        "local_first": bool(getattr(record, "local_first", False)),
+        "result_ref": str(getattr(record, "result_ref", "") or ""),
+        "created_at": created_at,
+        "age_seconds": _age_seconds(created_at, now=now),
+    }
+
+
+def _fabric_cognitive_signal_summary(record, *, now: datetime) -> dict[str, Any]:
+    created_at = _iso_or_none(getattr(record, "created_at", None))
+    return {
+        "signal_id": str(getattr(record, "signal_id", "") or ""),
+        "subject_type": str(getattr(record, "subject_type", "") or ""),
+        "subject_id": str(getattr(record, "subject_id", "") or ""),
+        "signal_kind": str(getattr(record, "signal_kind", "") or ""),
+        "review_gate": str(getattr(record, "review_gate", "") or ""),
+        "advisory_trace_id": str(getattr(record, "advisory_trace_id", "") or ""),
+        "coherence_score": getattr(record, "coherence_score", None),
+        "created_at": created_at,
+        "age_seconds": _age_seconds(created_at, now=now),
+    }
+
+
+def _safe_store_list(store, method_name: str, **kwargs: Any) -> list[Any]:
+    method = getattr(store, method_name, None)
+    if not callable(method):
+        return []
+    try:
+        value = method(**kwargs)
+    except Exception:
+        logger.debug("fabric advisory state store call failed: %s", method_name, exc_info=True)
+        return []
+    return list(value or [])
+
+
+def _fabric_record_allowed(fabric_read_allowed, key: str) -> bool:
+    if not callable(fabric_read_allowed):
+        return True
+    try:
+        return bool(fabric_read_allowed(key))
+    except Exception:
+        return False
+
+
+def _fabric_advisory_warning(code: str, message: str) -> dict[str, str]:
+    return {"level": "warning", "code": code, "message": message}
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None:
+        return None
+    raw = str(value).strip()
+    return raw or None
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    raw = _iso_or_none(value)
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _age_seconds(value: Any, *, now: datetime) -> float | None:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    try:
+        return max(0.0, (now - parsed).total_seconds())
+    except Exception:
+        return None
+
+
+def _latest_datetime(values: list[Any]) -> str | None:
+    parsed = [item for item in (_parse_iso_datetime(value) for value in values) if item]
+    if not parsed:
+        return None
+    return max(parsed).isoformat()
+
+
+def _latest_known_age_seconds(*values: Any, now: datetime) -> float | None:
+    latest = _latest_datetime([value for value in values if value])
+    return _age_seconds(latest, now=now)
+
+
 class _ApiHandler(http.server.BaseHTTPRequestHandler):
     store: SQLiteStateStore  # injected
     metrics: MetricsService  # injected
@@ -2322,6 +2718,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return
         if path_only in ("/fabric/movements", "/fabric/movements/"):
             self._handle_fabric_movements_list()
+            return
+        if path_only in ("/fabric/advisory/state", "/fabric/advisory/state/"):
+            self._handle_fabric_advisory_state()
             return
         if path_only in ("/fabric/advisory/requests", "/fabric/advisory/requests/"):
             self._handle_fabric_advisory_requests_list()
@@ -5053,6 +5452,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "responses": {"200": {"description": "OK"}},
                     }
                 },
+                "/fabric/advisory/state": {
+                    "get": {
+                        "summary": "Aggregate non-authoritative fabric advisory state",
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
                 "/status": {
                     "get": {
                         "summary": "List app statuses (paginated)",
@@ -5575,6 +5981,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if self._fabric_read_allowed(f"fabric/movements/{rec.movement_id}")
         ]
         self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_advisory_state(self) -> None:
+        self._json_ok(_build_fabric_advisory_state(self.store, self._fabric_read_allowed))
 
     def _handle_fabric_advisory_requests_list(self) -> None:
         from ae.fabric.locality import advisory_request_payload

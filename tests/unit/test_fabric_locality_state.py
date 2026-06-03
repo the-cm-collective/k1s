@@ -23,7 +23,7 @@ from ae.fabric.locality import (
     FabricTransferLeaseRecord,
     FabricTransportAttemptRecord,
 )
-from ae.observability.http_api import _ApiHandler
+from ae.observability.http_api import FABRIC_ADVISORY_STATE_API_VERSION, _ApiHandler
 
 CHUNK_ID = "sha256:" + ("b" * 64)
 
@@ -344,6 +344,68 @@ def test_fabric_read_api_lists_locality_and_advisory_payloads(tmp_path: Path) ->
     assert chunks["items"][0]["labels"]["lane"] == "coordinator"
     assert traces["items"][0]["trace_id"] == "trace-qwen-0"
     assert traces["items"][0]["replay_status"] == "recorded"
+
+
+def test_fabric_advisory_state_api_reports_empty_optional_state(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+
+    handler, statuses = _make_handler("/fabric/advisory/state", store)
+    _ApiHandler._handle_fabric_advisory_state(handler)  # type: ignore[arg-type]
+
+    payload = _payload(handler)
+    assert statuses == [200]
+    assert payload["api_version"] == FABRIC_ADVISORY_STATE_API_VERSION
+    assert payload["mode"] == "advisory_only"
+    assert payload["authoritative"] is False
+    assert payload["controller_authority"] == "k1s"
+    assert payload["data_present"] is False
+    assert payload["runtime_profiles"]["count"] == 0
+    assert payload["hyperon"]["status"] == "disabled"
+    assert payload["warnings"] == []
+
+
+def test_fabric_advisory_state_api_reports_runtime_profile_only(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    store.upsert_ai_runtime_profile(
+        {"run_id": "quality-promotion-test", "track": "quality"},
+        {"ok": True, "admitted": True, "findings": []},
+        workerbee_status={"ok": True},
+    )
+
+    handler, statuses = _make_handler("/fabric/advisory/state", store)
+    _ApiHandler._handle_fabric_advisory_state(handler)  # type: ignore[arg-type]
+
+    payload = _payload(handler)
+    assert statuses == [200]
+    assert payload["data_present"] is True
+    assert payload["runtime_profiles"]["count"] == 1
+    assert payload["runtime_profiles"]["promotion_ready_count"] == 1
+    assert payload["runtime_profiles"]["tracks"][0]["track"] == "quality"
+    assert payload["hyperon"]["status"] == "disabled"
+    assert payload["warnings"] == []
+
+
+def test_fabric_advisory_state_api_reports_hyperon_das_evidence(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    _seed_advisory(store)
+    _seed_f5(store)
+
+    handler, statuses = _make_handler("/fabric/advisory/state", store)
+    _ApiHandler._handle_fabric_advisory_state(handler)  # type: ignore[arg-type]
+
+    payload = _payload(handler)
+    warning_codes = {item["code"] for item in payload["warnings"]}
+    assert statuses == [200]
+    assert payload["data_present"] is True
+    assert payload["advisory"]["traces_count"] == 1
+    assert payload["advisory"]["pending_review_count"] == 1
+    assert payload["advisory"]["latest_trace"]["trace_id"] == "trace-qwen-0"
+    assert payload["hyperon"]["enabled"] is True
+    assert payload["hyperon"]["available"] is True
+    assert payload["hyperon"]["status"] == "experimental"
+    assert payload["hyperon"]["latest_das_query_trace"]["query_kind"] == "advisory"
+    assert "AI_RUNTIME_PROFILE_EVIDENCE_MISSING" in warning_codes
+    assert "FABRIC_ADVISORY_PENDING_REVIEW" in warning_codes
 
 
 def test_fabric_read_api_lists_f4_and_f5_payloads(tmp_path: Path) -> None:

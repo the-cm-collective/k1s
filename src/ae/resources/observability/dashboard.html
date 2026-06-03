@@ -397,6 +397,28 @@
           <strong>System</strong>
           <div class="row" id="sys-counters" style="gap:10px; margin-top:6px; flex-wrap:wrap; justify-content:center;"></div>
         </div>
+        <div id="fabric-advisory-section" class="card hidden" style="margin-top:12px;">
+          <div class="row" style="align-items:center; justify-content:space-between;">
+            <strong>Fabric Advisory</strong>
+            <span id="fabric-advisory-status-pill" class="pill"></span>
+          </div>
+          <div id="fabric-advisory-banner" class="banner hidden" role="status" aria-live="polite"></div>
+          <div id="fabric-advisory-summary" class="row hidden" style="gap:10px; margin-top:8px; flex-wrap:wrap; justify-content:center;"></div>
+          <div id="fabric-advisory-grid" class="ha-grid hidden" style="margin-top:12px;">
+            <div class="ha-subcard">
+              <strong>Runtime Profiles</strong>
+              <div id="fabric-advisory-profiles" class="ha-stack"></div>
+            </div>
+            <div class="ha-subcard">
+              <strong>Advisory Traces</strong>
+              <div id="fabric-advisory-traces" class="ha-stack"></div>
+            </div>
+            <div class="ha-subcard">
+              <strong>Hyperon / DAS</strong>
+              <div id="fabric-advisory-hyperon" class="ha-stack"></div>
+            </div>
+          </div>
+        </div>
         <div id="ha-section" class="card hidden" style="margin-top:12px;">
           <div class="row" style="align-items:center; justify-content:space-between;">
             <strong>HA Control Plane</strong>
@@ -749,6 +771,7 @@ Connection: close
       var logSource = null;
       var eventsSource = null;
       var lastSystem = null;
+      var lastFabricAdvisoryState = null;
       var lastStatuses = [];
       var currentDetail = null;
       var graphHover = null;
@@ -1399,7 +1422,7 @@ Connection: close
       function schedulePoll(){
         if(pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         var ms = parseInt(pollSel.value, 10) || 0;
-        if(ms > 0){ pollTimer = setInterval(function(){ Promise.all([refreshApps(), refreshDetail(), refreshSystem()]).catch(logIfNotNetwork); }, ms); }
+        if(ms > 0){ pollTimer = setInterval(function(){ Promise.all([refreshApps(), refreshDetail(), refreshSystem(), refreshFabricAdvisoryState()]).catch(logIfNotNetwork); }, ms); }
       }
 
       var backoffTimer = null;
@@ -1506,6 +1529,184 @@ Connection: close
         return (rows || []).map(function(row){
           return '<div class="ha-row"><strong>' + escapeHtml(row.k) + '</strong><span>' + escapeHtml(row.v) + '</span></div>';
         }).join('');
+      }
+
+      function advisoryStatePillClass(state){
+        var warnings = (state && Array.isArray(state.warnings)) ? state.warnings : [];
+        var hyperon = (state && state.hyperon) ? state.hyperon : {};
+        if (String(hyperon.status || '') === 'unavailable') return 'bad';
+        if (warnings.length) return 'warn';
+        return 'ok';
+      }
+
+      function renderFabricWarnings(warnings){
+        warnings = Array.isArray(warnings) ? warnings : [];
+        return warnings.map(function(item){
+          return '<span class="ha-chip ' + pillClassForSeverity(item.level || 'warning') + '">' + escapeHtml(item.code || 'warning') + '</span> ' + escapeHtml(item.message || '');
+        }).join(' &nbsp; ');
+      }
+
+      function renderRuntimeProfileRows(profiles){
+        profiles = Array.isArray(profiles) ? profiles : [];
+        if (!profiles.length) {
+          return '<div class="ha-site"><div class="ha-meta">No stored runtime profiles</div></div>';
+        }
+        return profiles.map(function(profile){
+          var cls = profile.promotion_ready ? 'ok' : (profile.admitted ? 'warn' : 'bad');
+          var label = profile.promotion_ready ? 'promoted' : (profile.admitted ? 'warnings' : 'not admitted');
+          var warnings = Array.isArray(profile.warning_codes) ? profile.warning_codes : [];
+          var meta = [];
+          if (profile.run_id) meta.push('run=' + profile.run_id);
+          if (warnings.length) meta.push('warnings=' + warnings.join(', '));
+          if (profile.age_seconds != null) meta.push('age=' + formatAgeShort(profile.age_seconds));
+          return (
+            '<div class="ha-site">' +
+              '<div><strong>' + escapeHtml(profile.track || 'track') + '</strong> <span class="pill ' + cls + '">' + escapeHtml(label) + '</span></div>' +
+              '<div class="ha-meta">' + escapeHtml(meta.join(' · ') || '-') + '</div>' +
+            '</div>'
+          );
+        }).join('');
+      }
+
+      function renderAdvisoryTraceRows(traces){
+        traces = Array.isArray(traces) ? traces : [];
+        if (!traces.length) {
+          return '<div class="ha-site"><div class="ha-meta">No advisory traces recorded</div></div>';
+        }
+        return traces.map(function(trace){
+          var label = 'pending review';
+          var cls = 'warn';
+          if (trace.accepted === true) { label = 'accepted'; cls = 'ok'; }
+          else if (trace.accepted === false) { label = 'diverged'; cls = 'bad'; }
+          var meta = [];
+          if (trace.request_id) meta.push('request=' + trace.request_id);
+          if (trace.replay_status) meta.push('replay=' + trace.replay_status);
+          if (trace.divergence_reason) meta.push('reason=' + trace.divergence_reason);
+          if (trace.age_seconds != null) meta.push('age=' + formatAgeShort(trace.age_seconds));
+          return (
+            '<div class="ha-site">' +
+              '<div><strong>' + escapeHtml(trace.trace_id || 'trace') + '</strong> <span class="pill ' + cls + '">' + escapeHtml(label) + '</span></div>' +
+              '<div class="ha-meta">' + escapeHtml(meta.join(' · ') || '-') + '</div>' +
+            '</div>'
+          );
+        }).join('');
+      }
+
+      function renderHyperonRows(hyperon){
+        hyperon = hyperon || {};
+        var status = String(hyperon.status || 'disabled');
+        var cls = status === 'experimental' ? 'ok' : (status === 'unavailable' ? 'bad' : '');
+        var rows = [
+          '<div class="ha-site">' +
+            '<div><strong>hyperon-das</strong> <span class="pill ' + cls + '">' + escapeHtml(status) + '</span></div>' +
+            '<div class="ha-meta">cells=' + escapeHtml(String(hyperon.das_cells_count || 0)) +
+              ', ready=' + escapeHtml(String(hyperon.ready_das_cells_count || 0)) +
+              ', queries=' + escapeHtml(String(hyperon.das_query_traces_count || 0)) +
+              ', signals=' + escapeHtml(String(hyperon.cognitive_signals_count || 0)) + '</div>' +
+          '</div>'
+        ];
+        var latestQuery = hyperon.latest_das_query_trace || null;
+        if (latestQuery) {
+          rows.push(
+            '<div class="ha-site">' +
+              '<div><strong>' + escapeHtml(latestQuery.trace_id || 'das query') + '</strong> <span class="pill">query</span></div>' +
+              '<div class="ha-meta">' + escapeHtml('kind=' + (latestQuery.query_kind || '-') + ', site=' + (latestQuery.site_id || '-') + ', age=' + formatAgeShort(latestQuery.age_seconds)) + '</div>' +
+            '</div>'
+          );
+        }
+        var latestSignal = hyperon.latest_cognitive_signal || null;
+        if (latestSignal) {
+          rows.push(
+            '<div class="ha-site">' +
+              '<div><strong>' + escapeHtml(latestSignal.signal_id || 'signal') + '</strong> <span class="pill warn">review</span></div>' +
+              '<div class="ha-meta">' + escapeHtml('gate=' + (latestSignal.review_gate || '-') + ', trace=' + (latestSignal.advisory_trace_id || '-') + ', age=' + formatAgeShort(latestSignal.age_seconds)) + '</div>' +
+            '</div>'
+          );
+        }
+        return rows.join('');
+      }
+
+      function renderFabricAdvisoryState(state, err){
+        var sectionEl = document.getElementById('fabric-advisory-section');
+        var statusEl = document.getElementById('fabric-advisory-status-pill');
+        var bannerEl = document.getElementById('fabric-advisory-banner');
+        var summaryEl = document.getElementById('fabric-advisory-summary');
+        var gridEl = document.getElementById('fabric-advisory-grid');
+        var profilesEl = document.getElementById('fabric-advisory-profiles');
+        var tracesEl = document.getElementById('fabric-advisory-traces');
+        var hyperonEl = document.getElementById('fabric-advisory-hyperon');
+        if (!sectionEl || !statusEl || !bannerEl || !summaryEl || !gridEl || !profilesEl || !tracesEl || !hyperonEl) return;
+
+        if (err) {
+          if (err.status === 404) {
+            sectionEl.classList.add('hidden');
+            return;
+          }
+          sectionEl.classList.remove('hidden');
+          statusEl.textContent = 'error';
+          statusEl.className = 'pill bad';
+          bannerEl.textContent = 'Fabric advisory state unavailable: ' + String((err && err.message) ? err.message : err || 'error');
+          bannerEl.className = 'banner err';
+          summaryEl.classList.add('hidden');
+          gridEl.classList.add('hidden');
+          return;
+        }
+
+        if (!state || !state.data_present) {
+          sectionEl.classList.add('hidden');
+          statusEl.textContent = '-';
+          statusEl.className = 'pill';
+          bannerEl.className = 'banner hidden';
+          bannerEl.textContent = '';
+          summaryEl.innerHTML = '';
+          summaryEl.classList.add('hidden');
+          gridEl.classList.add('hidden');
+          profilesEl.innerHTML = '';
+          tracesEl.innerHTML = '';
+          hyperonEl.innerHTML = '';
+          return;
+        }
+
+        sectionEl.classList.remove('hidden');
+        statusEl.textContent = 'advisory only';
+        statusEl.className = 'pill ' + advisoryStatePillClass(state);
+        var warnings = Array.isArray(state.warnings) ? state.warnings : [];
+        if (warnings.length) {
+          bannerEl.className = warnings.some(function(item){ return String(item.level || '').toLowerCase() === 'error'; }) ? 'banner err' : 'banner warn';
+          bannerEl.innerHTML = renderFabricWarnings(warnings);
+        } else {
+          bannerEl.className = 'banner hidden';
+          bannerEl.textContent = '';
+        }
+
+        var profiles = state.runtime_profiles || {};
+        var advisory = state.advisory || {};
+        var hyperon = state.hyperon || {};
+        var hyperonCls = String(hyperon.status || '') === 'experimental' ? 'ok' : (String(hyperon.status || '') === 'unavailable' ? 'bad' : '');
+        summaryEl.innerHTML = [
+          badge('ok', 'k1s authoritative'),
+          badge((profiles.promotion_ready_count || 0) ? 'ok' : 'warn', 'profiles ' + String(profiles.count || 0)),
+          badge((advisory.pending_review_count || 0) ? 'warn' : 'ok', 'traces ' + String(advisory.traces_count || 0)),
+          badge(hyperonCls, 'Hyperon ' + String(hyperon.status || 'disabled'))
+        ].join(' ');
+        summaryEl.classList.remove('hidden');
+        profilesEl.innerHTML = renderRuntimeProfileRows(profiles.tracks || []);
+        tracesEl.innerHTML = renderAdvisoryTraceRows(advisory.traces || []);
+        hyperonEl.innerHTML = renderHyperonRows(hyperon);
+        gridEl.classList.remove('hidden');
+      }
+
+      function refreshFabricAdvisoryState(){
+        return fetchJSON('/fabric/advisory/state')
+          .then(function(state){
+            lastFabricAdvisoryState = state;
+            renderFabricAdvisoryState(state);
+          })
+          .catch(function(err){
+            lastFabricAdvisoryState = null;
+            renderFabricAdvisoryState(null, err);
+            logIfNotNetwork(err);
+          });
       }
 
       function authorityMembersFromSnapshot(authority){
@@ -6175,7 +6376,7 @@ Connection: close
         } catch(e){}
       }
 
-      refreshApps().then(function(){ updateLogsHTMX(); updateProbeHistoryHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem()]); }).catch(logIfNotNetwork);
+      refreshApps().then(function(){ updateLogsHTMX(); updateProbeHistoryHTMX(); updateLogStreaming(); return Promise.all([refreshDetail(), refreshSystem(), refreshFabricAdvisoryState()]); }).catch(logIfNotNetwork);
       schedulePoll();
     </script>
   </body>

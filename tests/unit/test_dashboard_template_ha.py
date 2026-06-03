@@ -87,3 +87,21 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert "var edgeInsetEnd = 0.98;" in html
     assert "String(8.5 * localScale)" in html
     assert "createElementNS('http://www.w3.org/2000/svg','title')" not in html
+
+
+def test_dashboard_template_contains_fabric_advisory_panel() -> None:
+    html = Path("src/ae/resources/observability/dashboard.html").read_text(encoding="utf-8")
+
+    assert 'id="fabric-advisory-section" class="card hidden"' in html
+    assert 'id="fabric-advisory-status-pill"' in html
+    assert 'id="fabric-advisory-banner"' in html
+    assert 'id="fabric-advisory-summary" class="row hidden"' in html
+    assert 'id="fabric-advisory-grid" class="ha-grid hidden"' in html
+    assert 'id="fabric-advisory-profiles"' in html
+    assert 'id="fabric-advisory-traces"' in html
+    assert 'id="fabric-advisory-hyperon"' in html
+    assert "function refreshFabricAdvisoryState()" in html
+    assert "function renderFabricAdvisoryState(state, err)" in html
+    assert "fetchJSON('/fabric/advisory/state')" in html
+    assert "k1s authoritative" in html
+    assert "Hyperon " in html
