@@ -591,6 +591,119 @@ def test_fabric_advisory_import_ingests_router_trace_and_grouped_f5(tmp_path: Pa
     assert state["hyperon"]["status_label"] == "experimental active"
 
 
+def test_fabric_advisory_import_ingests_f2_locality_records(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    payload = {
+        "source": "workerbee.ai-fabric.f1-f2-locality-closeout/v1",
+        "records": {
+            "fabric_nodes": [
+                {
+                    "node_id": "node-a",
+                    "name": "node-a",
+                    "status": "Ready",
+                    "labels": {
+                        "gpu.present": "true",
+                        "gpu.count": "1",
+                        "gpu.models": "RTX 8000",
+                    },
+                    "capabilities": {
+                        "accelerators": [
+                            {
+                                "id": "gpu-0",
+                                "vendor": "nvidia",
+                                "family": "RTX 8000",
+                                "device_count": 1,
+                                "execution_role": "execution",
+                            }
+                        ],
+                        "storage_devices": [{"id": "workerbee-local-nvme", "medium": "nvme"}],
+                        "network_interfaces": [
+                            {
+                                "id": "workerbee-lan",
+                                "name": "workerbee-lan",
+                                "link_metrics": [
+                                    {
+                                        "from_site": "site-a",
+                                        "to_site": "site-a",
+                                        "rtt_p95_ms": 1.0,
+                                    }
+                                ],
+                            }
+                        ],
+                        "rdma_devices": [{"id": "rdma-0", "name": "rdma-0"}],
+                        "identity_roles": {
+                            "management": "spiffe://node-a/management",
+                            "execution": "spiffe://node-a/execution",
+                            "fabric": "spiffe://node-a/fabric",
+                        },
+                    },
+                }
+            ],
+            "fabric_chunks": [
+                {
+                    "chunk_id": CHUNK_ID,
+                    "namespace": "ai-fabric-lab",
+                    "name": "coordinator-adapter-hotset",
+                    "digest": CHUNK_ID,
+                    "size_bytes": 8192,
+                    "source_kind": "workerbee-artifact",
+                    "source_ref": "/srv/storage/k1s/ai-fabric-lab/adapters/expert",
+                    "labels": {"suite": "f1-f2-locality-closeout"},
+                    "created_at": "2026-06-04T00:00:00+00:00",
+                    "updated_at": "2026-06-04T00:00:00+00:00",
+                }
+            ],
+            "fabric_residencies": [
+                {
+                    "chunk_id": CHUNK_ID,
+                    "node_id": "node-a",
+                    "storage_device_id": "workerbee-local-nvme",
+                    "path": "/srv/storage/k1s/ai-fabric-lab/adapters/expert",
+                    "state": "resident",
+                    "integrity_state": "verified",
+                    "epoch": 1,
+                    "digest": CHUNK_ID,
+                    "verified_at": "2026-06-04T00:00:00+00:00",
+                    "updated_at": "2026-06-04T00:00:00+00:00",
+                }
+            ],
+            "fabric_movements": [
+                {
+                    "movement_id": "movement-f2-closeout",
+                    "chunk_id": CHUNK_ID,
+                    "direction": "pull",
+                    "source_node_id": "workerbee-storage",
+                    "target_node_id": "node-a",
+                    "status": "complete",
+                    "requested_by": "workerbee.ai-fabric.closeout",
+                    "digest": CHUNK_ID,
+                    "epoch": 1,
+                    "created_at": "2026-06-04T00:00:00+00:00",
+                    "updated_at": "2026-06-04T00:00:00+00:00",
+                }
+            ],
+        },
+    }
+
+    result = _import_fabric_advisory_payload(store, payload)
+    phase = _build_phase_payload(store)
+
+    assert result["ok"] is True
+    assert result["counts"]["fabric_nodes"] == 1
+    assert result["counts"]["fabric_chunks"] == 1
+    assert result["counts"]["fabric_residencies"] == 1
+    assert result["counts"]["fabric_movements"] == 1
+    assert store.list_fabric_chunks(namespace="ai-fabric-lab")[0].chunk_id == CHUNK_ID
+    assert phase["phases"]["F1"]["status"] == "present"
+    assert phase["phases"]["F2"]["status"] == "present"
+    assert phase["phases"]["F2"]["present"] == [
+        "content_addressed_chunks",
+        "residency_state",
+        "controlled_push_pull",
+        "integrity_epoch_semantics",
+    ]
+
+
 def test_fabric_advisory_import_accepts_live_das_evidence_stream(tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "state.db")
     payload = {

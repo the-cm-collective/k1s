@@ -1848,14 +1848,21 @@ def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str,
     from ae.fabric.locality import (
         advisory_request_from_payload,
         advisory_response_from_payload,
+        chunk_record_from_payload,
         cognitive_signal_from_payload,
         das_cell_bundle_from_payload,
         das_query_trace_from_payload,
         das_replication_from_payload,
         decision_trace_from_payload,
+        movement_record_from_payload,
+        residency_record_from_payload,
     )
 
     counts = {
+        "fabric_nodes": 0,
+        "fabric_chunks": 0,
+        "fabric_residencies": 0,
+        "fabric_movements": 0,
         "advisory_requests": 0,
         "advisory_responses": 0,
         "decision_traces": 0,
@@ -1868,6 +1875,18 @@ def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str,
     grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in counts}
     seen: dict[str, set[str]] = {key: set() for key in counts}
     source = str(payload.get("source") or payload.get("api_version") or "unknown")
+    locality_groups = (
+        "fabric_nodes",
+        "fabric_chunks",
+        "fabric_residencies",
+        "fabric_movements",
+    )
+    f5_groups = (
+        "das_cell_bundles",
+        "das_query_traces",
+        "das_replications",
+        "cognitive_signals",
+    )
 
     def add(group: str, item: Any) -> None:
         if not isinstance(item, dict):
@@ -1894,6 +1913,10 @@ def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str,
         grouped[group].append(item)
 
     for group, aliases in (
+        ("fabric_nodes", ("fabric_nodes", "nodes")),
+        ("fabric_chunks", ("fabric_chunks", "chunks")),
+        ("fabric_residencies", ("fabric_residencies", "residencies")),
+        ("fabric_movements", ("fabric_movements", "movements")),
         ("advisory_requests", ("advisory_requests", "requests")),
         ("advisory_responses", ("advisory_responses", "responses")),
         ("das_cell_bundles", ("das_cell_bundles",)),
@@ -1917,34 +1940,28 @@ def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str,
 
     records = payload.get("records")
     if isinstance(records, dict):
-        for group in (
-            "das_cell_bundles",
-            "das_query_traces",
-            "das_replications",
-            "cognitive_signals",
-        ):
+        for group in (*locality_groups, *f5_groups):
             for item in _fabric_advisory_import_payload_items(records, group):
                 add(group, item)
     elif isinstance(records, list):
         _fabric_advisory_import_record_stream(records, add)
 
-    for nested_name in ("f5_evidence", "evidence"):
+    for nested_name in ("f2_evidence", "locality_evidence", "f5_evidence", "evidence"):
         nested = payload.get(nested_name)
         if isinstance(nested, dict):
             nested_records = nested.get("records")
             if isinstance(nested_records, dict):
-                for group in (
-                    "das_cell_bundles",
-                    "das_query_traces",
-                    "das_replications",
-                    "cognitive_signals",
-                ):
+                for group in (*locality_groups, *f5_groups):
                     for item in _fabric_advisory_import_payload_items(nested_records, group):
                         add(group, item)
             elif isinstance(nested_records, list):
                 _fabric_advisory_import_record_stream(nested_records, add)
 
     writers = {
+        "fabric_nodes": ("_import_fabric_node", _fabric_node_record_from_payload),
+        "fabric_chunks": ("upsert_fabric_chunk", chunk_record_from_payload),
+        "fabric_residencies": ("upsert_fabric_residency", residency_record_from_payload),
+        "fabric_movements": ("upsert_fabric_movement", movement_record_from_payload),
         "advisory_requests": (
             "record_fabric_advisory_request",
             advisory_request_from_payload,
@@ -1960,7 +1977,11 @@ def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str,
         "cognitive_signals": ("record_fabric_cognitive_signal", cognitive_signal_from_payload),
     }
     for group, (method_name, converter) in writers.items():
-        method = getattr(store, method_name, None)
+        method = (
+            _import_fabric_node_record
+            if method_name == "_import_fabric_node"
+            else getattr(store, method_name, None)
+        )
         if not callable(method):
             if grouped[group]:
                 findings.append(
@@ -1973,7 +1994,10 @@ def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str,
             continue
         for item in grouped[group]:
             try:
-                method(converter(item))
+                if method_name == "_import_fabric_node":
+                    method(store, converter(item))
+                else:
+                    method(converter(item))
                 counts[group] += 1
             except Exception as exc:
                 logger.debug("fabric advisory import failed for %s", group, exc_info=True)
@@ -2015,6 +2039,14 @@ def _fabric_advisory_import_payload_items(
 
 def _fabric_advisory_import_record_stream(records: list[Any], add) -> None:
     kind_map = {
+        "fabric_node": "fabric_nodes",
+        "node": "fabric_nodes",
+        "fabric_chunk": "fabric_chunks",
+        "chunk": "fabric_chunks",
+        "fabric_residency": "fabric_residencies",
+        "residency": "fabric_residencies",
+        "fabric_movement": "fabric_movements",
+        "movement": "fabric_movements",
         "das_cell_bundle": "das_cell_bundles",
         "das_query_trace": "das_query_traces",
         "das_replication": "das_replications",
@@ -2115,7 +2147,16 @@ def _fabric_advisory_import_normalize_group_payload(
 
 
 def _fabric_advisory_import_record_key(group: str, payload: dict[str, Any]) -> str:
+    if group == "fabric_residencies":
+        chunk_id = str(payload.get("chunk_id") or "").strip()
+        node_id = str(payload.get("node_id") or "").strip()
+        return f"{chunk_id}/{node_id}" if chunk_id and node_id else ""
+    if group == "fabric_chunks":
+        return str(payload.get("chunk_id") or payload.get("digest") or "").strip()
+    if group == "fabric_nodes":
+        return str(payload.get("node_id") or payload.get("id") or "").strip()
     key_fields = {
+        "fabric_movements": "movement_id",
         "advisory_requests": "request_id",
         "advisory_responses": "request_id",
         "decision_traces": "trace_id",
@@ -2126,6 +2167,40 @@ def _fabric_advisory_import_record_key(group: str, payload: dict[str, Any]) -> s
     }
     field = key_fields[group]
     return str(payload.get(field) or "").strip()
+
+
+def _fabric_node_record_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return dict(payload)
+
+
+def _import_fabric_node_record(store, payload: dict[str, Any]) -> None:
+    from ae.accelerators import merge_projected_gpu_labels
+
+    node_id = str(payload.get("node_id") or payload.get("id") or "").strip()
+    if not node_id:
+        raise ValueError("node_id required")
+    labels = payload.get("labels") if isinstance(payload.get("labels"), dict) else {}
+    capabilities = (
+        payload.get("capabilities") if isinstance(payload.get("capabilities"), dict) else {}
+    )
+    labels = merge_projected_gpu_labels(labels, capabilities)
+    taints = payload.get("taints") if isinstance(payload.get("taints"), list) else []
+    store.upsert_node(
+        node_id,
+        name=payload.get("name") or node_id,
+        labels=labels,
+        capabilities=capabilities,
+        taints=taints,
+        backend=payload.get("backend"),
+        endpoint=payload.get("endpoint"),
+        pod_cidr=payload.get("pod_cidr"),
+        wg_pubkey=payload.get("wg_pubkey"),
+        rp_pubkey=payload.get("rp_pubkey"),
+    )
+    status = str(payload.get("status") or "Ready").strip() or "Ready"
+    record_heartbeat = getattr(store, "record_heartbeat", None)
+    if callable(record_heartbeat):
+        record_heartbeat(node_id, status)
 
 
 def _fabric_advisory_runtime_profile_state(store, *, now: datetime) -> dict[str, Any]:

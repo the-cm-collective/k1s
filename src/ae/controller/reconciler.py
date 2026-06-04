@@ -18,7 +18,11 @@ from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, lo
 from ae.controller.spec import HostAlias, split_app_key
 from ae.runtime import RuntimeAdapter, RuntimeResult
 from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
-from ae.accelerators import detect_nvidia_accelerator_capabilities, merge_projected_gpu_labels
+from ae.accelerators import (
+    detect_nvidia_accelerator_capabilities,
+    merge_projected_gpu_labels,
+    normalize_capabilities,
+)
 
 
 def _record_event_metric_safe(name: str) -> None:
@@ -69,6 +73,18 @@ LOCAL_PATH_PROVISIONER = "k1s.io/local-path"
 WAIT_FOR_FIRST_CONSUMER = "WaitForFirstConsumer"
 SELECTED_NODE_ANNOTATION = "volume.kubernetes.io/selected-node"
 CONFIG_SECRET_FALLBACK_ENV = "AE_RECONCILE_ALLOW_CONFIG_SECRET_FALLBACK"
+
+
+def _merge_local_node_capabilities(
+    detected: dict | None,
+    current: dict | None = None,
+) -> dict[str, Any]:
+    """Refresh detected facts without dropping imported typed fabric evidence."""
+    merged = normalize_capabilities(current or {})
+    detected_caps = normalize_capabilities(detected or {})
+    for key, value in detected_caps.items():
+        merged[key] = value
+    return normalize_capabilities(merged)
 
 
 @dataclass(slots=True)
@@ -219,6 +235,7 @@ class Reconciler:
     def _local_node_metadata(
         self,
         current_labels: dict | None = None,
+        current_capabilities: dict | None = None,
     ) -> tuple[dict[str, str], dict]:
         labels = {str(key): str(value) for key, value in dict(current_labels or {}).items()}
         labels.update(_parse_labels(os.getenv("AE_NODE_LABELS")))
@@ -226,7 +243,10 @@ class Reconciler:
         if profile:
             labels.setdefault("profile", profile)
         labels.setdefault("role", "controller")
-        capabilities = detect_nvidia_accelerator_capabilities()
+        capabilities = _merge_local_node_capabilities(
+            detect_nvidia_accelerator_capabilities(),
+            current_capabilities,
+        )
         labels = merge_projected_gpu_labels(labels, capabilities)
         return labels, capabilities
 
@@ -265,7 +285,10 @@ class Reconciler:
             # Refresh heartbeat only for local/controller nodes (no endpoint or role label).
             labels = getattr(node, "labels", {}) or {}
             if getattr(node, "endpoint", None) is None or labels.get("role") == "controller":
-                merged_labels, capabilities = self._local_node_metadata(labels)
+                merged_labels, capabilities = self._local_node_metadata(
+                    labels,
+                    getattr(node, "capabilities", {}) or {},
+                )
                 self._state_store.upsert_node(
                     node_id,
                     name=getattr(node, "name", None) or name,

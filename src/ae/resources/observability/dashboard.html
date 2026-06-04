@@ -1661,9 +1661,32 @@ Connection: close
         }).join('');
       }
 
-      function fabricF3Phase(report){
+      function fabricPhase(report, phaseId){
         var phases = (report && report.phases) ? report.phases : {};
-        return phases.F3 || phases.f3 || null;
+        return phases[phaseId] || phases[String(phaseId || '').toLowerCase()] || null;
+      }
+
+      function fabricF3Phase(report){
+        return fabricPhase(report, 'F3');
+      }
+
+      function renderFabricDependencyPhaseRow(report, phaseId){
+        var phase = fabricPhase(report, phaseId);
+        if (!phase) {
+          return '<div class="ha-site"><div><strong>' + escapeHtml(phaseId + ' dependency') + '</strong> <span class="pill warn">not reported</span></div><div class="ha-meta">No dependency phase payload is available.</div></div>';
+        }
+        var gate = phase.gate || {};
+        var status = String(phase.status || 'missing');
+        var ready = !!gate.ready;
+        var missing = Array.isArray(phase.missing) ? phase.missing : [];
+        var present = Array.isArray(phase.present) ? phase.present : [];
+        var blockers = Array.isArray(gate.blocked_by) ? gate.blocked_by : [];
+        var cls = ready ? 'ok' : (status === 'present' ? 'warn' : 'bad');
+        var label = ready ? 'ready' : (status === 'present' ? 'blocked' : 'missing');
+        var meta = 'present=' + String(present.length) + ', missing=' + String(missing.length);
+        if (missing.length) meta += ', missing_keys=' + missing.slice(0, 4).join(', ');
+        if (blockers.length) meta += ', blocked_by=' + blockers.join(', ');
+        return '<div class="ha-site"><div><strong>' + escapeHtml(phaseId + ' dependency evidence') + '</strong> <span class="pill ' + cls + '">' + escapeHtml(label) + '</span></div><div class="ha-meta">' + escapeHtml(meta) + '</div></div>';
       }
 
       function renderF3PhaseRows(report, err){
@@ -1690,6 +1713,14 @@ Connection: close
             '<div class="ha-meta">' + escapeHtml(evidenceMeta) + '</div>' +
           '</div>'
         ];
+        rows.push(
+          '<div class="ha-site">' +
+            '<div><strong>F1/F2 blockers</strong> <span class="pill ' + (blockers.length ? 'warn' : 'ok') + '">' + (blockers.length ? 'review' : 'clear') + '</span></div>' +
+            '<div class="ha-meta">Dependency evidence must be present before F3 can advance.</div>' +
+          '</div>'
+        );
+        rows.push(renderFabricDependencyPhaseRow(report, 'F1'));
+        rows.push(renderFabricDependencyPhaseRow(report, 'F2'));
         var keys = [
           'advisory_contract',
           'decision_traces',

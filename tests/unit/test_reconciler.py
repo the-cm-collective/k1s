@@ -3,7 +3,11 @@
 from pathlib import Path
 
 from ae.controller.health import HealthReport, PodHealth
-from ae.controller.reconciler import Reconciler, ReconcileReport
+from ae.controller.reconciler import (
+    Reconciler,
+    ReconcileReport,
+    _merge_local_node_capabilities,
+)
 from ae.controller.spec import (
     AppManifest,
     AppSpec,
@@ -117,6 +121,52 @@ class CapturingContainerdRuntime(ContainerdRuntime):
                 )
             ],
         )
+
+
+def test_local_node_capability_refresh_preserves_fabric_f1_families() -> None:
+    current = {
+        "accelerators": [{"vendor": "nvidia", "family": "RTX 8000", "device_count": 1}],
+        "storageDevices": [
+            {
+                "id": "nvme-model-cache",
+                "mediaType": "nvme",
+                "mountPath": "/models",
+                "roles": ["model-cache"],
+            }
+        ],
+        "networkInterfaces": [
+            {
+                "name": "enp1s0f0",
+                "siteId": "site-a",
+                "linkMetrics": [{"fromSite": "site-a", "toSite": "site-b", "rttP95Ms": 4.5}],
+            }
+        ],
+        "rdmaDevices": [{"name": "irdma0", "netDevice": "enp1s0f0", "state": "active"}],
+        "identityRoles": {
+            "management": "spiffe://node-a/management",
+            "execution": "spiffe://node-a/execution",
+            "fabric": "spiffe://node-a/fabric",
+        },
+    }
+    detected = {
+        "accelerators": [
+            {
+                "id": "GPU-AAAA",
+                "vendor": "nvidia",
+                "family": "TITAN RTX",
+                "device_count": 1,
+            }
+        ]
+    }
+
+    merged = _merge_local_node_capabilities(detected, current)
+
+    assert merged["accelerators"][0]["id"] == "GPU-AAAA"
+    assert merged["accelerators"][0]["family"] == "TITAN RTX"
+    assert merged["storage_devices"][0]["medium"] == "nvme"
+    assert merged["network_interfaces"][0]["link_metrics"][0]["to_site"] == "site-b"
+    assert merged["rdma_devices"][0]["netdev"] == "enp1s0f0"
+    assert merged["identity_roles"]["fabric"]["id"] == "spiffe://node-a/fabric"
 
 
 class FailingLivenessRuntime(RuntimeAdapter):

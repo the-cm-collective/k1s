@@ -139,3 +139,6 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert "k1s remains authoritative" in html
     assert "F3 Phase Gate" in html
     assert "F3 Gate" in html
+    assert "function renderFabricDependencyPhaseRow(report, phaseId)" in html
+    assert "F1/F2 blockers" in html
+    assert "Dependency evidence must be present before F3 can advance." in html
