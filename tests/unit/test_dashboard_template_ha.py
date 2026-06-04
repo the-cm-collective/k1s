@@ -100,10 +100,26 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert 'id="fabric-advisory-profiles"' in html
     assert 'id="fabric-advisory-traces"' in html
     assert 'id="fabric-advisory-hyperon"' in html
+    assert 'id="fabric-advisory-review-modal"' in html
+    assert 'id="fabric-advisory-review-checklist"' in html
+    assert 'id="fabric-advisory-review-tabs"' in html
+    assert 'id="fabric-advisory-review-json"' in html
+    assert 'data-trace-id="' in html
+    assert "Review</button>" in html
     assert "function refreshFabricAdvisoryState()" in html
     assert "function renderFabricAdvisoryState(state, err)" in html
+    assert "function openFabricAdvisoryReview(traceId)" in html
+    assert "function renderFabricReviewChecklist(trace, request, response, dasPayload, signalPayload)" in html
+    assert "function copyFabricAdvisoryReviewJson()" in html
     assert "fetchJSON('/fabric/advisory/state')" in html
+    assert "fetchJSON('/fabric/advisory/traces?limit=100')" in html
+    assert "fetchJSON('/fabric/advisory/requests?limit=100')" in html
+    assert "fetchJSON('/fabric/advisory/responses?limit=100')" in html
+    assert "fetchJSON('/fabric/das-query-traces?limit=100')" in html
+    assert "fetchJSON('/fabric/cognitive-signals?limit=100')" in html
     assert "k1s authoritative" in html
     assert "Optional Hyperon / DAS" in html
     assert "opt-in inactive" in html
     assert "k1s advisory-only data remains available" in html
+    assert "Record operator decision" in html
+    assert "k1s remains authoritative" in html

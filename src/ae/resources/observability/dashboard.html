@@ -329,6 +329,27 @@
       .terminal-wrap .xterm-viewport::-webkit-scrollbar { width:0; height:0; }
       .modal .row input[type=text], .modal .row input[type=password], .modal .row select { min-width: 140px; }
       .modal .hint { font-size:12px; opacity:.8; }
+      #fabric-advisory-review-modal .modal { width:min(1120px, 96vw); height:min(720px, 90vh); }
+      #fabric-advisory-review-modal .modal-body { display:grid; grid-template-columns:minmax(240px, 0.85fr) minmax(0, 1.35fr); gap:12px; min-height:0; overflow:hidden; }
+      .fabric-review-summary { display:flex; flex-direction:column; gap:10px; min-height:0; overflow:auto; padding-right:4px; }
+      .fabric-review-fields { border:1px solid rgba(148,163,184,0.2); border-radius:8px; padding:8px 10px; background:rgba(15,23,42,0.28); }
+      .fabric-review-checklist { display:flex; flex-direction:column; gap:8px; }
+      .fabric-review-step { display:flex; gap:8px; align-items:flex-start; border:1px solid rgba(148,163,184,0.2); border-radius:8px; padding:8px 10px; background:rgba(15,23,42,0.22); }
+      .fabric-review-step input { flex:0 0 auto; margin-top:3px; }
+      .fabric-review-step strong { display:block; font-size:12px; }
+      .fabric-review-json-panel { display:flex; flex-direction:column; min-height:0; gap:8px; }
+      .fabric-review-json-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+      .fabric-review-json-tabs { display:flex; gap:6px; flex-wrap:wrap; }
+      .fabric-review-json-tabs button { padding:4px 8px; font-size:11px; border-radius:999px; border:1px solid rgba(148,163,184,0.45); background:rgba(15,23,42,0.35); }
+      .fabric-review-json-tabs button.active { border-color:rgba(251,192,45,0.65); color:#f8c32b; background:linear-gradient(180deg, rgba(251,192,45,0.22), rgba(15,23,42,0.35)); }
+      .fabric-review-json-tabs button.warn { border-color:rgba(245,158,11,0.65); }
+      .fabric-review-json { flex:1 1 auto; min-height:0; margin:0; border:1px solid #334155; border-radius:8px; background:#0b0f14; color:#e2e8f0; padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; line-height:1.45; }
+      .fabric-advisory-trace-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+      .fabric-advisory-review-btn { padding:4px 8px; font-size:11px; white-space:nowrap; }
+      @media (max-width: 900px) {
+        #fabric-advisory-review-modal .modal-body { grid-template-columns:1fr; overflow:auto; }
+        .fabric-review-json { min-height:280px; }
+      }
     </style>
   </head>
   <body>
@@ -740,6 +761,37 @@ Connection: close
             <span id="pf-status" class="pill"></span>
             <span class="hint">Uses WebSocket port-forward (portforward.k8s.io).</span>
           </div>
+        </div>
+      </div>
+    </div>
+    <div id="fabric-advisory-review-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="fabric-advisory-review-title">
+      <div class="modal">
+        <div class="modal-header">
+          <div>
+            <strong id="fabric-advisory-review-title">Advisory Trace Review</strong>
+            <div id="fabric-advisory-review-subtitle" class="ha-meta"></div>
+          </div>
+          <button id="fabric-advisory-review-close" type="button">Close</button>
+        </div>
+        <div class="modal-body">
+          <section class="fabric-review-summary" aria-label="Trace review summary">
+            <div id="fabric-advisory-review-status" class="row" style="gap:8px;"></div>
+            <div id="fabric-advisory-review-fields" class="fabric-review-fields"></div>
+            <div id="fabric-advisory-review-checklist" class="fabric-review-checklist"></div>
+          </section>
+          <section class="fabric-review-json-panel" aria-label="Advisory JSON inspector">
+            <div class="fabric-review-json-head">
+              <strong>JSON Inspector</strong>
+              <button id="fabric-advisory-review-copy" type="button">Copy JSON</button>
+            </div>
+            <div id="fabric-advisory-review-tabs" class="fabric-review-json-tabs" role="tablist" aria-label="Advisory evidence payloads"></div>
+            <pre id="fabric-advisory-review-json" class="fabric-review-json scrollbar-hide" tabindex="0"></pre>
+          </section>
+        </div>
+        <div class="modal-footer">
+          <span id="fabric-advisory-review-note" class="hint" style="margin-right:auto;">Review decisions are recorded outside this panel; k1s remains authoritative.</span>
+          <button id="fabric-advisory-review-refresh" type="button">Refresh Evidence</button>
+          <button id="fabric-advisory-review-close-footer" type="button">Done</button>
         </div>
       </div>
     </div>
@@ -1504,6 +1556,13 @@ Connection: close
         return s.replace(/[&<>]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]); });
       }
 
+      function escapeAttr(s){
+        s = (s === null || s === undefined) ? '' : String(s);
+        return s.replace(/[&<>"']/g, function(c){
+          return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]);
+        });
+      }
+
       function formatNumberCompact(value){
         if (value === null || value === undefined || value === '') return '-';
         var num = Number(value);
@@ -1578,6 +1637,7 @@ Connection: close
           var cls = 'warn';
           if (trace.accepted === true) { label = 'accepted'; cls = 'ok'; }
           else if (trace.accepted === false) { label = 'diverged'; cls = 'bad'; }
+          var traceId = String(trace.trace_id || '');
           var meta = [];
           if (trace.request_id) meta.push('request=' + trace.request_id);
           if (trace.replay_status) meta.push('replay=' + trace.replay_status);
@@ -1585,7 +1645,10 @@ Connection: close
           if (trace.age_seconds != null) meta.push('age=' + formatAgeShort(trace.age_seconds));
           return (
             '<div class="ha-site">' +
-              '<div><strong>' + escapeHtml(trace.trace_id || 'trace') + '</strong> <span class="pill ' + cls + '">' + escapeHtml(label) + '</span></div>' +
+              '<div class="fabric-advisory-trace-head">' +
+                '<div><strong>' + escapeHtml(traceId || 'trace') + '</strong> <span class="pill ' + cls + '">' + escapeHtml(label) + '</span></div>' +
+                (traceId ? '<button type="button" class="fabric-advisory-review-btn" data-trace-id="' + escapeAttr(traceId) + '">Review</button>' : '') +
+              '</div>' +
               '<div class="ha-meta">' + escapeHtml(meta.join(' · ') || '-') + '</div>' +
             '</div>'
           );
@@ -1628,6 +1691,297 @@ Connection: close
           );
         }
         return rows.join('');
+      }
+
+      var fabricAdvisoryReviewTraceId = '';
+      var fabricAdvisoryReviewTabs = [];
+      var fabricAdvisoryReviewActiveTab = '';
+
+      function fabricReviewItems(payload){
+        return (payload && Array.isArray(payload.items)) ? payload.items : [];
+      }
+
+      function fabricReviewFindBy(items, key, value){
+        if (!value) return null;
+        var expected = String(value);
+        items = Array.isArray(items) ? items : [];
+        for (var i = 0; i < items.length; i++) {
+          if (String((items[i] || {})[key] || '') === expected) return items[i];
+        }
+        return null;
+      }
+
+      function fabricReviewTraceSummary(traceId){
+        var advisory = (lastFabricAdvisoryState && lastFabricAdvisoryState.advisory) ? lastFabricAdvisoryState.advisory : {};
+        var traces = Array.isArray(advisory.traces) ? advisory.traces : [];
+        return fabricReviewFindBy(traces, 'trace_id', traceId);
+      }
+
+      function fabricReviewEndpointError(endpoint, err){
+        return {
+          endpoint: endpoint,
+          error: String((err && err.message) ? err.message : err || 'error'),
+          status: err && err.status ? err.status : null
+        };
+      }
+
+      function fabricReviewPayloadJson(payload){
+        try { return JSON.stringify(payload, null, 2); } catch(e) { return String(payload || ''); }
+      }
+
+      function fabricReviewStatus(trace){
+        var label = 'pending review';
+        var cls = 'warn';
+        if (trace && trace.accepted === true) { label = 'accepted'; cls = 'ok'; }
+        else if (trace && trace.accepted === false) { label = 'diverged'; cls = 'bad'; }
+        return { label: label, cls: cls };
+      }
+
+      function fabricReviewRecommendation(response, trace){
+        var advisoryResponse = (response && response.advisory_response) || (trace && trace.advisory_response) || {};
+        return String((response && response.recommendation) || advisoryResponse.recommendation || advisoryResponse.recommended_action || advisoryResponse.action || '-');
+      }
+
+      function renderFabricReviewFields(trace, request, response, state, dasPayload, signalPayload){
+        trace = trace || {};
+        request = request || {};
+        response = response || {};
+        state = state || {};
+        dasPayload = dasPayload || {};
+        signalPayload = signalPayload || {};
+        var advisoryResponse = response.advisory_response || trace.advisory_response || {};
+        var coherence = trace.coherence_signals || {};
+        var provider = String(advisoryResponse.provider || trace.provider || '-');
+        var modelOk = coherence.model_ok;
+        if (modelOk === undefined || modelOk === null) modelOk = trace.model_ok;
+        var confidence = response.confidence;
+        if (confidence === undefined || confidence === null) confidence = advisoryResponse.confidence;
+        var rows = [
+          {k:'Trace', v: trace.trace_id || '-'},
+          {k:'Request', v: trace.request_id || request.request_id || '-'},
+          {k:'Subject', v: (request.subject_type || '-') + '/' + (request.subject_id || '-')},
+          {k:'Provider', v: provider},
+          {k:'Confidence', v: formatNumberCompact(confidence)},
+          {k:'Model', v: modelOk === undefined || modelOk === null ? '-' : (modelOk ? 'ok' : 'not ok')},
+          {k:'Hits', v: 'retrieval=' + String(coherence.retrieval_hits == null ? '-' : coherence.retrieval_hits) + ', symbolic=' + String(coherence.symbolic_hits == null ? '-' : coherence.symbolic_hits)},
+          {k:'Replay', v: trace.replay_status || '-'},
+          {k:'Reason', v: trace.divergence_reason || '-'},
+          {k:'Authority', v: 'k1s authoritative, advisory authoritative=' + String(!!response.authoritative || !!advisoryResponse.authoritative)},
+          {k:'DAS', v: 'linked_queries=' + String((dasPayload.matching_query_traces || []).length) + ', linked_signals=' + String((signalPayload.matching_signals || []).length)}
+        ];
+        return renderHaRows(rows);
+      }
+
+      function renderFabricReviewChecklist(trace, request, response, dasPayload, signalPayload){
+        trace = trace || {};
+        request = request || {};
+        response = response || {};
+        dasPayload = dasPayload || {};
+        signalPayload = signalPayload || {};
+        var hasDas = !!((dasPayload.matching_query_traces || []).length || (signalPayload.matching_signals || []).length);
+        var steps = [
+          {tab:'state', title:'Confirm k1s authority', detail:'The advisory path is non-authoritative; live k1s state remains the control-plane source of truth.'},
+          {tab:'request', title:'Inspect request JSON', detail: request.request_id ? ('Request ' + request.request_id) : 'No matching request payload found.'},
+          {tab:'response', title:'Inspect advisory response', detail: response.request_id ? fabricReviewRecommendation(response, trace) : 'No matching advisory response found.'},
+          {tab:'trace', title:'Compare trace with baseline', detail:'Review deterministic_baseline, advisory_response, continuity_signals, and coherence_signals.'},
+          {tab:'das', title:'Review Hyperon/DAS evidence', detail: hasDas ? 'Experimental DAS query and signal evidence is attached for review.' : 'No optional Hyperon/DAS evidence is attached to this trace.'},
+          {tab:'state', title:'Record operator decision', detail:'Use the external review/audit path until the dashboard gains an authenticated review-write endpoint.'}
+        ];
+        return steps.map(function(step, idx){
+          var id = 'fabric-review-step-' + String(idx);
+          return (
+            '<label class="fabric-review-step" data-fabric-review-tab="' + escapeAttr(step.tab) + '">' +
+              '<input id="' + escapeAttr(id) + '" type="checkbox" />' +
+              '<span><strong>' + escapeHtml(step.title) + '</strong><span class="ha-meta">' + escapeHtml(step.detail) + '</span></span>' +
+            '</label>'
+          );
+        }).join('');
+      }
+
+      function renderFabricReviewLoading(traceId){
+        var statusEl = document.getElementById('fabric-advisory-review-status');
+        var fieldsEl = document.getElementById('fabric-advisory-review-fields');
+        var checklistEl = document.getElementById('fabric-advisory-review-checklist');
+        var tabsEl = document.getElementById('fabric-advisory-review-tabs');
+        var jsonEl = document.getElementById('fabric-advisory-review-json');
+        var subtitleEl = document.getElementById('fabric-advisory-review-subtitle');
+        if (subtitleEl) subtitleEl.textContent = traceId ? ('trace=' + traceId) : '';
+        if (statusEl) statusEl.innerHTML = badge('warn', 'loading') + badge('', 'trace ' + escapeHtml(traceId || '-'));
+        if (fieldsEl) fieldsEl.innerHTML = renderHaRows([{k:'Trace', v:traceId || '-'}, {k:'Evidence', v:'loading'}]);
+        if (checklistEl) checklistEl.innerHTML = '';
+        if (tabsEl) tabsEl.innerHTML = '';
+        if (jsonEl) jsonEl.textContent = 'Loading advisory evidence...';
+      }
+
+      function setFabricAdvisoryReviewTab(tabId){
+        var jsonEl = document.getElementById('fabric-advisory-review-json');
+        var tabsEl = document.getElementById('fabric-advisory-review-tabs');
+        var selected = null;
+        for (var i = 0; i < fabricAdvisoryReviewTabs.length; i++) {
+          if (fabricAdvisoryReviewTabs[i].id === tabId) selected = fabricAdvisoryReviewTabs[i];
+        }
+        if (!selected && fabricAdvisoryReviewTabs.length) selected = fabricAdvisoryReviewTabs[0];
+        fabricAdvisoryReviewActiveTab = selected ? selected.id : '';
+        if (tabsEl) {
+          Array.prototype.forEach.call(tabsEl.querySelectorAll('button[data-fabric-review-tab]'), function(btn){
+            var active = btn.getAttribute('data-fabric-review-tab') === fabricAdvisoryReviewActiveTab;
+            btn.classList.toggle('active', active);
+            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+        }
+        if (jsonEl) jsonEl.textContent = selected ? fabricReviewPayloadJson(selected.payload) : '';
+      }
+
+      function renderFabricAdvisoryReviewTabs(tabs, activeTab){
+        var tabsEl = document.getElementById('fabric-advisory-review-tabs');
+        fabricAdvisoryReviewTabs = Array.isArray(tabs) ? tabs : [];
+        if (tabsEl) {
+          tabsEl.innerHTML = fabricAdvisoryReviewTabs.map(function(tab){
+            return '<button type="button" role="tab" class="' + (tab.warn ? 'warn' : '') + '" data-fabric-review-tab="' + escapeAttr(tab.id) + '">' + escapeHtml(tab.label) + '</button>';
+          }).join('');
+        }
+        setFabricAdvisoryReviewTab(activeTab || (fabricAdvisoryReviewTabs[0] && fabricAdvisoryReviewTabs[0].id) || '');
+      }
+
+      function renderFabricAdvisoryReviewData(traceId, payloads){
+        payloads = payloads || {};
+        var state = payloads.state && !payloads.state.error ? payloads.state : (lastFabricAdvisoryState || {});
+        if (payloads.state && !payloads.state.error) lastFabricAdvisoryState = payloads.state;
+        var traceItems = fabricReviewItems(payloads.traces);
+        var summaryTrace = fabricReviewTraceSummary(traceId);
+        var trace = fabricReviewFindBy(traceItems, 'trace_id', traceId) || summaryTrace || {trace_id: traceId};
+        var requestId = trace.request_id || (summaryTrace && summaryTrace.request_id) || '';
+        var requestItems = fabricReviewItems(payloads.requests);
+        var responseItems = fabricReviewItems(payloads.responses);
+        var request = fabricReviewFindBy(requestItems, 'request_id', requestId) || null;
+        var response = fabricReviewFindBy(responseItems, 'request_id', requestId) || null;
+        var dasItems = fabricReviewItems(payloads.das_query_traces);
+        var signalItems = fabricReviewItems(payloads.cognitive_signals);
+        var continuity = trace.continuity_signals || {};
+        var linkedDasTraceId = String(continuity.das_query_trace_id || '');
+        var matchingDas = dasItems.filter(function(item){
+          return linkedDasTraceId && String((item || {}).trace_id || '') === linkedDasTraceId;
+        });
+        var matchingSignals = signalItems.filter(function(item){
+          return String((item || {}).advisory_trace_id || '') === String(traceId || '');
+        });
+        var hyperon = state.hyperon || {};
+        var latestDas = hyperon.latest_das_query_trace || null;
+        var latestSignal = hyperon.latest_cognitive_signal || null;
+        if (!matchingDas.length && linkedDasTraceId && latestDas && String(latestDas.trace_id || '') === linkedDasTraceId) {
+          matchingDas.push(latestDas);
+        }
+        var dasPayload = {
+          linked_das_query_trace_id: linkedDasTraceId,
+          latest_das_query_trace: latestDas,
+          matching_query_traces: matchingDas,
+          recent_query_traces: dasItems.slice(0, 20),
+          endpoint_error: payloads.das_query_traces && payloads.das_query_traces.error ? payloads.das_query_traces : null
+        };
+        var signalPayload = {
+          latest_cognitive_signal: latestSignal,
+          matching_signals: matchingSignals,
+          recent_signals: signalItems.slice(0, 20),
+          endpoint_error: payloads.cognitive_signals && payloads.cognitive_signals.error ? payloads.cognitive_signals : null
+        };
+        var status = fabricReviewStatus(trace);
+        var statusEl = document.getElementById('fabric-advisory-review-status');
+        var fieldsEl = document.getElementById('fabric-advisory-review-fields');
+        var checklistEl = document.getElementById('fabric-advisory-review-checklist');
+        var noteEl = document.getElementById('fabric-advisory-review-note');
+        if (statusEl) {
+          statusEl.innerHTML = [
+            badge(status.cls, status.label),
+            badge('ok', 'k1s authoritative'),
+            badge(String(hyperon.status || '') === 'experimental' ? 'ok' : '', 'Hyperon ' + escapeHtml(hyperon.status_label || hyperon.status || 'opt-in inactive'))
+          ].join(' ');
+        }
+        if (fieldsEl) fieldsEl.innerHTML = renderFabricReviewFields(trace, request, response, state, dasPayload, signalPayload);
+        if (checklistEl) checklistEl.innerHTML = renderFabricReviewChecklist(trace, request, response, dasPayload, signalPayload);
+        if (noteEl) noteEl.textContent = 'Review decisions are recorded outside this panel; k1s remains authoritative.';
+        renderFabricAdvisoryReviewTabs([
+          {id:'trace', label:'Trace', payload: trace, warn: !trace.trace_id},
+          {id:'request', label:'Request', payload: request || {missing:'No matching request payload found', request_id:requestId}, warn: !request},
+          {id:'response', label:'Response', payload: response || {missing:'No matching advisory response found', request_id:requestId}, warn: !response},
+          {id:'das', label:'DAS', payload: dasPayload, warn: !!dasPayload.endpoint_error},
+          {id:'signals', label:'Signals', payload: signalPayload, warn: !!signalPayload.endpoint_error},
+          {id:'state', label:'State', payload: state || {}, warn: !!(payloads.state && payloads.state.error)}
+        ], 'trace');
+      }
+
+      function loadFabricAdvisoryReviewData(traceId){
+        return Promise.all([
+          fetchJSON('/fabric/advisory/state').catch(function(err){ return fabricReviewEndpointError('/fabric/advisory/state', err); }),
+          fetchJSON('/fabric/advisory/traces?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/advisory/traces', err); }),
+          fetchJSON('/fabric/advisory/requests?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/advisory/requests', err); }),
+          fetchJSON('/fabric/advisory/responses?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/advisory/responses', err); }),
+          fetchJSON('/fabric/das-query-traces?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/das-query-traces', err); }),
+          fetchJSON('/fabric/cognitive-signals?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/cognitive-signals', err); })
+        ]).then(function(results){
+          renderFabricAdvisoryReviewData(traceId, {
+            state: results[0],
+            traces: results[1],
+            requests: results[2],
+            responses: results[3],
+            das_query_traces: results[4],
+            cognitive_signals: results[5]
+          });
+        });
+      }
+
+      function openFabricAdvisoryReview(traceId){
+        var modal = document.getElementById('fabric-advisory-review-modal');
+        if (!modal || !traceId) return;
+        fabricAdvisoryReviewTraceId = String(traceId || '');
+        renderFabricReviewLoading(fabricAdvisoryReviewTraceId);
+        modal.classList.remove('hidden');
+        loadFabricAdvisoryReviewData(fabricAdvisoryReviewTraceId).catch(function(err){
+          var jsonEl = document.getElementById('fabric-advisory-review-json');
+          var noteEl = document.getElementById('fabric-advisory-review-note');
+          if (jsonEl) jsonEl.textContent = fabricReviewPayloadJson(fabricReviewEndpointError('review-modal', err));
+          if (noteEl) noteEl.textContent = 'Failed to load advisory evidence.';
+          logIfNotNetwork(err);
+        });
+      }
+
+      function closeFabricAdvisoryReview(){
+        var modal = document.getElementById('fabric-advisory-review-modal');
+        if (!modal) return;
+        modal.classList.add('hidden');
+      }
+
+      function refreshFabricAdvisoryReview(){
+        if (!fabricAdvisoryReviewTraceId) return;
+        renderFabricReviewLoading(fabricAdvisoryReviewTraceId);
+        loadFabricAdvisoryReviewData(fabricAdvisoryReviewTraceId);
+      }
+
+      function copyFabricAdvisoryReviewJson(){
+        var jsonEl = document.getElementById('fabric-advisory-review-json');
+        var noteEl = document.getElementById('fabric-advisory-review-note');
+        var text = jsonEl ? (jsonEl.textContent || '') : '';
+        if (!text) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function(){
+            if (noteEl) noteEl.textContent = 'Copied selected advisory JSON.';
+          }).catch(function(){
+            if (noteEl) noteEl.textContent = 'Clipboard copy failed; selected JSON remains visible.';
+          });
+          return;
+        }
+        if (noteEl) noteEl.textContent = 'Clipboard API unavailable; selected JSON remains visible.';
+      }
+
+      function bindFabricAdvisoryReviewButtons(){
+        var tracesEl = document.getElementById('fabric-advisory-traces');
+        if (!tracesEl || tracesEl.__fabricReviewBound) return;
+        tracesEl.__fabricReviewBound = true;
+        tracesEl.addEventListener('click', function(ev){
+          var target = ev.target && ev.target.closest ? ev.target.closest('button[data-trace-id]') : null;
+          if (!target) return;
+          ev.preventDefault();
+          openFabricAdvisoryReview(target.getAttribute('data-trace-id') || '');
+        });
       }
 
       function renderFabricAdvisoryState(state, err){
@@ -1697,6 +2051,7 @@ Connection: close
         summaryEl.classList.remove('hidden');
         profilesEl.innerHTML = renderRuntimeProfileRows(profiles.tracks || []);
         tracesEl.innerHTML = renderAdvisoryTraceRows(advisory.traces || []);
+        bindFabricAdvisoryReviewButtons();
         hyperonEl.innerHTML = renderHyperonRows(hyperon);
         gridEl.classList.remove('hidden');
       }
@@ -2799,6 +3154,22 @@ Connection: close
       try { document.getElementById('pf-disconnect').addEventListener('click', pfDisconnect); } catch(e){}
       try { document.getElementById('pf-view-source').addEventListener('click', function(){ setPfView('source'); }); } catch(e){}
       try { document.getElementById('pf-view-preview').addEventListener('click', function(){ setPfView('preview'); }); } catch(e){}
+      try { document.getElementById('fabric-advisory-review-close').addEventListener('click', closeFabricAdvisoryReview); } catch(e){}
+      try { document.getElementById('fabric-advisory-review-close-footer').addEventListener('click', closeFabricAdvisoryReview); } catch(e){}
+      try { document.getElementById('fabric-advisory-review-refresh').addEventListener('click', refreshFabricAdvisoryReview); } catch(e){}
+      try { document.getElementById('fabric-advisory-review-copy').addEventListener('click', copyFabricAdvisoryReviewJson); } catch(e){}
+      try {
+        document.getElementById('fabric-advisory-review-tabs').addEventListener('click', function(ev){
+          var target = ev.target && ev.target.closest ? ev.target.closest('button[data-fabric-review-tab]') : null;
+          if (target) setFabricAdvisoryReviewTab(target.getAttribute('data-fabric-review-tab') || '');
+        });
+      } catch(e){}
+      try {
+        document.getElementById('fabric-advisory-review-checklist').addEventListener('click', function(ev){
+          var target = ev.target && ev.target.closest ? ev.target.closest('[data-fabric-review-tab]') : null;
+          if (target) setFabricAdvisoryReviewTab(target.getAttribute('data-fabric-review-tab') || '');
+        });
+      } catch(e){}
       window.addEventListener('resize', function(){ if (shellModal && !shellModal.classList.contains('hidden')) { fitShellNow(); } });
       loadDashboardFeatures();
 
