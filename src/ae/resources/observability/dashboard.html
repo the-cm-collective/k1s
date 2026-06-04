@@ -344,8 +344,9 @@
       .fabric-review-json-tabs button.active { border-color:rgba(251,192,45,0.65); color:#f8c32b; background:linear-gradient(180deg, rgba(251,192,45,0.22), rgba(15,23,42,0.35)); }
       .fabric-review-json-tabs button.warn { border-color:rgba(245,158,11,0.65); }
       .fabric-review-json { flex:1 1 auto; min-height:0; margin:0; border:1px solid #334155; border-radius:8px; background:#0b0f14; color:#e2e8f0; padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; line-height:1.45; }
-      .fabric-advisory-trace-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
-      .fabric-advisory-review-btn { padding:4px 8px; font-size:11px; white-space:nowrap; }
+      .fabric-advisory-trace-head { display:grid; grid-template-columns:minmax(0, 1fr) max-content; align-items:start; column-gap:8px; }
+      .fabric-advisory-trace-label { min-width:0; overflow-wrap:anywhere; word-break:break-word; }
+      .fabric-advisory-review-btn { align-self:start; justify-self:end; padding:4px 8px; font-size:11px; white-space:nowrap; }
       @media (max-width: 900px) {
         #fabric-advisory-review-modal .modal-body { grid-template-columns:1fr; overflow:auto; }
         .fabric-review-json { min-height:280px; }
@@ -1646,7 +1647,7 @@ Connection: close
           return (
             '<div class="ha-site">' +
               '<div class="fabric-advisory-trace-head">' +
-                '<div><strong>' + escapeHtml(traceId || 'trace') + '</strong> <span class="pill ' + cls + '">' + escapeHtml(label) + '</span></div>' +
+                '<div class="fabric-advisory-trace-label"><strong>' + escapeHtml(traceId || 'trace') + '</strong> <span class="pill ' + cls + '">' + escapeHtml(label) + '</span></div>' +
                 (traceId ? '<button type="button" class="fabric-advisory-review-btn" data-trace-id="' + escapeAttr(traceId) + '">Review</button>' : '') +
               '</div>' +
               '<div class="ha-meta">' + escapeHtml(meta.join(' · ') || '-') + '</div>' +

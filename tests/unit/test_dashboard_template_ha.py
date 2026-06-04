@@ -105,6 +105,8 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert 'id="fabric-advisory-review-tabs"' in html
     assert 'id="fabric-advisory-review-json"' in html
     assert 'data-trace-id="' in html
+    assert "grid-template-columns:minmax(0, 1fr) max-content" in html
+    assert "fabric-advisory-trace-label" in html
     assert "Review</button>" in html
     assert "function refreshFabricAdvisoryState()" in html
     assert "function renderFabricAdvisoryState(state, err)" in html
