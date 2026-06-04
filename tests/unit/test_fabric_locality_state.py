@@ -23,7 +23,12 @@ from ae.fabric.locality import (
     FabricTransferLeaseRecord,
     FabricTransportAttemptRecord,
 )
-from ae.observability.http_api import FABRIC_ADVISORY_STATE_API_VERSION, _ApiHandler
+from ae.observability.http_api import (
+    FABRIC_ADVISORY_IMPORT_API_VERSION,
+    FABRIC_ADVISORY_STATE_API_VERSION,
+    _ApiHandler,
+    _import_fabric_advisory_payload,
+)
 
 CHUNK_ID = "sha256:" + ("b" * 64)
 
@@ -265,6 +270,13 @@ def _payload(handler: _ApiHandler) -> dict[str, Any]:
     return json.loads(handler.wfile.read().decode("utf-8"))
 
 
+def _build_state_payload(store: SQLiteStateStore) -> dict[str, Any]:
+    handler, statuses = _make_handler("/fabric/advisory/state", store)
+    _ApiHandler._handle_fabric_advisory_state(handler)  # type: ignore[arg-type]
+    assert statuses == [200]
+    return _payload(handler)
+
+
 def test_sqlite_fabric_locality_roundtrip(tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "state.db")
     _seed_locality(store)
@@ -440,3 +452,165 @@ def test_fabric_read_api_lists_f4_and_f5_payloads(tmp_path: Path) -> None:
     assert leases["items"][0]["transport"] == "roce"
     assert traces["items"][0]["local_first"] is True
     assert traces["items"][0]["warmed_refs"] == ["das://site-a/runtime/facts.jsonl"]
+
+
+def test_fabric_advisory_import_ingests_router_trace_and_grouped_f5(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    payload = {
+        "source": "workerbee.ai-fabric.runtime-validation/v1",
+        "decision_traces": [
+            {
+                "trace_id": "trace-import-0",
+                "request_id": "req-import-0",
+                "created_at": "2026-06-04T00:00:00+00:00",
+                "request_contract": {
+                    "subject_type": "advisory_query",
+                    "subject_id": "Explain k1s advisory routing",
+                    "intent": "advise",
+                    "facts_ref": "http://das.example",
+                    "locality_snapshot_ref": "http://retrieval.example",
+                    "max_candidates": 5,
+                    "time_budget_ms": 3000,
+                },
+                "response_contract": {
+                    "provider": "workerbee-ai-router",
+                    "status": "ok",
+                    "recommendation": "keep k1s authoritative",
+                    "confidence": 0.8,
+                    "evidence_refs": ["das-fact://fact-1"],
+                    "authoritative": True,
+                },
+                "deterministic_baseline": {"selected_lane": "coordinator"},
+                "accepted": None,
+                "divergence_reason": "pending_operator_review",
+                "replay_status": "recorded",
+                "continuity_signals": {"request_id": "req-import-0"},
+                "coherence_signals": {"authoritative": False},
+            }
+        ],
+        "records": {
+            "das_cell_bundles": [
+                {
+                    "bundle_id": "das-import-runtime",
+                    "site_id": "site-a",
+                    "cell_id": "runtime",
+                    "version": "2026-06-04",
+                    "storage_ref": "/srv/storage/k1s/ai-fabric-lab/das",
+                    "facts_ref": "das://site-a/runtime/facts.jsonl",
+                    "status": "ready",
+                    "labels": {"workerbee_lab": "ai-fabric"},
+                    "created_at": "2026-06-04T00:00:00+00:00",
+                    "updated_at": "2026-06-04T00:00:00+00:00",
+                }
+            ],
+            "das_query_traces": [
+                {
+                    "trace_id": "das-query-import-0",
+                    "bundle_id": "das-import-runtime",
+                    "site_id": "site-a",
+                    "query_id": "req-import-0",
+                    "query_kind": "advisory",
+                    "local_first": True,
+                    "warmed_refs": ["das-fact://fact-1"],
+                    "promoted_refs": ["qdrant://ai_fabric_corpus/smoke"],
+                    "fallback_sites": [],
+                    "result_ref": "das://site-a/runtime/query/das-query-import-0",
+                    "created_at": "2026-06-04T00:00:00+00:00",
+                }
+            ],
+            "cognitive_signals": [
+                {
+                    "signal_id": "cognitive-import-0",
+                    "subject_type": "das-cell",
+                    "subject_id": "das-import-runtime",
+                    "signal_kind": "continuity",
+                    "continuity_ref": "das://site-a/runtime/query/das-query-import-0",
+                    "coherence_score": 1.0,
+                    "overload_state": "nominal",
+                    "review_gate": "operator_review",
+                    "advisory_trace_id": "trace-import-0",
+                    "created_at": "2026-06-04T00:00:00+00:00",
+                }
+            ],
+        },
+    }
+
+    result = _import_fabric_advisory_payload(store, payload)
+    state = _build_state_payload(store)
+
+    assert result["api_version"] == FABRIC_ADVISORY_IMPORT_API_VERSION
+    assert result["ok"] is True
+    assert result["authoritative"] is False
+    assert result["counts"]["advisory_requests"] == 1
+    assert result["counts"]["advisory_responses"] == 1
+    assert result["counts"]["decision_traces"] == 1
+    assert result["counts"]["das_cell_bundles"] == 1
+    assert state["advisory"]["latest_response"]["authoritative"] is False
+    assert state["advisory"]["latest_trace"]["trace_id"] == "trace-import-0"
+    assert state["hyperon"]["enabled"] is True
+    assert state["hyperon"]["status_label"] == "experimental active"
+
+
+def test_fabric_advisory_import_accepts_live_das_evidence_stream(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    payload = {
+        "source": "workerbee.das-bridge",
+        "records": [
+            {
+                "kind": "das_cell_bundle",
+                "payload": {
+                    "bundle_id": "das-stream-runtime",
+                    "site_id": "site-a",
+                    "cell_id": "runtime",
+                    "version": "2026-06-04",
+                    "storage_ref": "/srv/storage/k1s/ai-fabric-lab/das",
+                    "facts_ref": "das://site-a/runtime/facts.jsonl",
+                    "status": "ready",
+                    "labels": {"workerbee_lab": "ai-fabric"},
+                    "created_at": "2026-06-04T00:00:00+00:00",
+                    "updated_at": "2026-06-04T00:00:00+00:00",
+                },
+            },
+            {
+                "kind": "das_query_trace",
+                "payload": {
+                    "trace_id": "das-stream-query-0",
+                    "bundle_id": "das-stream-runtime",
+                    "site_id": "site-a",
+                    "query_id": "query-0",
+                    "query_kind": "advisory",
+                    "local_first": True,
+                    "warmed_refs": ["das://site-a/runtime/facts.jsonl"],
+                    "promoted_refs": [],
+                    "fallback_sites": [],
+                    "result_ref": "das://site-a/runtime/query/das-stream-query-0",
+                    "created_at": "2026-06-04T00:00:00+00:00",
+                },
+            },
+            {
+                "kind": "cognitive_signal",
+                "payload": {
+                    "signal_id": "cognitive-stream-0",
+                    "subject_type": "das-cell",
+                    "subject_id": "das-stream-runtime",
+                    "signal_kind": "continuity",
+                    "continuity_ref": "das://site-a/runtime/query/das-stream-query-0",
+                    "coherence_score": 1.0,
+                    "overload_state": "nominal",
+                    "review_gate": "operator_review",
+                    "advisory_trace_id": "trace-import-0",
+                    "created_at": "2026-06-04T00:00:00+00:00",
+                },
+            },
+        ],
+    }
+
+    result = _import_fabric_advisory_payload(store, payload)
+    state = _build_state_payload(store)
+
+    assert result["ok"] is True
+    assert result["counts"]["das_cell_bundles"] == 1
+    assert result["counts"]["das_query_traces"] == 1
+    assert result["counts"]["cognitive_signals"] == 1
+    assert state["hyperon"]["latest_das_query_trace"]["trace_id"] == "das-stream-query-0"
+    assert state["hyperon"]["latest_cognitive_signal"]["review_gate"] == "operator_review"

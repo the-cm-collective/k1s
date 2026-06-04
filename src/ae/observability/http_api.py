@@ -13,6 +13,7 @@ Endpoints:
 - GET /fabric/movements   -> JSON list of controlled chunk movement records
 - GET /fabric/advisory/state -> JSON aggregate of advisory runtime state
 - GET /fabric/advisory/traces -> JSON list of advisory decision traces
+- POST /fabric/advisory/import -> Import non-authoritative advisory/DAS evidence
 - POST /k8s/preview      -> Render K8s YAML for a manifest (dev only; gated by AE_API_DEV_EXPORT=1)
 """
 
@@ -46,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 FABRIC_ADVISORY_STATE_API_VERSION = "k1s.fabric.advisory-state/v1"
 FABRIC_ADVISORY_STATE_KIND = "FabricAdvisoryState"
+FABRIC_ADVISORY_IMPORT_API_VERSION = "k1s.fabric.advisory-import/v1"
+FABRIC_ADVISORY_IMPORT_KIND = "FabricAdvisoryImportResult"
 FABRIC_ADVISORY_STALE_AFTER_SECONDS = 24 * 60 * 60
 
 # Simple in-memory reconcile metrics updated by the controller loop.
@@ -1814,6 +1817,290 @@ def _build_fabric_advisory_state(store, fabric_read_allowed=None) -> dict[str, A
     }
 
 
+def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str, Any]:
+    from ae.fabric.locality import (
+        advisory_request_from_payload,
+        advisory_response_from_payload,
+        cognitive_signal_from_payload,
+        das_cell_bundle_from_payload,
+        das_query_trace_from_payload,
+        das_replication_from_payload,
+        decision_trace_from_payload,
+    )
+
+    counts = {
+        "advisory_requests": 0,
+        "advisory_responses": 0,
+        "decision_traces": 0,
+        "das_cell_bundles": 0,
+        "das_query_traces": 0,
+        "das_replications": 0,
+        "cognitive_signals": 0,
+    }
+    findings: list[dict[str, str]] = []
+    grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in counts}
+    seen: dict[str, set[str]] = {key: set() for key in counts}
+    source = str(payload.get("source") or payload.get("api_version") or "unknown")
+
+    def add(group: str, item: Any) -> None:
+        if not isinstance(item, dict):
+            findings.append(
+                _fabric_advisory_warning(
+                    "FABRIC_ADVISORY_IMPORT_SKIPPED",
+                    f"{group}: not an object",
+                )
+            )
+            return
+        item = _fabric_advisory_import_normalize_group_payload(group, item)
+        key = _fabric_advisory_import_record_key(group, item)
+        if not key:
+            findings.append(
+                _fabric_advisory_warning(
+                    "FABRIC_ADVISORY_IMPORT_SKIPPED",
+                    f"{group}: missing required identifier",
+                )
+            )
+            return
+        if key in seen[group]:
+            return
+        seen[group].add(key)
+        grouped[group].append(item)
+
+    for group, aliases in (
+        ("advisory_requests", ("advisory_requests", "requests")),
+        ("advisory_responses", ("advisory_responses", "responses")),
+        ("das_cell_bundles", ("das_cell_bundles",)),
+        ("das_query_traces", ("das_query_traces",)),
+        ("das_replications", ("das_replications",)),
+        ("cognitive_signals", ("cognitive_signals",)),
+    ):
+        for item in _fabric_advisory_import_payload_items(payload, *aliases):
+            add(group, item)
+
+    for trace in _fabric_advisory_import_payload_items(
+        payload, "decision_traces", "traces", "decision_trace"
+    ):
+        request, response, decision_trace = _fabric_advisory_import_records_from_trace(trace)
+        if request:
+            add("advisory_requests", request)
+        if response:
+            add("advisory_responses", response)
+        if decision_trace:
+            add("decision_traces", decision_trace)
+
+    records = payload.get("records")
+    if isinstance(records, dict):
+        for group in (
+            "das_cell_bundles",
+            "das_query_traces",
+            "das_replications",
+            "cognitive_signals",
+        ):
+            for item in _fabric_advisory_import_payload_items(records, group):
+                add(group, item)
+    elif isinstance(records, list):
+        _fabric_advisory_import_record_stream(records, add)
+
+    for nested_name in ("f5_evidence", "evidence"):
+        nested = payload.get(nested_name)
+        if isinstance(nested, dict):
+            nested_records = nested.get("records")
+            if isinstance(nested_records, dict):
+                for group in (
+                    "das_cell_bundles",
+                    "das_query_traces",
+                    "das_replications",
+                    "cognitive_signals",
+                ):
+                    for item in _fabric_advisory_import_payload_items(nested_records, group):
+                        add(group, item)
+            elif isinstance(nested_records, list):
+                _fabric_advisory_import_record_stream(nested_records, add)
+
+    writers = {
+        "advisory_requests": (
+            "record_fabric_advisory_request",
+            advisory_request_from_payload,
+        ),
+        "advisory_responses": (
+            "record_fabric_advisory_response",
+            advisory_response_from_payload,
+        ),
+        "decision_traces": ("record_fabric_decision_trace", decision_trace_from_payload),
+        "das_cell_bundles": ("upsert_fabric_das_cell_bundle", das_cell_bundle_from_payload),
+        "das_query_traces": ("record_fabric_das_query_trace", das_query_trace_from_payload),
+        "das_replications": ("record_fabric_das_replication", das_replication_from_payload),
+        "cognitive_signals": ("record_fabric_cognitive_signal", cognitive_signal_from_payload),
+    }
+    for group, (method_name, converter) in writers.items():
+        method = getattr(store, method_name, None)
+        if not callable(method):
+            if grouped[group]:
+                findings.append(
+                    {
+                        "level": "error",
+                        "code": "FABRIC_ADVISORY_IMPORT_STORE_MISSING",
+                        "message": f"{group}: store method {method_name} is unavailable",
+                    }
+                )
+            continue
+        for item in grouped[group]:
+            try:
+                method(converter(item))
+                counts[group] += 1
+            except Exception as exc:
+                logger.debug("fabric advisory import failed for %s", group, exc_info=True)
+                findings.append(
+                    {
+                        "level": "error",
+                        "code": "FABRIC_ADVISORY_IMPORT_WRITE_FAILED",
+                        "message": f"{group}: {exc}",
+                    }
+                )
+
+    ok = not any(item.get("level") == "error" for item in findings)
+    return {
+        "api_version": FABRIC_ADVISORY_IMPORT_API_VERSION,
+        "kind": FABRIC_ADVISORY_IMPORT_KIND,
+        "ok": ok,
+        "mode": "advisory_only",
+        "authoritative": False,
+        "controller_authority": "k1s",
+        "source": source,
+        "imported_count": sum(counts.values()),
+        "counts": counts,
+        "findings": findings,
+    }
+
+
+def _fabric_advisory_import_payload_items(
+    payload: dict[str, Any], *names: str
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for name in names:
+        value = payload.get(name)
+        if isinstance(value, dict):
+            items.append(value)
+        elif isinstance(value, list):
+            items.extend(item for item in value if isinstance(item, dict))
+    return items
+
+
+def _fabric_advisory_import_record_stream(records: list[Any], add) -> None:
+    kind_map = {
+        "das_cell_bundle": "das_cell_bundles",
+        "das_query_trace": "das_query_traces",
+        "das_replication": "das_replications",
+        "cognitive_signal": "cognitive_signals",
+    }
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        kind = str(record.get("kind") or "").strip()
+        group = kind_map.get(kind)
+        item = record.get("payload")
+        if group and isinstance(item, dict):
+            add(group, item)
+
+
+def _fabric_advisory_import_records_from_trace(
+    trace: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    if not isinstance(trace, dict):
+        return None, None, None
+    trace_id = str(trace.get("trace_id") or "")
+    request_id = str(trace.get("request_id") or "")
+    created_at = _iso_or_none(trace.get("created_at"))
+    request_contract = (
+        trace.get("request_contract") if isinstance(trace.get("request_contract"), dict) else {}
+    )
+    response_contract = (
+        trace.get("response_contract")
+        if isinstance(trace.get("response_contract"), dict)
+        else trace.get("advisory_response")
+        if isinstance(trace.get("advisory_response"), dict)
+        else {}
+    )
+
+    request: dict[str, Any] | None = None
+    if request_contract:
+        request = dict(request_contract)
+        if request_id:
+            request["request_id"] = request_id
+        request.setdefault("request_id", request_id)
+        request["policy_mode"] = "advisory_only"
+        if created_at:
+            request.setdefault("created_at", created_at)
+
+    response: dict[str, Any] | None = None
+    if response_contract:
+        response = dict(response_contract)
+        if request_id:
+            response["request_id"] = request_id
+        response.setdefault("request_id", request_id)
+        response["authoritative"] = False
+        if created_at:
+            response.setdefault("created_at", created_at)
+
+    decision_trace: dict[str, Any] | None = None
+    if trace_id:
+        advisory_response = dict(response or response_contract)
+        if advisory_response:
+            advisory_response["authoritative"] = False
+        decision_trace = {
+            "trace_id": trace_id,
+            "request_id": request_id,
+            "deterministic_baseline": trace.get("deterministic_baseline")
+            if isinstance(trace.get("deterministic_baseline"), dict)
+            else {},
+            "advisory_response": advisory_response,
+            "accepted": trace.get("accepted") if isinstance(trace.get("accepted"), bool) else None,
+            "divergence_reason": trace.get("divergence_reason"),
+            "replay_status": str(trace.get("replay_status") or "recorded"),
+            "continuity_signals": trace.get("continuity_signals")
+            if isinstance(trace.get("continuity_signals"), dict)
+            else {},
+            "coherence_signals": trace.get("coherence_signals")
+            if isinstance(trace.get("coherence_signals"), dict)
+            else {},
+        }
+        if created_at:
+            decision_trace["created_at"] = created_at
+
+    return request, response, decision_trace
+
+
+def _fabric_advisory_import_normalize_group_payload(
+    group: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    item = dict(payload)
+    if group == "advisory_requests":
+        item["policy_mode"] = "advisory_only"
+    elif group == "advisory_responses":
+        item["authoritative"] = False
+    elif group == "decision_traces":
+        advisory_response = item.get("advisory_response")
+        if isinstance(advisory_response, dict):
+            response_payload = dict(advisory_response)
+            response_payload["authoritative"] = False
+            item["advisory_response"] = response_payload
+    return item
+
+
+def _fabric_advisory_import_record_key(group: str, payload: dict[str, Any]) -> str:
+    key_fields = {
+        "advisory_requests": "request_id",
+        "advisory_responses": "request_id",
+        "decision_traces": "trace_id",
+        "das_cell_bundles": "bundle_id",
+        "das_query_traces": "trace_id",
+        "das_replications": "replication_id",
+        "cognitive_signals": "signal_id",
+    }
+    field = key_fields[group]
+    return str(payload.get(field) or "").strip()
+
+
 def _fabric_advisory_runtime_profile_state(store, *, now: datetime) -> dict[str, Any]:
     records = _safe_store_list(store, "list_ai_runtime_profiles")
     profiles = [_fabric_runtime_profile_summary(record, now=now) for record in records]
@@ -2862,6 +3149,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):  # type: ignore[override]
+        path_only = self.path.split("?", 1)[0]
         # Read-only planner (not gated by AE_API_MUTATIONS)
         if self.path in {"/plan", "/dashboard/plan"}:
             try:
@@ -3020,6 +3308,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if self.path == "/apply" and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
+            if path_only in (
+                "/fabric/advisory/import",
+                "/fabric/advisory/import/",
+            ) and not self._require_role("admin"):
+                self._deny(401 if not self.headers.get("Authorization") else 403)
+                return
             if self.path.startswith("/exec/") and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
@@ -3039,6 +3333,10 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             ) and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
+
+        if path_only in ("/fabric/advisory/import", "/fabric/advisory/import/"):
+            self._handle_fabric_advisory_import()
+            return
 
         if self.path == "/apply" and self.apply_fn is not None:
             length = int(self.headers.get("Content-Length", "0") or "0")
@@ -5478,6 +5776,18 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "security": [{"bearerAuth": []}],
                     }
                 },
+                "/fabric/advisory/import": {
+                    "post": {
+                        "summary": "Import non-authoritative fabric advisory and DAS evidence",
+                        "responses": {
+                            "200": {"description": "Imported"},
+                            "400": {"description": "Import failed"},
+                            "401": {"description": "Unauthorized"},
+                            "403": {"description": "Forbidden"},
+                        },
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
                 "/status": {
                     "get": {
                         "summary": "List app statuses (paginated)",
@@ -6003,6 +6313,23 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_fabric_advisory_state(self) -> None:
         self._json_ok(_build_fabric_advisory_state(self.store, self._fabric_read_allowed))
+
+    def _handle_fabric_advisory_import(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            self._json_error(400, "invalid JSON body for fabric advisory import")
+            return
+        if not isinstance(payload, dict):
+            self._json_error(400, "fabric advisory import body must be a JSON object")
+            return
+        result = _import_fabric_advisory_payload(self.store, payload)
+        if result.get("ok"):
+            self._json_ok(result)
+        else:
+            self._json_error_obj(400, result)
 
     def _handle_fabric_advisory_requests_list(self) -> None:
         from ae.fabric.locality import advisory_request_payload
