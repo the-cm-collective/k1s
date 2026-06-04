@@ -361,8 +361,9 @@ def test_fabric_advisory_state_api_reports_empty_optional_state(tmp_path: Path) 
     assert payload["data_present"] is False
     assert payload["runtime_profiles"]["count"] == 0
     assert payload["hyperon"]["status"] == "disabled"
-    assert payload["hyperon"]["status_label"] == "opt-in inactive"
-    assert "k1s advisory-only data remains available" in payload["hyperon"]["status_message"]
+    assert payload["hyperon"]["status_label"] == "none attached"
+    assert "No Hyperon/DAS evidence is attached" in payload["hyperon"]["status_message"]
+    assert "k1s advisory-only review remains available" in payload["hyperon"]["status_message"]
     assert payload["warnings"] == []
 
 
@@ -384,8 +385,9 @@ def test_fabric_advisory_state_api_reports_runtime_profile_only(tmp_path: Path) 
     assert payload["runtime_profiles"]["promotion_ready_count"] == 1
     assert payload["runtime_profiles"]["tracks"][0]["track"] == "quality"
     assert payload["hyperon"]["status"] == "disabled"
-    assert payload["hyperon"]["status_label"] == "opt-in inactive"
-    assert "not enabled for this advisory state" in payload["hyperon"]["status_message"]
+    assert payload["hyperon"]["status_label"] == "none attached"
+    assert "No Hyperon/DAS evidence is attached" in payload["hyperon"]["status_message"]
+    assert "k1s advisory-only review remains available" in payload["hyperon"]["status_message"]
     assert payload["warnings"] == []
 
 

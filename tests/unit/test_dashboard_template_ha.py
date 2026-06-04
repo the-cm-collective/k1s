@@ -120,8 +120,17 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert "fetchJSON('/fabric/das-query-traces?limit=100')" in html
     assert "fetchJSON('/fabric/cognitive-signals?limit=100')" in html
     assert "k1s authoritative" in html
-    assert "Optional Hyperon / DAS" in html
-    assert "opt-in inactive" in html
-    assert "k1s advisory-only data remains available" in html
+    assert "Hyperon / DAS Evidence" in html
+    assert "function fabricReviewHasTraceDasEvidence(dasPayload, signalPayload)" in html
+    assert "fabricHyperonStatusLabel(hyperon)" in html
+    assert "Confirm no Hyperon/DAS evidence" in html
+    assert "hasExperimentalDasError" in html
+    assert "reviewTabs.push({id:'das'" in html
+    assert "reviewTabs.push({id:'signals'" in html
+    assert "none attached" in html
+    assert "No Hyperon/DAS evidence is attached" in html
+    assert "Optional Hyperon / DAS" not in html
+    assert "Optional Hyperon/DAS enhancement" not in html
+    assert "opt-in inactive" not in html
     assert "Record operator decision" in html
     assert "k1s remains authoritative" in html

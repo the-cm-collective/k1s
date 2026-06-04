@@ -1922,10 +1922,10 @@ def _fabric_advisory_hyperon_state(
     enabled = bool(cell_summaries or query_summaries or signal_summaries)
     available = bool(ready_count)
     status = "disabled"
-    status_label = "opt-in inactive"
+    status_label = "none attached"
     status_message = (
-        "Optional Hyperon/DAS enhancement is not enabled for this advisory state; "
-        "k1s advisory-only data remains available."
+        "No Hyperon/DAS evidence is attached to this advisory state; "
+        "k1s advisory-only review remains available."
     )
     if enabled:
         if available:
@@ -1939,7 +1939,7 @@ def _fabric_advisory_hyperon_state(
             status_label = "evidence present, no ready cell"
             status_message = (
                 "Hyperon/DAS evidence exists but no ready DAS cell is recorded; "
-                "k1s advisory-only data remains available."
+                "k1s advisory-only review remains available."
             )
     latest_created_at = _latest_datetime(
         [item.get("updated_at") for item in cell_summaries]

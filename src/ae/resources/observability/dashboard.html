@@ -436,7 +436,7 @@
               <div id="fabric-advisory-traces" class="ha-stack"></div>
             </div>
             <div class="ha-subcard">
-              <strong>Optional Hyperon / DAS</strong>
+              <strong>Hyperon / DAS Evidence</strong>
               <div id="fabric-advisory-hyperon" class="ha-stack"></div>
             </div>
           </div>
@@ -1656,19 +1656,44 @@ Connection: close
         }).join('');
       }
 
+      function fabricHyperonHasEvidence(hyperon){
+        hyperon = hyperon || {};
+        return !!(
+          Number(hyperon.das_cells_count || 0) ||
+          Number(hyperon.das_query_traces_count || 0) ||
+          Number(hyperon.cognitive_signals_count || 0)
+        );
+      }
+
+      function fabricHyperonStatusLabel(hyperon){
+        hyperon = hyperon || {};
+        var status = String(hyperon.status || 'disabled');
+        if (status === 'disabled' && !fabricHyperonHasEvidence(hyperon)) return 'none attached';
+        return String(hyperon.status_label || (status === 'disabled' ? 'none attached' : status));
+      }
+
+      function fabricHyperonStatusMessage(hyperon){
+        hyperon = hyperon || {};
+        var status = String(hyperon.status || 'disabled');
+        if (status === 'disabled' && !fabricHyperonHasEvidence(hyperon)) {
+          return 'No Hyperon/DAS evidence is attached to this advisory state; k1s advisory-only review remains available.';
+        }
+        return String(hyperon.status_message || (status === 'disabled' ? 'No Hyperon/DAS evidence is attached to this advisory state; k1s advisory-only review remains available.' : ''));
+      }
+
       function renderHyperonRows(hyperon){
         hyperon = hyperon || {};
         var status = String(hyperon.status || 'disabled');
-        var statusLabel = String(hyperon.status_label || (status === 'disabled' ? 'opt-in inactive' : status));
-        var statusMessage = String(hyperon.status_message || (status === 'disabled' ? 'Optional Hyperon/DAS enhancement is not enabled for this advisory state; k1s advisory-only data remains available.' : ''));
+        var statusLabel = fabricHyperonStatusLabel(hyperon);
+        var statusMessage = fabricHyperonStatusMessage(hyperon);
         var cls = status === 'experimental' ? 'ok' : (status === 'unavailable' ? 'bad' : '');
-        var evidenceMeta = 'cells=' + String(hyperon.das_cells_count || 0) +
+        var evidenceMeta = fabricHyperonHasEvidence(hyperon) ? ('cells=' + String(hyperon.das_cells_count || 0) +
           ', ready=' + String(hyperon.ready_das_cells_count || 0) +
           ', queries=' + String(hyperon.das_query_traces_count || 0) +
-          ', signals=' + String(hyperon.cognitive_signals_count || 0);
+          ', signals=' + String(hyperon.cognitive_signals_count || 0)) : 'none attached';
         var rows = [
           '<div class="ha-site">' +
-            '<div><strong>hyperon-das</strong> <span class="pill ' + cls + '">' + escapeHtml(statusLabel) + '</span></div>' +
+            '<div><strong>Hyperon/DAS evidence</strong> <span class="pill ' + cls + '">' + escapeHtml(statusLabel) + '</span></div>' +
             '<div class="ha-meta">' + escapeHtml(statusMessage) + '</div>' +
             '<div class="ha-meta">' + escapeHtml(evidenceMeta) + '</div>' +
           '</div>'
@@ -1743,6 +1768,12 @@ Connection: close
         return String((response && response.recommendation) || advisoryResponse.recommendation || advisoryResponse.recommended_action || advisoryResponse.action || '-');
       }
 
+      function fabricReviewHasTraceDasEvidence(dasPayload, signalPayload){
+        dasPayload = dasPayload || {};
+        signalPayload = signalPayload || {};
+        return !!((dasPayload.matching_query_traces || []).length || (signalPayload.matching_signals || []).length);
+      }
+
       function renderFabricReviewFields(trace, request, response, state, dasPayload, signalPayload){
         trace = trace || {};
         request = request || {};
@@ -1750,6 +1781,10 @@ Connection: close
         state = state || {};
         dasPayload = dasPayload || {};
         signalPayload = signalPayload || {};
+        var hasDasEvidence = fabricReviewHasTraceDasEvidence(dasPayload, signalPayload);
+        var evidenceSummary = hasDasEvidence
+          ? 'linked queries=' + String((dasPayload.matching_query_traces || []).length) + ', linked signals=' + String((signalPayload.matching_signals || []).length)
+          : 'none attached';
         var advisoryResponse = response.advisory_response || trace.advisory_response || {};
         var coherence = trace.coherence_signals || {};
         var provider = String(advisoryResponse.provider || trace.provider || '-');
@@ -1768,7 +1803,7 @@ Connection: close
           {k:'Replay', v: trace.replay_status || '-'},
           {k:'Reason', v: trace.divergence_reason || '-'},
           {k:'Authority', v: 'k1s authoritative, advisory authoritative=' + String(!!response.authoritative || !!advisoryResponse.authoritative)},
-          {k:'DAS', v: 'linked_queries=' + String((dasPayload.matching_query_traces || []).length) + ', linked_signals=' + String((signalPayload.matching_signals || []).length)}
+          {k:'Hyperon/DAS', v: evidenceSummary}
         ];
         return renderHaRows(rows);
       }
@@ -1779,15 +1814,22 @@ Connection: close
         response = response || {};
         dasPayload = dasPayload || {};
         signalPayload = signalPayload || {};
-        var hasDas = !!((dasPayload.matching_query_traces || []).length || (signalPayload.matching_signals || []).length);
+        var dasEvidenceCount = (dasPayload.matching_query_traces || []).length;
+        var signalEvidenceCount = (signalPayload.matching_signals || []).length;
+        var hasDas = !!(dasEvidenceCount || signalEvidenceCount);
+        var evidenceTab = dasEvidenceCount ? 'das' : 'signals';
         var steps = [
           {tab:'state', title:'Confirm k1s authority', detail:'The advisory path is non-authoritative; live k1s state remains the control-plane source of truth.'},
           {tab:'request', title:'Inspect request JSON', detail: request.request_id ? ('Request ' + request.request_id) : 'No matching request payload found.'},
           {tab:'response', title:'Inspect advisory response', detail: response.request_id ? fabricReviewRecommendation(response, trace) : 'No matching advisory response found.'},
-          {tab:'trace', title:'Compare trace with baseline', detail:'Review deterministic_baseline, advisory_response, continuity_signals, and coherence_signals.'},
-          {tab:'das', title:'Review Hyperon/DAS evidence', detail: hasDas ? 'Experimental DAS query and signal evidence is attached for review.' : 'No optional Hyperon/DAS evidence is attached to this trace.'},
-          {tab:'state', title:'Record operator decision', detail:'Use the external review/audit path until the dashboard gains an authenticated review-write endpoint.'}
+          {tab:'trace', title:'Compare trace with baseline', detail:'Review deterministic_baseline, advisory_response, continuity_signals, and coherence_signals.'}
         ];
+        if (hasDas) {
+          steps.push({tab:evidenceTab, title:'Review Hyperon/DAS evidence', detail:'Trace-linked Hyperon/DAS query or signal evidence is attached for review.'});
+        } else {
+          steps.push({tab:'state', title:'Confirm no Hyperon/DAS evidence', detail:'No Hyperon/DAS evidence is attached to this trace.'});
+        }
+        steps.push({tab:'state', title:'Record operator decision', detail:'Use the external review/audit path until the dashboard gains an authenticated review-write endpoint.'});
         return steps.map(function(step, idx){
           var id = 'fabric-review-step-' + String(idx);
           return (
@@ -1872,6 +1914,9 @@ Connection: close
         if (!matchingDas.length && linkedDasTraceId && latestDas && String(latestDas.trace_id || '') === linkedDasTraceId) {
           matchingDas.push(latestDas);
         }
+        if (!matchingSignals.length && latestSignal && String(latestSignal.advisory_trace_id || '') === String(traceId || '')) {
+          matchingSignals.push(latestSignal);
+        }
         var dasPayload = {
           linked_das_query_trace_id: linkedDasTraceId,
           latest_das_query_trace: latestDas,
@@ -1885,6 +1930,9 @@ Connection: close
           recent_signals: signalItems.slice(0, 20),
           endpoint_error: payloads.cognitive_signals && payloads.cognitive_signals.error ? payloads.cognitive_signals : null
         };
+        var hasDasEvidence = fabricReviewHasTraceDasEvidence(dasPayload, signalPayload);
+        var hasExperimentalDasError = String(hyperon.status || '') === 'experimental' && !!dasPayload.endpoint_error;
+        var hasExperimentalSignalError = String(hyperon.status || '') === 'experimental' && !!signalPayload.endpoint_error;
         var status = fabricReviewStatus(trace);
         var statusEl = document.getElementById('fabric-advisory-review-status');
         var fieldsEl = document.getElementById('fabric-advisory-review-fields');
@@ -1894,20 +1942,28 @@ Connection: close
           statusEl.innerHTML = [
             badge(status.cls, status.label),
             badge('ok', 'k1s authoritative'),
-            badge(String(hyperon.status || '') === 'experimental' ? 'ok' : '', 'Hyperon ' + escapeHtml(hyperon.status_label || hyperon.status || 'opt-in inactive'))
+            badge(String(hyperon.status || '') === 'experimental' ? 'ok' : '', 'Hyperon/DAS ' + escapeHtml(fabricHyperonStatusLabel(hyperon)))
           ].join(' ');
         }
         if (fieldsEl) fieldsEl.innerHTML = renderFabricReviewFields(trace, request, response, state, dasPayload, signalPayload);
         if (checklistEl) checklistEl.innerHTML = renderFabricReviewChecklist(trace, request, response, dasPayload, signalPayload);
         if (noteEl) noteEl.textContent = 'Review decisions are recorded outside this panel; k1s remains authoritative.';
-        renderFabricAdvisoryReviewTabs([
+        var reviewTabs = [
           {id:'trace', label:'Trace', payload: trace, warn: !trace.trace_id},
           {id:'request', label:'Request', payload: request || {missing:'No matching request payload found', request_id:requestId}, warn: !request},
-          {id:'response', label:'Response', payload: response || {missing:'No matching advisory response found', request_id:requestId}, warn: !response},
-          {id:'das', label:'DAS', payload: dasPayload, warn: !!dasPayload.endpoint_error},
-          {id:'signals', label:'Signals', payload: signalPayload, warn: !!signalPayload.endpoint_error},
-          {id:'state', label:'State', payload: state || {}, warn: !!(payloads.state && payloads.state.error)}
-        ], 'trace');
+          {id:'response', label:'Response', payload: response || {missing:'No matching advisory response found', request_id:requestId}, warn: !response}
+        ];
+        if ((dasPayload.matching_query_traces || []).length || hasExperimentalDasError) {
+          reviewTabs.push({id:'das', label:'DAS', payload: dasPayload, warn: !!dasPayload.endpoint_error});
+        }
+        if ((signalPayload.matching_signals || []).length || hasExperimentalSignalError) {
+          reviewTabs.push({id:'signals', label:'Signals', payload: signalPayload, warn: !!signalPayload.endpoint_error});
+        }
+        if (!hasDasEvidence) {
+          state = Object.assign({}, state || {}, {hyperon_das_evidence: 'none attached'});
+        }
+        reviewTabs.push({id:'state', label:'State', payload: state || {}, warn: !!(payloads.state && payloads.state.error)});
+        renderFabricAdvisoryReviewTabs(reviewTabs, 'trace');
       }
 
       function loadFabricAdvisoryReviewData(traceId){
@@ -2042,12 +2098,12 @@ Connection: close
         var advisory = state.advisory || {};
         var hyperon = state.hyperon || {};
         var hyperonCls = String(hyperon.status || '') === 'experimental' ? 'ok' : (String(hyperon.status || '') === 'unavailable' ? 'bad' : '');
-        var hyperonLabel = String(hyperon.status_label || (String(hyperon.status || '') === 'disabled' ? 'opt-in inactive' : (hyperon.status || 'opt-in inactive')));
+        var hyperonLabel = fabricHyperonStatusLabel(hyperon);
         summaryEl.innerHTML = [
           badge('ok', 'k1s authoritative'),
           badge((profiles.promotion_ready_count || 0) ? 'ok' : 'warn', 'profiles ' + String(profiles.count || 0)),
           badge((advisory.pending_review_count || 0) ? 'warn' : 'ok', 'traces ' + String(advisory.traces_count || 0)),
-          badge(hyperonCls, 'Hyperon ' + escapeHtml(hyperonLabel))
+          badge(hyperonCls, 'Hyperon/DAS ' + escapeHtml(hyperonLabel))
         ].join(' ');
         summaryEl.classList.remove('hidden');
         profilesEl.innerHTML = renderRuntimeProfileRows(profiles.tracks || []);
