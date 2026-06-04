@@ -11,6 +11,7 @@ Endpoints:
 - GET /fabric/chunks      -> JSON list of content-addressed fabric chunks
 - GET /fabric/residencies -> JSON list of chunk residency records
 - GET /fabric/movements   -> JSON list of controlled chunk movement records
+- GET /fabric/phase-assurance -> JSON controller-derived F-phase assurance report
 - GET /fabric/advisory/state -> JSON aggregate of advisory runtime state
 - GET /fabric/advisory/traces -> JSON list of advisory decision traces
 - POST /fabric/advisory/import -> Import non-authoritative advisory/DAS evidence
@@ -50,6 +51,7 @@ FABRIC_ADVISORY_STATE_KIND = "FabricAdvisoryState"
 FABRIC_ADVISORY_IMPORT_API_VERSION = "k1s.fabric.advisory-import/v1"
 FABRIC_ADVISORY_IMPORT_KIND = "FabricAdvisoryImportResult"
 FABRIC_ADVISORY_STALE_AFTER_SECONDS = 24 * 60 * 60
+FABRIC_PHASE_ASSURANCE_API_VERSION = "k1s.fabric.phase-assurance/v1"
 
 # Simple in-memory reconcile metrics updated by the controller loop.
 _LAST_RECONCILE_TS: float | None = None
@@ -1817,6 +1819,31 @@ def _build_fabric_advisory_state(store, fabric_read_allowed=None) -> dict[str, A
     }
 
 
+def _build_fabric_phase_assurance(store) -> dict[str, Any]:
+    from ae.fabric.phase_assurance import (
+        assess_fabric_phases,
+        f1_evidence_from_nodes,
+        f2_evidence_from_store,
+        f3_evidence_from_store,
+        f4_evidence_from_store,
+        f5_evidence_from_store,
+    )
+
+    evidence = {
+        "F1": f1_evidence_from_nodes(_safe_store_list(store, "list_nodes")),
+        "F2": f2_evidence_from_store(store),
+        "F3": f3_evidence_from_store(store),
+        "F4": f4_evidence_from_store(store),
+        "F5": f5_evidence_from_store(store),
+    }
+    report = dict(assess_fabric_phases(evidence))
+    report["source"] = "k1s-controller-state"
+    report["controller_authority"] = "k1s"
+    report["authoritative"] = True
+    report["advisory_authoritative"] = False
+    return report
+
+
 def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str, Any]:
     from ae.fabric.locality import (
         advisory_request_from_payload,
@@ -3024,6 +3051,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return
         if path_only in ("/fabric/movements", "/fabric/movements/"):
             self._handle_fabric_movements_list()
+            return
+        if path_only in ("/fabric/phase-assurance", "/fabric/phase-assurance/"):
+            self._handle_fabric_phase_assurance()
             return
         if path_only in ("/fabric/advisory/state", "/fabric/advisory/state/"):
             self._handle_fabric_advisory_state()
@@ -5776,6 +5806,13 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "security": [{"bearerAuth": []}],
                     }
                 },
+                "/fabric/phase-assurance": {
+                    "get": {
+                        "summary": "Controller-derived fabric phase assurance report",
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
                 "/fabric/advisory/import": {
                     "post": {
                         "summary": "Import non-authoritative fabric advisory and DAS evidence",
@@ -6313,6 +6350,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_fabric_advisory_state(self) -> None:
         self._json_ok(_build_fabric_advisory_state(self.store, self._fabric_read_allowed))
+
+    def _handle_fabric_phase_assurance(self) -> None:
+        self._json_ok(_build_fabric_phase_assurance(self.store))
 
     def _handle_fabric_advisory_import(self) -> None:
         try:

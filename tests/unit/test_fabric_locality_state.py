@@ -26,6 +26,7 @@ from ae.fabric.locality import (
 from ae.observability.http_api import (
     FABRIC_ADVISORY_IMPORT_API_VERSION,
     FABRIC_ADVISORY_STATE_API_VERSION,
+    FABRIC_PHASE_ASSURANCE_API_VERSION,
     _ApiHandler,
     _import_fabric_advisory_payload,
 )
@@ -277,6 +278,13 @@ def _build_state_payload(store: SQLiteStateStore) -> dict[str, Any]:
     return _payload(handler)
 
 
+def _build_phase_payload(store: SQLiteStateStore) -> dict[str, Any]:
+    handler, statuses = _make_handler("/fabric/phase-assurance", store)
+    _ApiHandler._handle_fabric_phase_assurance(handler)  # type: ignore[arg-type]
+    assert statuses == [200]
+    return _payload(handler)
+
+
 def test_sqlite_fabric_locality_roundtrip(tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "state.db")
     _seed_locality(store)
@@ -377,6 +385,38 @@ def test_fabric_advisory_state_api_reports_empty_optional_state(tmp_path: Path) 
     assert "No Hyperon/DAS evidence is attached" in payload["hyperon"]["status_message"]
     assert "k1s advisory-only review remains available" in payload["hyperon"]["status_message"]
     assert payload["warnings"] == []
+
+
+def test_fabric_phase_assurance_api_reports_empty_controller_state(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+
+    payload = _build_phase_payload(store)
+
+    assert payload["api_version"] == FABRIC_PHASE_ASSURANCE_API_VERSION
+    assert payload["source"] == "k1s-controller-state"
+    assert payload["controller_authority"] == "k1s"
+    assert payload["authoritative"] is True
+    assert payload["advisory_authoritative"] is False
+    assert payload["phases"]["F3"]["status"] == "missing"
+    assert payload["phases"]["F3"]["gate"]["ready"] is False
+    assert payload["phases"]["F3"]["gate"]["blocked_by"] == ["F1", "F2"]
+    assert "bounded_planning" in payload["phases"]["F3"]["missing"]
+
+
+def test_fabric_phase_assurance_api_derives_f3_from_advisory_records(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    _seed_advisory(store)
+
+    payload = _build_phase_payload(store)
+    f3 = payload["phases"]["F3"]
+
+    assert f3["status"] == "present"
+    assert f3["gate"]["ready"] is False
+    assert f3["gate"]["blocked_by"] == ["F1", "F2"]
+    assert f3["missing"] == []
+    assert f3["evidence"]["advisory_contract"]["authoritative"] is False
+    assert f3["evidence"]["bounded_planning"]["bounded_request_count"] == 1
+    assert f3["evidence"]["continuity_coherence_signals"]["signal_trace_count"] == 1
 
 
 def test_fabric_advisory_state_api_reports_runtime_profile_only(tmp_path: Path) -> None:

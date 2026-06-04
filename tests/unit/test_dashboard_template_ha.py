@@ -99,6 +99,7 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert 'id="fabric-advisory-grid" class="ha-grid hidden"' in html
     assert 'id="fabric-advisory-profiles"' in html
     assert 'id="fabric-advisory-traces"' in html
+    assert 'id="fabric-advisory-f3"' in html
     assert 'id="fabric-advisory-hyperon"' in html
     assert 'id="fabric-advisory-review-modal"' in html
     assert 'id="fabric-advisory-review-checklist"' in html
@@ -109,11 +110,13 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert "fabric-advisory-trace-label" in html
     assert "Review</button>" in html
     assert "function refreshFabricAdvisoryState()" in html
-    assert "function renderFabricAdvisoryState(state, err)" in html
+    assert "function renderFabricAdvisoryState(state, err, phaseReport, phaseErr)" in html
+    assert "function renderF3PhaseRows(report, err)" in html
     assert "function openFabricAdvisoryReview(traceId)" in html
     assert "function renderFabricReviewChecklist(trace, request, response, dasPayload, signalPayload)" in html
     assert "function copyFabricAdvisoryReviewJson()" in html
     assert "fetchJSON('/fabric/advisory/state')" in html
+    assert "fetchJSON('/fabric/phase-assurance')" in html
     assert "fetchJSON('/fabric/advisory/traces?limit=100')" in html
     assert "fetchJSON('/fabric/advisory/requests?limit=100')" in html
     assert "fetchJSON('/fabric/advisory/responses?limit=100')" in html
@@ -134,3 +137,5 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert "opt-in inactive" not in html
     assert "Record operator decision" in html
     assert "k1s remains authoritative" in html
+    assert "F3 Phase Gate" in html
+    assert "F3 Gate" in html

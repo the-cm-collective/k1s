@@ -436,6 +436,10 @@
               <div id="fabric-advisory-traces" class="ha-stack"></div>
             </div>
             <div class="ha-subcard">
+              <strong>F3 Phase Gate</strong>
+              <div id="fabric-advisory-f3" class="ha-stack"></div>
+            </div>
+            <div class="ha-subcard">
               <strong>Hyperon / DAS Evidence</strong>
               <div id="fabric-advisory-hyperon" class="ha-stack"></div>
             </div>
@@ -825,6 +829,7 @@ Connection: close
       var eventsSource = null;
       var lastSystem = null;
       var lastFabricAdvisoryState = null;
+      var lastFabricPhaseAssurance = null;
       var lastStatuses = [];
       var currentDetail = null;
       var graphHover = null;
@@ -1656,6 +1661,60 @@ Connection: close
         }).join('');
       }
 
+      function fabricF3Phase(report){
+        var phases = (report && report.phases) ? report.phases : {};
+        return phases.F3 || phases.f3 || null;
+      }
+
+      function renderF3PhaseRows(report, err){
+        if (err) {
+          return '<div class="ha-site"><div><strong>Phase assurance</strong> <span class="pill bad">unavailable</span></div><div class="ha-meta">' + escapeHtml(String((err && err.message) ? err.message : err || 'error')) + '</div></div>';
+        }
+        var phase = fabricF3Phase(report);
+        if (!phase) {
+          return '<div class="ha-site"><div><strong>F3 evidence</strong> <span class="pill warn">not reported</span></div><div class="ha-meta">No F3 phase assurance payload is available.</div></div>';
+        }
+        var gate = phase.gate || {};
+        var status = String(phase.status || 'missing');
+        var ready = !!gate.ready;
+        var blockers = Array.isArray(gate.blocked_by) ? gate.blocked_by : [];
+        var missing = Array.isArray(phase.missing) ? phase.missing : [];
+        var present = Array.isArray(phase.present) ? phase.present : [];
+        var cls = ready ? 'ok' : (status === 'present' ? 'warn' : 'bad');
+        var label = ready ? 'ready' : (status === 'present' ? 'blocked' : 'missing');
+        var evidenceMeta = 'present=' + String(present.length) + ', missing=' + String(missing.length);
+        if (blockers.length) evidenceMeta += ', blocked_by=' + blockers.join(', ');
+        var rows = [
+          '<div class="ha-site">' +
+            '<div><strong>F3 advisory assurance</strong> <span class="pill ' + cls + '">' + escapeHtml(label) + '</span></div>' +
+            '<div class="ha-meta">' + escapeHtml(evidenceMeta) + '</div>' +
+          '</div>'
+        ];
+        var keys = [
+          'advisory_contract',
+          'decision_traces',
+          'divergence_logging',
+          'replay_evaluation',
+          'bounded_planning',
+          'continuity_coherence_signals'
+        ];
+        var evidence = phase.evidence || {};
+        rows = rows.concat(keys.map(function(key){
+          var ok = present.indexOf(key) >= 0;
+          var detail = evidence[key];
+          var meta = ok ? 'controller evidence present' : 'missing from controller evidence';
+          if (detail && typeof detail === 'object') {
+            var counts = [];
+            ['request_count', 'advisory_response_count', 'trace_count', 'divergence_trace_count', 'replay_trace_count', 'bounded_request_count', 'signal_trace_count'].forEach(function(field){
+              if (detail[field] !== undefined && detail[field] !== null) counts.push(field + '=' + String(detail[field]));
+            });
+            if (counts.length) meta = counts.join(', ');
+          }
+          return '<div class="ha-site"><div><strong>' + escapeHtml(key) + '</strong> <span class="pill ' + (ok ? 'ok' : 'bad') + '">' + (ok ? 'present' : 'missing') + '</span></div><div class="ha-meta">' + escapeHtml(meta) + '</div></div>';
+        }));
+        return rows.join('');
+      }
+
       function fabricHyperonHasEvidence(hyperon){
         hyperon = hyperon || {};
         return !!(
@@ -1890,6 +1949,8 @@ Connection: close
         payloads = payloads || {};
         var state = payloads.state && !payloads.state.error ? payloads.state : (lastFabricAdvisoryState || {});
         if (payloads.state && !payloads.state.error) lastFabricAdvisoryState = payloads.state;
+        var phaseAssurance = payloads.phase_assurance && !payloads.phase_assurance.error ? payloads.phase_assurance : (lastFabricPhaseAssurance || {});
+        if (payloads.phase_assurance && !payloads.phase_assurance.error) lastFabricPhaseAssurance = payloads.phase_assurance;
         var traceItems = fabricReviewItems(payloads.traces);
         var summaryTrace = fabricReviewTraceSummary(traceId);
         var trace = fabricReviewFindBy(traceItems, 'trace_id', traceId) || summaryTrace || {trace_id: traceId};
@@ -1963,6 +2024,7 @@ Connection: close
           state = Object.assign({}, state || {}, {hyperon_das_evidence: 'none attached'});
         }
         reviewTabs.push({id:'state', label:'State', payload: state || {}, warn: !!(payloads.state && payloads.state.error)});
+        reviewTabs.push({id:'phase', label:'F3 Gate', payload: phaseAssurance || {}, warn: !!(payloads.phase_assurance && payloads.phase_assurance.error) || !((fabricF3Phase(phaseAssurance) || {}).gate || {}).ready});
         renderFabricAdvisoryReviewTabs(reviewTabs, 'trace');
       }
 
@@ -1973,7 +2035,8 @@ Connection: close
           fetchJSON('/fabric/advisory/requests?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/advisory/requests', err); }),
           fetchJSON('/fabric/advisory/responses?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/advisory/responses', err); }),
           fetchJSON('/fabric/das-query-traces?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/das-query-traces', err); }),
-          fetchJSON('/fabric/cognitive-signals?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/cognitive-signals', err); })
+          fetchJSON('/fabric/cognitive-signals?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/cognitive-signals', err); }),
+          fetchJSON('/fabric/phase-assurance').catch(function(err){ return fabricReviewEndpointError('/fabric/phase-assurance', err); })
         ]).then(function(results){
           renderFabricAdvisoryReviewData(traceId, {
             state: results[0],
@@ -1981,7 +2044,8 @@ Connection: close
             requests: results[2],
             responses: results[3],
             das_query_traces: results[4],
-            cognitive_signals: results[5]
+            cognitive_signals: results[5],
+            phase_assurance: results[6]
           });
         });
       }
@@ -2041,7 +2105,7 @@ Connection: close
         });
       }
 
-      function renderFabricAdvisoryState(state, err){
+      function renderFabricAdvisoryState(state, err, phaseReport, phaseErr){
         var sectionEl = document.getElementById('fabric-advisory-section');
         var statusEl = document.getElementById('fabric-advisory-status-pill');
         var bannerEl = document.getElementById('fabric-advisory-banner');
@@ -2049,8 +2113,9 @@ Connection: close
         var gridEl = document.getElementById('fabric-advisory-grid');
         var profilesEl = document.getElementById('fabric-advisory-profiles');
         var tracesEl = document.getElementById('fabric-advisory-traces');
+        var f3El = document.getElementById('fabric-advisory-f3');
         var hyperonEl = document.getElementById('fabric-advisory-hyperon');
-        if (!sectionEl || !statusEl || !bannerEl || !summaryEl || !gridEl || !profilesEl || !tracesEl || !hyperonEl) return;
+        if (!sectionEl || !statusEl || !bannerEl || !summaryEl || !gridEl || !profilesEl || !tracesEl || !f3El || !hyperonEl) return;
 
         if (err) {
           if (err.status === 404) {
@@ -2078,6 +2143,7 @@ Connection: close
           gridEl.classList.add('hidden');
           profilesEl.innerHTML = '';
           tracesEl.innerHTML = '';
+          f3El.innerHTML = '';
           hyperonEl.innerHTML = '';
           return;
         }
@@ -2097,31 +2163,46 @@ Connection: close
         var profiles = state.runtime_profiles || {};
         var advisory = state.advisory || {};
         var hyperon = state.hyperon || {};
+        var f3 = fabricF3Phase(phaseReport);
+        var f3Gate = (f3 && f3.gate) ? f3.gate : {};
+        var f3Ready = !!f3Gate.ready;
+        var f3Present = f3 && String(f3.status || '') === 'present';
+        var f3Label = phaseErr ? 'unavailable' : (f3Ready ? 'ready' : (f3Present ? 'blocked' : 'missing'));
+        var f3Cls = phaseErr ? 'bad' : (f3Ready ? 'ok' : (f3Present ? 'warn' : 'bad'));
         var hyperonCls = String(hyperon.status || '') === 'experimental' ? 'ok' : (String(hyperon.status || '') === 'unavailable' ? 'bad' : '');
         var hyperonLabel = fabricHyperonStatusLabel(hyperon);
         summaryEl.innerHTML = [
           badge('ok', 'k1s authoritative'),
           badge((profiles.promotion_ready_count || 0) ? 'ok' : 'warn', 'profiles ' + String(profiles.count || 0)),
           badge((advisory.pending_review_count || 0) ? 'warn' : 'ok', 'traces ' + String(advisory.traces_count || 0)),
+          badge(f3Cls, 'F3 ' + escapeHtml(f3Label)),
           badge(hyperonCls, 'Hyperon/DAS ' + escapeHtml(hyperonLabel))
         ].join(' ');
         summaryEl.classList.remove('hidden');
         profilesEl.innerHTML = renderRuntimeProfileRows(profiles.tracks || []);
         tracesEl.innerHTML = renderAdvisoryTraceRows(advisory.traces || []);
         bindFabricAdvisoryReviewButtons();
+        f3El.innerHTML = renderF3PhaseRows(phaseReport, phaseErr);
         hyperonEl.innerHTML = renderHyperonRows(hyperon);
         gridEl.classList.remove('hidden');
       }
 
       function refreshFabricAdvisoryState(){
-        return fetchJSON('/fabric/advisory/state')
-          .then(function(state){
-            lastFabricAdvisoryState = state;
-            renderFabricAdvisoryState(state);
-          })
+        return Promise.all([
+          fetchJSON('/fabric/advisory/state').catch(function(err){ return fabricReviewEndpointError('/fabric/advisory/state', err); }),
+          fetchJSON('/fabric/phase-assurance').catch(function(err){ return fabricReviewEndpointError('/fabric/phase-assurance', err); })
+        ]).then(function(results){
+          var state = results[0];
+          var phase = results[1];
+          if (state && state.error) throw state;
+          lastFabricAdvisoryState = state;
+          lastFabricPhaseAssurance = phase && !phase.error ? phase : null;
+          renderFabricAdvisoryState(state, null, lastFabricPhaseAssurance, phase && phase.error ? phase : null);
+        })
           .catch(function(err){
             lastFabricAdvisoryState = null;
-            renderFabricAdvisoryState(null, err);
+            lastFabricPhaseAssurance = null;
+            renderFabricAdvisoryState(null, err, null, null);
             logIfNotNetwork(err);
           });
       }
