@@ -322,16 +322,18 @@
         pointer-events:none;
       }
       .modal-body { padding:12px 16px; overflow:auto; }
-      .modal-footer { padding:10px 16px; border-top:1px solid rgba(148,163,184,0.35); display:flex; gap:8px; justify-content:flex-end; }
+      .modal-footer { padding:10px 16px; border-top:1px solid rgba(148,163,184,0.35); display:flex; gap:8px; justify-content:flex-end; align-items:center; flex-wrap:wrap; }
       .modal.hidden { display:none; }
       .terminal-wrap { height:360px; border:1px solid #334155; border-radius:8px; background:#0b0f14; overflow:hidden; }
       .terminal-wrap .xterm-viewport { scrollbar-width: none; }
       .terminal-wrap .xterm-viewport::-webkit-scrollbar { width:0; height:0; }
       .modal .row input[type=text], .modal .row input[type=password], .modal .row select { min-width: 140px; }
       .modal .hint { font-size:12px; opacity:.8; }
-      #fabric-advisory-review-modal .modal { width:min(1120px, 96vw); height:min(720px, 90vh); }
-      #fabric-advisory-review-modal .modal-body { display:grid; grid-template-columns:minmax(240px, 0.85fr) minmax(0, 1.35fr); gap:12px; min-height:0; overflow:hidden; }
-      .fabric-review-summary { display:flex; flex-direction:column; gap:10px; min-height:0; overflow:auto; padding-right:4px; }
+      #fabric-advisory-review-modal .modal { width:min(1120px, 96vw); height:min(720px, calc(100vh - 32px)); max-height:calc(100vh - 32px); }
+      #fabric-advisory-review-modal .modal-body { display:grid; grid-template-columns:minmax(240px, 0.85fr) minmax(0, 1.35fr); gap:12px; min-width:0; min-height:0; overflow:hidden; }
+      #fabric-advisory-review-modal .modal-body, #fabric-advisory-review-modal .fabric-review-summary, #fabric-advisory-review-modal .fabric-review-json, #fabric-advisory-review-modal .fabric-review-json-panel { scrollbar-width:none; -ms-overflow-style:none; }
+      #fabric-advisory-review-modal .modal-body::-webkit-scrollbar, #fabric-advisory-review-modal .fabric-review-summary::-webkit-scrollbar, #fabric-advisory-review-modal .fabric-review-json::-webkit-scrollbar, #fabric-advisory-review-modal .fabric-review-json-panel::-webkit-scrollbar { width:0; height:0; }
+      .fabric-review-summary { display:flex; flex-direction:column; gap:10px; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; padding-right:0; }
       .fabric-review-fields { border:1px solid rgba(148,163,184,0.2); border-radius:8px; padding:8px 10px; background:rgba(15,23,42,0.28); }
       .fabric-review-decision { display:flex; flex-direction:column; gap:8px; }
       .fabric-review-decision label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:#cbd5e1; }
@@ -341,7 +343,7 @@
       .fabric-review-step { display:flex; gap:8px; align-items:flex-start; border:1px solid rgba(148,163,184,0.2); border-radius:8px; padding:8px 10px; background:rgba(15,23,42,0.22); }
       .fabric-review-step input { flex:0 0 auto; margin-top:3px; }
       .fabric-review-step strong { display:block; font-size:12px; }
-      .fabric-review-json-panel { display:flex; flex-direction:column; min-height:0; gap:8px; }
+      .fabric-review-json-panel { display:flex; flex-direction:column; min-width:0; min-height:0; gap:8px; overflow:hidden; }
       .fabric-review-json-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
       .fabric-review-json-tabs { display:flex; gap:6px; flex-wrap:wrap; }
       .fabric-review-json-tabs button { padding:4px 8px; font-size:11px; border-radius:999px; border:1px solid rgba(148,163,184,0.45); background:rgba(15,23,42,0.35); }
@@ -352,9 +354,18 @@
       .fabric-advisory-trace-label { min-width:0; overflow-wrap:anywhere; word-break:break-word; }
       .fabric-advisory-review-btn { align-self:start; justify-self:end; padding:4px 8px; font-size:11px; white-space:nowrap; }
       .fabric-advisory-review-submit { min-width:92px; }
+      #fabric-advisory-review-modal .modal-footer .hint { flex:1 1 320px; min-width:0; overflow-wrap:anywhere; }
       @media (max-width: 900px) {
-        #fabric-advisory-review-modal .modal-body { grid-template-columns:1fr; overflow:auto; }
-        .fabric-review-json { min-height:280px; }
+        #fabric-advisory-review-modal .modal-body { grid-template-columns:1fr; grid-template-rows:minmax(160px, 0.9fr) minmax(220px, 1.1fr); overflow:hidden; }
+        .fabric-review-json { min-height:0; }
+      }
+      @media (max-width: 540px) {
+        #fabric-advisory-review-modal .modal { width:calc(100vw - 12px); height:calc(100vh - 32px); }
+        #fabric-advisory-review-modal .modal-header { padding:12px 16px; }
+        #fabric-advisory-review-modal .modal-body { padding:10px 16px; grid-template-rows:minmax(160px, 0.92fr) minmax(220px, 1.08fr); }
+        #fabric-advisory-review-modal .modal-footer { justify-content:stretch; align-items:center; }
+        #fabric-advisory-review-modal .modal-footer .hint { flex:1 0 100%; margin-right:0 !important; }
+        #fabric-advisory-review-modal .modal-footer button { flex:1 1 calc(50% - 8px); min-width:0; height:36px; padding:6px 8px; }
       }
     </style>
   </head>
