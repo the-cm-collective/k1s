@@ -2192,6 +2192,18 @@ def _fabric_advisory_review_trace_id(path_only: str) -> str:
     return _up.unquote(raw)
 
 
+def _fabric_advisory_proposal_trace_id(path_only: str) -> str:
+    import urllib.parse as _up
+
+    prefix = "/fabric/advisory/traces/"
+    suffix = "/proposal"
+    path_only = str(path_only or "")
+    if not path_only.startswith(prefix) or not path_only.endswith(suffix):
+        return ""
+    raw = path_only[len(prefix) : -len(suffix)].strip("/")
+    return _up.unquote(raw)
+
+
 def _import_fabric_node_record(store, payload: dict[str, Any]) -> None:
     from ae.accelerators import merge_projected_gpu_labels
 
@@ -2266,11 +2278,21 @@ def _fabric_advisory_trace_state(
             f"fabric/advisory/traces/{getattr(item, 'trace_id', '')}",
         )
     ]
+    proposals = [
+        item
+        for item in _safe_store_list(store, "list_fabric_advisory_proposals", limit=50)
+        if _fabric_record_allowed(
+            fabric_read_allowed,
+            f"fabric/advisory/proposals/{getattr(item, 'proposal_id', '')}",
+        )
+    ]
     trace_summaries = [_fabric_decision_trace_summary(item, now=now) for item in traces]
+    proposal_summaries = [_fabric_advisory_proposal_summary(item, now=now) for item in proposals]
     response_summaries = [_fabric_advisory_response_summary(item, now=now) for item in responses]
     request_summaries = [_fabric_advisory_request_summary(item, now=now) for item in requests]
     latest_created_at = _latest_datetime(
         [item.get("created_at") for item in trace_summaries]
+        + [item.get("updated_at") for item in proposal_summaries]
         + [item.get("created_at") for item in response_summaries]
         + [item.get("created_at") for item in request_summaries]
     )
@@ -2278,6 +2300,7 @@ def _fabric_advisory_trace_state(
         "requests_count": len(requests),
         "responses_count": len(responses),
         "traces_count": len(traces),
+        "proposals_count": len(proposals),
         "pending_review_count": sum(
             1
             for item in trace_summaries
@@ -2285,10 +2308,16 @@ def _fabric_advisory_trace_state(
         ),
         "accepted_count": sum(1 for item in trace_summaries if item.get("accepted") is True),
         "divergence_count": sum(1 for item in trace_summaries if item.get("accepted") is False),
+        "deferred_count": sum(1 for item in proposal_summaries if item.get("status") == "deferred"),
+        "pending_proposal_count": sum(
+            1 for item in proposal_summaries if item.get("status") == "pending_review"
+        ),
         "latest_trace": trace_summaries[0] if trace_summaries else None,
+        "latest_proposal": proposal_summaries[0] if proposal_summaries else None,
         "latest_response": response_summaries[0] if response_summaries else None,
         "latest_request": request_summaries[0] if request_summaries else None,
         "traces": trace_summaries[:8],
+        "proposals": proposal_summaries[:8],
         "latest_created_at": latest_created_at,
     }
 
@@ -2453,6 +2482,29 @@ def _fabric_decision_trace_summary(record, *, now: datetime) -> dict[str, Any]:
         "authoritative": False,
         "created_at": created_at,
         "age_seconds": _age_seconds(created_at, now=now),
+    }
+
+
+def _fabric_advisory_proposal_summary(record, *, now: datetime) -> dict[str, Any]:
+    updated_at = _iso_or_none(getattr(record, "updated_at", None))
+    dry_run = getattr(record, "dry_run", {}) or {}
+    return {
+        "proposal_id": str(getattr(record, "proposal_id", "") or ""),
+        "trace_id": str(getattr(record, "trace_id", "") or ""),
+        "request_id": str(getattr(record, "request_id", "") or ""),
+        "provider": str(getattr(record, "provider", "") or ""),
+        "proposal_kind": str(getattr(record, "proposal_kind", "") or ""),
+        "summary": str(getattr(record, "summary", "") or ""),
+        "confidence": getattr(record, "confidence", None),
+        "status": str(getattr(record, "status", "") or ""),
+        "review_event_id": str(getattr(record, "review_event_id", "") or ""),
+        "authoritative": False,
+        "controller_mutation_count": len(dry_run.get("controller_mutations") or [])
+        if isinstance(dry_run, dict)
+        else 0,
+        "created_at": _iso_or_none(getattr(record, "created_at", None)),
+        "updated_at": updated_at,
+        "age_seconds": _age_seconds(updated_at, now=now),
     }
 
 
@@ -2989,6 +3041,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):  # type: ignore[override]
         path_only = self.path.split("?", 1)[0]
+        fabric_proposal_trace_id = _fabric_advisory_proposal_trace_id(path_only)
 
         # Labs SSE (dev-only): stream events/status to the playground
         if path_only.startswith("/labs/sse/"):
@@ -3188,6 +3241,12 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             return
         if path_only in ("/fabric/advisory/traces", "/fabric/advisory/traces/"):
             self._handle_fabric_advisory_traces_list()
+            return
+        if path_only in ("/fabric/advisory/proposals", "/fabric/advisory/proposals/"):
+            self._handle_fabric_advisory_proposals_list()
+            return
+        if fabric_proposal_trace_id:
+            self._handle_fabric_advisory_trace_proposal(fabric_proposal_trace_id)
             return
         if path_only in ("/fabric/transfer-capabilities", "/fabric/transfer-capabilities/"):
             self._handle_fabric_transfer_capabilities_list()
@@ -5953,6 +6012,31 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "security": [{"bearerAuth": []}],
                     }
                 },
+                "/fabric/advisory/proposals": {
+                    "get": {
+                        "summary": "List non-mutating advisory dry-run proposals",
+                        "responses": {"200": {"description": "OK"}},
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
+                "/fabric/advisory/traces/{trace_id}/proposal": {
+                    "get": {
+                        "summary": "Return the dry-run proposal for an advisory trace",
+                        "parameters": [
+                            {
+                                "name": "trace_id",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {
+                            "200": {"description": "OK"},
+                            "404": {"description": "Proposal not found"},
+                        },
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
                 "/fabric/advisory/traces/{trace_id}/review": {
                     "post": {
                         "summary": "Record an operator review decision for an advisory trace",
@@ -6532,8 +6616,8 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self._json_error(400, "fabric advisory review body must be a JSON object")
             return
         decision = str(payload.get("decision") or "").strip().lower()
-        if decision not in {"accept", "diverge"}:
-            self._json_error(400, "decision must be accept or diverge")
+        if decision not in {"accept", "diverge", "defer"}:
+            self._json_error(400, "decision must be accept, diverge, or defer")
             return
         checked_raw = payload.get("checked_steps")
         checked_steps = (
@@ -6608,6 +6692,36 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             if self._fabric_read_allowed(f"fabric/advisory/traces/{rec.trace_id}")
         ]
         self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_advisory_proposals_list(self) -> None:
+        from ae.fabric.locality import advisory_proposal_payload
+
+        params = self._parse_query()
+        trace_id = (params.get("trace_id") or [None])[0] or None
+        status = (params.get("status") or [None])[0] or None
+        limit = self._bounded_int((params.get("limit") or [None])[0], default=100)
+        items = [
+            advisory_proposal_payload(rec)
+            for rec in self.store.list_fabric_advisory_proposals(
+                trace_id=trace_id,
+                status=status,
+                limit=limit,
+            )
+            if self._fabric_read_allowed(f"fabric/advisory/proposals/{rec.proposal_id}")
+        ]
+        self._json_ok({"items": items, "count": len(items)})
+
+    def _handle_fabric_advisory_trace_proposal(self, trace_id: str) -> None:
+        from ae.fabric.locality import advisory_proposal_payload
+
+        proposal = self.store.get_fabric_advisory_proposal(trace_id=trace_id)
+        if proposal is None:
+            self._json_error(404, "advisory proposal not found")
+            return
+        if not self._fabric_read_allowed(f"fabric/advisory/proposals/{proposal.proposal_id}"):
+            self._deny(403)
+            return
+        self._json_ok(advisory_proposal_payload(proposal))
 
     def _handle_fabric_transfer_capabilities_list(self) -> None:
         from ae.fabric.locality import transfer_capability_payload

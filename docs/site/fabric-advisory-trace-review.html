@@ -654,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -745,7 +745,7 @@
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
@@ -779,7 +779,12 @@
 <p>Pending</p>
 <ul>
 <li>Leave the trace pending when the operator cannot decide from the available context.</li>
-<li>There is no separate defer writeback state today. Pending is the correct state for &quot;needs more context&quot;.</li>
+<li>Use <code>Defer</code> when the operator has reviewed the trace but needs more context before accept/diverge. Defer records an operator review event and keeps the trace unresolved.</li>
+</ul>
+<p>Dry-run proposal</p>
+<ul>
+<li>Each imported advisory trace can produce a non-mutating proposal. The proposal summarizes the trace-derived recommendation, provider, confidence, evidence references, and dry-run guardrail.</li>
+<li>A proposal is never a controller action. Its dry-run payload must show <code>controller_mutations: []</code> and <code>authoritative: false</code>.</li>
 </ul>
 <h2 id="mode-matrix">Mode Matrix</h2>
 <table><thead><tr><th>Mode</th><th>Review posture</th><th>What to verify before deciding</th></tr></thead><tbody><tr><td>WorkerBee/dev</td><td>Treat traces as development and validation evidence. Synthetic traces are expected.</td><td>Confirm whether the trace came from a test, dashboard validation, advisory-store import, or a live workload scenario.</td></tr><tr><td>Lab/HA</td><td>Treat traces as operator rehearsal and integration evidence.</td><td>Compare the trace to live controller state, fabric gate readiness, workload health, and retained validation artifacts.</td></tr><tr><td>Production mode</td><td>Treat traces as advisory audit records only.</td><td>Confirm current controller authority, evidence freshness, approved operating policy, and whether the trace came from an enabled Hyperon/DAS integration.</td></tr></tbody></table>
@@ -789,11 +794,12 @@
 <li>Open the Hive dashboard and go to the Fabric Advisory area.</li>
 <li>Locate the pending trace or trace-linked cognitive signal and open Review.</li>
 <li>Confirm the <code>k1s authoritative</code> indicator before reading the recommendation.</li>
+<li>Inspect the dry-run Proposal summary and confirm it has no controller mutations.</li>
 <li>Inspect the request JSON and advisory response.</li>
 <li>Inspect trace metadata, replay/evaluation status, and divergence reason if present.</li>
 <li>Inspect Hyperon/DAS tabs only when evidence is attached. If no evidence is attached, treat the review as a <code>k1s</code> advisory-only review.</li>
 <li>Compare the trace to the current F3/fabric gate state from phase assurance.</li>
-<li>Submit <code>Accept</code> or <code>Diverge</code> with a short operator note.</li>
+<li>Submit <code>Accept</code>, <code>Diverge</code>, or <code>Defer</code> with a short operator note.</li>
 <li>Refresh and confirm the pending trace count and linked cognitive signal review status changed as expected.</li>
 </ul>
 <h2 id="decision-criteria">Decision Criteria</h2>
@@ -818,6 +824,12 @@
 <li>The trace cannot be tied to the current workload or phase gate.</li>
 <li>The right decision requires an incident owner, fabric owner, or release owner to supply more context.</li>
 </ul>
+<p>Defer instead of leaving pending when:</p>
+<ul>
+<li>The operator has inspected the proposal and JSON evidence but intentionally wants the unresolved state recorded.</li>
+<li>Additional owner context is required and the operator wants the audit trail to show that review started.</li>
+<li>The trace should stay visible as unresolved after review.</li>
+</ul>
 <h2 id="operator-note-examples">Operator Note Examples</h2>
 <p>Accepted trace:</p>
 <pre><code>Accepted. Trace matches current k1s F3 gate state and evidence refs are current. Hyperon/DAS input is advisory only.</code></pre>
@@ -830,7 +842,7 @@
 <p>Synthetic or test trace:</p>
 <pre><code>Diverged. Trace was produced by a test/import path and is not production workload evidence.</code></pre>
 <p>Needs more context:</p>
-<pre><code>Left pending. Evidence freshness and workload ownership are not clear enough for accept/diverge review.</code></pre>
+<pre><code>Deferred. Evidence freshness and workload ownership are not clear enough for accept/diverge review.</code></pre>
 <h2 id="updating-this-guide">Updating This Guide</h2>
 <ul>
 <li>Keep authority language stable: <code>k1s</code> remains authoritative until the fabric authority model changes through an explicit design and ops update.</li>
@@ -845,7 +857,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 15:24:33</span>
+        <span>Built 2026-06-05 21:36:21</span>
       </div>
     </footer>
     <script>

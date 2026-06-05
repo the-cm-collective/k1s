@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -92,6 +94,24 @@ class FabricDecisionTraceRecord:
     continuity_signals: dict[str, Any]
     coherence_signals: dict[str, Any]
     created_at: datetime
+
+
+@dataclass(slots=True)
+class FabricAdvisoryProposalRecord:
+    proposal_id: str
+    trace_id: str
+    request_id: str
+    provider: str
+    proposal_kind: str
+    summary: str
+    proposed_action: dict[str, Any]
+    evidence_refs: list[Any]
+    confidence: float | None
+    status: str
+    dry_run: dict[str, Any]
+    review_event_id: str
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(slots=True)
@@ -219,7 +239,7 @@ class FabricAdvisoryReviewEventRecord:
     event_id: str
     trace_id: str
     decision: str
-    accepted: bool
+    accepted: bool | None
     reviewer: str
     note: str
     checked_steps: list[Any]
@@ -351,6 +371,25 @@ def decision_trace_payload(record: FabricDecisionTraceRecord) -> dict[str, Any]:
         "continuity_signals": dict(record.continuity_signals),
         "coherence_signals": dict(record.coherence_signals),
         "created_at": _iso(record.created_at),
+    }
+
+
+def advisory_proposal_payload(record: FabricAdvisoryProposalRecord) -> dict[str, Any]:
+    return {
+        "proposal_id": record.proposal_id,
+        "trace_id": record.trace_id,
+        "request_id": record.request_id,
+        "provider": record.provider,
+        "proposal_kind": record.proposal_kind,
+        "summary": record.summary,
+        "proposed_action": dict(record.proposed_action),
+        "evidence_refs": list(record.evidence_refs),
+        "confidence": record.confidence,
+        "status": record.status,
+        "dry_run": dict(record.dry_run),
+        "review_event_id": record.review_event_id,
+        "created_at": _iso(record.created_at),
+        "updated_at": _iso(record.updated_at),
     }
 
 
@@ -487,7 +526,7 @@ def advisory_review_event_payload(record: FabricAdvisoryReviewEventRecord) -> di
         "event_id": record.event_id,
         "trace_id": record.trace_id,
         "decision": record.decision,
-        "accepted": bool(record.accepted),
+        "accepted": record.accepted,
         "reviewer": record.reviewer,
         "note": record.note,
         "checked_steps": list(record.checked_steps),
@@ -599,6 +638,109 @@ def decision_trace_from_payload(payload: dict[str, Any]) -> FabricDecisionTraceR
         continuity_signals=_dict(payload.get("continuity_signals")),
         coherence_signals=_dict(payload.get("coherence_signals")),
         created_at=parse_datetime(payload.get("created_at"), default=now) or now,
+    )
+
+
+def advisory_proposal_from_payload(payload: dict[str, Any]) -> FabricAdvisoryProposalRecord:
+    now = utc_now()
+    created = parse_datetime(payload.get("created_at"), default=now) or now
+    return FabricAdvisoryProposalRecord(
+        proposal_id=str(payload.get("proposal_id") or ""),
+        trace_id=str(payload.get("trace_id") or ""),
+        request_id=str(payload.get("request_id") or ""),
+        provider=str(payload.get("provider") or ""),
+        proposal_kind=str(payload.get("proposal_kind") or "evidence_review"),
+        summary=str(payload.get("summary") or ""),
+        proposed_action=_dict(payload.get("proposed_action")),
+        evidence_refs=_list(payload.get("evidence_refs")),
+        confidence=_float_or_none(payload.get("confidence")),
+        status=str(payload.get("status") or "pending_review"),
+        dry_run=_dict(payload.get("dry_run")),
+        review_event_id=str(payload.get("review_event_id") or ""),
+        created_at=created,
+        updated_at=parse_datetime(payload.get("updated_at"), default=created) or created,
+    )
+
+
+def build_fabric_advisory_proposal(
+    trace: FabricDecisionTraceRecord,
+    *,
+    request: FabricAdvisoryRequestRecord | None = None,
+    response: FabricAdvisoryResponseRecord | None = None,
+    status: str | None = None,
+    review_event_id: str = "",
+) -> FabricAdvisoryProposalRecord:
+    """Build a deterministic, non-mutating advisory proposal from trace evidence."""
+
+    advisory_response = dict(trace.advisory_response or {})
+    subject_type = str(getattr(request, "subject_type", "") or advisory_response.get("subject_type") or "")
+    subject_id = str(getattr(request, "subject_id", "") or advisory_response.get("subject_id") or "")
+    intent = str(getattr(request, "intent", "") or advisory_response.get("intent") or "")
+    provider = str(
+        getattr(response, "provider", "")
+        or advisory_response.get("provider")
+        or advisory_response.get("source")
+        or "unknown"
+    )
+    recommendation = str(
+        getattr(response, "recommendation", "")
+        or advisory_response.get("recommendation")
+        or advisory_response.get("recommended_action")
+        or advisory_response.get("action")
+        or "review advisory evidence"
+    )
+    confidence = getattr(response, "confidence", None)
+    if confidence is None:
+        confidence = _float_or_none(advisory_response.get("confidence"))
+    evidence_refs = list(getattr(response, "evidence_refs", []) or [])
+    for value in (
+        trace.continuity_signals.get("das_query_trace_id"),
+        trace.continuity_signals.get("facts_ref"),
+        trace.continuity_signals.get("evidence_ref"),
+    ):
+        if value and value not in evidence_refs:
+            evidence_refs.append(value)
+    proposal_kind = _fabric_advisory_proposal_kind(subject_type, subject_id)
+    proposal_status = status or _fabric_advisory_proposal_status(trace)
+    proposal_id = _stable_proposal_id(trace.trace_id, trace.request_id, provider, proposal_kind)
+    summary = _fabric_advisory_proposal_summary(
+        proposal_kind,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        recommendation=recommendation,
+    )
+    proposed_action = {
+        "intent": intent,
+        "subject_type": subject_type,
+        "subject_id": subject_id,
+        "recommendation": recommendation,
+        "advisory_status": str(getattr(response, "status", "") or advisory_response.get("status") or ""),
+        "action": proposal_kind,
+        "mode": "dry_run",
+    }
+    dry_run = {
+        "authoritative": False,
+        "controller_authority": "k1s",
+        "controller_mutations": [],
+        "would_apply": False,
+        "reason": "operator review only; no controller mutation is performed",
+    }
+    created_at = trace.created_at
+    return FabricAdvisoryProposalRecord(
+        proposal_id=proposal_id,
+        trace_id=trace.trace_id,
+        request_id=trace.request_id,
+        provider=provider,
+        proposal_kind=proposal_kind,
+        summary=summary,
+        proposed_action=proposed_action,
+        evidence_refs=evidence_refs,
+        confidence=confidence,
+        status=proposal_status,
+        dry_run=dry_run,
+        review_event_id=review_event_id,
+        created_at=created_at,
+        updated_at=utc_now(),
     )
 
 
@@ -747,11 +889,13 @@ def advisory_review_event_from_payload(
     payload: dict[str, Any]
 ) -> FabricAdvisoryReviewEventRecord:
     now = utc_now()
+    accepted_raw = payload.get("accepted")
+    accepted = accepted_raw if isinstance(accepted_raw, bool) else None
     return FabricAdvisoryReviewEventRecord(
         event_id=str(payload.get("event_id") or ""),
         trace_id=str(payload.get("trace_id") or ""),
         decision=str(payload.get("decision") or ""),
-        accepted=bool(payload.get("accepted")),
+        accepted=accepted,
         reviewer=str(payload.get("reviewer") or ""),
         note=str(payload.get("note") or ""),
         checked_steps=_list(payload.get("checked_steps")),
@@ -759,6 +903,51 @@ def advisory_review_event_from_payload(
         client_seen=_dict(payload.get("client_seen")),
         created_at=parse_datetime(payload.get("created_at"), default=now) or now,
     )
+
+
+def _fabric_advisory_proposal_kind(subject_type: str, subject_id: str) -> str:
+    subject = f"{subject_type}/{subject_id}".lower()
+    if "k1s.fabric.phase." in subject or "phase_gate" in subject:
+        return "phase_gate_review"
+    if "ai_fabric.service." in subject or "service" in subject_type.lower():
+        return "runtime_service_review"
+    if "ai_fabric.adapter." in subject or "adapter" in subject_type.lower():
+        return "adapter_review"
+    return "evidence_review"
+
+
+def _fabric_advisory_proposal_status(trace: FabricDecisionTraceRecord) -> str:
+    if trace.accepted is True:
+        return "accepted_dry_run"
+    if trace.accepted is False:
+        return "diverged"
+    return "pending_review"
+
+
+def _fabric_advisory_proposal_summary(
+    proposal_kind: str,
+    *,
+    subject_type: str,
+    subject_id: str,
+    recommendation: str,
+) -> str:
+    subject = subject_id or subject_type or "advisory subject"
+    if proposal_kind == "phase_gate_review":
+        return f"Review phase gate evidence for {subject}: {recommendation}"
+    if proposal_kind == "runtime_service_review":
+        return f"Review runtime service evidence for {subject}: {recommendation}"
+    if proposal_kind == "adapter_review":
+        return f"Review adapter evidence for {subject}: {recommendation}"
+    return f"Review advisory evidence for {subject}: {recommendation}"
+
+
+def _stable_proposal_id(trace_id: str, request_id: str, provider: str, proposal_kind: str) -> str:
+    source = json.dumps(
+        [trace_id, request_id, provider, proposal_kind],
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return "proposal-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
 def _iso(value: datetime) -> str:

@@ -654,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -745,7 +745,7 @@
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
@@ -766,6 +766,7 @@
     maxSurge: 1                             # keep old replicas temporarily (default: 1)
     maxUnavailable: 0                       # allow up to N replicas unavailable (default: 0)
     pause: true|false                       # pause rollout without changing runtime
+    restartAt: &quot;2026-06-02T00:00:00+00:00&quot; # force a new revision for unchanged specs/tags
     # canary options
     weight: 1                               # bias first upstream Nx in ingress (canary)
     auto: { start: 1, step: 2, intervalSeconds: 60, max: 10 }  # controller‑tracked ramp</code></pre>
@@ -817,9 +818,11 @@
 # or
 make demo-legacy ARGS=&quot;--demo-rollout -y -d&quot;</code></pre>
 <p>This applies <code>specs/examples/echo.yaml</code> then <code>specs/examples/echo-rollout.yaml</code> with rollout <code>{ strategy: ordered, maxSurge: 1, maxUnavailable: 0 }</code>.</p>
-<p>Pause/resume:</p>
+<p>Pause/resume/restart:</p>
 <pre><code>ae rollout pause echo
-ae rollout resume echo</code></pre>
+ae rollout resume echo
+ae rollout restart echo</code></pre>
+<p><code>restart</code> stamps <code>spec.rollout.restartAt</code>, which changes the desired-state hash and creates a new revision even when the manifest and local image tag are otherwise unchanged. For single-replica workloads with fixed service ports, restart runs without old/new overlap so the replacement revision can bind the same host port.</p>
     </div>
     <footer class="site-footer">
       <div class="container inner">
@@ -827,7 +830,7 @@ ae rollout resume echo</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-05-22 19:07:37</span>
+        <span>Built 2026-06-05 21:36:21</span>
       </div>
     </footer>
     <script>

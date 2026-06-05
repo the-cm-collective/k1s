@@ -19,7 +19,11 @@ Diverge
 
 Pending
 - Leave the trace pending when the operator cannot decide from the available context.
-- There is no separate defer writeback state today. Pending is the correct state for "needs more context".
+- Use `Defer` when the operator has reviewed the trace but needs more context before accept/diverge. Defer records an operator review event and keeps the trace unresolved.
+
+Dry-run proposal
+- Each imported advisory trace can produce a non-mutating proposal. The proposal summarizes the trace-derived recommendation, provider, confidence, evidence references, and dry-run guardrail.
+- A proposal is never a controller action. Its dry-run payload must show `controller_mutations: []` and `authoritative: false`.
 
 ## Mode Matrix
 
@@ -36,11 +40,12 @@ The review rules are intentionally the same in every mode. Only the evidence thr
 - Open the Hive dashboard and go to the Fabric Advisory area.
 - Locate the pending trace or trace-linked cognitive signal and open Review.
 - Confirm the `k1s authoritative` indicator before reading the recommendation.
+- Inspect the dry-run Proposal summary and confirm it has no controller mutations.
 - Inspect the request JSON and advisory response.
 - Inspect trace metadata, replay/evaluation status, and divergence reason if present.
 - Inspect Hyperon/DAS tabs only when evidence is attached. If no evidence is attached, treat the review as a `k1s` advisory-only review.
 - Compare the trace to the current F3/fabric gate state from phase assurance.
-- Submit `Accept` or `Diverge` with a short operator note.
+- Submit `Accept`, `Diverge`, or `Defer` with a short operator note.
 - Refresh and confirm the pending trace count and linked cognitive signal review status changed as expected.
 
 ## Decision Criteria
@@ -62,6 +67,11 @@ Leave pending when:
 - The operator cannot confirm evidence freshness.
 - The trace cannot be tied to the current workload or phase gate.
 - The right decision requires an incident owner, fabric owner, or release owner to supply more context.
+
+Defer instead of leaving pending when:
+- The operator has inspected the proposal and JSON evidence but intentionally wants the unresolved state recorded.
+- Additional owner context is required and the operator wants the audit trail to show that review started.
+- The trace should stay visible as unresolved after review.
 
 ## Operator Note Examples
 
@@ -98,7 +108,7 @@ Diverged. Trace was produced by a test/import path and is not production workloa
 Needs more context:
 
 ```text
-Left pending. Evidence freshness and workload ownership are not clear enough for accept/diverge review.
+Deferred. Evidence freshness and workload ownership are not clear enough for accept/diverge review.
 ```
 
 ## Updating This Guide

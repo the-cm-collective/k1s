@@ -355,6 +355,7 @@
       .fabric-advisory-trace-label { min-width:0; overflow-wrap:anywhere; word-break:break-word; }
       .fabric-advisory-review-btn { align-self:start; justify-self:end; padding:4px 8px; font-size:11px; white-space:nowrap; }
       .fabric-advisory-review-submit { min-width:92px; }
+      .fabric-review-proposal { border-color:#31514a; background:#0f1f1d; }
       #fabric-advisory-review-modal .modal-footer .hint { flex:1 1 320px; min-width:0; overflow-wrap:anywhere; }
       @media (max-width: 900px) {
         #fabric-advisory-review-modal .modal-body { grid-template-columns:1fr; grid-template-rows:minmax(160px, 0.9fr) minmax(220px, 1.1fr); overflow:hidden; }
@@ -799,6 +800,7 @@ Connection: close
           <section class="fabric-review-summary" aria-label="Trace review summary">
             <div id="fabric-advisory-review-status" class="row" style="gap:8px;"></div>
             <div id="fabric-advisory-review-fields" class="fabric-review-fields"></div>
+            <div id="fabric-advisory-review-proposal" class="fabric-review-fields fabric-review-proposal"></div>
             <div class="fabric-review-fields fabric-review-decision">
               <label>Reviewer <input id="fabric-advisory-review-reviewer" type="text" value="dashboard-operator" autocomplete="off" /></label>
               <label>Note <textarea id="fabric-advisory-review-operator-note" rows="3" placeholder="Optional operator note"></textarea></label>
@@ -819,6 +821,7 @@ Connection: close
           <button id="fabric-advisory-review-refresh" type="button">Refresh Evidence</button>
           <button id="fabric-advisory-review-accept" class="fabric-advisory-review-submit" type="button">Accept</button>
           <button id="fabric-advisory-review-diverge" class="fabric-advisory-review-submit" type="button">Diverge</button>
+          <button id="fabric-advisory-review-defer" class="fabric-advisory-review-submit" type="button">Defer</button>
           <button id="fabric-advisory-review-close-footer" type="button">Close</button>
         </div>
       </div>
@@ -1948,6 +1951,26 @@ Connection: close
         return renderHaRows(rows);
       }
 
+      function renderFabricReviewProposal(proposal){
+        proposal = proposal || {};
+        if (proposal.error || !proposal.proposal_id) {
+          return renderHaRows([
+            {k:'Proposal', v:'not available'},
+            {k:'Dry run', v:'no controller mutation'}
+          ]);
+        }
+        var dryRun = proposal.dry_run || {};
+        var mutations = Array.isArray(dryRun.controller_mutations) ? dryRun.controller_mutations : [];
+        return renderHaRows([
+          {k:'Proposal', v:proposal.proposal_id || '-'},
+          {k:'Kind', v:proposal.proposal_kind || '-'},
+          {k:'Status', v:proposal.status || '-'},
+          {k:'Provider', v:proposal.provider || '-'},
+          {k:'Summary', v:proposal.summary || '-'},
+          {k:'Dry run', v:'mutations=' + String(mutations.length) + ', authoritative=' + String(!!dryRun.authoritative)}
+        ]);
+      }
+
       function renderFabricReviewChecklist(trace, request, response, dasPayload, signalPayload){
         trace = trace || {};
         request = request || {};
@@ -1960,6 +1983,7 @@ Connection: close
         var evidenceTab = dasEvidenceCount ? 'das' : 'signals';
         var steps = [
           {id:'authority', tab:'state', title:'Confirm k1s authority', detail:'The advisory path is non-authoritative; live k1s state remains the control-plane source of truth.'},
+          {id:'proposal', tab:'proposal', title:'Inspect dry-run proposal', detail:'Confirm the proposal is advisory-only and lists zero controller mutations.'},
           {id:'request', tab:'request', title:'Inspect request JSON', detail: request.request_id ? ('Request ' + request.request_id) : 'No matching request payload found.'},
           {id:'response', tab:'response', title:'Inspect advisory response', detail: response.request_id ? fabricReviewRecommendation(response, trace) : 'No matching advisory response found.'},
           {id:'trace', tab:'trace', title:'Compare trace with baseline', detail:'Review deterministic_baseline, advisory_response, continuity_signals, and coherence_signals.'}
@@ -1969,7 +1993,7 @@ Connection: close
         } else {
           steps.push({id:'no_hyperon_das', tab:'state', title:'Confirm no Hyperon/DAS evidence', detail:'No Hyperon/DAS evidence is attached to this trace.'});
         }
-        steps.push({id:'decision', tab:'state', title:'Record operator decision', detail:'Submit accept or diverge to persist an operator audit event in k1s.'});
+        steps.push({id:'decision', tab:'state', title:'Record operator decision', detail:'Submit accept, diverge, or defer to persist an operator audit event in k1s.'});
         return steps.map(function(step, idx){
           var id = 'fabric-review-step-' + String(idx);
           return (
@@ -1984,6 +2008,7 @@ Connection: close
       function renderFabricReviewLoading(traceId){
         var statusEl = document.getElementById('fabric-advisory-review-status');
         var fieldsEl = document.getElementById('fabric-advisory-review-fields');
+        var proposalEl = document.getElementById('fabric-advisory-review-proposal');
         var checklistEl = document.getElementById('fabric-advisory-review-checklist');
         var tabsEl = document.getElementById('fabric-advisory-review-tabs');
         var jsonEl = document.getElementById('fabric-advisory-review-json');
@@ -1991,6 +2016,7 @@ Connection: close
         if (subtitleEl) subtitleEl.textContent = traceId ? ('trace=' + traceId) : '';
         if (statusEl) statusEl.innerHTML = badge('warn', 'loading') + badge('', 'trace ' + escapeHtml(traceId || '-'));
         if (fieldsEl) fieldsEl.innerHTML = renderHaRows([{k:'Trace', v:traceId || '-'}, {k:'Evidence', v:'loading'}]);
+        if (proposalEl) proposalEl.innerHTML = '';
         if (checklistEl) checklistEl.innerHTML = '';
         if (tabsEl) tabsEl.innerHTML = '';
         if (jsonEl) jsonEl.textContent = 'Loading advisory evidence...';
@@ -2086,20 +2112,26 @@ Connection: close
         var status = fabricReviewStatus(trace);
         var statusEl = document.getElementById('fabric-advisory-review-status');
         var fieldsEl = document.getElementById('fabric-advisory-review-fields');
+        var proposalEl = document.getElementById('fabric-advisory-review-proposal');
         var checklistEl = document.getElementById('fabric-advisory-review-checklist');
         var noteEl = document.getElementById('fabric-advisory-review-note');
+        var proposal = payloads.proposal && !payloads.proposal.error ? payloads.proposal : {missing:'No dry-run proposal found for trace', trace_id:traceId};
+        fabricAdvisoryReviewCurrent.proposal = proposal;
         if (statusEl) {
           statusEl.innerHTML = [
             badge(status.cls, status.label),
             badge('ok', 'k1s authoritative'),
+            badge(proposal.status === 'deferred' ? 'warn' : (proposal.status === 'accepted_dry_run' ? 'ok' : ''), 'proposal ' + escapeHtml(proposal.status || 'missing')),
             badge(String(hyperon.status || '') === 'experimental' ? 'ok' : '', 'Hyperon/DAS ' + escapeHtml(fabricHyperonStatusLabel(hyperon)))
           ].join(' ');
         }
         if (fieldsEl) fieldsEl.innerHTML = renderFabricReviewFields(trace, request, response, state, dasPayload, signalPayload);
+        if (proposalEl) proposalEl.innerHTML = renderFabricReviewProposal(proposal);
         if (checklistEl) checklistEl.innerHTML = renderFabricReviewChecklist(trace, request, response, dasPayload, signalPayload);
-        if (noteEl) noteEl.textContent = 'Submit accept or diverge to record an operator review event; k1s remains authoritative.';
+        if (noteEl) noteEl.textContent = 'Submit accept, diverge, or defer to record an operator review event; k1s remains authoritative.';
         var reviewTabs = [
           {id:'trace', label:'Trace', payload: trace, warn: !trace.trace_id},
+          {id:'proposal', label:'Proposal', payload: proposal, warn: !proposal.proposal_id},
           {id:'request', label:'Request', payload: request || {missing:'No matching request payload found', request_id:requestId}, warn: !request},
           {id:'response', label:'Response', payload: response || {missing:'No matching advisory response found', request_id:requestId}, warn: !response}
         ];
@@ -2125,7 +2157,8 @@ Connection: close
           fetchJSON('/fabric/advisory/responses?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/advisory/responses', err); }),
           fetchJSON('/fabric/das-query-traces?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/das-query-traces', err); }),
           fetchJSON('/fabric/cognitive-signals?limit=100').catch(function(err){ return fabricReviewEndpointError('/fabric/cognitive-signals', err); }),
-          fetchJSON('/fabric/phase-assurance').catch(function(err){ return fabricReviewEndpointError('/fabric/phase-assurance', err); })
+          fetchJSON('/fabric/phase-assurance').catch(function(err){ return fabricReviewEndpointError('/fabric/phase-assurance', err); }),
+          fetchJSON('/fabric/advisory/traces/' + encodeURIComponent(traceId) + '/proposal').catch(function(err){ return fabricReviewEndpointError('/fabric/advisory/traces/' + traceId + '/proposal', err); })
         ]).then(function(results){
           renderFabricAdvisoryReviewData(traceId, {
             state: results[0],
@@ -2134,7 +2167,8 @@ Connection: close
             responses: results[3],
             das_query_traces: results[4],
             cognitive_signals: results[5],
-            phase_assurance: results[6]
+            phase_assurance: results[6],
+            proposal: results[7]
           });
         });
       }
@@ -2197,16 +2231,19 @@ Connection: close
         var current = fabricAdvisoryReviewCurrent || {};
         var trace = current.trace || {};
         var request = current.request || {};
+        var proposal = current.proposal || {};
         var signalPayload = current.signals || {};
         var signals = Array.isArray(signalPayload.matching_signals) ? signalPayload.matching_signals : [];
         return {
           request_id: trace.request_id || request.request_id || '',
+          proposal_id: proposal.proposal_id || '',
+          proposal_status: proposal.status || '',
           signal_ids: signals.map(function(item){ return String((item || {}).signal_id || ''); }).filter(function(item){ return !!item; })
         };
       }
 
       function setFabricAdvisoryReviewSubmitting(isSubmitting){
-        ['fabric-advisory-review-accept', 'fabric-advisory-review-diverge', 'fabric-advisory-review-refresh'].forEach(function(id){
+        ['fabric-advisory-review-accept', 'fabric-advisory-review-diverge', 'fabric-advisory-review-defer', 'fabric-advisory-review-refresh'].forEach(function(id){
           var el = document.getElementById(id);
           if (el) el.disabled = !!isSubmitting;
         });
@@ -2324,6 +2361,7 @@ Connection: close
           badge('ok', 'k1s authoritative'),
           badge((profiles.promotion_ready_count || 0) ? 'ok' : 'warn', 'profiles ' + String(profiles.count || 0)),
           badge((advisory.pending_review_count || 0) ? 'warn' : 'ok', 'traces ' + String(advisory.traces_count || 0)),
+          badge((advisory.pending_proposal_count || advisory.deferred_count || 0) ? 'warn' : 'ok', 'proposals ' + String(advisory.proposals_count || 0)),
           badge(f3Cls, 'F3 ' + escapeHtml(f3Label)),
           badge(hyperonCls, 'Hyperon/DAS ' + escapeHtml(hyperonLabel))
         ].join(' ');
@@ -3447,6 +3485,7 @@ Connection: close
       try { document.getElementById('fabric-advisory-review-copy').addEventListener('click', copyFabricAdvisoryReviewJson); } catch(e){}
       try { document.getElementById('fabric-advisory-review-accept').addEventListener('click', function(){ submitFabricAdvisoryReview('accept'); }); } catch(e){}
       try { document.getElementById('fabric-advisory-review-diverge').addEventListener('click', function(){ submitFabricAdvisoryReview('diverge'); }); } catch(e){}
+      try { document.getElementById('fabric-advisory-review-defer').addEventListener('click', function(){ submitFabricAdvisoryReview('defer'); }); } catch(e){}
       try {
         document.getElementById('fabric-advisory-review-tabs').addEventListener('click', function(ev){
           var target = ev.target && ev.target.closest ? ev.target.closest('button[data-fabric-review-tab]') : null;

@@ -654,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -745,7 +745,7 @@
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
@@ -777,6 +777,7 @@
 <li><code>GET /health</code></li>
 <li><code>GET /status</code> and <code>GET /status/&lt;app&gt;</code></li>
 <li><code>GET /manifest/&lt;app&gt;</code>, <code>GET /events/&lt;app&gt;</code>, and <code>GET /history/&lt;app&gt;</code></li>
+<li><code>GET /inference/cells</code>, <code>GET /inference/cells/&lt;namespace&gt;/&lt;name&gt;</code>, <code>GET /inference/cellsets</code>, and <code>GET /inference/cellsets/&lt;namespace&gt;/&lt;name&gt;</code></li>
 <li><code>GET /nodes</code> and <code>GET /system</code></li>
 <li><code>GET /logs/&lt;app&gt;</code> and <code>GET /logs/&lt;app&gt;/stream</code></li>
 <li><code>GET /tls/verify</code></li>
@@ -787,7 +788,9 @@
 <li><code>POST /plan</code> and <code>POST /dashboard/plan</code> are read-only planner endpoints used by the dashboard and labs UI. They require READ access when tokens are configured.</li>
 <li><code>POST /k8s/preview</code> is a dev-only exporter preview and stays disabled unless <code>AE_API_DEV_EXPORT=1</code>.</li>
 <li><code>POST /scale/&lt;app&gt;</code> requires scale or admin access plus <code>AE_API_MUTATIONS=1</code>.</li>
-<li><code>POST /delete/&lt;app&gt;</code>, <code>POST /rollout/pause/&lt;app&gt;</code>, <code>POST /rollout/resume/&lt;app&gt;</code>, <code>POST /apply</code>, and <code>POST /exec/&lt;app&gt;</code> require admin access plus <code>AE_API_MUTATIONS=1</code>.</li>
+<li><code>POST /apply</code> accepts <code>Deployment</code>, <code>InferenceCell</code>, and <code>InferenceCellSet</code> manifests. The inference kinds are k1s-owned AI/ML resources, not Kubernetes scheduling primitives.</li>
+<li><code>POST /inference/delete/cells/&lt;name&gt;?namespace=&lt;namespace&gt;</code> and <code>POST /inference/delete/cellsets/&lt;name&gt;?namespace=&lt;namespace&gt;</code> delete inference resources.</li>
+<li><code>POST /delete/&lt;app&gt;</code>, <code>POST /rollout/pause/&lt;app&gt;</code>, <code>POST /rollout/resume/&lt;app&gt;</code>, <code>POST /rollout/restart/&lt;app&gt;</code>, <code>POST /apply</code>, <code>POST /inference/delete/*</code>, and <code>POST /exec/&lt;app&gt;</code> require admin access plus <code>AE_API_MUTATIONS=1</code>.</li>
 </ul>
 <h2 id="auth-model">Auth model</h2>
 <ul>
@@ -810,7 +813,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-05-22 19:07:37</span>
+        <span>Built 2026-06-05 21:36:21</span>
       </div>
     </footer>
     <script>

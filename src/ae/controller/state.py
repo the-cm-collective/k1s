@@ -29,6 +29,7 @@ from ae.controller.spec import (
     app_key_for_manifest,
 )
 from ae.fabric.locality import (
+    FabricAdvisoryProposalRecord,
     FabricAdvisoryReviewEventRecord,
     FabricAdvisoryRequestRecord,
     FabricAdvisoryResponseRecord,
@@ -44,6 +45,8 @@ from ae.fabric.locality import (
     FabricTransferCapabilityRecord,
     FabricTransferLeaseRecord,
     FabricTransportAttemptRecord,
+    advisory_proposal_from_payload,
+    advisory_proposal_payload,
     advisory_review_event_from_payload,
     advisory_request_from_payload,
     advisory_request_payload,
@@ -74,6 +77,7 @@ from ae.fabric.locality import (
     transfer_lease_payload,
     transport_attempt_from_payload,
     transport_attempt_payload,
+    build_fabric_advisory_proposal,
 )
 from ae.ha.fencing import parse_envelope, work_operation
 from ae.resources import loader as resource_loader
@@ -1072,6 +1076,32 @@ class SQLiteStateStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS fabric_advisory_proposals (
+                  proposal_id TEXT PRIMARY KEY,
+                  trace_id TEXT NOT NULL,
+                  request_id TEXT NOT NULL,
+                  provider TEXT NOT NULL,
+                  proposal_kind TEXT NOT NULL,
+                  summary TEXT NOT NULL,
+                  proposed_action_json TEXT NOT NULL,
+                  evidence_refs_json TEXT NOT NULL,
+                  confidence REAL,
+                  status TEXT NOT NULL,
+                  dry_run_json TEXT NOT NULL,
+                  review_event_id TEXT NOT NULL DEFAULT '',
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_advisory_proposals_trace ON fabric_advisory_proposals(trace_id, updated_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_advisory_proposals_status ON fabric_advisory_proposals(status, updated_at)"
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS fabric_transfer_capabilities (
                   capability_id TEXT PRIMARY KEY,
                   node_id TEXT NOT NULL,
@@ -1239,7 +1269,7 @@ class SQLiteStateStore:
                   event_id TEXT PRIMARY KEY,
                   trace_id TEXT NOT NULL,
                   decision TEXT NOT NULL,
-                  accepted INTEGER NOT NULL,
+                  accepted INTEGER,
                   reviewer TEXT NOT NULL,
                   note TEXT NOT NULL,
                   checked_steps_json TEXT NOT NULL,
@@ -1249,6 +1279,7 @@ class SQLiteStateStore:
                 )
                 """
             )
+            self._ensure_fabric_review_events_nullable_accepted(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_fabric_advisory_review_events_trace ON fabric_advisory_review_events(trace_id, created_at)"
             )
@@ -1262,6 +1293,44 @@ class SQLiteStateStore:
             stmt = stmt.strip()
             if stmt:
                 conn.execute(stmt)
+
+    def _ensure_fabric_review_events_nullable_accepted(self, conn) -> None:
+        try:
+            columns = conn.execute("PRAGMA table_info(fabric_advisory_review_events)").fetchall()
+        except Exception:
+            return
+        accepted = next((row for row in columns if row[1] == "accepted"), None)
+        if accepted is None or not int(accepted[3] or 0):
+            return
+        conn.execute("ALTER TABLE fabric_advisory_review_events RENAME TO fabric_advisory_review_events_old")
+        conn.execute(
+            """
+            CREATE TABLE fabric_advisory_review_events (
+              event_id TEXT PRIMARY KEY,
+              trace_id TEXT NOT NULL,
+              decision TEXT NOT NULL,
+              accepted INTEGER,
+              reviewer TEXT NOT NULL,
+              note TEXT NOT NULL,
+              checked_steps_json TEXT NOT NULL,
+              signal_ids_json TEXT NOT NULL,
+              client_seen_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fabric_advisory_review_events (
+              event_id, trace_id, decision, accepted, reviewer, note,
+              checked_steps_json, signal_ids_json, client_seen_json, created_at
+            )
+            SELECT event_id, trace_id, decision, accepted, reviewer, note,
+                   checked_steps_json, signal_ids_json, client_seen_json, created_at
+            FROM fabric_advisory_review_events_old
+            """
+        )
+        conn.execute("DROP TABLE fabric_advisory_review_events_old")
 
     def _ensure_column(self, conn, table: str, column: str, col_type: str) -> None:
         if self.backend == "sqlite":
@@ -3300,6 +3369,22 @@ class SQLiteStateStore:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._fabric_advisory_request_from_row(row) for row in rows]
 
+    def get_fabric_advisory_request(
+        self, request_id: str
+    ) -> FabricAdvisoryRequestRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, subject_type, subject_id, intent, facts_ref,
+                       locality_snapshot_ref, max_candidates, time_budget_ms,
+                       policy_mode, created_at
+                FROM fabric_advisory_requests
+                WHERE request_id = ?
+                """,
+                (str(request_id),),
+            ).fetchone()
+        return self._fabric_advisory_request_from_row(row) if row else None
+
     def record_fabric_advisory_response(self, record: FabricAdvisoryResponseRecord) -> None:
         payload = advisory_response_payload(record)
         with self._connect() as conn:
@@ -3366,6 +3451,164 @@ class SQLiteStateStore:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._fabric_advisory_response_from_row(row) for row in rows]
 
+    def get_fabric_advisory_response(
+        self, request_id: str
+    ) -> FabricAdvisoryResponseRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, provider, status, recommendation, confidence,
+                       evidence_refs_json, authoritative, created_at
+                FROM fabric_advisory_responses
+                WHERE request_id = ?
+                """,
+                (str(request_id),),
+            ).fetchone()
+        return self._fabric_advisory_response_from_row(row) if row else None
+
+    def upsert_fabric_advisory_proposal(
+        self, record: FabricAdvisoryProposalRecord
+    ) -> None:
+        payload = advisory_proposal_payload(record)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fabric_advisory_proposals (
+                  proposal_id, trace_id, request_id, provider, proposal_kind,
+                  summary, proposed_action_json, evidence_refs_json, confidence,
+                  status, dry_run_json, review_event_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(proposal_id) DO UPDATE SET
+                  trace_id = excluded.trace_id,
+                  request_id = excluded.request_id,
+                  provider = excluded.provider,
+                  proposal_kind = excluded.proposal_kind,
+                  summary = excluded.summary,
+                  proposed_action_json = excluded.proposed_action_json,
+                  evidence_refs_json = excluded.evidence_refs_json,
+                  confidence = excluded.confidence,
+                  status = CASE
+                    WHEN fabric_advisory_proposals.status != 'pending_review'
+                     AND excluded.status = 'pending_review'
+                      THEN fabric_advisory_proposals.status
+                    ELSE excluded.status
+                  END,
+                  dry_run_json = excluded.dry_run_json,
+                  review_event_id = CASE
+                    WHEN fabric_advisory_proposals.review_event_id != ''
+                     AND excluded.review_event_id = ''
+                      THEN fabric_advisory_proposals.review_event_id
+                    ELSE excluded.review_event_id
+                  END,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    payload["proposal_id"],
+                    payload["trace_id"],
+                    payload["request_id"],
+                    payload["provider"],
+                    payload["proposal_kind"],
+                    payload["summary"],
+                    json.dumps(payload["proposed_action"], sort_keys=True),
+                    json.dumps(payload["evidence_refs"], sort_keys=True),
+                    payload["confidence"],
+                    payload["status"],
+                    json.dumps(payload["dry_run"], sort_keys=True),
+                    payload["review_event_id"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+
+    def _fabric_advisory_proposal_from_row(self, row) -> FabricAdvisoryProposalRecord:
+        return advisory_proposal_from_payload(
+            {
+                "proposal_id": row[0],
+                "trace_id": row[1],
+                "request_id": row[2],
+                "provider": row[3],
+                "proposal_kind": row[4],
+                "summary": row[5],
+                "proposed_action": self._json_dict(row[6]),
+                "evidence_refs": self._json_list(row[7]),
+                "confidence": row[8],
+                "status": row[9],
+                "dry_run": self._json_dict(row[10]),
+                "review_event_id": row[11],
+                "created_at": row[12],
+                "updated_at": row[13],
+            }
+        )
+
+    def get_fabric_advisory_proposal(
+        self,
+        *,
+        proposal_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> FabricAdvisoryProposalRecord | None:
+        if not proposal_id and not trace_id:
+            return None
+        sql = """
+            SELECT proposal_id, trace_id, request_id, provider, proposal_kind,
+                   summary, proposed_action_json, evidence_refs_json, confidence,
+                   status, dry_run_json, review_event_id, created_at, updated_at
+            FROM fabric_advisory_proposals
+            WHERE
+        """
+        if proposal_id:
+            sql += " proposal_id = ?"
+            params = (str(proposal_id),)
+        else:
+            sql += " trace_id = ?"
+            params = (str(trace_id),)
+        sql += " ORDER BY updated_at DESC LIMIT 1"
+        with self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return self._fabric_advisory_proposal_from_row(row) if row else None
+
+    def list_fabric_advisory_proposals(
+        self,
+        *,
+        trace_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricAdvisoryProposalRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if trace_id:
+            clauses.append("trace_id = ?")
+            params.append(str(trace_id))
+        if status:
+            clauses.append("status = ?")
+            params.append(str(status))
+        sql = """
+            SELECT proposal_id, trace_id, request_id, provider, proposal_kind,
+                   summary, proposed_action_json, evidence_refs_json, confidence,
+                   status, dry_run_json, review_event_id, created_at, updated_at
+            FROM fabric_advisory_proposals
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_advisory_proposal_from_row(row) for row in rows]
+
+    def _upsert_fabric_advisory_proposal_for_trace(
+        self, trace: FabricDecisionTraceRecord
+    ) -> None:
+        request = self.get_fabric_advisory_request(trace.request_id)
+        response = self.get_fabric_advisory_response(trace.request_id)
+        proposal = build_fabric_advisory_proposal(
+            trace,
+            request=request,
+            response=response,
+        )
+        self.upsert_fabric_advisory_proposal(proposal)
+
     def record_fabric_decision_trace(self, record: FabricDecisionTraceRecord) -> None:
         payload = decision_trace_payload(record)
         accepted = payload["accepted"]
@@ -3410,6 +3653,9 @@ class SQLiteStateStore:
                 ),
             )
             conn.commit()
+        self._upsert_fabric_advisory_proposal_for_trace(
+            self.get_fabric_decision_trace(payload["trace_id"]) or record
+        )
 
     def _fabric_decision_trace_from_row(self, row) -> FabricDecisionTraceRecord:
         accepted_raw = row[4]
@@ -3481,18 +3727,34 @@ class SQLiteStateStore:
         decision = str(decision or "").strip().lower()
         if not trace_id:
             raise ValueError("trace_id required")
-        if decision not in {"accept", "diverge"}:
-            raise ValueError("decision must be accept or diverge")
+        if decision not in {"accept", "diverge", "defer"}:
+            raise ValueError("decision must be accept, diverge, or defer")
         reviewer = str(reviewer or "").strip() or "dashboard-operator"
         note = str(note or "").strip()
         checked_steps = [str(item).strip() for item in checked_steps if str(item).strip()]
         client_seen = dict(client_seen or {})
-        accepted = decision == "accept"
-        review_status = "accepted" if accepted else "diverged"
-        divergence_reason = None if accepted else "operator_diverged"
+        accepted = True if decision == "accept" else False if decision == "diverge" else None
+        review_status = (
+            "accepted" if accepted is True else "diverged" if accepted is False else "deferred"
+        )
+        divergence_reason = (
+            None
+            if accepted is True
+            else "operator_diverged"
+            if accepted is False
+            else "pending_operator_review"
+        )
+        proposal_status = (
+            "accepted_dry_run"
+            if accepted is True
+            else "diverged"
+            if accepted is False
+            else "deferred"
+        )
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
         event_id = f"review-{trace_id}-{uuid.uuid4().hex[:12]}"
+        proposal_id = ""
         with self._connect() as conn:
             trace_row = conn.execute(
                 "SELECT trace_id FROM fabric_decision_traces WHERE trace_id = ?",
@@ -3516,7 +3778,7 @@ class SQLiteStateStore:
                 SET accepted = ?, divergence_reason = ?
                 WHERE trace_id = ?
                 """,
-                (1 if accepted else 0, divergence_reason, trace_id),
+                (None if accepted is None else 1 if accepted else 0, divergence_reason, trace_id),
             )
             conn.execute(
                 """
@@ -3538,7 +3800,7 @@ class SQLiteStateStore:
                     event_id,
                     trace_id,
                     decision,
-                    1 if accepted else 0,
+                    None if accepted is None else 1 if accepted else 0,
                     reviewer,
                     note,
                     json.dumps(checked_steps, sort_keys=True),
@@ -3554,12 +3816,35 @@ class SQLiteStateStore:
                 WHERE accepted IS NULL OR divergence_reason = 'pending_operator_review'
                 """
             ).fetchone()[0]
+            proposal_row = conn.execute(
+                """
+                SELECT proposal_id
+                FROM fabric_advisory_proposals
+                WHERE trace_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (trace_id,),
+            ).fetchone()
+            if proposal_row is not None:
+                proposal_id = str(proposal_row[0])
+                conn.execute(
+                    """
+                    UPDATE fabric_advisory_proposals
+                    SET status = ?, review_event_id = ?, updated_at = ?
+                    WHERE proposal_id = ?
+                    """,
+                    (proposal_status, event_id, now_iso, proposal_id),
+                )
             conn.commit()
         return {
             "event_id": event_id,
             "trace_id": trace_id,
             "decision": decision,
             "accepted": accepted,
+            "proposal_id": proposal_id,
+            "proposal_status": proposal_status if proposal_id else "",
+            "controller_authority": "k1s",
             "reviewer": reviewer,
             "note": note,
             "checked_steps": checked_steps,
@@ -3574,7 +3859,7 @@ class SQLiteStateStore:
                 "event_id": row[0],
                 "trace_id": row[1],
                 "decision": row[2],
-                "accepted": bool(row[3]),
+                "accepted": None if row[3] is None else bool(row[3]),
                 "reviewer": row[4],
                 "note": row[5],
                 "checked_steps": self._json_list(row[6]),

@@ -654,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -745,7 +745,7 @@
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
@@ -777,10 +777,10 @@
 <ul>
 <li><code>AE_API_READ_TOKEN</code>: read-only operational access.</li>
 <li><code>AE_API_SCALER_TOKEN</code>: READ plus <code>/scale/&lt;app&gt;</code>.</li>
-<li><code>AE_API_ADMIN_TOKEN</code>: READ plus admin and mutation routes such as <code>/apply</code>, <code>/delete/&lt;app&gt;</code>, <code>/rollout/*</code>, and <code>/exec/&lt;app&gt;</code>.</li>
+<li><code>AE_API_ADMIN_TOKEN</code>: READ plus admin and mutation routes such as <code>/apply</code>, <code>/delete/&lt;app&gt;</code>, <code>/inference/delete/*</code>, <code>/rollout/*</code>, and <code>/exec/&lt;app&gt;</code>.</li>
 <li>Optional expiry controls: <code>AE_API_ADMIN_TOKEN_EXPIRES</code>, <code>AE_API_SCALER_TOKEN_EXPIRES</code>, <code>AE_API_READ_TOKEN_EXPIRES</code>.</li>
 <li>Optional scopes: <code>AE_API_ADMIN_SCOPE</code>, <code>AE_API_SCALER_SCOPE</code>, <code>AE_API_READ_SCOPE</code>.</li>
-<li>Scope note: admin and scaler scopes gate app-targeted mutations. Read scope is only enforced on app-targeted read routes today, such as <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code>, <code>/manifest/&lt;app&gt;</code>, <code>/history/&lt;app&gt;</code>, and <code>/logs/&lt;app&gt;</code>. Controller-wide list and system surfaces remain controller-wide.</li>
+<li>Scope note: admin and scaler scopes gate app-targeted mutations. Inference mutations use the same namespace/name key format as apps, for example <code>ml--llama</code>. Read scope is enforced on app-targeted and inference-targeted read routes today, such as <code>/status/&lt;app&gt;</code>, <code>/events/&lt;app&gt;</code>, <code>/manifest/&lt;app&gt;</code>, <code>/history/&lt;app&gt;</code>, <code>/logs/&lt;app&gt;</code>, and <code>/inference/cells/&lt;namespace&gt;/&lt;name&gt;</code>. Controller-wide list and system surfaces remain controller-wide, though inference list responses are filtered when <code>AE_API_READ_SCOPE</code> is set.</li>
 </ul>
 <h2 id="common-controller-workflows">Common Controller Workflows</h2>
 <p>Generate controller tokens and expiries:</p>
@@ -835,7 +835,7 @@ ae auth mint --role exec --scope default/echo</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-05-22 19:07:37</span>
+        <span>Built 2026-06-05 21:36:21</span>
       </div>
     </footer>
     <script>

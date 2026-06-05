@@ -654,8 +654,8 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>
-    <script>window.DOCS_API_BASE='https://api.home.arpa:8443';</script>
-    <script>window.DOCS_DASHBOARD_URL='https://dash.home.arpa:8443/dashboard';</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
     <script>
       // Attach copy buttons to all code blocks client-side
       (function() {
@@ -745,7 +745,7 @@
       <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
       <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
       <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="https://dash.home.arpa:8443/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
       <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
@@ -845,6 +845,14 @@
 <p>Current <code>gpu.*</code> labels may remain as a compatibility projection during the transition, but they should not be the long-term control-plane contract.</p>
 <h2 id="current-branch-mapping">Current Branch Mapping</h2>
 <table><thead><tr><th>Current seam</th><th>Formal role</th></tr></thead><tbody><tr><td><code>StagePlanner</code></td><td>deterministic planning engine</td></tr><tr><td><code>BoundaryBudgetAdmission</code></td><td>deterministic admission evaluator</td></tr><tr><td><code>FabricBroker</code></td><td>baseline session-provider seam</td></tr><tr><td><code>FabricAgentClient</code></td><td>node materializer seam</td></tr><tr><td><code>fabric.mode</code></td><td>transport mode</td></tr><tr><td>current fabric session metadata</td><td>precursor to a shared session record</td></tr></tbody></table>
+<h2 id="ai-runtime-profile-dry-run">AI Runtime Profile Dry Run</h2>
+<p>WorkerBee AI fabric closeout may produce <code>k1s.fabric.ai-runtime-profile/v1</code> as evidence about model lanes, context budgets, adapter hotsets, observed VRAM growth, and DAS/retrieval validation artifacts. The k1s-side <code>k1s.fabric.ai-runtime-profile-admission/v1</code> report consumes that profile only as dry-run admission evidence.</p>
+<p>This report is non-authoritative. It can expose structural profile errors and promotion warnings, but it does not change scheduler, controller, or reconcile behavior until a later enforcement design explicitly wires it into admission.</p>
+<p>The CLI can persist admitted dry-run evidence for later inspection:</p>
+<pre><code>ae fabric runtime-profile publish --profile ai-runtime-profile.json --workerbee-status workerbee-status.json
+ae fabric runtime-profile list --track baseline
+ae fabric runtime-profile show --track baseline --latest --json</code></pre>
+<p>Published profiles remain non-authoritative. Structural admission errors block publication; warning findings are stored and keep <code>promotion_ready=false</code>. Workloads may opt into advisory status evidence with <code>fabric.k1s.io/runtime-profile-track: baseline|quality|lora-adapter-smoke</code>. <code>ae status --json --wide</code> and <code>ae fabric runtime-profile advisory -f &lt;manifest&gt;</code> then include the latest stored profile for that track as advisory evidence only.</p>
 <h2 id="later-hyperon-path">Later Hyperon Path</h2>
 <p>Hyperon belongs at the control-plane and fabric layer, but in a bounded sequence:</p>
 <ul>
@@ -897,7 +905,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-05-22 19:07:37</span>
+        <span>Built 2026-06-05 21:36:21</span>
       </div>
     </footer>
     <script>

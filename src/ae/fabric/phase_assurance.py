@@ -299,6 +299,7 @@ def f3_evidence_from_store(store: Any) -> dict[str, Any]:
     requests = _safe_list(store, "list_fabric_advisory_requests")
     responses = _safe_list(store, "list_fabric_advisory_responses")
     traces = _safe_list(store, "list_fabric_decision_traces")
+    proposals = _safe_list(store, "list_fabric_advisory_proposals")
 
     request_ids = {_record_field(record, "request_id") for record in requests}
     advisory_responses = [
@@ -324,6 +325,11 @@ def f3_evidence_from_store(store: Any) -> dict[str, Any]:
         for record in requests
         if _record_int(record, "max_candidates") > 0 and _record_int(record, "time_budget_ms") > 0
     ]
+    dry_run_proposals = []
+    for record in proposals:
+        dry_run = _record_field(record, "dry_run", {})
+        if isinstance(dry_run, Mapping) and not bool(dry_run.get("controller_mutations")):
+            dry_run_proposals.append(record)
     continuity_traces = [
         record
         for record in traced_requests
@@ -351,8 +357,9 @@ def f3_evidence_from_store(store: Any) -> dict[str, Any]:
             replay_trace_count=len(replay_traces),
         ),
         "bounded_planning": _detail(
-            bounded_requests,
+            [*bounded_requests, *dry_run_proposals],
             bounded_request_count=len(bounded_requests),
+            dry_run_proposal_count=len(dry_run_proposals),
         ),
         "continuity_coherence_signals": _detail(
             continuity_traces,

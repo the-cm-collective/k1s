@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -361,6 +362,13 @@ def test_sqlite_fabric_advisory_review_updates_trace_signal_and_event(tmp_path: 
     store = SQLiteStateStore(tmp_path / "state.db")
     _seed_advisory(store)
     _seed_f5(store)
+    proposal = store.get_fabric_advisory_proposal(trace_id="trace-qwen-0")
+
+    assert proposal is not None
+    assert proposal.trace_id == "trace-qwen-0"
+    assert proposal.status == "pending_review"
+    assert proposal.dry_run["authoritative"] is False
+    assert proposal.dry_run["controller_mutations"] == []
 
     result = store.record_fabric_advisory_review(
         trace_id="trace-qwen-0",
@@ -372,15 +380,20 @@ def test_sqlite_fabric_advisory_review_updates_trace_signal_and_event(tmp_path: 
     )
 
     trace = store.get_fabric_decision_trace("trace-qwen-0")
+    proposal = store.get_fabric_advisory_proposal(trace_id="trace-qwen-0")
     signals = store.list_fabric_cognitive_signals(advisory_trace_id="trace-qwen-0")
     events = store.list_fabric_advisory_review_events(trace_id="trace-qwen-0")
     state = _build_state_payload(store)
 
     assert result["accepted"] is True
+    assert result["proposal_status"] == "accepted_dry_run"
     assert result["updated_signal_ids"] == ["cog-signal-0"]
     assert trace is not None
     assert trace.accepted is True
     assert trace.divergence_reason is None
+    assert proposal is not None
+    assert proposal.status == "accepted_dry_run"
+    assert proposal.review_event_id == result["event_id"]
     assert signals[0].review_status == "accepted"
     assert signals[0].reviewed_by == "operator-a"
     assert signals[0].review_note == "matches deterministic replay"
@@ -390,6 +403,8 @@ def test_sqlite_fabric_advisory_review_updates_trace_signal_and_event(tmp_path: 
     assert events[0].signal_ids == ["cog-signal-0"]
     assert state["advisory"]["pending_review_count"] == 0
     assert state["advisory"]["accepted_count"] == 1
+    assert state["advisory"]["proposals_count"] == 1
+    assert state["advisory"]["latest_proposal"]["status"] == "accepted_dry_run"
     assert state["hyperon"]["latest_cognitive_signal"]["review_status"] == "accepted"
 
     _seed_advisory(store)
@@ -458,11 +473,36 @@ def test_fabric_advisory_review_api_requires_admin_and_records_review(
     assert signals[0].review_status == "diverged"
     assert signals[0].reviewed_by == "operator-b"
 
-    invalid, invalid_statuses = _make_handler(
+    _seed_advisory(store)
+    deferred, deferred_statuses = _make_handler(
         "/fabric/advisory/traces/trace-qwen-0/review",
         store,
         method="POST",
         body={"decision": "defer"},
+        headers={"Authorization": "Bearer admin"},
+    )
+    deferred.do_POST()
+    deferred_payload = _payload(deferred)
+    deferred_trace = store.get_fabric_decision_trace("trace-qwen-0")
+    deferred_signals = store.list_fabric_cognitive_signals(advisory_trace_id="trace-qwen-0")
+    deferred_proposal = store.get_fabric_advisory_proposal(trace_id="trace-qwen-0")
+
+    assert deferred_statuses == [200]
+    assert deferred_payload["decision"] == "defer"
+    assert deferred_payload["accepted"] is None
+    assert deferred_payload["proposal_status"] == "deferred"
+    assert deferred_trace is not None
+    assert deferred_trace.accepted is None
+    assert deferred_trace.divergence_reason == "pending_operator_review"
+    assert deferred_signals[0].review_status == "deferred"
+    assert deferred_proposal is not None
+    assert deferred_proposal.status == "deferred"
+
+    invalid, invalid_statuses = _make_handler(
+        "/fabric/advisory/traces/trace-qwen-0/review",
+        store,
+        method="POST",
+        body={"decision": "hold"},
         headers={"Authorization": "Bearer admin"},
     )
     invalid.do_POST()
@@ -477,6 +517,62 @@ def test_fabric_advisory_review_api_requires_admin_and_records_review(
     )
     missing.do_POST()
     assert missing_statuses == [404]
+
+
+def test_sqlite_fabric_advisory_review_events_migrates_nullable_accepted(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.db"
+    SQLiteStateStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE fabric_advisory_review_events")
+        conn.execute(
+            """
+            CREATE TABLE fabric_advisory_review_events (
+              event_id TEXT PRIMARY KEY,
+              trace_id TEXT NOT NULL,
+              decision TEXT NOT NULL,
+              accepted INTEGER NOT NULL,
+              reviewer TEXT NOT NULL,
+              note TEXT NOT NULL,
+              checked_steps_json TEXT NOT NULL,
+              signal_ids_json TEXT NOT NULL,
+              client_seen_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fabric_advisory_review_events (
+              event_id, trace_id, decision, accepted, reviewer, note,
+              checked_steps_json, signal_ids_json, client_seen_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "review-old",
+                "trace-old",
+                "accept",
+                1,
+                "operator",
+                "",
+                "[]",
+                "[]",
+                "{}",
+                "2026-06-05T00:00:00+00:00",
+            ),
+        )
+        conn.commit()
+
+    store = SQLiteStateStore(db_path)
+    events = store.list_fabric_advisory_review_events(trace_id="trace-old")
+    with sqlite3.connect(db_path) as conn:
+        columns = conn.execute("PRAGMA table_info(fabric_advisory_review_events)").fetchall()
+    accepted = next(row for row in columns if row[1] == "accepted")
+
+    assert int(accepted[3] or 0) == 0
+    assert events[0].accepted is True
 
 
 def test_fabric_advisory_import_ingests_grouped_f3_records(tmp_path: Path) -> None:
@@ -548,15 +644,35 @@ def test_fabric_read_api_lists_locality_and_advisory_payloads(tmp_path: Path) ->
         store,
     )
     _ApiHandler._handle_fabric_advisory_traces_list(traces_handler)  # type: ignore[arg-type]
+    proposals_handler, proposal_statuses = _make_handler(
+        "/fabric/advisory/proposals?trace_id=trace-qwen-0",
+        store,
+    )
+    _ApiHandler._handle_fabric_advisory_proposals_list(proposals_handler)  # type: ignore[arg-type]
+    proposal_handler, proposal_detail_statuses = _make_handler(
+        "/fabric/advisory/traces/trace-qwen-0/proposal",
+        store,
+    )
+    _ApiHandler._handle_fabric_advisory_trace_proposal(  # type: ignore[arg-type]
+        proposal_handler,
+        "trace-qwen-0",
+    )
 
     chunks = _payload(chunks_handler)
     traces = _payload(traces_handler)
+    proposals = _payload(proposals_handler)
+    proposal = _payload(proposal_handler)
     assert chunk_statuses == [200]
     assert trace_statuses == [200]
+    assert proposal_statuses == [200]
+    assert proposal_detail_statuses == [200]
     assert chunks["items"][0]["chunk_id"] == CHUNK_ID
     assert chunks["items"][0]["labels"]["lane"] == "coordinator"
     assert traces["items"][0]["trace_id"] == "trace-qwen-0"
     assert traces["items"][0]["replay_status"] == "recorded"
+    assert proposals["items"][0]["trace_id"] == "trace-qwen-0"
+    assert proposal["proposal_id"] == proposals["items"][0]["proposal_id"]
+    assert proposal["dry_run"]["controller_mutations"] == []
 
 
 def test_fabric_advisory_state_api_reports_empty_optional_state(tmp_path: Path) -> None:
@@ -609,6 +725,7 @@ def test_fabric_phase_assurance_api_derives_f3_from_advisory_records(tmp_path: P
     assert f3["missing"] == []
     assert f3["evidence"]["advisory_contract"]["authoritative"] is False
     assert f3["evidence"]["bounded_planning"]["bounded_request_count"] == 1
+    assert f3["evidence"]["bounded_planning"]["dry_run_proposal_count"] == 1
     assert f3["evidence"]["continuity_coherence_signals"]["signal_trace_count"] == 1
 
 

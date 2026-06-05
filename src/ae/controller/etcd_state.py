@@ -56,6 +56,7 @@ from ae.controller.state import (
     _outbox_publish_subject,
 )
 from ae.fabric.locality import (
+    FabricAdvisoryProposalRecord,
     FabricAdvisoryRequestRecord,
     FabricAdvisoryResponseRecord,
     FabricAdvisoryReviewEventRecord,
@@ -71,6 +72,8 @@ from ae.fabric.locality import (
     FabricTransferCapabilityRecord,
     FabricTransferLeaseRecord,
     FabricTransportAttemptRecord,
+    advisory_proposal_from_payload,
+    advisory_proposal_payload,
     advisory_request_from_payload,
     advisory_request_payload,
     advisory_response_from_payload,
@@ -102,6 +105,7 @@ from ae.fabric.locality import (
     transfer_lease_payload,
     transport_attempt_from_payload,
     transport_attempt_payload,
+    build_fabric_advisory_proposal,
 )
 from ae.ha.fencing import parse_envelope, work_operation
 from ae.runtime import RuntimeResult
@@ -416,7 +420,6 @@ class EtcdStateStore(SQLiteStateStore):
         self.backend = "etcd"
         self._prefix = (prefix or env.get("AE_ETCD_PREFIX") or "k1s/v1").strip("/")
         self._site_id = site_id or env.get("AE_SITE_ID") or "core"
-        dial_timeout = _parse_duration_seconds(env.get("AE_ETCD_DIAL_TIMEOUT"), 3.0)
         op_timeout = _parse_duration_seconds(env.get("AE_ETCD_OP_TIMEOUT"), 3.0)
         timeout_s = float(timeout_s if timeout_s is not None else op_timeout)
         self._lease_ttl_seconds = int(env.get("AE_ETCD_LEASE_TTL_SECONDS", "60") or 60)
@@ -627,6 +630,9 @@ class EtcdStateStore(SQLiteStateStore):
 
     def _fabric_decision_trace_key(self, trace_id: str) -> str:
         return self._k("fabric", "advisory", "traces", str(trace_id))
+
+    def _fabric_advisory_proposal_key(self, proposal_id: str) -> str:
+        return self._k("fabric", "advisory", "proposals", str(proposal_id))
 
     def _fabric_advisory_review_event_key(self, event_id: str) -> str:
         return self._k("fabric", "advisory", "review_events", str(event_id))
@@ -1128,6 +1134,12 @@ class EtcdStateStore(SQLiteStateStore):
         items.sort(key=lambda item: item.created_at, reverse=True)
         return items[: max(1, int(limit))]
 
+    def get_fabric_advisory_request(
+        self, request_id: str
+    ) -> FabricAdvisoryRequestRecord | None:
+        rec, _mod_rev = self._get_json(self._fabric_advisory_request_key(request_id))
+        return advisory_request_from_payload(rec) if rec else None
+
     def record_fabric_advisory_response(self, record: FabricAdvisoryResponseRecord) -> None:
         payload = advisory_response_payload(record)
         key = self._fabric_advisory_response_key(payload["request_id"])
@@ -1151,6 +1163,73 @@ class EtcdStateStore(SQLiteStateStore):
         items.sort(key=lambda item: item.created_at, reverse=True)
         return items[: max(1, int(limit))]
 
+    def get_fabric_advisory_response(
+        self, request_id: str
+    ) -> FabricAdvisoryResponseRecord | None:
+        rec, _mod_rev = self._get_json(self._fabric_advisory_response_key(request_id))
+        return advisory_response_from_payload(rec) if rec else None
+
+    def upsert_fabric_advisory_proposal(
+        self, record: FabricAdvisoryProposalRecord
+    ) -> None:
+        payload = advisory_proposal_payload(record)
+        key = self._fabric_advisory_proposal_key(payload["proposal_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing:
+            if existing.get("created_at"):
+                payload["created_at"] = str(existing["created_at"])
+            if (
+                existing.get("status") != "pending_review"
+                and payload.get("status") == "pending_review"
+            ):
+                payload["status"] = str(existing.get("status") or payload["status"])
+            if existing.get("review_event_id") and not payload.get("review_event_id"):
+                payload["review_event_id"] = str(existing["review_event_id"])
+        self._put_json(key, payload)
+
+    def get_fabric_advisory_proposal(
+        self,
+        *,
+        proposal_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> FabricAdvisoryProposalRecord | None:
+        if proposal_id:
+            rec, _mod_rev = self._get_json(self._fabric_advisory_proposal_key(proposal_id))
+            return advisory_proposal_from_payload(rec) if rec else None
+        if not trace_id:
+            return None
+        proposals = self.list_fabric_advisory_proposals(trace_id=trace_id, limit=1)
+        return proposals[0] if proposals else None
+
+    def list_fabric_advisory_proposals(
+        self,
+        *,
+        trace_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricAdvisoryProposalRecord]:
+        rows = self._list_prefix(self._k("fabric", "advisory", "proposals"))
+        items: list[FabricAdvisoryProposalRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if trace_id and str(rec.get("trace_id") or "") != str(trace_id):
+                continue
+            if status and str(rec.get("status") or "") != str(status):
+                continue
+            items.append(advisory_proposal_from_payload(rec))
+        items.sort(key=lambda item: item.updated_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def _upsert_fabric_advisory_proposal_for_trace(
+        self, trace: FabricDecisionTraceRecord
+    ) -> None:
+        self.upsert_fabric_advisory_proposal(
+            build_fabric_advisory_proposal(
+                trace,
+                request=self.get_fabric_advisory_request(trace.request_id),
+                response=self.get_fabric_advisory_response(trace.request_id),
+            )
+        )
+
     def record_fabric_decision_trace(self, record: FabricDecisionTraceRecord) -> None:
         payload = decision_trace_payload(record)
         key = self._fabric_decision_trace_key(payload["trace_id"])
@@ -1161,6 +1240,9 @@ class EtcdStateStore(SQLiteStateStore):
             payload["accepted"] = existing.get("accepted")
             payload["divergence_reason"] = existing.get("divergence_reason")
         self._put_json(key, payload)
+        self._upsert_fabric_advisory_proposal_for_trace(
+            self.get_fabric_decision_trace(payload["trace_id"]) or record
+        )
 
     def get_fabric_decision_trace(self, trace_id: str) -> FabricDecisionTraceRecord | None:
         rec, _mod_rev = self._get_json(self._fabric_decision_trace_key(trace_id))
@@ -1195,15 +1277,30 @@ class EtcdStateStore(SQLiteStateStore):
         decision = str(decision or "").strip().lower()
         if not trace_id:
             raise ValueError("trace_id required")
-        if decision not in {"accept", "diverge"}:
-            raise ValueError("decision must be accept or diverge")
+        if decision not in {"accept", "diverge", "defer"}:
+            raise ValueError("decision must be accept, diverge, or defer")
         reviewer = str(reviewer or "").strip() or "dashboard-operator"
         note = str(note or "").strip()
         checked_steps = [str(item).strip() for item in checked_steps if str(item).strip()]
         client_seen = dict(client_seen or {})
-        accepted = decision == "accept"
-        review_status = "accepted" if accepted else "diverged"
-        divergence_reason = None if accepted else "operator_diverged"
+        accepted = True if decision == "accept" else False if decision == "diverge" else None
+        review_status = (
+            "accepted" if accepted is True else "diverged" if accepted is False else "deferred"
+        )
+        divergence_reason = (
+            None
+            if accepted is True
+            else "operator_diverged"
+            if accepted is False
+            else "pending_operator_review"
+        )
+        proposal_status = (
+            "accepted_dry_run"
+            if accepted is True
+            else "diverged"
+            if accepted is False
+            else "deferred"
+        )
         now = _now()
         now_iso = now.isoformat()
         event_id = f"review-{trace_id}-{uuid.uuid4().hex[:12]}"
@@ -1248,6 +1345,15 @@ class EtcdStateStore(SQLiteStateStore):
                 )
             ),
         )
+        proposal_id = ""
+        proposal = self.get_fabric_advisory_proposal(trace_id=trace_id)
+        if proposal is not None:
+            proposal_id = proposal.proposal_id
+            payload = advisory_proposal_payload(proposal)
+            payload["status"] = proposal_status
+            payload["review_event_id"] = event_id
+            payload["updated_at"] = now_iso
+            self._put_json(self._fabric_advisory_proposal_key(proposal_id), payload)
         pending_review_count = sum(
             1
             for item in self.list_fabric_decision_traces(limit=10_000)
@@ -1258,6 +1364,9 @@ class EtcdStateStore(SQLiteStateStore):
             "trace_id": trace_id,
             "decision": decision,
             "accepted": accepted,
+            "proposal_id": proposal_id,
+            "proposal_status": proposal_status if proposal_id else "",
+            "controller_authority": "k1s",
             "reviewer": reviewer,
             "note": note,
             "checked_steps": checked_steps,
