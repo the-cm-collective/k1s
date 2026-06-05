@@ -1809,7 +1809,9 @@ def _build_fabric_advisory_state(store, fabric_read_allowed=None) -> dict[str, A
         "mode": "advisory_only",
         "authoritative": False,
         "controller_authority": "k1s",
-        "experimental_providers": ["hyperon-das"] if hyperon.get("enabled") else [],
+        "experimental_providers": hyperon.get("providers")
+        if hyperon.get("enabled") and isinstance(hyperon.get("providers"), list)
+        else [],
         "data_present": data_present,
         "latest_evidence_age_seconds": latest_evidence_age,
         "runtime_profiles": runtime_profiles,
@@ -2352,8 +2354,10 @@ def _fabric_advisory_hyperon_state(
         + [item.get("created_at") for item in query_summaries]
         + [item.get("created_at") for item in signal_summaries]
     )
+    providers = _fabric_advisory_hyperon_providers(cells, enabled=enabled)
     return {
-        "provider": "hyperon-das",
+        "provider": providers[0] if len(providers) == 1 else "mixed" if providers else "hyperon-das",
+        "providers": providers,
         "enabled": enabled,
         "available": available,
         "experimental": enabled,
@@ -2369,6 +2373,27 @@ def _fabric_advisory_hyperon_state(
         "latest_cognitive_signal": signal_summaries[0] if signal_summaries else None,
         "latest_created_at": latest_created_at,
     }
+
+
+def _fabric_advisory_hyperon_providers(records: list[Any], *, enabled: bool) -> list[str]:
+    providers: set[str] = set()
+    unlabeled = False
+    for record in records:
+        labels = getattr(record, "labels", {}) or {}
+        provider = ""
+        if isinstance(labels, dict):
+            for key in ("provider", "experimental_provider", "hyperon_provider"):
+                value = str(labels.get(key) or "").strip()
+                if value:
+                    provider = value
+                    break
+        if provider:
+            providers.add(provider)
+        else:
+            unlabeled = True
+    if enabled and (unlabeled or not providers):
+        providers.add("hyperon-das")
+    return sorted(providers)
 
 
 def _fabric_runtime_profile_summary(record, *, now: datetime) -> dict[str, Any]:
@@ -5759,7 +5784,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self._json_ok(payload)
 
     def _handle_ui_features(self) -> None:
-        controlplane_readonly = self._controlplane_readonly_enabled()
         payload = {
             "dashboard": bool(self._dashboard_enabled()),
             "playground": bool(self._playground_enabled()),
@@ -7081,7 +7105,6 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         """Stream logs as Server-Sent Events (SSE): one log entry per event."""
         import queue as _queue
         import threading as _threading
-        import time as _t
         import urllib.parse as _up
 
         _path, _, query = self.path.partition("?")

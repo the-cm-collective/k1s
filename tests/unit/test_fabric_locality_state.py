@@ -656,9 +656,44 @@ def test_fabric_advisory_state_api_reports_hyperon_das_evidence(tmp_path: Path) 
     assert payload["hyperon"]["status"] == "experimental"
     assert payload["hyperon"]["status_label"] == "experimental active"
     assert "k1s remains authoritative" in payload["hyperon"]["status_message"]
+    assert payload["hyperon"]["provider"] == "hyperon-das"
+    assert payload["hyperon"]["providers"] == ["hyperon-das"]
+    assert payload["experimental_providers"] == ["hyperon-das"]
     assert payload["hyperon"]["latest_das_query_trace"]["query_kind"] == "advisory"
     assert "AI_RUNTIME_PROFILE_EVIDENCE_MISSING" in warning_codes
     assert "FABRIC_ADVISORY_PENDING_REVIEW" in warning_codes
+
+
+def test_fabric_advisory_state_api_reports_trueagi_hyperon_provider(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    now = _now()
+    store.upsert_fabric_das_cell_bundle(
+        FabricDasCellBundleRecord(
+            bundle_id="trueagi-hyperon-bundle",
+            site_id="site-a",
+            cell_id="trueagi-runtime",
+            version="v0.2.10",
+            storage_ref="/srv/storage/k1s/ai-fabric-lab/hyperon-advisor",
+            facts_ref="hyperon://site-a/trueagi-runtime/facts",
+            status="ready",
+            labels={
+                "provider": "trueagi-hyperon-experimental",
+                "source_ref": "v0.2.10",
+            },
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    state = _build_state_payload(store)
+
+    assert state["hyperon"]["enabled"] is True
+    assert state["hyperon"]["available"] is True
+    assert state["hyperon"]["provider"] == "trueagi-hyperon-experimental"
+    assert state["hyperon"]["providers"] == ["trueagi-hyperon-experimental"]
+    assert state["experimental_providers"] == ["trueagi-hyperon-experimental"]
 
 
 def test_fabric_read_api_lists_f4_and_f5_payloads(tmp_path: Path) -> None:
