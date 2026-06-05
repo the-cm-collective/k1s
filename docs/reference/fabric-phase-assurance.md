@@ -2,6 +2,9 @@
 
 Status: executable checkpoint contract for the fabric roadmap.
 
+Operator review of advisory traces is covered in
+[Fabric Advisory Trace Review](fabric-advisory-trace-review.html).
+
 This contract converts the `F*` roadmap order into a small machine-readable
 gate. It does not mark a roadmap phase complete. It records whether a phase has
 the required evidence for the current integration claim and whether that phase

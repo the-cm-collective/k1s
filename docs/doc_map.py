@@ -37,6 +37,7 @@ DOCS_MAPPING = {
     "ops/ha-cluster-bring-up.md": "ha-cluster-bring-up.html",
     "ops/validated-procedures.md": "validated-procedures.html",
     "ops/runbook.md": "runbook.html",
+    "ops/fabric-advisory-trace-review.md": "fabric-advisory-trace-review.html",
     "ops/host-a-linux-gpu-guest.md": "host-a-linux-gpu-guest.html",
     "ops/host-a-strict-cri-retest.md": "host-a-strict-cri-retest.html",
     "ops/ha-closeout.md": "ha-closeout.html",
