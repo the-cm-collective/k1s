@@ -253,15 +253,29 @@ def _seed_f5(store: SQLiteStateStore) -> None:
     )
 
 
-def _make_handler(path: str, store: SQLiteStateStore) -> tuple[_ApiHandler, list[int]]:
+def _make_handler(
+    path: str,
+    store: SQLiteStateStore,
+    *,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> tuple[_ApiHandler, list[int]]:
     handler = object.__new__(_ApiHandler)
     statuses: list[int] = []
-    headers: dict[str, str] = {}
+    response_headers: dict[str, str] = {}
+    payload = json.dumps(body or {}).encode("utf-8")
+    request_headers = dict(headers or {})
+    request_headers.setdefault("Content-Length", str(len(payload)))
+    request_headers.setdefault("Content-Type", "application/json")
     handler.path = path
+    handler.command = method
+    handler.headers = request_headers
+    handler.rfile = BytesIO(payload)
     handler.store = store
     handler.wfile = BytesIO()
     handler.send_response = lambda code: statuses.append(code)  # type: ignore[method-assign]
-    handler.send_header = lambda key, value: headers.__setitem__(key, value)  # type: ignore[method-assign]
+    handler.send_header = lambda key, value: response_headers.__setitem__(key, value)  # type: ignore[method-assign]
     handler.end_headers = lambda: None  # type: ignore[method-assign]
     return handler, statuses
 
@@ -341,6 +355,185 @@ def test_sqlite_fabric_f5_roundtrip(tmp_path: Path) -> None:
     assert traces[0].promoted_refs == ["qdrant://ai_fabric_corpus/k1s"]
     assert replications[0].approved_by == "operator"
     assert signals[0].review_gate == "operator_review"
+
+
+def test_sqlite_fabric_advisory_review_updates_trace_signal_and_event(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    _seed_advisory(store)
+    _seed_f5(store)
+
+    result = store.record_fabric_advisory_review(
+        trace_id="trace-qwen-0",
+        decision="accept",
+        reviewer="operator-a",
+        note="matches deterministic replay",
+        checked_steps=["authority", "request", "response", "trace", "signals"],
+        client_seen={"request_id": "req-qwen-0", "signal_ids": ["cog-signal-0"]},
+    )
+
+    trace = store.get_fabric_decision_trace("trace-qwen-0")
+    signals = store.list_fabric_cognitive_signals(advisory_trace_id="trace-qwen-0")
+    events = store.list_fabric_advisory_review_events(trace_id="trace-qwen-0")
+    state = _build_state_payload(store)
+
+    assert result["accepted"] is True
+    assert result["updated_signal_ids"] == ["cog-signal-0"]
+    assert trace is not None
+    assert trace.accepted is True
+    assert trace.divergence_reason is None
+    assert signals[0].review_status == "accepted"
+    assert signals[0].reviewed_by == "operator-a"
+    assert signals[0].review_note == "matches deterministic replay"
+    assert signals[0].reviewed_at is not None
+    assert events[0].decision == "accept"
+    assert events[0].checked_steps == ["authority", "request", "response", "trace", "signals"]
+    assert events[0].signal_ids == ["cog-signal-0"]
+    assert state["advisory"]["pending_review_count"] == 0
+    assert state["advisory"]["accepted_count"] == 1
+    assert state["hyperon"]["latest_cognitive_signal"]["review_status"] == "accepted"
+
+    _seed_advisory(store)
+    _seed_f5(store)
+    trace_after_reimport = store.get_fabric_decision_trace("trace-qwen-0")
+    signal_after_reimport = store.list_fabric_cognitive_signals(
+        advisory_trace_id="trace-qwen-0"
+    )[0]
+
+    assert trace_after_reimport is not None
+    assert trace_after_reimport.accepted is True
+    assert trace_after_reimport.divergence_reason is None
+    assert signal_after_reimport.review_status == "accepted"
+    assert signal_after_reimport.reviewed_by == "operator-a"
+
+
+def test_fabric_advisory_review_api_requires_admin_and_records_review(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AE_API_MUTATIONS", "1")
+    monkeypatch.setenv("AE_API_RBAC", "1")
+    monkeypatch.setenv("AE_API_ADMIN_TOKEN", "admin")
+    monkeypatch.setenv("AE_API_READ_TOKEN", "read")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    _seed_advisory(store)
+    _seed_f5(store)
+
+    reader, reader_statuses = _make_handler(
+        "/fabric/advisory/traces/trace-qwen-0/review",
+        store,
+        method="POST",
+        body={"decision": "accept"},
+        headers={"Authorization": "Bearer read"},
+    )
+    reader.do_POST()
+
+    assert 403 in reader_statuses
+    assert store.get_fabric_decision_trace("trace-qwen-0").accepted is None  # type: ignore[union-attr]
+
+    admin, admin_statuses = _make_handler(
+        "/fabric/advisory/traces/trace-qwen-0/review",
+        store,
+        method="POST",
+        body={
+            "decision": "diverge",
+            "reviewer": "operator-b",
+            "note": "advisory conflicts with current policy",
+            "checked_steps": ["authority", "trace"],
+            "client_seen": {"request_id": "req-qwen-0", "signal_ids": ["cog-signal-0"]},
+        },
+        headers={"Authorization": "Bearer admin"},
+    )
+    admin.do_POST()
+    payload = _payload(admin)
+    trace = store.get_fabric_decision_trace("trace-qwen-0")
+    signals = store.list_fabric_cognitive_signals(advisory_trace_id="trace-qwen-0")
+
+    assert admin_statuses == [200]
+    assert payload["ok"] is True
+    assert payload["decision"] == "diverge"
+    assert payload["accepted"] is False
+    assert payload["pending_review_count"] == 0
+    assert trace is not None
+    assert trace.accepted is False
+    assert trace.divergence_reason == "operator_diverged"
+    assert signals[0].review_status == "diverged"
+    assert signals[0].reviewed_by == "operator-b"
+
+    invalid, invalid_statuses = _make_handler(
+        "/fabric/advisory/traces/trace-qwen-0/review",
+        store,
+        method="POST",
+        body={"decision": "defer"},
+        headers={"Authorization": "Bearer admin"},
+    )
+    invalid.do_POST()
+    assert invalid_statuses == [400]
+
+    missing, missing_statuses = _make_handler(
+        "/fabric/advisory/traces/missing-trace/review",
+        store,
+        method="POST",
+        body={"decision": "accept"},
+        headers={"Authorization": "Bearer admin"},
+    )
+    missing.do_POST()
+    assert missing_statuses == [404]
+
+
+def test_fabric_advisory_import_ingests_grouped_f3_records(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    payload = {
+        "source": "workerbee.live.review-validation/v1",
+        "records": {
+            "advisory_requests": [
+                {
+                    "request_id": "req-grouped-0",
+                    "subject_type": "phase_gate",
+                    "subject_id": "F3",
+                    "intent": "review",
+                    "facts_ref": "facts://grouped",
+                    "locality_snapshot_ref": "fabric://grouped",
+                    "max_candidates": 1,
+                    "time_budget_ms": 100,
+                    "policy_mode": "advisory_only",
+                    "created_at": "2026-06-05T00:00:00+00:00",
+                }
+            ],
+            "advisory_responses": [
+                {
+                    "request_id": "req-grouped-0",
+                    "provider": "workerbee-test",
+                    "status": "review",
+                    "recommendation": "operator review",
+                    "confidence": 0.5,
+                    "evidence_refs": ["facts://grouped"],
+                    "authoritative": False,
+                    "created_at": "2026-06-05T00:00:00+00:00",
+                }
+            ],
+            "decision_traces": [
+                {
+                    "trace_id": "trace-grouped-0",
+                    "request_id": "req-grouped-0",
+                    "deterministic_baseline": {"winner": "node-a"},
+                    "advisory_response": {"winner": "node-b", "authoritative": False},
+                    "accepted": None,
+                    "divergence_reason": "pending_operator_review",
+                    "replay_status": "recorded",
+                    "continuity_signals": {"request_id": "req-grouped-0"},
+                    "coherence_signals": {"model_ok": True},
+                    "created_at": "2026-06-05T00:00:00+00:00",
+                }
+            ],
+        },
+    }
+
+    result = _import_fabric_advisory_payload(store, payload)
+
+    assert result["ok"] is True
+    assert result["counts"]["advisory_requests"] == 1
+    assert result["counts"]["advisory_responses"] == 1
+    assert result["counts"]["decision_traces"] == 1
+    assert store.get_fabric_decision_trace("trace-grouped-0") is not None
 
 
 def test_fabric_read_api_lists_locality_and_advisory_payloads(tmp_path: Path) -> None:

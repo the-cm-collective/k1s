@@ -1881,6 +1881,11 @@ def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str,
         "fabric_residencies",
         "fabric_movements",
     )
+    advisory_groups = (
+        "advisory_requests",
+        "advisory_responses",
+        "decision_traces",
+    )
     f5_groups = (
         "das_cell_bundles",
         "das_query_traces",
@@ -1940,7 +1945,7 @@ def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str,
 
     records = payload.get("records")
     if isinstance(records, dict):
-        for group in (*locality_groups, *f5_groups):
+        for group in (*locality_groups, *advisory_groups, *f5_groups):
             for item in _fabric_advisory_import_payload_items(records, group):
                 add(group, item)
     elif isinstance(records, list):
@@ -1951,7 +1956,7 @@ def _import_fabric_advisory_payload(store, payload: dict[str, Any]) -> dict[str,
         if isinstance(nested, dict):
             nested_records = nested.get("records")
             if isinstance(nested_records, dict):
-                for group in (*locality_groups, *f5_groups):
+                for group in (*locality_groups, *advisory_groups, *f5_groups):
                     for item in _fabric_advisory_import_payload_items(nested_records, group):
                         add(group, item)
             elif isinstance(nested_records, list):
@@ -2171,6 +2176,18 @@ def _fabric_advisory_import_record_key(group: str, payload: dict[str, Any]) -> s
 
 def _fabric_node_record_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return dict(payload)
+
+
+def _fabric_advisory_review_trace_id(path_only: str) -> str:
+    import urllib.parse as _up
+
+    prefix = "/fabric/advisory/traces/"
+    suffix = "/review"
+    path_only = str(path_only or "")
+    if not path_only.startswith(prefix) or not path_only.endswith(suffix):
+        return ""
+    raw = path_only[len(prefix) : -len(suffix)].strip("/")
+    return _up.unquote(raw)
 
 
 def _import_fabric_node_record(store, payload: dict[str, Any]) -> None:
@@ -2446,12 +2463,17 @@ def _fabric_das_query_trace_summary(record, *, now: datetime) -> dict[str, Any]:
 
 def _fabric_cognitive_signal_summary(record, *, now: datetime) -> dict[str, Any]:
     created_at = _iso_or_none(getattr(record, "created_at", None))
+    reviewed_at = _iso_or_none(getattr(record, "reviewed_at", None))
     return {
         "signal_id": str(getattr(record, "signal_id", "") or ""),
         "subject_type": str(getattr(record, "subject_type", "") or ""),
         "subject_id": str(getattr(record, "subject_id", "") or ""),
         "signal_kind": str(getattr(record, "signal_kind", "") or ""),
         "review_gate": str(getattr(record, "review_gate", "") or ""),
+        "review_status": str(getattr(record, "review_status", "") or ""),
+        "reviewed_by": str(getattr(record, "reviewed_by", "") or ""),
+        "reviewed_at": reviewed_at,
+        "review_note": str(getattr(record, "review_note", "") or ""),
         "advisory_trace_id": str(getattr(record, "advisory_trace_id", "") or ""),
         "coherence_score": getattr(record, "coherence_score", None),
         "created_at": created_at,
@@ -3255,6 +3277,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):  # type: ignore[override]
         path_only = self.path.split("?", 1)[0]
+        fabric_review_trace_id = _fabric_advisory_review_trace_id(path_only)
         # Read-only planner (not gated by AE_API_MUTATIONS)
         if self.path in {"/plan", "/dashboard/plan"}:
             try:
@@ -3419,6 +3442,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             ) and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
+            if fabric_review_trace_id and not self._require_role("admin"):
+                self._deny(401 if not self.headers.get("Authorization") else 403)
+                return
             if self.path.startswith("/exec/") and not self._require_role("admin"):
                 self._deny(401 if not self.headers.get("Authorization") else 403)
                 return
@@ -3441,6 +3467,9 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         if path_only in ("/fabric/advisory/import", "/fabric/advisory/import/"):
             self._handle_fabric_advisory_import()
+            return
+        if fabric_review_trace_id:
+            self._handle_fabric_advisory_trace_review(fabric_review_trace_id)
             return
 
         if self.path == "/apply" and self.apply_fn is not None:
@@ -5900,6 +5929,27 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
                         "security": [{"bearerAuth": []}],
                     }
                 },
+                "/fabric/advisory/traces/{trace_id}/review": {
+                    "post": {
+                        "summary": "Record an operator review decision for an advisory trace",
+                        "parameters": [
+                            {
+                                "name": "trace_id",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {
+                            "200": {"description": "Review recorded"},
+                            "400": {"description": "Invalid review payload"},
+                            "401": {"description": "Unauthorized"},
+                            "403": {"description": "Forbidden"},
+                            "404": {"description": "Trace not found"},
+                        },
+                        "security": [{"bearerAuth": []}],
+                    }
+                },
                 "/status": {
                     "get": {
                         "summary": "List app statuses (paginated)",
@@ -6445,6 +6495,45 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
             self._json_ok(result)
         else:
             self._json_error_obj(400, result)
+
+    def _handle_fabric_advisory_trace_review(self, trace_id: str) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            self._json_error(400, "invalid JSON body for fabric advisory review")
+            return
+        if not isinstance(payload, dict):
+            self._json_error(400, "fabric advisory review body must be a JSON object")
+            return
+        decision = str(payload.get("decision") or "").strip().lower()
+        if decision not in {"accept", "diverge"}:
+            self._json_error(400, "decision must be accept or diverge")
+            return
+        checked_raw = payload.get("checked_steps")
+        checked_steps = (
+            [str(item) for item in checked_raw if str(item)]
+            if isinstance(checked_raw, list)
+            else []
+        )
+        client_seen = payload.get("client_seen") if isinstance(payload.get("client_seen"), dict) else {}
+        try:
+            result = self.store.record_fabric_advisory_review(
+                trace_id=trace_id,
+                decision=decision,
+                reviewer=str(payload.get("reviewer") or "dashboard-operator"),
+                note=str(payload.get("note") or ""),
+                checked_steps=checked_steps,
+                client_seen=client_seen,
+            )
+        except KeyError:
+            self._json_error(404, "advisory trace not found")
+            return
+        except ValueError as exc:
+            self._json_error(400, str(exc))
+            return
+        self._json_ok({"ok": True, **result})
 
     def _handle_fabric_advisory_requests_list(self) -> None:
         from ae.fabric.locality import advisory_request_payload

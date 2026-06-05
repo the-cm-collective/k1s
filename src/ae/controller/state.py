@@ -29,6 +29,7 @@ from ae.controller.spec import (
     app_key_for_manifest,
 )
 from ae.fabric.locality import (
+    FabricAdvisoryReviewEventRecord,
     FabricAdvisoryRequestRecord,
     FabricAdvisoryResponseRecord,
     FabricChunkRecord,
@@ -43,6 +44,7 @@ from ae.fabric.locality import (
     FabricTransferCapabilityRecord,
     FabricTransferLeaseRecord,
     FabricTransportAttemptRecord,
+    advisory_review_event_from_payload,
     advisory_request_from_payload,
     advisory_request_payload,
     advisory_response_from_payload,
@@ -539,6 +541,16 @@ class SQLiteStateStore:
                 self._ensure_column(conn, "nodes", "capabilities_json", "TEXT")
             except Exception:
                 pass
+            for column, col_type in (
+                ("review_status", "TEXT NOT NULL DEFAULT ''"),
+                ("reviewed_by", "TEXT NOT NULL DEFAULT ''"),
+                ("reviewed_at", "TEXT"),
+                ("review_note", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                try:
+                    self._ensure_column(conn, "fabric_cognitive_signals", column, col_type)
+                except Exception:
+                    pass
             needs_reset = not self._schema_matches(
                 conn,
                 "app_status",
@@ -1207,12 +1219,38 @@ class SQLiteStateStore:
                   overload_state TEXT NOT NULL,
                   review_gate TEXT NOT NULL,
                   advisory_trace_id TEXT NOT NULL,
-                  created_at TEXT NOT NULL
+                  created_at TEXT NOT NULL,
+                  review_status TEXT NOT NULL DEFAULT '',
+                  reviewed_by TEXT NOT NULL DEFAULT '',
+                  reviewed_at TEXT,
+                  review_note TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_fabric_cognitive_signals_subject ON fabric_cognitive_signals(subject_type, subject_id, created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_cognitive_signals_trace ON fabric_cognitive_signals(advisory_trace_id, created_at)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fabric_advisory_review_events (
+                  event_id TEXT PRIMARY KEY,
+                  trace_id TEXT NOT NULL,
+                  decision TEXT NOT NULL,
+                  accepted INTEGER NOT NULL,
+                  reviewer TEXT NOT NULL,
+                  note TEXT NOT NULL,
+                  checked_steps_json TEXT NOT NULL,
+                  signal_ids_json TEXT NOT NULL,
+                  client_seen_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fabric_advisory_review_events_trace ON fabric_advisory_review_events(trace_id, created_at)"
             )
             conn.commit()
 
@@ -3345,8 +3383,15 @@ class SQLiteStateStore:
                   request_id = excluded.request_id,
                   deterministic_baseline_json = excluded.deterministic_baseline_json,
                   advisory_response_json = excluded.advisory_response_json,
-                  accepted = excluded.accepted,
-                  divergence_reason = excluded.divergence_reason,
+                  accepted = CASE
+                    WHEN excluded.accepted IS NULL THEN fabric_decision_traces.accepted
+                    ELSE excluded.accepted
+                  END,
+                  divergence_reason = CASE
+                    WHEN fabric_decision_traces.accepted IS NOT NULL AND excluded.accepted IS NULL
+                      THEN fabric_decision_traces.divergence_reason
+                    ELSE excluded.divergence_reason
+                  END,
                   replay_status = excluded.replay_status,
                   continuity_signals_json = excluded.continuity_signals_json,
                   coherence_signals_json = excluded.coherence_signals_json
@@ -3384,6 +3429,21 @@ class SQLiteStateStore:
             }
         )
 
+    def get_fabric_decision_trace(self, trace_id: str) -> FabricDecisionTraceRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT trace_id, request_id, deterministic_baseline_json,
+                       advisory_response_json, accepted, divergence_reason,
+                       replay_status, continuity_signals_json, coherence_signals_json,
+                       created_at
+                FROM fabric_decision_traces
+                WHERE trace_id = ?
+                """,
+                (str(trace_id),),
+            ).fetchone()
+        return self._fabric_decision_trace_from_row(row) if row else None
+
     def list_fabric_decision_traces(
         self,
         *,
@@ -3406,6 +3466,144 @@ class SQLiteStateStore:
         with self._connect() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._fabric_decision_trace_from_row(row) for row in rows]
+
+    def record_fabric_advisory_review(
+        self,
+        *,
+        trace_id: str,
+        decision: str,
+        reviewer: str,
+        note: str,
+        checked_steps: list[str],
+        client_seen: dict,
+    ) -> dict:
+        trace_id = str(trace_id or "").strip()
+        decision = str(decision or "").strip().lower()
+        if not trace_id:
+            raise ValueError("trace_id required")
+        if decision not in {"accept", "diverge"}:
+            raise ValueError("decision must be accept or diverge")
+        reviewer = str(reviewer or "").strip() or "dashboard-operator"
+        note = str(note or "").strip()
+        checked_steps = [str(item).strip() for item in checked_steps if str(item).strip()]
+        client_seen = dict(client_seen or {})
+        accepted = decision == "accept"
+        review_status = "accepted" if accepted else "diverged"
+        divergence_reason = None if accepted else "operator_diverged"
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        event_id = f"review-{trace_id}-{uuid.uuid4().hex[:12]}"
+        with self._connect() as conn:
+            trace_row = conn.execute(
+                "SELECT trace_id FROM fabric_decision_traces WHERE trace_id = ?",
+                (trace_id,),
+            ).fetchone()
+            if trace_row is None:
+                raise KeyError(trace_id)
+            signal_rows = conn.execute(
+                """
+                SELECT signal_id
+                FROM fabric_cognitive_signals
+                WHERE advisory_trace_id = ?
+                ORDER BY created_at DESC
+                """,
+                (trace_id,),
+            ).fetchall()
+            signal_ids = [str(row[0]) for row in signal_rows]
+            conn.execute(
+                """
+                UPDATE fabric_decision_traces
+                SET accepted = ?, divergence_reason = ?
+                WHERE trace_id = ?
+                """,
+                (1 if accepted else 0, divergence_reason, trace_id),
+            )
+            conn.execute(
+                """
+                UPDATE fabric_cognitive_signals
+                SET review_status = ?, reviewed_by = ?, reviewed_at = ?, review_note = ?
+                WHERE advisory_trace_id = ?
+                """,
+                (review_status, reviewer, now_iso, note, trace_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO fabric_advisory_review_events (
+                  event_id, trace_id, decision, accepted, reviewer, note,
+                  checked_steps_json, signal_ids_json, client_seen_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    trace_id,
+                    decision,
+                    1 if accepted else 0,
+                    reviewer,
+                    note,
+                    json.dumps(checked_steps, sort_keys=True),
+                    json.dumps(signal_ids, sort_keys=True),
+                    json.dumps(client_seen, sort_keys=True),
+                    now_iso,
+                ),
+            )
+            pending_review_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM fabric_decision_traces
+                WHERE accepted IS NULL OR divergence_reason = 'pending_operator_review'
+                """
+            ).fetchone()[0]
+            conn.commit()
+        return {
+            "event_id": event_id,
+            "trace_id": trace_id,
+            "decision": decision,
+            "accepted": accepted,
+            "reviewer": reviewer,
+            "note": note,
+            "checked_steps": checked_steps,
+            "updated_signal_ids": signal_ids,
+            "pending_review_count": int(pending_review_count or 0),
+            "created_at": now_iso,
+        }
+
+    def _fabric_advisory_review_event_from_row(self, row) -> FabricAdvisoryReviewEventRecord:
+        return advisory_review_event_from_payload(
+            {
+                "event_id": row[0],
+                "trace_id": row[1],
+                "decision": row[2],
+                "accepted": bool(row[3]),
+                "reviewer": row[4],
+                "note": row[5],
+                "checked_steps": self._json_list(row[6]),
+                "signal_ids": self._json_list(row[7]),
+                "client_seen": self._json_dict(row[8]),
+                "created_at": row[9],
+            }
+        )
+
+    def list_fabric_advisory_review_events(
+        self,
+        *,
+        trace_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricAdvisoryReviewEventRecord]:
+        params: list[object] = []
+        sql = """
+            SELECT event_id, trace_id, decision, accepted, reviewer, note,
+                   checked_steps_json, signal_ids_json, client_seen_json, created_at
+            FROM fabric_advisory_review_events
+        """
+        if trace_id:
+            sql += " WHERE trace_id = ?"
+            params.append(str(trace_id))
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._fabric_advisory_review_event_from_row(row) for row in rows]
 
     def upsert_fabric_transfer_capability(
         self, record: FabricTransferCapabilityRecord
@@ -3994,9 +4192,9 @@ class SQLiteStateStore:
                 INSERT INTO fabric_cognitive_signals (
                   signal_id, subject_type, subject_id, signal_kind, continuity_ref,
                   coherence_score, overload_state, review_gate, advisory_trace_id,
-                  created_at
+                  created_at, review_status, reviewed_by, reviewed_at, review_note
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(signal_id) DO UPDATE SET
                   subject_type = excluded.subject_type,
                   subject_id = excluded.subject_id,
@@ -4005,7 +4203,20 @@ class SQLiteStateStore:
                   coherence_score = excluded.coherence_score,
                   overload_state = excluded.overload_state,
                   review_gate = excluded.review_gate,
-                  advisory_trace_id = excluded.advisory_trace_id
+                  advisory_trace_id = excluded.advisory_trace_id,
+                  review_status = CASE
+                    WHEN excluded.review_status != '' THEN excluded.review_status
+                    ELSE fabric_cognitive_signals.review_status
+                  END,
+                  reviewed_by = CASE
+                    WHEN excluded.reviewed_by != '' THEN excluded.reviewed_by
+                    ELSE fabric_cognitive_signals.reviewed_by
+                  END,
+                  reviewed_at = COALESCE(excluded.reviewed_at, fabric_cognitive_signals.reviewed_at),
+                  review_note = CASE
+                    WHEN excluded.review_note != '' THEN excluded.review_note
+                    ELSE fabric_cognitive_signals.review_note
+                  END
                 """,
                 (
                     payload["signal_id"],
@@ -4018,6 +4229,10 @@ class SQLiteStateStore:
                     payload["review_gate"],
                     payload["advisory_trace_id"],
                     payload["created_at"],
+                    payload["review_status"],
+                    payload["reviewed_by"],
+                    payload["reviewed_at"],
+                    payload["review_note"],
                 ),
             )
             conn.commit()
@@ -4035,6 +4250,10 @@ class SQLiteStateStore:
                 "review_gate": row[7],
                 "advisory_trace_id": row[8],
                 "created_at": row[9],
+                "review_status": row[10],
+                "reviewed_by": row[11],
+                "reviewed_at": row[12],
+                "review_note": row[13],
             }
         )
 
@@ -4043,6 +4262,7 @@ class SQLiteStateStore:
         *,
         subject_type: str | None = None,
         subject_id: str | None = None,
+        advisory_trace_id: str | None = None,
         limit: int = 100,
     ) -> list[FabricCognitiveSignalRecord]:
         clauses: list[str] = []
@@ -4053,10 +4273,13 @@ class SQLiteStateStore:
         if subject_id:
             clauses.append("subject_id = ?")
             params.append(str(subject_id))
+        if advisory_trace_id:
+            clauses.append("advisory_trace_id = ?")
+            params.append(str(advisory_trace_id))
         sql = """
             SELECT signal_id, subject_type, subject_id, signal_kind, continuity_ref,
                    coherence_score, overload_state, review_gate, advisory_trace_id,
-                   created_at
+                   created_at, review_status, reviewed_by, reviewed_at, review_note
             FROM fabric_cognitive_signals
         """
         if clauses:

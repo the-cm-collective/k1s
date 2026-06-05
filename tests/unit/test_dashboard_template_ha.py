@@ -105,6 +105,10 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert 'id="fabric-advisory-review-checklist"' in html
     assert 'id="fabric-advisory-review-tabs"' in html
     assert 'id="fabric-advisory-review-json"' in html
+    assert 'id="fabric-advisory-review-reviewer"' in html
+    assert 'id="fabric-advisory-review-operator-note"' in html
+    assert 'id="fabric-advisory-review-accept"' in html
+    assert 'id="fabric-advisory-review-diverge"' in html
     assert 'data-trace-id="' in html
     assert "grid-template-columns:minmax(0, 1fr) max-content" in html
     assert "fabric-advisory-trace-label" in html
@@ -115,6 +119,8 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert "function openFabricAdvisoryReview(traceId)" in html
     assert "function renderFabricReviewChecklist(trace, request, response, dasPayload, signalPayload)" in html
     assert "function copyFabricAdvisoryReviewJson()" in html
+    assert "function submitFabricAdvisoryReview(decision)" in html
+    assert "postJSON('/fabric/advisory/traces/' + encodeURIComponent(fabricAdvisoryReviewTraceId) + '/review'" in html
     assert "fetchJSON('/fabric/advisory/state')" in html
     assert "fetchJSON('/fabric/phase-assurance')" in html
     assert "fetchJSON('/fabric/advisory/traces?limit=100')" in html
@@ -136,6 +142,8 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert "Optional Hyperon/DAS enhancement" not in html
     assert "opt-in inactive" not in html
     assert "Record operator decision" in html
+    assert "Submit accept or diverge to record an operator review event" in html
+    assert "review_status" in html
     assert "k1s remains authoritative" in html
     assert "F3 Phase Gate" in html
     assert "F3 Gate" in html

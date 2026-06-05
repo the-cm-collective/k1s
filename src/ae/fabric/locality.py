@@ -208,6 +208,24 @@ class FabricCognitiveSignalRecord:
     review_gate: str
     advisory_trace_id: str
     created_at: datetime
+    review_status: str = ""
+    reviewed_by: str = ""
+    reviewed_at: datetime | None = None
+    review_note: str = ""
+
+
+@dataclass(slots=True)
+class FabricAdvisoryReviewEventRecord:
+    event_id: str
+    trace_id: str
+    decision: str
+    accepted: bool
+    reviewer: str
+    note: str
+    checked_steps: list[Any]
+    signal_ids: list[str]
+    client_seen: dict[str, Any]
+    created_at: datetime
 
 
 def normalize_chunk_id(value: str) -> str:
@@ -457,6 +475,25 @@ def cognitive_signal_payload(record: FabricCognitiveSignalRecord) -> dict[str, A
         "review_gate": record.review_gate,
         "advisory_trace_id": record.advisory_trace_id,
         "created_at": _iso(record.created_at),
+        "review_status": record.review_status,
+        "reviewed_by": record.reviewed_by,
+        "reviewed_at": _iso_or_none(record.reviewed_at),
+        "review_note": record.review_note,
+    }
+
+
+def advisory_review_event_payload(record: FabricAdvisoryReviewEventRecord) -> dict[str, Any]:
+    return {
+        "event_id": record.event_id,
+        "trace_id": record.trace_id,
+        "decision": record.decision,
+        "accepted": bool(record.accepted),
+        "reviewer": record.reviewer,
+        "note": record.note,
+        "checked_steps": list(record.checked_steps),
+        "signal_ids": list(record.signal_ids),
+        "client_seen": dict(record.client_seen),
+        "created_at": _iso(record.created_at),
     }
 
 
@@ -698,6 +735,28 @@ def cognitive_signal_from_payload(payload: dict[str, Any]) -> FabricCognitiveSig
         overload_state=str(payload.get("overload_state") or ""),
         review_gate=str(payload.get("review_gate") or ""),
         advisory_trace_id=str(payload.get("advisory_trace_id") or ""),
+        created_at=parse_datetime(payload.get("created_at"), default=now) or now,
+        review_status=str(payload.get("review_status") or ""),
+        reviewed_by=str(payload.get("reviewed_by") or ""),
+        reviewed_at=parse_datetime(payload.get("reviewed_at")),
+        review_note=str(payload.get("review_note") or ""),
+    )
+
+
+def advisory_review_event_from_payload(
+    payload: dict[str, Any]
+) -> FabricAdvisoryReviewEventRecord:
+    now = utc_now()
+    return FabricAdvisoryReviewEventRecord(
+        event_id=str(payload.get("event_id") or ""),
+        trace_id=str(payload.get("trace_id") or ""),
+        decision=str(payload.get("decision") or ""),
+        accepted=bool(payload.get("accepted")),
+        reviewer=str(payload.get("reviewer") or ""),
+        note=str(payload.get("note") or ""),
+        checked_steps=_list(payload.get("checked_steps")),
+        signal_ids=[str(item) for item in _list(payload.get("signal_ids")) if str(item)],
+        client_seen=_dict(payload.get("client_seen")),
         created_at=parse_datetime(payload.get("created_at"), default=now) or now,
     )
 
