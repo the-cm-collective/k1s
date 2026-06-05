@@ -305,6 +305,7 @@ const decision = process.env.K1S_DEMO_REVIEW_DECISION || 'diverge';
 const reviewer = process.env.K1S_DEMO_REVIEWER || 'dashboard-operator';
 const note = process.env.K1S_DEMO_REVIEW_NOTE || '';
 const hostAddress = process.env.K1S_DEMO_HOST_ADDRESS || '127.0.0.1';
+const stepDelayMs = Number.parseInt(process.env.K1S_DEMO_STEP_DELAY_MS || '1400', 10);
 
 if (!dashboardUrl || !traceId || !artifactDir) {
   throw new Error('missing dashboard URL, trace id, or artifact dir');
@@ -315,6 +316,11 @@ fs.mkdirSync(path.join(artifactDir, 'video'), { recursive: true });
 
 function screenshotName(step) {
   return path.join(artifactDir, step + '.png');
+}
+
+async function pause(page, multiplier = 1) {
+  const delay = Number.isFinite(stepDelayMs) ? Math.max(0, stepDelayMs * multiplier) : 0;
+  if (delay > 0) await page.waitForTimeout(delay);
 }
 
 function isIgnoredConsoleError(text) {
@@ -334,6 +340,7 @@ async function clickReviewButton(page) {
     btn.scrollIntoView({ block: 'center', inline: 'nearest' });
     btn.click();
   }, traceId);
+  await pause(page);
 }
 
 async function clickTab(page, tabId, stepName, screenshots, optional = false) {
@@ -348,7 +355,7 @@ async function clickTab(page, tabId, stepName, screenshots, optional = false) {
     if (optional) return false;
     throw new Error('review tab missing: ' + tabId);
   }
-  await page.waitForTimeout(350);
+  await pause(page);
   const file = screenshotName(stepName);
   await page.screenshot({ path: file, fullPage: false });
   screenshots.push(file);
@@ -408,6 +415,7 @@ async function clickTab(page, tabId, stepName, screenshots, optional = false) {
     await page.waitForFunction((id) => document.body.textContent.includes(id), traceId, {
       timeout: 30000,
     });
+    await pause(page, 1.4);
     let file = screenshotName('01-dashboard-fabric-advisory');
     await page.screenshot({ path: file, fullPage: false });
     screenshots.push(file);
@@ -418,6 +426,7 @@ async function clickTab(page, tabId, stepName, screenshots, optional = false) {
       const tabs = document.querySelector('#fabric-advisory-review-tabs');
       return tabs && tabs.textContent.includes('Request') && tabs.textContent.includes('Response');
     }, { timeout: 30000 });
+    await pause(page);
     file = screenshotName('02-review-modal-trace');
     await page.screenshot({ path: file, fullPage: false });
     screenshots.push(file);
@@ -435,7 +444,9 @@ async function clickTab(page, tabId, stepName, screenshots, optional = false) {
     await clickTab(page, 'phase', '07-review-modal-f3-gate', screenshots);
 
     await page.fill('#fabric-advisory-review-reviewer', reviewer);
+    await pause(page, 0.4);
     await page.fill('#fabric-advisory-review-operator-note', note);
+    await pause(page, 0.8);
     const checkedSteps = await page.$$eval(
       '#fabric-advisory-review-checklist input[type=checkbox]',
       (inputs) => {
@@ -444,8 +455,9 @@ async function clickTab(page, tabId, stepName, screenshots, optional = false) {
         });
         return inputs.map((input) => input.value);
       },
-    );
+      );
     file = screenshotName('08-review-modal-ready-to-submit');
+    await pause(page);
     await page.screenshot({ path: file, fullPage: false });
     screenshots.push(file);
 
@@ -458,6 +470,7 @@ async function clickTab(page, tabId, stepName, screenshots, optional = false) {
         const noteEl = document.querySelector('#fabric-advisory-review-note');
         return noteEl && /Recorded (accept|diverge) review event/.test(noteEl.textContent || '');
       }, { timeout: 30000 });
+      await pause(page, 1.2);
       file = screenshotName('09-review-modal-recorded');
       await page.screenshot({ path: file, fullPage: false });
       screenshots.push(file);
@@ -539,6 +552,7 @@ def run_playwright_recorder(
     reviewer: str,
     note: str,
     host_address: str,
+    step_delay_ms: int,
 ) -> dict:
     node = require_tool("node")
     recorder = artifact_dir / "fabric-advisory-recorder.cjs"
@@ -555,6 +569,7 @@ def run_playwright_recorder(
             "K1S_DEMO_REVIEWER": reviewer,
             "K1S_DEMO_REVIEW_NOTE": note,
             "K1S_DEMO_HOST_ADDRESS": host_address,
+            "K1S_DEMO_STEP_DELAY_MS": str(step_delay_ms),
         }
     )
     completed = subprocess.run(  # noqa: S603
@@ -610,6 +625,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--npm-root", type=Path, default=DEFAULT_NPM_ROOT)
     parser.add_argument("--playwright-version", default=DEFAULT_PLAYWRIGHT_VERSION)
     parser.add_argument("--host-address", default="127.0.0.1")
+    parser.add_argument("--step-delay-ms", type=int, default=1400)
     parser.add_argument("--run-id", default="")
     parser.add_argument("--trace-id", default="")
     parser.add_argument("--skip-seed", action="store_true")
@@ -683,6 +699,7 @@ def main(argv: list[str] | None = None) -> int:
         reviewer=args.reviewer,
         note=args.note,
         host_address=args.host_address,
+        step_delay_ms=args.step_delay_ms,
     )
 
     summary = {

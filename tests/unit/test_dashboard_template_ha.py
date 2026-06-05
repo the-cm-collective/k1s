@@ -19,7 +19,8 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert 'id="ha-transport"' in html
     assert 'id="ha-edge-sites"' in html
     assert (
-        "HA disabled for this profile. Use make k1s-ha-core to view authority, etcd, transport, and edge site health."
+        "HA disabled for this profile. Use make k1s-ha-core to view authority, "
+        "etcd, transport, and edge site health."
         in html
     )
     assert "summaryEl.classList.add('hidden');" in html
@@ -92,6 +93,7 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
 def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     html = Path("src/ae/resources/observability/dashboard.html").read_text(encoding="utf-8")
 
+    assert "color:#e2e8f0;" in html
     assert 'id="fabric-advisory-section" class="card hidden"' in html
     assert 'id="fabric-advisory-status-pill"' in html
     assert 'id="fabric-advisory-banner"' in html
@@ -117,10 +119,16 @@ def test_dashboard_template_contains_fabric_advisory_panel() -> None:
     assert "function renderFabricAdvisoryState(state, err, phaseReport, phaseErr)" in html
     assert "function renderF3PhaseRows(report, err)" in html
     assert "function openFabricAdvisoryReview(traceId)" in html
-    assert "function renderFabricReviewChecklist(trace, request, response, dasPayload, signalPayload)" in html
+    assert (
+        "function renderFabricReviewChecklist(trace, request, response, "
+        "dasPayload, signalPayload)" in html
+    )
     assert "function copyFabricAdvisoryReviewJson()" in html
     assert "function submitFabricAdvisoryReview(decision)" in html
-    assert "postJSON('/fabric/advisory/traces/' + encodeURIComponent(fabricAdvisoryReviewTraceId) + '/review'" in html
+    assert (
+        "postJSON('/fabric/advisory/traces/' + "
+        "encodeURIComponent(fabricAdvisoryReviewTraceId) + '/review'" in html
+    )
     assert "fetchJSON('/fabric/advisory/state')" in html
     assert "fetchJSON('/fabric/phase-assurance')" in html
     assert "fetchJSON('/fabric/advisory/traces?limit=100')" in html
