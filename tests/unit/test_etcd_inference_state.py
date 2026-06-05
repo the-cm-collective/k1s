@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 
 from ae.controller.etcd_state import EtcdStateStore
 from ae.controller.inference_cell import InferenceCellController, InferenceCellSetController
 from ae.controller.spec import InferenceCellManifest, InferenceCellSetManifest
+from ae.fabric.locality import FabricCognitiveSignalRecord, FabricDecisionTraceRecord
 
 
 def _b64decode(value: str) -> str:
@@ -229,3 +231,103 @@ def test_etcd_store_supports_inference_cellset_scale_to_zero(
     ctrl.delete_cellset("set-a", namespace="default")
 
     assert store.get_inference_cellset("set-a", namespace="default") is None
+
+
+def test_etcd_store_records_fabric_advisory_review_and_preserves_reimport() -> None:
+    store = _mk_store()
+    now = datetime.now(UTC)
+    store.record_fabric_decision_trace(
+        FabricDecisionTraceRecord(
+            trace_id="trace-qwen-0",
+            request_id="req-qwen-0",
+            deterministic_baseline={"winner": "node-b"},
+            advisory_response={"winner": "node-a"},
+            accepted=None,
+            divergence_reason="pending_operator_review",
+            replay_status="recorded",
+            continuity_signals={"request_id": "req-qwen-0"},
+            coherence_signals={"model_ok": True},
+            created_at=now,
+        )
+    )
+    store.record_fabric_cognitive_signal(
+        FabricCognitiveSignalRecord(
+            signal_id="cog-signal-0",
+            subject_type="das-cell",
+            subject_id="runtime",
+            signal_kind="advisory",
+            continuity_ref="das://query/trace-qwen-0",
+            coherence_score=0.92,
+            overload_state="normal",
+            review_gate="operator_review",
+            advisory_trace_id="trace-qwen-0",
+            created_at=now,
+        )
+    )
+
+    result = store.record_fabric_advisory_review(
+        trace_id="trace-qwen-0",
+        decision="accept",
+        reviewer="operator-a",
+        note="matches deterministic replay",
+        checked_steps=["authority", "trace", "signals"],
+        client_seen={"request_id": "req-qwen-0", "signal_ids": ["cog-signal-0"]},
+    )
+
+    trace = store.get_fabric_decision_trace("trace-qwen-0")
+    signals = store.list_fabric_cognitive_signals(advisory_trace_id="trace-qwen-0")
+    events = store.list_fabric_advisory_review_events(trace_id="trace-qwen-0")
+
+    assert result["accepted"] is True
+    assert result["pending_review_count"] == 0
+    assert result["updated_signal_ids"] == ["cog-signal-0"]
+    assert trace is not None
+    assert trace.accepted is True
+    assert trace.divergence_reason is None
+    assert signals[0].review_status == "accepted"
+    assert signals[0].reviewed_by == "operator-a"
+    assert signals[0].review_note == "matches deterministic replay"
+    assert signals[0].reviewed_at is not None
+    assert events[0].decision == "accept"
+    assert events[0].checked_steps == ["authority", "trace", "signals"]
+    assert events[0].signal_ids == ["cog-signal-0"]
+
+    store.record_fabric_decision_trace(
+        FabricDecisionTraceRecord(
+            trace_id="trace-qwen-0",
+            request_id="req-qwen-0",
+            deterministic_baseline={"winner": "node-b"},
+            advisory_response={"winner": "node-a"},
+            accepted=None,
+            divergence_reason="pending_operator_review",
+            replay_status="recorded",
+            continuity_signals={"request_id": "req-qwen-0"},
+            coherence_signals={"model_ok": True},
+            created_at=now,
+        )
+    )
+    store.record_fabric_cognitive_signal(
+        FabricCognitiveSignalRecord(
+            signal_id="cog-signal-0",
+            subject_type="das-cell",
+            subject_id="runtime",
+            signal_kind="advisory",
+            continuity_ref="das://query/trace-qwen-0",
+            coherence_score=0.92,
+            overload_state="normal",
+            review_gate="operator_review",
+            advisory_trace_id="trace-qwen-0",
+            created_at=now,
+        )
+    )
+
+    trace_after_reimport = store.get_fabric_decision_trace("trace-qwen-0")
+    signal_after_reimport = store.list_fabric_cognitive_signals(
+        advisory_trace_id="trace-qwen-0"
+    )[0]
+
+    assert trace_after_reimport is not None
+    assert trace_after_reimport.accepted is True
+    assert trace_after_reimport.divergence_reason is None
+    assert signal_after_reimport.review_status == "accepted"
+    assert signal_after_reimport.reviewed_by == "operator-a"

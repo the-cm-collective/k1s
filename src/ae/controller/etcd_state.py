@@ -58,6 +58,7 @@ from ae.controller.state import (
 from ae.fabric.locality import (
     FabricAdvisoryRequestRecord,
     FabricAdvisoryResponseRecord,
+    FabricAdvisoryReviewEventRecord,
     FabricChunkRecord,
     FabricCognitiveSignalRecord,
     FabricDasCellBundleRecord,
@@ -74,6 +75,8 @@ from ae.fabric.locality import (
     advisory_request_payload,
     advisory_response_from_payload,
     advisory_response_payload,
+    advisory_review_event_from_payload,
+    advisory_review_event_payload,
     chunk_record_from_payload,
     chunk_record_payload,
     cognitive_signal_from_payload,
@@ -625,6 +628,9 @@ class EtcdStateStore(SQLiteStateStore):
     def _fabric_decision_trace_key(self, trace_id: str) -> str:
         return self._k("fabric", "advisory", "traces", str(trace_id))
 
+    def _fabric_advisory_review_event_key(self, event_id: str) -> str:
+        return self._k("fabric", "advisory", "review_events", str(event_id))
+
     def _fabric_transfer_capability_key(self, capability_id: str) -> str:
         return self._k("fabric", "transfer_capabilities", str(capability_id))
 
@@ -1151,7 +1157,14 @@ class EtcdStateStore(SQLiteStateStore):
         existing, _mod_rev = self._get_json(key)
         if existing and existing.get("created_at"):
             payload["created_at"] = str(existing["created_at"])
+        if existing and existing.get("accepted") is not None and payload.get("accepted") is None:
+            payload["accepted"] = existing.get("accepted")
+            payload["divergence_reason"] = existing.get("divergence_reason")
         self._put_json(key, payload)
+
+    def get_fabric_decision_trace(self, trace_id: str) -> FabricDecisionTraceRecord | None:
+        rec, _mod_rev = self._get_json(self._fabric_decision_trace_key(trace_id))
+        return decision_trace_from_payload(rec) if rec else None
 
     def list_fabric_decision_traces(
         self,
@@ -1165,6 +1178,106 @@ class EtcdStateStore(SQLiteStateStore):
             if request_id and str(rec.get("request_id") or "") != str(request_id):
                 continue
             items.append(decision_trace_from_payload(rec))
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[: max(1, int(limit))]
+
+    def record_fabric_advisory_review(
+        self,
+        *,
+        trace_id: str,
+        decision: str,
+        reviewer: str,
+        note: str,
+        checked_steps: list[str],
+        client_seen: dict,
+    ) -> dict:
+        trace_id = str(trace_id or "").strip()
+        decision = str(decision or "").strip().lower()
+        if not trace_id:
+            raise ValueError("trace_id required")
+        if decision not in {"accept", "diverge"}:
+            raise ValueError("decision must be accept or diverge")
+        reviewer = str(reviewer or "").strip() or "dashboard-operator"
+        note = str(note or "").strip()
+        checked_steps = [str(item).strip() for item in checked_steps if str(item).strip()]
+        client_seen = dict(client_seen or {})
+        accepted = decision == "accept"
+        review_status = "accepted" if accepted else "diverged"
+        divergence_reason = None if accepted else "operator_diverged"
+        now = _now()
+        now_iso = now.isoformat()
+        event_id = f"review-{trace_id}-{uuid.uuid4().hex[:12]}"
+
+        trace_key = self._fabric_decision_trace_key(trace_id)
+        trace, _mod_rev = self._get_json(trace_key)
+        if trace is None:
+            raise KeyError(trace_id)
+        trace["accepted"] = accepted
+        trace["divergence_reason"] = divergence_reason
+        self._put_json(trace_key, trace)
+
+        signal_ids: list[str] = []
+        for signal_key, signal, _signal_mod_rev in self._list_prefix(
+            self._k("fabric", "cognitive", "signals")
+        ):
+            if str(signal.get("advisory_trace_id") or "") != trace_id:
+                continue
+            signal_ids.append(str(signal.get("signal_id") or ""))
+            signal["review_status"] = review_status
+            signal["reviewed_by"] = reviewer
+            signal["reviewed_at"] = now_iso
+            signal["review_note"] = note
+            self._put_json(signal_key, signal)
+        signal_ids = [signal_id for signal_id in signal_ids if signal_id]
+        signal_ids.sort()
+
+        self._put_json(
+            self._fabric_advisory_review_event_key(event_id),
+            advisory_review_event_payload(
+                FabricAdvisoryReviewEventRecord(
+                    event_id=event_id,
+                    trace_id=trace_id,
+                    decision=decision,
+                    accepted=accepted,
+                    reviewer=reviewer,
+                    note=note,
+                    checked_steps=checked_steps,
+                    signal_ids=signal_ids,
+                    client_seen=client_seen,
+                    created_at=now,
+                )
+            ),
+        )
+        pending_review_count = sum(
+            1
+            for item in self.list_fabric_decision_traces(limit=10_000)
+            if item.accepted is None or item.divergence_reason == "pending_operator_review"
+        )
+        return {
+            "event_id": event_id,
+            "trace_id": trace_id,
+            "decision": decision,
+            "accepted": accepted,
+            "reviewer": reviewer,
+            "note": note,
+            "checked_steps": checked_steps,
+            "updated_signal_ids": signal_ids,
+            "pending_review_count": int(pending_review_count),
+            "created_at": now_iso,
+        }
+
+    def list_fabric_advisory_review_events(
+        self,
+        *,
+        trace_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FabricAdvisoryReviewEventRecord]:
+        rows = self._list_prefix(self._k("fabric", "advisory", "review_events"))
+        items: list[FabricAdvisoryReviewEventRecord] = []
+        for _key, rec, _mod_rev in rows:
+            if trace_id and str(rec.get("trace_id") or "") != str(trace_id):
+                continue
+            items.append(advisory_review_event_from_payload(rec))
         items.sort(key=lambda item: item.created_at, reverse=True)
         return items[: max(1, int(limit))]
 
@@ -1357,13 +1470,27 @@ class EtcdStateStore(SQLiteStateStore):
 
     def record_fabric_cognitive_signal(self, record: FabricCognitiveSignalRecord) -> None:
         payload = cognitive_signal_payload(record)
-        self._put_json(self._fabric_cognitive_signal_key(payload["signal_id"]), payload)
+        key = self._fabric_cognitive_signal_key(payload["signal_id"])
+        existing, _mod_rev = self._get_json(key)
+        if existing and existing.get("created_at"):
+            payload["created_at"] = str(existing["created_at"])
+        if existing:
+            if not payload.get("review_status"):
+                payload["review_status"] = str(existing.get("review_status") or "")
+            if not payload.get("reviewed_by"):
+                payload["reviewed_by"] = str(existing.get("reviewed_by") or "")
+            if payload.get("reviewed_at") is None:
+                payload["reviewed_at"] = existing.get("reviewed_at")
+            if not payload.get("review_note"):
+                payload["review_note"] = str(existing.get("review_note") or "")
+        self._put_json(key, payload)
 
     def list_fabric_cognitive_signals(
         self,
         *,
         subject_type: str | None = None,
         subject_id: str | None = None,
+        advisory_trace_id: str | None = None,
         limit: int = 100,
     ) -> list[FabricCognitiveSignalRecord]:
         rows = self._list_prefix(self._k("fabric", "cognitive", "signals"))
@@ -1372,6 +1499,10 @@ class EtcdStateStore(SQLiteStateStore):
             if subject_type and str(rec.get("subject_type") or "") != str(subject_type):
                 continue
             if subject_id and str(rec.get("subject_id") or "") != str(subject_id):
+                continue
+            if advisory_trace_id and str(rec.get("advisory_trace_id") or "") != str(
+                advisory_trace_id
+            ):
                 continue
             items.append(cognitive_signal_from_payload(rec))
         items.sort(key=lambda item: item.created_at, reverse=True)
