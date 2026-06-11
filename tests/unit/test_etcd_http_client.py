@@ -138,3 +138,34 @@ def test_post_429_retries_record_backoff_sleeps(monkeypatch: pytest.MonkeyPatch)
     assert len(calls) == 3
     assert all("/v3/kv/put" in u for u in calls)
     assert sleeps == [0.01, 0.02]
+
+
+def test_range_supports_sort_limit_count_and_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _fake_post(_url: str, **kwargs: Any) -> _Resp:
+        calls.append(kwargs)
+        return _Resp(200, {"count": "2"})
+
+    monkeypatch.setattr("ae.controller.etcd_state.requests.post", _fake_post)
+    client = EtcdHttpClient(["http://127.0.0.1:2379"])
+
+    out = client.range(
+        "events/demo/",
+        range_end=b"events/demo0",
+        limit=20,
+        sort_order="descend",
+        sort_target="key",
+        keys_only=True,
+        count_only=True,
+        timeout_s=30.0,
+    )
+
+    payload = calls[0]["json"]
+    assert out == {"count": "2"}
+    assert calls[0]["timeout"] == 30.0
+    assert payload["limit"] == 20
+    assert payload["sort_order"] == "DESCEND"
+    assert payload["sort_target"] == "KEY"
+    assert payload["keys_only"] is True
+    assert payload["count_only"] is True

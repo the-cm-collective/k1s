@@ -154,6 +154,17 @@ def _local_node_id() -> str:
     return os.getenv("AE_NODE_ID", socket.gethostname())
 
 
+def _should_run_etcd_maintenance(
+    *,
+    enabled: bool,
+    is_leader: bool,
+    now: float,
+    last_run: float,
+    interval: float,
+) -> bool:
+    return bool(enabled and is_leader and (now - last_run) >= interval)
+
+
 def _parse_labels(raw: str | None) -> dict[str, str]:
     labels: dict[str, str] = {}
     if not raw:
@@ -2992,6 +3003,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         os.getenv("AE_ETCD_MAINTENANCE_INTERVAL_SEC", "900"),
         default=900.0,
     )
+    etcd_maintenance_timeout = _parse_duration_seconds(
+        os.getenv("AE_ETCD_MAINTENANCE_TIMEOUT_SEC", "300"),
+        default=300.0,
+    )
     if etcd_maintenance_interval <= 0:
         etcd_maintenance_enabled = False
     last_etcd_maintenance = 0.0
@@ -3009,8 +3024,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
         import logging as _logging
 
         _logging.getLogger(__name__).info(
-            "etcd watchdog enabled (interval=%.1fs threshold_pct=%s)",
+            "etcd watchdog enabled (interval=%.1fs timeout=%.1fs threshold_pct=%s)",
             etcd_maintenance_interval,
+            etcd_maintenance_timeout,
             os.getenv("AE_ETCD_MAINTENANCE_THRESHOLD_PCT", "80"),
         )
 
@@ -3077,15 +3093,28 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
             if is_leader and not last_is_leader:
                 changed = True
             last_is_leader = is_leader
-            if (
-                etcd_maintenance_enabled
-                and (now - last_etcd_maintenance) >= etcd_maintenance_interval
+            if _should_run_etcd_maintenance(
+                enabled=etcd_maintenance_enabled,
+                is_leader=is_leader,
+                now=now,
+                last_run=last_etcd_maintenance,
+                interval=etcd_maintenance_interval,
             ):
                 triggered = False
                 try:
                     watchdog_fn = getattr(store, "run_maintenance_watchdog", None)
                     if callable(watchdog_fn):
-                        triggered = bool(watchdog_fn())
+                        triggered = bool(
+                            watchdog_fn(maintenance_timeout_s=etcd_maintenance_timeout)
+                        )
+                    result_fn = getattr(store, "last_maintenance_result", None)
+                    if callable(result_fn):
+                        import logging as _logging
+
+                        _logging.getLogger(__name__).info(
+                            "etcd watchdog result: %s",
+                            json.dumps(result_fn(), sort_keys=True),
+                        )
                 except Exception as exc:  # noqa: BLE001
                     import logging as _logging
 

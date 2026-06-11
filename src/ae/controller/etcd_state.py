@@ -80,6 +80,7 @@ from ae.fabric.locality import (
     advisory_response_payload,
     advisory_review_event_from_payload,
     advisory_review_event_payload,
+    build_fabric_advisory_proposal,
     chunk_record_from_payload,
     chunk_record_payload,
     cognitive_signal_from_payload,
@@ -105,7 +106,6 @@ from ae.fabric.locality import (
     transfer_lease_payload,
     transport_attempt_from_payload,
     transport_attempt_payload,
-    build_fabric_advisory_proposal,
 )
 from ae.ha.fencing import parse_envelope, work_operation
 from ae.runtime import RuntimeResult
@@ -167,6 +167,27 @@ def _parse_duration_seconds(value: str | None, default: float) -> float:
             except ValueError:
                 return default
     return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class EtcdHttpClient:
@@ -341,13 +362,26 @@ class EtcdHttpClient:
         *,
         range_end: str | bytes | None = None,
         limit: int | None = None,
+        sort_order: str | None = None,
+        sort_target: str | None = None,
+        keys_only: bool = False,
+        count_only: bool = False,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"key": _b64encode(key)}
         if range_end is not None:
             payload["range_end"] = _b64encode(range_end)
         if limit is not None:
             payload["limit"] = int(limit)
-        return self._post("/kv/range", payload)
+        if sort_order:
+            payload["sort_order"] = str(sort_order).upper()
+        if sort_target:
+            payload["sort_target"] = str(sort_target).upper()
+        if keys_only:
+            payload["keys_only"] = True
+        if count_only:
+            payload["count_only"] = True
+        return self._post("/kv/range", payload, timeout_s=timeout_s)
 
     def put(self, key: str, value: str, *, lease: int | None = None) -> None:
         payload: dict[str, Any] = {"key": _b64encode(key), "value": _b64encode(value)}
@@ -383,23 +417,36 @@ class EtcdHttpClient:
         payload = {"ID": int(lease_id)}
         self._post("/lease/revoke", payload)
 
-    def maintenance_status(self) -> dict[str, Any]:
-        return self._post("/maintenance/status", {})
+    def maintenance_status(self, *, timeout_s: float | None = None) -> dict[str, Any]:
+        return self._post("/maintenance/status", {}, timeout_s=timeout_s)
 
-    def maintenance_alarms(self, *, action: str = "GET", member_id: str | None = None, alarm: str | None = None) -> dict[str, Any]:
+    def maintenance_alarms(
+        self,
+        *,
+        action: str = "GET",
+        member_id: str | None = None,
+        alarm: str | None = None,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {"action": str(action).upper()}
         if member_id is not None:
             payload["memberID"] = str(member_id)
         if alarm is not None:
             payload["alarm"] = str(alarm).upper()
-        return self._post("/maintenance/alarm", payload)
+        return self._post("/maintenance/alarm", payload, timeout_s=timeout_s)
 
-    def compact(self, revision: int, *, physical: bool = True) -> None:
+    def compact(
+        self,
+        revision: int,
+        *,
+        physical: bool = True,
+        timeout_s: float | None = None,
+    ) -> None:
         payload = {"revision": str(int(revision)), "physical": bool(physical)}
-        self._post("/kv/compaction", payload)
+        self._post("/kv/compaction", payload, timeout_s=timeout_s)
 
-    def defragment(self) -> None:
-        self._post("/maintenance/defragment", {})
+    def defragment(self, *, timeout_s: float | None = None) -> None:
+        self._post("/maintenance/defragment", {}, timeout_s=timeout_s)
 
 
 class EtcdStateStore(SQLiteStateStore):
@@ -426,6 +473,7 @@ class EtcdStateStore(SQLiteStateStore):
         refresh_ratio = float(env.get("AE_ETCD_LEASE_REFRESH_RATIO", "0.5") or 0.5)
         self._lease_refresh_ratio = max(0.05, min(0.95, refresh_ratio))
         self._node_leases: dict[str, tuple[int, float]] = {}
+        self._last_maintenance_result: dict[str, Any] = {}
         ca_cert = env.get("AE_ETCD_CA") or None
         cert = env.get("AE_ETCD_CERT") or None
         key = env.get("AE_ETCD_KEY") or None
@@ -552,16 +600,48 @@ class EtcdStateStore(SQLiteStateStore):
     def _delete_prefix(self, prefix: str) -> None:
         self._client.delete_prefix(prefix)
 
+    def _decode_kv(self, kv: dict[str, Any]) -> tuple[str, dict, int]:
+        key = _b64decode(kv.get("key")).decode("utf-8")
+        value = _b64decode(kv.get("value")).decode("utf-8")
+        mod_rev = int(kv.get("mod_revision") or 0)
+        return key, self._decode(value), mod_rev
+
     def _list_prefix(self, prefix: str) -> list[tuple[str, dict, int]]:
         resp = self._client.range(prefix, range_end=_prefix_end(prefix.encode("utf-8")))
         kvs = resp.get("kvs") or []
         out: list[tuple[str, dict, int]] = []
         for kv in kvs:
-            key = _b64decode(kv.get("key")).decode("utf-8")
-            value = _b64decode(kv.get("value")).decode("utf-8")
-            mod_rev = int(kv.get("mod_revision") or 0)
-            out.append((key, self._decode(value), mod_rev))
+            out.append(self._decode_kv(kv))
         return out
+
+    def _list_prefix_keys(
+        self,
+        prefix: str,
+        *,
+        limit: int,
+        start_key: str | None = None,
+        timeout_s: float | None = None,
+    ) -> list[str]:
+        key = start_key or prefix
+        resp = self._client.range(
+            key,
+            range_end=_prefix_end(prefix.encode("utf-8")),
+            limit=max(1, int(limit)),
+            keys_only=True,
+            sort_order="ASCEND",
+            sort_target="KEY",
+            timeout_s=timeout_s,
+        )
+        keys: list[str] = []
+        for kv in resp.get("kvs") or []:
+            decoded = _b64decode(kv.get("key")).decode("utf-8")
+            if decoded.startswith(prefix):
+                keys.append(decoded)
+        return keys
+
+    @staticmethod
+    def _key_after(key: str) -> str:
+        return f"{key}\0"
 
     def _create_json_if_absent(self, key: str, payload: dict) -> bool:
         compare = [{"key": _b64encode(key), "target": "CREATE", "createRevision": "0"}]
@@ -2491,6 +2571,93 @@ class EtcdStateStore(SQLiteStateStore):
         return out[: int(limit)]
 
     # --- Events ---------------------------------------------------------
+    def _event_prefix(self, app_name: str) -> str:
+        return f"{self._k('events', app_name)}/"
+
+    @staticmethod
+    def _event_key_timestamp_us(key: str, prefix: str) -> int | None:
+        rest = key[len(prefix) :] if key.startswith(prefix) else ""
+        raw = rest.split("/", 1)[0]
+        if not raw.isdigit():
+            return None
+        return int(raw)
+
+    def _event_query_timeout_s(self) -> float:
+        return max(1.0, _env_float("AE_ETCD_EVENT_QUERY_TIMEOUT_SEC", 30.0))
+
+    def _event_count(self, app_name: str) -> int:
+        prefix = self._event_prefix(app_name)
+        resp = self._client.range(
+            prefix,
+            range_end=_prefix_end(prefix.encode("utf-8")),
+            count_only=True,
+            timeout_s=self._event_query_timeout_s(),
+        )
+        return int(resp.get("count") or 0)
+
+    def _event_rows(self, app_name: str, *, limit: int) -> list[tuple[str, dict, int]]:
+        limit = max(0, int(limit))
+        if limit <= 0:
+            return []
+        prefix = self._event_prefix(app_name)
+        resp = self._client.range(
+            prefix,
+            range_end=_prefix_end(prefix.encode("utf-8")),
+            limit=limit,
+            sort_order="DESCEND",
+            sort_target="KEY",
+            timeout_s=self._event_query_timeout_s(),
+        )
+        return [self._decode_kv(kv) for kv in resp.get("kvs") or []]
+
+    def _event_app_names(self, *, page_size: int = 1000) -> list[str]:
+        names: set[str] = set()
+        try:
+            names.update(str(name) for name in self.list_registered_app_names() if str(name))
+        except Exception:
+            pass
+        try:
+            names.update(str(status.app_name) for status in self.list_status() if status.app_name)
+        except Exception:
+            pass
+        if not _env_bool("AE_ETCD_EVENT_RETENTION_DISCOVER_STALE_APPS", False):
+            return sorted(names)
+
+        root = f"{self._k('events')}/"
+        start_key: str | None = None
+        while True:
+            keys = self._list_prefix_keys(
+                root,
+                limit=page_size,
+                start_key=start_key,
+                timeout_s=self._event_query_timeout_s(),
+            )
+            if not keys:
+                break
+            for key in keys:
+                rest = key[len(root) :] if key.startswith(root) else ""
+                app_name = rest.split("/", 1)[0]
+                if app_name:
+                    names.add(app_name)
+            if len(keys) < page_size:
+                break
+            start_key = self._key_after(keys[-1])
+        return sorted(names)
+
+    @staticmethod
+    def _app_event_from_record(app_name: str, rec: dict[str, Any]) -> AppEvent:
+        created = _dt_from_iso(
+            rec.get("created_at"),
+            default=datetime.fromtimestamp(0, tz=timezone.utc),
+        )
+        return AppEvent(
+            app_name=app_name,
+            revision=int(rec.get("revision", 0)),
+            event_type=str(rec.get("event_type", "")),
+            message=str(rec.get("message", "")),
+            created_at=created or datetime.fromtimestamp(0, tz=timezone.utc),
+        )
+
     def record_event(self, app_name: str, revision: int, event_type: str, message: str) -> None:
         created_at = _now_iso()
         ts_key = f"{int(_now().timestamp() * 1_000_000):020d}"
@@ -2505,42 +2672,114 @@ class EtcdStateStore(SQLiteStateStore):
         self._put_json(key, payload)
 
     def list_events(self, app_name: str, limit: int = 20) -> list[AppEvent]:
-        rows = self._list_prefix(self._k("events", app_name))
-        rows.sort(key=lambda r: r[0], reverse=True)
-        out: list[AppEvent] = []
-        for _key, rec, _rev in rows[: int(limit)]:
-            created = _dt_from_iso(rec.get("created_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
-            out.append(
-                AppEvent(
-                    app_name=app_name,
-                    revision=int(rec.get("revision", 0)),
-                    event_type=str(rec.get("event_type", "")),
-                    message=str(rec.get("message", "")),
-                    created_at=created or datetime.fromtimestamp(0, tz=timezone.utc),
-                )
-            )
-        return out
+        return [self._app_event_from_record(app_name, rec) for _key, rec, _rev in self._event_rows(app_name, limit=int(limit))]
 
     def list_events_paginated(
         self, app_name: str, limit: int, offset: int
     ) -> tuple[list[AppEvent], int]:
-        rows = self._list_prefix(self._k("events", app_name))
-        rows.sort(key=lambda r: r[0], reverse=True)
-        total = len(rows)
-        slice_rows = rows[int(offset) : int(offset) + int(limit)]
-        out: list[AppEvent] = []
-        for _key, rec, _rev in slice_rows:
-            created = _dt_from_iso(rec.get("created_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
-            out.append(
-                AppEvent(
-                    app_name=app_name,
-                    revision=int(rec.get("revision", 0)),
-                    event_type=str(rec.get("event_type", "")),
-                    message=str(rec.get("message", "")),
-                    created_at=created or datetime.fromtimestamp(0, tz=timezone.utc),
-                )
-            )
+        limit = max(0, int(limit))
+        offset = max(0, int(offset))
+        total = self._event_count(app_name)
+        scan_max = max(1, _env_int("AE_ETCD_EVENT_PAGE_SCAN_MAX", 1000))
+        scan_limit = min(scan_max, offset + limit)
+        if limit <= 0 or offset >= scan_limit:
+            return [], total
+        rows = self._event_rows(app_name, limit=scan_limit)
+        slice_rows = rows[offset : offset + limit]
+        out = [self._app_event_from_record(app_name, rec) for _key, rec, _rev in slice_rows]
         return out, total
+
+    def prune_events(
+        self,
+        *,
+        max_per_app: int | None = None,
+        max_age_days: int | None = None,
+        batch_size: int | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        max_per_app = (
+            _env_int("AE_ETCD_EVENT_RETENTION_MAX_PER_APP", 5000)
+            if max_per_app is None
+            else int(max_per_app)
+        )
+        max_age_days = (
+            _env_int("AE_ETCD_EVENT_RETENTION_MAX_AGE_DAYS", 14)
+            if max_age_days is None
+            else int(max_age_days)
+        )
+        batch_size = (
+            _env_int("AE_ETCD_EVENT_RETENTION_PRUNE_BATCH", 1000)
+            if batch_size is None
+            else int(batch_size)
+        )
+        batch_size = max(1, batch_size)
+        cutoff_us: int | None = None
+        if max_age_days > 0:
+            cutoff_us = int((_now() - timedelta(days=max_age_days)).timestamp() * 1_000_000)
+        apps = self._event_app_names(page_size=batch_size)
+        summary: dict[str, Any] = {
+            "dry_run": bool(dry_run),
+            "apps": len(apps),
+            "deleted": 0,
+            "eligible": 0,
+            "max_per_app": max_per_app,
+            "max_age_days": max_age_days,
+            "batch_size": batch_size,
+            "details": [],
+        }
+        remaining_budget = batch_size
+        for app_name in apps:
+            if remaining_budget <= 0:
+                break
+            total = self._event_count(app_name)
+            by_count_budget = max(0, total - max_per_app) if max_per_app > 0 else 0
+            prefix = self._event_prefix(app_name)
+            start_key: str | None = None
+            scanned = 0
+            candidates: list[str] = []
+            stop_app = False
+            while not stop_app and len(candidates) < remaining_budget:
+                keys = self._list_prefix_keys(
+                    prefix,
+                    limit=min(batch_size, remaining_budget - len(candidates)),
+                    start_key=start_key,
+                    timeout_s=self._event_query_timeout_s(),
+                )
+                if not keys:
+                    break
+                for key in keys:
+                    ts_us = self._event_key_timestamp_us(key, prefix)
+                    by_count = scanned < by_count_budget
+                    by_age = cutoff_us is not None and ts_us is not None and ts_us < cutoff_us
+                    scanned += 1
+                    if by_count or by_age:
+                        candidates.append(key)
+                        if len(candidates) >= remaining_budget:
+                            break
+                        continue
+                    stop_app = True
+                    break
+                if len(keys) < min(batch_size, remaining_budget):
+                    break
+                start_key = self._key_after(keys[-1])
+            if not candidates:
+                continue
+            if not dry_run:
+                for key in candidates:
+                    self._delete(key)
+            deleted = 0 if dry_run else len(candidates)
+            summary["eligible"] = int(summary["eligible"]) + len(candidates)
+            summary["deleted"] = int(summary["deleted"]) + deleted
+            remaining_budget -= len(candidates)
+            summary["details"].append(
+                {
+                    "app_name": app_name,
+                    "total": total,
+                    "eligible": len(candidates),
+                    "deleted": deleted,
+                }
+            )
+        return summary
 
     # --- Node leases (lab-edge) ----------------------------------------
     def acquire_lease(
@@ -3500,7 +3739,13 @@ class EtcdStateStore(SQLiteStateStore):
         *,
         threshold_pct: int | None = None,
         quota_backend_bytes: int | None = None,
+        maintenance_timeout_s: float | None = None,
     ) -> bool:
+        timeout_s = (
+            float(maintenance_timeout_s)
+            if maintenance_timeout_s is not None
+            else _parse_duration_seconds(os.getenv("AE_ETCD_MAINTENANCE_TIMEOUT_SEC"), 300.0)
+        )
         threshold = int(
             threshold_pct
             if threshold_pct is not None
@@ -3512,8 +3757,8 @@ class EtcdStateStore(SQLiteStateStore):
             else os.getenv("AE_ETCD_QUOTA_BACKEND_BYTES", "2147483648") or 2147483648
         )
         quota = max(1, quota)
-        status = self._client.maintenance_status()
-        alarms = self._client.maintenance_alarms(action="GET")
+        status = self._client.maintenance_status(timeout_s=timeout_s)
+        alarms = self._client.maintenance_alarms(action="GET", timeout_s=timeout_s)
         header = status.get("header") if isinstance(status, dict) else {}
         header = header if isinstance(header, dict) else {}
         revision = int(header.get("revision") or 0)
@@ -3523,12 +3768,37 @@ class EtcdStateStore(SQLiteStateStore):
         alarm_items = alarm_items if isinstance(alarm_items, list) else []
         nospace = any(str((item or {}).get("alarm") or "").upper() == "NOSPACE" for item in alarm_items)
         should_reclaim = nospace or usage_pct >= threshold
+        result: dict[str, Any] = {
+            "triggered": bool(should_reclaim),
+            "usage_pct": usage_pct,
+            "threshold_pct": threshold,
+            "quota_backend_bytes": quota,
+            "db_size": db_size,
+            "revision": revision,
+            "nospace": nospace,
+            "pruned_count": 0,
+            "compacted": False,
+            "defragged": False,
+            "alarms_deactivated": 0,
+            "timeout_s": timeout_s,
+            "skipped_reason": "",
+        }
         if not should_reclaim:
+            result["skipped_reason"] = "below_threshold"
+            self._last_maintenance_result = result
             return False
         if revision <= 0:
             raise RuntimeError("etcd maintenance watchdog refused compaction: revision is zero")
-        self._client.compact(revision, physical=True)
-        self._client.defragment()
+        if _env_bool("AE_ETCD_EVENT_RETENTION_PRUNE_ENABLE", True):
+            prune_summary = self.prune_events(dry_run=False)
+            result["prune"] = prune_summary
+            result["pruned_count"] = int(prune_summary.get("deleted") or 0)
+        else:
+            result["prune"] = {"enabled": False}
+        self._client.compact(revision, physical=True, timeout_s=timeout_s)
+        result["compacted"] = True
+        self._client.defragment(timeout_s=timeout_s)
+        result["defragged"] = True
         for item in alarm_items:
             alarm = str((item or {}).get("alarm") or "").upper()
             member_id = str((item or {}).get("memberID") or (item or {}).get("memberId") or "0")
@@ -3539,10 +3809,16 @@ class EtcdStateStore(SQLiteStateStore):
                     action="DEACTIVATE",
                     member_id=member_id,
                     alarm=alarm,
+                    timeout_s=timeout_s,
                 )
+                result["alarms_deactivated"] = int(result["alarms_deactivated"]) + 1
             except Exception:
                 pass
+        self._last_maintenance_result = result
         return True
+
+    def last_maintenance_result(self) -> dict[str, Any]:
+        return dict(getattr(self, "_last_maintenance_result", {}) or {})
 
     def _get_node_cordoned(self, node_id: str) -> bool:
         rec, _ = self._get_json(self._k("nodes", self._site_id, node_id))
@@ -3697,5 +3973,5 @@ class EtcdStateStore(SQLiteStateStore):
         self._delete(self._k("status", app_name))
         self._delete_prefix(self._k("storage", "attachments", app_name))
         if purge_history:
-            self._delete_prefix(self._k("events", app_name))
+            self._delete_prefix(self._event_prefix(app_name))
             self._delete_prefix(self._k("apps", app_name, "revisions"))

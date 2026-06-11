@@ -3,7 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from ae.controller.__main__ import main
+from ae.controller.__main__ import _should_run_etcd_maintenance, main
 from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata, ServiceSpec
 from ae.controller.state import SQLiteStateStore
 
@@ -71,6 +71,49 @@ class _FakeAuthority:
 
     def stop(self) -> None:
         self.stopped = True
+
+
+def test_should_run_etcd_maintenance_requires_leader_and_interval():
+    assert (
+        _should_run_etcd_maintenance(
+            enabled=True,
+            is_leader=True,
+            now=1200.0,
+            last_run=0.0,
+            interval=900.0,
+        )
+        is True
+    )
+    assert (
+        _should_run_etcd_maintenance(
+            enabled=True,
+            is_leader=False,
+            now=1200.0,
+            last_run=0.0,
+            interval=900.0,
+        )
+        is False
+    )
+    assert (
+        _should_run_etcd_maintenance(
+            enabled=False,
+            is_leader=True,
+            now=1200.0,
+            last_run=0.0,
+            interval=900.0,
+        )
+        is False
+    )
+    assert (
+        _should_run_etcd_maintenance(
+            enabled=True,
+            is_leader=True,
+            now=1000.0,
+            last_run=200.0,
+            interval=900.0,
+        )
+        is False
+    )
 
 
 def test_controller_once_reconciles(tmp_path, monkeypatch):

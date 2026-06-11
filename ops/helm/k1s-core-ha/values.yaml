@@ -41,6 +41,19 @@ controller:
   caddySites: ""
   apishimDbPath: /var/lib/ae/apishim.db
   siteIds: []
+  etcdMaintenance:
+    enabled: true
+    intervalSeconds: 900
+    thresholdPct: 80
+    timeoutSeconds: 300
+    quotaBackendBytes: 2147483648
+  etcdEventRetention:
+    pruneEnabled: true
+    maxPerApp: 5000
+    maxAgeDays: 14
+    pruneBatch: 1000
+    pageScanMax: 1000
+    eventQueryTimeoutSeconds: 30
   securityContext:
     runAsUser: 10001
     runAsGroup: 10001

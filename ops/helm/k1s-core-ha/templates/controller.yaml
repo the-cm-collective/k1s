@@ -72,6 +72,28 @@ spec:
               value: http://{{ include "k1s-core-ha.etcdClientServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.etcd.clientPort }}
             - name: AE_ETCD_PREFIX
               value: k1s/stacks/{{ .Release.Namespace }}/{{ .Release.Name }}
+            - name: AE_ETCD_MAINTENANCE_ENABLE
+              value: {{ ternary "1" "0" .Values.controller.etcdMaintenance.enabled | quote }}
+            - name: AE_ETCD_MAINTENANCE_INTERVAL_SEC
+              value: {{ .Values.controller.etcdMaintenance.intervalSeconds | quote }}
+            - name: AE_ETCD_MAINTENANCE_THRESHOLD_PCT
+              value: {{ .Values.controller.etcdMaintenance.thresholdPct | quote }}
+            - name: AE_ETCD_MAINTENANCE_TIMEOUT_SEC
+              value: {{ .Values.controller.etcdMaintenance.timeoutSeconds | quote }}
+            - name: AE_ETCD_QUOTA_BACKEND_BYTES
+              value: {{ .Values.controller.etcdMaintenance.quotaBackendBytes | quote }}
+            - name: AE_ETCD_EVENT_RETENTION_PRUNE_ENABLE
+              value: {{ ternary "1" "0" .Values.controller.etcdEventRetention.pruneEnabled | quote }}
+            - name: AE_ETCD_EVENT_RETENTION_MAX_PER_APP
+              value: {{ .Values.controller.etcdEventRetention.maxPerApp | quote }}
+            - name: AE_ETCD_EVENT_RETENTION_MAX_AGE_DAYS
+              value: {{ .Values.controller.etcdEventRetention.maxAgeDays | quote }}
+            - name: AE_ETCD_EVENT_RETENTION_PRUNE_BATCH
+              value: {{ .Values.controller.etcdEventRetention.pruneBatch | quote }}
+            - name: AE_ETCD_EVENT_PAGE_SCAN_MAX
+              value: {{ .Values.controller.etcdEventRetention.pageScanMax | quote }}
+            - name: AE_ETCD_EVENT_QUERY_TIMEOUT_SEC
+              value: {{ .Values.controller.etcdEventRetention.eventQueryTimeoutSeconds | quote }}
             - name: AE_TRANSPORT_BACKEND
               value: nats-js
             - name: AE_JS_DOMAIN
