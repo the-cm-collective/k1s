@@ -72,6 +72,8 @@ spec:
               value: http://{{ include "k1s-core-ha.etcdClientServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.etcd.clientPort }}
             - name: AE_ETCD_PREFIX
               value: k1s/stacks/{{ .Release.Namespace }}/{{ .Release.Name }}
+            - name: AE_ETCD_READ_TIMEOUT_SEC
+              value: {{ .Values.controller.etcdReadTimeoutSeconds | quote }}
             - name: AE_ETCD_MAINTENANCE_ENABLE
               value: {{ ternary "1" "0" .Values.controller.etcdMaintenance.enabled | quote }}
             - name: AE_ETCD_MAINTENANCE_INTERVAL_SEC

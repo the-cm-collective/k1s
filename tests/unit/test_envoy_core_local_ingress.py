@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
 from ae.controller.spec import app_key
@@ -177,6 +178,44 @@ def test_core_proxy_config_writers_replace_targets_atomically(
     assert envoy_path.stat().st_mode & 0o777 == 0o644
     assert [dst for _, dst in replace_calls] == [rathole_path, envoy_path]
     assert not list((tmp_path / "edge").glob(".*.tmp"))
+
+
+def test_core_proxy_render_read_failure_preserves_existing_config(tmp_path: Path) -> None:
+    class FailingStore:
+        def list_site_ingress_endpoints(self):
+            raise RuntimeError("etcd request failed: read timed out")
+
+    config_dir = tmp_path / "edge-ingress"
+    config_dir.mkdir(parents=True)
+    envoy_path = config_dir / "envoy.yaml"
+    rathole_path = config_dir / "rathole-server.toml"
+    envoy_path.write_text("existing envoy", encoding="utf-8")
+    rathole_path.write_text("existing rathole", encoding="utf-8")
+    cfg = EdgeCoreProxyConfig(
+        config_dir=config_dir,
+        envoy_config_path=envoy_path,
+        rathole_server_path=rathole_path,
+        rathole_client_dir=None,
+        site_domain_suffix="home.arpa",
+        http_listen_port=10080,
+        tls_listen_port=None,
+        tls_root=tmp_path / "tls",
+        tls_default_secret=None,
+        tls_fallback=False,
+        tls_fallback_cn="edge.local",
+        tls_fallback_days=7,
+        rathole_bind_addr="0.0.0.0:2333",
+        rathole_default_token="dev",
+        rathole_server_addr="127.0.0.1:2333",
+        edge_local_addr="127.0.0.1:18081",
+        reload_cmd=None,
+    )
+
+    with pytest.raises(RuntimeError, match="etcd request failed"):
+        EdgeCoreProxyRenderer(FailingStore(), cfg).render()  # type: ignore[arg-type]
+
+    assert envoy_path.read_text(encoding="utf-8") == "existing envoy"
+    assert rathole_path.read_text(encoding="utf-8") == "existing rathole"
 
 
 def test_core_proxy_policy_least_request_sets_cluster_lb_policy(tmp_path: Path) -> None:

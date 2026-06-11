@@ -474,6 +474,10 @@ class EtcdStateStore(SQLiteStateStore):
         self._lease_refresh_ratio = max(0.05, min(0.95, refresh_ratio))
         self._node_leases: dict[str, tuple[int, float]] = {}
         self._last_maintenance_result: dict[str, Any] = {}
+        self._read_timeout_s = max(
+            1.0,
+            _parse_duration_seconds(env.get("AE_ETCD_READ_TIMEOUT_SEC"), 10.0),
+        )
         ca_cert = env.get("AE_ETCD_CA") or None
         cert = env.get("AE_ETCD_CERT") or None
         key = env.get("AE_ETCD_KEY") or None
@@ -582,7 +586,7 @@ class EtcdStateStore(SQLiteStateStore):
             pass
 
     def _get_json(self, key: str) -> tuple[dict | None, int]:
-        resp = self._client.range(key, limit=1)
+        resp = self._client.range(key, limit=1, timeout_s=self._read_timeout_s)
         kvs = resp.get("kvs") or []
         if not kvs:
             return None, 0
@@ -607,7 +611,11 @@ class EtcdStateStore(SQLiteStateStore):
         return key, self._decode(value), mod_rev
 
     def _list_prefix(self, prefix: str) -> list[tuple[str, dict, int]]:
-        resp = self._client.range(prefix, range_end=_prefix_end(prefix.encode("utf-8")))
+        resp = self._client.range(
+            prefix,
+            range_end=_prefix_end(prefix.encode("utf-8")),
+            timeout_s=self._read_timeout_s,
+        )
         kvs = resp.get("kvs") or []
         out: list[tuple[str, dict, int]] = []
         for kv in kvs:

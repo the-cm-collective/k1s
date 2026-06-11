@@ -119,6 +119,7 @@ def _mk_store(client: _FakeEtcdClient) -> EtcdStateStore:
     store._lease_refresh_ratio = 0.5  # type: ignore[attr-defined]
     store._node_leases = {}  # type: ignore[attr-defined]
     store._last_maintenance_result = {}  # type: ignore[attr-defined]
+    store._read_timeout_s = 10.0  # type: ignore[attr-defined]
     return store
 
 
@@ -189,6 +190,22 @@ def test_record_heartbeat_reuses_cached_lease_and_skips_node_rewrite(
     assert [key for key, _lease in puts].count(node_key) == 1
 
 
+def test_generic_reads_use_read_timeout() -> None:
+    fake = _FakeEtcdClient()
+    store = _mk_store(fake)
+    store._read_timeout_s = 12.5  # type: ignore[attr-defined]
+    app_key = store._k("apps", "demo")
+    fake.kvs[app_key] = {"metadata": {"name": "demo"}}
+
+    rec, _rev = store._get_json(app_key)
+    rows = store._list_prefix(store._k("apps"))
+
+    assert rec == {"metadata": {"name": "demo"}}
+    assert len(rows) == 1
+    assert fake.range_calls[0][1]["timeout_s"] == 12.5
+    assert fake.range_calls[1][1]["timeout_s"] == 12.5
+
+
 def test_list_events_uses_server_side_descending_limit() -> None:
     fake = _FakeEtcdClient()
     store = _mk_store(fake)
@@ -204,6 +221,19 @@ def test_list_events_uses_server_side_descending_limit() -> None:
     assert kwargs["limit"] == 2
     assert kwargs["sort_order"] == "DESCEND"
     assert kwargs["sort_target"] == "KEY"
+
+
+def test_event_reads_keep_event_query_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeEtcdClient()
+    store = _mk_store(fake)
+    store._read_timeout_s = 12.5  # type: ignore[attr-defined]
+    monkeypatch.setenv("AE_ETCD_EVENT_QUERY_TIMEOUT_SEC", "31")
+    _seed_event(store, fake, app_name="demo", ts="00000000000000000001", event_type="Old")
+
+    events = store.list_events("demo", limit=1)
+
+    assert [event.event_type for event in events] == ["Old"]
+    assert fake.range_calls[-1][1]["timeout_s"] == 31.0
 
 
 def test_list_events_paginated_uses_count_and_capped_scan(
