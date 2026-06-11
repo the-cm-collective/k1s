@@ -7159,6 +7159,15 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_dashboard_js(self) -> None:
+        script = "// k1s dashboard JavaScript is embedded in /dashboard.\n"
+        payload = script.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _handle_dashboard_partial_logs(self) -> None:
         # Render logs as an HTML fragment suitable for hx-swap=innerHTML
         import urllib.parse as _up

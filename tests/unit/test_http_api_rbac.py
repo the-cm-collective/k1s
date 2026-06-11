@@ -363,6 +363,27 @@ def test_require_role_rejects_query_token_for_post(monkeypatch):
     assert handler._require_role("read") is False
 
 
+def test_dashboard_js_public_route_serves_fallback(monkeypatch):
+    monkeypatch.setenv("AE_DASHBOARD", "1")
+    handler = object.__new__(http_api._ApiHandler)
+    handler.path = "/dashboard.js"
+    handler.command = "GET"
+    handler.headers = {}
+    handler.wfile = BytesIO()
+    statuses: list[int] = []
+    headers: dict[str, str] = {}
+
+    handler.send_response = lambda code, _message=None: statuses.append(code)  # type: ignore[method-assign]
+    handler.send_header = lambda key, value: headers.__setitem__(key, value)  # type: ignore[method-assign]
+    handler.end_headers = lambda: None  # type: ignore[method-assign]
+
+    handler.do_GET()
+
+    assert statuses == [200]
+    assert headers["Content-Type"] == "application/javascript; charset=utf-8"
+    assert "dashboard JavaScript is embedded" in handler.wfile.getvalue().decode("utf-8")
+
+
 def test_inference_discovery_get_respects_read_scope(monkeypatch, tmp_path):
     monkeypatch.setenv("AE_API_READ_TOKEN", "r")
     monkeypatch.setenv("AE_API_READ_SCOPE", "ml--demo-cell")
