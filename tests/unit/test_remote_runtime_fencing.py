@@ -26,12 +26,15 @@ class _Authority:
         )
 
 
-def _manifest() -> AppManifest:
+def _manifest(namespace: str | None = None) -> AppManifest:
+    metadata = {"name": "demo"}
+    if namespace is not None:
+        metadata["namespace"] = namespace
     return AppManifest.model_validate(
         {
             "apiVersion": "ae.dev/v1alpha1",
             "kind": "Deployment",
-            "metadata": {"name": "demo"},
+            "metadata": metadata,
             "spec": {
                 "image": "alpine:3.20",
                 "replicas": 1,
@@ -71,6 +74,35 @@ def test_remote_runtime_includes_fencing_envelope_on_ensure() -> None:
     assert payload["controller_id"] == "ctrl-a"
     assert payload["controller_epoch"] == 11
     assert payload["operation_id"] == "ensure:demo:3:node-a"
+
+
+def test_remote_runtime_ensure_operation_id_includes_namespace() -> None:
+    captured: dict[str, object] = {}
+    runtime = RemoteRuntime(
+        "http://agent:9112",
+        StubRuntime(),
+        authority=_Authority("ctrl-a", 11),
+        node_id="node-a",
+    )
+
+    def _fake_request(method: str, path: str, *, json=None, timeout: int = 30, **kwargs):
+        captured["json"] = json
+        return SimpleNamespace(
+            json=lambda: {
+                "revision": 1,
+                "created": 0,
+                "updated": 0,
+                "removed": 0,
+                "pod_states": [],
+            }
+        )
+
+    runtime._request = _fake_request  # type: ignore[method-assign]
+    runtime.ensure_app(_manifest("sim-baseline-007-plain"), 1, node_id="node-a")
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["operation_id"] == "ensure:sim-baseline-007-plain--demo:1:node-a"
 
 
 def test_remote_runtime_ensure_timeout_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:

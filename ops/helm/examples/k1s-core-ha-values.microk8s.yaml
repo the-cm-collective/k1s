@@ -15,7 +15,12 @@ controller:
     allowPrivilegeEscalation: false
   siteIds:
     - host-a
+    - host-b
     - workerbee-edge
+  routeBundles:
+    enabled: true
+    intervalSeconds: 5
+    replayIntervalSeconds: 30
   api:
     mutationsEnabled: true
     adminTokenSecretKey: apishim-admin-token

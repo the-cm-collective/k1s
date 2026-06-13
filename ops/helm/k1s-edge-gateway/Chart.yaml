@@ -1,0 +1,6 @@
+apiVersion: v2
+name: k1s-edge-gateway
+description: Site gateway, tunnel client, and edge listener for k1s core-proxy MicroK8s lanes.
+type: application
+version: 0.1.0
+appVersion: 0.1.6.dev0

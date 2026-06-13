@@ -1820,11 +1820,17 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 }
                 if bundle_enabled:
                     bundle_interval = float(os.getenv("AE_ROUTE_BUNDLE_INTERVAL_S", "5") or 5)
+                    bundle_replay_interval = float(
+                        os.getenv("AE_ROUTE_BUNDLE_REPLAY_INTERVAL_S", "30") or 30
+                    )
                     _route_bundle = RouteBundlePublisher(
                         store,
                         nats_url=transport.nats_url,
                         nats_creds=transport.nats_creds,
-                        config=RouteBundlePublisherConfig(interval_s=bundle_interval),
+                        config=RouteBundlePublisherConfig(
+                            interval_s=bundle_interval,
+                            replay_interval_s=bundle_replay_interval,
+                        ),
                         authority=authority,
                     )
                     _route_bundle.start()
@@ -2848,7 +2854,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 report = reconciler.reconcile(updated)
                 if action == "resume":
                     try:
-                        store.record_event(app, report.revision, "RolloutResumed", "Rollout resumed")
+                        store.record_event(
+                            app, report.revision, "RolloutResumed", "Rollout resumed"
+                        )
                     except Exception:
                         pass
                 target_status = "paused" if action == "pause" else "ready"

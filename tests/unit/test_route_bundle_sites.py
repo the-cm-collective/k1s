@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ae.controller.etcd_state import EtcdStateStore
-from ae.controller.state import EdgeIngressRouteRecord, SQLiteStateStore, ServiceEndpoint
+from ae.controller.state import EdgeIngressRouteRecord, PodStatus, ServiceEndpoint, SQLiteStateStore
 from ae.transport.nats_client import NatsMessage
-from ae.transport.route_bundle_publisher import RouteBundlePublisher
+from ae.transport.route_bundle_publisher import RouteBundlePublisher, RouteBundlePublisherConfig
 from ae.transport.subjects import hub_route_bundle_subject
 
 
@@ -40,6 +40,35 @@ def _edge_local_route_record(site_id: str) -> EdgeIngressRouteRecord:
     )
 
 
+def _core_proxy_route_record(site_id: str) -> EdgeIngressRouteRecord:
+    now = datetime.now(timezone.utc)
+    return EdgeIngressRouteRecord(
+        name="app-core-proxy",
+        namespace="default",
+        site_id=site_id,
+        policy_name=None,
+        policy_namespace=None,
+        spec={
+            "apiVersion": "k1s.io/v1",
+            "kind": "EdgeIngressRoute",
+            "metadata": {"name": "app-core-proxy", "namespace": "default"},
+            "spec": {
+                "host": "app-core-proxy.home.arpa",
+                "paths": [
+                    {
+                        "path": "/",
+                        "serviceRef": {"name": "app-svc", "namespace": "default", "port": 8080},
+                    }
+                ],
+                "exposure": {"mode": "core-proxy", "placement": {"site": site_id}},
+            },
+        },
+        status=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def test_sqlite_route_bundle_site_ids_include_lease_and_route_sites(tmp_path: Path) -> None:
     store = SQLiteStateStore(db_path=tmp_path / "controller.db")
     store.acquire_lease(
@@ -58,7 +87,12 @@ def test_sqlite_route_bundle_site_ids_include_lease_and_route_sites(tmp_path: Pa
         policy_namespace=None,
         document={
             "host": "app-edge-local.home.arpa",
-            "paths": [{"path": "/", "serviceRef": {"name": "app-svc", "namespace": "default", "port": 8080}}],
+            "paths": [
+                {
+                    "path": "/",
+                    "serviceRef": {"name": "app-svc", "namespace": "default", "port": 8080},
+                }
+            ],
             "exposure": {"mode": "edge-local", "placement": {"site": "route-site"}},
         },
     )
@@ -70,7 +104,12 @@ def test_sqlite_route_bundle_site_ids_include_lease_and_route_sites(tmp_path: Pa
         policy_namespace=None,
         document={
             "host": "ignored.home.arpa",
-            "paths": [{"path": "/", "serviceRef": {"name": "app-svc", "namespace": "default", "port": 8080}}],
+            "paths": [
+                {
+                    "path": "/",
+                    "serviceRef": {"name": "app-svc", "namespace": "default", "port": 8080},
+                }
+            ],
             "exposure": {"mode": "edge-local", "placement": {"site": ""}},
         },
     )
@@ -170,6 +209,137 @@ def test_route_bundle_publisher_uses_route_bundle_site_ids(monkeypatch) -> None:
                 "target_port": 8080,
                 "ready": True,
             },
+        ]
+    }
+
+
+def test_route_bundle_publisher_includes_core_proxy_routes(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTROLLER_ID", "ctrl-a")
+    monkeypatch.setenv("AE_CONTROLLER_EPOCH", "9")
+
+    class FakeNatsClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.published = []
+
+        def connect(self) -> None:
+            return None
+
+        def subscribe(self, subject, callback) -> None:
+            return None
+
+        def publish_json(self, subject, payload) -> None:
+            self.published.append((subject, payload))
+
+        def close(self) -> None:
+            return None
+
+    class FakeStore:
+        def list_route_bundle_site_ids(self):
+            return ["host-b"]
+
+        def list_edge_ingress_routes_for_site(self, site_id: str):
+            assert site_id == "host-b"
+            return [_core_proxy_route_record(site_id)]
+
+        def get_edge_ingress_policy(self, *, name: str, namespace: str):
+            return None
+
+        def list_service_endpoints(self, app_name: str):
+            assert app_name == "app-svc"
+            return [
+                ServiceEndpoint(
+                    app_name="app-svc",
+                    port=18119,
+                    ip="10.241.0.11",
+                    target_port=8080,
+                    ready=True,
+                )
+            ]
+
+    monkeypatch.setattr("ae.transport.route_bundle_publisher.NatsClient", FakeNatsClient)
+
+    publisher = RouteBundlePublisher(FakeStore(), nats_url="nats://127.0.0.1:4222")
+    publisher.run_once()
+
+    subject, payload = publisher._client.published[0]  # type: ignore[attr-defined]
+    assert subject == hub_route_bundle_subject("host-b")
+    assert payload["routes"][0]["spec"]["exposure"]["mode"] == "core-proxy"
+    assert payload["routes"][0]["spec"]["host"] == "app-core-proxy.home.arpa"
+    assert payload["service_endpoints"] == {
+        "default/app-svc": [
+            {
+                "ip": "10.241.0.11",
+                "service_port": 18119,
+                "target_port": 8080,
+                "ready": True,
+            }
+        ]
+    }
+
+
+def test_route_bundle_publisher_falls_back_to_ready_pod_endpoints(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTROLLER_ID", "ctrl-a")
+    monkeypatch.setenv("AE_CONTROLLER_EPOCH", "9")
+
+    class FakeNatsClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.published = []
+
+        def connect(self) -> None:
+            return None
+
+        def subscribe(self, subject, callback) -> None:
+            return None
+
+        def publish_json(self, subject, payload) -> None:
+            self.published.append((subject, payload))
+
+        def close(self) -> None:
+            return None
+
+    class FakeStore:
+        def list_route_bundle_site_ids(self):
+            return ["host-b"]
+
+        def list_edge_ingress_routes_for_site(self, site_id: str):
+            assert site_id == "host-b"
+            return [_core_proxy_route_record(site_id)]
+
+        def get_edge_ingress_policy(self, *, name: str, namespace: str):
+            return None
+
+        def list_service_endpoints(self, app_name: str):
+            assert app_name == "app-svc"
+            return []
+
+        def list_pods(self, app_name: str):
+            assert app_name == "app-svc"
+            return [
+                PodStatus(
+                    ready=True,
+                    live=True,
+                    status="Running",
+                    readiness_message="ok",
+                    liveness_message="ok",
+                    pod_name="app-svc-0",
+                    endpoint="192.168.29.111:8788",
+                )
+            ]
+
+    monkeypatch.setattr("ae.transport.route_bundle_publisher.NatsClient", FakeNatsClient)
+
+    publisher = RouteBundlePublisher(FakeStore(), nats_url="nats://127.0.0.1:4222")
+    publisher.run_once()
+
+    _subject, payload = publisher._client.published[0]  # type: ignore[attr-defined]
+    assert payload["service_endpoints"] == {
+        "default/app-svc": [
+            {
+                "ip": "192.168.29.111",
+                "service_port": 8080,
+                "target_port": 8788,
+                "ready": True,
+            }
         ]
     }
 
@@ -286,6 +456,61 @@ def test_route_bundle_publish_reuses_operation_id_on_retry(monkeypatch) -> None:
     second = publisher._client.published[1][1]  # type: ignore[attr-defined]
     assert first["operation_id"] == "route:sea-edge-02:1:9"
     assert second["operation_id"] == first["operation_id"]
+
+
+def test_route_bundle_replays_acked_bundle_after_interval(monkeypatch) -> None:
+    monkeypatch.setenv("AE_CONTROLLER_ID", "ctrl-a")
+    monkeypatch.setenv("AE_CONTROLLER_EPOCH", "9")
+    times = iter([100.0, 131.0])
+    monkeypatch.setattr("ae.transport.route_bundle_publisher.time.monotonic", lambda: next(times))
+
+    class FakeNatsClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.published = []
+
+        def connect(self) -> None:
+            return None
+
+        def subscribe(self, subject, callback) -> None:
+            return None
+
+        def publish_json(self, subject, payload) -> None:
+            self.published.append((subject, payload))
+
+        def close(self) -> None:
+            return None
+
+    class FakeStore:
+        def list_route_bundle_site_ids(self):
+            return ["sea-edge-02"]
+
+        def list_edge_ingress_routes_for_site(self, site_id: str):
+            return [_edge_local_route_record(site_id)]
+
+        def get_edge_ingress_policy(self, *, name: str, namespace: str):
+            return None
+
+        def list_service_endpoints(self, app_name: str):
+            return []
+
+    monkeypatch.setattr("ae.transport.route_bundle_publisher.NatsClient", FakeNatsClient)
+
+    publisher = RouteBundlePublisher(
+        FakeStore(),
+        nats_url="nats://127.0.0.1:4222",
+        config=RouteBundlePublisherConfig(replay_interval_s=30.0),
+    )
+    publisher.run_once()
+    state = publisher._state["sea-edge-02"]  # type: ignore[attr-defined]
+    state.acked_rev = state.rev
+
+    publisher.run_once()
+
+    assert len(publisher._client.published) == 2  # type: ignore[attr-defined]
+    first = publisher._client.published[0][1]  # type: ignore[attr-defined]
+    second = publisher._client.published[1][1]  # type: ignore[attr-defined]
+    assert first["bundle_rev"] == second["bundle_rev"] == 1
+    assert first["hash"] == second["hash"]
 
 
 def test_route_bundle_ack_ignores_stale_envelope(monkeypatch) -> None:

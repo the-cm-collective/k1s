@@ -1,0 +1,336 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k1s-edge-gateway.fullname" . }}
+  labels:
+    {{- include "k1s-edge-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge-gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "k1s-edge-gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: edge-gateway
+  template:
+    metadata:
+      labels:
+        {{- include "k1s-edge-gateway.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: edge-gateway
+        k1s.dev/site-id: {{ .Values.gateway.siteId | quote }}
+      {{- with .Values.pod.annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.pod.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.pod.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.pod.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        {{- if eq (lower .Values.transport.mode) "edgenatsleaf" }}
+        - name: edge-nats
+          image: {{ include "k1s-edge-gateway.image" (dict "root" . "image" .Values.transport.edgeNats.image) }}
+          imagePullPolicy: {{ .Values.transport.edgeNats.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              cat >/tmp/nats-edge.conf <<EOF
+              host: 127.0.0.1
+              port: {{ .Values.transport.edgeNats.clientPort }}
+              http: {{ .Values.transport.edgeNats.monitorPort }}
+              server_name: ${POD_NAME}-edge-nats
+              leafnodes {
+                remotes = [
+                  { url: "nats://${NATS_LEAF_USER}:${NATS_LEAF_PASSWORD}@${K1S_NATS_LEAF_HOST}:${K1S_NATS_LEAF_PORT}" }
+                ]
+              }
+              EOF
+              exec nats-server --config /tmp/nats-edge.conf
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K1S_NATS_LEAF_HOST
+              value: {{ include "k1s-edge-gateway.natsLeafHost" . | quote }}
+            - name: K1S_NATS_LEAF_PORT
+              value: {{ .Values.transport.natsLeafPort | quote }}
+            - name: NATS_LEAF_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-edge-gateway.coreAuthSecretName" . }}
+                  key: {{ .Values.target.natsLeafUserSecretKey }}
+            - name: NATS_LEAF_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-edge-gateway.coreAuthSecretName" . }}
+                  key: {{ .Values.target.natsLeafPasswordSecretKey }}
+          ports:
+            - name: nats
+              containerPort: {{ .Values.transport.edgeNats.clientPort }}
+            - name: nats-monitor
+              containerPort: {{ .Values.transport.edgeNats.monitorPort }}
+          readinessProbe:
+            tcpSocket:
+              port: nats
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: nats
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.transport.edgeNats.resources | nindent 12 }}
+        {{- end }}
+        - name: gateway
+          image: {{ include "k1s-edge-gateway.image" (dict "root" . "image" .Values.gateway.image) }}
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              mode="$(printf '%s' "${K1S_EDGE_TRANSPORT_MODE}" | tr '[:upper:]' '[:lower:]')"
+              if [ "$mode" = "edgenatsleaf" ]; then
+                export AE_NATS_URL="nats://127.0.0.1:${K1S_EDGE_NATS_PORT}"
+              else
+                export AE_NATS_URL="nats://${NATS_USER}:${NATS_PASSWORD}@${K1S_NATS_HOST}:${K1S_NATS_PORT}"
+              fi
+              exec python -m ae.gateway \
+                --site-id "${AE_SITE_ID}" \
+                --node-id "${AE_NODE_ID}" \
+                --status-interval "${AE_GATEWAY_STATUS_INTERVAL}"
+          env:
+            - name: K1S_EDGE_TRANSPORT_MODE
+              value: {{ .Values.transport.mode | quote }}
+            - name: K1S_EDGE_NATS_PORT
+              value: {{ .Values.transport.edgeNats.clientPort | quote }}
+            - name: K1S_NATS_HOST
+              value: {{ include "k1s-edge-gateway.natsHost" . | quote }}
+            - name: K1S_NATS_PORT
+              value: {{ .Values.transport.natsPort | quote }}
+            - name: NATS_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-edge-gateway.coreAuthSecretName" . }}
+                  key: {{ .Values.target.natsUserSecretKey }}
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-edge-gateway.coreAuthSecretName" . }}
+                  key: {{ .Values.target.natsPasswordSecretKey }}
+            - name: AE_TRANSPORT_BACKEND
+              value: {{ .Values.gateway.transportBackend | quote }}
+            - name: AE_JS_DOMAIN
+              value: {{ .Values.gateway.jsDomain | quote }}
+            - name: AE_SITE_ID
+              value: {{ .Values.gateway.siteId | quote }}
+            - name: AE_NODE_ID
+              value: {{ .Values.gateway.nodeId | quote }}
+            - name: AE_GATEWAY_STATUS_INTERVAL
+              value: {{ .Values.gateway.statusIntervalSeconds | quote }}
+            - name: AE_GATEWAY_SPOOL_PATH
+              value: {{ .Values.gateway.spoolPath | quote }}
+            - name: AE_EDGE_LOCAL_INGRESS_CONFIG_DIR
+              value: {{ .Values.edgeLocal.configDir | quote }}
+            - name: AE_EDGE_LOCAL_INGRESS_CONFIG_FILE
+              value: {{ .Values.edgeLocal.configFile | quote }}
+            - name: AE_EDGE_LOCAL_UPSTREAM_MODE
+              value: {{ .Values.edgeLocal.upstreamMode | quote }}
+            - name: AE_EDGE_LOCAL_INGRESS_SCHEME
+              value: {{ .Values.edgeLocal.listenScheme | quote }}
+            - name: AE_EDGE_LOCAL_INGRESS_LISTEN_PORT
+              value: {{ .Values.edgeLocal.listenPort | quote }}
+            {{- with .Values.gateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - name: gateway-state
+              mountPath: /var/lib/ae
+            - name: edge-local-config
+              mountPath: {{ .Values.edgeLocal.configDir | quote }}
+        - name: edge-caddy
+          image: {{ include "k1s-edge-gateway.image" (dict "root" . "image" .Values.caddy.image) }}
+          imagePullPolicy: {{ .Values.caddy.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              mkdir -p "$(dirname "${CADDY_CONFIG_FILE}")" "{{ .Values.caddy.dataDir }}" "{{ .Values.caddy.configDir }}"
+              ensure_placeholder() {
+                if [ ! -s "${CADDY_CONFIG_FILE}" ]; then
+                  cat >"${CADDY_CONFIG_FILE}" <<EOF
+              :{{ .Values.edgeLocal.listenPort }} {
+                  respond 503
+              }
+              EOF
+                fi
+              }
+              child=""
+              last=""
+              start_child() {
+                ensure_placeholder
+                if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+                  kill "$child" || true
+                  wait "$child" || true
+                fi
+                caddy run --config "${CADDY_CONFIG_FILE}" --adapter caddyfile &
+                child="$!"
+              }
+              trap 'if [ -n "$child" ]; then kill "$child" || true; wait "$child" || true; fi' EXIT INT TERM
+              start_child
+              while true; do
+                ensure_placeholder
+                now="$(sha256sum "${CADDY_CONFIG_FILE}" | awk "{print \$1}")"
+                if [ "$now" != "$last" ]; then
+                  last="$now"
+                  if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+                    caddy reload --config "${CADDY_CONFIG_FILE}" --adapter caddyfile || start_child
+                  else
+                    start_child
+                  fi
+                fi
+                if [ -n "$child" ] && ! kill -0 "$child" 2>/dev/null; then
+                  start_child
+                fi
+                sleep 3
+              done
+          env:
+            - name: CADDY_CONFIG_FILE
+              value: {{ .Values.edgeLocal.configFile | quote }}
+          ports:
+            - name: edge-http
+              containerPort: {{ .Values.edgeLocal.listenPort }}
+          resources:
+            {{- toYaml .Values.caddy.resources | nindent 12 }}
+          volumeMounts:
+            - name: edge-local-config
+              mountPath: {{ .Values.edgeLocal.configDir | quote }}
+            - name: caddy-data
+              mountPath: {{ .Values.caddy.dataDir | quote }}
+            - name: caddy-config
+              mountPath: {{ .Values.caddy.configDir | quote }}
+        - name: rathole-client
+          image: {{ include "k1s-edge-gateway.image" (dict "root" . "image" .Values.rathole.image) }}
+          imagePullPolicy: {{ .Values.rathole.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              write_config() {
+                remote_addr="$1"
+                config_path="$2"
+                cat >"${config_path}" <<EOF
+              [client]
+              remote_addr = "${remote_addr}"
+              default_token = "${AE_RATHOLE_DEFAULT_TOKEN}"
+
+              [client.services]
+              [client.services."${AE_SITE_ID}"]
+              local_addr = "${AE_EDGE_INGRESS_LOCAL_ADDR}"
+              EOF
+              }
+
+              if [ "${K1S_RATHOLE_CONNECT_ALL_CONTROLLER_PODS}" != "1" ]; then
+                write_config "${AE_RATHOLE_SERVER_ADDR}" "{{ .Values.rathole.configPath }}"
+                exec rathole --client "{{ .Values.rathole.configPath }}"
+              fi
+
+              mkdir -p /tmp/rathole-clients
+              stop_clients() {
+                for pid_file in /tmp/rathole-clients/*.pid; do
+                  [ -e "${pid_file}" ] || continue
+                  pid="$(cat "${pid_file}" 2>/dev/null || true)"
+                  [ -n "${pid}" ] || continue
+                  kill "${pid}" 2>/dev/null || true
+                done
+              }
+              trap 'stop_clients; wait || true' EXIT INT TERM
+
+              while true; do
+                hosts="$(getent hosts "${K1S_RATHOLE_DISCOVERY_HOST}" | awk '{print $1}' | sort -u || true)"
+                if [ -z "${hosts}" ]; then
+                  echo "rathole discovery found no controller pods for ${K1S_RATHOLE_DISCOVERY_HOST}" >&2
+                  sleep "${K1S_RATHOLE_DISCOVERY_REFRESH_SECONDS}"
+                  continue
+                fi
+
+                active_keys=" "
+                for host in ${hosts}; do
+                  key="$(printf '%s' "${host}" | tr -c 'A-Za-z0-9_' '_')"
+                  active_keys="${active_keys}${key} "
+                  pid_file="/tmp/rathole-clients/${key}.pid"
+                  if [ -s "${pid_file}" ] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then
+                    continue
+                  fi
+
+                  config_path="/tmp/rathole-clients/${key}.toml"
+                  write_config "${host}:${K1S_RATHOLE_DISCOVERY_PORT}" "${config_path}"
+                  rathole --client "${config_path}" &
+                  echo "$!" >"${pid_file}"
+                  echo "started rathole client for ${host}:${K1S_RATHOLE_DISCOVERY_PORT}" >&2
+                done
+
+                for pid_file in /tmp/rathole-clients/*.pid; do
+                  [ -e "${pid_file}" ] || continue
+                  key="$(basename "${pid_file}" .pid)"
+                  case "${active_keys}" in
+                    *" ${key} "*) ;;
+                    *)
+                      pid="$(cat "${pid_file}" 2>/dev/null || true)"
+                      [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
+                      rm -f "${pid_file}" "/tmp/rathole-clients/${key}.toml"
+                      ;;
+                  esac
+                done
+
+                sleep "${K1S_RATHOLE_DISCOVERY_REFRESH_SECONDS}"
+              done
+          env:
+            - name: AE_SITE_ID
+              value: {{ .Values.gateway.siteId | quote }}
+            - name: AE_EDGE_INGRESS_LOCAL_ADDR
+              value: {{ .Values.edgeLocal.localAddr | quote }}
+            - name: AE_RATHOLE_SERVER_ADDR
+              value: {{ include "k1s-edge-gateway.ratholeServerAddr" . | quote }}
+            - name: K1S_RATHOLE_CONNECT_ALL_CONTROLLER_PODS
+              value: {{ ternary "1" "0" .Values.rathole.connectAllControllerPods | quote }}
+            - name: K1S_RATHOLE_DISCOVERY_HOST
+              value: {{ include "k1s-edge-gateway.ratholeDiscoveryHost" . | quote }}
+            - name: K1S_RATHOLE_DISCOVERY_PORT
+              value: {{ .Values.rathole.discoveryPort | quote }}
+            - name: K1S_RATHOLE_DISCOVERY_REFRESH_SECONDS
+              value: {{ .Values.rathole.discoveryRefreshSeconds | quote }}
+            - name: AE_RATHOLE_DEFAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "k1s-edge-gateway.coreAuthSecretName" . }}
+                  key: {{ .Values.target.ratholeTokenSecretKey }}
+          resources:
+            {{- toYaml .Values.rathole.resources | nindent 12 }}
+      volumes:
+        - name: gateway-state
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "k1s-edge-gateway.pvcName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: edge-local-config
+          emptyDir: {}
+        - name: caddy-data
+          emptyDir: {}
+        - name: caddy-config
+          emptyDir: {}

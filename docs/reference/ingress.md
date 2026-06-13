@@ -45,11 +45,13 @@ Caddy-rendered app ingress:
 
 Edge-local gateway rendering:
 
-- `AE_ROUTE_BUNDLE_ENABLED=1`: enable controller route-bundle publication for `edge-local`.
+- `AE_ROUTE_BUNDLE_ENABLED=1`: enable controller route-bundle publication for edge-rendered routes. This includes `edge-local` and the edge listener behind `core-proxy`.
 - `AE_EDGE_LOCAL_UPSTREAM_MODE`: upstream selection mode; `bundle-endpoints` is the strict route-bundle lane and `auto` may fall back to DNS.
 - `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR`: directory for rendered edge-local config output.
 - `AE_EDGE_LOCAL_INGRESS_CONFIG_FILE`: rendered edge-local Caddyfile path.
 - `AE_EDGE_LOCAL_INGRESS_RELOAD_CMD`: gateway-side reload command run after edge-local config updates.
+- `AE_EDGE_LOCAL_INGRESS_SCHEME`: Caddy site scheme for rendered routes, normally `https`; use `http` for the local listener behind a `core-proxy` Rathole tunnel.
+- `AE_EDGE_LOCAL_INGRESS_LISTEN_PORT`: optional explicit Caddy site port for rendered routes, for example `18081` when `AE_EDGE_INGRESS_LOCAL_ADDR=127.0.0.1:18081`.
 
 Optional Service VIP plumbing:
 

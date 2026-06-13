@@ -6,9 +6,11 @@ This lane packages `k1s` into a namespace-scoped MicroK8s dev stack on Host B wh
 
 - Host B core chart: `ops/helm/k1s-core-ha`
 - Host B local node chart: `ops/helm/k1s-node-local`
+- Host B site gateway chart: `ops/helm/k1s-edge-gateway`
 - Checked-in sample values:
   - `ops/helm/examples/k1s-core-ha-values.microk8s.yaml`
   - `ops/helm/examples/k1s-node-local-values.microk8s.yaml`
+  - `ops/helm/examples/k1s-edge-gateway-values.microk8s.yaml`
 - Host A bootstrap renderer: `scripts/dev/microk8s_stack_bundle.py`
 - Host A sample env: `ops/dev/host-a-edge-core.env.sample`
 
@@ -35,11 +37,13 @@ export TAG=dev
 podman build -f ops/images/controller.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-core:${TAG} .
 podman build -f ops/images/apishim.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-apishim:${TAG} .
 podman build -f ops/images/node.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-core-node:${TAG} .
+podman build -f ops/images/gateway.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-edge-core:${TAG} .
 podman build -f ops/images/rathole.Dockerfile -t ${REGISTRY_HOST}/k1s/k1s-rathole:${TAG} .
 
 podman push --tls-verify=false ${REGISTRY_HOST}/k1s/k1s-core:${TAG}
 podman push --tls-verify=false ${REGISTRY_HOST}/k1s/k1s-apishim:${TAG}
 podman push --tls-verify=false ${REGISTRY_HOST}/k1s/k1s-core-node:${TAG}
+podman push --tls-verify=false ${REGISTRY_HOST}/k1s/k1s-edge-core:${TAG}
 podman push --tls-verify=false ${REGISTRY_HOST}/k1s/k1s-rathole:${TAG}
 ```
 
@@ -50,6 +54,7 @@ for src in \
   quay.io/coreos/etcd:v3.5.14 \
   docker.io/nats:2.10.18-alpine \
   docker.io/natsio/prometheus-nats-exporter:0.19.2 \
+  docker.io/library/caddy:2.8 \
   docker.io/envoyproxy/envoy:v1.29-latest
 do
   podman pull ${src}
@@ -58,7 +63,7 @@ do
 done
 ```
 
-If you need the Host A edge gateway image in the same registry for other flows, build and push `ops/images/gateway.Dockerfile` separately.
+The `k1s-edge-core` gateway image is required when this lane keeps app ingress in `core-proxy`.
 
 ## Install
 
@@ -70,6 +75,7 @@ Keep live values under `.local/helm/`.
 mkdir -p .local/helm
 cp ops/helm/examples/k1s-core-ha-values.microk8s.yaml .local/helm/k1s-dev-a.core.yaml
 cp ops/helm/examples/k1s-node-local-values.microk8s.yaml .local/helm/k1s-dev-a.node.yaml
+cp ops/helm/examples/k1s-edge-gateway-values.microk8s.yaml .local/helm/k1s-dev-a.edge.yaml
 ```
 
 Edit at least these fields before install:
@@ -82,12 +88,20 @@ Edit at least these fields before install:
   - `bootstrap.controller.hostOverride`
   - `bootstrap.natsLeaf.hostOverride`
   - `bootstrap.rathole.hostOverride`
+  - `controller.routeBundles.enabled`
+  - `controller.routeBundles.replayIntervalSeconds`
   - `auth.*` secrets
 - `.local/helm/k1s-dev-a.node.yaml`
   - `target.namespace`
   - `target.controllerReleaseName`
   - `node.runtimeHostSocketPath`
   - `node.nodeSelector`
+- `.local/helm/k1s-dev-a.edge.yaml`
+  - `target.namespace`
+  - `target.controllerReleaseName`
+  - `gateway.siteId`
+  - `gateway.nodeId`
+  - `global.registryHost`
 
 On MicroK8s, set both runtime socket host paths to:
 
@@ -227,7 +241,43 @@ curl -fsS http://127.0.0.1:9108/metrics | rg 'ae_nodes_total|ae_nodes_ready|ae_n
 
 The chart is cluster-exclusive on purpose. A second `k1s-node-local` install should fail while the first exists.
 
-### 6. Bring up Host A
+### 6. Install the Host B edge gateway
+
+Install this chart when the stack is expected to serve app ingress through `core-proxy`.
+The gateway pod owns the Host B site tunnel client and the local Caddy listener that receives traffic from Rathole.
+For the HA MicroK8s lane, keep `rathole.connectAllControllerPods: true`; the gateway resolves the controller headless service and opens one Rathole client to each controller pod so every core Envoy can reach the same site-local listener.
+
+```bash
+helm upgrade --install k1s-dev-a-edge ops/helm/k1s-edge-gateway \
+  --namespace k1s-dev-a \
+  -f .local/helm/k1s-dev-a.edge.yaml
+```
+
+Validate the gateway pod and the core-proxy tunnel:
+
+```bash
+kubectl -n k1s-dev-a rollout status deploy/k1s-dev-a-edge-k1s-edge-gateway
+kubectl -n k1s-dev-a logs deploy/k1s-dev-a-edge-k1s-edge-gateway -c gateway --tail=100
+kubectl -n k1s-dev-a logs deploy/k1s-dev-a-edge-k1s-edge-gateway -c rathole-client --tail=100
+kubectl -n k1s-dev-a logs deploy/k1s-dev-a-edge-k1s-edge-gateway -c edge-caddy --tail=100
+curl -fsS http://127.0.0.1:9108/metrics | rg 'ae_site_gateway_last_seen_seconds|ae_route_bundle_pending|ae_route_bundle_ack_age_seconds'
+```
+
+Expected state:
+
+- the gateway site id matches the local node site, normally `host-b`
+- `ae_site_gateway_last_seen_seconds{site="host-b",...}` is present and recent
+- route bundle pending returns to `0` after an app route is present
+- every controller Rathole server has a per-site service for `host-b`
+- the assigned core-proxy port opens only after the Rathole client is connected
+
+Route bundles are replayed periodically even after acknowledgement. Keep `controller.routeBundles.replayIntervalSeconds` nonzero so a restarted gateway receives the last known-good route set without waiting for an app change.
+
+For the first MVP pass, keep `transport.mode: directHub`. Use `transport.mode: edgeNatsLeaf` after the direct-hub path is green and you want the edge NATS leaf topology.
+
+If the controller renders a `core-proxy` route but no `1808x` core-proxy port is reachable, do not expose those dynamic ports as Kubernetes Services. Treat it as an edge-gateway health problem: inspect the gateway, Rathole client, Caddy listener, route bundle ack, and site id alignment.
+
+### 7. Bring up Host A
 
 Preferred path:
 
@@ -244,7 +294,16 @@ Fallback path:
 
 Remove in dependency order so the cluster does not keep orphaned GPU or site transport state.
 
-### Remove the Host B local node first
+### Remove the edge gateway first
+
+```bash
+helm uninstall k1s-dev-a-edge --namespace k1s-dev-a
+kubectl -n k1s-dev-a get deploy,pvc | rg 'k1s-dev-a-edge|NAME'
+```
+
+Keep the gateway PVC until you decide whether the local gateway spool is useful for diagnostics.
+
+### Remove the Host B local node next
 
 ```bash
 helm uninstall k1s-dev-a-node --namespace k1s-dev-a
@@ -329,6 +388,21 @@ helm upgrade --install k1s-dev-a-node ops/helm/k1s-node-local \
 - Fallback in-guest path:
   - restore the prior `.env` content
   - restart edge-core services without touching the GPU compute node
+
+### Roll back the edge gateway
+
+```bash
+helm history k1s-dev-a-edge --namespace k1s-dev-a
+helm rollback k1s-dev-a-edge <revision> --namespace k1s-dev-a
+kubectl -n k1s-dev-a rollout status deploy/k1s-dev-a-edge-k1s-edge-gateway
+```
+
+Post-rollback checks:
+
+```bash
+curl -fsS http://127.0.0.1:9108/metrics | rg 'ae_site_gateway_last_seen_seconds|ae_route_bundle_pending|ae_route_bundle_ack_age_seconds'
+kubectl -n k1s-dev-a logs deploy/k1s-dev-a-edge-k1s-edge-gateway -c rathole-client --tail=100
+```
 
 ## Host A Topology Guidance
 

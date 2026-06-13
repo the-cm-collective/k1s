@@ -23,7 +23,7 @@ from ae.ha.fencing import (
     merge_envelope,
     resolve_controller_identity,
 )
-from ae.controller.spec import AppManifest
+from ae.controller.spec import AppManifest, app_key_for_manifest
 
 from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 
@@ -217,7 +217,7 @@ class RemoteRuntime(RuntimeAdapter):
         payload = self._mutation_payload(
             payload,
             ensure_operation(
-                str(manifest.metadata.name),
+                app_key_for_manifest(manifest),
                 revision,
                 str(node_id or self._node_id or ""),
             ),

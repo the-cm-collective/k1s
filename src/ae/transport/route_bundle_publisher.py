@@ -10,9 +10,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
-from ae.controller.state import SQLiteStateStore
 from ae.controller.spec import app_key
+from ae.controller.state import SQLiteStateStore
 from ae.ha.fencing import (
     MutationEnvelope,
     merge_envelope,
@@ -31,6 +32,7 @@ LOGGER = logging.getLogger(__name__)
 @dataclass(slots=True)
 class RouteBundlePublisherConfig:
     interval_s: float = 5.0
+    replay_interval_s: float = 30.0
 
 
 @dataclass(slots=True)
@@ -78,7 +80,7 @@ class RouteBundlePublisher:
                 self._client.add_reconnect_listener(self._on_transport_reconnect)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("route bundle reconnect listener failed: %s", exc)
-        self._client.subscribe("k1s.v1.site.*.routes.ack", self._on_ack)
+        self._client.subscribe(hub_route_ack_subject("*"), self._on_ack)
         self._started = True
         self._thread.start()
 
@@ -107,25 +109,32 @@ class RouteBundlePublisher:
             if self._authority is not None and not self._authority.snapshot().is_leader:
                 return
             state = self._state.setdefault(site_id, _BundleState())
-            routes, policies, service_endpoints = _collect_bundle_payload(
-                self._store, site_id
-            )
+            routes, policies, service_endpoints = _collect_bundle_payload(self._store, site_id)
             bundle_hash = _bundle_hash(site_id, routes, policies, service_endpoints)
             if bundle_hash != state.hash:
                 state.rev += 1
                 state.hash = bundle_hash
                 state.backoff_s = 1.0
                 state.next_send_at = 0.0
-            if state.acked_rev >= state.rev:
+            acked = state.acked_rev >= state.rev
+            if now < state.next_send_at:
+                ack_age_s = (
+                    max(0.0, now - state.last_publish_at) if state.last_publish_at > 0 else 0.0
+                )
                 record_route_bundle_publish_state(
-                    site_id, pending=False, ack_age_seconds=0.0
+                    site_id,
+                    pending=not acked,
+                    ack_age_seconds=(0.0 if acked else ack_age_s),
                 )
                 continue
-            if now < state.next_send_at:
-                ack_age_s = max(0.0, now - state.last_publish_at) if state.last_publish_at > 0 else 0.0
-                record_route_bundle_publish_state(
-                    site_id, pending=True, ack_age_seconds=ack_age_s
-                )
+            replay_due = (
+                acked
+                and self._config.replay_interval_s > 0
+                and state.last_publish_at > 0
+                and now - state.last_publish_at >= self._config.replay_interval_s
+            )
+            if acked and not replay_due:
+                record_route_bundle_publish_state(site_id, pending=False, ack_age_seconds=0.0)
                 continue
             identity = resolve_controller_identity(self._authority)
             operation_id = route_operation(site_id, state.rev, identity.controller_epoch)
@@ -146,12 +155,19 @@ class RouteBundlePublisher:
             published = self._publish(site_id, bundle)
             if published:
                 state.last_publish_at = now
+            if acked:
+                if published:
+                    state.backoff_s = 1.0
+                    state.next_send_at = now + self._config.replay_interval_s
+                else:
+                    state.backoff_s = _next_backoff(state.backoff_s)
+                    state.next_send_at = now + state.backoff_s
+                record_route_bundle_publish_state(site_id, pending=False, ack_age_seconds=0.0)
+                continue
             state.backoff_s = _next_backoff(state.backoff_s)
             state.next_send_at = now + state.backoff_s
             ack_age_s = max(0.0, now - state.last_publish_at) if state.last_publish_at > 0 else 0.0
-            record_route_bundle_publish_state(
-                site_id, pending=True, ack_age_seconds=ack_age_s
-            )
+            record_route_bundle_publish_state(site_id, pending=True, ack_age_seconds=ack_age_s)
 
     def _publish(self, site_id: str, bundle: dict) -> bool:
         try:
@@ -202,7 +218,9 @@ class RouteBundlePublisher:
             state.next_send_at = 0.0
             record_route_bundle_publish_state(site_id, pending=False, ack_age_seconds=0.0)
         elif bundle_rev == state.acked_rev:
-            record_ha_fence_event("route_bundle_publisher.ack", duplicate=True)
+            state.backoff_s = 1.0
+            state.next_send_at = 0.0
+            record_route_bundle_publish_state(site_id, pending=False, ack_age_seconds=0.0)
 
     def _on_transport_reconnect(self) -> None:
         pending = 0
@@ -253,14 +271,14 @@ def _collect_bundle_payload(
     routes: list[dict] = []
     policies: list[dict] = []
     policy_keys: set[tuple[str, str]] = set()
-    service_map: dict[str, str] = {}
+    service_map: dict[str, tuple[str, int | None]] = {}
     for record in store.list_edge_ingress_routes_for_site(site_id):
         doc = normalize_route_doc(record)
-        if not _route_is_edge_local(doc):
+        if not _route_is_edge_rendered(doc):
             continue
         routes.append(doc)
-        for service_key, app_name in _route_service_refs(doc):
-            service_map.setdefault(service_key, app_name)
+        for service_key, app_name, port_hint in _route_service_refs(doc):
+            service_map.setdefault(service_key, (app_name, port_hint))
         if record.policy_name:
             policy_ns = record.policy_namespace or record.namespace
             policy_keys.add((record.policy_name, policy_ns))
@@ -269,9 +287,7 @@ def _collect_bundle_payload(
         if policy:
             policies.append(normalize_policy_doc(policy))
         else:
-            LOGGER.debug(
-                "route bundle missing policy name=%s namespace=%s", name, namespace
-            )
+            LOGGER.debug("route bundle missing policy name=%s namespace=%s", name, namespace)
     routes = _sorted_docs(routes)
     policies = _sorted_docs(policies)
     service_endpoints = _collect_service_endpoints(store, service_map)
@@ -295,11 +311,11 @@ def _route_ack_matches_state(
     return True
 
 
-def _route_is_edge_local(doc: dict) -> bool:
+def _route_is_edge_rendered(doc: dict) -> bool:
     spec = doc.get("spec") or {}
     exposure = spec.get("exposure") or {}
     mode = str(exposure.get("mode") or "").strip().lower()
-    return mode == "edge-local"
+    return mode in {"edge-local", "core-proxy"}
 
 
 def _sorted_docs(docs: list[dict]) -> list[dict]:
@@ -329,8 +345,8 @@ def _bundle_hash(
     return f"sha256:{digest}"
 
 
-def _route_service_refs(doc: dict) -> list[tuple[str, str]]:
-    out: list[tuple[str, str]] = []
+def _route_service_refs(doc: dict) -> list[tuple[str, str, int | None]]:
+    out: list[tuple[str, str, int | None]] = []
     spec = doc.get("spec") if isinstance(doc.get("spec"), dict) else {}
     meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
     route_ns = str(meta.get("namespace") or "default").strip() or "default"
@@ -344,29 +360,30 @@ def _route_service_refs(doc: dict) -> list[tuple[str, str]]:
     for entry in paths:
         if not isinstance(entry, dict):
             continue
-        service_ref = (
-            entry.get("serviceRef") if isinstance(entry.get("serviceRef"), dict) else {}
-        )
-        pair = _service_ref_pair(service_ref, route_ns)
+        service_ref = entry.get("serviceRef") if isinstance(entry.get("serviceRef"), dict) else {}
+        pair = _service_ref_pair(service_ref, route_ns, entry.get("port"))
         if pair:
             out.append(pair)
     return out
 
 
-def _service_ref_pair(service_ref: dict, route_ns: str) -> tuple[str, str] | None:
+def _service_ref_pair(
+    service_ref: dict, route_ns: str, raw_port_hint: Any | None = None
+) -> tuple[str, str, int | None] | None:
     name = str(service_ref.get("name") or "").strip()
     if not name:
         return None
     namespace = str(service_ref.get("namespace") or route_ns).strip() or route_ns
     service_key = f"{namespace}/{name}"
-    return service_key, app_key(name, namespace)
+    port_hint = _coerce_int(raw_port_hint) or _coerce_int(service_ref.get("port"))
+    return service_key, app_key(name, namespace), port_hint
 
 
 def _collect_service_endpoints(
-    store: SQLiteStateStore, service_map: dict[str, str]
+    store: SQLiteStateStore, service_map: dict[str, tuple[str, int | None]]
 ) -> dict[str, list[dict[str, Any]]]:
     out: dict[str, list[dict[str, Any]]] = {}
-    for service_key, app_name in sorted(service_map.items()):
+    for service_key, (app_name, port_hint) in sorted(service_map.items()):
         try:
             endpoints = store.list_service_endpoints(app_name)
         except Exception as exc:  # noqa: BLE001
@@ -399,6 +416,8 @@ def _collect_service_endpoints(
                     "ready": ready,
                 }
             )
+        if not rows:
+            rows.extend(_collect_pod_endpoint_rows(store, app_name, port_hint))
         rows.sort(
             key=lambda item: (
                 int(item["service_port"]),
@@ -408,6 +427,57 @@ def _collect_service_endpoints(
         )
         out[service_key] = rows
     return out
+
+
+def _collect_pod_endpoint_rows(
+    store: SQLiteStateStore, app_name: str, port_hint: int | None
+) -> list[dict[str, Any]]:
+    try:
+        pods = store.list_pods(app_name)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.debug("route bundle failed to read pod endpoints app=%s: %s", app_name, exc)
+        pods = []
+
+    rows: list[dict[str, Any]] = []
+    dedup: set[tuple[str, int, int, bool]] = set()
+    for pod in pods:
+        if not bool(getattr(pod, "ready", False)):
+            continue
+        endpoint = str(getattr(pod, "endpoint", "") or "").strip()
+        host, target_port = _split_host_port(endpoint)
+        if not host or target_port is None:
+            continue
+        service_port = int(port_hint) if port_hint is not None else int(target_port)
+        row = (host, service_port, int(target_port), True)
+        if row in dedup:
+            continue
+        dedup.add(row)
+        rows.append(
+            {
+                "ip": host,
+                "service_port": service_port,
+                "target_port": int(target_port),
+                "ready": True,
+            }
+        )
+    return rows
+
+
+def _split_host_port(endpoint: str) -> tuple[str | None, int | None]:
+    try:
+        raw = str(endpoint or "").strip()
+        if not raw:
+            return None, None
+        if "://" in raw:
+            parsed = urlparse(raw)
+            return parsed.hostname, parsed.port
+        if raw.startswith("["):
+            host, port = raw.rsplit("]:", 1)
+            return host.lstrip("["), int(port)
+        host, port = raw.rsplit(":", 1)
+        return host, int(port)
+    except Exception:
+        return None, None
 
 
 def _coerce_int(value: Any) -> int | None:

@@ -1,0 +1,91 @@
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  registryHost: ""
+
+target:
+  namespace: ""
+  controllerReleaseName: ""
+  authSecretName: ""
+  natsServiceName: ""
+  natsLeafServiceName: ""
+  ratholeServiceName: ""
+  natsUserSecretKey: nats-controller-user
+  natsPasswordSecretKey: nats-controller-password
+  natsLeafUserSecretKey: nats-leaf-user
+  natsLeafPasswordSecretKey: nats-leaf-password
+  ratholeTokenSecretKey: rathole-token
+
+gateway:
+  replicas: 1
+  image:
+    registry: ""
+    repository: k1s/k1s-edge-core
+    tag: 0.1.6.dev0
+    pullPolicy: IfNotPresent
+  siteId: host-b
+  nodeId: edge-gateway-1
+  transportBackend: nats-js
+  jsDomain: K1S
+  statusIntervalSeconds: 30
+  spoolPath: /var/lib/ae/gateway/spool.db
+  resources: {}
+  extraEnv: []
+
+edgeLocal:
+  configDir: /var/run/k1s-edge-local
+  configFile: /var/run/k1s-edge-local/edge-local.caddy
+  upstreamMode: bundle-endpoints
+  listenScheme: http
+  listenPort: 18081
+  localAddr: 127.0.0.1:18081
+
+transport:
+  mode: directHub
+  natsPort: 4222
+  natsLeafPort: 7422
+  edgeNats:
+    image:
+      registry: ""
+      repository: docker.io/nats
+      tag: 2.10.18-alpine
+      pullPolicy: IfNotPresent
+    clientPort: 4222
+    monitorPort: 8222
+    resources: {}
+
+rathole:
+  image:
+    registry: ""
+    repository: k1s/k1s-rathole
+    tag: 0.1.6.dev0
+    pullPolicy: IfNotPresent
+  serverAddr: ""
+  connectAllControllerPods: false
+  discoveryHost: ""
+  discoveryPort: 2333
+  discoveryRefreshSeconds: 10
+  configPath: /tmp/rathole-client.toml
+  resources: {}
+
+caddy:
+  image:
+    registry: ""
+    repository: docker.io/library/caddy
+    tag: "2.8"
+    pullPolicy: IfNotPresent
+  dataDir: /data
+  configDir: /config
+  resources: {}
+
+persistence:
+  enabled: true
+  storageClassName: ""
+  size: 1Gi
+
+pod:
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  annotations: {}

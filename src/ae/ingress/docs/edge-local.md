@@ -32,7 +32,7 @@ Edge-local ingress renderer (Caddyfile) driven by route bundles.
 | _coerce_int | 404 | function | Internal helper. |
 
 ## Runtime And Data Flow
-- Environment inputs: `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR`, `AE_EDGE_LOCAL_INGRESS_CONFIG_FILE`, `AE_EDGE_LOCAL_INGRESS_RELOAD_CMD`, `AE_EDGE_LOCAL_SERVICE_DOMAIN`, `AE_EDGE_LOCAL_SERVICE_PORT_FALLBACK`, `AE_EDGE_LOCAL_UPSTREAM_MODE`
+- Environment inputs: `AE_EDGE_LOCAL_INGRESS_CONFIG_DIR`, `AE_EDGE_LOCAL_INGRESS_CONFIG_FILE`, `AE_EDGE_LOCAL_INGRESS_LISTEN_PORT`, `AE_EDGE_LOCAL_INGRESS_RELOAD_CMD`, `AE_EDGE_LOCAL_INGRESS_SCHEME`, `AE_EDGE_LOCAL_SERVICE_DOMAIN`, `AE_EDGE_LOCAL_SERVICE_PORT_FALLBACK`, `AE_EDGE_LOCAL_UPSTREAM_MODE`
 - Side-effect surfaces: filesystem/state, subprocess/runtime command.
 
 ## Maintenance Notes

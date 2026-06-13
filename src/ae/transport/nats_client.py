@@ -110,11 +110,13 @@ class NatsClient:
     async def _on_disconnect(self) -> None:
         if self._closing:
             return
+        self._connected = False
         return
 
     async def _on_reconnect(self) -> None:
         if self._closing:
             return
+        self._connected = True
         for callback in list(self._reconnect_listeners):
             try:
                 callback()
@@ -152,6 +154,10 @@ class NatsClient:
         except Exception as exc:  # noqa: BLE001
             raise NatsClientError(f"connect failed: {exc}") from exc
         self._connected = True
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
 
     def close(self, timeout_s: float = 5.0) -> None:
         self._closing = True

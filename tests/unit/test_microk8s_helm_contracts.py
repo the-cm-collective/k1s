@@ -10,21 +10,30 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _helm_template(chart: Path, values: Path, release: str, namespace: str) -> list[dict]:
+def _helm_template(
+    chart: Path,
+    values: Path,
+    release: str,
+    namespace: str,
+    extra_args: list[str] | None = None,
+) -> list[dict]:
     helm = shutil.which("helm")
     if not helm:
         pytest.skip("helm binary is required for chart contract tests")
+    cmd = [
+        helm,
+        "template",
+        release,
+        str(chart),
+        "--namespace",
+        namespace,
+        "-f",
+        str(values),
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
     proc = subprocess.run(  # noqa: S603 - helm path is resolved by shutil.which; args are fixed.
-        [
-            helm,
-            "template",
-            release,
-            str(chart),
-            "--namespace",
-            namespace,
-            "-f",
-            str(values),
-        ],
+        cmd,
         check=True,
         capture_output=True,
         text=True,
@@ -79,9 +88,7 @@ def test_core_chart_ingress_uses_apps_dash_and_docs_hosts() -> None:
         if item["kind"] == "ConfigMap"
         and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-bootstrap"
     )
-    hosts = [
-        rule["host"] for resource in ingresses for rule in resource["spec"].get("rules", [])
-    ]
+    hosts = [rule["host"] for resource in ingresses for rule in resource["spec"].get("rules", [])]
     assert "*.apps.k1s-dev-a.core.home.arpa" in hosts
     assert "api.k1s-dev-a.core.home.arpa" in hosts
     assert "dash.k1s-dev-a.core.home.arpa" in hosts
@@ -180,6 +187,10 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
     assert controller_env["AE_CADDY_SITES"] == ""
     assert controller_env["AE_APISHIM_DB"] == "/var/lib/ae/apishim.db"
     assert controller_env["AE_APISHIM_PUBLIC_BASE"] == "https://api.k1s-dev-a.core.home.arpa"
+    assert controller_env["AE_ROUTE_BUNDLE_ENABLED"] == "1"
+    assert controller_env["AE_ROUTE_BUNDLE_INTERVAL_S"] == "5"
+    assert controller_env["AE_ROUTE_BUNDLE_REPLAY_INTERVAL_S"] == "30"
+    assert controller_env["AE_SITE_IDS"] == "host-a,host-b,workerbee-edge"
     assert (
         controller_secret_env["AE_APISHIM_SESSION_SECRET"] == "apishim-session-secret"  # noqa: S105
     )
@@ -187,10 +198,7 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
         controller_secret_env["AE_DASHBOARD_BOOTSTRAP_TOKEN"] == "apishim-admin-token"  # noqa: S105
     )
     assert controller_mounts["containerd-sock"] == "/run/containerd/containerd.sock"
-    assert (
-        controller_volumes["containerd-sock"]
-        == "/var/snap/microk8s/common/run/containerd.sock"
-    )
+    assert controller_volumes["containerd-sock"] == "/var/snap/microk8s/common/run/containerd.sock"
     assert controller_container["readinessProbe"]["httpGet"]["port"] == "agent"
     assert controller_container["livenessProbe"]["httpGet"]["port"] == "agent"
     assert controller_container["securityContext"] == {
@@ -200,8 +208,7 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
         "runAsUser": 10001,
     }
     assert (
-        controller_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"]
-        == "controller"
+        controller_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"] == "controller"
     )
 
     etcd_metrics_service = next(
@@ -246,16 +253,13 @@ def test_core_chart_examples_avoid_shellless_runtime_breakage() -> None:
         if item["kind"] == "ServiceMonitor"
         and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-nats"
     )
-    assert nats_exporter["image"].endswith(
-        "/docker.io/natsio/prometheus-nats-exporter:0.19.2"
-    )
+    assert nats_exporter["image"].endswith("/docker.io/natsio/prometheus-nats-exporter:0.19.2")
     assert "-varz" in nats_exporter["args"]
     assert "-jsz" in nats_exporter["args"]
     assert "all" in nats_exporter["args"]
     assert nats_metrics_service["metadata"]["labels"]["k1s.dev/metrics-target"] == "nats"
     assert (
-        nats_service_monitor["spec"]["selector"]["matchLabels"]["k1s.dev/metrics-target"]
-        == "nats"
+        nats_service_monitor["spec"]["selector"]["matchLabels"]["k1s.dev/metrics-target"] == "nats"
     )
     assert nats_service_monitor["spec"]["endpoints"][0]["port"] == "metrics"
     rathole = next(
@@ -302,10 +306,7 @@ def test_node_chart_renders_daemonset_against_target_release() -> None:
     assert env["AE_NVIDIA_LIBRARY_DIRS"] == "/usr/local/nvidia/toolkit:/var/lib/ae/nvidia-libs"
     assert env["AE_NVIDIA_HOST_LIB_SOURCE_DIR"] == "/host-libs/x86_64-linux-gnu"
     assert env["AE_NVIDIA_LIBRARY_DIR"] == "/var/lib/ae/nvidia-libs"
-    assert (
-        env["AE_NVIDIA_CONTAINER_CLI_BIN"]
-        == "/usr/local/nvidia/toolkit/nvidia-container-cli"
-    )
+    assert env["AE_NVIDIA_CONTAINER_CLI_BIN"] == "/usr/local/nvidia/toolkit/nvidia-container-cli"
     assert (
         env["AE_NVIDIA_CONTAINER_RUNTIME_BIN"]
         == "/usr/local/nvidia/toolkit/nvidia-container-runtime"
@@ -337,6 +338,92 @@ def test_node_chart_renders_daemonset_against_target_release() -> None:
     assert container["securityContext"]["readOnlyRootFilesystem"] is False
     assert container["securityContext"]["seccompProfile"]["type"] == "Unconfined"
     assert env["AE_NODE_LABELS"]
+
+
+def test_edge_gateway_chart_renders_direct_hub_stack() -> None:
+    chart = ROOT / "ops" / "helm" / "k1s-edge-gateway"
+    values = ROOT / "ops" / "helm" / "examples" / "k1s-edge-gateway-values.microk8s.yaml"
+    docs = _helm_template(chart, values, "k1s-dev-a-edge", "k1s-dev-a")
+    kinds = {(item["kind"], item["metadata"]["name"]) for item in docs}
+    assert ("Deployment", "k1s-dev-a-edge-k1s-edge-gateway") in kinds
+    assert ("PersistentVolumeClaim", "k1s-dev-a-edge-k1s-edge-gateway-state") in kinds
+
+    deployment = next(item for item in docs if item["kind"] == "Deployment")
+    containers = {
+        item["name"]: item for item in deployment["spec"]["template"]["spec"]["containers"]
+    }
+    assert set(containers) == {"gateway", "edge-caddy", "rathole-client"}
+
+    gateway_env = {
+        item["name"]: item.get("value") for item in containers["gateway"]["env"] if "value" in item
+    }
+    gateway_secret_env = {
+        item["name"]: item["valueFrom"]["secretKeyRef"]
+        for item in containers["gateway"]["env"]
+        if "valueFrom" in item
+    }
+    assert containers["gateway"]["image"].endswith("/k1s/k1s-edge-core:dev")
+    assert gateway_env["K1S_EDGE_TRANSPORT_MODE"] == "directHub"
+    assert gateway_env["K1S_NATS_HOST"] == (
+        "k1s-dev-a-k1s-core-ha-nats.k1s-dev-a.svc.cluster.local"
+    )
+    assert gateway_env["AE_TRANSPORT_BACKEND"] == "nats-js"
+    assert gateway_env["AE_JS_DOMAIN"] == "K1S"
+    assert gateway_env["AE_SITE_ID"] == "host-b"
+    assert gateway_env["AE_NODE_ID"] == "edge-gateway-1"
+    assert gateway_env["AE_EDGE_LOCAL_INGRESS_SCHEME"] == "http"
+    assert gateway_env["AE_EDGE_LOCAL_INGRESS_LISTEN_PORT"] == "18081"
+    assert gateway_env["AE_EDGE_LOCAL_UPSTREAM_MODE"] == "bundle-endpoints"
+    assert gateway_secret_env["NATS_USER"]["name"] == "k1s-dev-a-k1s-core-ha-auth"
+    assert gateway_secret_env["NATS_USER"]["key"] == "nats-controller-user"
+    assert gateway_secret_env["NATS_PASSWORD"]["key"] == "nats-controller-password"
+
+    caddy = containers["edge-caddy"]
+    rathole = containers["rathole-client"]
+    assert caddy["image"].endswith("/docker.io/library/caddy:2.8")
+    assert caddy["ports"][0]["containerPort"] == 18081
+    assert rathole["image"].endswith("/k1s/k1s-rathole:dev")
+    rathole_env = {item["name"]: item.get("value") for item in rathole["env"] if "value" in item}
+    assert rathole_env["AE_RATHOLE_SERVER_ADDR"] == (
+        "k1s-dev-a-k1s-core-ha-rathole.k1s-dev-a.svc.cluster.local:2333"
+    )
+    assert rathole_env["AE_EDGE_INGRESS_LOCAL_ADDR"] == "127.0.0.1:18081"
+    assert rathole_env["K1S_RATHOLE_CONNECT_ALL_CONTROLLER_PODS"] == "1"
+    assert rathole_env["K1S_RATHOLE_DISCOVERY_HOST"] == (
+        "k1s-dev-a-k1s-core-ha-controller-headless.k1s-dev-a.svc.cluster.local"
+    )
+    assert rathole_env["K1S_RATHOLE_DISCOVERY_PORT"] == "2333"
+    assert "getent hosts" in "\n".join(rathole["command"])
+
+
+def test_edge_gateway_chart_renders_edge_nats_leaf_mode() -> None:
+    chart = ROOT / "ops" / "helm" / "k1s-edge-gateway"
+    values = ROOT / "ops" / "helm" / "examples" / "k1s-edge-gateway-values.microk8s.yaml"
+    docs = _helm_template(
+        chart,
+        values,
+        "k1s-dev-a-edge",
+        "k1s-dev-a",
+        extra_args=["--set", "transport.mode=edgeNatsLeaf"],
+    )
+    deployment = next(item for item in docs if item["kind"] == "Deployment")
+    containers = {
+        item["name"]: item for item in deployment["spec"]["template"]["spec"]["containers"]
+    }
+    assert set(containers) == {"edge-nats", "gateway", "edge-caddy", "rathole-client"}
+    edge_nats_env = {
+        item["name"]: item.get("value")
+        for item in containers["edge-nats"]["env"]
+        if "value" in item
+    }
+    assert edge_nats_env["K1S_NATS_LEAF_HOST"] == (
+        "k1s-dev-a-k1s-core-ha-nats-leaf.k1s-dev-a.svc.cluster.local"
+    )
+    assert edge_nats_env["K1S_NATS_LEAF_PORT"] == "7422"
+    gateway_env = {
+        item["name"]: item.get("value") for item in containers["gateway"]["env"] if "value" in item
+    }
+    assert gateway_env["K1S_EDGE_TRANSPORT_MODE"] == "edgeNatsLeaf"
 
 
 def test_node_chart_guard_uses_lookup_and_fail() -> None:

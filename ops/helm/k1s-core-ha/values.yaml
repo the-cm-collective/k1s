@@ -41,6 +41,10 @@ controller:
   caddySites: ""
   apishimDbPath: /var/lib/ae/apishim.db
   siteIds: []
+  routeBundles:
+    enabled: false
+    intervalSeconds: 5
+    replayIntervalSeconds: 30
   etcdReadTimeoutSeconds: 10
   etcdMaintenance:
     enabled: true

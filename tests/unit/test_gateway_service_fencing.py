@@ -7,6 +7,7 @@ from ae.config.transport import GatewayJetStreamConfig
 from ae.gateway.service import SiteGateway
 from ae.ha.fencing import MutationEnvelope
 from ae.transport.nats_client import NatsMessage
+from ae.transport.subjects import hub_route_bundle_subject
 
 
 class _FakeNatsClient:
@@ -15,7 +16,14 @@ class _FakeNatsClient:
         self.requests: list[tuple[str, dict]] = []
         self.request_responses: list[dict] = []
         self.listeners: list[object] = []
+        self.subscriptions: list[tuple[str, object]] = []
+        self.connect_attempts = 0
+        self.connected = False
         self.fail_result_publish = False
+
+    def connect(self) -> None:
+        self.connect_attempts += 1
+        self.connected = True
 
     def publish_json(self, subject: str, payload: dict, headers=None) -> None:
         if self.fail_result_publish and subject == "k1s.v1.site.sea.result":
@@ -32,10 +40,21 @@ class _FakeNatsClient:
         self.listeners.append(callback)
 
     def subscribe(self, subject, callback):
+        self.subscriptions.append((subject, callback))
         return "sid-1"
 
     def close(self) -> None:
+        self.connected = False
         return None
+
+
+class _FlakyConnectNatsClient(_FakeNatsClient):
+    def connect(self) -> None:
+        self.connect_attempts += 1
+        if self.connect_attempts == 1:
+            self.connected = False
+            raise RuntimeError("nats unavailable")
+        self.connected = True
 
 
 class _Renderer:
@@ -109,6 +128,75 @@ def test_gateway_route_bundle_rejects_stale_epoch_across_restart(tmp_path: Path)
         )
     )
     assert second._edge_local_renderer.applied == []  # type: ignore[attr-defined]
+
+
+def test_gateway_route_bundle_resets_revision_on_epoch_advance(tmp_path: Path) -> None:
+    gateway = _gateway(tmp_path)
+    gateway._route_bundle_rev = 4  # type: ignore[attr-defined]
+    gateway._route_bundle_hash = "sha256:old"  # type: ignore[attr-defined]
+    gateway._fence.commit(  # type: ignore[attr-defined]
+        "site:sea",
+        MutationEnvelope("ctrl-old", 8, "route:sea:4:8"),
+    )
+
+    gateway._on_route_bundle(  # type: ignore[attr-defined]
+        NatsMessage(
+            subject="k1s.v1.site.sea.routes.bundle",
+            reply=None,
+            data=json.dumps(
+                {
+                    "site_id": "sea",
+                    "bundle_rev": 1,
+                    "hash": "sha256:new",
+                    "controller_id": "ctrl-new",
+                    "controller_epoch": 9,
+                    "operation_id": "route:sea:1:9",
+                }
+            ).encode("utf-8"),
+        )
+    )
+
+    assert [item["hash"] for item in gateway._edge_local_renderer.applied] == [  # type: ignore[attr-defined]
+        "sha256:new"
+    ]
+    assert gateway._route_bundle_rev == 1  # type: ignore[attr-defined]
+    assert gateway._route_bundle_hash == "sha256:new"  # type: ignore[attr-defined]
+
+
+def test_gateway_route_bundle_duplicate_reapplies_after_restart(tmp_path: Path) -> None:
+    payload = {
+        "site_id": "sea",
+        "bundle_rev": 1,
+        "hash": "sha256:current",
+        "controller_id": "ctrl-a",
+        "controller_epoch": 9,
+        "operation_id": "route:sea:1:9",
+    }
+
+    first = _gateway(tmp_path)
+    first._on_route_bundle(  # type: ignore[attr-defined]
+        NatsMessage(
+            subject="k1s.v1.site.sea.routes.bundle",
+            reply=None,
+            data=json.dumps(payload).encode("utf-8"),
+        )
+    )
+    assert first._edge_local_renderer.applied  # type: ignore[attr-defined]
+
+    second = _gateway(tmp_path)
+    second._on_route_bundle(  # type: ignore[attr-defined]
+        NatsMessage(
+            subject="k1s.v1.site.sea.routes.bundle",
+            reply=None,
+            data=json.dumps(payload).encode("utf-8"),
+        )
+    )
+
+    assert [item["hash"] for item in second._edge_local_renderer.applied] == [  # type: ignore[attr-defined]
+        "sha256:current"
+    ]
+    assert second._route_bundle_rev == 1  # type: ignore[attr-defined]
+    assert second._route_bundle_hash == "sha256:current"  # type: ignore[attr-defined]
 
 
 def test_gateway_work_pull_ack_includes_envelope_for_stale_and_accepted_items(tmp_path: Path) -> None:
@@ -274,3 +362,20 @@ def test_gateway_replays_buffered_result_after_restart(tmp_path: Path) -> None:
     record = second._spool.get_result("w1", 1)  # type: ignore[attr-defined]
     assert record is not None
     assert record.delivered_to_controller_at is not None
+
+
+def test_gateway_retries_initial_nats_connect_and_subscribes_routes(tmp_path: Path) -> None:
+    nats = _FlakyConnectNatsClient()
+    gateway = _gateway(tmp_path, nats=nats)
+
+    assert gateway._ensure_transport_connected(10.0) is False  # type: ignore[attr-defined]
+    assert nats.subscriptions == []
+
+    assert gateway._ensure_transport_connected(11.0) is True  # type: ignore[attr-defined]
+
+    assert nats.connect_attempts == 2
+    assert [subject for subject, _callback in nats.subscriptions] == [
+        "k1s.v1.local.result",
+        "k1s.v1.local.work.progress",
+        hub_route_bundle_subject("sea"),
+    ]

@@ -6,12 +6,14 @@ import hashlib
 import logging
 import os
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 _UPSTREAM_MODES = {"auto", "bundle-endpoints", "dns"}
+_LISTEN_SCHEMES = {"http", "https"}
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,8 @@ class EdgeLocalIngressConfig:
     service_domain: str | None
     service_port_fallback: int
     upstream_mode: str = "auto"
+    listen_scheme: str = "https"
+    listen_port: int | None = None
 
 
 class EdgeLocalIngressRenderer:
@@ -32,9 +36,7 @@ class EdgeLocalIngressRenderer:
     def apply_bundle(self, bundle: dict) -> tuple[bool, str | None]:
         try:
             routes = bundle.get("routes") if isinstance(bundle.get("routes"), list) else []
-            policies = (
-                bundle.get("policies") if isinstance(bundle.get("policies"), list) else []
-            )
+            policies = bundle.get("policies") if isinstance(bundle.get("policies"), list) else []
             service_endpoints = (
                 bundle.get("service_endpoints")
                 if isinstance(bundle.get("service_endpoints"), dict)
@@ -84,6 +86,15 @@ def build_edge_local_renderer() -> EdgeLocalIngressRenderer | None:
             sorted(_UPSTREAM_MODES),
         )
         upstream_mode = "auto"
+    listen_scheme = str(os.getenv("AE_EDGE_LOCAL_INGRESS_SCHEME", "https")).strip().lower()
+    if listen_scheme not in _LISTEN_SCHEMES:
+        LOGGER.warning(
+            "edge-local invalid AE_EDGE_LOCAL_INGRESS_SCHEME=%s (expected one of %s); using https",
+            listen_scheme,
+            sorted(_LISTEN_SCHEMES),
+        )
+        listen_scheme = "https"
+    listen_port = _coerce_int(os.getenv("AE_EDGE_LOCAL_INGRESS_LISTEN_PORT"))
     return EdgeLocalIngressRenderer(
         EdgeLocalIngressConfig(
             config_dir=config_dir,
@@ -92,6 +103,8 @@ def build_edge_local_renderer() -> EdgeLocalIngressRenderer | None:
             service_domain=service_domain,
             service_port_fallback=port_fallback,
             upstream_mode=upstream_mode,
+            listen_scheme=listen_scheme,
+            listen_port=listen_port,
         )
     )
 
@@ -133,9 +146,7 @@ def render_edge_local_caddy(
         paths = spec.get("paths") if isinstance(spec.get("paths"), list) else []
         if not paths:
             service_ref = spec.get("serviceRef") if isinstance(spec.get("serviceRef"), dict) else {}
-            upstreams = _upstreams_for_service(
-                service_ref, namespace, config, service_endpoints
-            )
+            upstreams = _upstreams_for_service(service_ref, namespace, config, service_endpoints)
             if upstreams:
                 host_map.setdefault(host, []).append(
                     {
@@ -154,9 +165,7 @@ def render_edge_local_caddy(
             service_ref = (
                 entry.get("serviceRef") if isinstance(entry.get("serviceRef"), dict) else {}
             )
-            upstreams = _upstreams_for_service(
-                service_ref, namespace, config, service_endpoints
-            )
+            upstreams = _upstreams_for_service(service_ref, namespace, config, service_endpoints)
             if not upstreams:
                 continue
             host_map.setdefault(host, []).append(
@@ -169,22 +178,25 @@ def render_edge_local_caddy(
 
     blocks = []
     for host, entries in sorted(host_map.items()):
-        blocks.append(_render_site_block(host, entries))
+        blocks.append(_render_site_block(host, entries, config))
     if not blocks:
         # Keep output syntactically valid for Caddy even when there are no
         # routable edge-local hosts yet, without capturing real traffic.
-        blocks.append("https://edge-local-unconfigured.invalid {\n    respond 503\n}\n")
+        blocks.append(
+            f"{_site_address('edge-local-unconfigured.invalid', config)} {{\n    respond 503\n}}\n"
+        )
     return "\n\n".join(blocks) + "\n"
 
 
-def _render_site_block(host: str, entries: list[dict]) -> str:
-    lines = [f"https://{host} {{"]
+def _render_site_block(host: str, entries: list[dict], config: EdgeLocalIngressConfig) -> str:
+    lines = [f"{_site_address(host, config)} {{"]
     lines.append("    log {")
     lines.append("        output stdout")
     lines.append("        format console")
     lines.append("    }")
     lines.append("    header -Strict-Transport-Security")
-    lines.append("    tls internal")
+    if _listen_scheme(config) == "https":
+        lines.append("    tls internal")
     lines.append("    route {")
 
     def _path_key(item: dict) -> int:
@@ -202,6 +214,19 @@ def _render_site_block(host: str, entries: list[dict]) -> str:
     lines.append("    }")
     lines.append("}")
     return "\n".join(lines)
+
+
+def _site_address(host: str, config: EdgeLocalIngressConfig) -> str:
+    scheme = _listen_scheme(config)
+    port = config.listen_port
+    if port is not None:
+        return f"{scheme}://{host}:{int(port)}"
+    return f"{scheme}://{host}"
+
+
+def _listen_scheme(config: EdgeLocalIngressConfig) -> str:
+    scheme = str(config.listen_scheme or "https").strip().lower()
+    return scheme if scheme in _LISTEN_SCHEMES else "https"
 
 
 def _render_route_block(path: str, upstreams: list[str], policy: dict | None) -> list[str]:
@@ -269,11 +294,11 @@ def _render_timeouts(policy: dict) -> list[str]:
         return []
     lines = ["transport http {"]
     if read_ms:
-        lines.append(f"    read_timeout {read_ms/1000:.3f}s")
+        lines.append(f"    read_timeout {read_ms / 1000:.3f}s")
     if write_ms:
-        lines.append(f"    write_timeout {write_ms/1000:.3f}s")
+        lines.append(f"    write_timeout {write_ms / 1000:.3f}s")
     if idle_ms:
-        lines.append(f"    idle_timeout {idle_ms/1000:.3f}s")
+        lines.append(f"    idle_timeout {idle_ms / 1000:.3f}s")
     lines.append("}")
     return lines
 
@@ -316,9 +341,7 @@ def _upstreams_for_service(
 
     mode = config.upstream_mode if config.upstream_mode in _UPSTREAM_MODES else "auto"
     if mode in {"auto", "bundle-endpoints"}:
-        bundle_upstreams = _bundle_upstreams_for_service(
-            service_endpoints, service_key, port_hint
-        )
+        bundle_upstreams = _bundle_upstreams_for_service(service_endpoints, service_key, port_hint)
         if bundle_upstreams:
             return bundle_upstreams
         if mode == "bundle-endpoints":

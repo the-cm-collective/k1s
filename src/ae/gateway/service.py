@@ -157,6 +157,22 @@ class SiteGateway:
         self._route_bundle_rev = 0
         self._route_bundle_hash: str | None = None
         self._edge_local_renderer = build_edge_local_renderer()
+        self._transport_ready = False
+        self._transport_listener_registered = False
+        self._transport_retry_min_s = max(
+            0.5,
+            _parse_duration_seconds(
+                os.getenv("AE_GATEWAY_TRANSPORT_RETRY_MIN", "") or "", default=1.0
+            ),
+        )
+        self._transport_retry_max_s = max(
+            self._transport_retry_min_s,
+            _parse_duration_seconds(
+                os.getenv("AE_GATEWAY_TRANSPORT_RETRY_MAX", "") or "", default=30.0
+            ),
+        )
+        self._transport_backoff_s = self._transport_retry_min_s
+        self._transport_next_connect_at = 0.0
 
     def _subjects(self) -> list[str]:
         return [
@@ -244,26 +260,8 @@ class SiteGateway:
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("spool init failed: %s", exc)
             self._spool_enabled = False
-        if self._nats_client is not None:
-            try:
-                self._nats_client.connect()
-                LOGGER.info("nats client connected")
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.warning("nats client connect failed: %s", exc)
-            else:
-                if hasattr(self._nats_client, "add_reconnect_listener"):
-                    try:
-                        self._nats_client.add_reconnect_listener(self._on_transport_reconnect)
-                    except Exception as exc:  # noqa: BLE001
-                        LOGGER.warning("failed to register reconnect listener: %s", exc)
-                self._js_enabled = self._backend == "nats-js"
-                try:
-                    self._subscribe_local_results()
-                    self._subscribe_local_progress()
-                    self._subscribe_route_bundles()
-                    self._maybe_acquire(time.monotonic())
-                except Exception as exc:  # noqa: BLE001
-                    LOGGER.warning("failed to subscribe local results: %s", exc)
+        now = time.monotonic()
+        self._ensure_transport_connected(now)
         self._log_subjects()
         if once:
             self._shutdown()
@@ -274,10 +272,12 @@ class SiteGateway:
             while True:
                 time.sleep(1)
                 now = time.monotonic()
+                transport_ready = self._ensure_transport_connected(now)
                 self._run_progress(now)
-                self._maybe_acquire(now)
-                self._maybe_renew(now)
-                if self._nats_client is not None:
+                if transport_ready:
+                    self._maybe_acquire(now)
+                    self._maybe_renew(now)
+                if self._nats_client is not None and transport_ready:
                     if self._js_enabled:
                         self._poll_js(now)
                     else:
@@ -324,6 +324,47 @@ class SiteGateway:
         self._nats_client.subscribe(
             hub_route_bundle_subject(self._site_id), self._on_route_bundle
         )
+
+    def _ensure_transport_connected(self, now: float) -> bool:
+        if self._nats_client is None:
+            return False
+        if self._transport_ready:
+            if getattr(self._nats_client, "connected", True):
+                return True
+            self._transport_ready = False
+        if now < self._transport_next_connect_at:
+            return False
+        try:
+            self._nats_client.connect()
+            if not self._transport_listener_registered and hasattr(
+                self._nats_client, "add_reconnect_listener"
+            ):
+                self._nats_client.add_reconnect_listener(self._on_transport_reconnect)
+                self._transport_listener_registered = True
+            self._js_enabled = self._backend == "nats-js"
+            self._subscribe_local_results()
+            self._subscribe_local_progress()
+            self._subscribe_route_bundles()
+        except Exception as exc:  # noqa: BLE001
+            self._transport_ready = False
+            self._schedule_transport_retry(now, str(exc))
+            return False
+        self._transport_ready = True
+        self._transport_backoff_s = self._transport_retry_min_s
+        self._transport_next_connect_at = 0.0
+        LOGGER.info("nats client connected")
+        return True
+
+    def _schedule_transport_retry(self, now: float, reason: str | None = None) -> None:
+        delay = self._transport_backoff_s
+        self._transport_next_connect_at = now + delay
+        self._transport_backoff_s = min(
+            self._transport_backoff_s * 2.0, self._transport_retry_max_s
+        )
+        if reason:
+            LOGGER.warning("nats client connect failed; retry in %.1fs (%s)", delay, reason)
+        else:
+            LOGGER.warning("nats client connect retry in %.1fs", delay)
 
     def _on_local_result(self, msg) -> None:  # type: ignore[override]
         payload = _safe_json(msg.data)
@@ -419,10 +460,22 @@ class SiteGateway:
             return
         bundle_rev = int(payload.get("bundle_rev") or 0)
         bundle_hash = payload.get("hash")
+        if decision.epoch_advanced:
+            self._route_bundle_rev = 0
+            self._route_bundle_hash = None
         ok = True
         error = None
         if decision.duplicate:
-            ok = True
+            if bundle_rev > self._route_bundle_rev or (
+                bundle_rev == self._route_bundle_rev and self._route_bundle_hash != bundle_hash
+            ):
+                if self._edge_local_renderer is not None:
+                    ok, error = self._edge_local_renderer.apply_bundle(payload)
+                if ok:
+                    self._route_bundle_rev = bundle_rev
+                    self._route_bundle_hash = bundle_hash
+            else:
+                ok = True
         elif bundle_rev < self._route_bundle_rev:
             ok = True
         elif bundle_rev == self._route_bundle_rev:

@@ -37,6 +37,21 @@ def test_render_edge_local_caddy_basic(tmp_path: Path) -> None:
     assert "reverse_proxy app-svc.default:8080" in content
 
 
+def test_render_edge_local_caddy_can_bind_http_port(tmp_path: Path) -> None:
+    cfg = EdgeLocalIngressConfig(
+        config_dir=tmp_path,
+        config_file=tmp_path / "edge-local.caddy",
+        reload_cmd=None,
+        service_domain=None,
+        service_port_fallback=8080,
+        listen_scheme="http",
+        listen_port=18081,
+    )
+    content = render_edge_local_caddy(_route_doc(), [], cfg)
+    assert "http://app.example.com:18081" in content
+    assert "tls internal" not in content
+
+
 def test_render_edge_local_caddy_uses_bundle_endpoints_auto_mode(tmp_path: Path) -> None:
     cfg = EdgeLocalIngressConfig(
         config_dir=tmp_path,
@@ -62,9 +77,7 @@ def test_render_edge_local_caddy_uses_bundle_endpoints_auto_mode(tmp_path: Path)
             },
         ]
     }
-    content = render_edge_local_caddy(
-        _route_doc(), [], cfg, service_endpoints=service_endpoints
-    )
+    content = render_edge_local_caddy(_route_doc(), [], cfg, service_endpoints=service_endpoints)
     assert "reverse_proxy 10.88.0.11:8080 10.88.0.12:8080 {" in content
     assert "reverse_proxy app-svc.default:8080 {" not in content
 

@@ -180,6 +180,14 @@ spec:
             - name: AE_SITE_IDS
               value: {{ join "," .Values.controller.siteIds | quote }}
             {{- end }}
+            {{- if .Values.controller.routeBundles.enabled }}
+            - name: AE_ROUTE_BUNDLE_ENABLED
+              value: "1"
+            - name: AE_ROUTE_BUNDLE_INTERVAL_S
+              value: {{ .Values.controller.routeBundles.intervalSeconds | quote }}
+            - name: AE_ROUTE_BUNDLE_REPLAY_INTERVAL_S
+              value: {{ .Values.controller.routeBundles.replayIntervalSeconds | quote }}
+            {{- end }}
             {{- if .Values.controller.api.mutationsEnabled }}
             - name: AE_API_MUTATIONS
               value: "1"

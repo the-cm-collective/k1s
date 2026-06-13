@@ -61,10 +61,7 @@ def _parse_manifest(payload: dict) -> AppManifest:
 def _pod_state_from_container_record(record: dict) -> PodState | None:
     labels = (record.get("Config") or {}).get("Labels") or {}
     pod_name = (
-        labels.get("ae.pod_name")
-        or labels.get("ae.replica_id")
-        or labels.get("ae.replica")
-        or ""
+        labels.get("ae.pod_name") or labels.get("ae.replica_id") or labels.get("ae.replica") or ""
     )
     if not pod_name:
         return None
@@ -88,6 +85,74 @@ def _pod_state_from_container_record(record: dict) -> PodState | None:
     )
 
 
+def _preferred_manifest_port(manifest: AppManifest) -> int | None:
+    try:
+        readiness = getattr(getattr(manifest.spec, "health", None), "readiness", None)
+        if getattr(readiness, "http_get", None) is not None:
+            return int(readiness.http_get.port)
+        if getattr(readiness, "tcp_socket", None) is not None:
+            return int(readiness.tcp_socket.port)
+    except Exception:
+        pass
+    try:
+        ports = getattr(manifest.spec, "ports", None) or []
+        if ports:
+            return int(ports[0].container_port)
+    except Exception:
+        pass
+    try:
+        svc = getattr(manifest.spec, "service", None)
+        if svc is not None:
+            raw = getattr(svc, "target_port", None) or getattr(svc, "port", None)
+            if raw is not None:
+                return int(raw)
+    except Exception:
+        pass
+    return None
+
+
+def _container_info_pod_name(item: dict) -> str:
+    labels = item.get("labels") or {}
+    return str(
+        labels.get("ae.pod_name")
+        or labels.get("ae.replica_id")
+        or labels.get("ae.replica")
+        or item.get("name")
+        or ""
+    )
+
+
+def _endpoint_from_container_info(
+    runtime: RuntimeAdapter,
+    manifest: AppManifest,
+    item: dict,
+) -> str | None:
+    port = _preferred_manifest_port(manifest)
+    pod_ip = str(item.get("pod_ip") or item.get("podIP") or "").strip()
+    host_ip = str(item.get("host_ip") or item.get("hostIP") or "127.0.0.1").strip()
+    host_ports = item.get("host_ports") or item.get("hostPorts") or []
+    port_map = item.get("port_map") or item.get("portMap") or {}
+
+    if _runtime_prefers_pod_ip_portforward(runtime) and pod_ip and port is not None:
+        return f"{pod_ip}:{int(port)}"
+
+    if isinstance(port_map, dict) and port is not None:
+        if port in port_map:
+            return f"{host_ip}:{int(port_map.get(port) or port)}"
+        if str(port) in port_map:
+            return f"{host_ip}:{int(port_map.get(str(port)) or port)}"
+
+    if host_ports:
+        try:
+            return f"{host_ip}:{int(host_ports[0])}"
+        except Exception:
+            pass
+
+    if pod_ip and port is not None:
+        return f"{pod_ip}:{int(port)}"
+    return None
+
+
 def _duplicate_runtime_result(
     runtime: RuntimeAdapter,
     manifest: AppManifest,
@@ -98,6 +163,7 @@ def _duplicate_runtime_result(
     desired = {str(name) for name in (pod_names or []) if name}
     app_name = app_key_for_manifest(manifest)
     states: list[PodState] = []
+    states_by_name: dict[str, PodState] = {}
 
     list_app = getattr(runtime, "_list_app_containers", None)
     if callable(list_app):
@@ -114,13 +180,7 @@ def _duplicate_runtime_result(
             if desired and pod.pod_name not in desired:
                 continue
             states.append(pod)
-        return RuntimeResult(
-            revision=int(revision),
-            created=0,
-            updated=0,
-            removed=0,
-            pod_states=states,
-        )
+            states_by_name[pod.pod_name] = pod
 
     try:
         container_infos = runtime.list_containers_info()
@@ -132,25 +192,32 @@ def _duplicate_runtime_result(
         labels = item.get("labels") or {}
         if str(labels.get("ae.app") or "") != app_name:
             continue
-        pod_name = (
-            labels.get("ae.pod_name")
-            or labels.get("ae.replica_id")
-            or labels.get("ae.replica")
-            or ""
-        )
+        pod_name = _container_info_pod_name(item)
         if desired and pod_name not in desired:
             continue
         revision_raw = labels.get("ae.revision")
         item_revision = int(revision_raw) if str(revision_raw or "").isdigit() else None
         running = bool(item.get("running"))
-        states.append(
-            PodState(
-                pod_name=str(pod_name),
-                ready=running,
-                status="running" if running else "exited",
-                revision=item_revision,
-            )
+        endpoint = _endpoint_from_container_info(runtime, manifest, item)
+        existing = states_by_name.get(str(pod_name))
+        if existing is not None:
+            if endpoint and not existing.endpoint:
+                existing.endpoint = endpoint
+            if item_revision is not None and existing.revision is None:
+                existing.revision = item_revision
+            if running and not existing.ready:
+                existing.ready = True
+                existing.status = "running"
+            continue
+        state = PodState(
+            pod_name=str(pod_name),
+            ready=running,
+            status="running" if running else "exited",
+            revision=item_revision,
+            endpoint=endpoint,
         )
+        states.append(state)
+        states_by_name[state.pod_name] = state
     return RuntimeResult(
         revision=int(revision),
         created=0,

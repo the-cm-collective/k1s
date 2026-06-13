@@ -1,0 +1,42 @@
+global:
+  registryHost: reg.microk8s.core.home.arpa:32000
+
+target:
+  namespace: k1s-dev-a
+  controllerReleaseName: k1s-dev-a
+
+gateway:
+  image:
+    repository: k1s/k1s-edge-core
+    tag: dev
+  siteId: host-b
+  nodeId: edge-gateway-1
+
+edgeLocal:
+  listenScheme: http
+  listenPort: 18081
+  localAddr: 127.0.0.1:18081
+  upstreamMode: bundle-endpoints
+
+transport:
+  mode: directHub
+  edgeNats:
+    image:
+      repository: docker.io/nats
+      tag: 2.10.18-alpine
+
+rathole:
+  image:
+    repository: k1s/k1s-rathole
+    tag: dev
+  connectAllControllerPods: true
+
+caddy:
+  image:
+    repository: docker.io/library/caddy
+    tag: "2.8"
+
+persistence:
+  enabled: true
+  storageClassName: microk8s-hostpath
+  size: 1Gi

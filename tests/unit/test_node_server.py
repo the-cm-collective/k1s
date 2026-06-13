@@ -347,6 +347,70 @@ def test_ensure_app_duplicate_rehydrates_current_state_after_restart(
     assert handler.status_codes == [200]
 
 
+def test_ensure_app_duplicate_preserves_cri_pod_ip_endpoint(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    fence_path = tmp_path / "fence.db"
+    AgentHandler.fence_store = SQLiteFenceStore(fence_path)
+    AgentHandler.fence_store.init()
+    AgentHandler.fence_store.commit(
+        "runtime:node-test",
+        MutationEnvelope("ctrl-a", 7, "ensure:coreproxy-smoke:1:node-test"),
+    )
+    AgentHandler.fence_store = SQLiteFenceStore(fence_path)
+    AgentHandler.fence_store.init()
+
+    runtime = _CRIRuntimeStub()
+    runtime.list_containers_info = lambda: [  # type: ignore[method-assign]
+        {
+            "name": "ae-sim-preflight-coreproxy-smoke-rev1-0",
+            "labels": {
+                "ae.app": "sim-preflight--coreproxy-smoke",
+                "ae.pod_name": "sim-preflight--coreproxy-smoke-rev1-0",
+                "ae.revision": "1",
+            },
+            "pod_ip": "10.241.214.134",
+            "host_ip": "127.0.0.1",
+            "host_ports": [18082],
+            "port_map": {"8080": 18082},
+            "running": True,
+        }
+    ]
+    wfile = io.BytesIO()
+    handler = _JsonBodyHandler(
+        path="/v1/ensure_app",
+        payload={
+            "manifest": {
+                "apiVersion": "ae.dev/v1alpha1",
+                "kind": "Deployment",
+                "metadata": {"name": "coreproxy-smoke", "namespace": "sim-preflight"},
+                "spec": {
+                    "image": "demo:smoke",
+                    "replicas": 1,
+                    "ports": [{"name": "http", "containerPort": 8080}],
+                    "service": {"port": 18081, "targetPort": 8080},
+                },
+            },
+            "revision": 1,
+            "node_id": "node-test",
+            "controller_id": "ctrl-a",
+            "controller_epoch": 7,
+            "operation_id": "ensure:coreproxy-smoke:1:node-test",
+            "pod_names": ["sim-preflight--coreproxy-smoke-rev1-0"],
+        },
+        wfile=wfile,
+        runtime=runtime,
+    )
+
+    AgentHandler.do_POST(handler)  # type: ignore[arg-type]
+
+    assert runtime.ensure_calls == 0
+    body = json.loads(wfile.getvalue().decode("utf-8"))
+    assert body["duplicate"] is True
+    assert body["pod_states"][0]["endpoint"] == "10.241.214.134:8080"
+    assert body["pod_states"][0]["ready"] is True
+    assert handler.status_codes == [200]
+
+
 def test_remove_app_rejects_stale_epoch(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     AgentHandler.fence_store = SQLiteFenceStore(tmp_path / "fence.db")
