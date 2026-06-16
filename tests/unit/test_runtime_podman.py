@@ -225,6 +225,100 @@ def test_podman_runtime_maps_sidecar_command_args_to_entrypoint(monkeypatch):
     ]
 
 
+def test_create_container_uses_configured_podman_network_and_aliases(monkeypatch):
+    monkeypatch.setenv("AE_PODMAN_NETWORK", "workerbee-demo")
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr("ae.runtime.podman_runtime.choose_host_port", lambda *_, **__: (8080, True))
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        if argv[:3] == [rt._bin, "container", "exists"]:
+            return DummyResult(1)
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+    monkeypatch.setattr(rt, "ensure_storage_volumes", lambda *_a, **_k: None)
+
+    rt._create_container(_manifest_single(), "blue-rev1-0", 1, service=(8080, 8080, None))
+
+    run_call = next(c for c in calls if c[:2] == [rt._bin, "run"])
+    assert run_call[run_call.index("--network") + 1] == "workerbee-demo"
+    aliases = [
+        run_call[i + 1] for i, item in enumerate(run_call) if item == "--network-alias"
+    ]
+    assert aliases == ["ae-blue", "ae-blue-rev1", "ae-blue-rep-0"]
+
+
+def test_init_container_uses_configured_podman_network(monkeypatch):
+    monkeypatch.setenv("AE_PODMAN_NETWORK", "workerbee-demo")
+    rt = PodmanRuntime()
+    manifest = AppManifest(
+        api_version="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="initapp"),
+        spec=AppSpec(
+            image="localhost/demo:latest",
+            replicas=1,
+            init_containers=[
+                {"name": "prep", "image": "alpine", "command": ["sh", "-c"], "args": ["true"]}
+            ],
+        ),
+    )
+    captured: list[list[str]] = []
+
+    class P:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr("subprocess.run", lambda argv, **_kwargs: captured.append(list(argv)) or P())
+
+    result = rt.run_init_containers(manifest)
+
+    assert result and result[0][1] == 0
+    run_call = next(c for c in captured if c[:2] == [rt._bin, "run"])
+    assert run_call[run_call.index("--network") + 1] == "workerbee-demo"
+    assert "--network-alias" not in run_call
+
+
+def test_ensure_container_network_repairs_legacy_container(monkeypatch):
+    monkeypatch.setenv("AE_PODMAN_NETWORK", "workerbee-demo")
+    rt = PodmanRuntime()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        rt,
+        "_inspect_container_record",
+        lambda _cid: {"NetworkSettings": {"Networks": {"podman": {}}}},
+    )
+
+    def fake_run(argv, allow_fail=False):  # noqa: ANN001
+        _ = allow_fail
+        calls.append(list(argv))
+        return DummyResult(0)
+
+    monkeypatch.setattr(rt, "_run_ok", fake_run)  # type: ignore[arg-type]
+
+    rt._ensure_container_network("cid-1", aliases=["ae-blue", "ae-blue-rev1"])
+
+    assert calls == [
+        [
+            rt._bin,
+            "network",
+            "connect",
+            "--alias",
+            "ae-blue",
+            "--alias",
+            "ae-blue-rev1",
+            "workerbee-demo",
+            "cid-1",
+        ]
+    ]
+
+
 def test_podman_serial_service_rollout_removes_old(monkeypatch):
     monkeypatch.setenv("AE_SERIAL_SERVICE_ROLLOUT", "1")
     rt = PodmanRuntime()
@@ -449,6 +543,34 @@ def test_port_forward_socket_falls_back_to_container_ip(monkeypatch) -> None:
         (4242, "127.0.0.1", 8080, 2),
         (4242, "10.88.0.42", 8080, 2),
     ]
+
+
+def test_port_forward_socket_reports_attempted_hosts(monkeypatch) -> None:
+    rt = PodmanRuntime()
+    container = _container_with_ports(pod_ip="10.88.0.42")
+    container["State"]["Pid"] = 4242
+
+    monkeypatch.setattr(rt, "_inspect_container_record", lambda _cid: container)
+    monkeypatch.setattr(
+        rt,
+        "_connect_in_network_namespace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("blocked")),
+    )
+
+    try:
+        rt.port_forward_socket(
+            pod_id="container-1",
+            pod_name=None,
+            namespace=None,
+            port=8080,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected port_forward_socket to fail")
+
+    assert "via ['127.0.0.1', '10.88.0.42']" in message
+    assert "blocked" in message
 
 
 def test_connect_in_network_namespace_restores_namespace(monkeypatch) -> None:

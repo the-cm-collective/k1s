@@ -94,6 +94,39 @@ class PodmanRuntime(RuntimeAdapter):
         if "--runtime" not in argv:
             argv[idx + 1 : idx + 1] = ["--runtime", str(self._oci_runtime)]
 
+    def _network_aliases(self, app: str, revision: int, replica_id: str) -> list[str]:
+        return [
+            f"ae-{app}",
+            f"ae-{app}-rev{revision}",
+            f"ae-{app}-rep-{replica_id.split('-')[-1]}",
+        ]
+
+    def _network_run_args(self, aliases: list[str] | None = None) -> list[str]:
+        if not self._network_name:
+            return []
+        args = ["--network", self._network_name]
+        for alias in aliases or []:
+            if alias:
+                args += ["--network-alias", str(alias)]
+        return args
+
+    def _ensure_container_network(self, container_id: str, *, aliases: list[str]) -> None:
+        if not self._network_name or not container_id:
+            return
+        container = self._inspect_container_record(container_id)
+        try:
+            networks = ((container or {}).get("NetworkSettings") or {}).get("Networks") or {}
+        except Exception:
+            networks = {}
+        if self._network_name in networks:
+            return
+        cmd = [self._bin, "network", "connect"]
+        for alias in aliases:
+            if alias:
+                cmd += ["--alias", str(alias)]
+        cmd += [self._network_name, container_id]
+        self._run_ok(cmd, allow_fail=True)
+
     # Core ops ---------------------------------------------------------
     def ensure_app(
         self,
@@ -206,28 +239,6 @@ class PodmanRuntime(RuntimeAdapter):
                     service=(svc_port, svc_target, svc_ports_list),
                     node_id=node_id,
                 )
-                # If a shared network is configured, connect the new container to it
-                if self._network_name:
-                    cid = self._find_by_label(self.REPLICA_LABEL, rid)
-                    if cid:
-                        aliases = [
-                            f"ae-{app}",
-                            f"ae-{app}-rev{revision}",
-                            f"ae-{app}-rep-{rid.split('-')[-1]}",
-                        ]
-                        for al in aliases:
-                            self._run_ok(
-                                [
-                                    self._bin,
-                                    "network",
-                                    "connect",
-                                    "--alias",
-                                    al,
-                                    self._network_name,
-                                    cid,
-                                ],
-                                allow_fail=True,
-                            )
                 created += 1
             else:
                 # Ensure running with proper handling of Podman states
@@ -261,27 +272,6 @@ class PodmanRuntime(RuntimeAdapter):
                                 node_id=node_id,
                                 attempt=attempt + 1,
                             )
-                            if self._network_name:
-                                nid = self._find_by_label(self.REPLICA_LABEL, rid)
-                                if nid:
-                                    aliases = [
-                                        f"ae-{app}",
-                                        f"ae-{app}-rev{revision}",
-                                        f"ae-{app}-rep-{rid.split('-')[-1]}",
-                                    ]
-                                    for al in aliases:
-                                        self._run_ok(
-                                            [
-                                                self._bin,
-                                                "network",
-                                                "connect",
-                                                "--alias",
-                                                al,
-                                                self._network_name,
-                                                nid,
-                                            ],
-                                            allow_fail=True,
-                                        )
                             updated += 1
                             restart_handled = True
                 if st != "running" and not restart_handled:
@@ -298,6 +288,14 @@ class PodmanRuntime(RuntimeAdapter):
                         # created/exited/stopped → start
                         self._run_ok([self._bin, "start", cid], allow_fail=True)
                         updated += 1
+
+            if self._network_name:
+                cid = self._find_by_label(self.REPLICA_LABEL, rid)
+                if cid:
+                    self._ensure_container_network(
+                        cid,
+                        aliases=self._network_aliases(app, revision, rid),
+                    )
 
             # Ensure sidecars for this replica when declared
             try:
@@ -443,6 +441,7 @@ class PodmanRuntime(RuntimeAdapter):
                         "--restart",
                         "unless-stopped",
                     ]
+                    cmd += self._network_run_args()
                     # Volumes from manifest
                     if getattr(manifest.spec, "storage", None):
                         for s in manifest.spec.storage:
@@ -945,6 +944,7 @@ class PodmanRuntime(RuntimeAdapter):
             argv: list[str] = [self._bin, "run", "--rm"]
             # Respect AE_OCI_RUNTIME for init containers
             self._maybe_inject_runtime(argv)
+            argv += self._network_run_args()
             # Working dir if specified on init container
             try:
                 wd = (
@@ -1257,12 +1257,14 @@ class PodmanRuntime(RuntimeAdapter):
 
         hosts = ["127.0.0.1", *self._container_probe_hosts(container)]
         seen: set[str] = set()
+        attempted: list[str] = []
         timeout = max(1, int(os.getenv("AE_PODMAN_PORTFORWARD_TIMEOUT", "2")))
         last_error: Exception | None = None
         for host in hosts:
             if not host or host in seen:
                 continue
             seen.add(host)
+            attempted.append(host)
             try:
                 return self._connect_in_network_namespace(pid, host, int(port), timeout=timeout)
             except Exception as exc:
@@ -1270,9 +1272,12 @@ class PodmanRuntime(RuntimeAdapter):
                 continue
         if last_error is not None:
             raise RuntimeError(
-                f"Podman namespace socket failed for {container_id}:{int(port)}: {last_error}"
+                "Podman namespace socket failed for "
+                f"{container_id}:{int(port)} via {attempted}: {last_error}"
             ) from last_error
-        raise RuntimeError(f"Podman namespace socket failed for {container_id}:{int(port)}")
+        raise RuntimeError(
+            f"Podman namespace socket failed for {container_id}:{int(port)} via {attempted}"
+        )
 
     # Helpers ----------------------------------------------------------
     def _create_container(
@@ -1330,6 +1335,7 @@ class PodmanRuntime(RuntimeAdapter):
             "--restart",
             "no" if is_job else "unless-stopped",
         ]
+        cmd += self._network_run_args(self._network_aliases(app, revision, replica_id))
 
         # Resources: limits/requests
         # - limits.memory → hard cap (--memory)
