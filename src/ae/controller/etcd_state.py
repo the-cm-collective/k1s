@@ -8,6 +8,7 @@ import random
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import requests
@@ -169,11 +170,24 @@ def _parse_duration_seconds(value: str | None, default: float) -> float:
     return default
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
+def _parse_int_like(value: Any, default: int) -> int:
+    if value is None:
         return int(default)
+    raw = str(value).strip()
+    if not raw:
+        return int(default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(Decimal(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        return int(default)
+
+
+def _env_int(name: str, default: int) -> int:
+    return _parse_int_like(os.getenv(name, str(default)), default)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -393,6 +407,13 @@ class EtcdHttpClient:
         payload = {"key": _b64encode(key)}
         self._post("/kv/deleterange", payload)
 
+    def delete_range(self, start_key: str, end_key: str) -> None:
+        payload = {
+            "key": _b64encode(start_key),
+            "range_end": _b64encode(end_key),
+        }
+        self._post("/kv/deleterange", payload)
+
     def delete_prefix(self, prefix: str) -> None:
         rng = _prefix_end(prefix.encode("utf-8"))
         payload = {
@@ -473,6 +494,11 @@ class EtcdStateStore(SQLiteStateStore):
         refresh_ratio = float(env.get("AE_ETCD_LEASE_REFRESH_RATIO", "0.5") or 0.5)
         self._lease_refresh_ratio = max(0.05, min(0.95, refresh_ratio))
         self._node_leases: dict[str, tuple[int, float]] = {}
+        self._event_coalesce_window_s = max(
+            0.0,
+            _parse_duration_seconds(env.get("AE_ETCD_EVENT_COALESCE_WINDOW_SEC"), 0.0),
+        )
+        self._recent_events: dict[tuple[str, int, str, str], float] = {}
         self._last_maintenance_result: dict[str, Any] = {}
         self._read_timeout_s = max(
             1.0,
@@ -600,6 +626,9 @@ class EtcdStateStore(SQLiteStateStore):
 
     def _delete(self, key: str) -> None:
         self._client.delete(key)
+
+    def _delete_range(self, start_key: str, end_key: str) -> None:
+        self._client.delete_range(start_key, end_key)
 
     def _delete_prefix(self, prefix: str) -> None:
         self._client.delete_prefix(prefix)
@@ -2667,6 +2696,23 @@ class EtcdStateStore(SQLiteStateStore):
         )
 
     def record_event(self, app_name: str, revision: int, event_type: str, message: str) -> None:
+        coalesce_window_s = float(getattr(self, "_event_coalesce_window_s", 0.0) or 0.0)
+        if coalesce_window_s > 0:
+            cache = getattr(self, "_recent_events", None)
+            if cache is None:
+                cache = {}
+                self._recent_events = cache
+            now_mono = time.monotonic()
+            cache_key = (str(app_name), int(revision), str(event_type), str(message))
+            last_seen = cache.get(cache_key)
+            if last_seen is not None and (now_mono - last_seen) < coalesce_window_s:
+                return
+            cache[cache_key] = now_mono
+            if len(cache) > 2048:
+                cutoff = now_mono - coalesce_window_s
+                for key, seen in list(cache.items()):
+                    if seen < cutoff:
+                        cache.pop(key, None)
         created_at = _now_iso()
         ts_key = f"{int(_now().timestamp() * 1_000_000):020d}"
         key = self._k("events", app_name, ts_key, uuid.uuid4().hex)
@@ -2773,8 +2819,7 @@ class EtcdStateStore(SQLiteStateStore):
             if not candidates:
                 continue
             if not dry_run:
-                for key in candidates:
-                    self._delete(key)
+                self._delete_range(candidates[0], self._key_after(candidates[-1]))
             deleted = 0 if dry_run else len(candidates)
             summary["eligible"] = int(summary["eligible"]) + len(candidates)
             summary["deleted"] = int(summary["deleted"]) + deleted
@@ -3754,15 +3799,17 @@ class EtcdStateStore(SQLiteStateStore):
             if maintenance_timeout_s is not None
             else _parse_duration_seconds(os.getenv("AE_ETCD_MAINTENANCE_TIMEOUT_SEC"), 300.0)
         )
-        threshold = int(
+        threshold = _parse_int_like(
             threshold_pct
             if threshold_pct is not None
-            else os.getenv("AE_ETCD_MAINTENANCE_THRESHOLD_PCT", "80") or 80
+            else os.getenv("AE_ETCD_MAINTENANCE_THRESHOLD_PCT", "80"),
+            80,
         )
-        quota = int(
+        quota = _parse_int_like(
             quota_backend_bytes
             if quota_backend_bytes is not None
-            else os.getenv("AE_ETCD_QUOTA_BACKEND_BYTES", "2147483648") or 2147483648
+            else os.getenv("AE_ETCD_QUOTA_BACKEND_BYTES", "2147483648"),
+            2147483648,
         )
         quota = max(1, quota)
         status = self._client.maintenance_status(timeout_s=timeout_s)
@@ -3798,9 +3845,32 @@ class EtcdStateStore(SQLiteStateStore):
         if revision <= 0:
             raise RuntimeError("etcd maintenance watchdog refused compaction: revision is zero")
         if _env_bool("AE_ETCD_EVENT_RETENTION_PRUNE_ENABLE", True):
-            prune_summary = self.prune_events(dry_run=False)
-            result["prune"] = prune_summary
-            result["pruned_count"] = int(prune_summary.get("deleted") or 0)
+            max_batches_default = 100 if nospace else 1
+            max_batches = max(
+                1,
+                _env_int("AE_ETCD_EVENT_RETENTION_PRUNE_MAX_BATCHES", max_batches_default),
+            )
+            prune_runs: list[dict[str, Any]] = []
+            pruned_count = 0
+            eligible_count = 0
+            for _idx in range(max_batches):
+                prune_summary = self.prune_events(dry_run=False)
+                prune_runs.append(prune_summary)
+                deleted = int(prune_summary.get("deleted") or 0)
+                eligible = int(prune_summary.get("eligible") or 0)
+                pruned_count += deleted
+                eligible_count += eligible
+                if eligible <= 0 or deleted <= 0:
+                    break
+            result["prune"] = {
+                "enabled": True,
+                "runs": len(prune_runs),
+                "deleted": pruned_count,
+                "eligible": eligible_count,
+                "max_batches": max_batches,
+                "last": prune_runs[-1] if prune_runs else {},
+            }
+            result["pruned_count"] = pruned_count
         else:
             result["prune"] = {"enabled": False}
         self._client.compact(revision, physical=True, timeout_s=timeout_s)

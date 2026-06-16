@@ -17,6 +17,8 @@ class _FakeEtcdClient:
         self.alarm_deactivate_calls: list[tuple[str, str]] = []
         self.range_calls: list[tuple[str, dict[str, Any]]] = []
         self.delete_calls: list[str] = []
+        self.delete_range_calls: list[tuple[str, str]] = []
+        self.put_calls: list[tuple[str, str]] = []
         self.timeouts: list[float | None] = []
         self.kvs: dict[str, dict[str, Any]] = {}
         self.status_payload: dict[str, Any] = {"header": {"revision": 0}, "dbSize": 0}
@@ -76,6 +78,17 @@ class _FakeEtcdClient:
         self.delete_calls.append(key)
         self.kvs.pop(key, None)
 
+    def delete_range(self, start_key: str, end_key: str) -> None:
+        self.delete_range_calls.append((start_key, end_key))
+        for key in list(self.kvs):
+            if start_key <= key < end_key:
+                self.kvs.pop(key, None)
+
+    def put(self, key: str, value: str, *, lease: int | None = None) -> None:
+        del lease
+        self.put_calls.append((key, value))
+        self.kvs[key] = json.loads(value)
+
     def maintenance_status(self, *, timeout_s: float | None = None) -> dict[str, Any]:
         self.timeouts.append(timeout_s)
         return self.status_payload
@@ -118,6 +131,8 @@ def _mk_store(client: _FakeEtcdClient) -> EtcdStateStore:
     store._lease_ttl_seconds = 60  # type: ignore[attr-defined]
     store._lease_refresh_ratio = 0.5  # type: ignore[attr-defined]
     store._node_leases = {}  # type: ignore[attr-defined]
+    store._event_coalesce_window_s = 0.0  # type: ignore[attr-defined]
+    store._recent_events = {}  # type: ignore[attr-defined]
     store._last_maintenance_result = {}  # type: ignore[attr-defined]
     store._read_timeout_s = 10.0  # type: ignore[attr-defined]
     return store
@@ -286,8 +301,11 @@ def test_prune_events_deletes_oldest_keys_within_batch() -> None:
     summary = store.prune_events(max_per_app=2, max_age_days=0, batch_size=10)
 
     assert summary["deleted"] == 3
-    assert len(fake.delete_calls) == 3
-    assert all("/events/demo/" in key for key in fake.delete_calls)
+    assert fake.delete_calls == []
+    assert len(fake.delete_range_calls) == 1
+    start_key, end_key = fake.delete_range_calls[0]
+    assert "/events/demo/" in start_key
+    assert start_key < end_key
     assert [event.event_type for event in store.list_events("demo", limit=5)] == [
         "Event5",
         "Event4",
@@ -313,7 +331,23 @@ def test_prune_events_dry_run_does_not_delete() -> None:
     assert summary["eligible"] == 2
     assert summary["deleted"] == 0
     assert fake.delete_calls == []
+    assert fake.delete_range_calls == []
     assert store._event_count("demo") == 3
+
+
+def test_record_event_coalesces_duplicates(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeEtcdClient()
+    store = _mk_store(fake)
+    store._event_coalesce_window_s = 10.0  # type: ignore[attr-defined]
+    now = {"v": 100.0}
+    monkeypatch.setattr("ae.controller.etcd_state.time.monotonic", lambda: now["v"])
+
+    store.record_event("demo", 1, "Repeated", "same")
+    store.record_event("demo", 1, "Repeated", "same")
+    now["v"] += 11.0
+    store.record_event("demo", 1, "Repeated", "same")
+
+    assert len(fake.put_calls) == 2
 
 
 def test_watchdog_noop_when_usage_low_and_no_alarm() -> None:
@@ -328,6 +362,54 @@ def test_watchdog_noop_when_usage_low_and_no_alarm() -> None:
     assert fake.compact_calls == []
     assert fake.defrag_calls == 0
     assert store.last_maintenance_result()["skipped_reason"] == "below_threshold"
+
+
+def test_watchdog_accepts_scientific_quota_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeEtcdClient()
+    fake.status_payload = {"header": {"revision": 10}, "dbSize": 1024}
+    fake.alarms_payload = {"alarms": []}
+    store = _mk_store(fake)
+    monkeypatch.setenv("AE_ETCD_QUOTA_BACKEND_BYTES", "2.147483648e+09")
+
+    triggered = store.run_maintenance_watchdog(threshold_pct=None, quota_backend_bytes=None)
+
+    assert triggered is False
+    assert store.last_maintenance_result()["quota_backend_bytes"] == 2147483648
+
+
+def test_watchdog_runs_multiple_prune_batches_during_nospace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeEtcdClient()
+    fake.status_payload = {"header": {"revision": 88}, "dbSize": 2_147_483_648}
+    fake.alarms_payload = {"alarms": [{"memberID": "1234", "alarm": "NOSPACE"}]}
+    store = _mk_store(fake)
+    store.list_registered_app_names = lambda: ["demo"]  # type: ignore[method-assign]
+    for idx in range(5):
+        _seed_event(
+            store,
+            fake,
+            app_name="demo",
+            ts=f"{idx + 1:020d}",
+            event_type=f"Event{idx + 1}",
+        )
+    monkeypatch.setenv("AE_ETCD_EVENT_RETENTION_MAX_PER_APP", "1")
+    monkeypatch.setenv("AE_ETCD_EVENT_RETENTION_MAX_AGE_DAYS", "0")
+    monkeypatch.setenv("AE_ETCD_EVENT_RETENTION_PRUNE_BATCH", "2")
+    monkeypatch.setenv("AE_ETCD_EVENT_RETENTION_PRUNE_MAX_BATCHES", "2")
+
+    triggered = store.run_maintenance_watchdog(
+        threshold_pct=80,
+        quota_backend_bytes=2_147_483_648,
+        maintenance_timeout_s=42,
+    )
+
+    assert triggered is True
+    result = store.last_maintenance_result()
+    assert result["pruned_count"] == 4
+    assert result["prune"]["runs"] == 2
+    assert len(fake.delete_range_calls) == 2
+    assert [event.event_type for event in store.list_events("demo", limit=5)] == ["Event5"]
 
 
 def test_watchdog_triggers_on_nospace_alarm_and_uses_maintenance_timeout() -> None:

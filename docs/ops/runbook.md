@@ -67,10 +67,19 @@ Etcd maintenance (dev/CI)
 - Guard before long ingress lanes: `scripts/dev/validate_ingress_env.sh --lane core-proxy --watchdog`
 - Forced reclaim when etcd returns `mvcc: database space exceeded`:
   - `scripts/dev/etcd_maintenance.sh compact-defrag`
+  - For HA/dev clusters, snapshot first, prune the event prefix, compact, defrag each member, then verify `etcdctl alarm list` is empty before resuming long lanes.
 - Startup defaults in `k1s-core`/`dev-etcd` profiles:
   - `AE_ETCD_MAINTENANCE_ENABLE=1`
   - `AE_ETCD_MAINTENANCE_THRESHOLD_PCT=80`
   - `AE_ETCD_MAINTENANCE_INTERVAL_SEC=900` (controller loop watchdog cadence)
+  - `AE_ETCD_EVENT_RETENTION_PRUNE_ENABLE=1`
+  - `AE_ETCD_EVENT_RETENTION_PRUNE_BATCH=50000`
+  - `AE_ETCD_EVENT_RETENTION_PRUNE_MAX_BATCHES=100`
+  - `AE_ETCD_EVENT_COALESCE_WINDOW_SEC=300`
+- Long-soak guidance:
+  - Keep event retention enabled for HA/dev clusters; disabling it can let repeated workload status events exhaust the default 2 GiB etcd backend quota.
+  - Use a decimal `AE_ETCD_QUOTA_BACKEND_BYTES` value such as `2147483648`; avoid scientific notation in live environment overrides.
+  - After a reclaim, confirm the event keyspace remains bounded with `etcdctl get '<prefix>/events/' --prefix --count-only`.
 - Override/disable behavior when needed:
   - `AE_ETCD_MAINTENANCE_ENABLE=0 make k1s-core-cri`
   - `AE_ETCD_MAINTENANCE_THRESHOLD_PCT=70 make k1s-core-cri`

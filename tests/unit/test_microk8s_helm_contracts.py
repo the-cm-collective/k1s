@@ -71,6 +71,39 @@ def test_core_chart_renders_expected_resources() -> None:
     assert ("PrometheusRule", "k1s-dev-a-k1s-core-ha") in kinds
 
 
+def test_core_chart_controller_etcd_retention_env_is_operator_safe() -> None:
+    chart = ROOT / "ops" / "helm" / "k1s-core-ha"
+    values = ROOT / "ops" / "helm" / "examples" / "k1s-core-ha-values.microk8s.yaml"
+    docs = _helm_template(
+        chart,
+        values,
+        "k1s-dev-a",
+        "k1s-dev-a",
+        extra_args=[
+            "--set",
+            "controller.etcdMaintenance.quotaBackendBytes=2.147483648e+09",
+        ],
+    )
+    deployment = next(
+        item
+        for item in docs
+        if item["kind"] == "Deployment"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-controller"
+    )
+    controller = next(
+        item
+        for item in deployment["spec"]["template"]["spec"]["containers"]
+        if item["name"] == "controller"
+    )
+    env = {item["name"]: item.get("value") for item in controller["env"] if "value" in item}
+
+    assert env["AE_ETCD_QUOTA_BACKEND_BYTES"] == "2147483648"
+    assert env["AE_ETCD_EVENT_RETENTION_PRUNE_ENABLE"] == "1"
+    assert env["AE_ETCD_EVENT_RETENTION_PRUNE_BATCH"] == "50000"
+    assert env["AE_ETCD_EVENT_RETENTION_PRUNE_MAX_BATCHES"] == "100"
+    assert env["AE_ETCD_EVENT_COALESCE_WINDOW_SEC"] == "300"
+
+
 def test_core_chart_ingress_uses_apps_dash_and_docs_hosts() -> None:
     chart = ROOT / "ops" / "helm" / "k1s-core-ha"
     values = ROOT / "ops" / "helm" / "examples" / "k1s-core-ha-values.microk8s.yaml"

@@ -83,7 +83,7 @@ spec:
             - name: AE_ETCD_MAINTENANCE_TIMEOUT_SEC
               value: {{ .Values.controller.etcdMaintenance.timeoutSeconds | quote }}
             - name: AE_ETCD_QUOTA_BACKEND_BYTES
-              value: {{ .Values.controller.etcdMaintenance.quotaBackendBytes | quote }}
+              value: {{ printf "%.0f" (float64 .Values.controller.etcdMaintenance.quotaBackendBytes) | quote }}
             - name: AE_ETCD_EVENT_RETENTION_PRUNE_ENABLE
               value: {{ ternary "1" "0" .Values.controller.etcdEventRetention.pruneEnabled | quote }}
             - name: AE_ETCD_EVENT_RETENTION_MAX_PER_APP
@@ -92,10 +92,14 @@ spec:
               value: {{ .Values.controller.etcdEventRetention.maxAgeDays | quote }}
             - name: AE_ETCD_EVENT_RETENTION_PRUNE_BATCH
               value: {{ .Values.controller.etcdEventRetention.pruneBatch | quote }}
+            - name: AE_ETCD_EVENT_RETENTION_PRUNE_MAX_BATCHES
+              value: {{ .Values.controller.etcdEventRetention.pruneMaxBatches | quote }}
             - name: AE_ETCD_EVENT_PAGE_SCAN_MAX
               value: {{ .Values.controller.etcdEventRetention.pageScanMax | quote }}
             - name: AE_ETCD_EVENT_QUERY_TIMEOUT_SEC
               value: {{ .Values.controller.etcdEventRetention.eventQueryTimeoutSeconds | quote }}
+            - name: AE_ETCD_EVENT_COALESCE_WINDOW_SEC
+              value: {{ .Values.controller.etcdEventRetention.coalesceWindowSeconds | quote }}
             - name: AE_TRANSPORT_BACKEND
               value: nats-js
             - name: AE_JS_DOMAIN

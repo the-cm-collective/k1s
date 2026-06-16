@@ -56,9 +56,11 @@ controller:
     pruneEnabled: true
     maxPerApp: 5000
     maxAgeDays: 14
-    pruneBatch: 1000
+    pruneBatch: 50000
+    pruneMaxBatches: 100
     pageScanMax: 1000
     eventQueryTimeoutSeconds: 30
+    coalesceWindowSeconds: 300
   securityContext:
     runAsUser: 10001
     runAsGroup: 10001
