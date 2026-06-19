@@ -11,6 +11,38 @@
 ### Fixed
 - No user-facing changes yet.
 
+## 0.1.6.dev2 - 2026-06-19
+
+### Added
+- Fabric phase assurance, locality, F4/F5 evidence contracts, symbolic runtime
+  facts, and advisory decision contracts for AI fabric runtime review.
+- AI runtime profile dry-run admission, soak-evidence gating, advisory state
+  persistence, and WorkerBee CLI status intake for runtime profile admission.
+- Hive dashboard support for fabric advisory state, trace review, advisory
+  providers, review writeback, and advisory proposal dry runs.
+- Fabric advisory demo recording plus generated documentation for phase
+  assurance and advisory trace review.
+- Edge gateway route bundle Helm assets and MicroK8s edge gateway example
+  values.
+- Rollout restart support for development image refresh.
+
+### Changed
+- Runtime and direct-containerd service port handling were tightened for more
+  repeatable local validation with WorkerBee and MicroK8s.
+- Etcd event maintenance and advisory review storage were hardened for long
+  soak and HA validation paths.
+- Dashboard and docs output were refreshed for the new AI fabric and advisory
+  review surfaces.
+
+### Fixed
+- Fixed Podman workload network attachment so workloads join the configured
+  network instead of relying on implicit runtime defaults.
+- Fixed dashboard JavaScript fallback serving and fabric advisory modal bounds.
+- Fixed fabric advisory review persistence, demo recording behavior, and etcd
+  read/maintenance edge cases.
+- Fixed the etcd-backed inference/advisory test fixture used by release
+  validation so it mirrors the production read-timeout path.
+
 ## 0.1.5 - 2026-05-22
 
 ### Added

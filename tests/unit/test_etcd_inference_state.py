@@ -54,7 +54,9 @@ class _FakeEtcdClient:
         *,
         range_end: str | bytes | None = None,
         limit: int | None = None,
+        timeout_s: float | None = None,
     ) -> dict[str, object]:
+        del timeout_s
         items = list(self._iter_range(key, range_end=range_end))
         if limit is not None:
             items = items[: int(limit)]
@@ -134,10 +136,7 @@ class _FakeEtcdClient:
                 return iter(())
             return iter([(key, current[0], current[1], current[2])])
         start_bytes = key.encode("utf-8")
-        if isinstance(range_end, bytes):
-            end_bytes = range_end
-        else:
-            end_bytes = str(range_end).encode("utf-8")
+        end_bytes = range_end if isinstance(range_end, bytes) else str(range_end).encode("utf-8")
         items = []
         for current_key in keys:
             current_bytes = current_key.encode("utf-8")
@@ -167,6 +166,7 @@ def _mk_store() -> EtcdStateStore:
     store._lease_ttl_seconds = 60  # type: ignore[attr-defined]
     store._lease_refresh_ratio = 0.5  # type: ignore[attr-defined]
     store._node_leases = {}  # type: ignore[attr-defined]
+    store._read_timeout_s = 10.0  # type: ignore[attr-defined]
     store.backend = "etcd"  # type: ignore[attr-defined]
     return store
 
