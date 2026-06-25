@@ -18,6 +18,7 @@ from ae.accelerators import has_accelerator_inventory, preferred_gpu_count
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
+    InferenceCellContractSpec,
     InferenceCellManifest,
     InferenceCellSetManifest,
     InferenceCellSpec,
@@ -172,6 +173,34 @@ def _members_by_site(members: list[InferenceMemberSpec]) -> dict[str, list[Infer
     return out
 
 
+def _ai_max_edge_cell_contract(spec: InferenceCellSpec) -> InferenceCellContractSpec | None:
+    contract = getattr(spec, "cell_contract", None)
+    if contract is not None and contract.profile == "ai-max-edge-cell-v1":
+        return contract
+    return None
+
+
+def _effective_gpu_count(spec: InferenceCellSpec, member: InferenceMemberSpec) -> float:
+    value = float(member.gpu_count)
+    contract = _ai_max_edge_cell_contract(spec)
+    if contract is not None and member.role == "gateway":
+        value -= float(contract.gateway_reserved_gpu_fraction)
+    return max(0.0, value)
+
+
+def _ordered_stage_candidates(
+    spec: InferenceCellSpec, members: list[InferenceMemberSpec]
+) -> list[InferenceMemberSpec]:
+    contract = _ai_max_edge_cell_contract(spec)
+    if contract is None:
+        return list(members)
+    if float(contract.gateway_reserved_gpu_fraction) <= 0:
+        return list(members)
+    indexed = list(enumerate(members))
+    indexed.sort(key=lambda item: (-_effective_gpu_count(spec, item[1]), item[0]))
+    return [member for _idx, member in indexed]
+
+
 class StagePlanner:
     """Deterministic stage placement helper."""
 
@@ -188,6 +217,7 @@ class StagePlanner:
         sites = _site_order(eligible)
         if not sites:
             raise ValueError("no eligible sites for placement")
+        eligible = _ordered_stage_candidates(spec, eligible)
 
         # v0 topology defaults: PP=2 split across two sites, PP=4 grouped 2+2 when enabled.
         stage_sites: list[str]
@@ -967,7 +997,9 @@ class InferenceCellController:
                 errors.append(f"member {member.node_id} has no agent endpoint")
             gpu_count = self._node_gpu_count(node)
             if gpu_count is not None and gpu_count < int(member.gpu_count):
-                source = "accelerators" if has_accelerator_inventory(node.capabilities) else "gpu.count"
+                source = (
+                    "accelerators" if has_accelerator_inventory(node.capabilities) else "gpu.count"
+                )
                 errors.append(
                     "member "
                     f"{member.node_id} {source}={gpu_count} < "
@@ -1152,7 +1184,7 @@ class InferenceCellController:
         base_cmd = (
             "ray start "
             + (
-                "--head " f"--port {int(rp.head_port)} "
+                f"--head --port {int(rp.head_port)} "
                 if leader
                 else f'--address "$MASTER_ADDR:{int(rp.head_port)}" '
             )
@@ -1606,7 +1638,9 @@ class InferenceCellController:
                         node_id=leader.node_id,
                         api_endpoint=api_endpoint,
                     )
-                    leader_msg = "runtime applied (ray-local)" if local_ray else "runtime applied (ray)"
+                    leader_msg = (
+                        "runtime applied (ray-local)" if local_ray else "runtime applied (ray)"
+                    )
                 else:
                     mp_leader = self._mp_stage_manifest(manifest, leader, alloc)
                     mp_rec = self._apply_manifest_to_node(leader.node_id, mp_leader, revision=1)
@@ -1699,7 +1733,9 @@ class InferenceCellController:
                     stopped.append(f"{node_id}:{app_name}")
             if stopped:
                 message = f"stopped runtime containers: {', '.join(stopped)}"
-                if self._active_executor(manifest, alloc) == "ray" and self._supports_mp_fallback(manifest):
+                if self._active_executor(manifest, alloc) == "ray" and self._supports_mp_fallback(
+                    manifest
+                ):
                     self._log_event(
                         manifest,
                         "ExecutorFallback",

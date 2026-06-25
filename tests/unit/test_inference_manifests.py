@@ -163,10 +163,21 @@ def test_inference_cell_accepts_ai_max_edge_cell_contract() -> None:
 
     assert doc.spec.cell_contract is not None
     assert doc.spec.cell_contract.profile == "ai-max-edge-cell-v1"
+    assert doc.spec.cell_contract.gateway_reserved_gpu_fraction == 0.0
     assert len(doc.spec.members) == 4
     assert [member.role for member in doc.spec.members].count("gateway") == 1
     assert [member.role for member in doc.spec.members].count("cell-node") == 3
     assert all(member.compute_eligible for member in doc.spec.members)
+
+
+def test_inference_cell_accepts_ai_max_gateway_reservation() -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"]["cellContract"]["gatewayReservedGpuFraction"] = 0.25
+
+    doc = InferenceCellManifest.model_validate(payload)
+
+    assert doc.spec.cell_contract is not None
+    assert doc.spec.cell_contract.gateway_reserved_gpu_fraction == 0.25
 
 
 @pytest.mark.parametrize(
@@ -195,6 +206,14 @@ def test_inference_cell_rejects_invalid_ai_max_edge_cell_contract(mutate, messag
     mutate(payload)
 
     with pytest.raises(ValueError, match=message):
+        InferenceCellManifest.model_validate(payload)
+
+
+def test_inference_cell_rejects_invalid_ai_max_gateway_reservation() -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"]["cellContract"]["gatewayReservedGpuFraction"] = 1.0
+
+    with pytest.raises(ValueError, match="less than 1"):
         InferenceCellManifest.model_validate(payload)
 
 

@@ -648,6 +648,9 @@ class InferenceCellContractSpec(BaseModel):
     """Public opt-in validation contract for known inference cell shapes."""
 
     profile: Literal["ai-max-edge-cell-v1"]
+    gateway_reserved_gpu_fraction: float = Field(
+        default=0.0, alias="gatewayReservedGpuFraction", ge=0.0, lt=1.0
+    )
 
     model_config = {"populate_by_name": True}
 

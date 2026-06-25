@@ -4,6 +4,7 @@ from ae.controller.inference_cell import (
     InferenceCellController,
     InferenceCellSetController,
     StagePlacement,
+    StagePlanner,
 )
 from ae.controller.spec import InferenceCellManifest, InferenceCellSetManifest
 from ae.controller.state import SQLiteStateStore
@@ -54,6 +55,58 @@ def _single_node_ray_manifest(name: str = "single-node-ray") -> InferenceCellMan
                     "launcherImage": "ray-launcher:test",
                     "rayImage": "ray-head:test",
                 },
+            },
+        }
+    )
+
+
+def _ai_max_edge_cell_manifest(
+    *,
+    pp: int = 4,
+    gateway_reserved_gpu_fraction: float = 0.25,
+) -> InferenceCellManifest:
+    return InferenceCellManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "InferenceCell",
+            "metadata": {"name": "ai-max-edge-cell", "namespace": "default"},
+            "spec": {
+                "cellContract": {
+                    "profile": "ai-max-edge-cell-v1",
+                    "gatewayReservedGpuFraction": gateway_reserved_gpu_fraction,
+                },
+                "model": {"modelId": "llama", "localPath": "/models/llama"},
+                "parallelism": {"tp": 1, "pp": pp},
+                "members": [
+                    {
+                        "siteId": "edge-cell",
+                        "nodeId": "gateway-1",
+                        "gpuCount": 1,
+                        "role": "gateway",
+                        "computeEligible": True,
+                    },
+                    {
+                        "siteId": "edge-cell",
+                        "nodeId": "cell-node-1",
+                        "gpuCount": 1,
+                        "role": "cell-node",
+                        "computeEligible": True,
+                    },
+                    {
+                        "siteId": "edge-cell",
+                        "nodeId": "cell-node-2",
+                        "gpuCount": 1,
+                        "role": "cell-node",
+                        "computeEligible": True,
+                    },
+                    {
+                        "siteId": "edge-cell",
+                        "nodeId": "cell-node-3",
+                        "gpuCount": 1,
+                        "role": "cell-node",
+                        "computeEligible": True,
+                    },
+                ],
             },
         }
     )
@@ -181,6 +234,41 @@ def test_inference_cell_execution_mode_accepts_typed_accelerators(
     ctrl = InferenceCellController(store)
     errors = ctrl._validate_members_for_execution(_cell_manifest(name="typed-exec-cell").spec)
     assert errors == []
+
+
+def test_ai_max_gateway_reservation_keeps_gateway_compute_eligible_for_pp4() -> None:
+    manifest = _ai_max_edge_cell_manifest(pp=4, gateway_reserved_gpu_fraction=0.25)
+
+    placements = StagePlanner.plan(manifest.spec)
+
+    assert [placement.node_id for placement in placements] == [
+        "cell-node-1",
+        "cell-node-2",
+        "cell-node-3",
+        "gateway-1",
+    ]
+    gateway = placements[-1]
+    assert gateway.node_id == "gateway-1"
+    assert gateway.gpu_indices == [0]
+
+
+def test_ai_max_gateway_reservation_changes_partial_stage_placement() -> None:
+    reserved = _ai_max_edge_cell_manifest(pp=3, gateway_reserved_gpu_fraction=0.25)
+    unreserved = _ai_max_edge_cell_manifest(pp=3, gateway_reserved_gpu_fraction=0.0)
+
+    reserved_placements = StagePlanner.plan(reserved.spec)
+    unreserved_placements = StagePlanner.plan(unreserved.spec)
+
+    assert [placement.node_id for placement in reserved_placements] == [
+        "cell-node-1",
+        "cell-node-2",
+        "cell-node-3",
+    ]
+    assert [placement.node_id for placement in unreserved_placements] == [
+        "gateway-1",
+        "cell-node-1",
+        "cell-node-2",
+    ]
 
 
 def test_inference_cell_admission_uses_controller_link_metrics(tmp_path):
@@ -484,12 +572,12 @@ def test_inference_cell_joining_waits_for_leader_api_health(
     monkeypatch.setattr(
         ctrl,
         "_runtime_for_node",
-        lambda node_id: (runtime, "http://node-a:9109"),
+        lambda _node_id: (runtime, "http://node-a:9109"),
     )
     monkeypatch.setattr(
         ctrl,
         "_probe_leader_api",
-        lambda current_alloc: (False, "http://10.0.0.10:18080/health status=503"),
+        lambda _current_alloc: (False, "http://10.0.0.10:18080/health status=503"),
     )
 
     rec = ctrl._run_once(manifest)
@@ -525,12 +613,12 @@ def test_inference_cell_joining_requires_leader_api_health_for_ready(
     monkeypatch.setattr(
         ctrl,
         "_runtime_for_node",
-        lambda node_id: (runtime, "http://node-a:9109"),
+        lambda _node_id: (runtime, "http://node-a:9109"),
     )
     monkeypatch.setattr(
         ctrl,
         "_probe_leader_api",
-        lambda current_alloc: (True, "http://10.0.0.10:18080/health"),
+        lambda _current_alloc: (True, "http://10.0.0.10:18080/health"),
     )
 
     rec = ctrl._run_once(manifest)
@@ -569,7 +657,7 @@ def test_inference_cell_joining_falls_back_to_mp_when_ray_runtime_stops(
     monkeypatch.setattr(
         ctrl,
         "_runtime_for_node",
-        lambda node_id: (runtime, "http://node-a:9109"),
+        lambda _node_id: (runtime, "http://node-a:9109"),
     )
 
     rec = ctrl._run_once(manifest)
