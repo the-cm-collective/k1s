@@ -74,6 +74,7 @@ public contract for the first AI Max edge-cell shape. It validates:
 - all four members remain compute eligible
 - optional gateway capacity reservation with `gatewayReservedGpuFraction`
 - disconnected-operation intent under `cellContract.autonomy`
+- LAN-local gateway discovery intent under `cellContract.gatewayDiscovery`
 
 The autonomy block is intentionally declarative in the current repo. It gives
 simulators, manifest validators, and later controller work stable names for the
@@ -88,11 +89,22 @@ cellContract:
     coreLinkUnavailableMode: degraded-local-only
     reconnectMode: reconcile-on-restore
     coreLinkUptimeThresholdPct: 80
+  gatewayDiscovery:
+    mode: lan-local
+    fabricCellCount: 4
+    lanScope: floor-a
+    gatewayPeerIds:
+      - gateway-cell-b
+      - gateway-cell-c
+      - gateway-cell-d
 ```
 
 Current implementation:
 
 - validates the contract shape and accepted autonomy mode names
+- validates LAN-local discovery mode names and fabric cell counts of `1`, `2`,
+  `4`, or `8`
+- requires peer gateway IDs to match the requested fabric cell count
 - constrains `coreLinkUptimeThresholdPct` to `0..80`
 - keeps the gateway compute eligible while letting reservation affect placement planning
 
@@ -103,10 +115,14 @@ Planned runtime mapping:
   internet connectivity is unavailable
 - `reconcile-on-restore` means local state should reconcile when core
   connectivity returns, rather than being discarded
+- `lan-local` means gateway discovery is scoped to one physical LAN or lab LAN
+  simulator namespace
+- `fabricCellCount` counts four-node cells, not individual nodes; a value of
+  `4` represents sixteen compute-eligible members across four cells
 
 This is contract-level behavior only. It does not yet implement disconnected
-gateway execution, local service failover, LAN discovery, or post-reconnect
-state replay.
+gateway execution, local service failover, live LAN discovery, multi-cell
+routing, or post-reconnect state replay.
 
 ## Controller Lifecycle
 

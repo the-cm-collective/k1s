@@ -663,6 +663,39 @@ class InferenceCellAutonomySpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class InferenceGatewayDiscoverySpec(BaseModel):
+    """LAN-local gateway discovery intent for an AI Max edge-cell fabric."""
+
+    mode: Literal["lan-local"] = "lan-local"
+    fabric_cell_count: int = Field(default=1, alias="fabricCellCount")
+    lan_scope: str = Field(default="default-lan", alias="lanScope")
+    gateway_peer_ids: List[str] = Field(default_factory=list, alias="gatewayPeerIds")
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_gateway_discovery(self) -> "InferenceGatewayDiscoverySpec":
+        if self.fabric_cell_count not in {1, 2, 4, 8}:
+            raise ValueError("gatewayDiscovery.fabricCellCount must be one of 1, 2, 4, or 8")
+        scope = str(self.lan_scope or "").strip()
+        if not scope:
+            raise ValueError("gatewayDiscovery.lanScope must be non-empty")
+        peers = [str(peer or "").strip() for peer in self.gateway_peer_ids]
+        if any(not peer for peer in peers):
+            raise ValueError("gatewayDiscovery.gatewayPeerIds must not contain blank ids")
+        if len(set(peers)) != len(peers):
+            raise ValueError("gatewayDiscovery.gatewayPeerIds must be unique")
+        expected_peer_count = self.fabric_cell_count - 1
+        if len(peers) != expected_peer_count:
+            raise ValueError(
+                "gatewayDiscovery.gatewayPeerIds must contain exactly "
+                f"{expected_peer_count} peer id(s) for fabricCellCount={self.fabric_cell_count}"
+            )
+        self.lan_scope = scope
+        self.gateway_peer_ids = peers
+        return self
+
+
 class InferenceCellContractSpec(BaseModel):
     """Public opt-in validation contract for known inference cell shapes."""
 
@@ -671,6 +704,9 @@ class InferenceCellContractSpec(BaseModel):
         default=0.0, alias="gatewayReservedGpuFraction", ge=0.0, lt=1.0
     )
     autonomy: InferenceCellAutonomySpec = Field(default_factory=InferenceCellAutonomySpec)
+    gateway_discovery: InferenceGatewayDiscoverySpec = Field(
+        default_factory=InferenceGatewayDiscoverySpec, alias="gatewayDiscovery"
+    )
 
     model_config = {"populate_by_name": True}
 

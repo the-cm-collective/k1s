@@ -168,6 +168,10 @@ def test_inference_cell_accepts_ai_max_edge_cell_contract() -> None:
     assert doc.spec.cell_contract.autonomy.core_link_unavailable_mode == "degraded-local-only"
     assert doc.spec.cell_contract.autonomy.reconnect_mode == "reconcile-on-restore"
     assert doc.spec.cell_contract.autonomy.core_link_uptime_threshold_pct == 80.0
+    assert doc.spec.cell_contract.gateway_discovery.mode == "lan-local"
+    assert doc.spec.cell_contract.gateway_discovery.fabric_cell_count == 1
+    assert doc.spec.cell_contract.gateway_discovery.lan_scope == "default-lan"
+    assert doc.spec.cell_contract.gateway_discovery.gateway_peer_ids == []
     assert len(doc.spec.members) == 4
     assert [member.role for member in doc.spec.members].count("gateway") == 1
     assert [member.role for member in doc.spec.members].count("cell-node") == 3
@@ -201,6 +205,34 @@ def test_inference_cell_accepts_ai_max_disconnected_autonomy_policy() -> None:
     assert autonomy.core_link_unavailable_mode == "degraded-local-only"
     assert autonomy.reconnect_mode == "reconcile-on-restore"
     assert autonomy.core_link_uptime_threshold_pct == 75
+
+
+@pytest.mark.parametrize("fabric_cell_count", [1, 2, 4, 8])
+def test_inference_cell_accepts_ai_max_gateway_discovery_fabric_sizes(
+    fabric_cell_count: int,
+) -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"]["cellContract"]["gatewayDiscovery"] = {
+        "mode": "lan-local",
+        "fabricCellCount": fabric_cell_count,
+        "lanScope": "floor-a",
+        "gatewayPeerIds": [f"gateway-peer-{idx}" for idx in range(1, fabric_cell_count)],
+    }
+
+    doc = InferenceCellManifest.model_validate(payload)
+
+    assert doc.spec.cell_contract is not None
+    discovery = doc.spec.cell_contract.gateway_discovery
+    assert discovery.mode == "lan-local"
+    assert discovery.fabric_cell_count == fabric_cell_count
+    assert discovery.lan_scope == "floor-a"
+    assert discovery.gateway_peer_ids == [
+        f"gateway-peer-{idx}" for idx in range(1, fabric_cell_count)
+    ]
+    assert len(doc.spec.members) == 4
+    assert [member.role for member in doc.spec.members].count("gateway") == 1
+    assert [member.role for member in doc.spec.members].count("cell-node") == 3
+    assert all(member.compute_eligible for member in doc.spec.members)
 
 
 @pytest.mark.parametrize(
@@ -260,6 +292,82 @@ def test_inference_cell_rejects_invalid_ai_max_autonomy_policy(
         "coreLinkUptimeThresholdPct": 80,
     }
     payload["spec"]["cellContract"]["autonomy"][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        InferenceCellManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize("fabric_cell_count", [0, -1, 3])
+def test_inference_cell_rejects_invalid_gateway_discovery_fabric_cell_count(
+    fabric_cell_count: int,
+) -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"]["cellContract"]["gatewayDiscovery"] = {
+        "mode": "lan-local",
+        "fabricCellCount": fabric_cell_count,
+        "lanScope": "floor-a",
+        "gatewayPeerIds": [],
+    }
+
+    with pytest.raises(ValueError, match="fabricCellCount must be one of 1, 2, 4, or 8"):
+        InferenceCellManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("discovery", "message"),
+    [
+        (
+            {
+                "mode": "mdns",
+                "fabricCellCount": 1,
+                "lanScope": "floor-a",
+                "gatewayPeerIds": [],
+            },
+            "lan-local",
+        ),
+        (
+            {
+                "mode": "lan-local",
+                "fabricCellCount": 1,
+                "lanScope": "   ",
+                "gatewayPeerIds": [],
+            },
+            "lanScope must be non-empty",
+        ),
+        (
+            {
+                "mode": "lan-local",
+                "fabricCellCount": 2,
+                "lanScope": "floor-a",
+                "gatewayPeerIds": [],
+            },
+            "exactly 1 peer id",
+        ),
+        (
+            {
+                "mode": "lan-local",
+                "fabricCellCount": 2,
+                "lanScope": "floor-a",
+                "gatewayPeerIds": ["gateway-peer-1", "gateway-peer-1"],
+            },
+            "gatewayPeerIds must be unique",
+        ),
+        (
+            {
+                "mode": "lan-local",
+                "fabricCellCount": 2,
+                "lanScope": "floor-a",
+                "gatewayPeerIds": ["   "],
+            },
+            "must not contain blank ids",
+        ),
+    ],
+)
+def test_inference_cell_rejects_malformed_gateway_discovery_config(
+    discovery: dict, message: str
+) -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"]["cellContract"]["gatewayDiscovery"] = discovery
 
     with pytest.raises(ValueError, match=message):
         InferenceCellManifest.model_validate(payload)
