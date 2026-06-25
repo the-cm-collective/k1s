@@ -206,6 +206,65 @@ def _ai_max_installer_payload() -> dict:
     }
 
 
+def _ai_governance_evidence_payload() -> dict:
+    return {
+        "useCase": "nigerian-language-translation",
+        "readiness": "governance-evidence-ready",
+        "datasetCard": {
+            "datasetId": "ng-translation-public-demo-v1",
+            "name": "Nigerian language translation public demo corpus",
+            "languages": ["ha", "ig", "yo", "en"],
+            "domain": "public-service-local-domain",
+            "dataResidency": "NG-local-lab",
+            "classification": "public-demo",
+            "consentLawfulBasis": "placeholder-consent-lawful-basis",
+            "retentionDeletionMarker": "stage15-retention-delete-marker",
+        },
+        "modelCard": {
+            "modelId": "ng-translation-ai-max-stage15",
+            "name": "Nigerian language translation model",
+            "version": "stage15-local-v1",
+            "task": "translation",
+            "languages": ["ha", "ig", "yo", "en"],
+            "baseModelRef": "models/llama:stage11-local",
+            "artifactRef": "models/ng-translation:stage15-local",
+            "owner": "k1s-public-ai-governance",
+            "operator": "k1s-edge-operator",
+        },
+        "evalReport": {
+            "benchmarkRef": "benchmarks/ng-translation-stage15",
+            "evalSetRef": "evalsets/ng-translation-local-v1",
+            "metrics": {
+                "chrf": 0.62,
+                "semantic_adequacy": 0.81,
+                "toxicity_pass_rate": 0.99,
+            },
+            "approvalThreshold": 0.8,
+            "passed": True,
+            "localDomainNote": "Nigerian-language local-domain simulation only",
+        },
+        "riskAssessment": {
+            "riskLevel": "medium",
+            "humanOversight": True,
+            "biasNote": "bias review required for Hausa Igbo Yoruba English",
+            "fairnessNote": "fairness checks tracked by language and domain",
+            "securityNote": "prompt and data handling reviewed locally",
+            "mitigationStatus": "mitigations-documented",
+        },
+        "approvalRecord": {
+            "approverRole": "ai-governance-reviewer",
+            "approvedAt": "2026-06-25T00:00:00Z",
+            "releaseGate": "stage15-governance-evidence-ready",
+            "rollbackRef": "rollback/ng-translation-stage15",
+        },
+        "rollbackRecord": {
+            "trigger": "quality-regression-or-governance-review",
+            "previousVersion": "stage14-local-v0",
+            "evidenceMarker": "stage15-rollback-evidence-marker",
+        },
+    }
+
+
 def test_load_any_manifest_inference_cell(tmp_path: Path) -> None:
     p = _write(
         tmp_path / "cell.yaml",
@@ -378,6 +437,30 @@ def test_inference_cell_accepts_ai_max_edge_cell_contract() -> None:
     assert installer.install_paths[0].post_install.display_mode == "telemetry"
     assert installer.install_paths[1].post_install.connect_target == "gateway"
     assert installer.install_paths[1].post_install.display_mode == "connect-monitor-to-gateway"
+    governance = doc.spec.cell_contract.governance_evidence
+    assert governance.use_case == "nigerian-language-translation"
+    assert governance.readiness == "governance-evidence-ready"
+    assert governance.dataset_card.dataset_id == "ng-translation-public-demo-v1"
+    assert governance.dataset_card.languages == ["ha", "ig", "yo", "en"]
+    assert governance.dataset_card.data_residency == "NG-local-lab"
+    assert governance.dataset_card.classification == "public-demo"
+    assert governance.dataset_card.retention_deletion_marker == "stage15-retention-delete-marker"
+    assert governance.model_card.model_id == "ng-translation-ai-max-stage15"
+    assert governance.model_card.task == "translation"
+    assert governance.model_card.artifact_ref == "models/ng-translation:stage15-local"
+    assert governance.eval_report.eval_set_ref == "evalsets/ng-translation-local-v1"
+    assert governance.eval_report.metrics == {
+        "chrf": 0.62,
+        "semantic_adequacy": 0.81,
+        "toxicity_pass_rate": 0.99,
+    }
+    assert governance.eval_report.passed is True
+    assert governance.risk_assessment.risk_level == "medium"
+    assert governance.risk_assessment.human_oversight is True
+    assert governance.approval_record.release_gate == "stage15-governance-evidence-ready"
+    assert governance.approval_record.rollback_ref == "rollback/ng-translation-stage15"
+    assert governance.rollback_record.previous_version == "stage14-local-v0"
+    assert governance.rollback_record.evidence_marker == "stage15-rollback-evidence-marker"
     assert len(doc.spec.members) == 4
     assert [member.role for member in doc.spec.members].count("gateway") == 1
     assert [member.role for member in doc.spec.members].count("cell-node") == 3
@@ -410,6 +493,22 @@ def test_inference_cell_accepts_ai_max_installer_contract() -> None:
     assert cell_node.post_install.connect_target == "gateway"
     assert cell_node.post_install.usb_device_policy == "limited"
     assert cell_node.post_install.display_mode == "connect-monitor-to-gateway"
+
+
+def test_inference_cell_accepts_ai_governance_evidence_contract() -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"]["cellContract"]["governanceEvidence"] = _ai_governance_evidence_payload()
+
+    doc = InferenceCellManifest.model_validate(payload)
+
+    assert doc.spec.cell_contract is not None
+    governance = doc.spec.cell_contract.governance_evidence
+    assert governance.dataset_card.dataset_id == "ng-translation-public-demo-v1"
+    assert governance.model_card.task == "translation"
+    assert governance.eval_report.metrics["semantic_adequacy"] == 0.81
+    assert governance.risk_assessment.human_oversight is True
+    assert governance.approval_record.release_gate == "stage15-governance-evidence-ready"
+    assert governance.rollback_record.trigger == "quality-regression-or-governance-review"
 
 
 def test_inference_cell_accepts_ai_max_gateway_reservation() -> None:
@@ -839,6 +938,55 @@ def test_inference_cell_rejects_invalid_ai_max_installer_contract(mutate, messag
     installer = _ai_max_installer_payload()
     mutate(installer)
     payload["spec"]["cellContract"]["installer"] = installer
+
+    with pytest.raises(ValueError, match=message):
+        InferenceCellManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda evidence: evidence["datasetCard"].update({"datasetId": ""}),
+            "dataset card fields must be non-empty",
+        ),
+        (
+            lambda evidence: evidence["datasetCard"].update({"dataResidency": "   "}),
+            "dataset card fields must be non-empty",
+        ),
+        (
+            lambda evidence: evidence["datasetCard"].update({"classification": ""}),
+            "dataset card fields must be non-empty",
+        ),
+        (
+            lambda evidence: evidence["modelCard"].update({"task": "summarization"}),
+            "translation",
+        ),
+        (
+            lambda evidence: evidence["evalReport"].update({"metrics": {}}),
+            "metrics must not be empty",
+        ),
+        (
+            lambda evidence: evidence["riskAssessment"].update(
+                {"riskLevel": "high", "humanOversight": False}
+            ),
+            "requires human oversight",
+        ),
+        (
+            lambda evidence: evidence["approvalRecord"].update({"releaseGate": ""}),
+            "approval record gate fields must be non-empty",
+        ),
+        (
+            lambda evidence: evidence["approvalRecord"].update({"rollbackRef": "   "}),
+            "approval record gate fields must be non-empty",
+        ),
+    ],
+)
+def test_inference_cell_rejects_invalid_ai_governance_evidence(mutate, message: str) -> None:
+    payload = _ai_max_edge_cell_payload()
+    evidence = _ai_governance_evidence_payload()
+    mutate(evidence)
+    payload["spec"]["cellContract"]["governanceEvidence"] = evidence
 
     with pytest.raises(ValueError, match=message):
         InferenceCellManifest.model_validate(payload)

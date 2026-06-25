@@ -77,6 +77,8 @@ public contract for the first AI Max edge-cell shape. It validates:
 - LAN-local gateway discovery intent under `cellContract.gatewayDiscovery`
 - NixOS installer signing and boot assurance intent under
   `cellContract.installer`
+- AI governance evidence intent for the Nigerian-language translation use case
+  under `cellContract.governanceEvidence`
 
 The autonomy block is intentionally declarative in the current repo. It gives
 simulators, manifest validators, and later controller work stable names for the
@@ -193,6 +195,54 @@ cellContract:
           connectTarget: gateway
           usbDevicePolicy: limited
           displayMode: connect-monitor-to-gateway
+  governanceEvidence:
+    useCase: nigerian-language-translation
+    readiness: governance-evidence-ready
+    datasetCard:
+      datasetId: ng-translation-public-demo-v1
+      name: Nigerian language translation public demo corpus
+      languages: [ha, ig, yo, en]
+      domain: public-service-local-domain
+      dataResidency: NG-local-lab
+      classification: public-demo
+      consentLawfulBasis: placeholder-consent-lawful-basis
+      retentionDeletionMarker: stage15-retention-delete-marker
+    modelCard:
+      modelId: ng-translation-ai-max-stage15
+      name: Nigerian language translation model
+      version: stage15-local-v1
+      task: translation
+      languages: [ha, ig, yo, en]
+      baseModelRef: models/llama:stage11-local
+      artifactRef: models/ng-translation:stage15-local
+      owner: k1s-public-ai-governance
+      operator: k1s-edge-operator
+    evalReport:
+      benchmarkRef: benchmarks/ng-translation-stage15
+      evalSetRef: evalsets/ng-translation-local-v1
+      metrics:
+        chrf: 0.62
+        semantic_adequacy: 0.81
+        toxicity_pass_rate: 0.99
+      approvalThreshold: 0.8
+      passed: true
+      localDomainNote: Nigerian-language local-domain simulation only
+    riskAssessment:
+      riskLevel: medium
+      humanOversight: true
+      biasNote: bias review required for Hausa Igbo Yoruba English
+      fairnessNote: fairness checks tracked by language and domain
+      securityNote: prompt and data handling reviewed locally
+      mitigationStatus: mitigations-documented
+    approvalRecord:
+      approverRole: ai-governance-reviewer
+      approvedAt: "2026-06-25T00:00:00Z"
+      releaseGate: stage15-governance-evidence-ready
+      rollbackRef: rollback/ng-translation-stage15
+    rollbackRecord:
+      trigger: quality-regression-or-governance-review
+      previousVersion: stage14-local-v0
+      evidenceMarker: stage15-rollback-evidence-marker
 ```
 
 Current implementation:
@@ -227,6 +277,10 @@ Current implementation:
   transitioning through `connected`, `core-link-unavailable`,
   `degraded-local-only`, `reconciling`, and `reconciled` with deterministic
   gateway cache intent and transition traces
+- validates a Stage 15 local AI governance evidence bundle for the
+  Nigerian-language translation use case, including dataset/model cards, eval
+  report metrics and thresholds, risk assessment, approval gate, and
+  rollback/retirement marker
 - validates post-install posture for gateway and cell-node paths, including
   auto-boot, role-specific connect targets, constrained USB policy, and display
   mode
@@ -263,6 +317,11 @@ Planned runtime mapping:
 - the autonomy state machine is the Stage 11 state-machine-ready surface. It
   turns the declarative autonomy names into deterministic local transitions and
   cache state, but does not run an outage/probe drill.
+- `governanceEvidence` is the Stage 15 governance-evidence-ready surface. It
+  makes dataset/model/eval/risk/approval/rollback evidence executable in local
+  tests for the Nigerian-language translation model use case. It is not a legal
+  compliance determination, external approval workflow, production audit store,
+  or model governance platform.
 - `secureImageValidation`, `bootValidation`, `tamperDetection`,
   `validationFailureAction`, and `coreAlerting` are declarative assurance
   requirements for later installer, TPM/Secure Boot, attestation, and alerting
@@ -275,7 +334,9 @@ enforcement, attestation verification, USB policy enforcement, real key custody,
 production ISO signing, real NixOS image realization, TPM quote verification,
 Secure Boot event log verification, hardware attestation, real kubelet/node
 admission control, TPM-backed enforcement, Stage 12 outage/probe drills, or
-hardened alert transport.
+hardened alert transport. Stage 15 also does not complete legal compliance,
+consent verification, data protection review, external governance integration,
+or production release approval.
 
 ## Controller Lifecycle
 

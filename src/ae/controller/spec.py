@@ -1345,6 +1345,262 @@ class InferenceInstallerSpec(BaseModel):
         return self
 
 
+class InferenceGovernanceDatasetCardSpec(BaseModel):
+    """Dataset governance card for a local AI workload evidence bundle."""
+
+    dataset_id: str = Field(default="ng-translation-public-demo-v1", alias="datasetId")
+    name: str = "Nigerian language translation public demo corpus"
+    languages: List[str] = Field(default_factory=lambda: ["ha", "ig", "yo", "en"])
+    domain: str = "public-service-local-domain"
+    data_residency: str = Field(default="NG-local-lab", alias="dataResidency")
+    classification: str = "public-demo"
+    consent_lawful_basis: str = Field(
+        default="placeholder-consent-lawful-basis", alias="consentLawfulBasis"
+    )
+    retention_deletion_marker: str = Field(
+        default="stage15-retention-delete-marker", alias="retentionDeletionMarker"
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator(
+        "dataset_id",
+        "name",
+        "domain",
+        "data_residency",
+        "classification",
+        "consent_lawful_basis",
+        "retention_deletion_marker",
+        mode="before",
+    )
+    @classmethod
+    def _require_dataset_fields(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("governance dataset card fields must be non-empty")
+        return text
+
+    @field_validator("languages", mode="before")
+    @classmethod
+    def _require_languages(cls, v) -> list[str]:
+        languages = [str(item or "").strip() for item in list(v or [])]
+        if not languages or any(not item for item in languages):
+            raise ValueError("governance dataset card languages must be non-empty")
+        return languages
+
+
+class InferenceGovernanceModelCardSpec(BaseModel):
+    """Model governance card for a local AI workload evidence bundle."""
+
+    model_id: str = Field(default="ng-translation-ai-max-stage15", alias="modelId")
+    name: str = "Nigerian language translation model"
+    version: str = "stage15-local-v1"
+    task: Literal["translation"] = "translation"
+    languages: List[str] = Field(default_factory=lambda: ["ha", "ig", "yo", "en"])
+    base_model_ref: str = Field(default="models/llama:stage11-local", alias="baseModelRef")
+    artifact_ref: str = Field(default="models/ng-translation:stage15-local", alias="artifactRef")
+    owner: str = "k1s-public-ai-governance"
+    operator: str = "k1s-edge-operator"
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator(
+        "model_id",
+        "name",
+        "version",
+        "base_model_ref",
+        "artifact_ref",
+        "owner",
+        "operator",
+        mode="before",
+    )
+    @classmethod
+    def _require_model_fields(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("governance model card fields must be non-empty")
+        return text
+
+    @field_validator("languages", mode="before")
+    @classmethod
+    def _require_languages(cls, v) -> list[str]:
+        languages = [str(item or "").strip() for item in list(v or [])]
+        if not languages or any(not item for item in languages):
+            raise ValueError("governance model card languages must be non-empty")
+        return languages
+
+
+class InferenceGovernanceEvalReportSpec(BaseModel):
+    """Local eval report evidence for a governed AI workload."""
+
+    benchmark_ref: str = Field(default="benchmarks/ng-translation-stage15", alias="benchmarkRef")
+    eval_set_ref: str = Field(default="evalsets/ng-translation-local-v1", alias="evalSetRef")
+    metrics: dict[str, float] = Field(
+        default_factory=lambda: {
+            "chrf": 0.62,
+            "semantic_adequacy": 0.81,
+            "toxicity_pass_rate": 0.99,
+        }
+    )
+    approval_threshold: float = Field(default=0.80, alias="approvalThreshold", ge=0.0, le=1.0)
+    passed: bool = True
+    local_domain_note: str = Field(
+        default="Nigerian-language local-domain simulation only",
+        alias="localDomainNote",
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("benchmark_ref", "eval_set_ref", "local_domain_note", mode="before")
+    @classmethod
+    def _require_eval_fields(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("governance eval report fields must be non-empty")
+        return text
+
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def _require_metrics(cls, v):
+        metrics = dict(v or {})
+        if not metrics:
+            raise ValueError("governance eval report metrics must not be empty")
+        if any(not str(key or "").strip() for key in metrics):
+            raise ValueError("governance eval report metric names must be non-empty")
+        return metrics
+
+
+class InferenceGovernanceRiskAssessmentSpec(BaseModel):
+    """Risk and mitigation evidence for a governed AI workload."""
+
+    risk_level: Literal["low", "medium", "high"] = Field(default="medium", alias="riskLevel")
+    human_oversight: bool = Field(default=True, alias="humanOversight")
+    bias_note: str = Field(
+        default="bias review required for Hausa Igbo Yoruba English", alias="biasNote"
+    )
+    fairness_note: str = Field(
+        default="fairness checks tracked by language and domain",
+        alias="fairnessNote",
+    )
+    security_note: str = Field(
+        default="prompt and data handling reviewed locally", alias="securityNote"
+    )
+    mitigation_status: str = Field(default="mitigations-documented", alias="mitigationStatus")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator(
+        "bias_note",
+        "fairness_note",
+        "security_note",
+        "mitigation_status",
+        mode="before",
+    )
+    @classmethod
+    def _require_risk_fields(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("governance risk assessment fields must be non-empty")
+        return text
+
+    @model_validator(mode="after")
+    def _validate_human_oversight(self) -> "InferenceGovernanceRiskAssessmentSpec":
+        if self.risk_level in {"medium", "high"} and not self.human_oversight:
+            raise ValueError("governance risk assessment requires human oversight for higher risk")
+        return self
+
+
+class InferenceGovernanceApprovalRecordSpec(BaseModel):
+    """Release approval evidence for a governed AI workload."""
+
+    approver_role: str = Field(default="ai-governance-reviewer", alias="approverRole")
+    approved_at: str = Field(default="2026-06-25T00:00:00Z", alias="approvedAt")
+    release_gate: str = Field(default="stage15-governance-evidence-ready", alias="releaseGate")
+    rollback_ref: str = Field(default="rollback/ng-translation-stage15", alias="rollbackRef")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("approver_role", "approved_at", "release_gate", "rollback_ref", mode="before")
+    @classmethod
+    def _require_approval_fields(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("governance approval record gate fields must be non-empty")
+        return text
+
+
+class InferenceGovernanceRollbackRecordSpec(BaseModel):
+    """Rollback and retirement evidence for a governed AI workload."""
+
+    trigger: str = "quality-regression-or-governance-review"
+    previous_version: str = Field(default="stage14-local-v0", alias="previousVersion")
+    evidence_marker: str = Field(default="stage15-rollback-evidence-marker", alias="evidenceMarker")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("trigger", "previous_version", "evidence_marker", mode="before")
+    @classmethod
+    def _require_rollback_fields(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("governance rollback record fields must be non-empty")
+        return text
+
+
+class InferenceGovernanceEvidenceSpec(BaseModel):
+    """Local governance evidence bundle for the AI Max translation workload."""
+
+    use_case: str = Field(
+        default="nigerian-language-translation",
+        alias="useCase",
+    )
+    readiness: Literal["governance-evidence-ready"] = "governance-evidence-ready"
+    dataset_card: InferenceGovernanceDatasetCardSpec = Field(
+        default_factory=InferenceGovernanceDatasetCardSpec,
+        alias="datasetCard",
+    )
+    model_card: InferenceGovernanceModelCardSpec = Field(
+        default_factory=InferenceGovernanceModelCardSpec,
+        alias="modelCard",
+    )
+    eval_report: InferenceGovernanceEvalReportSpec = Field(
+        default_factory=InferenceGovernanceEvalReportSpec,
+        alias="evalReport",
+    )
+    risk_assessment: InferenceGovernanceRiskAssessmentSpec = Field(
+        default_factory=InferenceGovernanceRiskAssessmentSpec,
+        alias="riskAssessment",
+    )
+    approval_record: InferenceGovernanceApprovalRecordSpec = Field(
+        default_factory=InferenceGovernanceApprovalRecordSpec,
+        alias="approvalRecord",
+    )
+    rollback_record: InferenceGovernanceRollbackRecordSpec = Field(
+        default_factory=InferenceGovernanceRollbackRecordSpec,
+        alias="rollbackRecord",
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("use_case", mode="before")
+    @classmethod
+    def _require_use_case(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("governance useCase must be non-empty")
+        return text
+
+    @model_validator(mode="after")
+    def _validate_governance_bundle(self) -> "InferenceGovernanceEvidenceSpec":
+        if self.model_card.task != "translation":
+            raise ValueError("governance model card task must be translation")
+        if not self.eval_report.passed:
+            raise ValueError("governance eval report must pass before approval")
+        if not self.approval_record.release_gate:
+            raise ValueError("governance approval record releaseGate must be non-empty")
+        return self
+
+
 class InferenceCellContractSpec(BaseModel):
     """Public opt-in validation contract for known inference cell shapes."""
 
@@ -1357,6 +1613,9 @@ class InferenceCellContractSpec(BaseModel):
         default_factory=InferenceGatewayDiscoverySpec, alias="gatewayDiscovery"
     )
     installer: InferenceInstallerSpec = Field(default_factory=InferenceInstallerSpec)
+    governance_evidence: InferenceGovernanceEvidenceSpec = Field(
+        default_factory=InferenceGovernanceEvidenceSpec, alias="governanceEvidence"
+    )
 
     model_config = {"populate_by_name": True}
 
