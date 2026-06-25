@@ -16,6 +16,49 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+def _ai_max_edge_cell_payload() -> dict:
+    return {
+        "apiVersion": "ae.dev/v1alpha1",
+        "kind": "InferenceCell",
+        "metadata": {"name": "ai-max-edge-cell"},
+        "spec": {
+            "cellContract": {"profile": "ai-max-edge-cell-v1"},
+            "model": {"modelId": "llama", "localPath": "/models/llama"},
+            "parallelism": {"tp": 1, "pp": 4},
+            "members": [
+                {
+                    "siteId": "edge-cell",
+                    "nodeId": "gateway-1",
+                    "gpuCount": 1,
+                    "role": "gateway",
+                    "computeEligible": True,
+                },
+                {
+                    "siteId": "edge-cell",
+                    "nodeId": "cell-node-1",
+                    "gpuCount": 1,
+                    "role": "cell-node",
+                    "computeEligible": True,
+                },
+                {
+                    "siteId": "edge-cell",
+                    "nodeId": "cell-node-2",
+                    "gpuCount": 1,
+                    "role": "cell-node",
+                    "computeEligible": True,
+                },
+                {
+                    "siteId": "edge-cell",
+                    "nodeId": "cell-node-3",
+                    "gpuCount": 1,
+                    "role": "cell-node",
+                    "computeEligible": True,
+                },
+            ],
+        },
+    }
+
+
 def test_load_any_manifest_inference_cell(tmp_path: Path) -> None:
     p = _write(
         tmp_path / "cell.yaml",
@@ -113,6 +156,46 @@ spec:
     doc = load_any_manifest(p)
     assert isinstance(doc, InferenceCellSetManifest)
     assert doc.spec.replicas == 0
+
+
+def test_inference_cell_accepts_ai_max_edge_cell_contract() -> None:
+    doc = InferenceCellManifest.model_validate(_ai_max_edge_cell_payload())
+
+    assert doc.spec.cell_contract is not None
+    assert doc.spec.cell_contract.profile == "ai-max-edge-cell-v1"
+    assert len(doc.spec.members) == 4
+    assert [member.role for member in doc.spec.members].count("gateway") == 1
+    assert [member.role for member in doc.spec.members].count("cell-node") == 3
+    assert all(member.compute_eligible for member in doc.spec.members)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda payload: payload["spec"]["members"].pop(),
+            "requires exactly 4 total members",
+        ),
+        (
+            lambda payload: payload["spec"]["members"][1].update({"role": "gateway"}),
+            "requires exactly 1 gateway member",
+        ),
+        (
+            lambda payload: payload["spec"]["members"][1].update({"role": None}),
+            "requires exactly 3 cell-node members",
+        ),
+        (
+            lambda payload: payload["spec"]["members"][0].update({"computeEligible": False}),
+            "requires all members to be compute eligible: gateway-1",
+        ),
+    ],
+)
+def test_inference_cell_rejects_invalid_ai_max_edge_cell_contract(mutate, message: str) -> None:
+    payload = _ai_max_edge_cell_payload()
+    mutate(payload)
+
+    with pytest.raises(ValueError, match=message):
+        InferenceCellManifest.model_validate(payload)
 
 
 def test_load_manifest_rejects_non_deployment(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 
 DEFAULT_NAMESPACE = "default"
@@ -638,6 +638,16 @@ class InferenceMemberSpec(BaseModel):
     site_id: str = Field(alias="siteId")
     node_id: str = Field(alias="nodeId")
     gpu_count: int = Field(alias="gpuCount", ge=1)
+    role: Literal["gateway", "cell-node"] | None = None
+    compute_eligible: bool = Field(default=True, alias="computeEligible")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceCellContractSpec(BaseModel):
+    """Public opt-in validation contract for known inference cell shapes."""
+
+    profile: Literal["ai-max-edge-cell-v1"]
 
     model_config = {"populate_by_name": True}
 
@@ -725,6 +735,7 @@ class LinkMetricSample(BaseModel):
 class InferenceCellSpec(BaseModel):
     """Inference cell desired state."""
 
+    cell_contract: InferenceCellContractSpec | None = Field(default=None, alias="cellContract")
     model: InferenceModelRef
     parallelism: InferenceParallelismSpec = Field(default_factory=InferenceParallelismSpec)
     executor: InferenceExecutorSpec = Field(default_factory=InferenceExecutorSpec)
@@ -744,6 +755,35 @@ class InferenceCellSpec(BaseModel):
     link_metrics: List[LinkMetricSample] = Field(default_factory=list, alias="linkMetrics")
 
     model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_cell_contract(self) -> "InferenceCellSpec":
+        contract = self.cell_contract
+        if contract is None:
+            return self
+        if contract.profile == "ai-max-edge-cell-v1":
+            _validate_ai_max_edge_cell_contract(self.members)
+        return self
+
+
+def _validate_ai_max_edge_cell_contract(members: list[InferenceMemberSpec]) -> None:
+    if len(members) != 4:
+        raise ValueError("ai-max-edge-cell-v1 requires exactly 4 total members")
+
+    roles = [member.role for member in members]
+    gateway_count = roles.count("gateway")
+    cell_node_count = roles.count("cell-node")
+    if gateway_count != 1:
+        raise ValueError("ai-max-edge-cell-v1 requires exactly 1 gateway member")
+    if cell_node_count != 3:
+        raise ValueError("ai-max-edge-cell-v1 requires exactly 3 cell-node members")
+
+    ineligible = [member.node_id for member in members if not member.compute_eligible]
+    if ineligible:
+        nodes = ", ".join(ineligible)
+        raise ValueError(
+            f"ai-max-edge-cell-v1 requires all members to be compute eligible: {nodes}"
+        )
 
 
 class InferenceCellManifest(BaseModel):
