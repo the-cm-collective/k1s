@@ -122,6 +122,58 @@ def _ai_max_installer_payload() -> dict:
                 },
             },
         ],
+        "bootEvidence": [
+            {
+                "nodeId": "gateway-1",
+                "role": "gateway",
+                "installerProfile": "nixos-ai-max-edge-cell-installer-v1",
+                "installerImage": "nixos-ai-max-edge-cell-installer",
+                "artifactDigest": (
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                ),
+                "manifestDigest": (
+                    "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                ),
+                "bootMeasurementDigest": (
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                "signingKeyId": "k1s-core-root-of-trust",
+                "verifierTrustRoot": "k1s-core-root-of-trust",
+                "nonce": "k1s-stage9-nonce-gateway",
+                "createdAt": "2026-06-25T00:00:00Z",
+                "verification": {
+                    "status": "verified",
+                    "verifier": "k1s-local-boot-evidence-verifier-v1",
+                    "trustRoot": "k1s-core-root-of-trust",
+                    "failureReasons": [],
+                },
+            },
+            {
+                "nodeId": "cell-node-1",
+                "role": "cell-node",
+                "installerProfile": "nixos-ai-max-edge-cell-installer-v1",
+                "installerImage": "nixos-ai-max-edge-cell-installer",
+                "artifactDigest": (
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                ),
+                "manifestDigest": (
+                    "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                ),
+                "bootMeasurementDigest": (
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ),
+                "signingKeyId": "k1s-core-root-of-trust",
+                "verifierTrustRoot": "k1s-core-root-of-trust",
+                "nonce": "k1s-stage9-nonce-cell-node",
+                "createdAt": "2026-06-25T00:00:00Z",
+                "verification": {
+                    "status": "verified",
+                    "verifier": "k1s-local-boot-evidence-verifier-v1",
+                    "trustRoot": "k1s-core-root-of-trust",
+                    "failureReasons": [],
+                },
+            },
+        ],
         "assurance": {
             "secureImageValidation": "enabled",
             "bootValidation": "measured-verified",
@@ -297,6 +349,22 @@ def test_inference_cell_accepts_ai_max_edge_cell_contract() -> None:
     assert cell_node_scaffold.post_install.connect_target == "gateway"
     assert cell_node_scaffold.post_install.usb_device_policy == "limited"
     assert cell_node_scaffold.post_install.display_mode == "connect-monitor-to-gateway"
+    assert [evidence.role for evidence in installer.boot_evidence] == ["gateway", "cell-node"]
+    gateway_evidence, cell_node_evidence = installer.boot_evidence
+    assert gateway_evidence.node_id == "gateway-1"
+    assert gateway_evidence.artifact_digest == installer.artifact.artifact_digest
+    assert gateway_evidence.manifest_digest == installer.artifact.manifest_digest
+    assert gateway_evidence.boot_measurement_digest.startswith("sha256:")
+    assert gateway_evidence.signing_key_id == "k1s-core-root-of-trust"
+    assert gateway_evidence.verifier_trust_root == "k1s-core-root-of-trust"
+    assert gateway_evidence.nonce == "k1s-stage9-nonce-gateway"
+    assert gateway_evidence.created_at == "2026-06-25T00:00:00Z"
+    assert gateway_evidence.verification.status == "verified"
+    assert gateway_evidence.verification.verifier == "k1s-local-boot-evidence-verifier-v1"
+    assert gateway_evidence.verification.failure_reasons == []
+    assert cell_node_evidence.node_id == "cell-node-1"
+    assert cell_node_evidence.boot_measurement_digest.startswith("sha256:")
+    assert cell_node_evidence.nonce == "k1s-stage9-nonce-cell-node"
     assert installer.assurance.secure_image_validation == "enabled"
     assert installer.assurance.boot_validation == "measured-verified"
     assert installer.assurance.tamper_detection == "enabled"
@@ -330,6 +398,8 @@ def test_inference_cell_accepts_ai_max_installer_contract() -> None:
     assert [scaffold.role for scaffold in installer.role_scaffolds] == ["gateway", "cell-node"]
     assert installer.role_scaffolds[0].module_ref.endswith("/gateway.nix")
     assert installer.role_scaffolds[1].module_ref.endswith("/cell-node.nix")
+    assert [evidence.role for evidence in installer.boot_evidence] == ["gateway", "cell-node"]
+    assert all(evidence.verification.status == "verified" for evidence in installer.boot_evidence)
     assert [path.path for path in installer.install_paths] == ["gateway", "cell-node"]
     gateway, cell_node = installer.install_paths
     assert gateway.post_install.connect_target == "core"
@@ -546,6 +616,85 @@ def test_inference_cell_rejects_missing_ai_max_installer_path() -> None:
                 }
             ),
             "derivedFromManifestDigest must match artifact manifestDigest",
+        ),
+        (
+            lambda installer: installer["bootEvidence"].pop(),
+            "bootEvidence must contain exactly gateway and cell-node",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][1].update(
+                {
+                    "role": "gateway",
+                    "nonce": "k1s-stage9-nonce-gateway",
+                }
+            ),
+            "bootEvidence must not contain duplicate roles",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][0].update({"signingKeyId": "lab-key"}),
+            "k1s-core-root-of-trust",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][0].update({"verifierTrustRoot": "lab-key"}),
+            "k1s-core-root-of-trust",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][0].update(
+                {
+                    "artifactDigest": (
+                        "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+                    )
+                }
+            ),
+            "artifactDigest must match artifact digest",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][0].update(
+                {
+                    "manifestDigest": (
+                        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+                    )
+                }
+            ),
+            "manifestDigest must match artifact manifestDigest",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][0].update({"bootMeasurementDigest": ""}),
+            "sha256:<64 hex>",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][1].update(
+                {"bootMeasurementDigest": "sha256:bad"}
+            ),
+            "sha256:<64 hex>",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][0].update({"nonce": ""}),
+            "nodeId, nonce, and createdAt must be non-empty",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][0].update({"nonce": "stale-nonce"}),
+            "nonce is stale or does not match role",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][0].update(
+                {"installerProfile": "lab-profile"}
+            ),
+            "nixos-ai-max-edge-cell-installer-v1",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][1].update({"installerImage": "lab-image"}),
+            "nixos-ai-max-edge-cell-installer",
+        ),
+        (
+            lambda installer: installer["roleScaffolds"].pop(0),
+            "roleScaffolds must contain exactly gateway and cell-node",
+        ),
+        (
+            lambda installer: installer["bootEvidence"][0]["verification"].update(
+                {"failureReasons": ["tampered-artifact"]}
+            ),
+            "failureReasons must be empty when verified",
         ),
         (
             lambda installer: installer["assurance"].update({"secureImageValidation": "disabled"}),

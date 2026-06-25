@@ -141,6 +141,39 @@ cellContract:
           connectTarget: gateway
           usbDevicePolicy: limited
           displayMode: connect-monitor-to-gateway
+    bootEvidence:
+      - nodeId: gateway-1
+        role: gateway
+        installerProfile: nixos-ai-max-edge-cell-installer-v1
+        installerImage: nixos-ai-max-edge-cell-installer
+        artifactDigest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+        manifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        bootMeasurementDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        signingKeyId: k1s-core-root-of-trust
+        verifierTrustRoot: k1s-core-root-of-trust
+        nonce: k1s-stage9-nonce-gateway
+        createdAt: "2026-06-25T00:00:00Z"
+        verification:
+          status: verified
+          verifier: k1s-local-boot-evidence-verifier-v1
+          trustRoot: k1s-core-root-of-trust
+          failureReasons: []
+      - nodeId: cell-node-1
+        role: cell-node
+        installerProfile: nixos-ai-max-edge-cell-installer-v1
+        installerImage: nixos-ai-max-edge-cell-installer
+        artifactDigest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+        manifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        bootMeasurementDigest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        signingKeyId: k1s-core-root-of-trust
+        verifierTrustRoot: k1s-core-root-of-trust
+        nonce: k1s-stage9-nonce-cell-node
+        createdAt: "2026-06-25T00:00:00Z"
+        verification:
+          status: verified
+          verifier: k1s-local-boot-evidence-verifier-v1
+          trustRoot: k1s-core-root-of-trust
+          failureReasons: []
     assurance:
       secureImageValidation: enabled
       bootValidation: measured-verified
@@ -181,6 +214,10 @@ Current implementation:
   including exactly one `gateway` and one `cell-node` installed-system intent,
   non-empty module/config references, derivation from the signed Stage 7
   manifest digest, and role-specific post-install services
+- validates a local Stage 9 boot evidence verifier scaffold for gateway and
+  cell-node roles, including installer profile/image, artifact and manifest
+  digests, simulated boot measurement digest, trust root, nonce, timestamp, and
+  verified result
 - validates post-install posture for gateway and cell-node paths, including
   auto-boot, role-specific connect targets, constrained USB policy, and display
   mode
@@ -206,6 +243,10 @@ Planned runtime mapping:
 - `roleScaffolds` is the Stage 8 role-scaffold-ready surface. It describes the
   NixOS module/config intent that the single signed installer would use to
   produce gateway and cell-node installed systems.
+- `bootEvidence` is the Stage 9 local verifier surface. It makes the boot
+  evidence acceptance/rejection contract executable in unit tests without
+  claiming real TPM quote, Secure Boot event log, or hardware attestation
+  verification.
 - `secureImageValidation`, `bootValidation`, `tamperDetection`,
   `validationFailureAction`, and `coreAlerting` are declarative assurance
   requirements for later installer, TPM/Secure Boot, attestation, and alerting
@@ -215,8 +256,9 @@ This is contract-level behavior only. It does not yet implement disconnected
 gateway execution, local service failover, live LAN discovery, multi-cell
 routing, post-reconnect state replay, actual ISO build/signing, TPM/Secure Boot
 enforcement, attestation verification, USB policy enforcement, real key custody,
-production ISO signing, real NixOS image realization, or hardened
-alert transport.
+production ISO signing, real NixOS image realization, TPM quote verification,
+Secure Boot event log verification, hardware attestation, or hardened alert
+transport.
 
 ## Controller Lifecycle
 

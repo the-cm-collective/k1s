@@ -23,6 +23,15 @@ _AI_MAX_INSTALLER_MANIFEST_DIGEST = (
 _AI_MAX_INSTALLER_SIGNATURE = (
     "k1s-sim-signature:3333333333333333333333333333333333333333333333333333333333333333"
 )
+_AI_MAX_GATEWAY_BOOT_MEASUREMENT_DIGEST = (
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+_AI_MAX_CELL_NODE_BOOT_MEASUREMENT_DIGEST = (
+    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+_AI_MAX_GATEWAY_BOOT_NONCE = "k1s-stage9-nonce-gateway"
+_AI_MAX_CELL_NODE_BOOT_NONCE = "k1s-stage9-nonce-cell-node"
+_AI_MAX_BOOT_EVIDENCE_CREATED_AT = "2026-06-25T00:00:00Z"
 
 
 class ManifestError(RuntimeError):
@@ -957,6 +966,112 @@ def _default_ai_max_installer_role_scaffolds() -> list[InferenceInstallerRoleSca
     ]
 
 
+class InferenceInstallerBootEvidenceVerificationSpec(BaseModel):
+    """Local verification result for simulated AI Max boot evidence."""
+
+    status: Literal["verified"] = "verified"
+    verifier: Literal["k1s-local-boot-evidence-verifier-v1"] = "k1s-local-boot-evidence-verifier-v1"
+    trust_root: Literal["k1s-core-root-of-trust"] = Field(
+        default="k1s-core-root-of-trust", alias="trustRoot"
+    )
+    failure_reasons: List[str] = Field(default_factory=list, alias="failureReasons")
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_verification_result(self) -> "InferenceInstallerBootEvidenceVerificationSpec":
+        if self.failure_reasons:
+            raise ValueError("installer boot evidence failureReasons must be empty when verified")
+        return self
+
+
+class InferenceInstallerBootEvidenceSpec(BaseModel):
+    """Deterministic simulator evidence for installed-system boot posture."""
+
+    node_id: str = Field(alias="nodeId")
+    role: Literal["gateway", "cell-node"]
+    installer_profile: Literal["nixos-ai-max-edge-cell-installer-v1"] = Field(
+        default="nixos-ai-max-edge-cell-installer-v1", alias="installerProfile"
+    )
+    installer_image: Literal["nixos-ai-max-edge-cell-installer"] = Field(
+        default="nixos-ai-max-edge-cell-installer", alias="installerImage"
+    )
+    artifact_digest: str = Field(default=_AI_MAX_INSTALLER_ARTIFACT_DIGEST, alias="artifactDigest")
+    manifest_digest: str = Field(default=_AI_MAX_INSTALLER_MANIFEST_DIGEST, alias="manifestDigest")
+    boot_measurement_digest: str = Field(alias="bootMeasurementDigest")
+    signing_key_id: Literal["k1s-core-root-of-trust"] = Field(
+        default="k1s-core-root-of-trust", alias="signingKeyId"
+    )
+    verifier_trust_root: Literal["k1s-core-root-of-trust"] = Field(
+        default="k1s-core-root-of-trust", alias="verifierTrustRoot"
+    )
+    nonce: str
+    created_at: str = Field(default=_AI_MAX_BOOT_EVIDENCE_CREATED_AT, alias="createdAt")
+    verification: InferenceInstallerBootEvidenceVerificationSpec = Field(
+        default_factory=InferenceInstallerBootEvidenceVerificationSpec
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("node_id", "nonce", "created_at", mode="before")
+    @classmethod
+    def _require_non_blank(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError(
+                "installer boot evidence nodeId, nonce, and createdAt must be non-empty"
+            )
+        return text
+
+    @field_validator("artifact_digest", "manifest_digest", "boot_measurement_digest", mode="before")
+    @classmethod
+    def _validate_boot_digest(cls, v: str) -> str:
+        text = str(v or "").strip().lower()
+        if not _SHA256_DIGEST_RE.fullmatch(text):
+            raise ValueError("installer boot evidence digests must be sha256:<64 hex>")
+        return text
+
+    @model_validator(mode="after")
+    def _validate_simulated_nonce(self) -> "InferenceInstallerBootEvidenceSpec":
+        expected_nonce = (
+            _AI_MAX_GATEWAY_BOOT_NONCE if self.role == "gateway" else _AI_MAX_CELL_NODE_BOOT_NONCE
+        )
+        if self.nonce != expected_nonce:
+            raise ValueError("installer boot evidence nonce is stale or does not match role")
+        return self
+
+
+def _default_ai_max_installer_boot_evidence() -> list[InferenceInstallerBootEvidenceSpec]:
+    return [
+        InferenceInstallerBootEvidenceSpec(
+            nodeId="gateway-1",
+            role="gateway",
+            installerProfile="nixos-ai-max-edge-cell-installer-v1",
+            installerImage="nixos-ai-max-edge-cell-installer",
+            artifactDigest=_AI_MAX_INSTALLER_ARTIFACT_DIGEST,
+            manifestDigest=_AI_MAX_INSTALLER_MANIFEST_DIGEST,
+            bootMeasurementDigest=_AI_MAX_GATEWAY_BOOT_MEASUREMENT_DIGEST,
+            signingKeyId="k1s-core-root-of-trust",
+            verifierTrustRoot="k1s-core-root-of-trust",
+            nonce=_AI_MAX_GATEWAY_BOOT_NONCE,
+            createdAt=_AI_MAX_BOOT_EVIDENCE_CREATED_AT,
+        ),
+        InferenceInstallerBootEvidenceSpec(
+            nodeId="cell-node-1",
+            role="cell-node",
+            installerProfile="nixos-ai-max-edge-cell-installer-v1",
+            installerImage="nixos-ai-max-edge-cell-installer",
+            artifactDigest=_AI_MAX_INSTALLER_ARTIFACT_DIGEST,
+            manifestDigest=_AI_MAX_INSTALLER_MANIFEST_DIGEST,
+            bootMeasurementDigest=_AI_MAX_CELL_NODE_BOOT_MEASUREMENT_DIGEST,
+            signingKeyId="k1s-core-root-of-trust",
+            verifierTrustRoot="k1s-core-root-of-trust",
+            nonce=_AI_MAX_CELL_NODE_BOOT_NONCE,
+            createdAt=_AI_MAX_BOOT_EVIDENCE_CREATED_AT,
+        ),
+    ]
+
+
 class InferenceInstallerSpec(BaseModel):
     """Declarative NixOS installer contract for the AI Max edge-cell profile."""
 
@@ -978,6 +1093,10 @@ class InferenceInstallerSpec(BaseModel):
     role_scaffolds: List[InferenceInstallerRoleScaffoldSpec] = Field(
         default_factory=_default_ai_max_installer_role_scaffolds,
         alias="roleScaffolds",
+    )
+    boot_evidence: List[InferenceInstallerBootEvidenceSpec] = Field(
+        default_factory=_default_ai_max_installer_boot_evidence,
+        alias="bootEvidence",
     )
 
     model_config = {"populate_by_name": True}
@@ -1012,12 +1131,45 @@ class InferenceInstallerSpec(BaseModel):
                     "installer role scaffold derivedFromManifestDigest must match "
                     "artifact manifestDigest"
                 )
+        evidence_roles = [item.role for item in self.boot_evidence]
+        if len(set(evidence_roles)) != len(evidence_roles):
+            raise ValueError("installer.bootEvidence must not contain duplicate roles")
+        if len(evidence_roles) != 2 or set(evidence_roles) != _AI_MAX_INSTALLER_PATHS:
+            raise ValueError("installer.bootEvidence must contain exactly gateway and cell-node")
+        role_scaffold_set = set(role_scaffold_roles)
+        for evidence in self.boot_evidence:
+            if evidence.role not in role_scaffold_set:
+                raise ValueError("installer boot evidence role must match installer role scaffold")
+            if evidence.installer_profile != self.profile:
+                raise ValueError("installer boot evidence profile must match installer profile")
+            if evidence.installer_image != self.image:
+                raise ValueError("installer boot evidence image must match installer image")
+            if evidence.artifact_digest != self.artifact.artifact_digest:
+                raise ValueError(
+                    "installer boot evidence artifactDigest must match artifact digest"
+                )
+            if evidence.manifest_digest != self.artifact.manifest_digest:
+                raise ValueError(
+                    "installer boot evidence manifestDigest must match artifact manifestDigest"
+                )
+            if evidence.signing_key_id != self.signed_by:
+                raise ValueError("installer boot evidence signingKeyId must match signedBy")
+            if evidence.verifier_trust_root != self.signed_by:
+                raise ValueError("installer boot evidence verifierTrustRoot must match signedBy")
+            if evidence.verification.trust_root != self.signed_by:
+                raise ValueError(
+                    "installer boot evidence verification trustRoot must match signedBy"
+                )
         self.install_paths = sorted(
             self.install_paths,
             key=lambda item: 0 if item.path == "gateway" else 1,
         )
         self.role_scaffolds = sorted(
             self.role_scaffolds,
+            key=lambda item: 0 if item.role == "gateway" else 1,
+        )
+        self.boot_evidence = sorted(
+            self.boot_evidence,
             key=lambda item: 0 if item.role == "gateway" else 1,
         )
         self.artifact.path_coverage = sorted(
