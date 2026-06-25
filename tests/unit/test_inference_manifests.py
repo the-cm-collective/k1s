@@ -59,6 +59,41 @@ def _ai_max_edge_cell_payload() -> dict:
     }
 
 
+def _ai_max_installer_payload() -> dict:
+    return {
+        "profile": "nixos-ai-max-edge-cell-installer-v1",
+        "image": "nixos-ai-max-edge-cell-installer",
+        "signedBy": "k1s-core-root-of-trust",
+        "assurance": {
+            "secureImageValidation": "enabled",
+            "bootValidation": "measured-verified",
+            "tamperDetection": "enabled",
+            "validationFailureAction": "disable-quarantine",
+            "coreAlerting": "when-connected",
+        },
+        "installPaths": [
+            {
+                "path": "gateway",
+                "postInstall": {
+                    "autoBoot": "enabled",
+                    "connectTarget": "core",
+                    "usbDevicePolicy": "signed-only",
+                    "displayMode": "telemetry",
+                },
+            },
+            {
+                "path": "cell-node",
+                "postInstall": {
+                    "autoBoot": "enabled",
+                    "connectTarget": "gateway",
+                    "usbDevicePolicy": "limited",
+                    "displayMode": "connect-monitor-to-gateway",
+                },
+            },
+        ],
+    }
+
+
 def test_load_any_manifest_inference_cell(tmp_path: Path) -> None:
     p = _write(
         tmp_path / "cell.yaml",
@@ -172,10 +207,46 @@ def test_inference_cell_accepts_ai_max_edge_cell_contract() -> None:
     assert doc.spec.cell_contract.gateway_discovery.fabric_cell_count == 1
     assert doc.spec.cell_contract.gateway_discovery.lan_scope == "default-lan"
     assert doc.spec.cell_contract.gateway_discovery.gateway_peer_ids == []
+    installer = doc.spec.cell_contract.installer
+    assert installer.profile == "nixos-ai-max-edge-cell-installer-v1"
+    assert installer.image == "nixos-ai-max-edge-cell-installer"
+    assert installer.signed_by == "k1s-core-root-of-trust"
+    assert installer.assurance.secure_image_validation == "enabled"
+    assert installer.assurance.boot_validation == "measured-verified"
+    assert installer.assurance.tamper_detection == "enabled"
+    assert installer.assurance.validation_failure_action == "disable-quarantine"
+    assert installer.assurance.core_alerting == "when-connected"
+    assert [path.path for path in installer.install_paths] == ["gateway", "cell-node"]
+    assert installer.install_paths[0].post_install.auto_boot == "enabled"
+    assert installer.install_paths[0].post_install.connect_target == "core"
+    assert installer.install_paths[0].post_install.display_mode == "telemetry"
+    assert installer.install_paths[1].post_install.connect_target == "gateway"
+    assert installer.install_paths[1].post_install.display_mode == "connect-monitor-to-gateway"
     assert len(doc.spec.members) == 4
     assert [member.role for member in doc.spec.members].count("gateway") == 1
     assert [member.role for member in doc.spec.members].count("cell-node") == 3
     assert all(member.compute_eligible for member in doc.spec.members)
+
+
+def test_inference_cell_accepts_ai_max_installer_contract() -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"]["cellContract"]["installer"] = _ai_max_installer_payload()
+
+    doc = InferenceCellManifest.model_validate(payload)
+
+    assert doc.spec.cell_contract is not None
+    installer = doc.spec.cell_contract.installer
+    assert installer.profile == "nixos-ai-max-edge-cell-installer-v1"
+    assert installer.image == "nixos-ai-max-edge-cell-installer"
+    assert installer.signed_by == "k1s-core-root-of-trust"
+    assert [path.path for path in installer.install_paths] == ["gateway", "cell-node"]
+    gateway, cell_node = installer.install_paths
+    assert gateway.post_install.connect_target == "core"
+    assert gateway.post_install.usb_device_policy == "signed-only"
+    assert gateway.post_install.display_mode == "telemetry"
+    assert cell_node.post_install.connect_target == "gateway"
+    assert cell_node.post_install.usb_device_policy == "limited"
+    assert cell_node.post_install.display_mode == "connect-monitor-to-gateway"
 
 
 def test_inference_cell_accepts_ai_max_gateway_reservation() -> None:
@@ -269,6 +340,77 @@ def test_inference_cell_rejects_invalid_ai_max_gateway_reservation() -> None:
     payload["spec"]["cellContract"]["gatewayReservedGpuFraction"] = 1.0
 
     with pytest.raises(ValueError, match="less than 1"):
+        InferenceCellManifest.model_validate(payload)
+
+
+def test_inference_cell_rejects_missing_ai_max_installer_path() -> None:
+    payload = _ai_max_edge_cell_payload()
+    installer = _ai_max_installer_payload()
+    installer["installPaths"].pop()
+    payload["spec"]["cellContract"]["installer"] = installer
+
+    with pytest.raises(ValueError, match="exactly gateway and cell-node"):
+        InferenceCellManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda installer: installer.update({"signedBy": "lab-key"}),
+            "k1s-core-root-of-trust",
+        ),
+        (
+            lambda installer: installer["assurance"].update({"secureImageValidation": "disabled"}),
+            "enabled",
+        ),
+        (
+            lambda installer: installer["assurance"].update({"bootValidation": "measured-only"}),
+            "measured-verified",
+        ),
+        (
+            lambda installer: installer["assurance"].update(
+                {"validationFailureAction": "alert-only"}
+            ),
+            "disable-quarantine",
+        ),
+        (
+            lambda installer: installer["assurance"].update({"coreAlerting": "disabled"}),
+            "when-connected",
+        ),
+        (
+            lambda installer: installer["installPaths"][0]["postInstall"].update(
+                {"autoBoot": "disabled"}
+            ),
+            "enabled",
+        ),
+        (
+            lambda installer: installer["installPaths"][0]["postInstall"].update(
+                {"connectTarget": "gateway"}
+            ),
+            "gateway path must connectTarget=core",
+        ),
+        (
+            lambda installer: installer["installPaths"][1]["postInstall"].update(
+                {"displayMode": "telemetry"}
+            ),
+            "cell-node path must displayMode=connect-monitor-to-gateway",
+        ),
+        (
+            lambda installer: installer["installPaths"][1]["postInstall"].update(
+                {"usbDevicePolicy": "unrestricted"}
+            ),
+            "disabled",
+        ),
+    ],
+)
+def test_inference_cell_rejects_invalid_ai_max_installer_contract(mutate, message: str) -> None:
+    payload = _ai_max_edge_cell_payload()
+    installer = _ai_max_installer_payload()
+    mutate(installer)
+    payload["spec"]["cellContract"]["installer"] = installer
+
+    with pytest.raises(ValueError, match=message):
         InferenceCellManifest.model_validate(payload)
 
 

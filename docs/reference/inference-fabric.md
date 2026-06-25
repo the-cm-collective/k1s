@@ -75,6 +75,8 @@ public contract for the first AI Max edge-cell shape. It validates:
 - optional gateway capacity reservation with `gatewayReservedGpuFraction`
 - disconnected-operation intent under `cellContract.autonomy`
 - LAN-local gateway discovery intent under `cellContract.gatewayDiscovery`
+- NixOS installer signing and boot assurance intent under
+  `cellContract.installer`
 
 The autonomy block is intentionally declarative in the current repo. It gives
 simulators, manifest validators, and later controller work stable names for the
@@ -97,6 +99,29 @@ cellContract:
       - gateway-cell-b
       - gateway-cell-c
       - gateway-cell-d
+  installer:
+    profile: nixos-ai-max-edge-cell-installer-v1
+    image: nixos-ai-max-edge-cell-installer
+    signedBy: k1s-core-root-of-trust
+    assurance:
+      secureImageValidation: enabled
+      bootValidation: measured-verified
+      tamperDetection: enabled
+      validationFailureAction: disable-quarantine
+      coreAlerting: when-connected
+    installPaths:
+      - path: gateway
+        postInstall:
+          autoBoot: enabled
+          connectTarget: core
+          usbDevicePolicy: signed-only
+          displayMode: telemetry
+      - path: cell-node
+        postInstall:
+          autoBoot: enabled
+          connectTarget: gateway
+          usbDevicePolicy: limited
+          displayMode: connect-monitor-to-gateway
 ```
 
 Current implementation:
@@ -105,6 +130,14 @@ Current implementation:
 - validates LAN-local discovery mode names and fabric cell counts of `1`, `2`,
   `4`, or `8`
 - requires peer gateway IDs to match the requested fabric cell count
+- validates that the AI Max cell uses one installer profile/image with exactly
+  two install paths: `gateway` and `cell-node`
+- requires the installer contract to be signed by the k1s core root of trust
+  and to declare enabled secure image validation, measured/verified boot intent,
+  tamper detection, disable/quarantine response, and connected-core alerting
+- validates post-install posture for gateway and cell-node paths, including
+  auto-boot, role-specific connect targets, constrained USB policy, and display
+  mode
 - constrains `coreLinkUptimeThresholdPct` to `0..80`
 - keeps the gateway compute eligible while letting reservation affect placement planning
 
@@ -119,10 +152,18 @@ Planned runtime mapping:
   simulator namespace
 - `fabricCellCount` counts four-node cells, not individual nodes; a value of
   `4` represents sixteen compute-eligible members across four cells
+- `nixos-ai-max-edge-cell-installer-v1` describes a single NixOS installer
+  image that supports gateway and cell-node install paths
+- `secureImageValidation`, `bootValidation`, `tamperDetection`,
+  `validationFailureAction`, and `coreAlerting` are declarative assurance
+  requirements for later installer, TPM/Secure Boot, attestation, and alerting
+  enforcement
 
 This is contract-level behavior only. It does not yet implement disconnected
 gateway execution, local service failover, live LAN discovery, multi-cell
-routing, or post-reconnect state replay.
+routing, post-reconnect state replay, actual ISO build/signing, TPM/Secure Boot
+enforcement, attestation verification, USB policy enforcement, or hardened
+alert transport.
 
 ## Controller Lifecycle
 

@@ -696,6 +696,116 @@ class InferenceGatewayDiscoverySpec(BaseModel):
         return self
 
 
+class InferenceInstallerAssuranceSpec(BaseModel):
+    """Boot/system assurance intent for the AI Max NixOS installer."""
+
+    secure_image_validation: Literal["enabled"] = Field(
+        default="enabled", alias="secureImageValidation"
+    )
+    boot_validation: Literal["measured-verified"] = Field(
+        default="measured-verified", alias="bootValidation"
+    )
+    tamper_detection: Literal["enabled"] = Field(default="enabled", alias="tamperDetection")
+    validation_failure_action: Literal["disable-quarantine"] = Field(
+        default="disable-quarantine", alias="validationFailureAction"
+    )
+    core_alerting: Literal["when-connected"] = Field(default="when-connected", alias="coreAlerting")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceInstallerPostInstallSpec(BaseModel):
+    """Post-install posture for a specific AI Max installer path."""
+
+    auto_boot: Literal["enabled"] = Field(default="enabled", alias="autoBoot")
+    connect_target: Literal["core", "gateway"] = Field(alias="connectTarget")
+    usb_device_policy: Literal["disabled", "limited", "signed-only"] = Field(
+        alias="usbDevicePolicy"
+    )
+    display_mode: Literal["telemetry", "connect-monitor-to-gateway"] = Field(alias="displayMode")
+
+    model_config = {"populate_by_name": True}
+
+
+class InferenceInstallerInstallPathSpec(BaseModel):
+    """Role-specific install path for the single AI Max NixOS installer image."""
+
+    path: Literal["gateway", "cell-node"]
+    post_install: InferenceInstallerPostInstallSpec = Field(alias="postInstall")
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_post_install_posture(self) -> "InferenceInstallerInstallPathSpec":
+        if self.path == "gateway":
+            if self.post_install.connect_target != "core":
+                raise ValueError("installer gateway path must connectTarget=core")
+            if self.post_install.display_mode != "telemetry":
+                raise ValueError("installer gateway path must displayMode=telemetry")
+        elif self.path == "cell-node":
+            if self.post_install.connect_target != "gateway":
+                raise ValueError("installer cell-node path must connectTarget=gateway")
+            if self.post_install.display_mode != "connect-monitor-to-gateway":
+                raise ValueError(
+                    "installer cell-node path must displayMode=connect-monitor-to-gateway"
+                )
+        return self
+
+
+def _default_ai_max_installer_paths() -> list[InferenceInstallerInstallPathSpec]:
+    return [
+        InferenceInstallerInstallPathSpec(
+            path="gateway",
+            postInstall={
+                "autoBoot": "enabled",
+                "connectTarget": "core",
+                "usbDevicePolicy": "signed-only",
+                "displayMode": "telemetry",
+            },
+        ),
+        InferenceInstallerInstallPathSpec(
+            path="cell-node",
+            postInstall={
+                "autoBoot": "enabled",
+                "connectTarget": "gateway",
+                "usbDevicePolicy": "signed-only",
+                "displayMode": "connect-monitor-to-gateway",
+            },
+        ),
+    ]
+
+
+class InferenceInstallerSpec(BaseModel):
+    """Declarative NixOS installer contract for the AI Max edge-cell profile."""
+
+    profile: Literal["nixos-ai-max-edge-cell-installer-v1"] = "nixos-ai-max-edge-cell-installer-v1"
+    image: Literal["nixos-ai-max-edge-cell-installer"] = "nixos-ai-max-edge-cell-installer"
+    signed_by: Literal["k1s-core-root-of-trust"] = Field(
+        default="k1s-core-root-of-trust", alias="signedBy"
+    )
+    install_paths: List[InferenceInstallerInstallPathSpec] = Field(
+        default_factory=_default_ai_max_installer_paths, alias="installPaths"
+    )
+    assurance: InferenceInstallerAssuranceSpec = Field(
+        default_factory=InferenceInstallerAssuranceSpec
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_installer_contract(self) -> "InferenceInstallerSpec":
+        paths = [item.path for item in self.install_paths]
+        if len(paths) != 2 or set(paths) != {"gateway", "cell-node"}:
+            raise ValueError("installer.installPaths must contain exactly gateway and cell-node")
+        if len(set(paths)) != len(paths):
+            raise ValueError("installer.installPaths must not contain duplicate paths")
+        self.install_paths = sorted(
+            self.install_paths,
+            key=lambda item: 0 if item.path == "gateway" else 1,
+        )
+        return self
+
+
 class InferenceCellContractSpec(BaseModel):
     """Public opt-in validation contract for known inference cell shapes."""
 
@@ -707,6 +817,7 @@ class InferenceCellContractSpec(BaseModel):
     gateway_discovery: InferenceGatewayDiscoverySpec = Field(
         default_factory=InferenceGatewayDiscoverySpec, alias="gatewayDiscovery"
     )
+    installer: InferenceInstallerSpec = Field(default_factory=InferenceInstallerSpec)
 
     model_config = {"populate_by_name": True}
 
