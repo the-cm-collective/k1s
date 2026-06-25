@@ -223,6 +223,10 @@ Current implementation:
   while failed, tampered, or unverified members are marked quarantined, excluded
   from placement capacity, and reported with deterministic failure reasons and
   alert state
+- provides a Stage 11 local autonomy state machine for AI Max edge cells,
+  transitioning through `connected`, `core-link-unavailable`,
+  `degraded-local-only`, `reconciling`, and `reconciled` with deterministic
+  gateway cache intent and transition traces
 - validates post-install posture for gateway and cell-node paths, including
   auto-boot, role-specific connect targets, constrained USB policy, and display
   mode
@@ -256,6 +260,9 @@ Planned runtime mapping:
   lets unit tests represent verified/schedulable nodes and quarantined
   failed/tampered/unverified nodes, and the stage planner excludes quarantined
   members from simulated placement capacity.
+- the autonomy state machine is the Stage 11 state-machine-ready surface. It
+  turns the declarative autonomy names into deterministic local transitions and
+  cache state, but does not run an outage/probe drill.
 - `secureImageValidation`, `bootValidation`, `tamperDetection`,
   `validationFailureAction`, and `coreAlerting` are declarative assurance
   requirements for later installer, TPM/Secure Boot, attestation, and alerting
@@ -267,7 +274,8 @@ routing, post-reconnect state replay, actual ISO build/signing, TPM/Secure Boot
 enforcement, attestation verification, USB policy enforcement, real key custody,
 production ISO signing, real NixOS image realization, TPM quote verification,
 Secure Boot event log verification, hardware attestation, real kubelet/node
-admission control, TPM-backed enforcement, or hardened alert transport.
+admission control, TPM-backed enforcement, Stage 12 outage/probe drills, or
+hardened alert transport.
 
 ## Controller Lifecycle
 

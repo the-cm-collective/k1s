@@ -6,6 +6,8 @@ from ae.controller.spec import (
     InferenceCellManifest,
     InferenceCellSetManifest,
     ManifestError,
+    ai_max_autonomy_initial_state,
+    ai_max_autonomy_transition_trace,
     load_any_manifest,
     load_manifest,
 )
@@ -437,6 +439,98 @@ def test_inference_cell_accepts_ai_max_disconnected_autonomy_policy() -> None:
     assert autonomy.core_link_unavailable_mode == "degraded-local-only"
     assert autonomy.reconnect_mode == "reconcile-on-restore"
     assert autonomy.core_link_uptime_threshold_pct == 75
+
+
+def test_ai_max_autonomy_state_defaults_connected_with_cache_ready() -> None:
+    doc = InferenceCellManifest.model_validate(_ai_max_edge_cell_payload())
+
+    state = ai_max_autonomy_initial_state(doc.spec.cell_contract)
+
+    assert state is not None
+    assert state.state == "connected"
+    assert state.local_service_continuity is True
+    assert state.cache.ready is True
+    assert state.cache.approved_workload_ref == "inferencecell/default/ai-max-edge-cell"
+    assert state.cache.model_artifact_ref == "models/llama:stage11-local"
+    assert state.cache.service_endpoints == {
+        "gateway-api": "http://gateway.local:18080",
+        "cell-monitor": "http://gateway.local:19090",
+    }
+    assert state.cache.last_core_sync == "core-sync-stage11"
+    assert state.transition_trace == []
+
+
+def test_ai_max_autonomy_core_loss_degrades_and_retains_local_services() -> None:
+    doc = InferenceCellManifest.model_validate(_ai_max_edge_cell_payload())
+
+    state = ai_max_autonomy_transition_trace(
+        doc.spec.cell_contract,
+        ["core-link-lost", "local-services-retained"],
+    )
+
+    assert state is not None
+    assert state.state == "degraded-local-only"
+    assert state.local_service_continuity is True
+    assert state.transition_trace == [
+        {
+            "from": "connected",
+            "event": "core-link-lost",
+            "to": "core-link-unavailable",
+        },
+        {
+            "from": "core-link-unavailable",
+            "event": "local-services-retained",
+            "to": "degraded-local-only",
+        },
+    ]
+
+
+def test_ai_max_autonomy_core_restore_reconciles_to_reconciled() -> None:
+    doc = InferenceCellManifest.model_validate(_ai_max_edge_cell_payload())
+
+    state = ai_max_autonomy_transition_trace(
+        doc.spec.cell_contract,
+        [
+            "core-link-lost",
+            "local-services-retained",
+            "core-link-restored",
+            "reconcile-completed",
+        ],
+    )
+
+    assert state is not None
+    assert state.state == "reconciled"
+    assert state.local_service_continuity is True
+    assert state.transition_trace[-2:] == [
+        {
+            "from": "degraded-local-only",
+            "event": "core-link-restored",
+            "to": "reconciling",
+        },
+        {
+            "from": "reconciling",
+            "event": "reconcile-completed",
+            "to": "reconciled",
+        },
+    ]
+
+
+def test_ai_max_autonomy_rejects_unsupported_transition() -> None:
+    doc = InferenceCellManifest.model_validate(_ai_max_edge_cell_payload())
+    state = ai_max_autonomy_initial_state(doc.spec.cell_contract)
+    assert state is not None
+
+    with pytest.raises(ValueError, match="unsupported autonomy transition"):
+        state.apply_event("reconcile-completed")
+
+
+def test_ai_max_autonomy_missing_contract_is_backward_compatible() -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"].pop("cellContract")
+    doc = InferenceCellManifest.model_validate(payload)
+
+    assert ai_max_autonomy_initial_state(doc.spec.cell_contract) is None
+    assert ai_max_autonomy_transition_trace(doc.spec.cell_contract, ["core-link-lost"]) is None
 
 
 @pytest.mark.parametrize("fabric_cell_count", [1, 2, 4, 8])

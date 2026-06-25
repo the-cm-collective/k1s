@@ -737,6 +737,119 @@ class InferenceCellAutonomySpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class InferenceAutonomyCacheSpec(BaseModel):
+    """Local gateway cache intent for AI Max edge autonomy simulation."""
+
+    ready: bool = True
+    approved_workload_ref: str = Field(
+        default="inferencecell/default/ai-max-edge-cell", alias="approvedWorkloadRef"
+    )
+    model_artifact_ref: str = Field(default="models/llama:stage11-local", alias="modelArtifactRef")
+    service_endpoints: dict[str, str] = Field(
+        default_factory=lambda: {
+            "gateway-api": "http://gateway.local:18080",
+            "cell-monitor": "http://gateway.local:19090",
+        },
+        alias="serviceEndpoints",
+    )
+    last_core_sync: str = Field(default="core-sync-stage11", alias="lastCoreSync")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("approved_workload_ref", "model_artifact_ref", "last_core_sync", mode="before")
+    @classmethod
+    def _require_cache_ref(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("autonomy cache references must be non-empty")
+        return text
+
+
+class InferenceAutonomyStateSpec(BaseModel):
+    """Deterministic local state machine for AI Max edge autonomy."""
+
+    state: Literal[
+        "connected",
+        "core-link-unavailable",
+        "degraded-local-only",
+        "reconciling",
+        "reconciled",
+    ] = "connected"
+    local_service_continuity: bool = Field(default=True, alias="localServiceContinuity")
+    cache: InferenceAutonomyCacheSpec = Field(default_factory=InferenceAutonomyCacheSpec)
+    supported_events: List[
+        Literal[
+            "core-link-lost",
+            "local-services-retained",
+            "core-link-restored",
+            "reconcile-completed",
+            "reconcile-failed",
+        ]
+    ] = Field(
+        default_factory=lambda: [
+            "core-link-lost",
+            "local-services-retained",
+            "core-link-restored",
+            "reconcile-completed",
+            "reconcile-failed",
+        ],
+        alias="supportedEvents",
+    )
+    transition_trace: List[dict] = Field(default_factory=list, alias="transitionTrace")
+    last_error: str | None = Field(default=None, alias="lastError")
+
+    model_config = {"populate_by_name": True}
+
+    def apply_event(self, event: str) -> "InferenceAutonomyStateSpec":
+        event = str(event or "").strip()
+        transitions = {
+            ("connected", "core-link-lost"): "core-link-unavailable",
+            ("core-link-unavailable", "local-services-retained"): "degraded-local-only",
+            ("degraded-local-only", "core-link-restored"): "reconciling",
+            ("reconciling", "reconcile-completed"): "reconciled",
+            ("reconciling", "reconcile-failed"): "degraded-local-only",
+            ("reconciled", "core-link-lost"): "core-link-unavailable",
+        }
+        next_state = transitions.get((self.state, event))
+        if next_state is None:
+            raise ValueError(f"unsupported autonomy transition {self.state!r} + {event!r}")
+        trace = list(self.transition_trace)
+        trace.append({"from": self.state, "event": event, "to": next_state})
+        return self.model_copy(
+            update={
+                "state": next_state,
+                "local_service_continuity": next_state
+                in {"core-link-unavailable", "degraded-local-only", "reconciling", "reconciled"},
+                "transition_trace": trace,
+                "last_error": "reconcile-failed" if event == "reconcile-failed" else None,
+            }
+        )
+
+
+def ai_max_autonomy_initial_state(
+    contract: "InferenceCellContractSpec | None",
+) -> InferenceAutonomyStateSpec | None:
+    """Return local autonomy state only for the AI Max edge-cell contract."""
+
+    if contract is None or contract.profile != "ai-max-edge-cell-v1":
+        return None
+    return InferenceAutonomyStateSpec()
+
+
+def ai_max_autonomy_transition_trace(
+    contract: "InferenceCellContractSpec | None",
+    events: list[str],
+) -> InferenceAutonomyStateSpec | None:
+    """Apply a deterministic sequence of local autonomy events."""
+
+    state = ai_max_autonomy_initial_state(contract)
+    if state is None:
+        return None
+    for event in events:
+        state = state.apply_event(event)
+    return state
+
+
 class InferenceGatewayDiscoverySpec(BaseModel):
     """LAN-local gateway discovery intent for an AI Max edge-cell fabric."""
 
