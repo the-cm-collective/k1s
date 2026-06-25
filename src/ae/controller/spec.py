@@ -644,6 +644,25 @@ class InferenceMemberSpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class InferenceCellAutonomySpec(BaseModel):
+    """Disconnected operation intent for an inference cell contract."""
+
+    connected_mode: Literal["normal-connected"] = Field(
+        default="normal-connected", alias="connectedMode"
+    )
+    core_link_unavailable_mode: Literal["degraded-local-only"] = Field(
+        default="degraded-local-only", alias="coreLinkUnavailableMode"
+    )
+    reconnect_mode: Literal["reconcile-on-restore"] = Field(
+        default="reconcile-on-restore", alias="reconnectMode"
+    )
+    core_link_uptime_threshold_pct: float = Field(
+        default=80.0, alias="coreLinkUptimeThresholdPct", ge=0.0, le=80.0
+    )
+
+    model_config = {"populate_by_name": True}
+
+
 class InferenceCellContractSpec(BaseModel):
     """Public opt-in validation contract for known inference cell shapes."""
 
@@ -651,6 +670,7 @@ class InferenceCellContractSpec(BaseModel):
     gateway_reserved_gpu_fraction: float = Field(
         default=0.0, alias="gatewayReservedGpuFraction", ge=0.0, lt=1.0
     )
+    autonomy: InferenceCellAutonomySpec = Field(default_factory=InferenceCellAutonomySpec)
 
     model_config = {"populate_by_name": True}
 

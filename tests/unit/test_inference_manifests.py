@@ -164,6 +164,10 @@ def test_inference_cell_accepts_ai_max_edge_cell_contract() -> None:
     assert doc.spec.cell_contract is not None
     assert doc.spec.cell_contract.profile == "ai-max-edge-cell-v1"
     assert doc.spec.cell_contract.gateway_reserved_gpu_fraction == 0.0
+    assert doc.spec.cell_contract.autonomy.connected_mode == "normal-connected"
+    assert doc.spec.cell_contract.autonomy.core_link_unavailable_mode == "degraded-local-only"
+    assert doc.spec.cell_contract.autonomy.reconnect_mode == "reconcile-on-restore"
+    assert doc.spec.cell_contract.autonomy.core_link_uptime_threshold_pct == 80.0
     assert len(doc.spec.members) == 4
     assert [member.role for member in doc.spec.members].count("gateway") == 1
     assert [member.role for member in doc.spec.members].count("cell-node") == 3
@@ -178,6 +182,25 @@ def test_inference_cell_accepts_ai_max_gateway_reservation() -> None:
 
     assert doc.spec.cell_contract is not None
     assert doc.spec.cell_contract.gateway_reserved_gpu_fraction == 0.25
+
+
+def test_inference_cell_accepts_ai_max_disconnected_autonomy_policy() -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"]["cellContract"]["autonomy"] = {
+        "connectedMode": "normal-connected",
+        "coreLinkUnavailableMode": "degraded-local-only",
+        "reconnectMode": "reconcile-on-restore",
+        "coreLinkUptimeThresholdPct": 75,
+    }
+
+    doc = InferenceCellManifest.model_validate(payload)
+
+    assert doc.spec.cell_contract is not None
+    autonomy = doc.spec.cell_contract.autonomy
+    assert autonomy.connected_mode == "normal-connected"
+    assert autonomy.core_link_unavailable_mode == "degraded-local-only"
+    assert autonomy.reconnect_mode == "reconcile-on-restore"
+    assert autonomy.core_link_uptime_threshold_pct == 75
 
 
 @pytest.mark.parametrize(
@@ -214,6 +237,31 @@ def test_inference_cell_rejects_invalid_ai_max_gateway_reservation() -> None:
     payload["spec"]["cellContract"]["gatewayReservedGpuFraction"] = 1.0
 
     with pytest.raises(ValueError, match="less than 1"):
+        InferenceCellManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("connectedMode", "always-online", "normal-connected"),
+        ("coreLinkUnavailableMode", "fail-closed", "degraded-local-only"),
+        ("reconnectMode", "discard-local-state", "reconcile-on-restore"),
+        ("coreLinkUptimeThresholdPct", 95, "less than or equal to 80"),
+    ],
+)
+def test_inference_cell_rejects_invalid_ai_max_autonomy_policy(
+    field: str, value: object, message: str
+) -> None:
+    payload = _ai_max_edge_cell_payload()
+    payload["spec"]["cellContract"]["autonomy"] = {
+        "connectedMode": "normal-connected",
+        "coreLinkUnavailableMode": "degraded-local-only",
+        "reconnectMode": "reconcile-on-restore",
+        "coreLinkUptimeThresholdPct": 80,
+    }
+    payload["spec"]["cellContract"]["autonomy"][field] = value
+
+    with pytest.raises(ValueError, match=message):
         InferenceCellManifest.model_validate(payload)
 
 

@@ -64,6 +64,50 @@ Forward mapping:
 
 `InferenceCellSet` is a template-and-scale wrapper around repeated `InferenceCell` creation.
 
+### AI Max Edge Cell Contract
+
+The opt-in `cellContract.profile: ai-max-edge-cell-v1` surface represents the
+public contract for the first AI Max edge-cell shape. It validates:
+
+- exactly four total members
+- exactly one `gateway` member and three `cell-node` members
+- all four members remain compute eligible
+- optional gateway capacity reservation with `gatewayReservedGpuFraction`
+- disconnected-operation intent under `cellContract.autonomy`
+
+The autonomy block is intentionally declarative in the current repo. It gives
+simulators, manifest validators, and later controller work stable names for the
+edge behavior without claiming full runtime enforcement today:
+
+```yaml
+cellContract:
+  profile: ai-max-edge-cell-v1
+  gatewayReservedGpuFraction: 0.25
+  autonomy:
+    connectedMode: normal-connected
+    coreLinkUnavailableMode: degraded-local-only
+    reconnectMode: reconcile-on-restore
+    coreLinkUptimeThresholdPct: 80
+```
+
+Current implementation:
+
+- validates the contract shape and accepted autonomy mode names
+- constrains `coreLinkUptimeThresholdPct` to `0..80`
+- keeps the gateway compute eligible while letting reservation affect placement planning
+
+Planned runtime mapping:
+
+- `normal-connected` means normal controller/core connectivity is available
+- `degraded-local-only` means edge-local services should continue when core or
+  internet connectivity is unavailable
+- `reconcile-on-restore` means local state should reconcile when core
+  connectivity returns, rather than being discarded
+
+This is contract-level behavior only. It does not yet implement disconnected
+gateway execution, local service failover, LAN discovery, or post-reconnect
+state replay.
+
 ## Controller Lifecycle
 
 The controller runs a fixed phase machine:
