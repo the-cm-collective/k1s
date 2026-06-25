@@ -218,6 +218,11 @@ Current implementation:
   cell-node roles, including installer profile/image, artifact and manifest
   digests, simulated boot measurement digest, trust root, nonce, timestamp, and
   verified result
+- enforces local Stage 10 boot assurance semantics during stage placement when
+  member-level `bootAssurance` is present: verified members remain schedulable,
+  while failed, tampered, or unverified members are marked quarantined, excluded
+  from placement capacity, and reported with deterministic failure reasons and
+  alert state
 - validates post-install posture for gateway and cell-node paths, including
   auto-boot, role-specific connect targets, constrained USB policy, and display
   mode
@@ -247,6 +252,10 @@ Planned runtime mapping:
   evidence acceptance/rejection contract executable in unit tests without
   claiming real TPM quote, Secure Boot event log, or hardware attestation
   verification.
+- member-level `bootAssurance` is the Stage 10 local enforcement surface. It
+  lets unit tests represent verified/schedulable nodes and quarantined
+  failed/tampered/unverified nodes, and the stage planner excludes quarantined
+  members from simulated placement capacity.
 - `secureImageValidation`, `bootValidation`, `tamperDetection`,
   `validationFailureAction`, and `coreAlerting` are declarative assurance
   requirements for later installer, TPM/Secure Boot, attestation, and alerting
@@ -257,8 +266,8 @@ gateway execution, local service failover, live LAN discovery, multi-cell
 routing, post-reconnect state replay, actual ISO build/signing, TPM/Secure Boot
 enforcement, attestation verification, USB policy enforcement, real key custody,
 production ISO signing, real NixOS image realization, TPM quote verification,
-Secure Boot event log verification, hardware attestation, or hardened alert
-transport.
+Secure Boot event log verification, hardware attestation, real kubelet/node
+admission control, TPM-backed enforcement, or hardened alert transport.
 
 ## Controller Lifecycle
 

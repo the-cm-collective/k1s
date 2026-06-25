@@ -188,6 +188,13 @@ def _effective_gpu_count(spec: InferenceCellSpec, member: InferenceMemberSpec) -
     return max(0.0, value)
 
 
+def _member_boot_schedulable(member: InferenceMemberSpec) -> bool:
+    assurance = getattr(member, "boot_assurance", None)
+    if assurance is None:
+        return True
+    return bool(assurance.schedulable) and not bool(assurance.quarantined)
+
+
 def _ordered_stage_candidates(
     spec: InferenceCellSpec, members: list[InferenceMemberSpec]
 ) -> list[InferenceMemberSpec]:
@@ -210,7 +217,9 @@ class StagePlanner:
         pp = int(spec.parallelism.pp)
         if tp <= 0 or pp <= 0:
             raise ValueError("parallelism tp/pp must be > 0")
-        eligible = [m for m in spec.members if int(m.gpu_count) >= tp]
+        eligible = [
+            m for m in spec.members if int(m.gpu_count) >= tp and _member_boot_schedulable(m)
+        ]
         if len(eligible) < pp:
             raise ValueError(f"need {pp} members with gpu_count >= tp={tp}, found {len(eligible)}")
 
@@ -259,6 +268,37 @@ class StagePlanner:
             for gpu in placement.gpu_indices:
                 slots.append((placement.node_id, int(gpu)))
         return slots
+
+    @staticmethod
+    def assurance_summary(spec: InferenceCellSpec) -> dict:
+        members = list(spec.members or [])
+        quarantined: list[dict] = []
+        schedulable: list[dict] = []
+        usable_gpu_capacity = 0
+        for member in members:
+            assurance = getattr(member, "boot_assurance", None)
+            item = {
+                "node_id": member.node_id,
+                "role": member.role,
+                "gpu_count": int(member.gpu_count),
+                "status": assurance.status if assurance is not None else "unknown",
+                "schedulable": _member_boot_schedulable(member),
+                "quarantined": bool(assurance.quarantined) if assurance is not None else False,
+                "alert": assurance.alert if assurance is not None else "none",
+                "failure_reasons": list(assurance.failure_reasons) if assurance is not None else [],
+            }
+            if item["schedulable"]:
+                schedulable.append(item)
+                usable_gpu_capacity += int(member.gpu_count)
+            else:
+                quarantined.append(item)
+        return {
+            "total_members": len(members),
+            "schedulable_members": len(schedulable),
+            "quarantined_members": len(quarantined),
+            "usable_gpu_capacity": usable_gpu_capacity,
+            "quarantined": quarantined,
+        }
 
 
 class BoundaryBudgetAdmission:
@@ -1329,14 +1369,17 @@ class InferenceCellController:
                     message = "; ".join(member_errors)
                     cond = _make_condition(cond, "AdmissionReady", False, message)
                     self._log_event(manifest, "AdmissionFailed", message)
+                    alloc["boot_assurance"] = StagePlanner.assurance_summary(manifest.spec)
                     return self._update(
                         manifest,
                         phase=CellPhase.FAILED,
+                        allocations=alloc,
                         conditions=cond,
                         admission={"admitted": False, "reasons": list(member_errors)},
                         last_error="ADMISSION_MEMBER_INVALID",
                     )
             try:
+                alloc["boot_assurance"] = StagePlanner.assurance_summary(manifest.spec)
                 placements = StagePlanner.plan(manifest.spec)
             except Exception as exc:  # noqa: BLE001
                 cond = _make_condition(cond, "AdmissionReady", False, str(exc))
@@ -1344,6 +1387,7 @@ class InferenceCellController:
                 return self._update(
                     manifest,
                     phase=CellPhase.FAILED,
+                    allocations=alloc,
                     conditions=cond,
                     admission={"admitted": False, "reasons": [str(exc)]},
                     last_error="ADMISSION_PLACEMENT_FAILED",

@@ -653,6 +653,56 @@ class InferenceExecutorSpec(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class InferenceMemberBootAssuranceSpec(BaseModel):
+    """Local simulated boot assurance state for a candidate inference member."""
+
+    status: Literal["verified", "unverified", "failed", "tampered"] = "verified"
+    schedulable: bool = True
+    quarantined: bool = False
+    failure_reasons: List[str] = Field(default_factory=list, alias="failureReasons")
+    alert: Literal["none", "pending", "emitted"] = "none"
+    evidence_nonce: str | None = Field(default=None, alias="evidenceNonce")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("failure_reasons", mode="before")
+    @classmethod
+    def _normalize_failure_reasons(cls, v):  # noqa: D401 - simple guard
+        values = list(v or [])
+        reasons = [str(item or "").strip() for item in values]
+        if any(not item for item in reasons):
+            raise ValueError("member bootAssurance.failureReasons must not contain blank reasons")
+        return reasons
+
+    @field_validator("evidence_nonce", mode="before")
+    @classmethod
+    def _normalize_nonce(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        text = str(v or "").strip()
+        return text or None
+
+    @model_validator(mode="after")
+    def _validate_assurance_state(self) -> "InferenceMemberBootAssuranceSpec":
+        if self.status == "verified":
+            if self.quarantined:
+                raise ValueError("verified member bootAssurance must not be quarantined")
+            if not self.schedulable:
+                raise ValueError("verified member bootAssurance must be schedulable")
+            if self.failure_reasons:
+                raise ValueError("verified member bootAssurance must not include failureReasons")
+        else:
+            if not self.quarantined:
+                raise ValueError("failed member bootAssurance must be quarantined")
+            if self.schedulable:
+                raise ValueError("failed member bootAssurance must not be schedulable")
+            if not self.failure_reasons:
+                raise ValueError("failed member bootAssurance must include failureReasons")
+            if self.alert == "none":
+                raise ValueError("failed member bootAssurance must set alert pending or emitted")
+        return self
+
+
 class InferenceMemberSpec(BaseModel):
     """Candidate node for stage placement."""
 
@@ -661,6 +711,9 @@ class InferenceMemberSpec(BaseModel):
     gpu_count: int = Field(alias="gpuCount", ge=1)
     role: Literal["gateway", "cell-node"] | None = None
     compute_eligible: bool = Field(default=True, alias="computeEligible")
+    boot_assurance: InferenceMemberBootAssuranceSpec | None = Field(
+        default=None, alias="bootAssurance"
+    )
 
     model_config = {"populate_by_name": True}
 

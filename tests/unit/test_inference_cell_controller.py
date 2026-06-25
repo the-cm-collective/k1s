@@ -112,6 +112,40 @@ def _ai_max_edge_cell_manifest(
     )
 
 
+def _ai_max_member_assurance(
+    status: str = "verified",
+    *,
+    quarantined: bool = False,
+    schedulable: bool = True,
+    failure_reasons: list[str] | None = None,
+    alert: str = "none",
+) -> dict:
+    return {
+        "status": status,
+        "quarantined": quarantined,
+        "schedulable": schedulable,
+        "failureReasons": list(failure_reasons or []),
+        "alert": alert,
+    }
+
+
+def _ai_max_manifest_with_member_assurance(
+    assurance_by_node: dict[str, dict],
+    *,
+    pp: int = 4,
+    gateway_reserved_gpu_fraction: float = 0.25,
+) -> InferenceCellManifest:
+    payload = _ai_max_edge_cell_manifest(
+        pp=pp,
+        gateway_reserved_gpu_fraction=gateway_reserved_gpu_fraction,
+    ).model_dump(by_alias=True)
+    for member in payload["spec"]["members"]:
+        assurance = assurance_by_node.get(member["nodeId"])
+        if assurance is not None:
+            member["bootAssurance"] = dict(assurance)
+    return InferenceCellManifest.model_validate(payload)
+
+
 class _JoinRuntime:
     def __init__(self, app_names: list[str], *, running: bool = True):
         self._app_names = list(app_names)
@@ -268,6 +302,123 @@ def test_ai_max_gateway_reservation_changes_partial_stage_placement() -> None:
         "gateway-1",
         "cell-node-1",
         "cell-node-2",
+    ]
+
+
+def test_ai_max_verified_boot_assurance_keeps_capacity_unchanged() -> None:
+    manifest = _ai_max_manifest_with_member_assurance(
+        {
+            "gateway-1": _ai_max_member_assurance(),
+            "cell-node-1": _ai_max_member_assurance(),
+            "cell-node-2": _ai_max_member_assurance(),
+            "cell-node-3": _ai_max_member_assurance(),
+        }
+    )
+
+    placements = StagePlanner.plan(manifest.spec)
+    summary = StagePlanner.assurance_summary(manifest.spec)
+
+    assert [placement.node_id for placement in placements] == [
+        "cell-node-1",
+        "cell-node-2",
+        "cell-node-3",
+        "gateway-1",
+    ]
+    assert summary["schedulable_members"] == 4
+    assert summary["quarantined_members"] == 0
+    assert summary["usable_gpu_capacity"] == 4
+
+
+def test_ai_max_failed_cell_node_is_excluded_from_stage_capacity() -> None:
+    manifest = _ai_max_manifest_with_member_assurance(
+        {
+            "cell-node-2": _ai_max_member_assurance(
+                "tampered",
+                quarantined=True,
+                schedulable=False,
+                failure_reasons=["boot-measurement-mismatch"],
+                alert="pending",
+            )
+        },
+        pp=3,
+    )
+
+    placements = StagePlanner.plan(manifest.spec)
+    summary = StagePlanner.assurance_summary(manifest.spec)
+
+    assert [placement.node_id for placement in placements] == [
+        "cell-node-1",
+        "cell-node-3",
+        "gateway-1",
+    ]
+    assert summary["schedulable_members"] == 3
+    assert summary["quarantined_members"] == 1
+    assert summary["usable_gpu_capacity"] == 3
+    assert summary["quarantined"] == [
+        {
+            "node_id": "cell-node-2",
+            "role": "cell-node",
+            "gpu_count": 1,
+            "status": "tampered",
+            "schedulable": False,
+            "quarantined": True,
+            "alert": "pending",
+            "failure_reasons": ["boot-measurement-mismatch"],
+        }
+    ]
+
+
+def test_ai_max_failed_gateway_is_excluded_without_invalidating_manifest() -> None:
+    manifest = _ai_max_manifest_with_member_assurance(
+        {
+            "gateway-1": _ai_max_member_assurance(
+                "failed",
+                quarantined=True,
+                schedulable=False,
+                failure_reasons=["artifact-digest-mismatch"],
+                alert="emitted",
+            )
+        },
+        pp=3,
+    )
+
+    placements = StagePlanner.plan(manifest.spec)
+    summary = StagePlanner.assurance_summary(manifest.spec)
+
+    assert [placement.node_id for placement in placements] == [
+        "cell-node-1",
+        "cell-node-2",
+        "cell-node-3",
+    ]
+    assert summary["quarantined"][0]["node_id"] == "gateway-1"
+    assert summary["quarantined"][0]["failure_reasons"] == ["artifact-digest-mismatch"]
+    assert summary["quarantined"][0]["alert"] == "emitted"
+
+
+def test_ai_max_quarantine_summary_is_recorded_on_admission_failure(tmp_path):
+    manifest = _ai_max_manifest_with_member_assurance(
+        {
+            "cell-node-1": _ai_max_member_assurance(
+                "tampered",
+                quarantined=True,
+                schedulable=False,
+                failure_reasons=["boot-measurement-mismatch"],
+                alert="pending",
+            )
+        },
+        pp=4,
+    )
+    store = SQLiteStateStore(tmp_path / "state.db")
+    ctrl = InferenceCellController(store)
+
+    rec = ctrl.reconcile_manifest(manifest, source="test")
+
+    assert rec.phase == "FAILED"
+    assert rec.last_error == "ADMISSION_PLACEMENT_FAILED"
+    assert rec.allocations["boot_assurance"]["quarantined_members"] == 1
+    assert rec.allocations["boot_assurance"]["usable_gpu_capacity"] == 3
+    assert rec.allocations["boot_assurance"]["quarantined"][0]["failure_reasons"] == [
+        "boot-measurement-mismatch"
     ]
 
 
