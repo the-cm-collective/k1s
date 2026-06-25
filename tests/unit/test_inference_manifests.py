@@ -64,6 +64,34 @@ def _ai_max_installer_payload() -> dict:
         "profile": "nixos-ai-max-edge-cell-installer-v1",
         "image": "nixos-ai-max-edge-cell-installer",
         "signedBy": "k1s-core-root-of-trust",
+        "artifact": {
+            "name": "nixos-ai-max-edge-cell-installer",
+            "profile": "nixos-ai-max-edge-cell-installer-v1",
+            "image": "nixos-ai-max-edge-cell-installer",
+            "version": "stage7-local",
+            "artifactDigest": (
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            ),
+            "manifestDigest": (
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            ),
+            "pathCoverage": ["gateway", "cell-node"],
+            "provenance": {
+                "builder": "k1s-public-stage7-local-simulator",
+                "sourceRevision": "public-dev-stage7",
+                "createdAt": "2026-06-25T00:00:00Z",
+            },
+        },
+        "signature": {
+            "algorithm": "k1s-local-sim-ed25519-sha256",
+            "signingKeyId": "k1s-core-root-of-trust",
+            "signedDigest": (
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            ),
+            "signature": (
+                "k1s-sim-signature:3333333333333333333333333333333333333333333333333333333333333333"
+            ),
+        },
         "assurance": {
             "secureImageValidation": "enabled",
             "bootValidation": "measured-verified",
@@ -211,6 +239,20 @@ def test_inference_cell_accepts_ai_max_edge_cell_contract() -> None:
     assert installer.profile == "nixos-ai-max-edge-cell-installer-v1"
     assert installer.image == "nixos-ai-max-edge-cell-installer"
     assert installer.signed_by == "k1s-core-root-of-trust"
+    assert installer.artifact.name == "nixos-ai-max-edge-cell-installer"
+    assert installer.artifact.profile == "nixos-ai-max-edge-cell-installer-v1"
+    assert installer.artifact.image == "nixos-ai-max-edge-cell-installer"
+    assert installer.artifact.version == "stage7-local"
+    assert installer.artifact.artifact_digest.startswith("sha256:")
+    assert installer.artifact.manifest_digest.startswith("sha256:")
+    assert installer.artifact.path_coverage == ["gateway", "cell-node"]
+    assert installer.artifact.provenance.builder == "k1s-public-stage7-local-simulator"
+    assert installer.artifact.provenance.source_revision == "public-dev-stage7"
+    assert installer.artifact.provenance.created_at == "2026-06-25T00:00:00Z"
+    assert installer.signature.algorithm == "k1s-local-sim-ed25519-sha256"
+    assert installer.signature.signing_key_id == "k1s-core-root-of-trust"
+    assert installer.signature.signed_digest == installer.artifact.manifest_digest
+    assert installer.signature.signature.startswith("k1s-sim-signature:")
     assert installer.assurance.secure_image_validation == "enabled"
     assert installer.assurance.boot_validation == "measured-verified"
     assert installer.assurance.tamper_detection == "enabled"
@@ -239,6 +281,8 @@ def test_inference_cell_accepts_ai_max_installer_contract() -> None:
     assert installer.profile == "nixos-ai-max-edge-cell-installer-v1"
     assert installer.image == "nixos-ai-max-edge-cell-installer"
     assert installer.signed_by == "k1s-core-root-of-trust"
+    assert installer.artifact.path_coverage == ["gateway", "cell-node"]
+    assert installer.signature.signing_key_id == "k1s-core-root-of-trust"
     assert [path.path for path in installer.install_paths] == ["gateway", "cell-node"]
     gateway, cell_node = installer.install_paths
     assert gateway.post_install.connect_target == "core"
@@ -359,6 +403,48 @@ def test_inference_cell_rejects_missing_ai_max_installer_path() -> None:
         (
             lambda installer: installer.update({"signedBy": "lab-key"}),
             "k1s-core-root-of-trust",
+        ),
+        (
+            lambda installer: installer["signature"].update({"signingKeyId": "lab-key"}),
+            "k1s-core-root-of-trust",
+        ),
+        (
+            lambda installer: installer["artifact"].update({"artifactDigest": ""}),
+            "sha256:<64 hex>",
+        ),
+        (
+            lambda installer: installer["artifact"].update({"manifestDigest": "sha256:bad"}),
+            "sha256:<64 hex>",
+        ),
+        (
+            lambda installer: installer["signature"].update({"signedDigest": ""}),
+            "sha256:<64 hex>",
+        ),
+        (
+            lambda installer: installer["signature"].update({"signature": ""}),
+            "signature must be non-empty",
+        ),
+        (
+            lambda installer: installer["artifact"].update({"profile": "lab-profile"}),
+            "nixos-ai-max-edge-cell-installer-v1",
+        ),
+        (
+            lambda installer: installer["artifact"].update({"image": "lab-image"}),
+            "nixos-ai-max-edge-cell-installer",
+        ),
+        (
+            lambda installer: installer["artifact"].update({"pathCoverage": ["gateway"]}),
+            "pathCoverage must cover gateway and cell-node",
+        ),
+        (
+            lambda installer: installer["signature"].update(
+                {
+                    "signedDigest": (
+                        "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+                    )
+                }
+            ),
+            "signedDigest must match artifact manifestDigest",
         ),
         (
             lambda installer: installer["assurance"].update({"secureImageValidation": "disabled"}),

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -11,6 +12,8 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 
 DEFAULT_NAMESPACE = "default"
+_SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_AI_MAX_INSTALLER_PATHS = {"gateway", "cell-node"}
 
 
 class ManifestError(RuntimeError):
@@ -775,6 +778,101 @@ def _default_ai_max_installer_paths() -> list[InferenceInstallerInstallPathSpec]
     ]
 
 
+class InferenceInstallerArtifactProvenanceSpec(BaseModel):
+    """Local build provenance for the AI Max installer artifact scaffold."""
+
+    builder: str = "k1s-public-stage7-local-simulator"
+    source_revision: str = Field(default="public-dev-stage7", alias="sourceRevision")
+    created_at: str = Field(default="2026-06-25T00:00:00Z", alias="createdAt")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("builder", "source_revision", "created_at", mode="before")
+    @classmethod
+    def _require_non_blank(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("installer artifact provenance fields must be non-empty")
+        return text
+
+
+class InferenceInstallerArtifactSpec(BaseModel):
+    """Signed artifact manifest for the local AI Max installer scaffold."""
+
+    name: Literal["nixos-ai-max-edge-cell-installer"] = "nixos-ai-max-edge-cell-installer"
+    profile: Literal["nixos-ai-max-edge-cell-installer-v1"] = "nixos-ai-max-edge-cell-installer-v1"
+    image: Literal["nixos-ai-max-edge-cell-installer"] = "nixos-ai-max-edge-cell-installer"
+    version: str = "stage7-local"
+    artifact_digest: str = Field(
+        default="sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        alias="artifactDigest",
+    )
+    manifest_digest: str = Field(
+        default="sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        alias="manifestDigest",
+    )
+    path_coverage: List[Literal["gateway", "cell-node"]] = Field(
+        default_factory=lambda: ["gateway", "cell-node"], alias="pathCoverage"
+    )
+    provenance: InferenceInstallerArtifactProvenanceSpec = Field(
+        default_factory=InferenceInstallerArtifactProvenanceSpec
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _require_version(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("installer artifact version must be non-empty")
+        return text
+
+    @field_validator("artifact_digest", "manifest_digest", mode="before")
+    @classmethod
+    def _validate_digest(cls, v: str) -> str:
+        text = str(v or "").strip().lower()
+        if not _SHA256_DIGEST_RE.fullmatch(text):
+            raise ValueError("installer artifact digests must be sha256:<64 hex>")
+        return text
+
+
+class InferenceInstallerSignatureEnvelopeSpec(BaseModel):
+    """Local signature envelope for the AI Max installer artifact scaffold."""
+
+    algorithm: Literal["k1s-local-sim-ed25519-sha256"] = "k1s-local-sim-ed25519-sha256"
+    signing_key_id: Literal["k1s-core-root-of-trust"] = Field(
+        default="k1s-core-root-of-trust", alias="signingKeyId"
+    )
+    signed_digest: str = Field(
+        default="sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        alias="signedDigest",
+    )
+    signature: str = (
+        "k1s-sim-signature:3333333333333333333333333333333333333333333333333333333333333333"
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("signed_digest", mode="before")
+    @classmethod
+    def _validate_signed_digest(cls, v: str) -> str:
+        text = str(v or "").strip().lower()
+        if not _SHA256_DIGEST_RE.fullmatch(text):
+            raise ValueError("installer signature signedDigest must be sha256:<64 hex>")
+        return text
+
+    @field_validator("signature", mode="before")
+    @classmethod
+    def _validate_signature(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("installer signature must be non-empty")
+        if not text.startswith("k1s-sim-signature:"):
+            raise ValueError("installer signature must use the k1s local simulation envelope")
+        return text
+
+
 class InferenceInstallerSpec(BaseModel):
     """Declarative NixOS installer contract for the AI Max edge-cell profile."""
 
@@ -789,19 +887,39 @@ class InferenceInstallerSpec(BaseModel):
     assurance: InferenceInstallerAssuranceSpec = Field(
         default_factory=InferenceInstallerAssuranceSpec
     )
+    artifact: InferenceInstallerArtifactSpec = Field(default_factory=InferenceInstallerArtifactSpec)
+    signature: InferenceInstallerSignatureEnvelopeSpec = Field(
+        default_factory=InferenceInstallerSignatureEnvelopeSpec
+    )
 
     model_config = {"populate_by_name": True}
 
     @model_validator(mode="after")
     def _validate_installer_contract(self) -> "InferenceInstallerSpec":
         paths = [item.path for item in self.install_paths]
-        if len(paths) != 2 or set(paths) != {"gateway", "cell-node"}:
+        if len(paths) != 2 or set(paths) != _AI_MAX_INSTALLER_PATHS:
             raise ValueError("installer.installPaths must contain exactly gateway and cell-node")
         if len(set(paths)) != len(paths):
             raise ValueError("installer.installPaths must not contain duplicate paths")
+        if set(self.artifact.path_coverage) != set(paths):
+            raise ValueError("installer artifact pathCoverage must cover gateway and cell-node")
+        if len(set(self.artifact.path_coverage)) != len(self.artifact.path_coverage):
+            raise ValueError("installer artifact pathCoverage must not contain duplicate paths")
+        if self.artifact.profile != self.profile:
+            raise ValueError("installer artifact profile must match installer profile")
+        if self.artifact.image != self.image:
+            raise ValueError("installer artifact image must match installer image")
+        if self.signature.signing_key_id != self.signed_by:
+            raise ValueError("installer signature signingKeyId must match signedBy")
+        if self.signature.signed_digest != self.artifact.manifest_digest:
+            raise ValueError("installer signature signedDigest must match artifact manifestDigest")
         self.install_paths = sorted(
             self.install_paths,
             key=lambda item: 0 if item.path == "gateway" else 1,
+        )
+        self.artifact.path_coverage = sorted(
+            self.artifact.path_coverage,
+            key=lambda item: 0 if item == "gateway" else 1,
         )
         return self
 

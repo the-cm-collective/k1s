@@ -103,6 +103,25 @@ cellContract:
     profile: nixos-ai-max-edge-cell-installer-v1
     image: nixos-ai-max-edge-cell-installer
     signedBy: k1s-core-root-of-trust
+    artifact:
+      name: nixos-ai-max-edge-cell-installer
+      profile: nixos-ai-max-edge-cell-installer-v1
+      image: nixos-ai-max-edge-cell-installer
+      version: stage7-local
+      artifactDigest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+      manifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+      pathCoverage:
+        - gateway
+        - cell-node
+      provenance:
+        builder: k1s-public-stage7-local-simulator
+        sourceRevision: public-dev-stage7
+        createdAt: "2026-06-25T00:00:00Z"
+    signature:
+      algorithm: k1s-local-sim-ed25519-sha256
+      signingKeyId: k1s-core-root-of-trust
+      signedDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+      signature: k1s-sim-signature:3333333333333333333333333333333333333333333333333333333333333333
     assurance:
       secureImageValidation: enabled
       bootValidation: measured-verified
@@ -135,6 +154,10 @@ Current implementation:
 - requires the installer contract to be signed by the k1s core root of trust
   and to declare enabled secure image validation, measured/verified boot intent,
   tamper detection, disable/quarantine response, and connected-core alerting
+- validates a local Stage 7 installer artifact signing envelope with
+  deterministic artifact and manifest digests, root-of-trust signing key ID,
+  simulation signature, provenance fields, and path coverage for both installer
+  roles
 - validates post-install posture for gateway and cell-node paths, including
   auto-boot, role-specific connect targets, constrained USB policy, and display
   mode
@@ -154,6 +177,9 @@ Planned runtime mapping:
   `4` represents sixteen compute-eligible members across four cells
 - `nixos-ai-max-edge-cell-installer-v1` describes a single NixOS installer
   image that supports gateway and cell-node install paths
+- `artifactDigest`, `manifestDigest`, and `signature` are Stage 7 local
+  signing-envelope scaffold fields. They make verification behavior executable
+  in manifest tests; they are not a real ISO build or production signature.
 - `secureImageValidation`, `bootValidation`, `tamperDetection`,
   `validationFailureAction`, and `coreAlerting` are declarative assurance
   requirements for later installer, TPM/Secure Boot, attestation, and alerting
@@ -162,7 +188,8 @@ Planned runtime mapping:
 This is contract-level behavior only. It does not yet implement disconnected
 gateway execution, local service failover, live LAN discovery, multi-cell
 routing, post-reconnect state replay, actual ISO build/signing, TPM/Secure Boot
-enforcement, attestation verification, USB policy enforcement, or hardened
+enforcement, attestation verification, USB policy enforcement, real key custody,
+production ISO signing, or hardened
 alert transport.
 
 ## Controller Lifecycle
