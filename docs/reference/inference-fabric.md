@@ -122,6 +122,25 @@ cellContract:
       signingKeyId: k1s-core-root-of-trust
       signedDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
       signature: k1s-sim-signature:3333333333333333333333333333333333333333333333333333333333333333
+    roleScaffolds:
+      - role: gateway
+        moduleRef: nixos/modules/ai-max/installer/gateway.nix
+        configRef: nixos/configs/ai-max/gateway-installed-system.nix
+        derivedFromManifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        postInstall:
+          autoBoot: enabled
+          connectTarget: core
+          usbDevicePolicy: signed-only
+          displayMode: telemetry
+      - role: cell-node
+        moduleRef: nixos/modules/ai-max/installer/cell-node.nix
+        configRef: nixos/configs/ai-max/cell-node-installed-system.nix
+        derivedFromManifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        postInstall:
+          autoBoot: enabled
+          connectTarget: gateway
+          usbDevicePolicy: limited
+          displayMode: connect-monitor-to-gateway
     assurance:
       secureImageValidation: enabled
       bootValidation: measured-verified
@@ -158,6 +177,10 @@ Current implementation:
   deterministic artifact and manifest digests, root-of-trust signing key ID,
   simulation signature, provenance fields, and path coverage for both installer
   roles
+- validates a local Stage 8 NixOS role scaffold for the single installer image,
+  including exactly one `gateway` and one `cell-node` installed-system intent,
+  non-empty module/config references, derivation from the signed Stage 7
+  manifest digest, and role-specific post-install services
 - validates post-install posture for gateway and cell-node paths, including
   auto-boot, role-specific connect targets, constrained USB policy, and display
   mode
@@ -180,6 +203,9 @@ Planned runtime mapping:
 - `artifactDigest`, `manifestDigest`, and `signature` are Stage 7 local
   signing-envelope scaffold fields. They make verification behavior executable
   in manifest tests; they are not a real ISO build or production signature.
+- `roleScaffolds` is the Stage 8 role-scaffold-ready surface. It describes the
+  NixOS module/config intent that the single signed installer would use to
+  produce gateway and cell-node installed systems.
 - `secureImageValidation`, `bootValidation`, `tamperDetection`,
   `validationFailureAction`, and `coreAlerting` are declarative assurance
   requirements for later installer, TPM/Secure Boot, attestation, and alerting
@@ -189,7 +215,7 @@ This is contract-level behavior only. It does not yet implement disconnected
 gateway execution, local service failover, live LAN discovery, multi-cell
 routing, post-reconnect state replay, actual ISO build/signing, TPM/Secure Boot
 enforcement, attestation verification, USB policy enforcement, real key custody,
-production ISO signing, or hardened
+production ISO signing, real NixOS image realization, or hardened
 alert transport.
 
 ## Controller Lifecycle

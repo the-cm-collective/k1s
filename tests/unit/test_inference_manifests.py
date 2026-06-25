@@ -92,6 +92,36 @@ def _ai_max_installer_payload() -> dict:
                 "k1s-sim-signature:3333333333333333333333333333333333333333333333333333333333333333"
             ),
         },
+        "roleScaffolds": [
+            {
+                "role": "gateway",
+                "moduleRef": "nixos/modules/ai-max/installer/gateway.nix",
+                "configRef": "nixos/configs/ai-max/gateway-installed-system.nix",
+                "derivedFromManifestDigest": (
+                    "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                ),
+                "postInstall": {
+                    "autoBoot": "enabled",
+                    "connectTarget": "core",
+                    "usbDevicePolicy": "signed-only",
+                    "displayMode": "telemetry",
+                },
+            },
+            {
+                "role": "cell-node",
+                "moduleRef": "nixos/modules/ai-max/installer/cell-node.nix",
+                "configRef": "nixos/configs/ai-max/cell-node-installed-system.nix",
+                "derivedFromManifestDigest": (
+                    "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                ),
+                "postInstall": {
+                    "autoBoot": "enabled",
+                    "connectTarget": "gateway",
+                    "usbDevicePolicy": "limited",
+                    "displayMode": "connect-monitor-to-gateway",
+                },
+            },
+        ],
         "assurance": {
             "secureImageValidation": "enabled",
             "bootValidation": "measured-verified",
@@ -253,6 +283,20 @@ def test_inference_cell_accepts_ai_max_edge_cell_contract() -> None:
     assert installer.signature.signing_key_id == "k1s-core-root-of-trust"
     assert installer.signature.signed_digest == installer.artifact.manifest_digest
     assert installer.signature.signature.startswith("k1s-sim-signature:")
+    assert [scaffold.role for scaffold in installer.role_scaffolds] == ["gateway", "cell-node"]
+    gateway_scaffold, cell_node_scaffold = installer.role_scaffolds
+    assert gateway_scaffold.module_ref == "nixos/modules/ai-max/installer/gateway.nix"
+    assert gateway_scaffold.config_ref == "nixos/configs/ai-max/gateway-installed-system.nix"
+    assert gateway_scaffold.derived_from_manifest_digest == installer.artifact.manifest_digest
+    assert gateway_scaffold.post_install.connect_target == "core"
+    assert gateway_scaffold.post_install.usb_device_policy == "signed-only"
+    assert gateway_scaffold.post_install.display_mode == "telemetry"
+    assert cell_node_scaffold.module_ref == "nixos/modules/ai-max/installer/cell-node.nix"
+    assert cell_node_scaffold.config_ref == "nixos/configs/ai-max/cell-node-installed-system.nix"
+    assert cell_node_scaffold.derived_from_manifest_digest == installer.artifact.manifest_digest
+    assert cell_node_scaffold.post_install.connect_target == "gateway"
+    assert cell_node_scaffold.post_install.usb_device_policy == "limited"
+    assert cell_node_scaffold.post_install.display_mode == "connect-monitor-to-gateway"
     assert installer.assurance.secure_image_validation == "enabled"
     assert installer.assurance.boot_validation == "measured-verified"
     assert installer.assurance.tamper_detection == "enabled"
@@ -283,6 +327,9 @@ def test_inference_cell_accepts_ai_max_installer_contract() -> None:
     assert installer.signed_by == "k1s-core-root-of-trust"
     assert installer.artifact.path_coverage == ["gateway", "cell-node"]
     assert installer.signature.signing_key_id == "k1s-core-root-of-trust"
+    assert [scaffold.role for scaffold in installer.role_scaffolds] == ["gateway", "cell-node"]
+    assert installer.role_scaffolds[0].module_ref.endswith("/gateway.nix")
+    assert installer.role_scaffolds[1].module_ref.endswith("/cell-node.nix")
     assert [path.path for path in installer.install_paths] == ["gateway", "cell-node"]
     gateway, cell_node = installer.install_paths
     assert gateway.post_install.connect_target == "core"
@@ -445,6 +492,60 @@ def test_inference_cell_rejects_missing_ai_max_installer_path() -> None:
                 }
             ),
             "signedDigest must match artifact manifestDigest",
+        ),
+        (
+            lambda installer: installer["roleScaffolds"].pop(),
+            "roleScaffolds must contain exactly gateway and cell-node",
+        ),
+        (
+            lambda installer: installer["roleScaffolds"][1].update(
+                {
+                    "role": "gateway",
+                    "postInstall": {
+                        "autoBoot": "enabled",
+                        "connectTarget": "core",
+                        "usbDevicePolicy": "signed-only",
+                        "displayMode": "telemetry",
+                    },
+                }
+            ),
+            "roleScaffolds must not contain duplicate roles",
+        ),
+        (
+            lambda installer: installer["roleScaffolds"][0]["postInstall"].update(
+                {"connectTarget": "gateway"}
+            ),
+            "gateway role scaffold must connectTarget=core",
+        ),
+        (
+            lambda installer: installer["roleScaffolds"][1]["postInstall"].update(
+                {"connectTarget": "core"}
+            ),
+            "cell-node role scaffold must connectTarget=gateway",
+        ),
+        (
+            lambda installer: installer["roleScaffolds"][0].update({"moduleRef": ""}),
+            "moduleRef and configRef must be non-empty",
+        ),
+        (
+            lambda installer: installer["roleScaffolds"][1].update({"configRef": "   "}),
+            "moduleRef and configRef must be non-empty",
+        ),
+        (
+            lambda installer: installer["roleScaffolds"][0]["postInstall"].update(
+                {"usbDevicePolicy": "unrestricted"}
+            ),
+            "disabled",
+        ),
+        (
+            lambda installer: installer["roleScaffolds"][0].update(
+                {
+                    "derivedFromManifestDigest": (
+                        "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+                    )
+                }
+            ),
+            "derivedFromManifestDigest must match artifact manifestDigest",
         ),
         (
             lambda installer: installer["assurance"].update({"secureImageValidation": "disabled"}),

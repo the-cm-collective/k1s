@@ -14,6 +14,15 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 DEFAULT_NAMESPACE = "default"
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _AI_MAX_INSTALLER_PATHS = {"gateway", "cell-node"}
+_AI_MAX_INSTALLER_ARTIFACT_DIGEST = (
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+)
+_AI_MAX_INSTALLER_MANIFEST_DIGEST = (
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+)
+_AI_MAX_INSTALLER_SIGNATURE = (
+    "k1s-sim-signature:3333333333333333333333333333333333333333333333333333333333333333"
+)
 
 
 class ManifestError(RuntimeError):
@@ -804,11 +813,11 @@ class InferenceInstallerArtifactSpec(BaseModel):
     image: Literal["nixos-ai-max-edge-cell-installer"] = "nixos-ai-max-edge-cell-installer"
     version: str = "stage7-local"
     artifact_digest: str = Field(
-        default="sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        default=_AI_MAX_INSTALLER_ARTIFACT_DIGEST,
         alias="artifactDigest",
     )
     manifest_digest: str = Field(
-        default="sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        default=_AI_MAX_INSTALLER_MANIFEST_DIGEST,
         alias="manifestDigest",
     )
     path_coverage: List[Literal["gateway", "cell-node"]] = Field(
@@ -845,12 +854,10 @@ class InferenceInstallerSignatureEnvelopeSpec(BaseModel):
         default="k1s-core-root-of-trust", alias="signingKeyId"
     )
     signed_digest: str = Field(
-        default="sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        default=_AI_MAX_INSTALLER_MANIFEST_DIGEST,
         alias="signedDigest",
     )
-    signature: str = (
-        "k1s-sim-signature:3333333333333333333333333333333333333333333333333333333333333333"
-    )
+    signature: str = _AI_MAX_INSTALLER_SIGNATURE
 
     model_config = {"populate_by_name": True}
 
@@ -873,6 +880,83 @@ class InferenceInstallerSignatureEnvelopeSpec(BaseModel):
         return text
 
 
+class InferenceInstallerRoleScaffoldSpec(BaseModel):
+    """Role-specific installed-system scaffold emitted by the single installer image."""
+
+    role: Literal["gateway", "cell-node"]
+    module_ref: str = Field(alias="moduleRef")
+    config_ref: str = Field(alias="configRef")
+    derived_from_manifest_digest: str = Field(
+        default=_AI_MAX_INSTALLER_MANIFEST_DIGEST, alias="derivedFromManifestDigest"
+    )
+    post_install: InferenceInstallerPostInstallSpec = Field(alias="postInstall")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("module_ref", "config_ref", mode="before")
+    @classmethod
+    def _require_ref(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("installer role scaffold moduleRef and configRef must be non-empty")
+        return text
+
+    @field_validator("derived_from_manifest_digest", mode="before")
+    @classmethod
+    def _validate_derived_digest(cls, v: str) -> str:
+        text = str(v or "").strip().lower()
+        if not _SHA256_DIGEST_RE.fullmatch(text):
+            raise ValueError(
+                "installer role scaffold derivedFromManifestDigest must be sha256:<64 hex>"
+            )
+        return text
+
+    @model_validator(mode="after")
+    def _validate_role_posture(self) -> "InferenceInstallerRoleScaffoldSpec":
+        if self.role == "gateway":
+            if self.post_install.connect_target != "core":
+                raise ValueError("installer gateway role scaffold must connectTarget=core")
+            if self.post_install.display_mode != "telemetry":
+                raise ValueError("installer gateway role scaffold must displayMode=telemetry")
+        elif self.role == "cell-node":
+            if self.post_install.connect_target != "gateway":
+                raise ValueError("installer cell-node role scaffold must connectTarget=gateway")
+            if self.post_install.display_mode != "connect-monitor-to-gateway":
+                raise ValueError(
+                    "installer cell-node role scaffold must displayMode=connect-monitor-to-gateway"
+                )
+        return self
+
+
+def _default_ai_max_installer_role_scaffolds() -> list[InferenceInstallerRoleScaffoldSpec]:
+    return [
+        InferenceInstallerRoleScaffoldSpec(
+            role="gateway",
+            moduleRef="nixos/modules/ai-max/installer/gateway.nix",
+            configRef="nixos/configs/ai-max/gateway-installed-system.nix",
+            derivedFromManifestDigest=_AI_MAX_INSTALLER_MANIFEST_DIGEST,
+            postInstall={
+                "autoBoot": "enabled",
+                "connectTarget": "core",
+                "usbDevicePolicy": "signed-only",
+                "displayMode": "telemetry",
+            },
+        ),
+        InferenceInstallerRoleScaffoldSpec(
+            role="cell-node",
+            moduleRef="nixos/modules/ai-max/installer/cell-node.nix",
+            configRef="nixos/configs/ai-max/cell-node-installed-system.nix",
+            derivedFromManifestDigest=_AI_MAX_INSTALLER_MANIFEST_DIGEST,
+            postInstall={
+                "autoBoot": "enabled",
+                "connectTarget": "gateway",
+                "usbDevicePolicy": "limited",
+                "displayMode": "connect-monitor-to-gateway",
+            },
+        ),
+    ]
+
+
 class InferenceInstallerSpec(BaseModel):
     """Declarative NixOS installer contract for the AI Max edge-cell profile."""
 
@@ -890,6 +974,10 @@ class InferenceInstallerSpec(BaseModel):
     artifact: InferenceInstallerArtifactSpec = Field(default_factory=InferenceInstallerArtifactSpec)
     signature: InferenceInstallerSignatureEnvelopeSpec = Field(
         default_factory=InferenceInstallerSignatureEnvelopeSpec
+    )
+    role_scaffolds: List[InferenceInstallerRoleScaffoldSpec] = Field(
+        default_factory=_default_ai_max_installer_role_scaffolds,
+        alias="roleScaffolds",
     )
 
     model_config = {"populate_by_name": True}
@@ -913,9 +1001,24 @@ class InferenceInstallerSpec(BaseModel):
             raise ValueError("installer signature signingKeyId must match signedBy")
         if self.signature.signed_digest != self.artifact.manifest_digest:
             raise ValueError("installer signature signedDigest must match artifact manifestDigest")
+        role_scaffold_roles = [item.role for item in self.role_scaffolds]
+        if len(set(role_scaffold_roles)) != len(role_scaffold_roles):
+            raise ValueError("installer.roleScaffolds must not contain duplicate roles")
+        if len(role_scaffold_roles) != 2 or set(role_scaffold_roles) != _AI_MAX_INSTALLER_PATHS:
+            raise ValueError("installer.roleScaffolds must contain exactly gateway and cell-node")
+        for scaffold in self.role_scaffolds:
+            if scaffold.derived_from_manifest_digest != self.artifact.manifest_digest:
+                raise ValueError(
+                    "installer role scaffold derivedFromManifestDigest must match "
+                    "artifact manifestDigest"
+                )
         self.install_paths = sorted(
             self.install_paths,
             key=lambda item: 0 if item.path == "gateway" else 1,
+        )
+        self.role_scaffolds = sorted(
+            self.role_scaffolds,
+            key=lambda item: 0 if item.role == "gateway" else 1,
         )
         self.artifact.path_coverage = sorted(
             self.artifact.path_coverage,
