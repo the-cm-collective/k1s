@@ -1,0 +1,26 @@
+{
+  "api_version": "workerbee.openstack_lite.patch_artifact_payload/v1",
+  "artifact_id": "k1s-public-route-import-contract-patch",
+  "checkpoint": "OSK-97",
+  "dashboard_route_registration_allowed": false,
+  "generated_for_review_only": true,
+  "k1s_target_import_allowed": false,
+  "live_refresh_allowed": false,
+  "patch_applied": false,
+  "production_ready": false,
+  "public_private_parity_complete": false,
+  "public_release_ready": false,
+  "public_repo_write_allowed": false,
+  "route_ids": [
+    "openstack-lite-approvals",
+    "openstack-lite-evidence",
+    "openstack-lite-status"
+  ],
+  "route_registered": false,
+  "secret_values_allowed": false,
+  "sibling_repo_mutation_allowed": false,
+  "source_checkpoint": "OSK-95",
+  "source_id": "k1s-public-dashboard-route-import-bundle",
+  "target_variant": "k1s-public",
+  "workerbee_runtime_start_allowed": false
+}
