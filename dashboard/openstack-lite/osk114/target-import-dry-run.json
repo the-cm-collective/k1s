@@ -1,0 +1,33 @@
+{
+  "api_version": "workerbee.openstack_lite.k1s_target_import_dry_run/v1",
+  "checkpoint": "OSK-114",
+  "contract_id": "k1s-public-openstack-lite-target-import-dry-run",
+  "dashboard_route_registration_allowed": false,
+  "dry_run_only": true,
+  "generated_for_review_only": true,
+  "k1s_target_import_executed": false,
+  "k1s_target_import_mutation_allowed": false,
+  "k1s_target_record_written": false,
+  "live_refresh_allowed": false,
+  "openstack_resource_mutation_allowed": false,
+  "production_ready": false,
+  "public_private_parity_complete": false,
+  "public_release_ready": false,
+  "route_contract_ref": "dashboard/openstack-lite/osk97/k1s-public-route-import-contract.json",
+  "route_ids": [
+    "openstack-lite-approvals",
+    "openstack-lite-evidence",
+    "openstack-lite-status"
+  ],
+  "secret_values_allowed": false,
+  "target_import_plan": {
+    "dashboard_routes_source": "static-openstack-lite-contract",
+    "import_mode": "dry-run",
+    "required_secret_refs": [],
+    "runtime_contact_required": false,
+    "target_alias": "openstack-lite-local-public-preview",
+    "target_kind": "dashboard-route-contract"
+  },
+  "target_variant": "k1s-public",
+  "workerbee_runtime_start_allowed": false
+}
