@@ -7616,7 +7616,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 if d_name is None:
                     label_sel, field_sel = _selector_values_from_query(q)
                     if q.get("watch", ["0"])[0] in ("1", "true", "True"):
-                        if not self._rbac_allows("watch", "deployments"):
+                        if not self._rbac_allows("watch", "deployments", d_ns):
                             self._deny(403)
                             return
                         self.send_response(HTTPStatus.OK)
@@ -7662,7 +7662,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                         except BrokenPipeError:
                             pass
                         return
-                    if not self._rbac_allows("list", "deployments"):
+                    if not self._rbac_allows("list", "deployments", d_ns):
                         self._deny(403)
                         return
                     try:
@@ -7688,7 +7688,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                     )
                     return
                 else:
-                    if not self._rbac_allows("get", "deployments"):
+                    if not self._rbac_allows("get", "deployments", d_ns):
                         self._deny(403)
                         return
                     obj = self.server.store.get("apps", "v1", "deployments", d_ns, d_name)  # type: ignore[attr-defined]
@@ -9446,6 +9446,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         message="invalid metadata.namespace (DNS-1123 label)",
                     )
                     return
+                if not self._rbac_allows("create", "deployments", ns_in):
+                    self._deny(403)
+                    return
                 spec_in = doc.get("spec") or {}
                 spec_in = _inject_sa_projection(spec_in)
                 created = self.server.store.upsert(  # type: ignore[attr-defined]
@@ -10032,6 +10035,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                         reason="Invalid",
                         message="invalid metadata.namespace (DNS-1123 label)",
                     )
+                    return
+                if not self._rbac_allows("update", "deployments", ns_in):
+                    self._deny(403)
                     return
                 updated = self.server.store.upsert(  # type: ignore[attr-defined]
                     "apps",
@@ -11335,7 +11341,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         if path.startswith("/apis/apps/v1"):
             d_plural, d_ns, d_name = _apps_ns_name(path)
             if d_plural in {"deployments", "statefulsets", "daemonsets"}:
-                if not self._rbac_allows("delete", d_plural):
+                if not self._rbac_allows("delete", d_plural, d_ns):
                     self._deny(403)
                     return
                 if d_name:

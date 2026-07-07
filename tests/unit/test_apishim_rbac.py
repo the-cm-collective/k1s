@@ -1,4 +1,5 @@
 import json
+import time
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -199,6 +200,127 @@ def test_apishim_rbac_eval_rolebinding(monkeypatch, store):
     handler.wfile = BytesIO()
     handler.do_GET()
     assert 200 in handler._response_codes
+
+
+def test_apishim_rbac_eval_namespaced_deployment_lifecycle(monkeypatch, store):
+    monkeypatch.setenv("AE_APISHIM_RBAC", "1")
+    monkeypatch.setenv("AE_APISHIM_RBAC_EVAL", "1")
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = True
+    shim_server.ShimHandler.admin_token = None
+    shim_server.ShimHandler.read_token = None
+    shim_server.ShimHandler.allow_anonymous = False
+    with shim_server.ShimHandler.sa_tokens_lock:
+        shim_server.ShimHandler.sa_tokens.clear()
+
+    token = "unit-service-account-token"
+    service_namespace = "openstack-lite-mcp-dev"
+    target_namespace = "openstack-lite-dashboard-proof"
+    store.upsert(
+        "",
+        "v1",
+        "serviceaccounts",
+        service_namespace,
+        "workerbee-k1s-mcp-hzn07-canary",
+        {
+            "name": "workerbee-k1s-mcp-hzn07-canary",
+            "namespace": service_namespace,
+            "annotations": {
+                "ae.apishim/token": token,
+                "ae.apishim/token-exp": str(int(time.time() + 3600)),
+            },
+        },
+        {},
+    )
+    store.upsert(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "roles",
+        target_namespace,
+        "hzn07-canary-deployment-executor",
+        {"name": "hzn07-canary-deployment-executor", "namespace": target_namespace},
+        {"rules": [{"verbs": ["get", "create", "delete"], "resources": ["deployments"]}]},
+    )
+    store.upsert(
+        "rbac.authorization.k8s.io",
+        "v1",
+        "rolebindings",
+        target_namespace,
+        "hzn07-canary-deployment-executor",
+        {"name": "hzn07-canary-deployment-executor", "namespace": target_namespace},
+        {
+            "subjects": [
+                {
+                    "kind": "ServiceAccount",
+                    "name": "workerbee-k1s-mcp-hzn07-canary",
+                    "namespace": service_namespace,
+                }
+            ],
+            "roleRef": {"kind": "Role", "name": "hzn07-canary-deployment-executor"},
+        },
+    )
+
+    def invoke(method: str, path: str, payload: dict | None = None):
+        body = json.dumps(payload or {}).encode() if payload is not None else b""
+        req = make_handler(path, method=method, headers={"Authorization": f"Bearer {token}"}, body=body)
+        handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+        handler.path = req.path
+        handler.command = req.command
+        handler.headers = req.headers
+        handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+        handler.store = store
+        handler.state = None
+        handler.request_version = "HTTP/1.1"
+        handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+        handler.rfile = BytesIO(body)
+        handler.wfile = BytesIO()
+        return handler
+
+    deployment = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {"name": "hzn06-unit-canary", "namespace": target_namespace},
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": "hzn06-unit-canary"}},
+            "template": {
+                "metadata": {"labels": {"app": "hzn06-unit-canary"}},
+                "spec": {"containers": [{"name": "canary", "image": "example.test/canary:unit"}]},
+            },
+        },
+    }
+
+    create = invoke(
+        "POST",
+        f"/apis/apps/v1/namespaces/{target_namespace}/deployments",
+        deployment,
+    )
+    create.do_POST()
+    assert 201 in create._response_codes
+
+    get = invoke(
+        "GET",
+        f"/apis/apps/v1/namespaces/{target_namespace}/deployments/hzn06-unit-canary",
+    )
+    get.do_GET()
+    assert 200 in get._response_codes
+
+    delete = invoke(
+        "DELETE",
+        f"/apis/apps/v1/namespaces/{target_namespace}/deployments/hzn06-unit-canary",
+        {"apiVersion": "v1", "kind": "DeleteOptions"},
+    )
+    delete.do_DELETE()
+    assert 200 in delete._response_codes
+
+    denied = invoke(
+        "POST",
+        "/apis/apps/v1/namespaces/default/deployments",
+        {**deployment, "metadata": {"name": "hzn06-unit-canary", "namespace": "default"}},
+    )
+    denied.do_POST()
+    assert 403 in denied._response_codes
 
 
 def test_apishim_rbac_exec_requires_exec_or_admin(monkeypatch, store):
