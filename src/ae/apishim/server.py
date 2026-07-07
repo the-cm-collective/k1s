@@ -3602,6 +3602,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         # Role/RoleBinding evaluation
         user = principal.username
         groups = principal.groups
+        store = getattr(self, "store", None) or getattr(self.server, "store", None)
+        if store is None:
+            return False
         sa_ns = None
         sa_name = None
         if user.startswith("system:serviceaccount:"):
@@ -3613,7 +3616,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         allowed_verbs: set[str] = set()
         try:
             # RoleBindings (namespaced)
-            for rb in self.store.list_all("rbac.authorization.k8s.io", "v1", "rolebindings"):  # type: ignore[attr-defined]
+            for rb in store.list_all("rbac.authorization.k8s.io", "v1", "rolebindings"):
                 if namespace and rb.namespace and rb.namespace != namespace:
                     continue
                 subjects = (rb.spec or {}).get("subjects", [])
@@ -3633,17 +3636,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                 rname = ref.get("name")
                 if not rname:
                     continue
-                role_obj = self.store.get(
+                role_obj = store.get(
                     "rbac.authorization.k8s.io", "v1", "roles", rb.namespace, rname
-                )  # type: ignore[attr-defined]
+                )
                 if role_obj:
                     for rule in (role_obj.spec or {}).get("rules", []):
                         if _rule_matches(resource, rule.get("resources", [])):
                             allowed_verbs.update(rule.get("verbs", []))
             # ClusterRoleBindings
-            for crb in self.store.list_all(
+            for crb in store.list_all(
                 "rbac.authorization.k8s.io", "v1", "clusterrolebindings"
-            ):  # type: ignore[attr-defined]
+            ):
                 subjects = (crb.spec or {}).get("subjects", [])
                 if not any(
                     (s.get("kind") == "User" and s.get("name") == user)
@@ -3661,9 +3664,9 @@ class ShimHandler(BaseHTTPRequestHandler):
                 rname = ref.get("name")
                 if not rname:
                     continue
-                crobj = self.store.get(
+                crobj = store.get(
                     "rbac.authorization.k8s.io", "v1", "clusterroles", None, rname
-                )  # type: ignore[attr-defined]
+                )
                 if crobj:
                     for rule in (crobj.spec or {}).get("rules", []):
                         if _rule_matches(resource, rule.get("resources", [])):

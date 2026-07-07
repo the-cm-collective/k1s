@@ -269,7 +269,6 @@ def test_apishim_rbac_eval_namespaced_deployment_lifecycle(monkeypatch, store):
         handler.command = req.command
         handler.headers = req.headers
         handler.server = SimpleNamespace(store=store, state=store, runtime=None)
-        handler.store = store
         handler.state = None
         handler.request_version = "HTTP/1.1"
         handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
