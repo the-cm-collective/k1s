@@ -46,6 +46,158 @@ def test_history_replica_alias_warns(tmp_path, capsys):
     assert "history --replica is deprecated; use --pod" in captured.err
 
 
+def test_remote_k8s_apply_posts_namespaced_rbac_before_workload(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    manifest_path = tmp_path / "mcp-dev-service.yaml"
+    manifest_path.write_text(
+        """
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workerbee-k1s-mcp-hzn07-canary
+  namespace: openstack-lite-mcp-dev
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hzn07-canary-deployment-executor
+  namespace: openstack-lite-dashboard-proof
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hzn07-canary-deployment-executor
+  namespace: openstack-lite-dashboard-proof
+subjects:
+  - kind: ServiceAccount
+    name: workerbee-k1s-mcp-hzn07-canary
+    namespace: openstack-lite-mcp-dev
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hzn07-canary-deployment-executor
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workerbee-k1s-mcp-dev
+  namespace: openstack-lite-mcp-dev
+spec:
+  template:
+    spec:
+      serviceAccountName: workerbee-k1s-mcp-hzn07-canary
+      containers:
+        - name: mcp
+          image: openstack-lite-mcp-dev:hzn07
+""".strip(),
+        encoding="utf-8",
+    )
+    calls: list[tuple[str, str, str | None]] = []
+
+    def fake_post(base: str, path: str, body: dict, token: str | None = None) -> dict:
+        calls.append((base, path, token))
+        if path == "/apply":
+            assert body["apiVersion"] == "ae.dev/v1alpha1"
+            assert body["metadata"]["name"] == "workerbee-k1s-mcp-dev"
+            return {
+                "status": "accepted",
+                "app": "openstack-lite-mcp-dev/workerbee-k1s-mcp-dev",
+                "resourceVersion": "7",
+            }
+        return {"kind": body["kind"]}
+
+    monkeypatch.setenv("AE_APISHIM_SERVER", "https://127.0.0.1:18445")
+    monkeypatch.setenv("AE_APISHIM_TOKEN", "apishim-token")
+    monkeypatch.setattr("ae.cli.__main__._http_post_json", fake_post)
+
+    exit_code = main(
+        [
+            "--server",
+            "http://127.0.0.1:19108",
+            "--token=secret-token",
+            "apply",
+            "--k8s",
+            "-f",
+            str(manifest_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            "https://127.0.0.1:18445",
+            "/api/v1/namespaces/openstack-lite-mcp-dev/serviceaccounts",
+            "apishim-token",
+        ),
+        (
+            "https://127.0.0.1:18445",
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/openstack-lite-dashboard-proof/roles",
+            "apishim-token",
+        ),
+        (
+            "https://127.0.0.1:18445",
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/openstack-lite-dashboard-proof/rolebindings",
+            "apishim-token",
+        ),
+        ("http://127.0.0.1:19108", "/apply", "secret-token"),
+    ]
+    output = capsys.readouterr().out
+    assert (
+        "applied Kubernetes ServiceAccount "
+        "openstack-lite-mcp-dev/workerbee-k1s-mcp-hzn07-canary"
+    ) in output
+    assert (
+        "applied Kubernetes Role "
+        "openstack-lite-dashboard-proof/hzn07-canary-deployment-executor"
+    ) in output
+    assert (
+        "applied Kubernetes RoleBinding "
+        "openstack-lite-dashboard-proof/hzn07-canary-deployment-executor"
+    ) in output
+    assert "applied desired state" in output
+
+
+def test_remote_k8s_apply_rejects_cluster_rbac(tmp_path, monkeypatch, capsys) -> None:
+    manifest_path = tmp_path / "cluster-role.yaml"
+    manifest_path.write_text(
+        """
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bad-global-role
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    def fake_post(*_args, **_kwargs):
+        raise AssertionError("cluster-scoped RBAC must not be posted")
+
+    monkeypatch.setattr("ae.cli.__main__._http_post_json", fake_post)
+
+    exit_code = main(
+        [
+            "--server",
+            "http://127.0.0.1:19108",
+            "apply",
+            "--k8s",
+            "-f",
+            str(manifest_path),
+        ]
+    )
+
+    assert exit_code == 1
+    assert "unsupported cluster-scoped Kubernetes kind: ClusterRole" in capsys.readouterr().out
+
+
 def test_apply_and_status_commands(tmp_path, monkeypatch, capsys):
     manifest_path = tmp_path / "echo.yaml"
     write_manifest(manifest_path)

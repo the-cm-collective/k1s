@@ -1649,6 +1649,7 @@ def handle_apply(
 
     k8s_workload_kinds = {"Deployment", "StatefulSet", "DaemonSet", "Job"}
     k8s_network_kinds = {"Service", "Ingress"}
+    k8s_passive_namespaced_kinds = {"ServiceAccount", "Role", "RoleBinding"}
 
     def _k8s_kind(doc: dict) -> str:
         return str(doc.get("kind") or "")
@@ -1668,6 +1669,59 @@ def handle_apply(
         meta = _k8s_meta(doc)
         ns = meta.get("namespace")
         return str(ns) if ns else None
+
+    def _k8s_passive_apply_path(doc: dict) -> str | None:
+        from urllib.parse import quote
+
+        kind = _k8s_kind(doc)
+        api = _k8s_api(doc)
+        if kind in {"ClusterRole", "ClusterRoleBinding"}:
+            raise ValueError(f"unsupported cluster-scoped Kubernetes kind: {kind}")
+        if kind not in k8s_passive_namespaced_kinds:
+            return None
+        expected_api = "v1" if kind == "ServiceAccount" else "rbac.authorization.k8s.io/v1"
+        if api != expected_api:
+            raise ValueError(f"{kind} must use apiVersion {expected_api}")
+        ns = _k8s_namespace(doc)
+        if not ns or not ns.strip():
+            raise ValueError(f"{kind} requires metadata.namespace")
+        if not _k8s_name(doc):
+            raise ValueError(f"{kind} requires metadata.name")
+        if kind == "RoleBinding":
+            role_ref = doc.get("roleRef") if isinstance(doc.get("roleRef"), dict) else {}
+            if str(role_ref.get("kind") or "") != "Role":
+                raise ValueError("RoleBinding must reference a namespace-scoped Role")
+        ns_q = quote(ns, safe="")
+        if kind == "ServiceAccount":
+            return f"/api/v1/namespaces/{ns_q}/serviceaccounts"
+        plural = "roles" if kind == "Role" else "rolebindings"
+        return f"/apis/rbac.authorization.k8s.io/v1/namespaces/{ns_q}/{plural}"
+
+    def _split_k8s_documents_for_apply(docs: list[dict]) -> tuple[list[dict], list[dict]]:
+        passive: list[dict] = []
+        convertible: list[dict] = []
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            if _k8s_passive_apply_path(doc) is not None:
+                passive.append(doc)
+            else:
+                convertible.append(doc)
+        return passive, convertible
+
+    def _apply_k8s_passive_documents(
+        base: str, token: str | None, docs: list[dict]
+    ) -> list[str]:
+        passive_base = _apishim_base_url(os.getenv("AE_APISHIM_SERVER") or base)
+        passive_token = os.getenv("AE_APISHIM_TOKEN") or token
+        applied: list[str] = []
+        for doc in docs:
+            path = _k8s_passive_apply_path(doc)
+            if path is None:
+                continue
+            _http_post_json(passive_base, path, doc, passive_token)
+            applied.append(f"{_k8s_kind(doc)} {_k8s_namespace(doc)}/{_k8s_name(doc)}")
+        return applied
 
     def _should_convert_k8s(docs: list[dict], force: bool) -> bool:
         if force:
@@ -1820,9 +1874,17 @@ def handle_apply(
             return 1
         try:
             if _should_convert_k8s(docs, bool(getattr(args, "k8s", False))):
-                manifest, warnings = _convert_k8s_documents(docs)
+                passive_docs, convertible_docs = _split_k8s_documents_for_apply(docs)
+                passive_applied = _apply_k8s_passive_documents(base, tok, passive_docs)
+                if not convertible_docs:
+                    for item in passive_applied:
+                        print(f"applied Kubernetes {item}")
+                    return 0
+                manifest, warnings = _convert_k8s_documents(convertible_docs)
                 for w in warnings:
                     print(f"warning: {w}")
+                for item in passive_applied:
+                    print(f"applied Kubernetes {item}")
                 payload = manifest.model_dump(by_alias=True)
             else:
                 if len(docs) != 1:
@@ -2861,10 +2923,12 @@ def _apishim_ca_bundle_path() -> str | None:
 
 
 def _apishim_requests_verify() -> bool | str:
+    if os.getenv("AE_APISHIM_INSECURE") == "1":
+        return False
     ca_bundle = _apishim_ca_bundle_path()
     if ca_bundle:
         return ca_bundle
-    return os.getenv("AE_APISHIM_INSECURE") != "1"
+    return True
 
 
 def _apishim_ssl_context():

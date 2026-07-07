@@ -113,6 +113,13 @@ def test_apishim_ssl_context_honors_insecure(monkeypatch):
     assert dummy.loaded is False
 
 
+def test_apishim_requests_verify_honors_insecure_over_ca(monkeypatch):
+    monkeypatch.setenv("AE_APISHIM_INSECURE", "1")
+    monkeypatch.setenv("AE_APISHIM_CA_BUNDLE", "/tmp/demo-ca.pem")
+
+    assert cli._apishim_requests_verify() is False
+
+
 def test_http_get_json_uses_apishim_verify(monkeypatch, tmp_path):
     ca_bundle = tmp_path / "apishim.ca.crt"
     ca_bundle.write_text("dummy-ca", encoding="utf-8")
