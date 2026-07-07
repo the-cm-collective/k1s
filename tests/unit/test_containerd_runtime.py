@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -394,6 +395,66 @@ def test_containerd_runtime_create_container_uses_configured_network_for_non_hos
     run_argv = calls[-1]
     assert "--net" in run_argv
     assert run_argv[run_argv.index("--net") + 1] == "ae-net"
+
+
+def test_containerd_runtime_projects_service_account_token_and_api_host(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    api_host = "k1s-api.demo.workerbee.home.arpa"
+    monkeypatch.setenv("AE_PROJECTION_ROOT", str(tmp_path / "projections"))
+    monkeypatch.setenv("AE_APISHIM_PUBLIC_BASE", f"https://{api_host}:19444/")
+    monkeypatch.setenv("AE_WORKLOAD_INGRESS_HOST_ALIAS", "192.168.29.111")
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "mcp", "namespace": "openstack-lite-mcp-dev"},
+            "spec": {
+                "image": "docker.io/library/busybox:latest",
+                "replicas": 1,
+                "serviceAccountName": "workerbee-k1s-mcp-hzn07-canary",
+                "command": ["/bin/sh", "-lc"],
+                "args": ["sleep 60"],
+            },
+        }
+    )
+    token_value = "projected-sa-token"
+    store = SimpleNamespace(
+        get=lambda *_args: SimpleNamespace(
+            metadata={"annotations": {"ae.apishim/token": token_value}},
+            spec={},
+            status={},
+        )
+    )
+    runtime = ContainerdRuntime(namespace="ae-test")
+    calls: list[list[str]] = []
+
+    def fake_run_ok(argv, *, allow_fail=False):
+        _ = allow_fail
+        calls.append(list(argv))
+        return SimpleNamespace(code=0, out="", err="")
+
+    monkeypatch.setattr(runtime, "_get_apishim_store", lambda: store)
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+    monkeypatch.setattr(runtime, "_container_exists", lambda _name: False)
+
+    runtime._create_container(manifest, "openstack-lite-mcp-dev--mcp-rev4-0", 4)
+
+    run_argv = calls[-1]
+    assert f"KUBERNETES_SERVICE_HOST={api_host}" in run_argv
+    assert "KUBERNETES_SERVICE_PORT=19444" in run_argv
+    assert "KUBERNETES_SERVICE_PORT_HTTPS=19444" in run_argv
+    assert "--add-host" in run_argv
+    assert f"{api_host}:192.168.29.111" in run_argv
+    mount_arg = next(
+        item
+        for item in run_argv
+        if item.endswith(":/var/run/secrets/kubernetes.io/serviceaccount:ro")
+    )
+    projection_dir = Path(mount_arg.split(":", 1)[0])
+    assert (projection_dir / "token").read_text(encoding="utf-8") == token_value
+    assert (projection_dir / "namespace").read_text(encoding="utf-8") == "openstack-lite-mcp-dev"
 
 
 def test_containerd_runtime_retries_transient_name_store_conflict(monkeypatch) -> None:

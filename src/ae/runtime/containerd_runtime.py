@@ -12,6 +12,8 @@ import subprocess
 import time
 from contextlib import suppress
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from urllib.parse import urlsplit
 
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
@@ -67,6 +69,11 @@ def _insecure_registry_hosts_from_env() -> set[str]:
     return hosts
 
 
+def _safe_path_segment(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip())
+    return safe.strip(".-") or "default"
+
+
 class ContainerdRuntime(PodmanRuntime):
     """Containerd-backed runtime adapter using nerdctl."""
 
@@ -120,6 +127,102 @@ class ContainerdRuntime(PodmanRuntime):
         self._exec_exit_codes: dict[str, int] = {}
         self._gpu_preflight_ready = False
         self._insecure_registries = _insecure_registry_hosts_from_env()
+
+    def _service_account_name_for_manifest(self, manifest: AppManifest) -> str | None:
+        sa_name = getattr(manifest.spec, "service_account_name", None)
+        if sa_name:
+            return str(sa_name)
+        store = self._get_apishim_store()
+        if store is None:
+            return None
+        return self._service_account_name_from_store(manifest, store)
+
+    def _service_account_token(self, namespace: str, name: str) -> str | None:
+        store = self._get_apishim_store()
+        if store is None:
+            return None
+        try:
+            obj = store.get("", "v1", "serviceaccounts", namespace, name)
+        except Exception:
+            return None
+        if obj is None:
+            return None
+        metadata = getattr(obj, "metadata", None) or {}
+        annotations = metadata.get("annotations") if isinstance(metadata, dict) else None
+        if not isinstance(annotations, dict):
+            return None
+        token = str(annotations.get("ae.apishim/token") or "").strip()
+        return token or None
+
+    def _write_service_account_projection(
+        self,
+        *,
+        namespace: str,
+        service_account: str,
+        token: str,
+        revision: int,
+    ) -> Path:
+        root = Path(os.getenv("AE_PROJECTION_ROOT", "state/projections"))
+        projection_dir = (
+            root
+            / "serviceaccounts"
+            / _safe_path_segment(namespace)
+            / _safe_path_segment(service_account)
+            / f"rev{int(revision)}"
+        )
+        projection_dir.mkdir(parents=True, exist_ok=True)
+        token_path = projection_dir / "token"
+        token_path.write_text(token, encoding="utf-8")
+        token_path.chmod(0o644)
+        namespace_path = projection_dir / "namespace"
+        namespace_path.write_text(namespace, encoding="utf-8")
+        namespace_path.chmod(0o644)
+        return projection_dir
+
+    def _service_account_projection_args(
+        self,
+        manifest: AppManifest,
+        revision: int,
+    ) -> list[str]:
+        service_account = self._service_account_name_for_manifest(manifest)
+        if not service_account:
+            return []
+        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        token = self._service_account_token(str(namespace), service_account)
+        if not token:
+            return []
+        api_base = (
+            os.getenv("AE_APISHIM_PUBLIC_BASE")
+            or os.getenv("AE_APISHIM_SERVER")
+            or ""
+        ).strip()
+        parsed = urlsplit(api_base)
+        host = parsed.hostname or ""
+        if not host:
+            return []
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        projection_dir = self._write_service_account_projection(
+            namespace=str(namespace),
+            service_account=service_account,
+            token=token,
+            revision=revision,
+        )
+        args = [
+            "-e",
+            f"KUBERNETES_SERVICE_HOST={host}",
+            "-e",
+            f"KUBERNETES_SERVICE_PORT={port}",
+            "-e",
+            f"KUBERNETES_SERVICE_PORT_HTTPS={port}",
+        ]
+        alias_ip = str(os.getenv("AE_WORKLOAD_INGRESS_HOST_ALIAS") or "").strip()
+        if alias_ip and host not in {"localhost", "127.0.0.1", "::1"}:
+            args += ["--add-host", f"{host}:{alias_ip}"]
+        args += [
+            "-v",
+            f"{projection_dir}:/var/run/secrets/kubernetes.io/serviceaccount:ro",
+        ]
+        return args
 
     def _nerdctl_safe_name(self, *parts: object, prefix: str = "ae") -> str:
         raw = "-".join(str(part or "").strip() for part in parts if str(part or "").strip())
@@ -311,6 +414,7 @@ class ContainerdRuntime(PodmanRuntime):
         for item in manifest.spec.env or []:
             if "name" in item and "value" in item:
                 cmd += ["-e", f"{item['name']}={item['value']}"]
+        cmd += self._service_account_projection_args(manifest, revision)
         cmd += self._host_alias_args(manifest)
         cmd += self._dns_args(manifest)
 
