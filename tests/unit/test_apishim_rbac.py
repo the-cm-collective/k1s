@@ -60,6 +60,30 @@ def make_handler(path: str, method: str = "GET", headers=None, body: bytes = b""
     return DummyRequest()
 
 
+def invoke_handler(
+    store: ObjectStore,
+    path: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    payload: dict | None = None,
+):
+    body = json.dumps(payload or {}).encode() if payload is not None else b""
+    req = make_handler(path, method=method, headers=headers or {}, body=body)
+    handler = shim_server.ShimHandler(req, ("127.0.0.1", 0), None)
+    handler.path = req.path
+    handler.command = req.command
+    handler.headers = req.headers
+    handler.server = SimpleNamespace(store=store, state=store, runtime=None)
+    handler.store = store
+    handler.state = None
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = f"{handler.command} {handler.path} HTTP/1.1"
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    return handler
+
+
 @pytest.fixture
 def store(tmp_path):
     s = ObjectStore(tmp_path / "apishim.db")
@@ -240,7 +264,11 @@ def test_apishim_rbac_eval_namespaced_deployment_lifecycle(monkeypatch, store):
         target_namespace,
         "hzn07-canary-deployment-executor",
         {"name": "hzn07-canary-deployment-executor", "namespace": target_namespace},
-        {"rules": [{"verbs": ["get", "create", "delete"], "resources": ["deployments"]}]},
+        {
+            "rules": [
+                {"verbs": ["get", "list", "create", "delete"], "resources": ["deployments"]}
+            ]
+        },
     )
     store.upsert(
         "rbac.authorization.k8s.io",
@@ -305,6 +333,13 @@ def test_apishim_rbac_eval_namespaced_deployment_lifecycle(monkeypatch, store):
     get.do_GET()
     assert 200 in get._response_codes
 
+    list_deployments = invoke(
+        "GET",
+        f"/apis/apps/v1/namespaces/{target_namespace}/deployments",
+    )
+    list_deployments.do_GET()
+    assert 200 in list_deployments._response_codes
+
     delete = invoke(
         "DELETE",
         f"/apis/apps/v1/namespaces/{target_namespace}/deployments/hzn06-unit-canary",
@@ -320,6 +355,112 @@ def test_apishim_rbac_eval_namespaced_deployment_lifecycle(monkeypatch, store):
     )
     denied.do_POST()
     assert 403 in denied._response_codes
+
+
+def test_serviceaccount_reapply_preserves_non_expired_token(monkeypatch, store):
+    monkeypatch.setenv("AE_APISHIM_RBAC", "1")
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = True
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    with shim_server.ShimHandler.sa_tokens_lock:
+        shim_server.ShimHandler.sa_tokens.clear()
+
+    service_account = {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {"name": "stable-sa", "namespace": "default"},
+    }
+    first = invoke_handler(
+        store,
+        "/api/v1/namespaces/default/serviceaccounts",
+        method="POST",
+        headers={"Authorization": "Bearer a"},
+        payload=service_account,
+    )
+    first.do_POST()
+    assert 201 in first._response_codes
+    first_obj = store.get("", "v1", "serviceaccounts", "default", "stable-sa")
+    first_annotations = first_obj.metadata.get("annotations") or {}
+    first_token = first_annotations.get("ae.apishim/token")
+    first_exp = first_annotations.get("ae.apishim/token-exp")
+    assert first_token
+    assert first_exp
+
+    reapplied = invoke_handler(
+        store,
+        "/api/v1/namespaces/default/serviceaccounts",
+        method="POST",
+        headers={"Authorization": "Bearer a"},
+        payload=service_account,
+    )
+    reapplied.do_POST()
+    assert 201 in reapplied._response_codes
+    reapplied_obj = store.get("", "v1", "serviceaccounts", "default", "stable-sa")
+    reapplied_annotations = reapplied_obj.metadata.get("annotations") or {}
+    assert reapplied_annotations.get("ae.apishim/token") == first_token
+    assert reapplied_annotations.get("ae.apishim/token-exp") == first_exp
+    with shim_server.ShimHandler.sa_tokens_lock:
+        assert shim_server.ShimHandler.sa_tokens[first_token] == (
+            "default",
+            "stable-sa",
+            float(first_exp),
+        )
+
+
+def test_serviceaccount_reapply_rotates_expired_token(monkeypatch, store):
+    monkeypatch.setenv("AE_APISHIM_RBAC", "1")
+    monkeypatch.setattr(shim_server.ShimHandler, "handle", lambda _self: None)
+    shim_server.ShimHandler.rbac_enabled = True
+    shim_server.ShimHandler.rbac_eval_roles = True
+    shim_server.ShimHandler.admin_token = "a"
+    shim_server.ShimHandler.read_token = None
+    with shim_server.ShimHandler.sa_tokens_lock:
+        shim_server.ShimHandler.sa_tokens.clear()
+
+    expired_token = "expired-service-account-token"
+    store.upsert(
+        "",
+        "v1",
+        "serviceaccounts",
+        "default",
+        "stable-sa",
+        {
+            "name": "stable-sa",
+            "namespace": "default",
+            "annotations": {
+                "ae.apishim/token": expired_token,
+                "ae.apishim/token-exp": "1",
+            },
+        },
+        {},
+    )
+    with shim_server.ShimHandler.sa_tokens_lock:
+        shim_server.ShimHandler.sa_tokens[expired_token] = ("default", "stable-sa", 1.0)
+
+    reapplied = invoke_handler(
+        store,
+        "/api/v1/namespaces/default/serviceaccounts",
+        method="POST",
+        headers={"Authorization": "Bearer a"},
+        payload={
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "metadata": {"name": "stable-sa", "namespace": "default"},
+        },
+    )
+    reapplied.do_POST()
+    assert 201 in reapplied._response_codes
+    reapplied_obj = store.get("", "v1", "serviceaccounts", "default", "stable-sa")
+    annotations = reapplied_obj.metadata.get("annotations") or {}
+    rotated_token = annotations.get("ae.apishim/token")
+    assert rotated_token
+    assert rotated_token != expired_token
+    assert float(annotations.get("ae.apishim/token-exp")) > time.time()
+    with shim_server.ShimHandler.sa_tokens_lock:
+        assert expired_token not in shim_server.ShimHandler.sa_tokens
+        assert shim_server.ShimHandler.sa_tokens[rotated_token][0:2] == ("default", "stable-sa")
 
 
 def test_apishim_rbac_exec_requires_exec_or_admin(monkeypatch, store):

@@ -3580,6 +3580,42 @@ class ShimHandler(BaseHTTPRequestHandler):
             self.sa_tokens[token] = (namespace, name, exp_ts)
         return token
 
+    def _preserve_or_issue_sa_token(
+        self, namespace: str, name: str, annotations: dict[str, Any]
+    ) -> None:
+        now = time.time()
+        existing_token = ""
+        existing_exp_raw = ""
+        existing_exp = 0.0
+        try:
+            existing = self.server.store.get(  # type: ignore[attr-defined]
+                "", "v1", "serviceaccounts", namespace, name
+            )
+        except Exception:
+            existing = None
+        if existing is not None:
+            existing_md = existing.metadata or {}
+            existing_annotations = existing_md.get("annotations") or {}
+            if isinstance(existing_annotations, dict):
+                existing_token = str(existing_annotations.get("ae.apishim/token") or "")
+                existing_exp_raw = str(existing_annotations.get("ae.apishim/token-exp") or "")
+                try:
+                    existing_exp = float(existing_exp_raw or 0)
+                except Exception:
+                    existing_exp = 0.0
+        if existing_token and existing_exp > now:
+            annotations["ae.apishim/token"] = existing_token
+            annotations["ae.apishim/token-exp"] = existing_exp_raw or str(int(existing_exp))
+            with self.sa_tokens_lock:
+                self.sa_tokens[existing_token] = (namespace, name, existing_exp)
+            return
+        if existing_token:
+            with self.sa_tokens_lock:
+                self.sa_tokens.pop(existing_token, None)
+        token = self._issue_sa_token(namespace, name)
+        annotations["ae.apishim/token"] = token
+        annotations["ae.apishim/token-exp"] = str(int(now + self.sa_token_ttl))
+
     def _rbac_allows(self, verb: str, resource: str, namespace: str | None = None) -> bool:
         if not self.rbac_enabled:
             return True
@@ -9312,11 +9348,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             # Service enrichments: allocate clusterIP/nodePort if missing and validate collisions
             if plural == "serviceaccounts":
                 annotations = md.setdefault("annotations", {})
-                token = self._issue_sa_token(ns_in or "default", name_in)
-                annotations.setdefault("ae.apishim/token", token)
-                annotations.setdefault(
-                    "ae.apishim/token-exp", str(int(time.time() + self.sa_token_ttl))
-                )
+                self._preserve_or_issue_sa_token(ns_in or "default", name_in, annotations)
             if plural == "services":
                 spec_in = dict(spec_in or {})
                 existing_svcs = self.server.store.list_all("", "v1", "services")  # type: ignore[attr-defined]
