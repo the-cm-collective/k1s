@@ -104,3 +104,58 @@ def test_caddy_byo_tls(tmp_path, monkeypatch):
     assert changed is True
     content = site_path.read_text()
     assert "tls /etc/certs/tls.crt /etc/certs/tls.key" in content
+
+
+def test_caddy_manager_quarantines_stale_generated_duplicate_host(tmp_path, monkeypatch):
+    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("ae.ingress.caddy.time.strftime", lambda *_args, **_kwargs: "20260708T220000Z")
+    manager = CaddyIngressManager(config_root=tmp_path / "sites", caddy_binary="caddy")
+    manager._config_root.mkdir(parents=True, exist_ok=True)  # noqa: SLF001
+    stale = manager._config_root / "old-namespace--demo.caddy"  # noqa: SLF001
+    stale.write_text(
+        """https://demo.local {
+    log {
+        output stdout
+        format console
+    }
+    # Ensure upstream HSTS does not stick during dev
+    header -Strict-Transport-Security
+    tls internal
+    reverse_proxy 10.0.0.10:8080
+}
+""",
+        encoding="utf-8",
+    )
+    manifest = build_manifest()
+
+    site_path, changed = manager.apply(manifest, upstream="127.0.0.1:32000")
+
+    assert changed is True
+    assert site_path == manager._config_root / "demo.caddy"  # noqa: SLF001
+    assert site_path.is_file()
+    assert not stale.exists()
+    quarantine = manager._config_root / ".ae-caddy-quarantine" / "20260708T220000Z-old-namespace--demo.caddy"  # noqa: SLF001
+    assert quarantine.is_file()
+    assert "10.0.0.10:8080" in quarantine.read_text(encoding="utf-8")
+    assert "127.0.0.1:32000" in site_path.read_text(encoding="utf-8")
+
+
+def test_caddy_manager_leaves_manual_duplicate_host_for_operator_review(tmp_path, monkeypatch):
+    monkeypatch.setattr("ae.ingress.caddy.subprocess.run", lambda *_args, **_kwargs: None)
+    manager = CaddyIngressManager(config_root=tmp_path / "sites", caddy_binary="caddy")
+    manager._config_root.mkdir(parents=True, exist_ok=True)  # noqa: SLF001
+    manual = manager._config_root / "manual.caddy"  # noqa: SLF001
+    manual.write_text(
+        """https://demo.local {
+    reverse_proxy 10.0.0.10:8080
+}
+""",
+        encoding="utf-8",
+    )
+
+    site_path, changed = manager.apply(build_manifest(), upstream="127.0.0.1:32000")
+
+    assert changed is True
+    assert site_path.is_file()
+    assert manual.is_file()
+    assert not (manager._config_root / ".ae-caddy-quarantine").exists()  # noqa: SLF001

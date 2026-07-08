@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from string import Template
@@ -62,6 +63,7 @@ class CaddyIngressManager:
             ingress, upstream, readiness_path, prefer_first, first_weight
         )
         site_path = self._site_path(app_key_for_manifest(manifest))
+        self._quarantine_duplicate_host_sites(ingress.host, keep=site_path)
         changed = True
         try:
             if site_path.exists():
@@ -304,3 +306,87 @@ class CaddyIngressManager:
 
     def _site_path(self, app_name: str) -> Path:
         return self._config_root / f"{app_name}.caddy"
+
+    def _quarantine_duplicate_host_sites(self, host: str, *, keep: Path) -> list[Path]:
+        normalized_host = _normalize_caddy_site_label(host)
+        if not normalized_host:
+            return []
+        quarantined: list[Path] = []
+        for path in sorted(self._config_root.glob("*.caddy")):
+            if path.resolve() == keep.resolve():
+                continue
+            try:
+                hosts = _caddy_site_hosts(path)
+            except OSError:
+                continue
+            if normalized_host not in hosts:
+                continue
+            if not _workerbee_generated_site(path):
+                LOGGER.warning(
+                    "Duplicate Caddy host %s also appears in non-generated site %s; "
+                    "leaving it in place for operator review",
+                    normalized_host,
+                    path,
+                )
+                continue
+            target = _quarantine_path(self._config_root, path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            path.replace(target)
+            quarantined.append(target)
+            LOGGER.info(
+                "Quarantined stale generated Caddy site %s for duplicate host %s at %s",
+                path,
+                normalized_host,
+                target,
+            )
+        return quarantined
+
+
+def _caddy_site_hosts(path: Path) -> set[str]:
+    hosts: set[str] = set()
+    brace_depth = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and brace_depth == 0 and "{" in stripped:
+            label = stripped.split("{", 1)[0]
+            for part in label.split(","):
+                host = _normalize_caddy_site_label(part)
+                if host:
+                    hosts.add(host)
+        brace_depth += line.count("{") - line.count("}")
+        brace_depth = max(brace_depth, 0)
+    return hosts
+
+
+def _normalize_caddy_site_label(label: str) -> str:
+    normalized = str(label or "").strip()
+    if "://" in normalized:
+        normalized = normalized.split("://", 1)[1]
+    if normalized.count(":") == 1:
+        normalized = normalized.rsplit(":", 1)[0]
+    return normalized.strip().lower().rstrip(".")
+
+
+def _workerbee_generated_site(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return (
+        path.name.endswith(".caddy")
+        and "Ensure upstream HSTS does not stick during dev" in text
+        and "reverse_proxy " in text
+    )
+
+
+def _quarantine_path(config_root: Path, source: Path) -> Path:
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    target = config_root / ".ae-caddy-quarantine" / f"{stamp}-{source.name}"
+    if not target.exists():
+        return target
+    suffix = 1
+    while True:
+        candidate = target.with_name(f"{target.stem}-{suffix}{target.suffix}")
+        if not candidate.exists():
+            return candidate
+        suffix += 1
