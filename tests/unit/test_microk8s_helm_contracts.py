@@ -49,6 +49,21 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _controller_env(docs: list[dict]) -> dict[str, str]:
+    deployment = next(
+        item
+        for item in docs
+        if item["kind"] == "Deployment"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-controller"
+    )
+    controller = next(
+        item
+        for item in deployment["spec"]["template"]["spec"]["containers"]
+        if item["name"] == "controller"
+    )
+    return {item["name"]: item.get("value") for item in controller["env"] if "value" in item}
+
+
 def test_core_chart_renders_expected_resources() -> None:
     chart = ROOT / "ops" / "helm" / "k1s-core-ha"
     values = ROOT / "ops" / "helm" / "examples" / "k1s-core-ha-values.microk8s.yaml"
@@ -102,6 +117,33 @@ def test_core_chart_controller_etcd_retention_env_is_operator_safe() -> None:
     assert env["AE_ETCD_EVENT_RETENTION_PRUNE_BATCH"] == "50000"
     assert env["AE_ETCD_EVENT_RETENTION_PRUNE_MAX_BATCHES"] == "100"
     assert env["AE_ETCD_EVENT_COALESCE_WINDOW_SEC"] == "300"
+
+
+def test_core_chart_edge_ingress_mode_is_values_driven() -> None:
+    chart = ROOT / "ops" / "helm" / "k1s-core-ha"
+    values = ROOT / "ops" / "helm" / "examples" / "k1s-core-ha-values.microk8s.yaml"
+    expected_core_proxy = {
+        "core-proxy": "1",
+        "core-to-edge-public": "1",
+        "edge-local": "0",
+    }
+
+    default_env = _controller_env(_helm_template(chart, values, "k1s-dev-a", "k1s-dev-a"))
+    assert default_env["EDGE_INGRESS_MODE"] == "core-proxy"
+    assert default_env["AE_EDGE_INGRESS_CORE_PROXY"] == "1"
+
+    for mode, core_proxy_enabled in expected_core_proxy.items():
+        env = _controller_env(
+            _helm_template(
+                chart,
+                values,
+                "k1s-dev-a",
+                "k1s-dev-a",
+                extra_args=["--set", f"edgeProxy.ingressMode={mode}"],
+            )
+        )
+        assert env["EDGE_INGRESS_MODE"] == mode
+        assert env["AE_EDGE_INGRESS_CORE_PROXY"] == core_proxy_enabled
 
 
 def test_core_chart_ingress_uses_apps_dash_and_docs_hosts() -> None:

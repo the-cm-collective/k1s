@@ -141,6 +141,7 @@ natsExporter:
 
 edgeProxy:
   enabled: true
+  ingressMode: core-proxy
   envoyImage:
     registry: ""
     repository: docker.io/envoyproxy/envoy

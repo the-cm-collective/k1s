@@ -1,3 +1,7 @@
+{{- $edgeIngressMode := default "core-proxy" .Values.edgeProxy.ingressMode -}}
+{{- if not (has $edgeIngressMode (list "core-proxy" "core-to-edge-public" "edge-local")) -}}
+{{- fail (printf "edgeProxy.ingressMode must be one of core-proxy, core-to-edge-public, edge-local (got %s)" $edgeIngressMode) -}}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -138,9 +142,9 @@ spec:
                   name: {{ include "k1s-core-ha.authSecretName" . }}
                   key: apishim-session-secret
             - name: EDGE_INGRESS_MODE
-              value: core-proxy
+              value: {{ $edgeIngressMode | quote }}
             - name: AE_EDGE_INGRESS_CORE_PROXY
-              value: "1"
+              value: {{ ternary "1" "0" (or (eq $edgeIngressMode "core-proxy") (eq $edgeIngressMode "core-to-edge-public")) | quote }}
             - name: AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS
               value: "1"
             - name: AE_CADDY_SITES
