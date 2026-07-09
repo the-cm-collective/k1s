@@ -38,7 +38,7 @@ from ae.controller.hpa_authority import (
     WorkloadMetricsCollector,
     WorkloadMetricsCollectorConfig,
 )
-from ae.controller.app_ingress import sync_translated_app_ingress
+from ae.controller.app_ingress import delete_translated_app_ingress, sync_translated_app_ingress
 from ae.controller.storage_authority import (
     StorageAuthorityRunner,
     build_storage_authority_store,
@@ -1369,6 +1369,45 @@ def _purge_app_from_runtime(reconciler: Reconciler, store: SQLiteStateStore, app
         pass
 
 
+def _delete_app_and_cleanup_translated_ingress(
+    store,
+    reconciler,
+    app: str,
+    purge: bool,
+    edge_renderer=None,
+) -> dict:
+    existing = store.get_registered_entry(app)
+    manifest = existing.manifest if existing is not None else None
+    if existing is not None:
+        store.delete_registered_app(
+            app,
+            expected_resource_version=existing.resource_version,
+        )
+    runtime = reconciler._runtime  # type: ignore[attr-defined]
+    removed = runtime.remove_app(app)
+    ingress = reconciler._ingress_service  # type: ignore[attr-defined]
+    if ingress is not None:
+        try:
+            ingress.remove(app)
+            ingress.reload()
+        except Exception:
+            pass
+    store.delete_app_state(app, purge_history=bool(purge))
+    translated_route_removed = delete_translated_app_ingress(
+        store,
+        manifest=manifest,
+        app_name=app,
+    )
+    if translated_route_removed:
+        _reconcile_edge_ingress(store, edge_renderer)
+    return {
+        "app": app,
+        "removed": removed,
+        "purged": bool(purge),
+        "translated_route_removed": translated_route_removed,
+    }
+
+
 def _sync_apishim_registry(
     store: SQLiteStateStore,
     reconciler: Reconciler,
@@ -2015,25 +2054,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
 
         def _delete(app: str, purge: bool):  # noqa: ANN001
             _require_mutation_authority()
-            existing = store.get_registered_entry(app)
-            if existing is not None:
-                store.delete_registered_app(
-                    app,
-                    expected_resource_version=existing.resource_version,
-                )
-            # Remove runtime containers
-            runtime = reconciler._runtime  # type: ignore[attr-defined]
-            removed = runtime.remove_app(app)
-            # Remove ingress if present
-            ingress = reconciler._ingress_service  # type: ignore[attr-defined]
-            if ingress is not None:
-                try:
-                    ingress.remove(app)
-                    ingress.reload()
-                except Exception:
-                    pass
-            store.delete_app_state(app, purge_history=bool(purge))
-            return {"app": app, "removed": removed, "purged": bool(purge)}
+            return _delete_app_and_cleanup_translated_ingress(
+                store,
+                reconciler,
+                app,
+                purge,
+                edge_renderer=_edge_renderer,
+            )
 
         def _apply(payload: dict, source: str | None = None, labels: dict | None = None):  # noqa: ANN001
             _require_mutation_authority()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 
-from ae.controller.spec import AppManifest, DEFAULT_NAMESPACE
+from ae.controller.spec import DEFAULT_NAMESPACE, AppManifest
 
 _LOG = logging.getLogger(__name__)
 _TRANSLATED_FROM = "AppManifest"
@@ -70,6 +70,37 @@ def sync_translated_app_ingress(store, *, enabled: bool | None = None) -> None: 
         if not edge_ingress_is_translated(route):
             continue
         store.delete_edge_ingress_route(name=route.name, namespace=route.namespace)
+
+
+def delete_translated_app_ingress(
+    store,
+    *,
+    manifest: AppManifest | None = None,
+    app_name: str | None = None,
+    namespace: str | None = None,
+) -> bool:  # type: ignore[no-untyped-def]
+    """Delete the controller-derived EdgeIngressRoute for one AppManifest.
+
+    This is intentionally narrower than a full translated-ingress sync. It is
+    used by the app delete path so an app removal can clean its derived route
+    immediately without touching unrelated route state.
+    """
+
+    if manifest is not None:
+        metadata = manifest.metadata
+        app_name = metadata.name
+        namespace = metadata.namespace or DEFAULT_NAMESPACE
+    app = str(app_name or "").strip()
+    ns = str(namespace or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+    if not app:
+        return False
+
+    route = store.get_edge_ingress_route(name=f"{app}-ingress", namespace=ns)
+    if route is None:
+        return False
+    if not edge_ingress_is_translated(route):
+        return False
+    return bool(store.delete_edge_ingress_route(name=route.name, namespace=route.namespace))
 
 
 def build_translated_route(manifest: AppManifest) -> dict | None:
