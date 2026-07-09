@@ -1708,6 +1708,27 @@ def _sync_translated_ingress_after_api_apply(
     return []
 
 
+def _reconcile_manifest_after_api_apply(reconciler: Reconciler, manifest: AppManifest):
+    """Run the same bounded immediate reconcile used by API apply paths."""
+
+    report = reconciler.reconcile(manifest)
+    try:
+        import os as _os, time as _t
+
+        burst = int(_os.getenv("AE_APPLY_RECONCILE_BURST", "2"))
+        delay_ms = int(_os.getenv("AE_APPLY_RECONCILE_DELAY_MS", "300"))
+        burst = max(0, burst)
+        for _ in range(burst):
+            if str(report.revision_status).lower() == "ready":
+                break
+            _t.sleep(max(0.001, delay_ms / 1000.0))
+            report = reconciler.reconcile(manifest)
+    except Exception:
+        # Best-effort only; never fail the apply on fast-follow errors.
+        pass
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via unit test paths)
     args = build_parser().parse_args(argv)
     specs_dir = Path(args.specs)
@@ -2144,6 +2165,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 expected_resource_version=(existing.resource_version if existing else None),
             )
             if authority_config.enabled:
+                report = _reconcile_manifest_after_api_apply(reconciler, manifest)
                 warnings.extend(
                     _sync_translated_ingress_after_api_apply(
                         store,
@@ -2152,30 +2174,16 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     )
                 )
                 return {
-                    "app": app_name,
-                    "status": "accepted",
+                    "app": report.app_name,
+                    "revision": report.revision,
+                    "status": report.revision_status,
                     "resourceVersion": resource_version,
+                    "created": report.created,
+                    "updated": report.updated,
+                    "removed": report.removed,
                     "warnings": warnings,
                 }
-            # First reconcile immediately
-            report = reconciler.reconcile(manifest)
-
-            # Optional fast-follow burst: perform a few short-interval reconciles
-            # to shorten the time from progressing->ready for demo/playground flows.
-            try:
-                import os as _os, time as _t
-
-                burst = int(_os.getenv("AE_APPLY_RECONCILE_BURST", "2"))
-                delay_ms = int(_os.getenv("AE_APPLY_RECONCILE_DELAY_MS", "300"))
-                burst = max(0, burst)
-                for _ in range(burst):
-                    if str(report.revision_status).lower() == "ready":
-                        break
-                    _t.sleep(max(0.001, delay_ms / 1000.0))
-                    report = reconciler.reconcile(manifest)
-            except Exception:
-                # Best-effort only; never fail the apply on fast-follow errors
-                pass
+            report = _reconcile_manifest_after_api_apply(reconciler, manifest)
 
             return {
                 "app": report.app_name,

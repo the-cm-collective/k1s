@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ae.controller.__main__ import (
+    _reconcile_manifest_after_api_apply,
     _reconcile_registry_apps_then_translated_ingress,
     _should_run_etcd_maintenance,
     _sync_translated_ingress_after_api_apply,
@@ -76,6 +77,16 @@ class _FakeAuthority:
 
     def stop(self) -> None:
         self.stopped = True
+
+
+class _FakeReport:
+    def __init__(self, *, revision_status: str) -> None:
+        self.app_name = "k1s-dev-anchor"
+        self.revision = 1
+        self.revision_status = revision_status
+        self.created = 1
+        self.updated = 0
+        self.removed = 0
 
 
 def test_should_run_etcd_maintenance_requires_leader_and_interval():
@@ -162,6 +173,25 @@ def test_registry_reconcile_runs_before_translated_ingress(monkeypatch):
         "sync",
         ("edge", "renderer"),
     ]
+
+
+def test_api_apply_reconcile_helper_runs_until_ready(monkeypatch) -> None:
+    reports = [_FakeReport(revision_status="progressing"), _FakeReport(revision_status="ready")]
+    calls = []
+
+    class Reconciler:
+        def reconcile(self, manifest):
+            calls.append(manifest.metadata.name)
+            return reports.pop(0)
+
+    monkeypatch.setenv("AE_APPLY_RECONCILE_BURST", "2")
+    monkeypatch.setenv("AE_APPLY_RECONCILE_DELAY_MS", "1")
+    manifest = build_manifest("k1s-dev-anchor")
+
+    report = _reconcile_manifest_after_api_apply(Reconciler(), manifest)
+
+    assert report.revision_status == "ready"
+    assert calls == ["k1s-dev-anchor", "k1s-dev-anchor"]
 
 
 def test_controller_once_reconciles(tmp_path, monkeypatch):
