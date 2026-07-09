@@ -5,7 +5,7 @@ import pytest
 import requests
 
 from ae.controller.agent_api import make_handler
-from ae.controller.state import SQLiteStateStore
+from ae.controller.state import ServiceEndpoint, SQLiteStateStore
 from ae.network.pod_cidr import PodCIDRAllocator
 
 
@@ -54,6 +54,85 @@ def test_heartbeat_requires_token(tmp_path):
     try:
         url = f"http://127.0.0.1:{server.server_port}/v1/heartbeat"
         resp = requests.post(url, json={"node_id": "n1"}, timeout=5)
+        assert resp.status_code == 401
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_services_snapshot_accepts_bearer_token_and_includes_endpoints(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    app = "default--k1s-dev-anchor"
+    store.upsert_service(
+        app,
+        "10.241.0.20",
+        {
+            "ports": [
+                {
+                    "name": "http",
+                    "port": 18086,
+                    "targetPort": 5678,
+                    "protocol": "TCP",
+                }
+            ]
+        },
+    )
+    store.upsert_service_endpoints(
+        app,
+        [
+            ServiceEndpoint(
+                app_name=app,
+                port=18086,
+                ip="10.210.0.12",
+                target_port=5678,
+                ready=True,
+            )
+        ],
+    )
+    server, thread = _run_server(store, token="secret")
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/services"
+        resp = requests.get(url, headers={"Authorization": "Bearer secret"}, timeout=5)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["items"] == [
+            {
+                "app": app,
+                "cluster_ip": "10.241.0.20",
+                "ports": {
+                    "ports": [
+                        {
+                            "name": "http",
+                            "port": 18086,
+                            "targetPort": 5678,
+                            "protocol": "TCP",
+                        }
+                    ]
+                },
+                "endpoints": [
+                    {
+                        "port": 18086,
+                        "ip": "10.210.0.12",
+                        "target_port": 5678,
+                        "ready": True,
+                    }
+                ],
+            }
+        ]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_services_snapshot_requires_token(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    server, thread = _run_server(store, token="secret")
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/services"
+        resp = requests.get(url, timeout=5)
         assert resp.status_code == 401
     finally:
         server.shutdown()

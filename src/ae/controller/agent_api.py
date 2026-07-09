@@ -81,6 +81,43 @@ def _serialize_nodes(store: SQLiteStateStore) -> list[dict]:
     return items
 
 
+def _serialize_services(store: SQLiteStateStore) -> list[dict]:
+    items: list[dict] = []
+    try:
+        services = store.list_services()
+    except Exception:
+        services = []
+    for svc in services:
+        try:
+            record = store.get_service(svc.app_name)
+            ports = record.ports if record is not None else {}
+        except Exception:
+            ports = {}
+        try:
+            endpoints = store.list_service_endpoints(svc.app_name)
+        except Exception:
+            endpoints = []
+        rows: list[dict] = []
+        for ep in endpoints:
+            rows.append(
+                {
+                    "port": int(ep.port),
+                    "ip": str(ep.ip),
+                    "target_port": int(ep.target_port),
+                    "ready": bool(ep.ready),
+                }
+            )
+        items.append(
+            {
+                "app": svc.app_name,
+                "cluster_ip": svc.cluster_ip,
+                "ports": dict(ports) if isinstance(ports, dict) else {},
+                "endpoints": rows,
+            }
+        )
+    return items
+
+
 def make_handler(
     store: SQLiteStateStore,
     token: str | None = None,
@@ -96,7 +133,13 @@ def make_handler(
             if not token:
                 return True
             if self.headers.get("X-Agent-Token") != token:
-                return False
+                auth = str(self.headers.get("Authorization") or "")
+                if auth.lower().startswith("bearer "):
+                    bearer = auth.split(None, 1)[1].strip()
+                    if bearer != token:
+                        return False
+                else:
+                    return False
             # Optional token expiry check
             import os as _os
             from datetime import datetime as _dt, timezone as _tz
@@ -144,6 +187,11 @@ def make_handler(
                     _json(self, 200, payload)
                 else:
                     _json(self, 200, {"nodes": _serialize_nodes(store)})
+                return
+            if self.path.split("?", 1)[0] == "/services":
+                if not self._auth_ok():
+                    return self._unauthorized()
+                _json(self, 200, {"items": _serialize_services(store)})
                 return
             _json(self, 404, {"error": "not found"})
 
