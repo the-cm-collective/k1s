@@ -91,6 +91,26 @@ def test_sync_translated_app_ingress_uses_service_port_not_target_port(
     assert route.spec["spec"]["paths"][0]["serviceRef"]["port"] == 18086
 
 
+def test_sync_translated_app_ingress_allows_annotation_mode_override(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AE_EDGE_INGRESS_MODE", "core-proxy")
+    monkeypatch.setenv("AE_EDGE_INGRESS_APP_SITE", "sea-edge-01")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    manifest = _manifest("anchor", port=5678)
+    manifest.spec.service = ServiceSpec(port=18086, targetPort=5678)
+    manifest.spec.ingress.annotations = {"k1s.io/edge-ingress-mode": "core-local"}
+    store.register_app(manifest, source="test", labels={})
+
+    sync_translated_app_ingress(store, enabled=True)
+
+    route = store.get_edge_ingress_route(name="anchor-ingress", namespace="default")
+    assert route is not None
+    assert route.site_id == "core"
+    assert route.spec["spec"]["exposure"]["mode"] == "core-local"
+    assert route.spec["spec"]["paths"][0]["serviceRef"]["port"] == 18086
+
+
 def test_sync_translated_app_ingress_uses_node_selector_site_when_env_missing(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("AE_EDGE_INGRESS_MODE", "core-proxy")
     monkeypatch.delenv("AE_EDGE_INGRESS_APP_SITE", raising=False)

@@ -175,6 +175,10 @@ def _translate_ingress_mode(manifest: AppManifest) -> str:
     if explicit_translate_mode:
         return explicit_translate_mode
 
+    annotated_mode = _manifest_ingress_mode(manifest)
+    if annotated_mode:
+        return annotated_mode
+
     if _manifest_prefers_core_local(manifest):
         return "core-local"
 
@@ -200,6 +204,26 @@ def _normalize_ingress_mode(raw: str | None) -> str | None:
         return "core-to-edge-public"
     if value in {"edge-local", "edge"}:
         return "edge-local"
+    return None
+
+
+def _manifest_ingress_mode(manifest: AppManifest) -> str | None:
+    try:
+        ingress = manifest.spec.ingress
+        annotations = (ingress.annotations or {}) if ingress else {}
+    except Exception:
+        annotations = {}
+    if not isinstance(annotations, dict):
+        return None
+    for key in (
+        "k1s.io/edge-ingress-mode",
+        "k1s.io/ingress-mode",
+        "edgeIngressMode",
+        "ingressMode",
+    ):
+        mode = _normalize_ingress_mode(annotations.get(key))
+        if mode:
+            return mode
     return None
 
 
