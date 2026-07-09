@@ -444,26 +444,25 @@ class ContainerdRuntime(PodmanRuntime):
                             tgt = by_name.get(s_name) or (
                                 by_num.get(int(portnum)) if portnum is not None else None
                             )
-                        if portnum is not None and tgt is not None:
-                            chosen, used_preferred = self._choose_service_host_port(
-                                int(portnum),
-                                reserved_ports,
-                            )
-                            if chosen is None:
-                                raise RuntimeError(
-                                    f"service.port {portnum} for app {app} is unavailable"
-                                )
-                            if not used_preferred:
-                                LOGGER.warning(
-                                    "service port %s for app %s already in use; assigning %s",
-                                    portnum,
-                                    app,
-                                    chosen,
-                                )
-                            cmd += ["-p", f"{int(chosen)}:{int(tgt)}"]
-                            published_any = True
                     except Exception:
                         continue
+                    if portnum is None or tgt is None:
+                        continue
+                    chosen, used_preferred = self._choose_service_host_port(
+                        int(portnum),
+                        reserved_ports,
+                    )
+                    if chosen is None:
+                        raise RuntimeError(f"service.port {portnum} for app {app} is unavailable")
+                    if not used_preferred:
+                        LOGGER.warning(
+                            "service port %s for app %s already in use; assigning %s",
+                            portnum,
+                            app,
+                            chosen,
+                        )
+                    cmd += ["-p", f"{int(chosen)}:{int(tgt)}"]
+                    published_any = True
             elif svc_port is not None:
                 target = int(svc_target) if svc_target is not None else int(svc_port)
                 chosen, used_preferred = self._choose_service_host_port(

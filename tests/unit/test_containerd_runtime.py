@@ -47,6 +47,24 @@ def _manifest_with_service() -> AppManifest:
     )
 
 
+def _manifest_with_service_ports() -> AppManifest:
+    return AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "store", "namespace": "workerbee-poc"},
+            "spec": {
+                "image": "localhost/workerbee-poc-store:test",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 8080}],
+                "service": {
+                    "ports": [{"name": "http", "port": 19080, "targetPort": 8080}]
+                },
+            },
+        }
+    )
+
+
 def _manifest_with_command(
     *,
     command: list[str] | None = None,
@@ -638,6 +656,37 @@ def test_containerd_runtime_publishes_service_port_exactly(monkeypatch) -> None:
     assert run_argv[run_argv.index("-p") + 1] == "19080:8080"
 
 
+def test_containerd_runtime_publishes_service_ports_exactly(monkeypatch) -> None:
+    manifest = _manifest_with_service_ports()
+    runtime = ContainerdRuntime(namespace="ae-test")
+    calls: list[list[str]] = []
+
+    def fake_run_ok(argv, *, allow_fail=False):
+        _ = allow_fail
+        calls.append(list(argv))
+        return SimpleNamespace(code=0, out="", err="")
+
+    def fake_choose(preferred, reserved_ports):
+        assert preferred == 19080
+        reserved_ports.add(preferred)
+        return preferred, True
+
+    monkeypatch.setattr(runtime, "_run_ok", fake_run_ok)
+    monkeypatch.setattr(runtime, "_container_exists", lambda _name: False)
+    monkeypatch.setattr(runtime, "_choose_service_host_port", fake_choose)
+
+    runtime._create_container(
+        manifest,
+        "workerbee-poc--store-rev1-0",
+        1,
+        service=(None, None, list(manifest.spec.service.ports)),
+    )
+
+    run_argv = calls[-1]
+    assert "-p" in run_argv
+    assert run_argv[run_argv.index("-p") + 1] == "19080:8080"
+
+
 def test_containerd_runtime_raises_when_service_port_unavailable(monkeypatch) -> None:
     manifest = _manifest_with_service()
     runtime = ContainerdRuntime(namespace="ae-test")
@@ -662,6 +711,27 @@ def test_containerd_runtime_raises_when_service_port_unavailable(monkeypatch) ->
             "workerbee-poc--store-rev1-0",
             1,
             service=(19080, 8080, None),
+        )
+
+
+def test_containerd_runtime_raises_when_service_ports_unavailable(monkeypatch) -> None:
+    manifest = _manifest_with_service_ports()
+    runtime = ContainerdRuntime(namespace="ae-test")
+
+    monkeypatch.setattr(
+        runtime,
+        "_run_ok",
+        lambda *_args, **_kwargs: SimpleNamespace(code=0, out="", err=""),
+    )
+    monkeypatch.setattr(runtime, "_container_exists", lambda _name: False)
+    monkeypatch.setattr(runtime, "_choose_service_host_port", lambda *_args, **_kwargs: (None, False))
+
+    with pytest.raises(RuntimeError, match="service.port 19080"):
+        runtime._create_container(
+            manifest,
+            "workerbee-poc--store-rev1-0",
+            1,
+            service=(None, None, list(manifest.spec.service.ports)),
         )
 
 
