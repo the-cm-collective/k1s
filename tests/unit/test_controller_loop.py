@@ -3,7 +3,11 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from ae.controller.__main__ import _should_run_etcd_maintenance, main
+from ae.controller.__main__ import (
+    _reconcile_registry_apps_then_translated_ingress,
+    _should_run_etcd_maintenance,
+    main,
+)
 from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata, ServiceSpec
 from ae.controller.state import SQLiteStateStore
 
@@ -114,6 +118,49 @@ def test_should_run_etcd_maintenance_requires_leader_and_interval():
         )
         is False
     )
+
+
+def test_registry_reconcile_runs_before_translated_ingress(monkeypatch):
+    calls = []
+
+    class Store:
+        def list_registered_apps(self):
+            calls.append("list")
+            return ["entry"]
+
+    def materialize(_store, entries):
+        calls.append(("materialize", tuple(entries)))
+        return ["manifest"]
+
+    def reconcile_all(_reconciler, manifests, *, should_continue=None):
+        calls.append(("reconcile", tuple(manifests), should_continue))
+
+    monkeypatch.setattr("ae.controller.__main__.materialize_registry_manifests", materialize)
+    monkeypatch.setattr("ae.controller.__main__._reconcile_all", reconcile_all)
+    monkeypatch.setattr(
+        "ae.controller.__main__.sync_translated_app_ingress",
+        lambda _store: calls.append("sync"),
+    )
+    monkeypatch.setattr(
+        "ae.controller.__main__._reconcile_edge_ingress",
+        lambda _store, edge_renderer=None: calls.append(("edge", edge_renderer)),
+    )
+
+    entries = _reconcile_registry_apps_then_translated_ingress(
+        Store(),
+        object(),
+        edge_renderer="renderer",
+        should_continue="leader-check",
+    )
+
+    assert entries == ["entry"]
+    assert calls == [
+        "list",
+        ("materialize", ("entry",)),
+        ("reconcile", ("manifest",), "leader-check"),
+        "sync",
+        ("edge", "renderer"),
+    ]
 
 
 def test_controller_once_reconciles(tmp_path, monkeypatch):

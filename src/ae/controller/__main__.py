@@ -1657,6 +1657,30 @@ def _reconcile_all(
                 pass
 
 
+def _reconcile_registry_apps_then_translated_ingress(
+    store: SQLiteStateStore,
+    reconciler: Reconciler,
+    *,
+    edge_renderer=None,
+    should_continue=None,
+) -> list:
+    try:
+        entries = store.list_registered_apps()
+    except Exception:
+        entries = []
+    _reconcile_all(
+        reconciler,
+        materialize_registry_manifests(store, entries),
+        should_continue=should_continue,
+    )
+    try:
+        sync_translated_app_ingress(store)
+        _reconcile_edge_ingress(store, edge_renderer)
+    except Exception:
+        pass
+    return entries
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via unit test paths)
     args = build_parser().parse_args(argv)
     specs_dir = Path(args.specs)
@@ -2989,18 +3013,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 _sync_apishim_registry(store, reconciler)
             except Exception:
                 pass
-        try:
-            sync_translated_app_ingress(store)
-            _reconcile_edge_ingress(store, _edge_renderer)
-        except Exception:
-            pass
-        try:
-            entries = store.list_registered_apps()
-        except Exception:
-            entries = []
-        _reconcile_all(
+        entries = _reconcile_registry_apps_then_translated_ingress(
+            store,
             reconciler,
-            materialize_registry_manifests(store, entries),
+            edge_renderer=_edge_renderer,
             should_continue=(
                 (lambda: authority is None or authority.snapshot().is_leader)
                 if authority_config.enabled
@@ -3178,18 +3194,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                         _sync_apishim_registry(store, reconciler)
                     except Exception:
                         pass
-                try:
-                    sync_translated_app_ingress(store)
-                    _reconcile_edge_ingress(store, _edge_renderer)
-                except Exception:
-                    pass
-                try:
-                    entries = store.list_registered_apps()
-                except Exception:
-                    entries = []
-                _reconcile_all(
+                entries = _reconcile_registry_apps_then_translated_ingress(
+                    store,
                     reconciler,
-                    materialize_registry_manifests(store, entries),
+                    edge_renderer=_edge_renderer,
                     should_continue=(
                         (lambda: authority is None or authority.snapshot().is_leader)
                         if authority_config.enabled
