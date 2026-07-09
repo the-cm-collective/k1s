@@ -458,21 +458,6 @@ class AgentHandler(BaseHTTPRequestHandler):
                     return
                 manifest = _parse_manifest(payload.get("manifest", {}))
                 pod_names = payload.get("pod_names") or payload.get("replica_ids")
-                if status == "duplicate":
-                    duplicate_result = _duplicate_runtime_result(
-                        self.runtime,
-                        manifest,
-                        int(payload.get("revision", 0)),
-                        pod_names=[str(name) for name in pod_names if name]
-                        if isinstance(pod_names, list)
-                        else None,
-                    )
-                    _json_response(
-                        self,
-                        200,
-                        _result_to_dict(duplicate_result) | {"ok": True, "duplicate": True},
-                    )
-                    return
                 replica_id = None
                 if isinstance(pod_names, list) and len(pod_names) == 1:
                     replica_id = pod_names[0]
@@ -505,8 +490,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                                 removed=0,
                                 pod_states=pending_states,
                             )
-                            self._commit_mutation(scope, envelope)
-                            _json_response(self, 200, _result_to_dict(result))
+                            if status != "duplicate":
+                                self._commit_mutation(scope, envelope)
+                            _json_response(
+                                self,
+                                200,
+                                _result_to_dict(result)
+                                | ({"ok": True, "duplicate": True} if status == "duplicate" else {}),
+                            )
                             return
                         raise
                 result = self.runtime.ensure_app(
@@ -517,20 +508,27 @@ class AgentHandler(BaseHTTPRequestHandler):
                     pod_names=pod_names,
                     node_id=payload.get("node_id"),
                 )
-                self._commit_mutation(scope, envelope)
-                _json_response(self, 200, _result_to_dict(result))
+                if status != "duplicate":
+                    self._commit_mutation(scope, envelope)
+                _json_response(
+                    self,
+                    200,
+                    _result_to_dict(result)
+                    | ({"ok": True, "duplicate": True} if status == "duplicate" else {}),
+                )
                 return
             if self.path == "/v1/remove_app":
                 scope = self._fence_scope("runtime")
                 status, envelope, _decision = self._begin_mutation(payload, scope)
                 if status == "reject":
                     return
-                if status == "duplicate":
-                    _json_response(self, 200, {"removed": 0, "ok": True, "duplicate": True})
-                    return
                 removed = self.runtime.remove_app(payload.get("app", ""))
-                self._commit_mutation(scope, envelope)
-                _json_response(self, 200, {"removed": removed})
+                if status != "duplicate":
+                    self._commit_mutation(scope, envelope)
+                body = {"removed": removed}
+                if status == "duplicate":
+                    body.update({"ok": True, "duplicate": True})
+                _json_response(self, 200, body)
                 return
             if self.path == "/v1/remove_old":
                 scope = self._fence_scope("runtime")

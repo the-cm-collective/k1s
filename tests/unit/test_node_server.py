@@ -279,7 +279,7 @@ def test_exec_inspect_ignores_client_disconnect_without_error_log(caplog) -> Non
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
-def test_ensure_app_duplicate_rehydrates_current_state_after_restart(
+def test_ensure_app_duplicate_runs_idempotent_runtime_reconcile(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
@@ -331,23 +331,17 @@ def test_ensure_app_duplicate_rehydrates_current_state_after_restart(
 
     AgentHandler.do_POST(handler)  # type: ignore[arg-type]
 
-    assert runtime.ensure_calls == 0
+    assert runtime.ensure_calls == 1
     body = json.loads(wfile.getvalue().decode("utf-8"))
     assert body["duplicate"] is True
-    assert body["pod_states"] == [
-        {
-            "pod_name": "default/demo-rev3-0",
-            "replica_id": "default/demo-rev3-0",
-            "ready": True,
-            "status": "running",
-            "revision": 3,
-            "endpoint": None,
-        }
-    ]
+    assert body["created"] == 1
+    assert body["pod_states"] == []
     assert handler.status_codes == [200]
 
 
-def test_ensure_app_duplicate_preserves_cri_pod_ip_endpoint(tmp_path: Path, monkeypatch) -> None:
+def test_ensure_app_duplicate_for_cri_runtime_runs_idempotent_reconcile(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("AE_HA_MODE", "1")
     fence_path = tmp_path / "fence.db"
     AgentHandler.fence_store = SQLiteFenceStore(fence_path)
@@ -403,11 +397,45 @@ def test_ensure_app_duplicate_preserves_cri_pod_ip_endpoint(tmp_path: Path, monk
 
     AgentHandler.do_POST(handler)  # type: ignore[arg-type]
 
-    assert runtime.ensure_calls == 0
+    assert runtime.ensure_calls == 1
     body = json.loads(wfile.getvalue().decode("utf-8"))
     assert body["duplicate"] is True
-    assert body["pod_states"][0]["endpoint"] == "10.241.214.134:8080"
-    assert body["pod_states"][0]["ready"] is True
+    assert body["created"] == 1
+    assert handler.status_codes == [200]
+
+
+def test_remove_app_duplicate_still_runs_idempotent_runtime_cleanup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AE_HA_MODE", "1")
+    fence_path = tmp_path / "fence.db"
+    AgentHandler.fence_store = SQLiteFenceStore(fence_path)
+    AgentHandler.fence_store.init()
+    AgentHandler.fence_store.commit(
+        "runtime:node-test",
+        MutationEnvelope("ctrl-a", 7, "delete:demo:7:node-test"),
+    )
+
+    runtime = _RuntimeStub()
+    wfile = io.BytesIO()
+    handler = _JsonBodyHandler(
+        path="/v1/remove_app",
+        payload={
+            "app": "demo",
+            "controller_id": "ctrl-a",
+            "controller_epoch": 7,
+            "operation_id": "delete:demo:7:node-test",
+        },
+        wfile=wfile,
+        runtime=runtime,
+    )
+
+    AgentHandler.do_POST(handler)  # type: ignore[arg-type]
+
+    assert runtime.remove_calls == 1
+    body = json.loads(wfile.getvalue().decode("utf-8"))
+    assert body["duplicate"] is True
+    assert body["removed"] == 1
     assert handler.status_codes == [200]
 
 
