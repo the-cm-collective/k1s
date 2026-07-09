@@ -1685,6 +1685,29 @@ def _reconcile_registry_apps_then_translated_ingress(
     return entries
 
 
+def _sync_translated_ingress_after_api_apply(
+    store: SQLiteStateStore,
+    manifest: AppManifest,
+    *,
+    edge_renderer=None,
+) -> list[str]:
+    """Best-effort derived ingress sync for HA API apply.
+
+    HA API apply returns before the normal reconcile loop can run. Keep the
+    derived EdgeIngressRoute path current for app manifests so route readback
+    does not depend on the next periodic leader tick.
+    """
+
+    if getattr(manifest.spec, "ingress", None) is None:
+        return []
+    try:
+        sync_translated_app_ingress(store)
+        _reconcile_edge_ingress(store, edge_renderer)
+    except Exception as exc:  # noqa: BLE001
+        return [f"translated app ingress sync failed: {exc}"]
+    return []
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via unit test paths)
     args = build_parser().parse_args(argv)
     specs_dir = Path(args.specs)
@@ -2121,6 +2144,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 expected_resource_version=(existing.resource_version if existing else None),
             )
             if authority_config.enabled:
+                warnings.extend(
+                    _sync_translated_ingress_after_api_apply(
+                        store,
+                        manifest,
+                        edge_renderer=_edge_renderer,
+                    )
+                )
                 return {
                     "app": app_name,
                     "status": "accepted",
