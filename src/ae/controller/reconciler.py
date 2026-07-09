@@ -1464,6 +1464,22 @@ class Reconciler:
                 pass
         return total
 
+    def remove_app_across_runtimes(self, app_name: str) -> int:
+        """Remove an app from the local runtime and registered node-agent runtimes."""
+
+        total = 0
+        seen: set[int] = set()
+        for rt in self._rollout_observation_runtimes():
+            ident = id(rt)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            try:
+                total += int(rt.remove_app(app_name))
+            except Exception:
+                pass
+        return total
+
     def _rollout_observation_runtimes(self) -> list[RuntimeAdapter]:
         runtimes: list[RuntimeAdapter] = []
         seen: set[int] = set()

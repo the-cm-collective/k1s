@@ -1383,8 +1383,12 @@ def _delete_app_and_cleanup_translated_ingress(
             app,
             expected_resource_version=existing.resource_version,
         )
-    runtime = reconciler._runtime  # type: ignore[attr-defined]
-    removed = runtime.remove_app(app)
+    remove_all = getattr(reconciler, "remove_app_across_runtimes", None)
+    if callable(remove_all):
+        removed = remove_all(app)
+    else:
+        runtime = reconciler._runtime  # type: ignore[attr-defined]
+        removed = runtime.remove_app(app)
     ingress = reconciler._ingress_service  # type: ignore[attr-defined]
     if ingress is not None:
         try:

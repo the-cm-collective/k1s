@@ -33,6 +33,18 @@ class _Reconciler:
         self._runtime = _Runtime()
         self._ingress_service = _Ingress()
 
+    def remove_app_across_runtimes(self, app_name: str) -> int:
+        return self._runtime.remove_app(app_name)
+
+
+class _MultiRuntimeReconciler(_Reconciler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.remote_runtime = _Runtime()
+
+    def remove_app_across_runtimes(self, app_name: str) -> int:
+        return self._runtime.remove_app(app_name) + self.remote_runtime.remove_app(app_name)
+
 
 class _Renderer:
     def __init__(self) -> None:
@@ -125,3 +137,25 @@ def test_delete_app_preserves_explicit_edge_route(tmp_path, monkeypatch) -> None
     assert route is not None
     assert route.spec["spec"]["host"] == "explicit.apps.home.arpa"
     assert renderer.calls == 0
+
+
+def test_delete_app_removes_remote_node_runtime_replicas(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AE_EDGE_INGRESS_MODE", "core-proxy")
+    monkeypatch.setenv("AE_EDGE_INGRESS_APP_SITE", "sfo-edge-01")
+    store = SQLiteStateStore(tmp_path / "state.db")
+    store.register_app(_manifest("echo"), source="test", labels={})
+    sync_translated_app_ingress(store, enabled=True)
+    reconciler = _MultiRuntimeReconciler()
+    renderer = _Renderer()
+
+    result = _delete_app_and_cleanup_translated_ingress(
+        store,
+        reconciler,
+        "echo",
+        True,
+        edge_renderer=renderer,
+    )
+
+    assert result["removed"] == 2
+    assert reconciler._runtime.removed == ["echo"]
+    assert reconciler.remote_runtime.removed == ["echo"]
