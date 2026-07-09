@@ -3,8 +3,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ae.controller.spec import app_key
-from ae.controller.state import ServiceEndpoint, SQLiteStateStore
+from ae.controller.health import HealthReport, PodHealth
+from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata, ServiceSpec, app_key
+from ae.controller.state import PodStatus, ServiceEndpoint, SQLiteStateStore
 from ae.ingress import _atomic as atomic_writes
 from ae.ingress.edge_core_proxy import (
     EdgeCoreProxyConfig,
@@ -24,6 +25,7 @@ from ae.ingress.rathole import (
     RatholeServerService,
     write_rathole_server,
 )
+from ae.runtime import PodState, RuntimeResult
 
 
 def _find_vhost(vhosts: list[dict], domain: str) -> dict:
@@ -218,6 +220,138 @@ def test_envoy_core_local_ingress_uses_service_port_hint_with_target_port(
         item
         for item in payload["static_resources"]["clusters"]
         if item["name"] == "core_default_k1s-dev-anchor_18086"
+    )
+    endpoints = cluster["load_assignment"]["endpoints"][0]["lb_endpoints"]
+    assert endpoints[0]["endpoint"]["address"]["socket_address"] == {
+        "address": "10.210.0.12",
+        "port_value": 5678,
+    }
+
+
+def test_envoy_core_local_ingress_falls_back_to_pod_target_port_for_service_port_hint(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(db_path=tmp_path / "state.db")
+
+    app_name = app_key("k1s-dev-anchor", "default")
+    store.upsert_service(
+        app_name,
+        "10.241.0.20",
+        {
+            "ports": [
+                {
+                    "name": "http",
+                    "port": 18087,
+                    "targetPort": 5678,
+                    "protocol": "TCP",
+                }
+            ]
+        },
+    )
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="k1s-dev-anchor", namespace="default"),
+        spec=AppSpec(
+            image="hashicorp/http-echo:1.0",
+            replicas=1,
+            ingress=IngressSpec(host="demo.apps.k1s-dev-a.core.home.arpa", path="/"),
+            service=ServiceSpec(port=18087, targetPort=5678),
+        ),
+    )
+    store.record_snapshot(
+        manifest,
+        RuntimeResult(
+            revision=1,
+            created=1,
+            updated=0,
+            removed=0,
+            pod_states=[
+                PodState(
+                    pod_name="k1s-dev-anchor-rev1-0",
+                    ready=True,
+                    endpoint="10.210.0.12:5678",
+                )
+            ],
+        ),
+        HealthReport(
+            ready_replicas=1,
+            live_replicas=1,
+            pods=[
+                PodHealth(
+                    pod_name="k1s-dev-anchor-rev1-0",
+                    ready=True,
+                    live=True,
+                    readiness_message="ok",
+                    liveness_message="ok",
+                )
+            ],
+        ),
+        revision=1,
+        revision_status="ready",
+    )
+    store.upsert_edge_ingress_route(
+        name="k1s-dev-anchor-ingress",
+        namespace="default",
+        site_id="core",
+        policy_name=None,
+        policy_namespace=None,
+        document={
+            "apiVersion": "k1s.io/v1",
+            "kind": "EdgeIngressRoute",
+            "metadata": {"name": "k1s-dev-anchor-ingress", "namespace": "default"},
+            "spec": {
+                "host": "demo.apps.k1s-dev-a.core.home.arpa",
+                "paths": [
+                    {
+                        "path": "/",
+                        "serviceRef": {
+                            "name": "k1s-dev-anchor",
+                            "namespace": "default",
+                            "port": 18087,
+                        },
+                    }
+                ],
+                "exposure": {"mode": "core-local"},
+            },
+        },
+    )
+
+    cfg = EdgeCoreProxyConfig(
+        config_dir=tmp_path / "edge-ingress",
+        envoy_config_path=tmp_path / "edge-ingress" / "envoy.yaml",
+        rathole_server_path=tmp_path / "edge-ingress" / "rathole-server.toml",
+        rathole_client_dir=None,
+        site_domain_suffix="home.arpa",
+        http_listen_port=10080,
+        tls_listen_port=None,
+        tls_root=tmp_path / "tls",
+        tls_default_secret=None,
+        tls_fallback=False,
+        tls_fallback_cn="edge.local",
+        tls_fallback_days=7,
+        rathole_bind_addr="0.0.0.0:2333",
+        rathole_default_token="dev",
+        rathole_server_addr="127.0.0.1:2333",
+        edge_local_addr="127.0.0.1:18081",
+        reload_cmd=None,
+    )
+    EdgeCoreProxyRenderer(store, cfg).render()
+
+    payload = yaml.safe_load(cfg.envoy_config_path.read_text(encoding="utf-8"))
+    hcm_http = payload["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]
+    vhost = _find_vhost(
+        hcm_http["route_config"]["virtual_hosts"], "demo.apps.k1s-dev-a.core.home.arpa"
+    )
+    route = _find_route(vhost, "/")
+    assert route["route"]["cluster"] == "core_default_k1s-dev-anchor_18087"
+
+    cluster = next(
+        item
+        for item in payload["static_resources"]["clusters"]
+        if item["name"] == "core_default_k1s-dev-anchor_18087"
     )
     endpoints = cluster["load_assignment"]["endpoints"][0]["lb_endpoints"]
     assert endpoints[0]["endpoint"]["address"]["socket_address"] == {

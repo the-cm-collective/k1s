@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
 import fcntl
+import hashlib
+import logging
 import os
+import shutil
 import subprocess
 import threading
-import logging
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ae.controller.state import SiteIngressListItem, SQLiteStateStore
 from ae.controller.spec import app_key
+from ae.controller.state import SiteIngressListItem, SQLiteStateStore
 from ae.ingress.edge_docs import normalize_route_doc
 from ae.ingress.envoy_core_proxy import (
     CoreProxyCluster,
@@ -23,7 +23,6 @@ from ae.ingress.envoy_core_proxy import (
     EnvoyRenderConfig,
     write_envoy_config,
 )
-from ae.ingress.tls_sync import TlsSecretResolver
 from ae.ingress.rathole import (
     RatholeClientConfig,
     RatholeClientService,
@@ -32,6 +31,7 @@ from ae.ingress.rathole import (
     write_rathole_client,
     write_rathole_server,
 )
+from ae.ingress.tls_sync import TlsSecretResolver
 
 LOGGER = logging.getLogger(__name__)
 _ALLOWED_CLUSTER_LB_POLICIES = {"ROUND_ROBIN", "LEAST_REQUEST", "RING_HASH"}
@@ -756,6 +756,7 @@ def _resolve_core_local_endpoints(
     svc_ns = str(service_ref.get("namespace") or namespace or "default").strip() or "default"
     app_name = app_key(name, svc_ns)
     svc_port = port_hint or _service_port_from_store(store, app_name)
+    target_port = _service_target_port_from_store(store, app_name, svc_port)
     endpoints: list[tuple[str, int]] = []
     try:
         eps = store.list_service_endpoints(app_name)
@@ -780,7 +781,8 @@ def _resolve_core_local_endpoints(
         host, port = _split_host_port(str(endpoint))
         if host is None or port is None:
             continue
-        if svc_port is not None and int(port) != int(svc_port):
+        expected_port = target_port or svc_port
+        if expected_port is not None and int(port) != int(expected_port):
             continue
         endpoints.append((host, int(port)))
     return endpoints
@@ -802,6 +804,41 @@ def _service_port_from_store(store: SQLiteStateStore, app_name: str) -> int | No
     raw = svc.ports.get("port")
     try:
         return int(raw) if raw is not None else None
+    except Exception:
+        return None
+
+
+def _service_target_port_from_store(
+    store: SQLiteStateStore,
+    app_name: str,
+    service_port: int | None = None,
+) -> int | None:
+    try:
+        svc = store.get_service(app_name)
+    except Exception:
+        svc = None
+    if not svc or not isinstance(svc.ports, dict):
+        return None
+    ports = svc.ports.get("ports") if isinstance(svc.ports.get("ports"), list) else []
+    for item in ports:
+        try:
+            port = int(item.get("port"))
+        except Exception:
+            port = None
+        if service_port is not None and port is not None and port != int(service_port):
+            continue
+        raw_target = item.get("targetPort")
+        if raw_target is None:
+            raw_target = item.get("target_port")
+        try:
+            return int(raw_target) if raw_target is not None else port
+        except Exception:
+            return port
+    raw_target = svc.ports.get("targetPort")
+    if raw_target is None:
+        raw_target = svc.ports.get("target_port")
+    try:
+        return int(raw_target) if raw_target is not None else None
     except Exception:
         return None
 
