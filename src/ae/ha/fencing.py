@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import socket
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -282,8 +282,8 @@ def route_operation(site_id: str, bundle_rev: int, controller_epoch: int) -> str
     return f"route:{site_id}:{int(bundle_rev)}:{int(controller_epoch)}"
 
 
-def ensure_operation(app_name: str, revision: int, node_id: str) -> str:
-    return f"ensure:{app_name}:{int(revision)}:{node_id}"
+def ensure_operation(app_name: str, revision: int, node_id: str, controller_epoch: int) -> str:
+    return f"ensure:{app_name}:{int(revision)}:{int(controller_epoch)}:{node_id}"
 
 
 def gc_operation(app_name: str, keep_revision: int, node_id: str) -> str:

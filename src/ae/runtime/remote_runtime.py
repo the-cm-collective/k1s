@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.ha.fencing import (
     delete_operation,
     ensure_operation,
@@ -23,7 +24,6 @@ from ae.ha.fencing import (
     merge_envelope,
     resolve_controller_identity,
 )
-from ae.controller.spec import AppManifest, app_key_for_manifest
 
 from .base import PodState, RuntimeAdapter, RuntimeResult, WorkloadMetricSample
 
@@ -220,6 +220,7 @@ class RemoteRuntime(RuntimeAdapter):
                 app_key_for_manifest(manifest),
                 revision,
                 str(node_id or self._node_id or ""),
+                identity.controller_epoch,
             ),
             identity=identity,
         )
