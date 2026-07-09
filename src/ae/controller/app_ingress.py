@@ -239,6 +239,15 @@ def _translate_ingress_tls(ingress) -> dict | None:  # type: ignore[no-untyped-d
 
 def _translate_ingress_port(manifest: AppManifest) -> int | None:
     try:
+        service = manifest.spec.service
+        if service:
+            if service.ports:
+                return int(service.ports[0].port)
+            if service.port:
+                return int(service.port)
+    except Exception:
+        pass
+    try:
         if manifest.spec.health and manifest.spec.health.readiness:
             readiness = manifest.spec.health.readiness
             if getattr(readiness, "http_get", None) is not None:
