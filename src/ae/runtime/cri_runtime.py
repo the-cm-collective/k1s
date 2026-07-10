@@ -3159,8 +3159,12 @@ class CRIRuntime(RuntimeAdapter):
             port_map = self._port_assignments.get(str(replica_id), {})
             host_port = port_map.get(preferred_port)
             if host_port:
-                host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
-                return f"{host}:{int(host_port)}"
+                host = os.getenv("AE_NODE_ADVERTISE_IP")
+                if host:
+                    return f"{host}:{int(host_port)}"
+                if pod_ip:
+                    return f"{pod_ip}:{preferred_port}"
+                return f"127.0.0.1:{int(host_port)}"
         if bool(getattr(manifest.spec, "host_network", False)):
             endpoint = self._endpoint_for_host_network(manifest, preferred_port)
             if endpoint:

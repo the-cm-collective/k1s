@@ -394,6 +394,64 @@ def test_cri_runtime_prefers_advertised_host_port_endpoint(
     assert endpoint == "192.168.29.148:32080"
 
 
+def test_cri_runtime_prefers_pod_ip_when_host_port_would_be_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "docker.io/library/demo-shell:latest",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 5678}],
+                "service": {"ports": [{"name": "http", "port": 18087, "targetPort": 5678}]},
+            },
+        }
+    )
+    runtime._port_assignments["default/demo-rev1-0"] = {5678: 18087}
+    monkeypatch.delenv("AE_NODE_ADVERTISE_IP", raising=False)
+
+    endpoint = runtime._endpoint_for_manifest(
+        manifest,
+        "10.42.0.14",
+        replica_id="default/demo-rev1-0",
+    )
+
+    assert endpoint == "10.42.0.14:5678"
+
+
+def test_cri_runtime_falls_back_to_loopback_host_port_without_pod_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "docker.io/library/demo-shell:latest",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 5678}],
+                "service": {"ports": [{"name": "http", "port": 18087, "targetPort": 5678}]},
+            },
+        }
+    )
+    runtime._port_assignments["default/demo-rev1-0"] = {5678: 18087}
+    monkeypatch.delenv("AE_NODE_ADVERTISE_IP", raising=False)
+
+    endpoint = runtime._endpoint_for_manifest(
+        manifest,
+        None,
+        replica_id="default/demo-rev1-0",
+    )
+
+    assert endpoint == "127.0.0.1:18087"
+
+
 def test_cri_runtime_service_ready_for_manifest_uses_http_readiness(monkeypatch) -> None:
     runtime = CRIRuntime(node_id="hub-1")
     manifest = AppManifest.model_validate(
