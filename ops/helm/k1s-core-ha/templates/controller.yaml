@@ -58,6 +58,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: AE_NODE_ADVERTISE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
             - name: AE_HA_MODE
               value: "1"
             - name: AE_STATE_BACKEND

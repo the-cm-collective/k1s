@@ -64,6 +64,21 @@ def _controller_env(docs: list[dict]) -> dict[str, str]:
     return {item["name"]: item.get("value") for item in controller["env"] if "value" in item}
 
 
+def _controller_env_entries(docs: list[dict]) -> dict[str, dict]:
+    deployment = next(
+        item
+        for item in docs
+        if item["kind"] == "Deployment"
+        and item["metadata"]["name"] == "k1s-dev-a-k1s-core-ha-controller"
+    )
+    controller = next(
+        item
+        for item in deployment["spec"]["template"]["spec"]["containers"]
+        if item["name"] == "controller"
+    )
+    return {item["name"]: item for item in controller["env"]}
+
+
 def test_core_chart_renders_expected_resources() -> None:
     chart = ROOT / "ops" / "helm" / "k1s-core-ha"
     values = ROOT / "ops" / "helm" / "examples" / "k1s-core-ha-values.microk8s.yaml"
@@ -84,6 +99,15 @@ def test_core_chart_renders_expected_resources() -> None:
     assert ("Certificate", "k1s-dev-a-ingress-tls") in kinds
     assert ("ServiceMonitor", "k1s-dev-a-k1s-core-ha-controller") in kinds
     assert ("PrometheusRule", "k1s-dev-a-k1s-core-ha") in kinds
+
+
+def test_core_chart_controller_advertises_node_host_ip_for_service_endpoints() -> None:
+    chart = ROOT / "ops" / "helm" / "k1s-core-ha"
+    values = ROOT / "ops" / "helm" / "examples" / "k1s-core-ha-values.microk8s.yaml"
+    docs = _helm_template(chart, values, "k1s-dev-a", "k1s-dev-a")
+    env = _controller_env_entries(docs)
+
+    assert env["AE_NODE_ADVERTISE_IP"]["valueFrom"]["fieldRef"]["fieldPath"] == "status.hostIP"
 
 
 def test_core_chart_controller_etcd_retention_env_is_operator_safe() -> None:
