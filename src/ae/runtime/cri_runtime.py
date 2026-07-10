@@ -75,6 +75,7 @@ class CRIRuntime(RuntimeAdapter):
     REVISION_LABEL = "ae.revision"
     CONTAINER_LABEL = "ae.container"
     JOB_ATTEMPT_LABEL = "ae.job_attempt"
+    PORT_MAP_ANNOTATION = "ae.port_map"
     SANDBOX_RECOVERY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
     SANDBOX_CLEANUP_SETTLE_SECONDS = 0.5
     RESERVED_NAME_RECOVERY_TIMEOUT_SECONDS = 30.0
@@ -288,7 +289,11 @@ class CRIRuntime(RuntimeAdapter):
                 if c_status:
                     running = self._is_container_running(c_status)
                     started_at = self._timestamp_iso(getattr(c_status, "started_at", None))
-                port_map = self._port_assignments.get(str(replica_id), {})
+                port_map = self._port_assignments.get(
+                    str(replica_id), {}
+                ) or self._port_map_from_pod(pod, status=status)
+                if port_map:
+                    self._port_assignments[str(replica_id)] = port_map
                 out.append(
                     {
                         "name": replica_id or "",
@@ -916,6 +921,55 @@ class CRIRuntime(RuntimeAdapter):
             return out
         return {}
 
+    def _pod_annotations(self, pod: Any, status: Any | None = None) -> dict[str, str]:
+        candidates = [
+            getattr(pod, "annotations", None),
+            getattr(status, "annotations", None) if status is not None else None,
+        ]
+        meta = getattr(pod, "metadata", None)
+        if meta is not None:
+            candidates.append(getattr(meta, "annotations", None))
+        status_meta = getattr(status, "metadata", None) if status is not None else None
+        if status_meta is not None:
+            candidates.append(getattr(status_meta, "annotations", None))
+        for annotations in candidates:
+            if annotations:
+                return {str(k): str(v) for k, v in dict(annotations).items()}
+        return {}
+
+    def _port_map_annotation(self, port_map: dict[int, int]) -> dict[str, str]:
+        if not port_map:
+            return {}
+        return {
+            self.PORT_MAP_ANNOTATION: json.dumps(
+                {str(int(k)): int(v) for k, v in port_map.items()},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        }
+
+    def _port_map_from_pod(self, pod: Any, *, status: Any | None = None) -> dict[int, int]:
+        raw = str(self._pod_annotations(pod, status=status).get(self.PORT_MAP_ANNOTATION) or "")
+        if not raw.strip():
+            return {}
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        out: dict[int, int] = {}
+        for key, value in payload.items():
+            try:
+                container_port = int(key)
+                host_port = int(value)
+            except Exception:
+                continue
+            if container_port <= 0 or host_port <= 0:
+                continue
+            out[container_port] = host_port
+        return out
+
     def _pod_status(self, pod_id: str | None):
         if not pod_id:
             return None
@@ -1401,6 +1455,7 @@ class CRIRuntime(RuntimeAdapter):
         pod_config = pb2.PodSandboxConfig(
             metadata=pod_meta,
             labels=labels,
+            annotations=self._port_map_annotation(port_map),
             log_directory=self._pod_log_dir(ns, replica_id, pod_uid),
             port_mappings=port_mappings,
         )
@@ -3064,7 +3119,13 @@ class CRIRuntime(RuntimeAdapter):
                 ready = (
                     exit_code == 0 and status == "exited" if is_job else status == "running"
                 )
-            endpoint = self._endpoint_for_manifest(manifest, pod_ip, replica_id=str(pod_name))
+            endpoint = self._endpoint_for_manifest(
+                manifest,
+                pod_ip,
+                replica_id=str(pod_name),
+                pod=pod,
+                pod_status=pod_status,
+            )
             if c_status and status == "running" and not is_job:
                 ready = self._service_ready_for_manifest(manifest, endpoint)
             states.append(
@@ -3139,6 +3200,8 @@ class CRIRuntime(RuntimeAdapter):
         pod_ip: str | None,
         *,
         replica_id: str | None = None,
+        pod: Any | None = None,
+        pod_status: Any | None = None,
     ) -> str | None:
         preferred_port = None
         try:
@@ -3157,6 +3220,10 @@ class CRIRuntime(RuntimeAdapter):
                 preferred_port = None
         if preferred_port is not None and replica_id:
             port_map = self._port_assignments.get(str(replica_id), {})
+            if not port_map and pod is not None:
+                port_map = self._port_map_from_pod(pod, status=pod_status)
+                if port_map:
+                    self._port_assignments[str(replica_id)] = port_map
             host_port = port_map.get(preferred_port)
             if host_port:
                 host = os.getenv("AE_NODE_ADVERTISE_IP")

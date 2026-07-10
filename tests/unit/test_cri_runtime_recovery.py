@@ -191,6 +191,30 @@ def test_cri_runtime_service_port_mapping_raises_when_unavailable(monkeypatch) -
         runtime._port_mappings(_manifest_with_service())
 
 
+def test_cri_runtime_run_pod_persists_service_port_map_annotation(monkeypatch) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = _manifest_with_service()
+    requests = []
+
+    monkeypatch.setattr(runtime, "_pb2", lambda: _PB2)
+    monkeypatch.setattr(runtime, "_port_mappings", lambda _manifest: ([], {8080: 18180}))
+    monkeypatch.setattr(runtime, "_create_main_container", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_ensure_sidecars", lambda *_args, **_kwargs: None)
+
+    def _runtime_call(method, req):
+        if method == "RunPodSandbox":
+            requests.append(req)
+            return SimpleNamespace(pod_sandbox_id="pod-1")
+        raise AssertionError(f"unexpected runtime call: {method}")
+
+    monkeypatch.setattr(runtime, "_runtime_call", _runtime_call)
+
+    runtime._run_pod(manifest, "default/demo-rev1-0", 1)
+
+    assert requests
+    assert requests[0].config.annotations == {runtime.PORT_MAP_ANNOTATION: '{"8080":18180}'}
+
+
 def test_cri_runtime_service_rollout_removes_old_revision_before_create(monkeypatch) -> None:
     runtime = CRIRuntime()
     old_pod = SimpleNamespace(
@@ -450,6 +474,58 @@ def test_cri_runtime_uses_advertised_host_port_without_pod_ip(
     )
 
     assert endpoint == "192.168.29.15:18087"
+
+
+def test_cri_runtime_recovers_endpoint_from_pod_port_map_annotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = CRIRuntime(node_id="hub-1")
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "docker.io/library/demo-shell:latest",
+                "replicas": 1,
+                "ports": [{"name": "http", "containerPort": 5678}],
+                "service": {"ports": [{"name": "http", "port": 18087, "targetPort": 5678}]},
+            },
+        }
+    )
+    pod = SimpleNamespace(
+        id="pod-1",
+        labels={
+            runtime.APP_LABEL: "default/demo",
+            runtime.POD_LABEL: "default/demo-rev1-0",
+            runtime.REVISION_LABEL: "1",
+        },
+        annotations={runtime.PORT_MAP_ANNOTATION: '{"5678":18087}'},
+    )
+    pod_status = SimpleNamespace(network=SimpleNamespace(ip=None))
+    container = SimpleNamespace(id="ctr-1")
+    container_status = SimpleNamespace(
+        state="running",
+        started_at=None,
+        finished_at=None,
+        exit_code=None,
+    )
+
+    monkeypatch.setenv("AE_NODE_ADVERTISE_IP", "192.168.29.15")
+    monkeypatch.setattr(runtime, "_list_pods", lambda _app=None: [pod])
+    monkeypatch.setattr(runtime, "_pod_status", lambda _pod_id: pod_status)
+    monkeypatch.setattr(runtime, "_find_container", lambda _pod_id, container_label="main": container)
+    monkeypatch.setattr(runtime, "_container_status", lambda _container_id: container_status)
+    monkeypatch.setattr(runtime, "_container_state_name", lambda _status: "running")
+    monkeypatch.setattr(runtime, "_timestamp_dt", lambda _value: None)
+    monkeypatch.setattr(runtime, "_service_ready_for_manifest", lambda _manifest, _endpoint: True)
+
+    states = runtime._build_states(manifest, 1)
+
+    assert len(states) == 1
+    assert states[0].endpoint == "192.168.29.15:18087"
+    assert states[0].ready is True
+    assert runtime._port_assignments["default/demo-rev1-0"] == {5678: 18087}
 
 
 def test_cri_runtime_falls_back_to_loopback_host_port_without_pod_ip(
