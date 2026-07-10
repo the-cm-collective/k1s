@@ -81,7 +81,7 @@ def test_hydrate_runtime_endpoints_from_container_info_uses_node_host_port(monke
     monkeypatch.setattr(
         rec,
         "_container_infos_by_pod",
-        lambda *, require_direct_ingress=True: {
+        lambda *, require_direct_ingress=True, include_observation_runtimes=False: {
             "demo-rev1-0": {
                 "name": "demo-rev1-0",
                 "host_ip": "192.168.29.15",
@@ -124,3 +124,34 @@ def test_hydrate_runtime_endpoints_preserves_existing_endpoint(monkeypatch):
     hydrated = rec._hydrate_runtime_endpoints_from_container_info(manifest, result)
 
     assert hydrated.pod_states[0].endpoint == "192.168.29.20:18088"
+
+
+def test_container_infos_by_pod_can_include_remote_observation_runtimes(monkeypatch):
+    rec = _reconciler()
+
+    class EmptyRuntime:
+        def list_containers_info(self):
+            return []
+
+    class RemoteRuntime:
+        def list_containers_info(self):
+            return [
+                {
+                    "name": "demo-rev1-0",
+                    "labels": {"ae.pod_name": "demo-rev1-0"},
+                    "host_ip": "192.168.29.15",
+                    "port_map": {5678: 18087},
+                }
+            ]
+
+    monkeypatch.setattr(rec, "_runtime", EmptyRuntime())
+    monkeypatch.setattr(rec, "_rollout_observation_runtimes", lambda: [rec._runtime, RemoteRuntime()])
+
+    local_only = rec._container_infos_by_pod(require_direct_ingress=False)
+    with_remote = rec._container_infos_by_pod(
+        require_direct_ingress=False,
+        include_observation_runtimes=True,
+    )
+
+    assert local_only == {}
+    assert with_remote["demo-rev1-0"]["host_ip"] == "192.168.29.15"

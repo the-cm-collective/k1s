@@ -1898,21 +1898,34 @@ class Reconciler:
         value = os.getenv("AE_CADDY_PREFER_HOST_PORT_UPSTREAMS", "")
         return value.strip().lower() in {"1", "true", "yes", "on"}
 
-    def _container_infos_by_pod(self, *, require_direct_ingress: bool = True) -> dict[str, dict]:
+    def _container_infos_by_pod(
+        self,
+        *,
+        require_direct_ingress: bool = True,
+        include_observation_runtimes: bool = False,
+    ) -> dict[str, dict]:
         if require_direct_ingress and not (
             self._docker_container_dns_enabled() or self._caddy_prefers_host_port_upstreams()
         ):
             return {}
-        try:
-            items = self._runtime.list_containers_info()  # type: ignore[attr-defined]
-        except Exception:
-            return {}
+        runtimes = (
+            self._rollout_observation_runtimes()
+            if include_observation_runtimes
+            else [self._runtime]
+        )
         out: dict[str, dict] = {}
-        for item in items or []:
-            labels = (item or {}).get("labels") or {}
-            pod_name = str(labels.get("ae.pod_name") or labels.get("ae.replica_id") or "").strip()
-            if pod_name:
-                out[pod_name] = item
+        for runtime in runtimes:
+            try:
+                items = runtime.list_containers_info()  # type: ignore[attr-defined]
+            except Exception:
+                continue
+            for item in items or []:
+                labels = (item or {}).get("labels") or {}
+                pod_name = str(
+                    labels.get("ae.pod_name") or labels.get("ae.replica_id") or ""
+                ).strip()
+                if pod_name:
+                    out[pod_name] = item
         return out
 
     def _hydrate_runtime_endpoints_from_container_info(
@@ -1923,7 +1936,10 @@ class Reconciler:
         preferred_port = self._preferred_container_port(manifest)
         if preferred_port is None:
             return result
-        container_infos_by_pod = self._container_infos_by_pod(require_direct_ingress=False)
+        container_infos_by_pod = self._container_infos_by_pod(
+            require_direct_ingress=False,
+            include_observation_runtimes=True,
+        )
         if not container_infos_by_pod:
             return result
         for state in result.pod_states:
