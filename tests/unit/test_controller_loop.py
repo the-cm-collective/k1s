@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ae.controller.__main__ import (
+    _reconcile_and_sync_manifest_after_api_apply,
     _reconcile_manifest_after_api_apply,
     _reconcile_registry_apps_then_translated_ingress,
     _should_run_etcd_maintenance,
@@ -192,6 +193,48 @@ def test_api_apply_reconcile_helper_runs_until_ready(monkeypatch) -> None:
 
     assert report.revision_status == "ready"
     assert calls == ["k1s-dev-anchor", "k1s-dev-anchor"]
+
+
+def test_api_apply_reconcile_and_syncs_translated_ingress(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "state.db"
+    monkeypatch.setenv("AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS", "1")
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="k1s-dev-anchor", namespace="default"),
+        spec=AppSpec(
+            image="hashicorp/http-echo:1.0",
+            replicas=1,
+            ingress=IngressSpec(
+                host="demo.apps.k1s-dev-a.core.home.arpa",
+                path="/",
+                annotations={"k1s.io/edge-ingress-mode": "core-local"},
+            ),
+            service=ServiceSpec(port=18087, targetPort=5678),
+        ),
+    )
+    store = SQLiteStateStore(db_path)
+    store.register_app(manifest, source="api", labels={})
+
+    class Reconciler:
+        def reconcile(self, applied_manifest):
+            assert applied_manifest == manifest
+            return _FakeReport(revision_status="ready")
+
+    report, warnings = _reconcile_and_sync_manifest_after_api_apply(
+        store,
+        Reconciler(),
+        manifest,
+    )
+
+    route = store.get_edge_ingress_route(name="k1s-dev-anchor-ingress", namespace="default")
+    assert report.revision_status == "ready"
+    assert warnings == []
+    assert route is not None
+    assert route.site_id == "core"
+    assert route.spec["spec"]["host"] == "demo.apps.k1s-dev-a.core.home.arpa"
+    assert route.spec["spec"]["paths"][0]["serviceRef"]["port"] == 18087
 
 
 def test_controller_once_reconciles(tmp_path, monkeypatch):

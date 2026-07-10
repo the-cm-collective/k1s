@@ -1737,6 +1737,22 @@ def _sync_translated_ingress_after_api_apply(
     return []
 
 
+def _reconcile_and_sync_manifest_after_api_apply(
+    store: SQLiteStateStore,
+    reconciler: Reconciler,
+    manifest: AppManifest,
+    *,
+    edge_renderer=None,
+):
+    report = _reconcile_manifest_after_api_apply(reconciler, manifest)
+    warnings = _sync_translated_ingress_after_api_apply(
+        store,
+        manifest,
+        edge_renderer=edge_renderer,
+    )
+    return report, warnings
+
+
 def _reconcile_manifest_after_api_apply(reconciler: Reconciler, manifest: AppManifest):
     """Run the same bounded immediate reconcile used by API apply paths."""
 
@@ -2194,14 +2210,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                 expected_resource_version=(existing.resource_version if existing else None),
             )
             if authority_config.enabled:
-                report = _reconcile_manifest_after_api_apply(reconciler, manifest)
-                warnings.extend(
-                    _sync_translated_ingress_after_api_apply(
-                        store,
-                        manifest,
-                        edge_renderer=_edge_renderer,
-                    )
+                report, sync_warnings = _reconcile_and_sync_manifest_after_api_apply(
+                    store,
+                    reconciler,
+                    manifest,
+                    edge_renderer=_edge_renderer,
                 )
+                warnings.extend(sync_warnings)
                 return {
                     "app": report.app_name,
                     "revision": report.revision,
@@ -2212,7 +2227,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     "removed": report.removed,
                     "warnings": warnings,
                 }
-            report = _reconcile_manifest_after_api_apply(reconciler, manifest)
+            report, sync_warnings = _reconcile_and_sync_manifest_after_api_apply(
+                store,
+                reconciler,
+                manifest,
+                edge_renderer=_edge_renderer,
+            )
+            warnings.extend(sync_warnings)
 
             return {
                 "app": report.app_name,
