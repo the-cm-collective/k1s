@@ -126,6 +126,43 @@ def test_hydrate_runtime_endpoints_preserves_existing_endpoint(monkeypatch):
     assert hydrated.pod_states[0].endpoint == "192.168.29.20:18088"
 
 
+def test_hydrate_runtime_endpoints_replaces_loopback_endpoint(monkeypatch):
+    rec = _reconciler()
+    manifest = _manifest_with_readiness(5678)
+    result = RuntimeResult(
+        revision=1,
+        created=0,
+        updated=0,
+        removed=0,
+        pod_states=[
+            PodState(
+                pod_name="demo-rev1-0",
+                ready=True,
+                status="running",
+                revision=1,
+                endpoint="127.0.0.1:18087",
+            )
+        ],
+    )
+
+    monkeypatch.setattr(
+        rec,
+        "_container_infos_by_pod",
+        lambda *, require_direct_ingress=True, include_observation_runtimes=False: {
+            "demo-rev1-0": {
+                "name": "demo-rev1-0",
+                "host_ip": "192.168.29.15",
+                "port_map": {5678: 18087},
+                "host_ports": [18087],
+            }
+        },
+    )
+
+    hydrated = rec._hydrate_runtime_endpoints_from_container_info(manifest, result)
+
+    assert hydrated.pod_states[0].endpoint == "192.168.29.15:18087"
+
+
 def test_container_infos_by_pod_can_include_remote_observation_runtimes(monkeypatch):
     rec = _reconciler()
 

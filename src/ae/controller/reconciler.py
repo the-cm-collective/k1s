@@ -1931,7 +1931,11 @@ class Reconciler:
     def _hydrate_runtime_endpoints_from_container_info(
         self, manifest: AppManifest, result: RuntimeResult
     ) -> RuntimeResult:
-        if all(getattr(state, "endpoint", None) for state in result.pod_states):
+        if all(
+            getattr(state, "endpoint", None)
+            and not self._endpoint_is_loopback(str(getattr(state, "endpoint", "")))
+            for state in result.pod_states
+        ):
             return result
         preferred_port = self._preferred_container_port(manifest)
         if preferred_port is None:
@@ -1943,7 +1947,8 @@ class Reconciler:
         if not container_infos_by_pod:
             return result
         for state in result.pod_states:
-            if getattr(state, "endpoint", None):
+            endpoint = str(getattr(state, "endpoint", "") or "")
+            if endpoint and not self._endpoint_is_loopback(endpoint):
                 continue
             info = container_infos_by_pod.get(state.pod_name)
             if not info:
@@ -1954,6 +1959,12 @@ class Reconciler:
             host, port = target
             state.endpoint = f"{host}:{int(port)}"
         return result
+
+    def _endpoint_is_loopback(self, endpoint: str) -> bool:
+        host, _port = self._split_host_port(str(endpoint or ""))
+        if not host:
+            return False
+        return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
 
     def _endpoint_from_container_info(
         self, info: dict, port_hint: int | None
