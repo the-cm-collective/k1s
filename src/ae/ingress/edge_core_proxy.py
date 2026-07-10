@@ -781,8 +781,12 @@ def _resolve_core_local_endpoints(
         host, port = _split_host_port(str(endpoint))
         if host is None or port is None:
             continue
-        expected_port = target_port or svc_port
-        if expected_port is not None and int(port) != int(expected_port):
+        expected_ports = {
+            int(item)
+            for item in (target_port, svc_port)
+            if item is not None
+        }
+        if expected_ports and int(port) not in expected_ports:
             continue
         endpoints.append((host, int(port)))
     return endpoints
