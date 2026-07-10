@@ -1626,6 +1626,35 @@ def _reconcile_all(
             _log.getLogger(__name__).info("authority changed; stopping reconcile sweep")
             break
         app_name = app_key_for_manifest(m)
+        store = getattr(reconciler, "_state_store", None)
+        if store is not None:
+            try:
+                current = store.get_registered_entry(app_name)
+            except Exception:
+                current = None
+            if current is None:
+                try:
+                    _log.getLogger(__name__).info(
+                        "skipping stale reconcile for deleted registry app %s",
+                        app_name,
+                    )
+                except Exception:
+                    pass
+                continue
+            try:
+                current_hash = _spec_hash(current.manifest)
+                incoming_hash = _spec_hash(m)
+            except Exception:
+                current_hash = incoming_hash = None
+            if current_hash and incoming_hash and current_hash != incoming_hash:
+                try:
+                    _log.getLogger(__name__).info(
+                        "skipping stale reconcile for changed registry app %s",
+                        app_name,
+                    )
+                except Exception:
+                    pass
+                continue
         if _labs_is_blocked(app_name):
             try:
                 _log.getLogger(__name__).debug(

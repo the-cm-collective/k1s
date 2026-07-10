@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ae.controller.__main__ import _delete_app_and_cleanup_translated_ingress
+from ae.controller.__main__ import _delete_app_and_cleanup_translated_ingress, _reconcile_all
 from ae.controller.app_ingress import sync_translated_app_ingress
 from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata, ServiceSpec
 from ae.controller.state import SQLiteStateStore
@@ -54,6 +54,16 @@ class _Renderer:
         self.calls += 1
 
 
+class _SweepReconciler:
+    def __init__(self, store: SQLiteStateStore) -> None:
+        self._state_store = store
+        self.reconciled: list[str] = []
+
+    def reconcile(self, manifest: AppManifest):  # noqa: ANN201
+        self.reconciled.append(manifest.metadata.name)
+        raise AssertionError("stale registry manifest should not be reconciled")
+
+
 def _manifest(name: str = "echo") -> AppManifest:
     return AppManifest(
         apiVersion="ae.dev/v1alpha1",
@@ -90,6 +100,7 @@ def test_delete_app_removes_registered_manifest_and_translated_route(tmp_path, m
     assert result["purged"] is True
     assert result["removed"] == 1
     assert store.get_registered_manifest("echo") is None
+    assert store.list_revisions("echo") == []
     assert store.get_edge_ingress_route(name="echo-ingress", namespace="default") is None
     assert reconciler._runtime.removed == ["echo"]
     assert reconciler._ingress_service.removed == ["echo"]
@@ -159,3 +170,42 @@ def test_delete_app_removes_remote_node_runtime_replicas(tmp_path, monkeypatch) 
     assert result["removed"] == 2
     assert reconciler._runtime.removed == ["echo"]
     assert reconciler.remote_runtime.removed == ["echo"]
+
+
+def test_reconcile_sweep_skips_manifest_deleted_after_snapshot(tmp_path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    manifest = _manifest("echo")
+    store.register_app(manifest, source="test", labels={})
+    stale_snapshot = [manifest]
+    assert store.delete_registered_app("echo") is True
+    store.delete_app_state("echo", purge_history=True)
+
+    reconciler = _SweepReconciler(store)
+
+    _reconcile_all(reconciler, stale_snapshot)
+
+    assert reconciler.reconciled == []
+
+
+def test_reconcile_sweep_skips_manifest_changed_after_snapshot(tmp_path) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    old_manifest = _manifest("echo")
+    store.register_app(old_manifest, source="test", labels={})
+    current = store.get_registered_entry("echo")
+    assert current is not None
+    new_manifest = _manifest("echo")
+    new_manifest = new_manifest.model_copy(
+        update={"spec": new_manifest.spec.model_copy(update={"image": "docker.io/library/other:latest"})}
+    )
+    store.register_app(
+        new_manifest,
+        source="test",
+        labels={},
+        expected_resource_version=current.resource_version,
+    )
+
+    reconciler = _SweepReconciler(store)
+
+    _reconcile_all(reconciler, [old_manifest])
+
+    assert reconciler.reconciled == []
