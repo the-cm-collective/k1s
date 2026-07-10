@@ -5,6 +5,7 @@ from pathlib import Path
 from ae.controller.reconciler import Reconciler
 from ae.controller.spec import AppManifest
 from ae.controller.state import SQLiteStateStore
+from ae.runtime import PodState, RuntimeResult
 from ae.runtime.docker_stub import StubRuntime
 
 
@@ -56,3 +57,70 @@ def test_endpoint_from_container_info_uses_host_ports_fallback():
     rec = _reconciler()
     info = {"host_ports": [9090]}
     assert rec._endpoint_from_container_info(info, None) == ("127.0.0.1", 9090)
+
+
+def test_hydrate_runtime_endpoints_from_container_info_uses_node_host_port(monkeypatch):
+    rec = _reconciler()
+    manifest = _manifest_with_readiness(5678)
+    result = RuntimeResult(
+        revision=1,
+        created=0,
+        updated=0,
+        removed=0,
+        pod_states=[
+            PodState(
+                pod_name="demo-rev1-0",
+                ready=True,
+                status="running",
+                revision=1,
+                endpoint=None,
+            )
+        ],
+    )
+
+    monkeypatch.setattr(
+        rec,
+        "_container_infos_by_pod",
+        lambda *, require_direct_ingress=True: {
+            "demo-rev1-0": {
+                "name": "demo-rev1-0",
+                "host_ip": "192.168.29.15",
+                "port_map": {5678: 18087},
+                "host_ports": [18087],
+            }
+        },
+    )
+
+    hydrated = rec._hydrate_runtime_endpoints_from_container_info(manifest, result)
+
+    assert hydrated is result
+    assert hydrated.pod_states[0].endpoint == "192.168.29.15:18087"
+
+
+def test_hydrate_runtime_endpoints_preserves_existing_endpoint(monkeypatch):
+    rec = _reconciler()
+    manifest = _manifest_with_readiness(5678)
+    result = RuntimeResult(
+        revision=1,
+        created=0,
+        updated=0,
+        removed=0,
+        pod_states=[
+            PodState(
+                pod_name="demo-rev1-0",
+                ready=True,
+                status="running",
+                revision=1,
+                endpoint="192.168.29.20:18088",
+            )
+        ],
+    )
+
+    def _unexpected_container_info(**_kwargs):
+        raise AssertionError("container info should not be read when endpoints are present")
+
+    monkeypatch.setattr(rec, "_container_infos_by_pod", _unexpected_container_info)
+
+    hydrated = rec._hydrate_runtime_endpoints_from_container_info(manifest, result)
+
+    assert hydrated.pod_states[0].endpoint == "192.168.29.20:18088"

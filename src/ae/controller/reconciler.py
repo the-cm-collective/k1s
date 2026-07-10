@@ -1104,6 +1104,7 @@ class Reconciler:
             removed=removed,
             pod_states=aggregate_states,
         )
+        result = self._hydrate_runtime_endpoints_from_container_info(manifest_for_runtime, result)
         health_report = self._health_manager.evaluate(manifest, result)
         # Service/IPAM: prefer Service VIPs when controller is available. Direct containerd still
         # refreshes same-namespace service aliases from ready pod endpoints without Service VIPs.
@@ -1897,8 +1898,8 @@ class Reconciler:
         value = os.getenv("AE_CADDY_PREFER_HOST_PORT_UPSTREAMS", "")
         return value.strip().lower() in {"1", "true", "yes", "on"}
 
-    def _container_infos_by_pod(self) -> dict[str, dict]:
-        if not (
+    def _container_infos_by_pod(self, *, require_direct_ingress: bool = True) -> dict[str, dict]:
+        if require_direct_ingress and not (
             self._docker_container_dns_enabled() or self._caddy_prefers_host_port_upstreams()
         ):
             return {}
@@ -1913,6 +1914,30 @@ class Reconciler:
             if pod_name:
                 out[pod_name] = item
         return out
+
+    def _hydrate_runtime_endpoints_from_container_info(
+        self, manifest: AppManifest, result: RuntimeResult
+    ) -> RuntimeResult:
+        if all(getattr(state, "endpoint", None) for state in result.pod_states):
+            return result
+        preferred_port = self._preferred_container_port(manifest)
+        if preferred_port is None:
+            return result
+        container_infos_by_pod = self._container_infos_by_pod(require_direct_ingress=False)
+        if not container_infos_by_pod:
+            return result
+        for state in result.pod_states:
+            if getattr(state, "endpoint", None):
+                continue
+            info = container_infos_by_pod.get(state.pod_name)
+            if not info:
+                continue
+            target = self._endpoint_from_container_info(info, preferred_port)
+            if not target:
+                continue
+            host, port = target
+            state.endpoint = f"{host}:{int(port)}"
+        return result
 
     def _endpoint_from_container_info(
         self, info: dict, port_hint: int | None
