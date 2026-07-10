@@ -135,6 +135,9 @@ def build_translated_route(manifest: AppManifest) -> dict | None:
         }
         if port is not None:
             service_ref["port"] = port
+        target_port = _translate_ingress_target_port(manifest)
+        if target_port is not None:
+            service_ref["targetPort"] = target_port
         paths.append(
             {
                 "path": path,
@@ -283,6 +286,35 @@ def _translate_ingress_port(manifest: AppManifest) -> int | None:
     try:
         if manifest.spec.service and getattr(manifest.spec.service, "target_port", None):
             return int(manifest.spec.service.target_port)
+    except Exception:
+        pass
+    try:
+        if manifest.spec.ports:
+            return int(manifest.spec.ports[0].container_port)
+    except Exception:
+        pass
+    return None
+
+
+def _translate_ingress_target_port(manifest: AppManifest) -> int | None:
+    try:
+        service = manifest.spec.service
+        if service:
+            if service.ports:
+                target_port = service.ports[0].target_port
+                if target_port is not None:
+                    return int(target_port)
+            if getattr(service, "target_port", None):
+                return int(service.target_port)
+    except Exception:
+        pass
+    try:
+        if manifest.spec.health and manifest.spec.health.readiness:
+            readiness = manifest.spec.health.readiness
+            if getattr(readiness, "http_get", None) is not None:
+                return int(readiness.http_get.port)
+            if getattr(readiness, "tcp_socket", None) is not None:
+                return int(readiness.tcp_socket.port)
     except Exception:
         pass
     try:

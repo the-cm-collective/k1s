@@ -238,6 +238,7 @@ def test_api_apply_reconcile_and_syncs_translated_ingress(tmp_path, monkeypatch)
     assert route.site_id == "core"
     assert route.spec["spec"]["host"] == "demo.apps.k1s-dev-a.core.home.arpa"
     assert route.spec["spec"]["paths"][0]["serviceRef"]["port"] == 18087
+    assert route.spec["spec"]["paths"][0]["serviceRef"]["targetPort"] == 5678
 
 
 def test_api_apply_reconciles_until_translated_core_local_backend_ready(
@@ -499,6 +500,7 @@ def test_ha_api_apply_syncs_translated_app_ingress(tmp_path, monkeypatch) -> Non
     assert route.spec["spec"]["host"] == "demo.apps.k1s-dev-a.core.home.arpa"
     assert route.spec["spec"]["exposure"]["mode"] == "core-local"
     assert route.spec["spec"]["paths"][0]["serviceRef"]["port"] == 18087
+    assert route.spec["spec"]["paths"][0]["serviceRef"]["targetPort"] == 5678
 
 
 def test_controller_once_ha_leader_translates_shared_registry_ingress_from_node_selector_site(

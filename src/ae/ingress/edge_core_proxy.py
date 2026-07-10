@@ -756,7 +756,11 @@ def _resolve_core_local_endpoints(
     svc_ns = str(service_ref.get("namespace") or namespace or "default").strip() or "default"
     app_name = app_key(name, svc_ns)
     svc_port = port_hint or _service_port_from_store(store, app_name)
-    target_port = _service_target_port_from_store(store, app_name, svc_port)
+    target_port = (
+        _coerce_int(service_ref.get("targetPort"))
+        or _coerce_int(service_ref.get("target_port"))
+        or _service_target_port_from_store(store, app_name, svc_port)
+    )
     endpoints: list[tuple[str, int]] = []
     try:
         eps = store.list_service_endpoints(app_name)
