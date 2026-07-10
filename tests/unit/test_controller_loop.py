@@ -9,10 +9,13 @@ from ae.controller.__main__ import (
     _reconcile_registry_apps_then_translated_ingress,
     _should_run_etcd_maintenance,
     _sync_translated_ingress_after_api_apply,
+    _translated_app_ingress_has_backend,
     main,
 )
+from ae.controller.health import PodHealth
 from ae.controller.spec import AppManifest, AppSpec, IngressSpec, Metadata, ServiceSpec
 from ae.controller.state import SQLiteStateStore
+from ae.runtime import PodState, RuntimeResult
 
 
 def write_manifest(path: Path) -> None:
@@ -235,6 +238,91 @@ def test_api_apply_reconcile_and_syncs_translated_ingress(tmp_path, monkeypatch)
     assert route.site_id == "core"
     assert route.spec["spec"]["host"] == "demo.apps.k1s-dev-a.core.home.arpa"
     assert route.spec["spec"]["paths"][0]["serviceRef"]["port"] == 18087
+
+
+def test_api_apply_reconciles_until_translated_core_local_backend_ready(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "state.db"
+    monkeypatch.setenv("AE_EDGE_INGRESS_TRANSLATE_APP_INGRESS", "1")
+    monkeypatch.setenv("AE_APPLY_ROUTE_SYNC_BURST", "3")
+    monkeypatch.setenv("AE_APPLY_RECONCILE_DELAY_MS", "1")
+
+    manifest = AppManifest(
+        apiVersion="ae.dev/v1alpha1",
+        kind="Deployment",
+        metadata=Metadata(name="k1s-dev-anchor", namespace="default"),
+        spec=AppSpec(
+            image="hashicorp/http-echo:1.0",
+            replicas=1,
+            ports=[{"name": "http", "containerPort": 5678}],
+            ingress=IngressSpec(
+                host="demo.apps.k1s-dev-a.core.home.arpa",
+                path="/",
+                annotations={"k1s.io/edge-ingress-mode": "core-local"},
+            ),
+            service=ServiceSpec(port=18087, targetPort=5678),
+        ),
+    )
+    store = SQLiteStateStore(db_path)
+    store.register_app(manifest, source="api", labels={})
+    calls: list[int] = []
+
+    class Reconciler:
+        def reconcile(self, applied_manifest):
+            assert applied_manifest == manifest
+            calls.append(1)
+            if len(calls) >= 2:
+                store.record_snapshot(
+                    manifest=manifest,
+                    runtime_result=RuntimeResult(
+                        revision=1,
+                        created=0,
+                        updated=0,
+                        removed=0,
+                        pod_states=[
+                            PodState(
+                                pod_name="k1s-dev-anchor-rev1-0",
+                                ready=True,
+                                status="running",
+                                revision=1,
+                                endpoint="192.168.29.15:18087",
+                            )
+                        ],
+                    ),
+                    health_report=type(
+                        "HealthReport",
+                        (),
+                        {
+                            "ready_replicas": 1,
+                            "live_replicas": 1,
+                            "pods": [
+                                PodHealth(
+                                    pod_name="k1s-dev-anchor-rev1-0",
+                                    ready=True,
+                                    live=True,
+                                    readiness_message="ok",
+                                    liveness_message="ok",
+                                )
+                            ],
+                        },
+                    )(),
+                    revision=1,
+                    revision_status="ready",
+                )
+            return _FakeReport(revision_status="ready")
+
+    report, warnings = _reconcile_and_sync_manifest_after_api_apply(
+        store,
+        Reconciler(),
+        manifest,
+    )
+
+    assert report.revision_status == "ready"
+    assert warnings == []
+    assert len(calls) == 2
+    assert _translated_app_ingress_has_backend(store, manifest) is True
 
 
 def test_controller_once_reconciles(tmp_path, monkeypatch):

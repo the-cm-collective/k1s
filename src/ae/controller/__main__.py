@@ -49,6 +49,7 @@ from ae.controller.rollout import mutate_rollout_manifest
 from ae.controller.spec import (
     AppManifest,
     ManifestError,
+    app_key,
     app_key_for_manifest,
     load_manifest,
     parse_manifest_document,
@@ -1737,6 +1738,53 @@ def _sync_translated_ingress_after_api_apply(
     return []
 
 
+def _translated_app_ingress_has_backend(store: SQLiteStateStore, manifest: AppManifest) -> bool:
+    """Return true once a translated route exists and has a usable backend.
+
+    API apply can report the workload ready before route rendering sees the
+    current pod endpoint. Core-local routes must wait for that endpoint before
+    rendering, otherwise the proof route remains absent until a later loop.
+    """
+
+    if getattr(manifest.spec, "ingress", None) is None:
+        return True
+    namespace = getattr(manifest.metadata, "namespace", None) or DEFAULT_NAMESPACE
+    route = store.get_edge_ingress_route(
+        name=f"{manifest.metadata.name}-ingress",
+        namespace=namespace,
+    )
+    if route is None:
+        return False
+    spec = _edge_ingress_route_spec(route)
+    exposure = spec.get("exposure") if isinstance(spec.get("exposure"), dict) else {}
+    mode = str(exposure.get("mode") or "").strip().lower()
+    if mode not in {"core-local", "core"}:
+        return True
+    raw_paths = spec.get("paths") if isinstance(spec.get("paths"), list) else []
+    if not raw_paths:
+        raw_paths = [{"serviceRef": spec.get("serviceRef") if isinstance(spec.get("serviceRef"), dict) else {}}]
+    for item in raw_paths:
+        if not isinstance(item, dict):
+            continue
+        service_ref = item.get("serviceRef") if isinstance(item.get("serviceRef"), dict) else {}
+        name = str(service_ref.get("name") or "").strip()
+        if not name:
+            continue
+        service_namespace = str(service_ref.get("namespace") or namespace or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+        service_app = app_key(name, service_namespace)
+        try:
+            if any(endpoint.ready for endpoint in store.list_service_endpoints(service_app)):
+                return True
+        except Exception:
+            pass
+        try:
+            if any(pod.ready and bool(str(pod.endpoint or "").strip()) for pod in store.list_pods(service_app)):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def _reconcile_and_sync_manifest_after_api_apply(
     store: SQLiteStateStore,
     reconciler: Reconciler,
@@ -1750,6 +1798,27 @@ def _reconcile_and_sync_manifest_after_api_apply(
         manifest,
         edge_renderer=edge_renderer,
     )
+    if getattr(manifest.spec, "ingress", None) is not None:
+        try:
+            burst = int(os.getenv("AE_APPLY_ROUTE_SYNC_BURST", "3") or 3)
+        except Exception:
+            burst = 3
+        try:
+            delay_ms = int(os.getenv("AE_APPLY_RECONCILE_DELAY_MS", "300") or 300)
+        except Exception:
+            delay_ms = 300
+        for _ in range(max(0, burst)):
+            if _translated_app_ingress_has_backend(store, manifest):
+                break
+            time.sleep(max(0.001, delay_ms / 1000.0))
+            report = _reconcile_manifest_after_api_apply(reconciler, manifest)
+            warnings.extend(
+                _sync_translated_ingress_after_api_apply(
+                    store,
+                    manifest,
+                    edge_renderer=edge_renderer,
+                )
+            )
     return report, warnings
 
 
