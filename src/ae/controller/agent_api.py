@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from ae.accelerators import (
@@ -118,6 +119,39 @@ def _serialize_services(store: SQLiteStateStore) -> list[dict]:
     return items
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_utc(raw: object) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        value = str(raw).strip()
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except Exception:
+        return None
+
+
+def _payload_label(payload: dict, key: str) -> str:
+    labels = payload.get("labels") if isinstance(payload.get("labels"), dict) else {}
+    value = payload.get(key) or labels.get(key)
+    return str(value or "").strip()
+
+
+def _edge_admission_env(path: str) -> str | None:
+    clean = path.split("?", 1)[0].strip("/")
+    parts = clean.split("/")
+    if len(parts) == 5 and parts[0] == "k1s" and parts[1] == "envs" and parts[3] == "edge" and parts[4] == "admission":
+        return parts[2]
+    return None
+
+
 def make_handler(
     store: SQLiteStateStore,
     token: str | None = None,
@@ -198,7 +232,8 @@ def make_handler(
         def do_POST(self) -> None:  # noqa: N802 - stdlib naming
             if not self._auth_ok():
                 return self._unauthorized()
-            if self.path not in {"/v1/heartbeat", "/v1/bootstrap"}:
+            env_admission = _edge_admission_env(self.path)
+            if self.path not in {"/v1/heartbeat", "/v1/bootstrap"} and env_admission is None:
                 _json(self, 404, {"error": "not found"})
                 return
             try:
@@ -252,7 +287,10 @@ def make_handler(
                     _json(self, 500, {"error": str(exc)})
                     return
 
-            node_id = str(payload.get("node_id") or payload.get("id") or "").strip()
+            if env_admission is not None:
+                node_id = str(payload.get("node_id") or payload.get("gateway_id") or payload.get("id") or "").strip()
+            else:
+                node_id = str(payload.get("node_id") or payload.get("id") or "").strip()
             status = str(payload.get("status") or "Ready")
             if not node_id:
                 _json(self, 400, {"error": "node_id required"})
@@ -261,6 +299,91 @@ def make_handler(
             labels = payload.get("labels") or {}
             if not isinstance(labels, dict):
                 labels = {}
+            if env_admission is not None:
+                payload_env = _payload_label(payload, "env_id")
+                site_id = _payload_label(payload, "site_id")
+                role = (_payload_label(payload, "role") or "").lower()
+                expires_at = _parse_utc(
+                    payload.get("expires_at")
+                    or payload.get("token_expires_at")
+                    or payload.get("admission_expires_at")
+                )
+                revoked = bool(
+                    payload.get("revoked")
+                    or payload.get("token_revoked")
+                    or str(payload.get("admission_state") or "").lower() == "revoked"
+                    or str(payload.get("token_state") or "").lower() == "revoked"
+                )
+                if payload_env and payload_env != env_admission:
+                    _json(
+                        self,
+                        403,
+                        {
+                            "ok": False,
+                            "accepted": False,
+                            "error": "env_id mismatch",
+                            "env_id": env_admission,
+                            "raw_secret_retained": False,
+                        },
+                    )
+                    return
+                if not site_id:
+                    _json(
+                        self,
+                        400,
+                        {
+                            "ok": False,
+                            "accepted": False,
+                            "error": "site_id required",
+                            "env_id": env_admission,
+                            "raw_secret_retained": False,
+                        },
+                    )
+                    return
+                if role != "gateway":
+                    _json(
+                        self,
+                        403,
+                        {
+                            "ok": False,
+                            "accepted": False,
+                            "error": "gateway role required",
+                            "env_id": env_admission,
+                            "role": role or None,
+                            "raw_secret_retained": False,
+                        },
+                    )
+                    return
+                if revoked:
+                    _json(
+                        self,
+                        403,
+                        {
+                            "ok": False,
+                            "accepted": False,
+                            "error": "token revoked",
+                            "env_id": env_admission,
+                            "raw_secret_retained": False,
+                        },
+                    )
+                    return
+                if expires_at is not None and expires_at <= _utc_now():
+                    _json(
+                        self,
+                        403,
+                        {
+                            "ok": False,
+                            "accepted": False,
+                            "error": "token expired",
+                            "env_id": env_admission,
+                            "raw_secret_retained": False,
+                        },
+                    )
+                    return
+                labels = dict(labels)
+                labels["env_id"] = env_admission
+                labels["site_id"] = site_id
+                labels["role"] = "gateway"
             capabilities = normalize_capabilities(payload.get("capabilities"))
             taints = payload.get("taints") or []
             if not isinstance(taints, list):
@@ -312,6 +435,16 @@ def make_handler(
                 _json(self, 500, {"error": str(exc)})
                 return
             response = {"ok": True}
+            if env_admission is not None:
+                response.update(
+                    {
+                        "accepted": True,
+                        "env_id": env_admission,
+                        "node_id": node_id,
+                        "role": "gateway",
+                        "raw_secret_retained": False,
+                    }
+                )
             if assigned_cidr:
                 response["pod_cidr"] = assigned_cidr
             _json(self, 200, response)

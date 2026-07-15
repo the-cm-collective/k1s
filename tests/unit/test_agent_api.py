@@ -1,4 +1,5 @@
 import threading
+from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer
 
 import pytest
@@ -54,6 +55,131 @@ def test_heartbeat_requires_token(tmp_path):
     try:
         url = f"http://127.0.0.1:{server.server_port}/v1/heartbeat"
         resp = requests.post(url, json={"node_id": "n1"}, timeout=5)
+        assert resp.status_code == 401
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_env_scoped_edge_admission_upserts_gateway_node(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    server, thread = _run_server(store, token="secret")
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/k1s/envs/pilot-edge-west/edge/admission"
+        resp = requests.post(
+            url,
+            json={
+                "node_id": "strix-halo-edge-gateway",
+                "backend": "gateway",
+                "endpoint": "http://192.168.29.115:9111",
+                "status": "Ready",
+                "labels": {
+                    "role": "gateway",
+                    "env_id": "pilot-edge-west",
+                    "site_id": "edge-site-strix-halo-a",
+                    "workerbee.edge/schedulable": "true",
+                },
+                "capabilities": {
+                    "compute_participant": True,
+                    "schedulable": True,
+                    "gateway_only_scheduling": True,
+                },
+            },
+            headers={"X-Agent-Token": "secret"},
+            timeout=5,
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["accepted"] is True
+        assert body["env_id"] == "pilot-edge-west"
+        assert body["raw_secret_retained"] is False
+        res = store.get_node("strix-halo-edge-gateway")
+        assert res is not None
+        node, status = res
+        assert node.backend == "gateway"
+        assert node.endpoint == "http://192.168.29.115:9111"
+        assert node.labels["env_id"] == "pilot-edge-west"
+        assert node.labels["site_id"] == "edge-site-strix-halo-a"
+        assert node.labels["role"] == "gateway"
+        assert node.capabilities["gateway_only_scheduling"] is True
+        assert status is not None
+        assert status.status == "Ready"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize(
+    ("payload_update", "expected_status", "expected_error"),
+    [
+        ({"labels": {"role": "gateway", "env_id": "wrong-env", "site_id": "edge-site-strix-halo-a"}}, 403, "env_id mismatch"),
+        ({"labels": {"role": "cell-node", "env_id": "pilot-edge-west", "site_id": "edge-site-strix-halo-a"}}, 403, "gateway role required"),
+        (
+            {
+                "labels": {"role": "gateway", "env_id": "pilot-edge-west", "site_id": "edge-site-strix-halo-a"},
+                "expires_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+            },
+            403,
+            "token expired",
+        ),
+        (
+            {
+                "labels": {"role": "gateway", "env_id": "pilot-edge-west", "site_id": "edge-site-strix-halo-a"},
+                "token_revoked": True,
+            },
+            403,
+            "token revoked",
+        ),
+    ],
+)
+def test_env_scoped_edge_admission_denies_bad_requests(tmp_path, payload_update, expected_status, expected_error):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    server, thread = _run_server(store, token="secret")
+    payload = {
+        "node_id": "strix-halo-edge-gateway",
+        "backend": "gateway",
+        "endpoint": "http://192.168.29.115:9111",
+        "status": "Ready",
+        "labels": {
+            "role": "gateway",
+            "env_id": "pilot-edge-west",
+            "site_id": "edge-site-strix-halo-a",
+        },
+    }
+    payload.update(payload_update)
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/k1s/envs/pilot-edge-west/edge/admission"
+        resp = requests.post(url, json=payload, headers={"X-Agent-Token": "secret"}, timeout=5)
+
+        assert resp.status_code == expected_status
+        body = resp.json()
+        assert body["accepted"] is False
+        assert body["error"] == expected_error
+        assert body["raw_secret_retained"] is False
+        assert store.get_node("strix-halo-edge-gateway") is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_env_scoped_edge_admission_requires_token(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    server, thread = _run_server(store, token="secret")
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/k1s/envs/pilot-edge-west/edge/admission"
+        resp = requests.post(
+            url,
+            json={
+                "node_id": "strix-halo-edge-gateway",
+                "labels": {"role": "gateway", "env_id": "pilot-edge-west", "site_id": "edge-site-strix-halo-a"},
+            },
+            timeout=5,
+        )
         assert resp.status_code == 401
     finally:
         server.shutdown()
