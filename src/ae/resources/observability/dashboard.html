@@ -4610,6 +4610,7 @@ Connection: close
                   leader: isLeaderController,
                   standby: isStandbyController,
                   leader_id: leaderId || null,
+                  gateway_schedulable: gatewayInfo ? gatewayInfo.schedulable : nodeRec.gateway_schedulable,
                   gateway_last_seen_age_s: gatewayInfo ? gatewayInfo.last_seen_age_s : null,
                   gateway_build: gatewayInfo ? {
                     version: gatewayInfo.version,
@@ -6834,6 +6835,9 @@ Connection: close
             if (meta.profile) nodeLines.push('profile: <code>' + escapeHtml(String(meta.profile)) + '</code>');
             if (meta.status) nodeLines.push('status: <code>' + escapeHtml(String(meta.status)) + '</code>');
             if (meta.backend) nodeLines.push('backend: <code>' + escapeHtml(String(meta.backend)) + '</code>');
+            if (meta.gateway_schedulable != null) {
+              nodeLines.push('gateway schedulable: <code>' + escapeHtml(meta.gateway_schedulable ? 'yes' : 'no') + '</code>');
+            }
             if (meta.gateway_last_seen_age_s != null) nodeLines.push('gateway seen: ' + escapeHtml(formatAge(meta.gateway_last_seen_age_s)));
             if (meta.gateway_build && meta.gateway_build.version) {
               var buildText = String(meta.gateway_build.version || '');

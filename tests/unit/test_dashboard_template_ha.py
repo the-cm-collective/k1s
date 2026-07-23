@@ -52,6 +52,8 @@ def test_dashboard_template_contains_ha_dashboard_containers() -> None:
     assert "heartbeat age: <code>" in html
     assert "heartbeat age=" in html
     assert "freshness: <code>" in html
+    assert "gateway_schedulable: gatewayInfo ? gatewayInfo.schedulable : nodeRec.gateway_schedulable" in html
+    assert "gateway schedulable: <code>" in html
     assert "title:'DNS'" in html
     assert "title: 'Host'" in html
     assert "max-width:min(340px, calc(100% - 24px))" in html
