@@ -7,6 +7,8 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 try:
     import requests  # noqa: F401
 except ImportError:
@@ -43,6 +45,11 @@ from ae.observability.http_api import (
     _SITE_GATEWAY_LAST_SEEN,
     _SITE_LAST_SEEN,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dashboard_edge_gateway_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AE_DASHBOARD_EDGE_GATEWAYS_FILE", str(tmp_path / "no-edge-gateways.json"))
 
 
 def _make_handler(
