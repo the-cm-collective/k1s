@@ -30,6 +30,7 @@ except ImportError:
     yaml_stub.safe_dump = lambda *_args, **_kwargs: ""
     sys.modules["yaml"] = yaml_stub
 
+from ae.observability import http_api
 from ae.observability.http_api import (
     _ApiHandler,
     _GATEWAY_WORK_METRICS,
@@ -417,6 +418,77 @@ def test_system_uses_site_layout_for_attached_site_nodes(
     payload = _read_system_payload(handler)
 
     assert payload["ha"]["enabled"] is False
+    assert payload["dashboard"]["layout_mode"] == "site"
+
+
+def test_system_adds_configured_edge_gateway_to_hive_graph(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = tmp_path / "edge-gateways.json"
+    config.write_text(
+        json.dumps(
+            {
+                "gateways": [
+                    {
+                        "id": "strix-halo-edge-gateway",
+                        "name": "Strix Halo Edge Gateway",
+                        "site_id": "edge-site-strix-halo-a",
+                        "cell_id": "strix-halo-cell-a",
+                        "url": "http://192.0.2.115:9111",
+                        "expected_cell_nodes": 3,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AE_DASHBOARD_EDGE_GATEWAYS_FILE", str(config))
+
+    def fake_probe(base_url: str, path: str, *, timeout_seconds: float):
+        assert base_url == "http://192.0.2.115:9111"
+        assert timeout_seconds > 0
+        if path == "/healthz":
+            return (
+                {
+                    "status": "active-gateway-ready",
+                    "gateway_id": "strix-halo-edge-gateway",
+                    "gateway_schedulable": True,
+                },
+                None,
+            )
+        if path == "/v1/workloads":
+            return (
+                {
+                    "gateway_id": "strix-halo-edge-gateway",
+                    "workload_count": 1,
+                },
+                None,
+            )
+        raise AssertionError(path)
+
+    monkeypatch.setattr(http_api, "_dashboard_edge_gateway_get_json", fake_probe)
+    handler = _make_handler(
+        tmp_path,
+        system_info_fn=lambda: {"nodes": [_node("c3rb3rus", role="controller")]},
+    )
+
+    payload = _read_system_payload(handler)
+
+    edge_nodes = [
+        node for node in payload["nodes"] if node["id"] == "strix-halo-edge-gateway"
+    ]
+    assert len(edge_nodes) == 1
+    edge = edge_nodes[0]
+    assert edge["status"] == "ready"
+    assert edge["gateway_schedulable"] is True
+    assert edge["workload_count"] == 1
+    assert edge["labels"]["cell.size"] == "4"
+    assert edge["labels"]["edge.gateway.schedulable"] == "true"
+    assert payload["edge_gateways"][0]["ready"] is True
+    assert payload["edge_gateways"][0]["schedulable"] is True
+    assert payload["sites"][0]["site_id"] == "edge-site-strix-halo-a"
+    assert payload["sites"][0]["ready"] == 1
     assert payload["dashboard"]["layout_mode"] == "site"
 
 

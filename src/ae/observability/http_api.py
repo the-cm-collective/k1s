@@ -1692,6 +1692,192 @@ def _dashboard_layout_mode(payload: dict[str, object], ha: dict[str, object]) ->
     return "simple"
 
 
+_DASHBOARD_EDGE_GATEWAYS_FILE = "/run/k1s-dashboard-edge-gateways.json"
+
+
+def _dashboard_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dashboard_edge_gateway_get_json(
+    base_url: str,
+    path: str,
+    *,
+    timeout_seconds: float,
+) -> tuple[dict[str, object] | None, str | None]:
+    try:
+        import urllib.request as _ur
+
+        url = base_url.rstrip("/") + path
+        with _ur.urlopen(url, timeout=max(0.1, timeout_seconds)) as resp:  # noqa: S310
+            body = resp.read(1024 * 1024)
+        parsed = json.loads(body.decode("utf-8"))
+        if isinstance(parsed, dict):
+            return parsed, None
+        return None, "response was not a JSON object"
+    except Exception as exc:  # noqa: BLE001 - best-effort dashboard enrichment
+        return None, str(exc)
+
+
+def _dashboard_edge_gateway_specs() -> list[dict[str, object]]:
+    path = str(
+        os.getenv("AE_DASHBOARD_EDGE_GATEWAYS_FILE")
+        or _DASHBOARD_EDGE_GATEWAYS_FILE
+    ).strip()
+    if not path:
+        return []
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict) and payload.get("enabled") is not False:
+        items = payload.get("gateways") or payload.get("items") or []
+    else:
+        items = []
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _dashboard_site_summaries_from_nodes(nodes: list[object]) -> list[dict[str, object]]:
+    sites: dict[str, dict[str, object]] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        site_id = _dashboard_node_site_id(node)
+        if not site_id:
+            continue
+        entry = sites.setdefault(
+            site_id,
+            {"site_id": site_id, "nodes": [], "ready": 0, "notready": 0, "stale": 0},
+        )
+        node_id = str(node.get("id") or node.get("name") or "")
+        if node_id:
+            entry["nodes"].append(node_id)  # type: ignore[index,union-attr]
+        if bool(node.get("stale")):
+            entry["stale"] = int(entry.get("stale") or 0) + 1
+        if str(node.get("status") or "").lower() == "ready":
+            entry["ready"] = int(entry.get("ready") or 0) + 1
+        else:
+            entry["notready"] = int(entry.get("notready") or 0) + 1
+    return sorted(sites.values(), key=lambda item: str(item.get("site_id") or ""))
+
+
+def _augment_dashboard_edge_gateways(payload: dict[str, object]) -> None:
+    specs = _dashboard_edge_gateway_specs()
+    if not specs:
+        return
+
+    raw_nodes = payload.get("nodes")
+    nodes: list[object] = raw_nodes if isinstance(raw_nodes, list) else []
+    if raw_nodes is not nodes:
+        payload["nodes"] = nodes
+    existing = {
+        str(node.get("id") or node.get("name") or ""): node
+        for node in nodes
+        if isinstance(node, dict)
+    }
+    edge_gateways: list[dict[str, object]] = []
+    for spec in specs:
+        base_url = str(spec.get("url") or spec.get("base_url") or "").strip().rstrip("/")
+        if not base_url:
+            continue
+        timeout_seconds = float(spec.get("timeout_seconds") or spec.get("timeout") or 0.75)
+        health, health_error = _dashboard_edge_gateway_get_json(
+            base_url, "/healthz", timeout_seconds=timeout_seconds
+        )
+        workloads, workloads_error = _dashboard_edge_gateway_get_json(
+            base_url, "/v1/workloads", timeout_seconds=timeout_seconds
+        )
+        gateway_id = str(
+            spec.get("id")
+            or (health or {}).get("gateway_id")
+            or (workloads or {}).get("gateway_id")
+            or "edge-gateway"
+        ).strip()
+        site_id = str(spec.get("site_id") or spec.get("site") or "edge-site").strip()
+        cell_id = str(spec.get("cell_id") or spec.get("cell") or f"{site_id}-cell-1").strip()
+        expected_cell_nodes = int(spec.get("expected_cell_nodes") or 3)
+        workload_count = int((workloads or {}).get("workload_count") or 0)
+        schedulable = _dashboard_bool(
+            (health or {}).get("gateway_schedulable")
+            if health is not None
+            else spec.get("gateway_schedulable")
+        )
+        ready = bool(
+            health
+            and str(health.get("status") or "").lower() in {
+                "active-gateway-ready",
+                "ready",
+                "ok",
+            }
+        )
+        labels = {
+            "site": site_id,
+            "role": "edge-gateway",
+            "profile": "k1s-edge",
+            "cell.id": cell_id,
+            "cell.size": str(expected_cell_nodes + 1),
+            "cell.gateway.compute": "true",
+            "cell.nodes.expected": str(expected_cell_nodes),
+            "cell.nodes.connected": str(spec.get("connected_cell_nodes") or 0),
+            "edge.gateway": "true",
+            "edge.gateway.schedulable": str(schedulable).lower(),
+            "edge.workloads.running": str(workload_count),
+        }
+        spec_labels = spec.get("labels")
+        if isinstance(spec_labels, dict):
+            labels.update({str(key): str(value) for key, value in spec_labels.items()})
+        node = {
+            "id": gateway_id,
+            "name": str(spec.get("name") or gateway_id),
+            "labels": labels,
+            "taints": [],
+            "backend": "edge-gateway-http",
+            "endpoint": base_url,
+            "pod_cidr": None,
+            "wg_pubkey": None,
+            "rp_pubkey": None,
+            "cordoned": False,
+            "status": "ready" if ready else "notready",
+            "stale": not ready,
+            "last_seen_seconds": 0 if ready else None,
+            "site_id": site_id,
+            "role": "edge-gateway",
+            "profile": "k1s-edge",
+            "gateway_schedulable": schedulable,
+            "workload_count": workload_count,
+        }
+        if gateway_id in existing:
+            existing[gateway_id].update(node)
+        else:
+            nodes.append(node)
+            existing[gateway_id] = node
+        edge_gateways.append(
+            {
+                "gateway_id": gateway_id,
+                "site_id": site_id,
+                "cell_id": cell_id,
+                "url": base_url,
+                "ready": ready,
+                "schedulable": schedulable,
+                "workload_count": workload_count,
+                "health_status": (health or {}).get("status"),
+                "health_error": health_error,
+                "workloads_error": workloads_error,
+                "raw_secret_retained": False,
+            }
+        )
+
+    if edge_gateways:
+        payload["edge_gateways"] = edge_gateways
+        payload["sites"] = _dashboard_site_summaries_from_nodes(nodes)
+
+
 def _dashboard_bootstrap_token() -> str:
     """Return a read-capable token for simple local demo/dev dashboards.
 
@@ -5830,6 +6016,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
 
         payload = {"controller": ctrl, "rbac": rbac, "crashloop": crash, **(extra or {})}
         payload["transport"] = transport
+        _augment_dashboard_edge_gateways(payload)
         payload["ha"] = _build_ha_snapshot(
             extra=payload,
             authority_snapshot=authority_snapshot,
