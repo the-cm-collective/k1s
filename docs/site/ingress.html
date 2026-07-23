@@ -799,11 +799,13 @@
 </ul>
 <p>Edge-local gateway rendering:</p>
 <ul>
-<li><code>AE_ROUTE_BUNDLE_ENABLED=1</code>: enable controller route-bundle publication for <code>edge-local</code>.</li>
+<li><code>AE_ROUTE_BUNDLE_ENABLED=1</code>: enable controller route-bundle publication for edge-rendered routes. This includes <code>edge-local</code> and the edge listener behind <code>core-proxy</code>.</li>
 <li><code>AE_EDGE_LOCAL_UPSTREAM_MODE</code>: upstream selection mode; <code>bundle-endpoints</code> is the strict route-bundle lane and <code>auto</code> may fall back to DNS.</li>
 <li><code>AE_EDGE_LOCAL_INGRESS_CONFIG_DIR</code>: directory for rendered edge-local config output.</li>
 <li><code>AE_EDGE_LOCAL_INGRESS_CONFIG_FILE</code>: rendered edge-local Caddyfile path.</li>
 <li><code>AE_EDGE_LOCAL_INGRESS_RELOAD_CMD</code>: gateway-side reload command run after edge-local config updates.</li>
+<li><code>AE_EDGE_LOCAL_INGRESS_SCHEME</code>: Caddy site scheme for rendered routes, normally <code>https</code>; use <code>http</code> for the local listener behind a <code>core-proxy</code> Rathole tunnel.</li>
+<li><code>AE_EDGE_LOCAL_INGRESS_LISTEN_PORT</code>: optional explicit Caddy site port for rendered routes, for example <code>18081</code> when <code>AE_EDGE_INGRESS_LOCAL_ADDR=127.0.0.1:18081</code>.</li>
 </ul>
 <p>Optional Service VIP plumbing:</p>
 <ul>
@@ -858,7 +860,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 21:36:21</span>
+        <span>Built 2026-07-23 23:44:31</span>
       </div>
     </footer>
     <script>

@@ -824,6 +824,211 @@
 <li>budget and boundary inputs including link metrics</li>
 </ul>
 <p><code>InferenceCellSet</code> is a template-and-scale wrapper around repeated <code>InferenceCell</code> creation.</p>
+<h3 id="ai-max-edge-cell-contract">AI Max Edge Cell Contract</h3>
+<p>The opt-in <code>cellContract.profile: ai-max-edge-cell-v1</code> surface represents the public contract for the first AI Max edge-cell shape. It validates:</p>
+<ul>
+<li>exactly four total members</li>
+<li>exactly one <code>gateway</code> member and three <code>cell-node</code> members</li>
+<li>all four members remain compute eligible</li>
+<li>optional gateway capacity reservation with <code>gatewayReservedGpuFraction</code></li>
+<li>disconnected-operation intent under <code>cellContract.autonomy</code></li>
+<li>LAN-local gateway discovery intent under <code>cellContract.gatewayDiscovery</code></li>
+<li>NixOS installer signing and boot assurance intent under <code>cellContract.installer</code></li>
+<li>AI governance evidence intent for the Nigerian-language translation use case under <code>cellContract.governanceEvidence</code></li>
+</ul>
+<p>The autonomy block is intentionally declarative in the current repo. It gives simulators, manifest validators, and later controller work stable names for the edge behavior without claiming full runtime enforcement today:</p>
+<pre><code>cellContract:
+  profile: ai-max-edge-cell-v1
+  gatewayReservedGpuFraction: 0.25
+  autonomy:
+    connectedMode: normal-connected
+    coreLinkUnavailableMode: degraded-local-only
+    reconnectMode: reconcile-on-restore
+    coreLinkUptimeThresholdPct: 80
+  gatewayDiscovery:
+    mode: lan-local
+    fabricCellCount: 4
+    lanScope: floor-a
+    gatewayPeerIds:
+      - gateway-cell-b
+      - gateway-cell-c
+      - gateway-cell-d
+  installer:
+    profile: nixos-ai-max-edge-cell-installer-v1
+    image: nixos-ai-max-edge-cell-installer
+    signedBy: k1s-core-root-of-trust
+    artifact:
+      name: nixos-ai-max-edge-cell-installer
+      profile: nixos-ai-max-edge-cell-installer-v1
+      image: nixos-ai-max-edge-cell-installer
+      version: stage7-local
+      artifactDigest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+      manifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+      pathCoverage:
+        - gateway
+        - cell-node
+      provenance:
+        builder: k1s-public-stage7-local-simulator
+        sourceRevision: public-dev-stage7
+        createdAt: &quot;2026-06-25T00:00:00Z&quot;
+    signature:
+      algorithm: k1s-local-sim-ed25519-sha256
+      signingKeyId: k1s-core-root-of-trust
+      signedDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+      signature: k1s-sim-signature:3333333333333333333333333333333333333333333333333333333333333333
+    roleScaffolds:
+      - role: gateway
+        moduleRef: nixos/modules/ai-max/installer/gateway.nix
+        configRef: nixos/configs/ai-max/gateway-installed-system.nix
+        derivedFromManifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        postInstall:
+          autoBoot: enabled
+          connectTarget: core
+          usbDevicePolicy: signed-only
+          displayMode: telemetry
+      - role: cell-node
+        moduleRef: nixos/modules/ai-max/installer/cell-node.nix
+        configRef: nixos/configs/ai-max/cell-node-installed-system.nix
+        derivedFromManifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        postInstall:
+          autoBoot: enabled
+          connectTarget: gateway
+          usbDevicePolicy: limited
+          displayMode: connect-monitor-to-gateway
+    bootEvidence:
+      - nodeId: gateway-1
+        role: gateway
+        installerProfile: nixos-ai-max-edge-cell-installer-v1
+        installerImage: nixos-ai-max-edge-cell-installer
+        artifactDigest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+        manifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        bootMeasurementDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        signingKeyId: k1s-core-root-of-trust
+        verifierTrustRoot: k1s-core-root-of-trust
+        nonce: k1s-stage9-nonce-gateway
+        createdAt: &quot;2026-06-25T00:00:00Z&quot;
+        verification:
+          status: verified
+          verifier: k1s-local-boot-evidence-verifier-v1
+          trustRoot: k1s-core-root-of-trust
+          failureReasons: []
+      - nodeId: cell-node-1
+        role: cell-node
+        installerProfile: nixos-ai-max-edge-cell-installer-v1
+        installerImage: nixos-ai-max-edge-cell-installer
+        artifactDigest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+        manifestDigest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        bootMeasurementDigest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        signingKeyId: k1s-core-root-of-trust
+        verifierTrustRoot: k1s-core-root-of-trust
+        nonce: k1s-stage9-nonce-cell-node
+        createdAt: &quot;2026-06-25T00:00:00Z&quot;
+        verification:
+          status: verified
+          verifier: k1s-local-boot-evidence-verifier-v1
+          trustRoot: k1s-core-root-of-trust
+          failureReasons: []
+    assurance:
+      secureImageValidation: enabled
+      bootValidation: measured-verified
+      tamperDetection: enabled
+      validationFailureAction: disable-quarantine
+      coreAlerting: when-connected
+    installPaths:
+      - path: gateway
+        postInstall:
+          autoBoot: enabled
+          connectTarget: core
+          usbDevicePolicy: signed-only
+          displayMode: telemetry
+      - path: cell-node
+        postInstall:
+          autoBoot: enabled
+          connectTarget: gateway
+          usbDevicePolicy: limited
+          displayMode: connect-monitor-to-gateway
+  governanceEvidence:
+    useCase: nigerian-language-translation
+    readiness: governance-evidence-ready
+    datasetCard:
+      datasetId: ng-translation-public-demo-v1
+      name: Nigerian language translation public demo corpus
+      languages: [ha, ig, yo, en]
+      domain: public-service-local-domain
+      dataResidency: NG-local-lab
+      classification: public-demo
+      consentLawfulBasis: placeholder-consent-lawful-basis
+      retentionDeletionMarker: stage15-retention-delete-marker
+    modelCard:
+      modelId: ng-translation-ai-max-stage15
+      name: Nigerian language translation model
+      version: stage15-local-v1
+      task: translation
+      languages: [ha, ig, yo, en]
+      baseModelRef: models/llama:stage11-local
+      artifactRef: models/ng-translation:stage15-local
+      owner: k1s-public-ai-governance
+      operator: k1s-edge-operator
+    evalReport:
+      benchmarkRef: benchmarks/ng-translation-stage15
+      evalSetRef: evalsets/ng-translation-local-v1
+      metrics:
+        chrf: 0.62
+        semantic_adequacy: 0.81
+        toxicity_pass_rate: 0.99
+      approvalThreshold: 0.8
+      passed: true
+      localDomainNote: Nigerian-language local-domain simulation only
+    riskAssessment:
+      riskLevel: medium
+      humanOversight: true
+      biasNote: bias review required for Hausa Igbo Yoruba English
+      fairnessNote: fairness checks tracked by language and domain
+      securityNote: prompt and data handling reviewed locally
+      mitigationStatus: mitigations-documented
+    approvalRecord:
+      approverRole: ai-governance-reviewer
+      approvedAt: &quot;2026-06-25T00:00:00Z&quot;
+      releaseGate: stage15-governance-evidence-ready
+      rollbackRef: rollback/ng-translation-stage15
+    rollbackRecord:
+      trigger: quality-regression-or-governance-review
+      previousVersion: stage14-local-v0
+      evidenceMarker: stage15-rollback-evidence-marker</code></pre>
+<p>Current implementation:</p>
+<ul>
+<li>validates the contract shape and accepted autonomy mode names</li>
+<li>validates LAN-local discovery mode names and fabric cell counts of <code>1</code>, <code>2</code>, <code>4</code>, or <code>8</code></li>
+<li>requires peer gateway IDs to match the requested fabric cell count</li>
+<li>validates that the AI Max cell uses one installer profile/image with exactly two install paths: <code>gateway</code> and <code>cell-node</code></li>
+<li>requires the installer contract to be signed by the k1s core root of trust and to declare enabled secure image validation, measured/verified boot intent, tamper detection, disable/quarantine response, and connected-core alerting</li>
+<li>validates a local Stage 7 installer artifact signing envelope with deterministic artifact and manifest digests, root-of-trust signing key ID, simulation signature, provenance fields, and path coverage for both installer roles</li>
+<li>validates a local Stage 8 NixOS role scaffold for the single installer image, including exactly one <code>gateway</code> and one <code>cell-node</code> installed-system intent, non-empty module/config references, derivation from the signed Stage 7 manifest digest, and role-specific post-install services</li>
+<li>validates a local Stage 9 boot evidence verifier scaffold for gateway and cell-node roles, including installer profile/image, artifact and manifest digests, simulated boot measurement digest, trust root, nonce, timestamp, and verified result</li>
+<li>enforces local Stage 10 boot assurance semantics during stage placement when member-level <code>bootAssurance</code> is present: verified members remain schedulable, while failed, tampered, or unverified members are marked quarantined, excluded from placement capacity, and reported with deterministic failure reasons and alert state</li>
+<li>provides a Stage 11 local autonomy state machine for AI Max edge cells, transitioning through <code>connected</code>, <code>core-link-unavailable</code>, <code>degraded-local-only</code>, <code>reconciling</code>, and <code>reconciled</code> with deterministic gateway cache intent and transition traces</li>
+<li>validates a Stage 15 local AI governance evidence bundle for the Nigerian-language translation use case, including dataset/model cards, eval report metrics and thresholds, risk assessment, approval gate, and rollback/retirement marker</li>
+<li>validates post-install posture for gateway and cell-node paths, including auto-boot, role-specific connect targets, constrained USB policy, and display mode</li>
+<li>constrains <code>coreLinkUptimeThresholdPct</code> to <code>0..80</code></li>
+<li>keeps the gateway compute eligible while letting reservation affect placement planning</li>
+</ul>
+<p>Planned runtime mapping:</p>
+<ul>
+<li><code>normal-connected</code> means normal controller/core connectivity is available</li>
+<li><code>degraded-local-only</code> means edge-local services should continue when core or internet connectivity is unavailable</li>
+<li><code>reconcile-on-restore</code> means local state should reconcile when core connectivity returns, rather than being discarded</li>
+<li><code>lan-local</code> means gateway discovery is scoped to one physical LAN or lab LAN simulator namespace</li>
+<li><code>fabricCellCount</code> counts four-node cells, not individual nodes; a value of <code>4</code> represents sixteen compute-eligible members across four cells</li>
+<li><code>nixos-ai-max-edge-cell-installer-v1</code> describes a single NixOS installer image that supports gateway and cell-node install paths</li>
+<li><code>artifactDigest</code>, <code>manifestDigest</code>, and <code>signature</code> are Stage 7 local signing-envelope scaffold fields. They make verification behavior executable in manifest tests; they are not a real ISO build or production signature.</li>
+<li><code>roleScaffolds</code> is the Stage 8 role-scaffold-ready surface. It describes the NixOS module/config intent that the single signed installer would use to produce gateway and cell-node installed systems.</li>
+<li><code>bootEvidence</code> is the Stage 9 local verifier surface. It makes the boot evidence acceptance/rejection contract executable in unit tests without claiming real TPM quote, Secure Boot event log, or hardware attestation verification.</li>
+<li>member-level <code>bootAssurance</code> is the Stage 10 local enforcement surface. It lets unit tests represent verified/schedulable nodes and quarantined failed/tampered/unverified nodes, and the stage planner excludes quarantined members from simulated placement capacity.</li>
+<li>the autonomy state machine is the Stage 11 state-machine-ready surface. It turns the declarative autonomy names into deterministic local transitions and cache state, but does not run an outage/probe drill.</li>
+<li><code>governanceEvidence</code> is the Stage 15 governance-evidence-ready surface. It makes dataset/model/eval/risk/approval/rollback evidence executable in local tests for the Nigerian-language translation model use case. It is not a legal compliance determination, external approval workflow, production audit store, or model governance platform.</li>
+<li><code>secureImageValidation</code>, <code>bootValidation</code>, <code>tamperDetection</code>, <code>validationFailureAction</code>, and <code>coreAlerting</code> are declarative assurance requirements for later installer, TPM/Secure Boot, attestation, and alerting enforcement</li>
+</ul>
+<p>This is contract-level behavior only. It does not yet implement disconnected gateway execution, local service failover, live LAN discovery, multi-cell routing, post-reconnect state replay, actual ISO build/signing, TPM/Secure Boot enforcement, attestation verification, USB policy enforcement, real key custody, production ISO signing, real NixOS image realization, TPM quote verification, Secure Boot event log verification, hardware attestation, real kubelet/node admission control, TPM-backed enforcement, Stage 12 outage/probe drills, or hardened alert transport. Stage 15 also does not complete legal compliance, consent verification, data protection review, external governance integration, or production release approval.</p>
 <h2 id="controller-lifecycle">Controller Lifecycle</h2>
 <p>The controller runs a fixed phase machine:</p>
 <p>1. <code>PENDING</code> 2. <code>ADMITTING</code> 3. <code>RESERVING</code> 4. <code>FABRIC</code> 5. <code>STARTING_WORKERS</code> 6. <code>STARTING_LEADER</code> 7. <code>JOINING</code> 8. <code>READY</code> 9. <code>RESTARTING</code> 10. <code>FAILED</code></p>
@@ -958,7 +1163,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 21:36:21</span>
+        <span>Built 2026-07-23 23:44:31</span>
       </div>
     </footer>
     <script>

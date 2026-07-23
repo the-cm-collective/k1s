@@ -864,6 +864,7 @@
 <li>Forced reclaim when etcd returns <code>mvcc: database space exceeded</code>:
 <ul>
 <li><code>scripts/dev/etcd_maintenance.sh compact-defrag</code></li>
+<li>For HA/dev clusters, snapshot first, prune the event prefix, compact, defrag each member, then verify <code>etcdctl alarm list</code> is empty before resuming long lanes.</li>
 </ul>
 </li>
 <li>Startup defaults in <code>k1s-core</code>/<code>dev-etcd</code> profiles:
@@ -871,6 +872,17 @@
 <li><code>AE_ETCD_MAINTENANCE_ENABLE=1</code></li>
 <li><code>AE_ETCD_MAINTENANCE_THRESHOLD_PCT=80</code></li>
 <li><code>AE_ETCD_MAINTENANCE_INTERVAL_SEC=900</code> (controller loop watchdog cadence)</li>
+<li><code>AE_ETCD_EVENT_RETENTION_PRUNE_ENABLE=1</code></li>
+<li><code>AE_ETCD_EVENT_RETENTION_PRUNE_BATCH=50000</code></li>
+<li><code>AE_ETCD_EVENT_RETENTION_PRUNE_MAX_BATCHES=100</code></li>
+<li><code>AE_ETCD_EVENT_COALESCE_WINDOW_SEC=300</code></li>
+</ul>
+</li>
+<li>Long-soak guidance:
+<ul>
+<li>Keep event retention enabled for HA/dev clusters; disabling it can let repeated workload status events exhaust the default 2 GiB etcd backend quota.</li>
+<li>Use a decimal <code>AE_ETCD_QUOTA_BACKEND_BYTES</code> value such as <code>2147483648</code>; avoid scientific notation in live environment overrides.</li>
+<li>After a reclaim, confirm the event keyspace remains bounded with <code>etcdctl get &#x27;&lt;prefix&gt;/events/&#x27; --prefix --count-only</code>.</li>
 </ul>
 </li>
 <li>Override/disable behavior when needed:
@@ -2213,7 +2225,7 @@ if [ $dup_names -gt 0 ] || [ $oor -gt 0 ]; then
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 21:36:21</span>
+        <span>Built 2026-07-23 23:44:31</span>
       </div>
     </footer>
     <script>
