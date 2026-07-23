@@ -11,6 +11,42 @@
 ### Fixed
 - No user-facing changes yet.
 
+## 0.1.6 - 2026-07-23
+
+### Added
+- Stable release of the 0.1.6 line, including AI Max / Strix Halo edge-cell
+  contracts for gateway discovery, reservation policy, boot assurance,
+  installer role scaffolding, artifact-signing scaffolds, and edge autonomy
+  state.
+- Env-scoped edge admission API plus Hive dashboard edge gateway probes, site
+  grouping, build visibility, and schedulability display.
+- Namespaced RBAC support in Kubernetes apply/API shim paths, including service
+  account token projection in the containerd runtime.
+- OpenStack Lite public route import and target import dry-run contract
+  artifacts for local SaaS integration validation.
+- Expanded inference fabric manifest/controller coverage and public reference
+  documentation.
+
+### Changed
+- Core/edge ingress translation now preserves service target ports, waits for
+  translated backends, and syncs routes after API apply.
+- Controller reconciliation now orders registry app import, translated ingress,
+  API apply, route sync, endpoint recovery, and stale snapshot handling more
+  defensibly.
+- Runtime endpoint hydration now recovers service endpoints from CRI/container
+  runtime state and prefers live pod/container IPs for core-local routes.
+- `k1s-core-ha` Helm values expose additional ingress configuration for
+  MicroK8s and edge gateway deployments.
+
+### Fixed
+- Translated ingress cleanup now follows app deletion and ingress removal more
+  reliably.
+- Containerd service port conflicts fail closed, stale registry snapshots are
+  skipped, and remote runtimes remove deleted apps more consistently.
+- Dashboard tests isolate lab edge-gateway config so local
+  `/run/k1s-dashboard-edge-gateways.json` does not leak into unit-only layout
+  assertions.
+
 ## 0.1.6.dev3 - 2026-07-23
 
 ### Added
