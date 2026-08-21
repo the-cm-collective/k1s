@@ -672,7 +672,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pdb-min-available",
         type=str,
         default=None,
-        help="PDB minAvailable (int or percent, e.g., 1 or 50%)",
+        help="PDB minAvailable (int or percent, e.g., 1 or 50%%)",
     )
     xk.add_argument(
         "--pdb-max-unavailable",
