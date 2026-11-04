@@ -11,6 +11,22 @@
 ### Fixed
 - No user-facing changes yet.
 
+## 0.1.8a1 - 2026-11-03
+
+### Changed
+- Renamed the Python distribution from `ae` to `k1s-core` while preserving the
+  `ae` import package and the `ae`, `k1s`, and service compatibility commands.
+- Kept the release line pre-1.0 and advanced to the next PEP 440 alpha rather
+  than implying a stable 1.0 compatibility contract.
+- Made the CRI gogo protobuf dependency package-local so wheel and source
+  archives no longer expose a top-level `github` Python namespace.
+- Added digest-verified OIDC workflows that promote the exact TestPyPI-built
+  wheel and sdist bytes to the production PyPI environment.
+
+### Fixed
+- Unified package, CLI, controller OpenAPI, and API-shim OpenAPI versions on the
+  canonical `ae.__version__` value.
+
 ## 0.1.7 - 2026-08-27
 
 ### Changed

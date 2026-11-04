@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
 from ae.controller.spec import DEFAULT_NAMESPACE, split_app_key
 from ae.controller.state import (
@@ -2179,7 +2180,7 @@ def _swagger_doc() -> dict[str, Any]:
         "swagger": "2.0",
         "info": {
             "title": "k1s apishim",
-            "version": "0.1.6.dev1",
+            "version": AE_VERSION,
             "description": (
                 "Kubernetes-compatible API shim for local k1s development. "
                 "Supports discovery, basic CRUD for core workloads, and a minimal OpenAPI schema "

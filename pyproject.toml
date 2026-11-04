@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ae"
-version = "0.1.7"
-description = "Minimal application engine controller prototype"
+name = "k1s-core"
+version = "0.1.8a1"
+description = "Core Python runtime and compatibility CLIs for k1s"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
@@ -44,6 +44,11 @@ version_codename = "Snow Moon"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["ae", "ae.*"]
+namespaces = true
 
 [tool.setuptools.package-data]
 "ae.resources" = ["**/*.html", "**/*.md", "**/*.txt", "**/*.sql"]

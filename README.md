@@ -50,6 +50,8 @@ Production guidance:
 - Demo modes and examples: `docs/guides/demos-examples.md`
 - End-to-end walkthrough: `docs/guides/e2e.md`
 - CI examples: `docs/ops/ci-gh-actions.md`
+- Python distribution identity and release compatibility:
+  `docs/reference/python-distribution.md`
 
 ## Integrated Dashboard & Interactive Playground
 
@@ -66,6 +68,11 @@ Playground:
 ```
 python -m pip install -e .[dev]
 ```
+
+Published Python artifacts use the distribution name `k1s-core`. The runtime
+package remains importable as `ae`, and the `k1s` and historical `ae*` command
+entry points remain available. See `docs/reference/python-distribution.md` for
+the pre-1.0 compatibility policy.
 
 Optional: add file-watching support for instant reconciles on spec changes:
 

@@ -49,4 +49,8 @@ git push origin v0.1.0
 
 ## Current status
 
-- `0.1.0` (2026-01-18) is the first official release.
+- `0.1.7` (2026-08-27) is the latest stable release.
+- `0.1.8a1` is the next pre-1.0 candidate. It changes the installable
+  distribution name to `k1s-core` while retaining the `ae` Python import and
+  compatibility commands. A `1.0.0a1` version remains deferred until the
+  project documents and validates a 1.0 compatibility contract.
