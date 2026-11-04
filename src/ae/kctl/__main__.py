@@ -7,6 +7,7 @@ that map onto the existing `ae.cli` functionality. k1s Apps are Deployment-like 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ from ae.observability.logging import configure_logging
 from ae.controller.reconciler import Reconciler
 from ae.controller.state import RegistryConflictError, SQLiteStateStore, state_store_from_env
 from ae.ingress.service import IngressService
+from ae.kctl.lifecycle import LIFECYCLE_ACTIONS, PROFILE_NAMES, LifecycleManager
 from ae.controller.__main__ import service_controller_factory
 
 
@@ -178,6 +180,14 @@ def build_parser() -> argparse.ArgumentParser:
     sc_p = sub.add_parser("scale", help="Scale a workload/app by reconciling replicas")
     sc_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
     sc_p.add_argument("--replicas", type=int, required=True)
+
+    # k1s profile start|status|stop|restart <core|edge|core-edge|edge-core>
+    profile_p = sub.add_parser("profile", help="Manage a supported k1s runtime profile")
+    profile_sub = profile_p.add_subparsers(dest="profile_action", required=True)
+    for action in LIFECYCLE_ACTIONS:
+        action_p = profile_sub.add_parser(action, help=f"{action.capitalize()} a runtime profile")
+        action_p.add_argument("profile", choices=PROFILE_NAMES)
+        action_p.add_argument("-o", "--output", choices=["text", "json"], default="text")
 
     return p
 
@@ -381,7 +391,9 @@ def handle_apply(ns: argparse.Namespace, reconciler: Reconciler) -> int:
 
         manifest = load_manifest(Path(ns.file))
         store = state_store_from_env()
-        existing = store.get_registered_entry(app_key(manifest.metadata.name, manifest.metadata.namespace))
+        existing = store.get_registered_entry(
+            app_key(manifest.metadata.name, manifest.metadata.namespace)
+        )
         src = existing.source if existing else "kctl"
         lbls = existing.labels if existing else getattr(manifest.metadata, "labels", None)
         try:
@@ -549,6 +561,28 @@ def handle_scale_k1s(
     return 0
 
 
+def profile_lifecycle_manager_factory() -> LifecycleManager:
+    """Return the concrete lifecycle manager behind the public CLI handler."""
+
+    return LifecycleManager.from_environment()
+
+
+def handle_profile(ns: argparse.Namespace) -> int:
+    """Execute one explicit profile lifecycle action."""
+
+    result = profile_lifecycle_manager_factory().perform(ns.profile_action, ns.profile)
+    if ns.output == "json":
+        print(json.dumps(result.to_dict(), sort_keys=True))
+    else:
+        details = [f"profile={result.profile}", f"status={result.status}"]
+        if result.pid is not None:
+            details.append(f"pid={result.pid}")
+        if result.command:
+            details.append(f"command={' '.join(result.command)}")
+        print(" ".join(details))
+    return result.exit_code
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - exercised via tests
     parser = build_parser()
     ns = parser.parse_args(argv)
@@ -560,6 +594,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - exercised 
         configure_logging(ns.log_level.upper())
     else:
         configure_logging(None)
+
+    if ns.cmd == "profile":
+        return handle_profile(ns)
 
     store, reconciler, runtime = _setup()
 

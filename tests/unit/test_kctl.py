@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
-from ae.kctl.__main__ import main
+import ae.kctl.__main__ as kctl_main
+from ae.kctl.__main__ import build_parser, main
+from ae.kctl.lifecycle import LifecycleResult
 
 
 def write_manifest(path: Path, image: str = "alpine:3.20") -> None:
@@ -78,3 +80,37 @@ def test_rollout_undo(tmp_path, monkeypatch, capsys):
     assert main(["rollout", "undo", "app/echo", "--to-revision", "1"]) == 0
     out = capsys.readouterr().out
     assert "rolled back default/echo" in out
+
+
+def test_profile_lifecycle_cli_does_not_initialize_workload_runtime(monkeypatch, capsys):
+    calls: list[tuple[str, str]] = []
+
+    class FakeManager:
+        def perform(self, action: str, profile: str) -> LifecycleResult:
+            calls.append((action, profile))
+            return LifecycleResult(
+                action="start",
+                profile="core-edge",
+                status="started",
+                exit_code=0,
+                pid=1234,
+                command=("/repo/scripts/dev/run_profile.sh", "k1s-core"),
+            )
+
+    monkeypatch.setattr(kctl_main, "profile_lifecycle_manager_factory", FakeManager)
+    monkeypatch.setattr(
+        kctl_main,
+        "_setup",
+        lambda: (_ for _ in ()).throw(AssertionError("workload runtime initialized")),
+    )
+
+    assert main(["profile", "start", "core-edge", "--output", "json"]) == 0
+    assert calls == [("start", "core-edge")]
+    assert '"profile": "core-edge"' in capsys.readouterr().out
+
+
+def test_k1s_help_preserves_workload_commands_and_adds_profile_lifecycle() -> None:
+    help_text = build_parser().format_help()
+    for command in ("get", "describe", "apply", "rollout", "logs", "events", "delete", "scale"):
+        assert command in help_text
+    assert "profile" in help_text

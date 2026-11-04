@@ -10,6 +10,10 @@ Python or command surfaces.
 - Python imports remain under `ae`, including `import ae` and all
   `ae.runtime.cri` modules.
 - The primary operator command remains `k1s`.
+- `k1s profile start|status|stop|restart` provides one stable lifecycle
+  contract for the `core`, `edge`, `core-edge`, and `edge-core` profiles. It
+  delegates to the existing profile runner and keeps per-profile PID/log state
+  separate from workload reconciliation state.
 - Existing commands `ae`, `ae-rotate-certs`, `ae-node`, `ae-gateway`, and
   `ae-worker-stub` remain installed by `k1s-core`.
 - CRI protobuf modules remain under

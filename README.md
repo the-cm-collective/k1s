@@ -159,6 +159,21 @@ k1s describe app/echo
 k1s logs app/echo --follow --tail 100
 ```
 
+Managed runtime profiles use a deterministic lifecycle surface. The paired
+profiles preserve the existing Makefile contracts: `core-edge` selects the
+lightweight NATS core transport, while `edge-core` connects an edge profile to
+the core profile.
+
+```
+k1s profile start core
+k1s profile status core
+k1s profile restart core-edge
+k1s profile stop edge-core
+```
+
+Lifecycle state and logs default to `state/k1s-lifecycle/`; set
+`K1S_PROFILE_LIFECYCLE_DIR` to use a different local state directory.
+
 API endpoints (when started with `--metrics-port`): see `docs/reference/http-api.md`.
 
 Multi-container tips:

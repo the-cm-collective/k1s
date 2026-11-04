@@ -3,7 +3,8 @@
 ## Unreleased
 
 ### Added
-- No user-facing changes yet.
+- Added deterministic `k1s profile start|status|stop|restart` lifecycle
+  contracts for the core, edge, core-edge, and edge-core runtime profiles.
 
 ### Changed
 - No user-facing changes yet.

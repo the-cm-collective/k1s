@@ -3,11 +3,13 @@ from __future__ import annotations
 import re
 import tarfile
 import tomllib
+from importlib import import_module
 from pathlib import Path
 
 from scripts.normalize_python_sdist import normalize
 
 from ae import __version__ as ae_version
+from ae import build_info
 from ae.apishim.server import _openapi_v3_stub, _swagger_doc
 from ae.kctl import __version__ as kctl_version
 from ae.runtime.cri.api.runtime.v1 import api_pb2, gogo_pb2
@@ -15,6 +17,11 @@ from ae.runtime.cri.api.runtime.v1 import api_pb2, gogo_pb2
 ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = ROOT / "pyproject.toml"
 PROTECTED_PATHS = {
+    ".envrc",
+    ".env.development",
+    ".env.local",
+    ".env.production",
+    ".env.test",
     "ops/systemd/ae-ha-core.env",
     "ops/systemd/ae.env",
 }
@@ -46,6 +53,15 @@ def test_distribution_identity_preserves_import_and_commands() -> None:
         "include": ["ae", "ae.*"],
         "namespaces": True,
     }
+
+
+def test_documented_compatibility_entrypoints_remain_importable() -> None:
+    scripts = _project()["scripts"]
+    for target in scripts.values():
+        module_name, attribute = target.split(":", 1)
+        module = import_module(module_name)
+        assert callable(getattr(module, attribute))
+    assert build_info()["version"] == ae_version
 
 
 def test_version_sources_share_the_canonical_runtime_version() -> None:
