@@ -10,7 +10,8 @@
 - No user-facing changes yet.
 
 ### Fixed
-- No user-facing changes yet.
+- Completed CRI container seccomp/AppArmor and pod sandbox fsGroup,
+  seccomp, and SELinux security-context mappings.
 
 ## 0.1.8a1 - 2026-11-03
 

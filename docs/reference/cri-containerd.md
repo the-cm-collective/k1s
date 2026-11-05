@@ -404,6 +404,15 @@ export AE_APISHIM_READ_TOKEN=<read-token>
 - Pod security: `podSecurity.fsGroup` maps to supplemental groups, and
   `podSecurity.seccompProfileType`/`podSecurity.seLinux*` map into the sandbox
   security context.
+- Seccomp accepts `RuntimeDefault`, `Unconfined`, or `Localhost`. A `Localhost`
+  profile must also set `seccompLocalhostProfile`; the reference is passed to
+  CRI without rewriting it.
+- AppArmor accepts `runtime/default`, `unconfined`, or `localhost/<profile>`.
+  The `localhost/` prefix selects the CRI `Localhost` profile type and only the
+  profile name is passed as its localhost reference.
+- Pod security mappings are emitted even when host namespaces are disabled.
+  When host namespaces are enabled, their existing CRI namespace options are
+  preserved alongside fsGroup, seccomp, and SELinux values.
 - Host namespaces are gated by `AE_CRI_ALLOW_HOST_NS=1` as described above.
 
 ## Crictl-only image (default)

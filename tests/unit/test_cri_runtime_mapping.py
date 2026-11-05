@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from ae.controller.spec import AppManifest
 from ae.runtime.cri_runtime import CRIRuntime
 
@@ -74,8 +76,7 @@ def test_cri_container_config_separates_command_args_and_mounts():
 
     mounts = list(side_cfg.mounts or [])
     assert any(
-        m.host_path == "/tmp/ae-proj/config/db" and m.container_path == "/etc/db"
-        for m in mounts
+        m.host_path == "/tmp/ae-proj/config/db" and m.container_path == "/etc/db" for m in mounts
     )
 
 
@@ -158,8 +159,149 @@ def test_run_pod_sets_host_network_namespace_mode(monkeypatch) -> None:
     req = captured.get("req")
     assert req is not None
     assert int(req.config.linux.security_context.namespace_options.network) == 2
-    assert runtime._endpoint_for_manifest(
-        manifest,
-        None,
-        replica_id="hostnet-demo-rev1-0",
-    ) == "127.0.0.1:8080"
+    assert (
+        runtime._endpoint_for_manifest(
+            manifest,
+            None,
+            replica_id="hostnet-demo-rev1-0",
+        )
+        == "127.0.0.1:8080"
+    )
+
+
+def test_cri_container_security_context_maps_profiles_and_existing_fields() -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "secure-demo", "namespace": "default"},
+            "spec": {
+                "image": "busybox:1.36",
+                "replicas": 1,
+                "security": {
+                    "runAsUser": 1000,
+                    "runAsGroup": 2000,
+                    "readOnlyRootFilesystem": True,
+                    "dropCapabilities": ["NET_RAW", "SYS_PTRACE"],
+                    "seccompProfileType": "Localhost",
+                    "seccompLocalhostProfile": "profiles/k1s-seccomp.json",
+                    "apparmorProfile": "localhost/k1s-secure-demo",
+                },
+            },
+        }
+    )
+
+    config = CRIRuntime()._container_config(  # type: ignore[abstract]
+        manifest, "secure-demo-rev1-0", 1
+    )
+    context = config.linux.security_context
+
+    assert context.run_as_user.value == 1000
+    assert context.run_as_group.value == 2000
+    assert context.readonly_rootfs is True
+    assert list(context.capabilities.drop_capabilities) == ["NET_RAW", "SYS_PTRACE"]
+    assert context.seccomp.profile_type == context.seccomp.Localhost
+    assert context.seccomp.localhost_ref == "profiles/k1s-seccomp.json"
+    assert context.apparmor.profile_type == context.apparmor.Localhost
+    assert context.apparmor.localhost_ref == "k1s-secure-demo"
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_type"),
+    [
+        ("runtime/default", "RuntimeDefault"),
+        ("unconfined", "Unconfined"),
+    ],
+)
+def test_cri_container_apparmor_named_profiles(profile: str, expected_type: str) -> None:
+    runtime = CRIRuntime()  # type: ignore[abstract]
+    context = runtime._build_security_context_from_spec({"apparmorProfile": profile})
+
+    assert context is not None
+    assert context.apparmor.profile_type == getattr(context.apparmor, expected_type)
+    assert context.apparmor.localhost_ref == ""
+
+
+@pytest.mark.parametrize("profile_type", ["RuntimeDefault", "Unconfined"])
+def test_cri_container_seccomp_named_profiles(profile_type: str) -> None:
+    runtime = CRIRuntime()  # type: ignore[abstract]
+    context = runtime._build_security_context_from_spec({"seccompProfileType": profile_type})
+
+    assert context is not None
+    assert context.seccomp.profile_type == getattr(context.seccomp, profile_type)
+    assert context.seccomp.localhost_ref == ""
+
+
+def test_cri_container_rejects_local_profiles_without_references() -> None:
+    runtime = CRIRuntime()  # type: ignore[abstract]
+
+    with pytest.raises(ValueError, match="requires a localhost reference"):
+        runtime._build_security_context_from_spec({"seccompProfileType": "Localhost"})
+    with pytest.raises(ValueError, match="unsupported AppArmor profile"):
+        runtime._build_security_context_from_spec({"apparmorProfile": "localhost/"})
+
+
+def test_cri_pod_sandbox_maps_fs_group_seccomp_and_selinux_without_host_ns() -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "secure-pod", "namespace": "default"},
+            "spec": {
+                "image": "busybox:1.36",
+                "replicas": 1,
+                "podSecurity": {
+                    "fsGroup": 3000,
+                    "seccompProfileType": "Localhost",
+                    "seccompLocalhostProfile": "profiles/pod-seccomp.json",
+                    "seLinuxUser": "system_u",
+                    "seLinuxRole": "system_r",
+                    "seLinuxType": "container_t",
+                    "seLinuxLevel": "s0:c1,c2",
+                },
+            },
+        }
+    )
+
+    config = CRIRuntime()._pod_sandbox_linux_config(manifest)  # type: ignore[abstract]
+
+    assert config is not None
+    context = config.security_context
+    assert list(context.supplemental_groups) == [3000]
+    assert context.seccomp.profile_type == context.seccomp.Localhost
+    assert context.seccomp.localhost_ref == "profiles/pod-seccomp.json"
+    assert context.selinux_options.user == "system_u"
+    assert context.selinux_options.role == "system_r"
+    assert context.selinux_options.type == "container_t"
+    assert context.selinux_options.level == "s0:c1,c2"
+    assert not context.HasField("namespace_options")
+
+
+def test_cri_pod_sandbox_preserves_host_namespace_with_security_context() -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "secure-host-pod", "namespace": "default"},
+            "spec": {
+                "image": "busybox:1.36",
+                "replicas": 1,
+                "hostNetwork": True,
+                "podSecurity": {
+                    "fsGroup": 4000,
+                    "seccompProfileType": "RuntimeDefault",
+                },
+            },
+        }
+    )
+
+    runtime = CRIRuntime()  # type: ignore[abstract]
+    config = runtime._pod_sandbox_linux_config(manifest)
+
+    assert config is not None
+    context = config.security_context
+
+    assert int(context.namespace_options.network) == 2
+    assert list(context.supplemental_groups) == [4000]
+    assert context.seccomp.profile_type == context.seccomp.RuntimeDefault
+    assert context.seccomp.localhost_ref == ""

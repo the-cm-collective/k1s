@@ -3055,7 +3055,7 @@ class CRIRuntime(RuntimeAdapter):
             memory_limit_in_bytes=mem_limit or 0,
         )
 
-    def _build_security_context_from_spec(self, spec: Any):
+    def _build_security_context_from_spec(self, spec: Any) -> Any | None:
         pb2 = self._pb2()
         sec = spec
         if sec is None:
@@ -3084,7 +3084,59 @@ class CRIRuntime(RuntimeAdapter):
         drops = list(self._spec_value(sec, "drop_caps", "dropCapabilities") or [])
         if drops:
             ctx.capabilities.drop_capabilities.extend([str(c) for c in drops])
+        seccomp_type = self._spec_value(sec, "seccomp_type", "seccompProfileType")
+        if seccomp_type:
+            seccomp = self._security_profile(
+                str(seccomp_type),
+                self._spec_value(
+                    sec,
+                    "seccomp_localhost_profile",
+                    "seccompLocalhostProfile",
+                ),
+            )
+            try:
+                ctx.seccomp.CopyFrom(seccomp)
+            except Exception:
+                ctx.seccomp = seccomp
+        apparmor_profile = self._spec_value(sec, "apparmor_profile", "apparmorProfile")
+        if apparmor_profile:
+            apparmor = self._apparmor_security_profile(str(apparmor_profile))
+            try:
+                ctx.apparmor.CopyFrom(apparmor)
+            except Exception:
+                ctx.apparmor = apparmor
         return ctx
+
+    def _security_profile(self, profile_type: str, localhost_ref: Any = None) -> Any:
+        pb2 = self._pb2()  # type: ignore[no-untyped-call]
+        normalized = str(profile_type).strip()
+        enum_value = getattr(pb2.SecurityProfile, normalized, None)
+        if enum_value is None or normalized not in {
+            "RuntimeDefault",
+            "Unconfined",
+            "Localhost",
+        }:
+            raise ValueError(f"unsupported CRI security profile type: {profile_type}")
+        ref = str(localhost_ref or "").strip()
+        if normalized == "Localhost" and not ref:
+            raise ValueError("Localhost CRI security profile requires a localhost reference")
+        return pb2.SecurityProfile(
+            profile_type=enum_value,
+            localhost_ref=ref if normalized == "Localhost" else "",
+        )
+
+    def _apparmor_security_profile(self, profile: str) -> Any:
+        normalized = str(profile).strip()
+        if normalized == "runtime/default":
+            return self._security_profile("RuntimeDefault")
+        if normalized == "unconfined":
+            return self._security_profile("Unconfined")
+        prefix = "localhost/"
+        if normalized.startswith(prefix):
+            localhost_ref = normalized[len(prefix) :].strip()
+            if localhost_ref:
+                return self._security_profile("Localhost", localhost_ref)
+        raise ValueError(f"unsupported AppArmor profile: {profile}")
 
     def _build_states(self, manifest: AppManifest, revision: int) -> list[PodState]:
         states: list[PodState] = []
@@ -3344,26 +3396,73 @@ class CRIRuntime(RuntimeAdapter):
         host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
         return f"{host}:{int(port)}"
 
-    def _pod_sandbox_linux_config(self, manifest: AppManifest):
+    def _pod_sandbox_linux_config(self, manifest: AppManifest) -> Any | None:
         host_network = bool(getattr(manifest.spec, "host_network", False))
         host_pid = bool(getattr(manifest.spec, "host_pid", False))
         host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
-        if not any((host_network, host_pid, host_ipc)):
+        pod_security = getattr(manifest.spec, "pod_security", None)
+        fs_group = self._spec_value(pod_security, "fs_group", "fsGroup")
+        seccomp_type = self._spec_value(
+            pod_security,
+            "seccomp_type",
+            "seccompProfileType",
+        )
+        selinux_values = {
+            "user": self._spec_value(pod_security, "selinux_user", "seLinuxUser"),
+            "role": self._spec_value(pod_security, "selinux_role", "seLinuxRole"),
+            "type": self._spec_value(pod_security, "selinux_type", "seLinuxType"),
+            "level": self._spec_value(pod_security, "selinux_level", "seLinuxLevel"),
+        }
+        has_pod_security = (
+            fs_group is not None
+            or bool(seccomp_type)
+            or any(value is not None for value in selinux_values.values())
+        )
+        if not any((host_network, host_pid, host_ipc)) and not has_pod_security:
             return None
         pb2 = self._pb2()
-        namespace_options = pb2.NamespaceOption()
-        node_mode = pb2.NamespaceMode.NODE
-        if host_network:
-            namespace_options.network = node_mode
-        if host_pid:
-            namespace_options.pid = node_mode
-        if host_ipc:
-            namespace_options.ipc = node_mode
+        security_context = pb2.LinuxSandboxSecurityContext()
+        if any((host_network, host_pid, host_ipc)):
+            namespace_options = pb2.NamespaceOption()
+            node_mode = pb2.NamespaceMode.NODE
+            if host_network:
+                namespace_options.network = node_mode
+            if host_pid:
+                namespace_options.pid = node_mode
+            if host_ipc:
+                namespace_options.ipc = node_mode
+            try:
+                security_context.namespace_options.CopyFrom(namespace_options)
+            except Exception:
+                security_context.namespace_options = namespace_options
+        if fs_group is not None:
+            security_context.supplemental_groups.append(int(fs_group))
+        if seccomp_type:
+            seccomp = self._security_profile(
+                str(seccomp_type),
+                self._spec_value(
+                    pod_security,
+                    "seccomp_localhost_profile",
+                    "seccompLocalhostProfile",
+                ),
+            )
+            try:
+                security_context.seccomp.CopyFrom(seccomp)
+            except Exception:
+                security_context.seccomp = seccomp
+        if any(value is not None for value in selinux_values.values()):
+            selinux_options = pb2.SELinuxOption(
+                **{key: str(value or "") for key, value in selinux_values.items()}
+            )
+            try:
+                security_context.selinux_options.CopyFrom(selinux_options)
+            except Exception:
+                security_context.selinux_options = selinux_options
         linux_cfg = pb2.LinuxPodSandboxConfig()
         try:
-            linux_cfg.security_context.namespace_options.CopyFrom(namespace_options)
+            linux_cfg.security_context.CopyFrom(security_context)
         except Exception:
-            linux_cfg.security_context.namespace_options = namespace_options
+            linux_cfg.security_context = security_context
         return linux_cfg
 
     def _pod_uid(self, replica_id: str, namespace: str | None) -> str:
