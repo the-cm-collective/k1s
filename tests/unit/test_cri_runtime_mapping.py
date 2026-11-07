@@ -224,11 +224,21 @@ def test_cri_container_security_context_maps_profiles_and_existing_fields() -> N
                 "security": {
                     "runAsUser": 1000,
                     "runAsGroup": 2000,
+                    "runAsNonRoot": True,
+                    "privileged": False,
+                    "allowPrivilegeEscalation": False,
                     "readOnlyRootFilesystem": True,
+                    "addCapabilities": ["NET_BIND_SERVICE"],
                     "dropCapabilities": ["NET_RAW", "SYS_PTRACE"],
+                    "maskedPaths": ["/proc/kcore"],
+                    "readOnlyPaths": ["/proc/sys"],
                     "seccompProfileType": "Localhost",
                     "seccompLocalhostProfile": "profiles/k1s-seccomp.json",
                     "apparmorProfile": "localhost/k1s-secure-demo",
+                    "seLinuxUser": "system_u",
+                    "seLinuxRole": "system_r",
+                    "seLinuxType": "container_t",
+                    "seLinuxLevel": "s0:c1,c2",
                 },
             },
         }
@@ -241,12 +251,21 @@ def test_cri_container_security_context_maps_profiles_and_existing_fields() -> N
 
     assert context.run_as_user.value == 1000
     assert context.run_as_group.value == 2000
+    assert context.privileged is False
+    assert context.no_new_privs is True
     assert context.readonly_rootfs is True
+    assert list(context.capabilities.add_capabilities) == ["NET_BIND_SERVICE"]
     assert list(context.capabilities.drop_capabilities) == ["NET_RAW", "SYS_PTRACE"]
+    assert list(context.masked_paths) == ["/proc/kcore"]
+    assert list(context.readonly_paths) == ["/proc/sys"]
     assert context.seccomp.profile_type == context.seccomp.Localhost
     assert context.seccomp.localhost_ref == "profiles/k1s-seccomp.json"
     assert context.apparmor.profile_type == context.apparmor.Localhost
     assert context.apparmor.localhost_ref == "k1s-secure-demo"
+    assert context.selinux_options.user == "system_u"
+    assert context.selinux_options.role == "system_r"
+    assert context.selinux_options.type == "container_t"
+    assert context.selinux_options.level == "s0:c1,c2"
 
 
 @pytest.mark.parametrize(
@@ -278,9 +297,9 @@ def test_cri_container_seccomp_named_profiles(profile_type: str) -> None:
 def test_cri_container_rejects_local_profiles_without_references() -> None:
     runtime = CRIRuntime()  # type: ignore[abstract]
 
-    with pytest.raises(ValueError, match="requires a localhost reference"):
+    with pytest.raises(ValueError, match="Localhost seccomp requires"):
         runtime._build_security_context_from_spec({"seccompProfileType": "Localhost"})
-    with pytest.raises(ValueError, match="unsupported AppArmor profile"):
+    with pytest.raises(ValueError, match="apparmor"):
         runtime._build_security_context_from_spec({"apparmorProfile": "localhost/"})
 
 
@@ -295,6 +314,7 @@ def test_cri_pod_sandbox_maps_fs_group_seccomp_and_selinux_without_host_ns() -> 
                 "replicas": 1,
                 "podSecurity": {
                     "fsGroup": 3000,
+                    "supplementalGroups": [1000, 2000, 1000, 3000],
                     "seccompProfileType": "Localhost",
                     "seccompLocalhostProfile": "profiles/pod-seccomp.json",
                     "seLinuxUser": "system_u",
@@ -310,7 +330,7 @@ def test_cri_pod_sandbox_maps_fs_group_seccomp_and_selinux_without_host_ns() -> 
 
     assert config is not None
     context = config.security_context
-    assert list(context.supplemental_groups) == [3000]
+    assert list(context.supplemental_groups) == [1000, 2000, 3000]
     assert context.seccomp.profile_type == context.seccomp.Localhost
     assert context.seccomp.localhost_ref == "profiles/pod-seccomp.json"
     assert context.selinux_options.user == "system_u"
@@ -348,3 +368,205 @@ def test_cri_pod_sandbox_preserves_host_namespace_with_security_context() -> Non
     assert list(context.supplemental_groups) == [4000]
     assert context.seccomp.profile_type == context.seccomp.RuntimeDefault
     assert context.seccomp.localhost_ref == ""
+
+
+def test_cri_container_security_context_preserves_omission_and_explicit_defaults() -> None:
+    runtime = CRIRuntime()  # type: ignore[abstract]
+
+    empty = runtime._build_security_context_from_spec({})
+    assert empty is not None
+    assert not empty.HasField("run_as_user")
+    assert not empty.HasField("run_as_group")
+    assert not empty.HasField("capabilities")
+    assert not empty.HasField("selinux_options")
+    assert not empty.HasField("seccomp")
+    assert not empty.HasField("apparmor")
+    assert empty.privileged is False
+    assert empty.no_new_privs is False
+    assert list(empty.masked_paths) == []
+    assert list(empty.readonly_paths) == []
+
+    privileged = runtime._build_security_context_from_spec(
+        {"privileged": True, "allowPrivilegeEscalation": True}
+    )
+    assert privileged is not None
+    assert privileged.privileged is True
+    assert privileged.no_new_privs is False
+
+
+def test_cri_sidecar_and_create_request_sandbox_map_security(monkeypatch) -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "secure-sidecar", "namespace": "default"},
+            "spec": {
+                "image": "busybox:1.36",
+                "replicas": 1,
+                "podSecurity": {
+                    "supplementalGroups": [1000, 1000, 2000],
+                    "fsGroup": 3000,
+                    "seccompProfileType": "RuntimeDefault",
+                },
+                "containers": [
+                    {
+                        "name": "audit",
+                        "image": "busybox:1.36",
+                        "security": {
+                            "runAsUser": 2000,
+                            "runAsNonRoot": True,
+                            "privileged": False,
+                            "allowPrivilegeEscalation": False,
+                            "addCapabilities": ["AUDIT_WRITE"],
+                        },
+                    }
+                ],
+            },
+        }
+    )
+    runtime = CRIRuntime()  # type: ignore[abstract]
+    pb2 = runtime._pb2()
+    runtime_requests: list[tuple[str, object]] = []
+    metadata = pb2.PodSandboxMetadata(
+        name="secure-sidecar-rev1-0",
+        namespace="default",
+        uid="pod-uid",
+        attempt=0,
+    )
+    monkeypatch.setattr(runtime, "_pod_status", lambda _pod_id: SimpleNamespace(metadata=metadata))
+    monkeypatch.setattr(runtime, "_ensure_image", lambda _image: None)
+
+    def fake_runtime_call(method: str, request):
+        runtime_requests.append((method, request))
+        if method == "ListContainers":
+            return SimpleNamespace(containers=[])
+        if method == "CreateContainer":
+            return SimpleNamespace(container_id="sidecar-container")
+        return SimpleNamespace()
+
+    monkeypatch.setattr(runtime, "_runtime_call", fake_runtime_call)
+
+    sidecar = manifest.spec.containers[0]
+    config = runtime._container_config_for_spec(
+        manifest,
+        sidecar,
+        name="audit",
+        replica_id="secure-sidecar-rev1-0",
+        revision=1,
+        is_main=False,
+    )
+    context = config.linux.security_context
+    assert context.run_as_user.value == 2000
+    assert context.privileged is False
+    assert context.no_new_privs is True
+    assert list(context.capabilities.add_capabilities) == ["AUDIT_WRITE"]
+
+    sandbox = runtime._pod_sandbox_config_for_container_request(
+        manifest,
+        "pod-1",
+        "secure-sidecar-rev1-0",
+    )
+    sandbox_context = sandbox.linux.security_context
+    assert list(sandbox_context.supplemental_groups) == [1000, 2000, 3000]
+    assert sandbox_context.seccomp.profile_type == sandbox_context.seccomp.RuntimeDefault
+    assert sandbox.metadata.uid == "pod-uid"
+    assert sandbox.log_directory == runtime._pod_log_dir(
+        "default", "secure-sidecar-rev1-0", "pod-uid"
+    )
+
+    runtime._ensure_sidecars(manifest, "pod-1", "secure-sidecar-rev1-0", 1)
+    create_request = next(
+        request for method, request in runtime_requests if method == "CreateContainer"
+    )
+    create_context = create_request.sandbox_config.linux.security_context
+    assert list(create_context.supplemental_groups) == [1000, 2000, 3000]
+    assert create_context.seccomp.profile_type == create_context.seccomp.RuntimeDefault
+
+
+def test_cri_init_container_and_sandbox_map_security(monkeypatch) -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "secure-init", "namespace": "default"},
+            "spec": {
+                "image": "busybox:1.36",
+                "replicas": 1,
+                "podSecurity": {
+                    "supplementalGroups": [1000, 2000],
+                    "fsGroup": 2000,
+                    "seLinuxType": "container_t",
+                },
+                "initContainers": [
+                    {
+                        "name": "prepare",
+                        "image": "busybox:1.36",
+                        "security": {
+                            "runAsUser": 1000,
+                            "runAsNonRoot": True,
+                            "allowPrivilegeEscalation": False,
+                            "readOnlyPaths": ["/proc/sys"],
+                        },
+                    }
+                ],
+            },
+        }
+    )
+    runtime = CRIRuntime()  # type: ignore[abstract]
+    requests: list[tuple[str, object]] = []
+
+    def fake_runtime_call(method: str, request):
+        requests.append((method, request))
+        if method == "RunPodSandbox":
+            return SimpleNamespace(pod_sandbox_id="init-pod")
+        if method == "CreateContainer":
+            return SimpleNamespace(container_id="init-container")
+        return SimpleNamespace()
+
+    monkeypatch.setattr(runtime, "_ensure_clients", lambda: None)
+    monkeypatch.setattr(runtime, "_ensure_image", lambda _image: None)
+    monkeypatch.setattr(runtime, "_runtime_call", fake_runtime_call)
+    monkeypatch.setattr(runtime, "_wait_container_exit", lambda _container_id, _timeout: 0)
+
+    assert runtime.run_init_containers(manifest) == [("prepare", 0, "ok")]
+
+    run_request = next(request for method, request in requests if method == "RunPodSandbox")
+    run_context = run_request.config.linux.security_context
+    assert list(run_context.supplemental_groups) == [1000, 2000]
+    assert run_context.selinux_options.type == "container_t"
+
+    create_request = next(request for method, request in requests if method == "CreateContainer")
+    container_context = create_request.config.linux.security_context
+    assert container_context.run_as_user.value == 1000
+    assert container_context.no_new_privs is True
+    assert list(container_context.readonly_paths) == ["/proc/sys"]
+    sandbox_context = create_request.sandbox_config.linux.security_context
+    assert list(sandbox_context.supplemental_groups) == [1000, 2000]
+    assert sandbox_context.selinux_options.type == "container_t"
+
+
+def test_cri_sandbox_security_composes_all_host_namespace_modes() -> None:
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "secure-namespaces", "namespace": "default"},
+            "spec": {
+                "image": "busybox:1.36",
+                "replicas": 1,
+                "hostNetwork": True,
+                "hostPID": True,
+                "hostIPC": True,
+                "podSecurity": {"supplementalGroups": [1000]},
+            },
+        }
+    )
+
+    config = CRIRuntime()._pod_sandbox_linux_config(manifest)  # type: ignore[abstract]
+
+    assert config is not None
+    context = config.security_context
+    assert int(context.namespace_options.network) == 2
+    assert int(context.namespace_options.pid) == 2
+    assert int(context.namespace_options.ipc) == 2
+    assert list(context.supplemental_groups) == [1000]

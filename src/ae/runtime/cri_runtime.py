@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import urlopen
@@ -36,6 +36,7 @@ from ae.controller.quantities import (
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
+    SecuritySpec,
     app_key_for_manifest,
     runtime_labels_for_manifest,
     split_app_key,
@@ -671,6 +672,12 @@ class CRIRuntime(RuntimeAdapter):
                 labels=runtime_labels_for_manifest(manifest, app_name=app_name),
                 log_directory=self._pod_log_dir(ns, pod_name, pod_uid),
             )
+            linux_cfg = self._pod_sandbox_linux_config(manifest)
+            if linux_cfg is not None:
+                try:
+                    pod_config.linux.CopyFrom(linux_cfg)
+                except Exception:
+                    pod_config.linux = linux_cfg
             try:
                 resp = self._runtime_call(
                     "RunPodSandbox", pb2.RunPodSandboxRequest(config=pod_config)
@@ -2180,10 +2187,17 @@ class CRIRuntime(RuntimeAdapter):
         pod_name = str(getattr(pod_meta, "name", None) or replica_id)
         namespace = str(getattr(pod_meta, "namespace", None) or DEFAULT_NAMESPACE)
         uid = str(getattr(pod_meta, "uid", None) or self._pod_uid(pod_name, namespace))
-        return pb2.PodSandboxConfig(
+        pod_config = pb2.PodSandboxConfig(
             metadata=pod_meta,
             log_directory=self._pod_log_dir(namespace, pod_name, uid),
         )
+        linux_cfg = self._pod_sandbox_linux_config(manifest)
+        if linux_cfg is not None:
+            try:
+                pod_config.linux.CopyFrom(linux_cfg)
+            except Exception:
+                pod_config.linux = linux_cfg
+        return pod_config
 
     def _container_log_path(self, container_name: str, *, attempt: int = 0) -> str:
         try:
@@ -3062,9 +3076,9 @@ class CRIRuntime(RuntimeAdapter):
 
     def _build_security_context_from_spec(self, spec: Any) -> Any | None:
         pb2 = self._pb2()
-        sec = spec
-        if sec is None:
+        if spec is None:
             return None
+        sec = SecuritySpec.model_validate(spec) if isinstance(spec, dict) else spec
         ctx = pb2.LinuxContainerSecurityContext()
         run_as_user = self._spec_value(sec, "run_as_user", "runAsUser")
         if run_as_user is not None:
@@ -3084,11 +3098,44 @@ class CRIRuntime(RuntimeAdapter):
                     from google.protobuf.wrappers_pb2 import Int64Value
 
                     ctx.run_as_group.CopyFrom(Int64Value(value=int(run_as_group)))
+        privileged = self._spec_value(sec, "privileged")
+        if privileged is not None:
+            ctx.privileged = bool(privileged)
+        allow_privilege_escalation = self._spec_value(
+            sec,
+            "allow_privilege_escalation",
+            "allowPrivilegeEscalation",
+        )
+        if allow_privilege_escalation is not None:
+            ctx.no_new_privs = not bool(allow_privilege_escalation)
         if bool(self._spec_value(sec, "read_only_root", "readOnlyRootFilesystem")):
             ctx.readonly_rootfs = True
+        adds = list(self._spec_value(sec, "add_caps", "addCapabilities") or [])
+        if adds:
+            ctx.capabilities.add_capabilities.extend([str(c) for c in adds])
         drops = list(self._spec_value(sec, "drop_caps", "dropCapabilities") or [])
         if drops:
             ctx.capabilities.drop_capabilities.extend([str(c) for c in drops])
+        masked_paths = list(self._spec_value(sec, "masked_paths", "maskedPaths") or [])
+        if masked_paths:
+            ctx.masked_paths.extend([str(path) for path in masked_paths])
+        read_only_paths = list(self._spec_value(sec, "read_only_paths", "readOnlyPaths") or [])
+        if read_only_paths:
+            ctx.readonly_paths.extend([str(path) for path in read_only_paths])
+        selinux_values = {
+            "user": self._spec_value(sec, "selinux_user", "seLinuxUser"),
+            "role": self._spec_value(sec, "selinux_role", "seLinuxRole"),
+            "type": self._spec_value(sec, "selinux_type", "seLinuxType"),
+            "level": self._spec_value(sec, "selinux_level", "seLinuxLevel"),
+        }
+        if any(value is not None for value in selinux_values.values()):
+            selinux_options = pb2.SELinuxOption(
+                **{key: str(value) for key, value in selinux_values.items() if value is not None}
+            )
+            try:
+                ctx.selinux_options.CopyFrom(selinux_options)
+            except Exception:
+                ctx.selinux_options = selinux_options
         seccomp_type = self._spec_value(sec, "seccomp_type", "seccompProfileType")
         if seccomp_type:
             seccomp = self._security_profile(
@@ -3112,9 +3159,15 @@ class CRIRuntime(RuntimeAdapter):
                 ctx.apparmor = apparmor
         return ctx
 
-    def _security_profile(self, profile_type: str, localhost_ref: Any = None) -> Any:
+    def _security_profile(
+        self,
+        profile_type: str,
+        localhost_ref: Any = None,
+        *,
+        validate_localhost_path: bool = True,
+    ) -> Any:
         pb2 = self._pb2()  # type: ignore[no-untyped-call]
-        normalized = str(profile_type).strip()
+        normalized = str(profile_type)
         enum_value = getattr(pb2.SecurityProfile, normalized, None)
         if enum_value is None or normalized not in {
             "RuntimeDefault",
@@ -3122,26 +3175,47 @@ class CRIRuntime(RuntimeAdapter):
             "Localhost",
         }:
             raise ValueError(f"unsupported CRI security profile type: {profile_type}")
-        ref = str(localhost_ref or "").strip()
+        ref = str(localhost_ref or "")
         if normalized == "Localhost" and not ref:
             raise ValueError("Localhost CRI security profile requires a localhost reference")
+        if normalized == "Localhost":
+            if validate_localhost_path:
+                self._validate_localhost_profile_ref(ref)
+        elif ref:
+            raise ValueError(
+                f"{normalized} CRI security profile must not set a localhost reference"
+            )
         return pb2.SecurityProfile(
             profile_type=enum_value,
             localhost_ref=ref if normalized == "Localhost" else "",
         )
 
     def _apparmor_security_profile(self, profile: str) -> Any:
-        normalized = str(profile).strip()
+        normalized = str(profile)
+        if not normalized or normalized != normalized.strip() or "\x00" in normalized:
+            raise ValueError(f"unsupported AppArmor profile: {profile}")
         if normalized == "runtime/default":
             return self._security_profile("RuntimeDefault")
         if normalized == "unconfined":
             return self._security_profile("Unconfined")
         prefix = "localhost/"
         if normalized.startswith(prefix):
-            localhost_ref = normalized[len(prefix) :].strip()
+            localhost_ref = normalized[len(prefix) :]
             if localhost_ref:
-                return self._security_profile("Localhost", localhost_ref)
+                return self._security_profile(
+                    "Localhost",
+                    localhost_ref,
+                    validate_localhost_path=False,
+                )
         raise ValueError(f"unsupported AppArmor profile: {profile}")
+
+    @staticmethod
+    def _validate_localhost_profile_ref(ref: str) -> None:
+        if not ref or ref != ref.strip() or "\x00" in ref or "\\" in ref or ref.startswith("/"):
+            raise ValueError("Localhost CRI security profile requires a canonical relative path")
+        parts = ref.split("/")
+        if any(part in {"", ".", ".."} for part in parts) or str(PurePosixPath(ref)) != ref:
+            raise ValueError("Localhost CRI security profile requires a canonical relative path")
 
     def _build_states(self, manifest: AppManifest, revision: int) -> list[PodState]:
         states: list[PodState] = []
@@ -3405,6 +3479,9 @@ class CRIRuntime(RuntimeAdapter):
         host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
         pod_security = getattr(manifest.spec, "pod_security", None)
         fs_group = self._spec_value(pod_security, "fs_group", "fsGroup")
+        supplemental_groups = list(
+            self._spec_value(pod_security, "supplemental_groups", "supplementalGroups") or []
+        )
         seccomp_type = self._spec_value(
             pod_security,
             "seccomp_type",
@@ -3418,6 +3495,7 @@ class CRIRuntime(RuntimeAdapter):
         }
         has_pod_security = (
             fs_group is not None
+            or bool(supplemental_groups)
             or bool(seccomp_type)
             or any(value is not None for value in selinux_values.values())
         )
@@ -3438,8 +3516,19 @@ class CRIRuntime(RuntimeAdapter):
                 security_context.namespace_options.CopyFrom(namespace_options)
             except Exception:
                 security_context.namespace_options = namespace_options
+        groups: list[int] = []
+        seen_groups: set[int] = set()
+        for raw_group in supplemental_groups:
+            group = int(raw_group)
+            if group not in seen_groups:
+                groups.append(group)
+                seen_groups.add(group)
         if fs_group is not None:
-            security_context.supplemental_groups.append(int(fs_group))
+            group = int(fs_group)
+            if group not in seen_groups:
+                groups.append(group)
+        if groups:
+            security_context.supplemental_groups.extend(groups)
         if seccomp_type:
             seccomp = self._security_profile(
                 str(seccomp_type),
@@ -3455,7 +3544,7 @@ class CRIRuntime(RuntimeAdapter):
                 security_context.seccomp = seccomp
         if any(value is not None for value in selinux_values.values()):
             selinux_options = pb2.SELinuxOption(
-                **{key: str(value or "") for key, value in selinux_values.items()}
+                **{key: str(value) for key, value in selinux_values.items() if value is not None}
             )
             try:
                 security_context.selinux_options.CopyFrom(selinux_options)

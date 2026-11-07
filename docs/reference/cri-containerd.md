@@ -398,22 +398,44 @@ export AE_APISHIM_READ_TOKEN=<read-token>
 
 ## Security context (CRI)
 
-- Container security: `runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`,
-  `dropCapabilities`, `seccompProfileType` (+ `seccompLocalhostProfile`), and
-  `apparmorProfile` map into CRI container security context.
-- Pod security: `podSecurity.fsGroup` maps to supplemental groups, and
+- Container security: `runAsUser`, `runAsGroup`, `runAsNonRoot`, `privileged`,
+  `allowPrivilegeEscalation`, `readOnlyRootFilesystem`, `addCapabilities`,
+  `dropCapabilities`, `maskedPaths`, `readOnlyPaths`, `seccompProfileType`
+  (+ `seccompLocalhostProfile`), `apparmorProfile`, and `seLinux*` are validated
+  before mapping into the CRI container security context. These extended fields
+  are a CRI request contract; other local backends and Kubernetes export do not
+  yet provide parity.
+- `runAsNonRoot: true` requires an explicit positive `runAsUser`; k1s does not
+  inspect image metadata to resolve an image user. `allowPrivilegeEscalation`
+  maps inversely to CRI `no_new_privs`, and cannot be false for a privileged
+  container.
+- `maskedPaths` and `readOnlyPaths` are CRI-only and require canonical absolute
+  POSIX paths. Capability strings and SELinux components are passed exactly
+  after rejecting blank, NUL-containing, or whitespace-padded values.
+- Pod security: `podSecurity.supplementalGroups` and `podSecurity.fsGroup` map
+  to sandbox supplemental groups in deterministic first-occurrence order;
+  `fsGroup` is appended only when it is not already present.
   `podSecurity.seccompProfileType`/`podSecurity.seLinux*` map into the sandbox
-  security context.
+  security context. This proves request propagation, not volume ownership or
+  relabel enforcement.
 - Seccomp accepts `RuntimeDefault`, `Unconfined`, or `Localhost`. A `Localhost`
-  profile must also set `seccompLocalhostProfile`; the reference is passed to
-  CRI without rewriting it.
+  profile must also set `seccompLocalhostProfile` to an exact canonical relative
+  POSIX reference. Absolute, empty, backslash, repeated-separator, dot, and
+  dot-dot paths are rejected; accepted bytes are passed without rewriting.
+  Other profile types reject a localhost reference.
 - AppArmor accepts `runtime/default`, `unconfined`, or `localhost/<profile>`.
   The `localhost/` prefix selects the CRI `Localhost` profile type and only the
-  profile name is passed as its localhost reference.
+  exact nonempty profile name is passed as its localhost reference.
 - Pod security mappings are emitted even when host namespaces are disabled.
   When host namespaces are enabled, their existing CRI namespace options are
-  preserved alongside fsGroup, seccomp, and SELinux values.
-- Host namespaces are gated by `AE_CRI_ALLOW_HOST_NS=1` as described above.
+  preserved alongside supplemental groups, fsGroup, seccomp, and SELinux values.
+  The same sandbox Linux security context is supplied for main, sidecar, and
+  init-container request construction.
+- The direct CRI mapper currently does not enforce the documented
+  `AE_CRI_ALLOW_HOST_NS=1` admission gate. Treat host namespace use as a known
+  host-plan authority residual until that separate checkpoint is completed.
+- These mappings are deterministic request-construction guarantees. Runtime
+  application and enforcement require a separately isolated validation lane.
 
 ## Crictl-only image (default)
 
