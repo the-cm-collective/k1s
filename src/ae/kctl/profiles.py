@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from dataclasses import dataclass
 from importlib import metadata
 from typing import Literal, Protocol, cast
 
 from ae.kctl.lifecycle import PROFILE_CONTRACTS
+from ae.resources import loader as resource_loader
 
 API_VERSION = "k1s.dev/v1alpha1"
 SCHEMA_VERSION = 1
+PROFILE_RESOURCE_PARTS = ("profiles", "profile-catalog-v1.json")
+MAX_PROFILE_RESOURCE_BYTES = 64 * 1024
 
 ProfilePosture = Literal["ga", "development-only", "preview"]
 CheckStatus = Literal["pass", "warn", "fail"]
+
+
+class ProfileResourceError(ValueError):
+    """The installed profile catalog is absent, corrupt, or noncanonical."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,79 +100,224 @@ class SystemDoctorProbe:
         )
 
 
-PROFILE_CATALOG: tuple[ProfileDescriptor, ...] = (
-    ProfileDescriptor(
-        name="local",
-        contract_posture="ga",
-        production_eligible=True,
-        summary="Local controller and local-node contract.",
-        components=("controller", "node-local"),
-        requirements=("runtime-backend",),
-    ),
-    ProfileDescriptor(
-        name="core",
-        contract_posture="ga",
-        production_eligible=True,
-        summary="Single core-controller contract.",
-        components=("controller",),
-        requirements=("runtime-backend",),
-    ),
-    ProfileDescriptor(
-        name="edge-gateway",
-        contract_posture="ga",
-        production_eligible=True,
-        summary="Production gateway-only edge contract.",
-        components=("gateway",),
-        requirements=("explicit-node-identity", "controller-endpoint"),
-    ),
-    ProfileDescriptor(
-        name="node",
-        contract_posture="ga",
-        production_eligible=True,
-        summary="Explicit node-agent contract.",
-        components=("node-agent",),
-        requirements=("explicit-node-identity", "controller-endpoint", "runtime-backend"),
-    ),
-    ProfileDescriptor(
-        name="edge-dev",
-        contract_posture="development-only",
-        production_eligible=False,
-        summary="Development edge gateway with an in-process worker stub.",
-        components=("gateway", "worker-stub"),
-        requirements=(),
-    ),
-    ProfileDescriptor(
-        name="core-ha",
-        contract_posture="preview",
-        production_eligible=False,
-        summary="Preview high-availability core intent.",
-        components=("controller-replica-set", "ha-control-plane"),
-        requirements=("external-state-store", "ha-transport"),
-    ),
-)
+_EXPECTED_PROFILE_NAMES = ("local", "core", "edge-gateway", "node", "edge-dev", "core-ha")
+_EXPECTED_ALIAS_NAMES = ("edge", "core-edge", "edge-core")
+_PROFILE_KEYS = {
+    "aliases",
+    "components",
+    "contractPosture",
+    "executionStatus",
+    "name",
+    "productionEligible",
+    "requirements",
+    "summary",
+}
+_ALIAS_KEYS = {"compatibilityVariant", "name", "warning"}
 
-PROFILE_ALIASES: tuple[ProfileAlias, ...] = (
-    ProfileAlias(
-        name="edge",
-        canonical_name="edge-dev",
-        compatibility_variant=None,
-        warning="Legacy 'edge' selects the development worker-stub profile, not edge-gateway.",
-    ),
-    ProfileAlias(
-        name="core-edge",
-        canonical_name="core",
-        compatibility_variant="nats-core",
-        warning=(
-            "Legacy 'core-edge' records the nats-core transport variant; no transport is started."
-        ),
-    ),
-    ProfileAlias(
-        name="edge-core",
-        canonical_name="edge-dev",
-        compatibility_variant="core-peering",
-        warning="Legacy 'edge-core' remains development-only and never resolves to edge-gateway.",
-    ),
-)
+
+def _without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProfileResourceError(f"duplicate profile resource key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ProfileResourceError(f"unsupported profile resource number: {value}")
+
+
+def _mapping(value: object, *, context: str) -> dict[str, object]:
+    if type(value) is not dict:
+        raise ProfileResourceError(f"{context} must be an object")
+    return cast(dict[str, object], value)
+
+
+def _list(value: object, *, context: str) -> list[object]:
+    if type(value) is not list:
+        raise ProfileResourceError(f"{context} must be an array")
+    return cast(list[object], value)
+
+
+def _text(value: object, *, context: str) -> str:
+    if type(value) is not str or not value or value != value.strip() or "\x00" in value:
+        raise ProfileResourceError(f"{context} must be nonblank canonical text")
+    return value
+
+
+def _string_tuple(value: object, *, context: str) -> tuple[str, ...]:
+    values = tuple(
+        _text(item, context=f"{context}[{index}]")
+        for index, item in enumerate(_list(value, context=context))
+    )
+    if len(values) != len(set(values)):
+        raise ProfileResourceError(f"{context} contains duplicate values")
+    return values
+
+
+def _exact_keys(value: dict[str, object], expected: set[str], *, context: str) -> None:
+    if set(value) != expected:
+        missing = sorted(expected - set(value))
+        extra = sorted(set(value) - expected)
+        raise ProfileResourceError(f"{context} keys differ: missing={missing}, extra={extra}")
+
+
+def _validate_catalog_semantics(
+    catalog: tuple[ProfileDescriptor, ...], aliases: tuple[ProfileAlias, ...]
+) -> None:
+    if tuple(profile.name for profile in catalog) != _EXPECTED_PROFILE_NAMES:
+        raise ProfileResourceError("canonical profile order or names changed")
+    if tuple(alias.name for alias in aliases) != _EXPECTED_ALIAS_NAMES:
+        raise ProfileResourceError("profile alias order or names changed")
+
+    profiles_by_name = {profile.name: profile for profile in catalog}
+    aliases_by_name = {alias.name: alias for alias in aliases}
+    if len(profiles_by_name) != len(catalog):
+        raise ProfileResourceError("duplicate canonical profile name")
+    if len(aliases_by_name) != len(aliases):
+        raise ProfileResourceError("duplicate profile alias")
+    overlap = set(profiles_by_name) & set(aliases_by_name)
+    if overlap:
+        raise ProfileResourceError(f"canonical profile and alias overlap: {sorted(overlap)}")
+    unknown_targets = {
+        alias.canonical_name for alias in aliases if alias.canonical_name not in profiles_by_name
+    }
+    if unknown_targets:
+        raise ProfileResourceError(
+            f"profile aliases target unknown profiles: {sorted(unknown_targets)}"
+        )
+
+    expected_posture = {
+        "local": ("ga", True),
+        "core": ("ga", True),
+        "edge-gateway": ("ga", True),
+        "node": ("ga", True),
+        "edge-dev": ("development-only", False),
+        "core-ha": ("preview", False),
+    }
+    actual_posture = {
+        profile.name: (profile.contract_posture, profile.production_eligible) for profile in catalog
+    }
+    if actual_posture != expected_posture:
+        raise ProfileResourceError("profile posture or production eligibility changed")
+    if profiles_by_name["edge-gateway"].components != ("gateway",):
+        raise ProfileResourceError("edge-gateway must remain gateway-only")
+    if profiles_by_name["edge-dev"].components != ("gateway", "worker-stub"):
+        raise ProfileResourceError("edge-dev must retain its explicit worker-stub component")
+    if aliases_by_name["edge"].canonical_name != "edge-dev":
+        raise ProfileResourceError("legacy edge alias must remain development-only")
+    if aliases_by_name["edge-core"].canonical_name != "edge-dev":
+        raise ProfileResourceError("legacy edge-core alias must remain development-only")
+
+
+def _parse_profile_catalog_bytes(
+    raw: bytes,
+) -> tuple[tuple[ProfileDescriptor, ...], tuple[ProfileAlias, ...]]:
+    if not raw or len(raw) > MAX_PROFILE_RESOURCE_BYTES:
+        raise ProfileResourceError("profile resource size is outside the accepted range")
+    if raw.startswith(b"\xef\xbb\xbf") or b"\x00" in raw or b"\r" in raw:
+        raise ProfileResourceError("profile resource encoding is not canonical UTF-8/LF")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProfileResourceError("profile resource is not valid UTF-8") from exc
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=_without_duplicate_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except json.JSONDecodeError as exc:
+        raise ProfileResourceError("profile resource is not valid JSON") from exc
+    canonical = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if text != canonical:
+        raise ProfileResourceError("profile resource bytes are not canonical JSON")
+
+    root = _mapping(value, context="profile resource")
+    _exact_keys(
+        root,
+        {"apiVersion", "kind", "mutating", "profiles", "schemaVersion"},
+        context="profile resource",
+    )
+    if root["apiVersion"] != API_VERSION:
+        raise ProfileResourceError("profile resource API version mismatch")
+    if root["kind"] != "ProfileCatalog":
+        raise ProfileResourceError("profile resource kind mismatch")
+    if root["mutating"] is not False:
+        raise ProfileResourceError("profile resource must be non-mutating")
+    if type(root["schemaVersion"]) is not int or root["schemaVersion"] != SCHEMA_VERSION:
+        raise ProfileResourceError("profile resource schema version mismatch")
+
+    profiles: list[ProfileDescriptor] = []
+    aliases_by_name: dict[str, ProfileAlias] = {}
+    for profile_index, raw_profile in enumerate(
+        _list(root["profiles"], context="profile resource profiles")
+    ):
+        context = f"profile resource profiles[{profile_index}]"
+        profile = _mapping(raw_profile, context=context)
+        _exact_keys(profile, _PROFILE_KEYS, context=context)
+        name = _text(profile["name"], context=f"{context}.name")
+        posture = _text(profile["contractPosture"], context=f"{context}.contractPosture")
+        if posture not in {"ga", "development-only", "preview"}:
+            raise ProfileResourceError(f"{context}.contractPosture is unsupported")
+        production_eligible = profile["productionEligible"]
+        if type(production_eligible) is not bool:
+            raise ProfileResourceError(f"{context}.productionEligible must be a boolean")
+        if profile["executionStatus"] != "deferred":
+            raise ProfileResourceError(f"{context}.executionStatus must remain deferred")
+        profiles.append(
+            ProfileDescriptor(
+                name=name,
+                contract_posture=cast(ProfilePosture, posture),
+                production_eligible=production_eligible,
+                summary=_text(profile["summary"], context=f"{context}.summary"),
+                components=_string_tuple(profile["components"], context=f"{context}.components"),
+                requirements=_string_tuple(
+                    profile["requirements"], context=f"{context}.requirements"
+                ),
+            )
+        )
+        raw_aliases = _list(profile["aliases"], context=f"{context}.aliases")
+        for alias_index, raw_alias in enumerate(raw_aliases):
+            alias_context = f"{context}.aliases[{alias_index}]"
+            alias = _mapping(raw_alias, context=alias_context)
+            _exact_keys(alias, _ALIAS_KEYS, context=alias_context)
+            alias_name = _text(alias["name"], context=f"{alias_context}.name")
+            if alias_name in aliases_by_name:
+                raise ProfileResourceError(f"duplicate profile alias: {alias_name!r}")
+            variant = alias["compatibilityVariant"]
+            if variant is not None:
+                variant = _text(variant, context=f"{alias_context}.compatibilityVariant")
+            aliases_by_name[alias_name] = ProfileAlias(
+                name=alias_name,
+                canonical_name=name,
+                compatibility_variant=variant,
+                warning=_text(alias["warning"], context=f"{alias_context}.warning"),
+            )
+
+    try:
+        aliases = tuple(aliases_by_name[name] for name in _EXPECTED_ALIAS_NAMES)
+    except KeyError as exc:
+        raise ProfileResourceError(f"missing required profile alias: {exc.args[0]}") from exc
+    if set(aliases_by_name) != set(_EXPECTED_ALIAS_NAMES):
+        raise ProfileResourceError("profile alias names changed")
+    catalog = tuple(profiles)
+    _validate_catalog_semantics(catalog, aliases)
+    return catalog, aliases
+
+
+def _load_profile_catalog_resource() -> tuple[
+    tuple[ProfileDescriptor, ...], tuple[ProfileAlias, ...]
+]:
+    try:
+        raw = resource_loader.load_binary(*PROFILE_RESOURCE_PARTS)
+    except OSError as exc:
+        raise ProfileResourceError("installed profile resource is unavailable") from exc
+    return _parse_profile_catalog_bytes(raw)
+
+
+PROFILE_CATALOG, PROFILE_ALIASES = _load_profile_catalog_resource()
 
 PROFILE_NAMES: tuple[str, ...] = tuple(profile.name for profile in PROFILE_CATALOG)
 PROFILE_INPUT_NAMES: tuple[str, ...] = PROFILE_NAMES + tuple(
@@ -179,28 +332,7 @@ _EXECUTION_DEFERRED = "Stateful execution is deferred to later lifecycle checkpo
 def validate_profile_catalog() -> None:
     """Reject internal ambiguity or compatibility drift deterministically."""
 
-    if len(_PROFILES_BY_NAME) != len(PROFILE_CATALOG):
-        raise ValueError("duplicate canonical profile name")
-    if len(_ALIASES_BY_NAME) != len(PROFILE_ALIASES):
-        raise ValueError("duplicate profile alias")
-    overlap = set(_PROFILES_BY_NAME) & set(_ALIASES_BY_NAME)
-    if overlap:
-        raise ValueError(f"canonical profile and alias overlap: {sorted(overlap)}")
-    unknown_targets = {
-        alias.canonical_name
-        for alias in PROFILE_ALIASES
-        if alias.canonical_name not in _PROFILES_BY_NAME
-    }
-    if unknown_targets:
-        raise ValueError(f"profile aliases target unknown profiles: {sorted(unknown_targets)}")
-    if _PROFILES_BY_NAME["edge-gateway"].components != ("gateway",):
-        raise ValueError("edge-gateway must remain gateway-only")
-    if "worker-stub" not in _PROFILES_BY_NAME["edge-dev"].components:
-        raise ValueError("edge-dev must retain its explicit worker-stub component")
-    if _ALIASES_BY_NAME["edge"].canonical_name != "edge-dev":
-        raise ValueError("legacy edge alias must remain development-only")
-    if _ALIASES_BY_NAME["edge-core"].canonical_name != "edge-dev":
-        raise ValueError("legacy edge-core alias must remain development-only")
+    _validate_catalog_semantics(PROFILE_CATALOG, PROFILE_ALIASES)
 
     legacy_names = set(PROFILE_CONTRACTS)
     expected_legacy_names = {"core", "edge", "core-edge", "edge-core"}

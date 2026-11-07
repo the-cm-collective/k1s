@@ -16,6 +16,27 @@ the legacy lifecycle runner.
 The JSON contract uses `apiVersion: k1s.dev/v1alpha1`, `schemaVersion: 1`, and
 `mutating: false`. Catalog ordering and output fields are deterministic.
 
+## Installed catalog resource
+
+The catalog is installed by `k1s-core` as the package resource
+`ae/resources/profiles/profile-catalog-v1.json`. That canonical JSON document
+contains only the static role, posture, component, requirement, alias, and
+deferred-execution contract described on this page. It contains no executable
+command, credential, environment setting, port, state path, backend setting,
+service definition, supervisor configuration, or host-preparation instruction.
+
+The loader accepts only canonical package-relative path components and does
+not fall back to the source checkout, current directory, legacy profile
+runner, environment, or network. Missing, malformed, duplicated-key,
+noncanonical, or semantically inconsistent catalog data is an invalid
+installation and fails closed. The wheel and source-distribution validators
+require the installed bytes to match this source resource exactly, and the
+wheel `RECORD` must cover it with the correct SHA-256 and size.
+
+This resource is static package construction, not profile installation or
+execution. Reading it does not create state, select a backend, prepare a host,
+start a supervisor, or activate a runtime.
+
 ## Canonical roles
 
 | Role | Contract posture | Production eligible | Components | Execution |

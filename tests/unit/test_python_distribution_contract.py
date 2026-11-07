@@ -63,6 +63,7 @@ def test_distribution_identity_preserves_import_and_commands() -> None:
         "ae.resources": [
             "ingress/*.txt",
             "observability/*.html",
+            "profiles/*.json",
             "sql/apishim/*.sql",
             "sql/controller/*.sql",
         ],

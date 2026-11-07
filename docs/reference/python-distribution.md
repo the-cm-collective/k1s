@@ -31,9 +31,10 @@ Dependency declarations and installation commands must migrate to
 `k1s-core` is the only distribution that owns the `ae` package. The wheel
 contains every `ae` Python module, the package-local CRI and CSI generated
 modules, the SQL and HTML resources loaded through `ae.resources`, the Caddy
-site template, and the three vendored terminal assets used by the dashboard's
-offline fallback. Package documentation, repository tests, scripts, examples,
-operations files, charts, and environment files are not runtime wheel payload.
+site template, the canonical static profile catalog, and the three vendored
+terminal assets used by the dashboard's offline fallback. Package
+documentation, repository tests, scripts, examples, operations files, charts,
+and environment files are not runtime wheel payload.
 
 The release validator compares the source-owned module and resource inventory
 with the wheel and source distribution. It rejects duplicate or unsafe archive
@@ -55,11 +56,19 @@ configuration, Python socket connections, and source-tree `PYTHONPATH`
 fallback. Safe help, version, import, resource, and stub-only planning checks
 run without starting Docker, containerd, CRI, CSI, Kubernetes, or a service.
 
+The canonical profile catalog is
+`ae/resources/profiles/profile-catalog-v1.json`. Its source, wheel, and source
+distribution bytes must match; it has one exact wheel `RECORD` row with the
+correct SHA-256 and size. The installed-artifact gate resolves it from a fresh
+virtual environment outside the checkout, compares its schema and role
+contract with the Python API, and exercises non-mutating `profile list`,
+`doctor`, and `plan` commands with indexes and network sockets disabled.
+
 The existing `profile start|status|stop|restart` compatibility actions and
 lab/example helpers deliberately use repository scripts. They remain separate
 experimental or later lifecycle contracts. Those repository paths are not
-copied into the runtime wheel. Installed wheel/sdist proof for the new pure
-profile catalog is deferred to its dedicated artifact checkpoint.
+copied into the runtime wheel, and the static catalog does not make their
+stateful behavior part of the installed package contract.
 
 ## Version posture
 

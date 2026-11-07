@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -93,6 +94,22 @@ def _run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> None:
     subprocess.run(argv, cwd=cwd, env=env, check=True)  # noqa: S603
 
 
+def _run_json(argv: list[str], *, cwd: Path, env: dict[str, str]) -> dict[str, object]:
+    print("+", " ".join(argv))
+    completed = subprocess.run(  # noqa: S603
+        argv,
+        cwd=cwd,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    value = json.loads(completed.stdout)
+    if type(value) is not dict:
+        raise ValueError(f"command did not return a JSON object: {argv}")
+    return value
+
+
 def validate_install(
     *, wheel: Path, wheelhouse: Path, lock: Path, work_root: Path, expected_version: str
 ) -> None:
@@ -148,11 +165,13 @@ socket.socket.connect_ex = _deny
             str(python),
             "-c",
             """from importlib import metadata, resources
+import json
 from pathlib import Path
 import os
 import sys
 import ae
 from ae.apishim.server import _openapi_v3_stub, _swagger_doc
+from ae.kctl.profiles import PROFILE_INPUT_NAMES, PROFILE_NAMES, profile_catalog_payload
 from ae.runtime.cri.api.runtime.v1 import api_pb2, gogo_pb2
 from ae.runtime.cri.api.runtime.v1 import api_pb2_grpc
 from ae.storage.csi.api import csi_pb2, csi_pb2_grpc
@@ -183,6 +202,8 @@ assert under(ae.__file__, venv_root)
 distribution = metadata.distribution('k1s-core')
 assert under(distribution.locate_file(''), venv_root)
 installed_members = {str(item) for item in distribution.files or ()}
+profile_member = 'ae/resources/profiles/profile-catalog-v1.json'
+assert list(str(item) for item in distribution.files or ()).count(profile_member) == 1
 assert not any(
     member == 'test_apishim_env.py'
     or member.startswith('test/')
@@ -209,7 +230,7 @@ resource_relative = {
 resource_data = {
     name
     for name in resource_relative
-    if name.endswith(('.sql', '.html', '.txt'))
+    if name.endswith(('.sql', '.html', '.txt', '.json'))
 }
 expected_html = {
     'observability/dashboard.html',
@@ -223,11 +244,33 @@ assert {name for name in resource_data if name.endswith('.html')} == expected_ht
 assert {name for name in resource_data if name.endswith('.txt')} == {
     'ingress/caddy_site.txt'
 }
-assert len(resource_data) == 82
+assert {name for name in resource_data if name.endswith('.json')} == {
+    'profiles/profile-catalog-v1.json'
+}
+assert len(resource_data) == 83
 assert not any(name.endswith('.md') for name in resource_relative)
 for item in resource_files:
-    if str(item).endswith(('.sql', '.html', '.txt')):
+    if str(item).endswith(('.sql', '.html', '.txt', '.json')):
         assert item.read_bytes()
+
+profile_path = resource_root.joinpath('profiles', 'profile-catalog-v1.json')
+assert under(profile_path, venv_root)
+profile_raw = profile_path.read_bytes()
+profile_text = profile_raw.decode('utf-8')
+profile_catalog = json.loads(profile_text)
+assert profile_text == json.dumps(
+    profile_catalog, ensure_ascii=False, indent=2, sort_keys=True
+) + '\\n'
+assert profile_catalog == profile_catalog_payload()
+assert tuple(profile['name'] for profile in profile_catalog['profiles']) == PROFILE_NAMES
+assert PROFILE_INPUT_NAMES == (
+    'local', 'core', 'edge-gateway', 'node', 'edge-dev', 'core-ha',
+    'edge', 'core-edge', 'edge-core'
+)
+profile_by_name = {profile['name']: profile for profile in profile_catalog['profiles']}
+assert profile_by_name['edge-gateway']['components'] == ['gateway']
+assert profile_by_name['core-ha']['contractPosture'] == 'preview'
+assert profile_by_name['core-ha']['productionEligible'] is False
 
 static_root = resources.files('ae.observability').joinpath('static/vendor')
 static_files = {item.name: item for item in static_root.iterdir() if item.is_file()}
@@ -262,6 +305,43 @@ assert scripts == {'ae', 'ae-rotate-certs', 'k1s', 'ae-node', 'ae-gateway', 'ae-
         if not (bin_dir / command[0]).is_file():
             raise ValueError(f"installed console script is missing: {command[0]}")
         _run([str(bin_dir / command[0]), *command[1:]], cwd=outside, env=env)
+
+    catalog = _run_json(
+        [str(bin_dir / "k1s"), "profile", "list", "--output", "json"],
+        cwd=outside,
+        env=env,
+    )
+    catalog_profiles = catalog.get("profiles")
+    if type(catalog_profiles) is not list or [
+        profile.get("name") if type(profile) is dict else None for profile in catalog_profiles
+    ] != ["local", "core", "edge-gateway", "node", "edge-dev", "core-ha"]:
+        raise ValueError("installed profile catalog output differs")
+    for profile_name in (
+        "local",
+        "core",
+        "edge-gateway",
+        "node",
+        "edge-dev",
+        "core-ha",
+        "edge",
+        "core-edge",
+        "edge-core",
+    ):
+        plan = _run_json(
+            [str(bin_dir / "k1s"), "profile", "plan", profile_name, "--output", "json"],
+            cwd=outside,
+            env=env,
+        )
+        if plan.get("mutating") is not False or plan.get("executionStatus") != "deferred":
+            raise ValueError(f"installed profile plan is not static: {profile_name}")
+    for profile_name in ("local", "core", "edge-gateway", "node", "edge-dev", "core-ha"):
+        doctor = _run_json(
+            [str(bin_dir / "k1s"), "profile", "doctor", profile_name, "--output", "json"],
+            cwd=outside,
+            env=env,
+        )
+        if doctor.get("mutating") is not False:
+            raise ValueError(f"installed profile doctor is not static: {profile_name}")
 
     manifest = outside / "artifact-smoke.yaml"
     manifest.write_text(

@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ae.kctl.profiles import (
+    MAX_PROFILE_RESOURCE_BYTES,
     PROFILE_INPUT_NAMES,
     PROFILE_NAMES,
+    PROFILE_RESOURCE_PARTS,
     InstalledProfileFacts,
+    ProfileResourceError,
+    _load_profile_catalog_resource,
+    _parse_profile_catalog_bytes,
     profile_catalog_payload,
     profile_doctor_payload,
     profile_plan_payload,
     resolve_profile,
     validate_profile_catalog,
 )
+from ae.resources import loader as resource_loader
 
 
 class StaticProbe:
@@ -79,6 +87,75 @@ def test_profile_catalog_is_ordered_and_has_frozen_postures() -> None:
         False,
     ]
     assert PROFILE_NAMES == ("local", "core", "edge-gateway", "node", "edge-dev", "core-ha")
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
+
+
+def test_profile_catalog_is_derived_from_canonical_package_resource() -> None:
+    raw = resource_loader.load_binary(*PROFILE_RESOURCE_PARTS)
+    parsed = json.loads(raw)
+
+    assert len(raw) <= MAX_PROFILE_RESOURCE_BYTES
+    assert raw == _canonical_bytes(parsed)
+    assert parsed == profile_catalog_payload()
+    catalog, aliases = _parse_profile_catalog_bytes(raw)
+    assert tuple(profile.name for profile in catalog) == PROFILE_NAMES
+    assert tuple(alias.name for alias in aliases) == ("edge", "core-edge", "edge-core")
+
+
+def test_profile_resource_contains_no_operational_defaults() -> None:
+    payload = json.loads(resource_loader.load_binary(*PROFILE_RESOURCE_PARTS))
+    rendered = json.dumps(payload, sort_keys=True)
+
+    for forbidden in (
+        "command",
+        "credential",
+        "environment",
+        "hostPath",
+        "pidFile",
+        "port",
+        "service",
+        "statePath",
+        "supervisor",
+    ):
+        assert f'"{forbidden}"' not in rendered
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"{",
+        b"\xef\xbb\xbf{}\n",
+        b'{"apiVersion":"a","apiVersion":"b"}\n',
+        resource_loader.load_binary(*PROFILE_RESOURCE_PARTS).replace(b"\n", b"\r\n"),
+    ],
+)
+def test_profile_resource_rejects_corrupt_or_noncanonical_bytes(payload: bytes) -> None:
+    with pytest.raises(ProfileResourceError):
+        _parse_profile_catalog_bytes(payload)
+
+
+def test_profile_resource_rejects_unknown_keys_and_semantic_drift() -> None:
+    original = json.loads(resource_loader.load_binary(*PROFILE_RESOURCE_PARTS))
+    unknown = {**original, "unexpected": True}
+    with pytest.raises(ProfileResourceError, match="keys differ"):
+        _parse_profile_catalog_bytes(_canonical_bytes(unknown))
+
+    core_ha = next(profile for profile in original["profiles"] if profile["name"] == "core-ha")
+    core_ha["productionEligible"] = True
+    with pytest.raises(ProfileResourceError, match="posture or production eligibility"):
+        _parse_profile_catalog_bytes(_canonical_bytes(original))
+
+
+def test_missing_profile_resource_fails_without_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(*_parts: str) -> bytes:
+        raise FileNotFoundError("missing profile resource")
+
+    monkeypatch.setattr(resource_loader, "load_binary", missing)
+    with pytest.raises(ProfileResourceError, match="unavailable"):
+        _load_profile_catalog_resource()
 
 
 @pytest.mark.parametrize(

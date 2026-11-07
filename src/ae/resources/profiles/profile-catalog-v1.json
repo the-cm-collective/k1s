@@ -1,0 +1,114 @@
+{
+  "apiVersion": "k1s.dev/v1alpha1",
+  "kind": "ProfileCatalog",
+  "mutating": false,
+  "profiles": [
+    {
+      "aliases": [],
+      "components": [
+        "controller",
+        "node-local"
+      ],
+      "contractPosture": "ga",
+      "executionStatus": "deferred",
+      "name": "local",
+      "productionEligible": true,
+      "requirements": [
+        "runtime-backend"
+      ],
+      "summary": "Local controller and local-node contract."
+    },
+    {
+      "aliases": [
+        {
+          "compatibilityVariant": "nats-core",
+          "name": "core-edge",
+          "warning": "Legacy 'core-edge' records the nats-core transport variant; no transport is started."
+        }
+      ],
+      "components": [
+        "controller"
+      ],
+      "contractPosture": "ga",
+      "executionStatus": "deferred",
+      "name": "core",
+      "productionEligible": true,
+      "requirements": [
+        "runtime-backend"
+      ],
+      "summary": "Single core-controller contract."
+    },
+    {
+      "aliases": [],
+      "components": [
+        "gateway"
+      ],
+      "contractPosture": "ga",
+      "executionStatus": "deferred",
+      "name": "edge-gateway",
+      "productionEligible": true,
+      "requirements": [
+        "explicit-node-identity",
+        "controller-endpoint"
+      ],
+      "summary": "Production gateway-only edge contract."
+    },
+    {
+      "aliases": [],
+      "components": [
+        "node-agent"
+      ],
+      "contractPosture": "ga",
+      "executionStatus": "deferred",
+      "name": "node",
+      "productionEligible": true,
+      "requirements": [
+        "explicit-node-identity",
+        "controller-endpoint",
+        "runtime-backend"
+      ],
+      "summary": "Explicit node-agent contract."
+    },
+    {
+      "aliases": [
+        {
+          "compatibilityVariant": null,
+          "name": "edge",
+          "warning": "Legacy 'edge' selects the development worker-stub profile, not edge-gateway."
+        },
+        {
+          "compatibilityVariant": "core-peering",
+          "name": "edge-core",
+          "warning": "Legacy 'edge-core' remains development-only and never resolves to edge-gateway."
+        }
+      ],
+      "components": [
+        "gateway",
+        "worker-stub"
+      ],
+      "contractPosture": "development-only",
+      "executionStatus": "deferred",
+      "name": "edge-dev",
+      "productionEligible": false,
+      "requirements": [],
+      "summary": "Development edge gateway with an in-process worker stub."
+    },
+    {
+      "aliases": [],
+      "components": [
+        "controller-replica-set",
+        "ha-control-plane"
+      ],
+      "contractPosture": "preview",
+      "executionStatus": "deferred",
+      "name": "core-ha",
+      "productionEligible": false,
+      "requirements": [
+        "external-state-store",
+        "ha-transport"
+      ],
+      "summary": "Preview high-availability core intent."
+    }
+  ],
+  "schemaVersion": 1
+}

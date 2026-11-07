@@ -9,6 +9,7 @@ import configparser
 import csv
 import hashlib
 import io
+import json
 import stat
 import tarfile
 import tomllib
@@ -17,6 +18,7 @@ from collections import Counter
 from email.message import Message
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 try:
     from scripts.check_public_markers import scan_archive
@@ -42,9 +44,12 @@ RUNTIME_DATA_GLOBS = {
     "ae/resources/sql/controller": ("*.sql", 64),
     "ae/resources/observability": ("*.html", 4),
     "ae/resources/ingress": ("*.txt", 1),
+    "ae/resources/profiles": ("*.json", 1),
     "ae/observability/static/vendor": ("*.css", 1),
     "ae/observability/static/vendor#js": ("*.js", 2),
 }
+PROFILE_CATALOG_MEMBER = "ae/resources/profiles/profile-catalog-v1.json"
+MAX_PROFILE_CATALOG_BYTES = 64 * 1024
 SDIST_ROOT_FILES = {"LICENSE", "README.md", "pyproject.toml", "requirements.in"}
 # Setuptools' standard sdist file list includes tests/test*.py. Keep the exact
 # source-only member explicit; it is forbidden from the runtime wheel.
@@ -84,6 +89,46 @@ def _require_unique_names(names: list[str], *, artifact: Path) -> None:
     duplicates = sorted(name for name, count in Counter(names).items() if count != 1)
     if duplicates:
         raise ValueError(f"artifact contains duplicate members in {artifact}: {duplicates}")
+
+
+def _profile_object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"profile catalog contains duplicate key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _validate_profile_catalog_bytes(payload: bytes, *, artifact: Path) -> None:
+    if not payload or len(payload) > MAX_PROFILE_CATALOG_BYTES:
+        raise ValueError(f"profile catalog size is invalid in {artifact}")
+    if payload.startswith(b"\xef\xbb\xbf") or b"\x00" in payload or b"\r" in payload:
+        raise ValueError(f"profile catalog encoding is not canonical in {artifact}")
+    try:
+        text = payload.decode("utf-8")
+        value = json.loads(text, object_pairs_hook=_profile_object_without_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"profile catalog is not canonical JSON in {artifact}") from exc
+    canonical = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if text != canonical or type(value) is not dict:
+        raise ValueError(f"profile catalog bytes are not canonical in {artifact}")
+    catalog = cast(dict[str, object], value)
+    if set(catalog) != {"apiVersion", "kind", "mutating", "profiles", "schemaVersion"}:
+        raise ValueError(f"profile catalog schema keys differ in {artifact}")
+    if (
+        catalog["apiVersion"] != "k1s.dev/v1alpha1"
+        or catalog["kind"] != "ProfileCatalog"
+        or catalog["mutating"] is not False
+        or type(catalog["schemaVersion"]) is not int
+        or catalog["schemaVersion"] != 1
+        or type(catalog["profiles"]) is not list
+    ):
+        raise ValueError(f"profile catalog identity differs in {artifact}")
+    profiles = cast(list[object], catalog["profiles"])
+    names = [profile.get("name") if type(profile) is dict else None for profile in profiles]
+    if names != ["local", "core", "edge-gateway", "node", "edge-dev", "core-ha"]:
+        raise ValueError(f"profile catalog role order differs in {artifact}")
 
 
 def _validate_exact_source_identity(
@@ -126,10 +171,15 @@ def _source_payloads(pyproject: Path) -> tuple[set[str], set[str]]:
                 f"expected {expected_count}, found {len(members)}"
             )
         runtime_data.update(members)
-    if len(runtime_data) != 85:
+    if len(runtime_data) != 86:
         raise ValueError(
-            f"runtime resource inventory must contain 85 files, found {len(runtime_data)}"
+            f"runtime resource inventory must contain 86 files, found {len(runtime_data)}"
         )
+    profile_catalog = source_root / PROFILE_CATALOG_MEMBER
+    _validate_profile_catalog_bytes(
+        profile_catalog.read_bytes(),
+        artifact=profile_catalog,
+    )
     return python_members | runtime_data, runtime_data
 
 
@@ -275,6 +325,11 @@ def _validate_wheel(path: Path, *, version: str, pyproject: Path) -> None:
             dist_info=expected_dist_info,
             artifact=path,
         )
+        profile_payload = archive.read(PROFILE_CATALOG_MEMBER)
+        source_payload = (pyproject.parent / "src" / PROFILE_CATALOG_MEMBER).read_bytes()
+        if profile_payload != source_payload:
+            raise ValueError(f"wheel profile catalog differs from source: {path}")
+        _validate_profile_catalog_bytes(profile_payload, artifact=path)
 
 
 def _validate_sdist(path: Path, *, version: str, pyproject: Path) -> None:
@@ -339,6 +394,14 @@ def _validate_sdist(path: Path, *, version: str, pyproject: Path) -> None:
                 expected_sha256=identity[1],
                 expected_git_blob=identity[2],
             )
+        profile_member = archive.extractfile(f"{root}/src/{PROFILE_CATALOG_MEMBER}")
+        if profile_member is None:
+            raise ValueError(f"unable to read sdist profile catalog: {path}")
+        profile_payload = profile_member.read()
+        source_payload = (pyproject.parent / "src" / PROFILE_CATALOG_MEMBER).read_bytes()
+        if profile_payload != source_payload:
+            raise ValueError(f"sdist profile catalog differs from source: {path}")
+        _validate_profile_catalog_bytes(profile_payload, artifact=path)
         pkg_info_name = f"{root}/PKG-INFO"
         if pkg_info_name not in names:
             raise ValueError(f"sdist is missing root PKG-INFO: {path}")

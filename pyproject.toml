@@ -73,6 +73,7 @@ namespaces = true
 "ae.resources" = [
     "ingress/*.txt",
     "observability/*.html",
+    "profiles/*.json",
     "sql/apishim/*.sql",
     "sql/controller/*.sql",
 ]

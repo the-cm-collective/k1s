@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import csv
 import hashlib
@@ -16,11 +17,13 @@ from scripts.validate_installed_python_artifact import (
     verify_wheelhouse,
 )
 from scripts.validate_python_artifacts import (
+    PROFILE_CATALOG_MEMBER,
     SDIST_SOURCE_ONLY_FILES,
     SDIST_SOURCE_ONLY_IDENTITIES,
     _require_unique_names,
     _source_payloads,
     _validate_exact_source_identity,
+    _validate_profile_catalog_bytes,
     _validate_wheel_record,
     _validated_member_name,
 )
@@ -168,10 +171,11 @@ def test_wheel_record_rejects_changed_hash_or_coverage(tmp_path: Path) -> None:
 
 def test_runtime_payload_inventory_is_exact() -> None:
     payload, runtime_data = _source_payloads(ROOT / "pyproject.toml")
-    assert len(runtime_data) == 85
+    assert len(runtime_data) == 86
     assert len([name for name in runtime_data if name.startswith("ae/resources/sql/")]) == 77
     assert len([name for name in runtime_data if name.endswith(".html")]) == 4
     assert len([name for name in runtime_data if name.endswith(".txt")]) == 1
+    assert {name for name in runtime_data if name.endswith(".json")} == {PROFILE_CATALOG_MEMBER}
     assert {
         name for name in runtime_data if name.startswith("ae/observability/static/vendor/")
     } == {
@@ -191,6 +195,39 @@ def test_runtime_payload_inventory_is_exact() -> None:
         )
     }
     assert payload.isdisjoint(SDIST_SOURCE_ONLY_FILES)
+
+
+def test_profile_catalog_artifact_member_is_canonical_and_fail_closed() -> None:
+    resource = ROOT / "src" / PROFILE_CATALOG_MEMBER
+    payload = resource.read_bytes()
+
+    _validate_profile_catalog_bytes(payload, artifact=resource)
+    with pytest.raises(ValueError, match="profile catalog"):
+        changed = payload.replace(b'"mutating": false', b'"mutating": true')
+        _validate_profile_catalog_bytes(changed, artifact=resource)
+
+
+def test_installed_artifact_gate_exercises_static_profile_commands() -> None:
+    source = (ROOT / "scripts" / "validate_installed_python_artifact.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "profiles/profile-catalog-v1.json" in source
+    assert '"profile", "list", "--output", "json"' in source
+    assert '"profile", "plan", profile_name, "--output", "json"' in source
+    assert '"profile", "doctor", profile_name, "--output", "json"' in source
+    assert 'plan.get("mutating") is not False' in source
+
+    tree = ast.parse(source)
+    smoke_programs = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "profile_catalog_payload" in node.value
+    ]
+    assert len(smoke_programs) == 1
+    compile(smoke_programs[0], "<installed-artifact-profile-smoke>", "exec")
 
 
 def test_sdist_only_source_identity_is_frozen() -> None:
