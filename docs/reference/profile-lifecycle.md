@@ -101,6 +101,44 @@ path for canonical `local` and `core`. Other names retain the repository-local
 compatibility runner; `--legacy` makes that boundary explicit where supported.
 There is no automatic Podman/Docker fallback.
 
+Three additional installed surfaces are deliberately limited to `local` and
+`core`:
+
+```text
+k1s profile run local|core [--backend podman|docker]
+k1s profile logs local|core --component ID [--run-id RUN] [--tail N]
+k1s profile delete local|core --run-id RUN --confirm-delete PROFILE/RUN
+```
+
+`run` claims a newly generated run under the same exclusive profile lock used
+by `start`; it never attaches to an already-active run. It uses the same
+transaction journal, activation gate, exact process identities, readiness,
+reverse-order stop, and owned cleanup as portable start/stop. `SIGINT` and
+`SIGTERM` handlers only record an intent. Normal foreground control flow
+performs all state, process, and filesystem actions, returning 130 or 143 after
+an exact clean stop. A component exit fails the run; an identity mismatch is
+fenced as orphaned and the mismatched process is never signalled.
+
+`logs` is a bounded snapshot, never an unbounded follow. It selects either the
+explicit immutable run ID or the exact recorded current run, then requires the
+named component's canonical `logs/<component>.log` descriptor. The file must
+remain an owner-owned, mode-`0600`, single-link regular file below the exact run
+directory. The default tail is 200 lines, the accepted range is 0 through
+10,000, and at most 1 MiB is read. There is no filename discovery, path
+normalization, source-checkout fallback, or process/runtime access.
+
+`delete` accepts only a stopped, cleanup-complete run with no live process
+authority or resource/secret receipts, and the confirmation must equal the
+literal `PROFILE/RUN`. Under the exclusive profile lock it persists an
+owner-private canonical deletion intent bound to the run-state digest, removes
+only that run's exact logs/data/cache trees, then records completion. A pending
+intent occupies the authoritative `transaction.json` slot as well as the exact
+run tombstone, so pre-checkpoint readers reject it instead of treating the run
+as cleanly terminal. It rolls forward after a crash; a complete intent is
+idempotent after descriptor-relative target-absence checks. The run
+state and current generation authority remain so an older or unknown deletion
+record fails closed and the next generation remains monotonic.
+
 ## Portable local/core transaction
 
 `k1s-core` includes an installed portable local/core adapter. Importing it,
@@ -147,12 +185,13 @@ receipts. Cleanup uses only the recorded allowlisted handler and exact secret
 device/inode, in reverse resource order. Successful receipts are removed;
 failed and pending receipts remain for deterministic same-run retry. No glob,
 prefix, process scan, socket scan, or ambient backend discovery grants
-ownership. Logs and stopped-run state are retained; deletion and pruning are
-later lifecycle work.
+ownership. Logs are retained until the exact stopped-run deletion contract is
+invoked. State authority and its digest-bound deletion tombstone are retained;
+ambient pruning and broad filesystem cleanup are not supported.
 
 These are packaged source contracts and deterministic fakeable boundaries,
 not evidence of live Podman/Docker qualification. This checkpoint uses only
 injected engine, process, readiness, and signal boundaries in validation.
-Host preparation, ambient resource adoption, run deletion, WorkerBee live
+Host preparation, ambient resource adoption, WorkerBee live
 qualification, and distributed/HA ownership remain deferred to separately
 reviewed checkpoints.

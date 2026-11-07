@@ -7,7 +7,7 @@ import signal
 import stat
 import subprocess
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -25,6 +25,7 @@ from ae.kctl.profile_state import (
 
 ProcessDisposition = Literal["running", "exited", "orphaned"]
 StopDisposition = Literal["stopped", "term-sent", "kill-sent", "orphaned"]
+ForegroundDisposition = Literal["stop-requested", "component-exited", "orphaned", "stopped"]
 
 
 class SupervisorError(ProfileStateError):
@@ -88,6 +89,13 @@ class StopResult:
     disposition: StopDisposition
     term_sent: bool = False
     kill_sent: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ForegroundWaitResult:
+    disposition: ForegroundDisposition
+    signal_number: int | None = None
+    component_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -460,6 +468,65 @@ class ProfileSupervisor:
         self.signals.signal_group(expected.process_group_id, signal.SIGKILL)
         return StopResult("kill-sent", term_sent=True, kill_sent=True)
 
+    def wait_foreground(
+        self,
+        run: RunState,
+        *,
+        state_reader: Callable[[], RunState | None],
+        stop_requested: Callable[[], int | None],
+    ) -> ForegroundWaitResult:
+        """Wait on recorded identities only; never discover or adopt a process."""
+
+        expected = {
+            component.component_id: component.process_identity
+            for component in run.components
+            if component.process_identity is not None
+        }
+        if not expected and run.phase != "stopping":
+            raise SupervisorError("foreground run has no recorded process identities")
+        stopping_deadline: float | None = None
+        while True:
+            requested = stop_requested()
+            if requested is not None:
+                if requested not in {signal.SIGINT, signal.SIGTERM}:
+                    raise SupervisorError("foreground stop request is unsupported")
+                return ForegroundWaitResult("stop-requested", signal_number=requested)
+            current = state_reader()
+            if current is None or current.run_id != run.run_id:
+                return ForegroundWaitResult("orphaned")
+            if current.phase == "stopped":
+                return ForegroundWaitResult("stopped")
+            if current.phase == "stopping":
+                if stopping_deadline is None:
+                    stopping_deadline = self.monotonic.now() + self.stop_timeout_seconds
+                if self.monotonic.now() >= stopping_deadline:
+                    raise SupervisorError("external stop did not settle within its deadline")
+            else:
+                stopping_deadline = None
+            current_components = {
+                component.component_id: component for component in current.components
+            }
+            for component_id, identity in expected.items():
+                component = current_components.get(component_id)
+                if component is None:
+                    return ForegroundWaitResult("orphaned", component_id=component_id)
+                if (
+                    current.phase == "stopping"
+                    and component.status == "stopped"
+                    and component.process_identity is None
+                ):
+                    continue
+                if component.process_identity != identity:
+                    return ForegroundWaitResult("orphaned", component_id=component_id)
+                disposition = self.classify_exact(identity)
+                if disposition == "exited":
+                    if current.phase == "stopping":
+                        continue
+                    return ForegroundWaitResult("component-exited", component_id=component_id)
+                if disposition == "orphaned":
+                    return ForegroundWaitResult("orphaned", component_id=component_id)
+            self.monotonic.sleep(self.poll_interval_seconds)
+
     def recover(self, store: ProfileStateStore, cleaner: ResourceCleaner) -> RunState | None:
         """Recover one current run without process discovery or ownership guessing."""
 
@@ -562,6 +629,8 @@ class ProfileSupervisor:
 
 
 __all__ = [
+    "ForegroundDisposition",
+    "ForegroundWaitResult",
     "LinuxProcInspector",
     "MonotonicClock",
     "OSSignalBackend",

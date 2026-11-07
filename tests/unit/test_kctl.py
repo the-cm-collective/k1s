@@ -11,6 +11,7 @@ from ae.kctl.__main__ import build_parser, main
 from ae.kctl.lifecycle import LifecycleResult
 from ae.kctl.profile_backend import PortableLifecycleResult
 from ae.kctl.profile_engine import EngineCapability
+from ae.kctl.profile_state import ProfileLogSnapshot
 from ae.kctl.profiles import InstalledProfileFacts
 
 
@@ -290,5 +291,128 @@ def test_profile_help_exposes_non_mutating_contracts_and_legacy_actions() -> Non
     )
     profile_parser = profile_action.choices["profile"]
     help_text = profile_parser.format_help()
-    for command in ("list", "doctor", "plan", "start", "status", "stop", "restart"):
+    for command in (
+        "list",
+        "doctor",
+        "plan",
+        "start",
+        "status",
+        "stop",
+        "restart",
+        "run",
+        "logs",
+        "delete",
+    ):
         assert command in help_text
+
+
+def test_profile_run_records_signal_intent_and_returns_foreground_exit(monkeypatch, capsys) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Manager:
+        def run(self, profile, *, backend, stop_requested):  # type: ignore[no-untyped-def]
+            calls.append((profile, backend))
+            assert stop_requested() is None
+            return PortableLifecycleResult(
+                action="run",
+                profile="core",
+                status="externally-stopped",
+                backend="podman",
+                run_id="r1-00000000000000000000000000000001",
+                generation=1,
+                phase="stopped",
+                exit_code=0,
+            )
+
+    monkeypatch.setattr(kctl_main, "portable_profile_manager_factory", Manager)
+    assert main(["profile", "run", "core", "-o", "json"]) == 0
+    assert calls == [("core", "podman")]
+    assert json.loads(capsys.readouterr().out)["action"] == "run"
+
+
+def test_profile_logs_and_delete_route_only_exact_arguments(monkeypatch, capsys) -> None:
+    calls: list[tuple[object, ...]] = []
+    run_id = "r1-00000000000000000000000000000001"
+
+    class Manager:
+        def logs(self, profile, *, component, run_id, tail):  # type: ignore[no-untyped-def]
+            calls.append(("logs", profile, component, run_id, tail))
+            return ProfileLogSnapshot(profile, run_id, component, ("safe",), False)
+
+        def delete(self, profile, *, run_id, confirmation):  # type: ignore[no-untyped-def]
+            calls.append(("delete", profile, run_id, confirmation))
+            return PortableLifecycleResult(
+                action="delete",
+                profile="core",
+                status="deleted",
+                backend="podman",
+                run_id=run_id,
+                generation=1,
+                phase="stopped",
+                exit_code=0,
+            )
+
+    monkeypatch.setattr(kctl_main, "portable_profile_manager_factory", Manager)
+    assert (
+        main(
+            [
+                "profile",
+                "logs",
+                "core",
+                "--component",
+                "controller",
+                "--run-id",
+                run_id,
+                "--tail",
+                "1",
+                "-o",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["lines"] == ["safe"]
+    assert (
+        main(
+            [
+                "profile",
+                "delete",
+                "core",
+                "--run-id",
+                run_id,
+                "--confirm-delete",
+                f"core/{run_id}",
+                "-o",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["status"] == "deleted"
+    assert calls == [
+        ("logs", "core", "controller", run_id, 1),
+        ("delete", "core", run_id, f"core/{run_id}"),
+    ]
+
+
+def test_profile_run_logs_delete_reject_nonportable_roles_at_parse_time() -> None:
+    parser = build_parser()
+    for argv in (
+        ["profile", "run", "edge-dev"],
+        ["profile", "logs", "edge-dev", "--component", "worker"],
+        [
+            "profile",
+            "delete",
+            "edge-dev",
+            "--run-id",
+            "r1-00000000000000000000000000000001",
+            "--confirm-delete",
+            "edge-dev/r1-00000000000000000000000000000001",
+        ],
+    ):
+        try:
+            parser.parse_args(argv)
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:  # pragma: no cover - fail closed assertion
+            raise AssertionError("nonportable lifecycle role unexpectedly parsed")

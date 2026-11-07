@@ -14,6 +14,7 @@ pre-releases. The status vocabulary is deliberately limited to **stable** and
 | Primary CLI | stable | `k1s --help` remains safe without starting a runtime. |
 | Compatibility CLIs | stable | `ae`, `ae-rotate-certs`, `ae-node`, `ae-gateway`, and `ae-worker-stub` remain installed entry points. |
 | Installed profile catalog | stable | `k1s profile list`, `doctor`, and `plan` are deterministic, non-mutating installed-contract commands. |
+| Portable profile lifecycle | experimental | `k1s profile run`, `logs`, and confirmed `delete` are exact-owner local/core contracts; live backend qualification remains separate. |
 | Version metadata | stable | Package metadata, CLI build information, OpenAPI v2/v3, and release checks resolve `ae.__version__`. |
 | CRI protobuf resources | stable | Package-local CRI and gogoproto modules ship in wheel and source distributions. |
 
@@ -44,7 +45,7 @@ without claiming that an exploratory interpreter is already supported.
 | Fabric control plane | experimental | External WorkerBee evidence remains advisory to K1s-owned reconciliation. |
 | Lab and VM automation | experimental | Host-specific validation helpers are not installed-artifact runtime contracts. |
 | HA drill tooling | experimental | Drill and retained-evidence formats may evolve before 1.0. |
-| Legacy profile runner | experimental | `profile start`, `status`, `stop`, and `restart` remain checkout-local compatibility actions pending later lifecycle work. |
+| Legacy profile runner | experimental | Non-local/core `profile start`, `status`, `stop`, and `restart` remain checkout-local compatibility actions pending later lifecycle work. |
 
 Experimental surfaces must still fail safely and remain documented, but their
 internal schemas and command details may change in a pre-release. A surface may

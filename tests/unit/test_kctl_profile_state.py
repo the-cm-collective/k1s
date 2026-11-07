@@ -391,6 +391,249 @@ def test_new_generation_requires_clean_terminal_current_run(tmp_path: Path) -> N
     assert second.run_id != first.run_id
 
 
+def _stopped_run(store: ProfileStateStore) -> RunState:
+    state = store.begin_run(backend_id="podman", plan_digest="sha256:" + "d" * 64)
+    state = store.transition(state.run_id, "stopping", expected_revision=state.revision)
+    state = store.cleanup_owned(state.run_id, _Cleaner())
+    state = store.settle_components(state.run_id, expected_revision=state.revision)
+    return store.transition(
+        state.run_id,
+        "stopped",
+        expected_revision=state.revision,
+        cleanup_complete=True,
+    )
+
+
+def test_exact_component_log_snapshot_is_bounded_and_descriptor_owned(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    state = store.begin_run()
+    component = ComponentState(
+        component_id="controller",
+        command_digest=command_digest(("controller",)),
+        log_path="logs/controller.log",
+        status="prepared",
+    )
+    state = store.put_component(state.run_id, component, expected_revision=state.revision)
+    log = store.layout.for_run(state.run_id).log_path("controller")
+    log.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    log.chmod(0o600)
+
+    snapshot = store.read_log_snapshot(state.run_id, "controller", tail=2)
+
+    assert snapshot.lines == ("two", "three")
+    assert snapshot.truncated is True
+    assert snapshot.run_id == state.run_id
+    with pytest.raises(StateConflictError, match="not recorded"):
+        store.read_log_snapshot(state.run_id, "node-local")
+    with pytest.raises(ProfileStateError, match="0 through 10000"):
+        store.read_log_snapshot(state.run_id, "controller", tail=10_001)
+
+
+def test_log_snapshot_uses_fstat_bounded_suffix_for_oversize_file(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    state = store.begin_run()
+    state = store.put_component(
+        state.run_id,
+        ComponentState(
+            component_id="controller",
+            command_digest=command_digest(("controller",)),
+            log_path="logs/controller.log",
+            status="prepared",
+        ),
+        expected_revision=state.revision,
+    )
+    log = store.layout.for_run(state.run_id).log_path("controller")
+    log.write_bytes((b"old-line\n" * 140_000) + b"final-line\n")
+    log.chmod(0o600)
+
+    snapshot = store.read_log_snapshot(state.run_id, "controller", tail=1)
+
+    assert snapshot.lines == ("final-line",)
+    assert snapshot.truncated is True
+
+
+def test_log_snapshot_rejects_symlink_mode_and_hardlink_substitution(tmp_path: Path) -> None:
+    for case in ("symlink", "mode", "hardlink"):
+        store = _store(tmp_path / case)
+        state = store.begin_run()
+        state = store.put_component(
+            state.run_id,
+            ComponentState(
+                component_id="controller",
+                command_digest=command_digest(("controller",)),
+                log_path="logs/controller.log",
+                status="prepared",
+            ),
+            expected_revision=state.revision,
+        )
+        log = store.layout.for_run(state.run_id).log_path("controller")
+        log.write_text("safe\n", encoding="utf-8")
+        log.chmod(0o600)
+        if case == "symlink":
+            target = tmp_path / "foreign.log"
+            target.write_text("foreign\n", encoding="utf-8")
+            log.unlink()
+            log.symlink_to(target)
+        elif case == "mode":
+            log.chmod(0o644)
+        else:
+            os.link(log, log.with_name("other.log"))
+        with pytest.raises(ProfileStateError):
+            store.read_log_snapshot(state.run_id, "controller")
+
+
+def test_log_directory_device_must_match_validated_run_parent(tmp_path: Path) -> None:
+    import ae.kctl.profile_state as profile_state
+
+    store = _store(tmp_path)
+    state = store.begin_run()
+    layout = store.layout.for_run(state.run_id)
+    parent_fd = profile_state._open_owned_directory(
+        layout.run_state.parent,
+        owner_uid=os.geteuid(),
+    )
+    try:
+        parent_info = os.fstat(parent_fd)
+        with pytest.raises(ProfileStateError, match="child directory identity"):
+            profile_state._open_owned_child_directory(
+                parent_fd,
+                "logs",
+                owner_uid=os.geteuid(),
+                expected_device=parent_info.st_dev + 1,
+            )
+    finally:
+        os.close(parent_fd)
+
+
+def test_owned_tree_device_must_match_validated_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ae.kctl.profile_state as profile_state
+
+    parent = tmp_path / "parent"
+    target = parent / "target"
+    parent.mkdir(mode=0o700)
+    target.mkdir(mode=0o700)
+    payload = target / "owned.txt"
+    payload.write_text("owned\n", encoding="utf-8")
+    payload.chmod(0o600)
+    original_stat = profile_state.os.stat
+
+    def mismatched_target_stat(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        info = original_stat(path, *args, **kwargs)
+        if path == target.name and kwargs.get("dir_fd") is not None:
+            values = list(info)
+            values[2] = info.st_dev + 1
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(profile_state.os, "stat", mismatched_target_stat)
+    with pytest.raises(ProfileStateError, match="deletion target is unsafe"):
+        profile_state._remove_owned_tree(target, owner_uid=os.geteuid())
+
+    assert target.is_dir()
+    assert payload.read_text(encoding="utf-8") == "owned\n"
+
+
+def test_delete_run_is_digest_bound_idempotent_and_preserves_authority(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    state = _stopped_run(store)
+    layout = store.layout.for_run(state.run_id)
+    payload = layout.run_data / "controller.db"
+    payload.write_bytes(b"state")
+    payload.chmod(0o600)
+    log = layout.log_path("controller")
+    log.write_text("done\n", encoding="utf-8")
+    log.chmod(0o600)
+
+    deleted = store.delete_run(
+        state.run_id,
+        confirmation=f"{state.profile}/{state.run_id}",
+    )
+    repeated = store.delete_run(
+        state.run_id,
+        confirmation=f"{state.profile}/{state.run_id}",
+    )
+
+    assert deleted == repeated
+    assert deleted.status == "complete"
+    assert not layout.run_data.exists()
+    assert not layout.run_cache.exists()
+    assert not layout.run_logs.exists()
+    assert layout.run_state.is_file()
+    assert store.layout.current.is_file()
+    record_path = layout.run_state.parent / "deletion.json"
+    assert record_path.stat().st_mode & 0o777 == 0o600
+    assert store.inspect() == state
+    next_run = store.begin_run(backend_id="podman", plan_digest="sha256:" + "e" * 64)
+    assert next_run.generation == state.generation + 1
+
+
+def test_delete_run_pending_intent_rolls_forward_after_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    state = _stopped_run(store)
+    import ae.kctl.profile_state as profile_state
+
+    original = profile_state._remove_owned_tree
+    calls = 0
+
+    def crash_once(path: Path, *, owner_uid: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated deletion crash")
+        original(path, owner_uid=owner_uid)
+
+    monkeypatch.setattr(profile_state, "_remove_owned_tree", crash_once)
+    confirmation = f"{state.profile}/{state.run_id}"
+    with pytest.raises(RuntimeError, match="simulated deletion crash"):
+        store.delete_run(state.run_id, confirmation=confirmation)
+    authority = json.loads(store.layout.transaction.read_text(encoding="utf-8"))
+    assert authority["kind"] == "ProfileRunDeletion"
+    assert authority["status"] == "pending"
+    with pytest.raises(StateConflictError, match="roll-forward"):
+        store.inspect()
+
+    monkeypatch.setattr(profile_state, "_remove_owned_tree", original)
+    record = store.delete_run(state.run_id, confirmation=confirmation)
+    assert record.status == "complete"
+    assert store.inspect() == state
+
+
+def test_completed_delete_revalidates_exact_target_absence(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    state = _stopped_run(store)
+    confirmation = f"{state.profile}/{state.run_id}"
+    store.delete_run(state.run_id, confirmation=confirmation)
+    layout = store.layout.for_run(state.run_id)
+    layout.run_cache.mkdir(mode=0o700)
+
+    with pytest.raises(StateConflictError, match="unexpectedly exists"):
+        store.delete_run(state.run_id, confirmation=confirmation)
+
+
+def test_delete_run_requires_exact_confirmation_and_rejects_unsafe_target(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    state = _stopped_run(store)
+    with pytest.raises(StateConflictError, match="confirmation"):
+        store.delete_run(state.run_id, confirmation="local/wrong")
+
+    layout = store.layout.for_run(state.run_id)
+    layout.run_secrets.rmdir()
+    layout.run_data.rmdir()
+    layout.run_data.symlink_to(tmp_path)
+    with pytest.raises(ProfileStateError, match="target is unsafe"):
+        store.delete_run(state.run_id, confirmation=f"local/{state.run_id}")
+
+
 def test_repeated_random_run_id_collision_fails_closed(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     store = ProfileStateStore(

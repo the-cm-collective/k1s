@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import signal
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from ae.kctl.profile_state import ProcessIdentity
+from ae.kctl.profile_state import ComponentState, ProcessIdentity, RunState, command_digest
 from ae.kctl.profile_supervisor import (
     ProfileSupervisor,
     StopResult,
@@ -256,3 +257,123 @@ def test_identity_change_during_term_wait_suppresses_kill() -> None:
 
     assert supervisor.stop_exact(expected) == StopResult("orphaned", term_sent=True)
     assert signals.calls == [(expected.process_group_id, signal.SIGTERM)]
+
+
+def _running_state(identity: ProcessIdentity) -> RunState:
+    return RunState(
+        profile="core",
+        requested_name="core",
+        run_id="r1-00000000000000000000000000000001",
+        generation=1,
+        revision=1,
+        owner_uid=0,
+        phase="running",
+        created_at="2026-11-07T12:00:00Z",
+        updated_at="2026-11-07T12:00:00Z",
+        components=(
+            ComponentState(
+                component_id="controller",
+                command_digest=command_digest(("controller",)),
+                log_path="logs/controller.log",
+                status="running",
+                process_identity=identity,
+            ),
+        ),
+    )
+
+
+def test_foreground_wait_returns_recorded_signal_without_process_action() -> None:
+    expected = _identity()
+    supervisor, signals, _, clock = _supervisor([])
+    state = _running_state(expected)
+
+    result = supervisor.wait_foreground(
+        state,
+        state_reader=lambda: state,
+        stop_requested=lambda: signal.SIGINT,
+    )
+
+    assert result.disposition == "stop-requested"
+    assert result.signal_number == signal.SIGINT
+    assert signals.calls == []
+    assert clock.sleeps == []
+
+
+def test_foreground_wait_detects_exit_and_identity_mismatch_without_signaling() -> None:
+    expected = _identity()
+    for observed, disposition in ((None, "component-exited"), (_identity(start=999), "orphaned")):
+        supervisor, signals, _, _ = _supervisor([observed])
+        state = _running_state(expected)
+        result = supervisor.wait_foreground(
+            state,
+            state_reader=lambda current=state: current,
+            stop_requested=lambda: None,
+        )
+        assert result.disposition == disposition
+        assert result.component_id == "controller"
+        assert signals.calls == []
+
+
+def test_foreground_wait_tolerates_exact_same_run_external_stop_progress() -> None:
+    expected = _identity()
+    supervisor, signals, _, clock = _supervisor([])
+    running = _running_state(expected)
+    stopping = replace(
+        running,
+        phase="stopping",
+        components=(replace(running.components[0], status="stopped", process_identity=None),),
+    )
+    stopped = replace(stopping, phase="stopped", cleanup_complete=True)
+    states = iter((stopping, stopped))
+
+    result = supervisor.wait_foreground(
+        running,
+        state_reader=lambda: next(states),
+        stop_requested=lambda: None,
+    )
+
+    assert result.disposition == "stopped"
+    assert signals.calls == []
+    assert clock.sleeps == [0.05]
+
+
+def test_foreground_wait_bounds_same_run_stuck_stopping_state() -> None:
+    expected = _identity()
+    supervisor, signals, _, clock = _supervisor([], timeout=0.1)
+    running = _running_state(expected)
+    stopping = replace(
+        running,
+        phase="stopping",
+        components=(replace(running.components[0], status="stopped", process_identity=None),),
+    )
+
+    with pytest.raises(SupervisorError, match="did not settle"):
+        supervisor.wait_foreground(
+            stopping,
+            state_reader=lambda: stopping,
+            stop_requested=lambda: None,
+        )
+
+    assert signals.calls == []
+    assert clock.sleeps == [0.05, 0.05]
+
+
+def test_foreground_wait_rejects_identity_substitution_while_stopping() -> None:
+    expected = _identity()
+    replacement = _identity(start=999)
+    supervisor, signals, _, _ = _supervisor([])
+    running = _running_state(expected)
+    stopping = replace(
+        running,
+        phase="stopping",
+        components=(replace(running.components[0], process_identity=replacement),),
+    )
+
+    result = supervisor.wait_foreground(
+        running,
+        state_reader=lambda: stopping,
+        stop_requested=lambda: None,
+    )
+
+    assert result.disposition == "orphaned"
+    assert signals.calls == []

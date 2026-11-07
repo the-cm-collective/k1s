@@ -9,6 +9,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Tuple
@@ -36,6 +40,7 @@ from ae.kctl.profile_backend import (
     PortableProfileManager,
 )
 from ae.kctl.profile_engine import SelectedEngineProbe
+from ae.kctl.profile_state import ProfileStateError
 from ae.kctl.profiles import (
     PROFILE_INPUT_NAMES,
     ReadOnlyDoctorProbe,
@@ -227,6 +232,26 @@ def build_parser() -> argparse.ArgumentParser:
         )
         if action in {"start", "restart"}:
             action_p.add_argument("--backend", choices=("podman", "docker"), default=None)
+
+    run_p = profile_sub.add_parser("run", help="Run a local/core profile in the foreground")
+    run_p.add_argument("profile", choices=PORTABLE_PROFILES)
+    run_p.add_argument("--backend", choices=("podman", "docker"), default="podman")
+    run_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    logs_profile_p = profile_sub.add_parser("logs", help="Read an exact owned component log")
+    logs_profile_p.add_argument("profile", choices=PORTABLE_PROFILES)
+    logs_profile_p.add_argument("--component", required=True)
+    logs_profile_p.add_argument("--run-id", default=None)
+    logs_profile_p.add_argument("--tail", type=int, default=200)
+    logs_profile_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    delete_profile_p = profile_sub.add_parser(
+        "delete", help="Delete one exact cleaned stopped profile run"
+    )
+    delete_profile_p.add_argument("profile", choices=PORTABLE_PROFILES)
+    delete_profile_p.add_argument("--run-id", required=True)
+    delete_profile_p.add_argument("--confirm-delete", required=True)
+    delete_profile_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
 
     return p
 
@@ -624,6 +649,34 @@ def profile_doctor_probe_factory() -> ReadOnlyDoctorProbe:
     return SystemDoctorProbe()
 
 
+@dataclass(slots=True)
+class _SignalRequest:
+    signal_number: int | None = None
+
+    def record(self, signal_number: int, frame: object) -> None:
+        del frame
+        if self.signal_number is None:
+            self.signal_number = signal_number
+
+
+@contextmanager
+def _foreground_signal_requests() -> Iterator[_SignalRequest]:
+    """Install handlers that only record intent; cleanup remains normal control flow."""
+
+    request = _SignalRequest()
+    previous = {
+        signal_number: signal.getsignal(signal_number)
+        for signal_number in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        for signal_number in previous:
+            signal.signal(signal_number, request.record)
+        yield request
+    finally:
+        for signal_number, handler in previous.items():
+            signal.signal(signal_number, handler)
+
+
 def handle_profile(ns: argparse.Namespace) -> int:
     """Inspect profile contracts or execute one explicit legacy lifecycle action."""
 
@@ -655,6 +708,56 @@ def handle_profile(ns: argparse.Namespace) -> int:
         else:
             print(render_profile_text(payload))
         return exit_code
+
+    if ns.profile_action in {"run", "logs", "delete"}:
+        manager = portable_profile_manager_factory()
+        try:
+            if ns.profile_action == "run":
+                with _foreground_signal_requests() as request:
+                    run_result = manager.run(
+                        ns.profile,
+                        backend=ns.backend,
+                        stop_requested=lambda: request.signal_number,
+                    )
+                payload = run_result.to_dict()
+                if ns.output == "json":
+                    print(json.dumps(payload, sort_keys=True))
+                else:
+                    print(
+                        f"profile={run_result.profile} status={run_result.status} "
+                        f"backend={run_result.backend} run={run_result.run_id}"
+                    )
+                return run_result.exit_code
+            if ns.profile_action == "logs":
+                snapshot = manager.logs(
+                    ns.profile,
+                    component=ns.component,
+                    run_id=ns.run_id,
+                    tail=ns.tail,
+                )
+                if ns.output == "json":
+                    print(json.dumps(snapshot.to_payload(), sort_keys=True))
+                else:
+                    for line in snapshot.lines:
+                        print(line)
+                return 0
+            delete_result = manager.delete(
+                ns.profile,
+                run_id=ns.run_id,
+                confirmation=ns.confirm_delete,
+            )
+            payload = delete_result.to_dict()
+            if ns.output == "json":
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(
+                    f"profile={delete_result.profile} status={delete_result.status} "
+                    f"run={delete_result.run_id}"
+                )
+            return delete_result.exit_code
+        except ProfileStateError:
+            print("profile command failed closed", file=sys.stderr)
+            return 1
 
     legacy = bool(ns.legacy)
     backend = getattr(ns, "backend", None)

@@ -27,7 +27,9 @@ API_VERSION = "k1s.dev/v1alpha1"
 SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
 TRANSACTION_SCHEMA_VERSION = 1
+DELETION_SCHEMA_VERSION = 1
 MAX_STATE_BYTES = 1024 * 1024
+MAX_LOG_SNAPSHOT_BYTES = 1024 * 1024
 
 RunPhase = Literal[
     "preparing",
@@ -450,6 +452,136 @@ class FailureRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DeletionRecord:
+    """Crash-recoverable intent for deleting one exact stopped run payload."""
+
+    profile: str
+    run_id: str
+    generation: int
+    owner_uid: int
+    confirmation: str
+    state_digest: str
+    status: Literal["pending", "complete"]
+    targets: tuple[str, ...]
+    created_at: str
+    completed_at: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_identifier(self.profile, field="deletion profile")
+        validate_run_id(self.run_id)
+        _strict_int(self.generation, field="deletion generation", minimum=1)
+        _strict_int(self.owner_uid, field="deletion ownerUid")
+        if self.confirmation != f"{self.profile}/{self.run_id}":
+            raise ProfileStateError("deletion confirmation differs from the exact run")
+        _validate_digest(self.state_digest, field="deletion state digest")
+        if self.status not in {"pending", "complete"}:
+            raise ProfileStateError("deletion status is unsupported")
+        if self.targets != ("cache", "data", "logs"):
+            raise ProfileStateError("deletion targets differ from the canonical set")
+        _canonical_timestamp(self.created_at)
+        if self.status == "pending" and self.completed_at is not None:
+            raise ProfileStateError("pending deletion cannot have a completion time")
+        if self.status == "complete":
+            if self.completed_at is None:
+                raise ProfileStateError("complete deletion requires a completion time")
+            _canonical_timestamp(self.completed_at)
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "apiVersion": API_VERSION,
+            "completedAt": self.completed_at,
+            "confirmation": self.confirmation,
+            "createdAt": self.created_at,
+            "generation": self.generation,
+            "kind": "ProfileRunDeletion",
+            "ownerUid": self.owner_uid,
+            "profile": self.profile,
+            "runId": self.run_id,
+            "schemaVersion": DELETION_SCHEMA_VERSION,
+            "stateDigest": self.state_digest,
+            "status": self.status,
+            "targets": list(self.targets),
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> DeletionRecord:
+        raw = _mapping(value, field="deletion record")
+        _exact_keys(
+            raw,
+            {
+                "apiVersion",
+                "completedAt",
+                "confirmation",
+                "createdAt",
+                "generation",
+                "kind",
+                "ownerUid",
+                "profile",
+                "runId",
+                "schemaVersion",
+                "stateDigest",
+                "status",
+                "targets",
+            },
+            field="deletion record",
+        )
+        if (
+            raw["apiVersion"] != API_VERSION
+            or raw["kind"] != "ProfileRunDeletion"
+            or raw["schemaVersion"] != DELETION_SCHEMA_VERSION
+        ):
+            raise ProfileStateError("deletion record envelope differs")
+        completed_at = raw["completedAt"]
+        targets = _list(raw["targets"], field="deletion targets")
+        if not all(type(target) is str for target in targets):
+            raise ProfileStateError("deletion targets must be strings")
+        return cls(
+            profile=validate_identifier(
+                _strict_text(raw["profile"], field="deletion.profile"),
+                field="deletion profile",
+            ),
+            run_id=validate_run_id(_strict_text(raw["runId"], field="deletion.runId")),
+            generation=_strict_int(raw["generation"], field="deletion.generation", minimum=1),
+            owner_uid=_strict_int(raw["ownerUid"], field="deletion.ownerUid"),
+            confirmation=_strict_text(raw["confirmation"], field="deletion.confirmation"),
+            state_digest=_strict_text(raw["stateDigest"], field="deletion.stateDigest", maximum=71),
+            status=cast(
+                Literal["pending", "complete"],
+                _strict_text(raw["status"], field="deletion.status", maximum=16),
+            ),
+            targets=cast(tuple[str, ...], tuple(targets)),
+            created_at=_canonical_timestamp(
+                _strict_text(raw["createdAt"], field="deletion.createdAt")
+            ),
+            completed_at=(
+                None
+                if completed_at is None
+                else _canonical_timestamp(_strict_text(completed_at, field="deletion.completedAt"))
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileLogSnapshot:
+    profile: str
+    run_id: str
+    component_id: str
+    lines: tuple[str, ...]
+    truncated: bool
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "apiVersion": API_VERSION,
+            "component": self.component_id,
+            "kind": "ProfileLogSnapshot",
+            "lines": list(self.lines),
+            "profile": self.profile,
+            "runId": self.run_id,
+            "truncated": self.truncated,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CurrentState:
     profile: str
     run_id: str
@@ -858,6 +990,7 @@ class ProfileStateStore:
             if current is not None:
                 previous = self._read_run(current.run_id)
                 self._require_consistent(current, previous)
+                self._require_no_pending_deletion(previous.run_id)
                 if previous.phase != "stopped" or not previous.cleanup_complete:
                     raise StateConflictError("the current profile run is not cleanly terminal")
                 generation = previous.generation + 1
@@ -910,8 +1043,193 @@ class ProfileStateStore:
             if current is None:
                 return None
             state = self._read_run(current.run_id)
+            self._require_no_pending_deletion(state.run_id)
             self._require_consistent(current, state)
             return state
+
+    def inspect_run(self, run_id: str) -> RunState:
+        """Read one exact historical run without selecting it by discovery."""
+
+        validate_run_id(run_id)
+        with self.locked(shared=True, create=False):
+            self._require_no_transaction()
+            self._require_no_pending_deletion(run_id)
+            state = self._read_run(run_id)
+            self._require_run_owner(state)
+            return state
+
+    def deletion_record(self, run_id: str) -> DeletionRecord | None:
+        validate_run_id(run_id)
+        with self.locked(shared=True, create=False):
+            record = self._read_deletion(run_id, optional=True)
+            if record is not None:
+                self._require_deletion_owner(record)
+            return record
+
+    def read_log_snapshot(
+        self, run_id: str, component_id: str, *, tail: int = 200
+    ) -> ProfileLogSnapshot:
+        """Read a bounded exact component log under the profile's shared lock."""
+
+        validate_run_id(run_id)
+        component_name = validate_identifier(component_id, field="component ID")
+        if type(tail) is not int or not 0 <= tail <= 10_000:
+            raise ProfileStateError("log tail must be an integer from 0 through 10000")
+        with self.locked(shared=True, create=False):
+            self._require_no_transaction()
+            self._require_no_pending_deletion(run_id)
+            state = self._read_run(run_id)
+            self._require_run_owner(state)
+            component = next(
+                (item for item in state.components if item.component_id == component_name), None
+            )
+            if component is None:
+                raise StateConflictError("requested component is not recorded by the run")
+            if component.log_path != f"logs/{component_name}.log":
+                raise ProfileStateError("component log descriptor is not canonical")
+            run_layout = self.layout.for_run(run_id)
+            run_parent_fd = _open_owned_directory(
+                run_layout.run_state.parent,
+                owner_uid=self.layout.roots.owner_uid,
+            )
+            try:
+                run_parent_info = os.fstat(run_parent_fd)
+                directory_fd = _open_owned_child_directory(
+                    run_parent_fd,
+                    "logs",
+                    owner_uid=self.layout.roots.owner_uid,
+                    expected_device=run_parent_info.st_dev,
+                )
+            finally:
+                os.close(run_parent_fd)
+            try:
+                directory_info = os.fstat(directory_fd)
+                try:
+                    fd = os.open(
+                        f"{component_name}.log",
+                        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                        dir_fd=directory_fd,
+                    )
+                except FileNotFoundError as exc:
+                    raise ProfileStateError("recorded component log is missing") from exc
+                except OSError as exc:
+                    raise ProfileStateError(
+                        "recorded component log cannot be opened safely"
+                    ) from exc
+                try:
+                    info = os.fstat(fd)
+                    if (
+                        not stat.S_ISREG(info.st_mode)
+                        or info.st_uid != self.layout.roots.owner_uid
+                        or info.st_dev != directory_info.st_dev
+                        or stat.S_IMODE(info.st_mode) != 0o600
+                        or info.st_nlink != 1
+                    ):
+                        raise ProfileStateError("recorded component log identity is unsafe")
+                    snapshot_length = min(info.st_size, MAX_LOG_SNAPSHOT_BYTES)
+                    start = info.st_size - snapshot_length
+                    os.lseek(fd, start, os.SEEK_SET)
+                    chunks: list[bytes] = []
+                    remaining = snapshot_length
+                    while remaining:
+                        chunk = os.read(fd, min(65536, remaining))
+                        if not chunk:
+                            raise ProfileStateError(
+                                "component log changed during its bounded snapshot"
+                            )
+                        chunks.append(chunk)
+                        remaining -= len(chunk)
+                    payload = b"".join(chunks)
+                finally:
+                    os.close(fd)
+            finally:
+                os.close(directory_fd)
+            if b"\x00" in payload:
+                raise ProfileStateError("component log contains invalid bytes")
+            truncated = start > 0
+            if truncated:
+                newline = payload.find(b"\n")
+                payload = b"" if newline < 0 else payload[newline + 1 :]
+            try:
+                all_lines = payload.decode("utf-8").splitlines()
+            except UnicodeDecodeError as exc:
+                raise ProfileStateError("component log is not valid UTF-8") from exc
+            selected = all_lines[-tail:] if tail else []
+            return ProfileLogSnapshot(
+                profile=state.profile,
+                run_id=state.run_id,
+                component_id=component_name,
+                lines=tuple(selected),
+                truncated=truncated or len(selected) < len(all_lines),
+            )
+
+    def delete_run(self, run_id: str, *, confirmation: str) -> DeletionRecord:
+        """Delete only exact owned payload for one clean stopped run."""
+
+        validate_run_id(run_id)
+        with self.locked():
+            authority = self._read_deletion_transaction(optional=True)
+            if authority is None:
+                self._require_no_transaction()
+            state = self._read_run(run_id)
+            self._require_run_owner(state)
+            expected_confirmation = f"{state.profile}/{state.run_id}"
+            if confirmation != expected_confirmation:
+                raise StateConflictError("delete confirmation differs from the exact profile/run")
+            if (
+                state.phase != "stopped"
+                or not state.cleanup_complete
+                or state.resource_receipts
+                or state.secret_receipts
+                or any(
+                    item.status != "stopped" or item.process_identity is not None
+                    for item in state.components
+                )
+            ):
+                raise StateConflictError("only a completely cleaned stopped run may be deleted")
+            state_digest = _payload_digest(state.to_payload())
+            record = self._read_deletion(run_id, optional=True)
+            if authority is not None:
+                self._require_deletion_matches(authority, state, state_digest)
+                if record is not None:
+                    self._require_same_deletion_record(record, authority)
+                record = authority
+            elif record is None:
+                record = DeletionRecord(
+                    profile=state.profile,
+                    run_id=state.run_id,
+                    generation=state.generation,
+                    owner_uid=state.owner_uid,
+                    confirmation=expected_confirmation,
+                    state_digest=state_digest,
+                    status="pending",
+                    targets=("cache", "data", "logs"),
+                    created_at=_canonical_timestamp(self.clock()),
+                )
+                self._write_deletion_transaction(record)
+                self._write_deletion(record)
+            else:
+                self._require_deletion_matches(record, state, state_digest)
+                if record.status == "complete":
+                    for _, target in self._deletion_targets(run_id):
+                        if not _owned_tree_absent(target, owner_uid=self.layout.roots.owner_uid):
+                            raise StateConflictError(
+                                "completed deletion target unexpectedly exists"
+                            )
+                    return record
+                raise StateConflictError(
+                    "pending deletion lacks its authoritative transaction intent"
+                )
+            for _, target in self._deletion_targets(run_id):
+                _remove_owned_tree(target, owner_uid=self.layout.roots.owner_uid)
+            complete = replace(
+                record,
+                status="complete",
+                completed_at=_canonical_timestamp(self.clock()),
+            )
+            self._write_deletion(complete)
+            self._remove_transaction()
+            return complete
 
     def transition(
         self,
@@ -1139,6 +1457,7 @@ class ProfileStateStore:
     ) -> tuple[RunState, CurrentState]:
         validate_run_id(run_id)
         self._require_no_transaction()
+        self._require_no_pending_deletion(run_id)
         current = self._read_current(optional=False)
         assert current is not None
         if current.run_id != run_id:
@@ -1150,6 +1469,13 @@ class ProfileStateStore:
         if expected_revision is not None and state.revision != expected_revision:
             raise StateConflictError("run revision changed")
         return state, current
+
+    def _require_run_owner(self, state: RunState) -> None:
+        if (
+            state.profile != self.layout.canonical_profile
+            or state.owner_uid != self.layout.roots.owner_uid
+        ):
+            raise StateConflictError("run state ownership differs from the selected profile")
 
     def _require_consistent(self, current: CurrentState, state: RunState) -> None:
         if (
@@ -1315,7 +1641,29 @@ class ProfileStateStore:
             owner_uid=self.layout.roots.owner_uid,
             optional=optional,
         )
-        return None if raw is None else StateTransaction.from_payload(raw)
+        if raw is None:
+            return None
+        if raw.get("kind") == "ProfileRunDeletion":
+            DeletionRecord.from_payload(raw)
+            raise StateConflictError("run deletion requires explicit roll-forward")
+        return StateTransaction.from_payload(raw)
+
+    def _read_deletion_transaction(self, *, optional: bool) -> DeletionRecord | None:
+        raw = _read_canonical_json(
+            self.layout.transaction,
+            owner_uid=self.layout.roots.owner_uid,
+            optional=optional,
+        )
+        if raw is None:
+            return None
+        if raw.get("kind") != "ProfileRunDeletion":
+            StateTransaction.from_payload(raw)
+            raise StateConflictError("profile state transaction requires explicit recovery")
+        record = DeletionRecord.from_payload(raw)
+        if record.status != "pending":
+            raise StateConflictError("authoritative deletion intent must remain pending")
+        self._require_deletion_owner(record)
+        return record
 
     def _read_current_payload(self, *, optional: bool) -> dict[str, object] | None:
         return _read_canonical_json(
@@ -1330,6 +1678,75 @@ class ProfileStateStore:
             owner_uid=self.layout.roots.owner_uid,
             optional=optional,
         )
+
+    def _deletion_path(self, run_id: str) -> Path:
+        return self.layout.for_run(run_id).run_state.parent / "deletion.json"
+
+    def _deletion_targets(self, run_id: str) -> tuple[tuple[str, Path], ...]:
+        layout = self.layout.for_run(run_id)
+        return (("cache", layout.run_cache), ("data", layout.run_data), ("logs", layout.run_logs))
+
+    def _read_deletion(self, run_id: str, *, optional: bool) -> DeletionRecord | None:
+        raw = _read_canonical_json(
+            self._deletion_path(run_id),
+            owner_uid=self.layout.roots.owner_uid,
+            optional=optional,
+        )
+        return None if raw is None else DeletionRecord.from_payload(raw)
+
+    def _write_deletion(self, record: DeletionRecord) -> None:
+        self._require_deletion_owner(record)
+        _atomic_json_write(
+            self._deletion_path(record.run_id),
+            record.to_payload(),
+            owner_uid=self.layout.roots.owner_uid,
+            random_bytes=self.random_bytes,
+        )
+
+    def _write_deletion_transaction(self, record: DeletionRecord) -> None:
+        if record.status != "pending":
+            raise ProfileStateError("authoritative deletion intent must be pending")
+        self._require_deletion_owner(record)
+        _atomic_json_write(
+            self.layout.transaction,
+            record.to_payload(),
+            owner_uid=self.layout.roots.owner_uid,
+            random_bytes=self.random_bytes,
+        )
+
+    def _require_deletion_owner(self, record: DeletionRecord) -> None:
+        if (
+            record.profile != self.layout.canonical_profile
+            or record.owner_uid != self.layout.roots.owner_uid
+        ):
+            raise StateConflictError("deletion record ownership differs")
+
+    def _require_no_pending_deletion(self, run_id: str) -> None:
+        record = self._read_deletion(run_id, optional=True)
+        if record is not None:
+            self._require_deletion_owner(record)
+            if record.status == "pending":
+                raise StateConflictError("run deletion requires explicit roll-forward")
+
+    def _require_deletion_matches(
+        self, record: DeletionRecord, state: RunState, state_digest: str
+    ) -> None:
+        self._require_deletion_owner(record)
+        if (
+            record.run_id != state.run_id
+            or record.generation != state.generation
+            or record.state_digest != state_digest
+            or record.confirmation != f"{state.profile}/{state.run_id}"
+        ):
+            raise StateConflictError("deletion record differs from the exact stopped run")
+
+    @staticmethod
+    def _require_same_deletion_record(
+        observed: DeletionRecord, authoritative: DeletionRecord
+    ) -> None:
+        normalized = replace(observed, status="pending", completed_at=None)
+        if normalized != authoritative:
+            raise StateConflictError("deletion tombstone differs from authoritative intent")
 
     def _read_current(self, *, optional: bool) -> CurrentState | None:
         raw = self._read_current_payload(optional=optional)
@@ -1586,6 +2003,131 @@ def _validate_existing_state_target(path: Path, *, owner_uid: int) -> None:
         raise ProfileStateError(f"existing state target is unsafe: {path.name}")
 
 
+def _open_owned_directory(path: Path, *, owner_uid: int) -> int:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise ProfileStateError("owned directory cannot be opened safely") from exc
+    info = os.fstat(fd)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != owner_uid
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        os.close(fd)
+        raise ProfileStateError("owned directory identity is unsafe")
+    return fd
+
+
+def _open_owned_child_directory(
+    parent_fd: int,
+    name: str,
+    *,
+    owner_uid: int,
+    expected_device: int,
+) -> int:
+    try:
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        raise ProfileStateError("owned child directory cannot be opened safely") from exc
+    info = os.fstat(fd)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != owner_uid
+        or info.st_dev != expected_device
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        os.close(fd)
+        raise ProfileStateError("owned child directory identity is unsafe")
+    return fd
+
+
+def _remove_owned_tree(path: Path, *, owner_uid: int) -> None:
+    """Remove one exact owner-private tree by descriptor, without following links."""
+
+    parent_fd = _open_owned_directory(path.parent, owner_uid=owner_uid)
+    try:
+        parent_info = os.fstat(parent_fd)
+        try:
+            info = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(info.st_mode) or info.st_dev != parent_info.st_dev:
+            raise ProfileStateError("owned deletion target is unsafe")
+        _remove_owned_directory_entry(
+            parent_fd,
+            path.name,
+            owner_uid=owner_uid,
+            root_device=parent_info.st_dev,
+        )
+    finally:
+        os.close(parent_fd)
+    _fsync_directory(path.parent)
+
+
+def _owned_tree_absent(path: Path, *, owner_uid: int) -> bool:
+    """Check one exact target through its validated parent descriptor."""
+
+    parent_fd = _open_owned_directory(path.parent, owner_uid=owner_uid)
+    try:
+        try:
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return True
+        return False
+    finally:
+        os.close(parent_fd)
+
+
+def _remove_owned_directory_entry(
+    parent_fd: int,
+    name: str,
+    *,
+    owner_uid: int,
+    root_device: int,
+) -> None:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        directory_fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise ProfileStateError("owned deletion target cannot be opened safely") from exc
+    try:
+        info = os.fstat(directory_fd)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != owner_uid
+            or info.st_dev != root_device
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise ProfileStateError("owned deletion directory identity is unsafe")
+        for child_name in sorted(os.listdir(directory_fd)):
+            if child_name in {"", ".", ".."} or "/" in child_name or "\\" in child_name:
+                raise ProfileStateError("owned deletion target contains an unsafe name")
+            child = os.stat(child_name, dir_fd=directory_fd, follow_symlinks=False)
+            if child.st_uid != owner_uid or child.st_dev != root_device:
+                raise ProfileStateError("owned deletion target contains an unsafe member")
+            if stat.S_ISDIR(child.st_mode):
+                _remove_owned_directory_entry(
+                    directory_fd,
+                    child_name,
+                    owner_uid=owner_uid,
+                    root_device=root_device,
+                )
+            elif stat.S_ISREG(child.st_mode):
+                if stat.S_IMODE(child.st_mode) != 0o600 or child.st_nlink != 1:
+                    raise ProfileStateError("owned file member identity is unsafe")
+                os.unlink(child_name, dir_fd=directory_fd)
+            else:
+                raise ProfileStateError("owned deletion target contains a special member")
+    finally:
+        os.close(directory_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
 def _write_all(fd: int, payload: bytes) -> None:
     view = memoryview(payload)
     while view:
@@ -1607,8 +2149,10 @@ __all__ = [
     "API_VERSION",
     "ComponentState",
     "CurrentState",
+    "DeletionRecord",
     "FailureRecord",
     "ProcessIdentity",
+    "ProfileLogSnapshot",
     "ProfileBusyError",
     "ProfileLock",
     "ProfileStateError",
@@ -1618,6 +2162,7 @@ __all__ = [
     "RunPhase",
     "RunState",
     "SecretReceipt",
+    "MAX_LOG_SNAPSHOT_BYTES",
     "StateTransaction",
     "StateConflictError",
     "command_digest",

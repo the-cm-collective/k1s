@@ -17,7 +17,7 @@ from ae.kctl.profile_backend import (
 from ae.kctl.profile_engine import EngineCapability
 from ae.kctl.profile_paths import ProfileRoots
 from ae.kctl.profile_state import ComponentState, ProcessIdentity, ProfileStateStore, command_digest
-from ae.kctl.profile_supervisor import StopResult
+from ae.kctl.profile_supervisor import ForegroundWaitResult, StopResult
 
 NOW = "2026-11-07T12:00:00Z"
 
@@ -104,6 +104,7 @@ class Supervisor:
         self.prepared: list[str] = []
         self.pending: list[Pending] = []
         self.stop_calls: list[int] = []
+        self.foreground_result = ForegroundWaitResult("stop-requested", signal_number=2)
 
     def prepare_component(
         self,
@@ -138,6 +139,13 @@ class Supervisor:
         assert identity.pid > 0
         return "running"
 
+    def wait_foreground(self, run, *, state_reader, stop_requested):  # type: ignore[no-untyped-def]
+        del run, state_reader
+        requested = stop_requested()
+        if requested is not None:
+            return ForegroundWaitResult("stop-requested", signal_number=requested)
+        return self.foreground_result
+
 
 class Readiness:
     def __init__(self, results: Sequence[bool] = (True, True)) -> None:
@@ -150,10 +158,12 @@ class Readiness:
         identity: ProcessIdentity,
         *,
         timeout_seconds: float,
+        stop_requested=None,  # type: ignore[no-untyped-def]
     ) -> bool:
         assert identity.pid > 0
         assert timeout_seconds == 30.0
         self.calls.append(component.component_id)
+        PortableProfileManager._raise_if_stop_requested(stop_requested)
         return self.results.pop(0)
 
 
@@ -278,6 +288,165 @@ def test_explicit_docker_never_falls_back_to_podman(tmp_path: Path) -> None:
     assert supervisor.prepared == ["controller"]
 
 
+def test_foreground_run_claims_new_run_and_signal_cleanup_is_normal_flow(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path, "core")
+    manager, engine, supervisor, _ = _manager(store, readiness=Readiness((True,)))
+    checks = 0
+
+    def request_after_activation() -> int | None:
+        nonlocal checks
+        checks += 1
+        return 15 if checks >= 8 else None
+
+    result = manager.run(
+        "core",
+        backend="podman",
+        stop_requested=request_after_activation,
+    )
+
+    state = store.inspect()
+    assert result.action == "run"
+    assert result.status == "signal-stopped"
+    assert result.exit_code == 143
+    assert engine.calls == ["podman"]
+    assert supervisor.stop_calls == [101]
+    assert state is not None and state.phase == "stopped"
+
+
+@pytest.mark.parametrize(
+    ("request_at", "prepared_count", "pending_cancelled"),
+    [(1, 0, False), (3, 1, True), (4, 1, True), (5, 1, False), (6, 1, False)],
+)
+def test_foreground_signal_safe_boundaries_cancel_or_stop_exactly(
+    tmp_path: Path,
+    request_at: int,
+    prepared_count: int,
+    pending_cancelled: bool,
+) -> None:
+    store = _store(tmp_path / str(request_at), "core")
+    manager, engine, supervisor, readiness = _manager(store, readiness=Readiness((True,)))
+    checks = 0
+
+    def request() -> int | None:
+        nonlocal checks
+        checks += 1
+        return 2 if checks >= request_at else None
+
+    result = manager.run("core", backend="podman", stop_requested=request)
+
+    assert result.exit_code == 130
+    assert result.phase == "stopped"
+    assert engine.calls == ["podman"]
+    assert len(supervisor.prepared) == prepared_count
+    if pending_cancelled:
+        assert supervisor.pending[0].cancelled is True
+        assert supervisor.pending[0].activated is False
+    if request_at == 6:
+        assert readiness.calls == ["controller"]
+
+
+def test_post_claim_plan_failure_rolls_back_without_second_capability_probe(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path, "core")
+    engine = EngineProbe()
+    manager = PortableProfileManager(
+        store_factory=lambda _profile: store,
+        engine_probe=engine,
+        supervisor=Supervisor(),  # type: ignore[arg-type]
+        readiness=Readiness((True,)),
+        python_executable=Path("relative-python"),
+    )
+
+    with pytest.raises(PortableBackendError, match="must be absolute"):
+        manager.run("core", backend="podman", stop_requested=lambda: None)
+
+    state = store.inspect()
+    assert engine.calls == ["podman"]
+    assert state is not None and state.phase == "stopped"
+
+
+def test_foreground_external_stop_result_uses_final_exact_stopped_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path, "core")
+    manager, _, supervisor, _ = _manager(store, readiness=Readiness((True,)))
+
+    def external_stop(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        stopped = manager.stop("core")
+        assert stopped.phase == "stopped"
+        return ForegroundWaitResult("stopped")
+
+    monkeypatch.setattr(supervisor, "wait_foreground", external_stop)
+    result = manager.run("core", backend="podman", stop_requested=lambda: None)
+
+    assert result.status == "externally-stopped"
+    assert result.phase == "stopped"
+    assert result.exit_code == 0
+
+
+def test_foreground_immediate_external_stop_after_start_is_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path, "core")
+    manager, _, _, _ = _manager(store, readiness=Readiness((True,)))
+    original_start = manager.start
+
+    def start_then_stop(*args, **kwargs):  # type: ignore[no-untyped-def]
+        started = original_start(*args, **kwargs)
+        stopped = manager.stop("core")
+        assert stopped.run_id == started.run_id
+        assert stopped.phase == "stopped"
+        return started
+
+    monkeypatch.setattr(manager, "start", start_then_stop)
+    result = manager.run("core", backend="podman", stop_requested=lambda: None)
+
+    assert result.status == "externally-stopped"
+    assert result.phase == "stopped"
+    assert result.run_id == store.inspect().run_id  # type: ignore[union-attr]
+    assert result.exit_code == 0
+
+
+def test_foreground_run_never_attaches_to_an_existing_active_run(tmp_path: Path) -> None:
+    store = _store(tmp_path, "core")
+    manager, _, supervisor, _ = _manager(store, readiness=Readiness((True,)))
+    manager.start("core", backend="podman")
+    prepared = list(supervisor.prepared)
+
+    with pytest.raises(Exception, match="not cleanly terminal"):
+        manager.run("core", backend="podman", stop_requested=lambda: None)
+
+    assert supervisor.prepared == prepared
+
+
+def test_manager_reads_exact_logs_and_deletes_only_confirmed_stopped_run(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path, "core")
+    manager, _, _, _ = _manager(store, readiness=Readiness((True,)))
+    started = manager.start("core", backend="podman")
+    assert started.run_id is not None
+    log = store.layout.for_run(started.run_id).log_path("controller")
+    log.write_text("alpha\nbeta\n", encoding="utf-8")
+    log.chmod(0o600)
+
+    snapshot = manager.logs("core", component="controller", run_id=None, tail=1)
+    stopped = manager.stop("core")
+    deleted = manager.delete(
+        "core",
+        run_id=started.run_id,
+        confirmation=f"core/{started.run_id}",
+    )
+
+    assert snapshot.lines == ("beta",)
+    assert stopped.status == "stopped"
+    assert deleted.status == "deleted"
+    assert manager.status("core").status == "deleted"
+
+
 def test_identity_mismatch_is_fenced_orphaned_without_cleanup(tmp_path: Path) -> None:
     store = _store(tmp_path, "core")
     starter, _, _, _ = _manager(store, readiness=Readiness((True,)))
@@ -358,8 +527,9 @@ class CrashAfterActivation:
         identity: ProcessIdentity,
         *,
         timeout_seconds: float,
+        stop_requested=None,  # type: ignore[no-untyped-def]
     ) -> bool:
-        del identity, timeout_seconds
+        del identity, timeout_seconds, stop_requested
         self.calls.append(component.component_id)
         raise SimulatedCrash
 

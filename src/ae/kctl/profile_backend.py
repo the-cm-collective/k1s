@@ -10,8 +10,10 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import signal
 import sys
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -22,9 +24,11 @@ from ae.kctl.profile_state import (
     ComponentState,
     FailureRecord,
     ProcessIdentity,
+    ProfileLogSnapshot,
     ProfileStateError,
     ProfileStateStore,
     ResourceReceipt,
+    RunPhase,
     RunState,
     command_digest,
 )
@@ -36,7 +40,7 @@ from ae.kctl.profile_supervisor import (
 )
 
 PortableProfile = Literal["local", "core"]
-PortableAction = Literal["start", "status", "stop", "restart"]
+PortableAction = Literal["start", "status", "stop", "restart", "run", "delete"]
 PORTABLE_PROFILES: tuple[PortableProfile, ...] = ("local", "core")
 PORTABLE_ACTIONS: tuple[PortableAction, ...] = ("start", "status", "stop", "restart")
 CONTROLLER_METRICS_PORT = 9108
@@ -47,6 +51,12 @@ DEFAULT_READINESS_TIMEOUT_SECONDS = 30.0
 
 class PortableBackendError(ProfileStateError):
     """A portable profile cannot be planned or reconciled safely."""
+
+
+class _ForegroundStopRequested(PortableBackendError):
+    def __init__(self, signal_number: int) -> None:
+        super().__init__("foreground stop requested")
+        self.signal_number = signal_number
 
 
 class EngineProbe(Protocol):
@@ -97,6 +107,7 @@ class ReadinessProbe(Protocol):
         identity: ProcessIdentity,
         *,
         timeout_seconds: float,
+        stop_requested: Callable[[], int | None] | None = None,
     ) -> bool: ...
 
 
@@ -320,14 +331,17 @@ class LoopbackReadinessProbe:
         identity: ProcessIdentity,
         *,
         timeout_seconds: float,
+        stop_requested: Callable[[], int | None] | None = None,
     ) -> bool:
         if timeout_seconds <= 0 or timeout_seconds > 300:
             raise PortableBackendError("readiness deadline is outside the safe range")
         deadline = self.monotonic() + timeout_seconds
         while self.monotonic() < deadline:
+            PortableProfileManager._raise_if_stop_requested(stop_requested)
             if classify_identity(identity, self.inspector.inspect(identity.pid)) != "running":
                 return False
             if all(self._probe(target) for target in component.readiness):
+                PortableProfileManager._raise_if_stop_requested(stop_requested)
                 return (
                     classify_identity(identity, self.inspector.inspect(identity.pid)) == "running"
                 )
@@ -430,12 +444,24 @@ class PortableProfileManager:
             return self.stop(selected_profile)
         return self.restart(selected_profile, backend=backend)
 
-    def start(self, profile: PortableProfile, *, backend: str) -> PortableLifecycleResult:
-        capability = self.engine_probe.probe(backend)
+    def start(
+        self,
+        profile: PortableProfile,
+        *,
+        backend: str,
+        _required_run_id: str | None = None,
+        _stop_requested: Callable[[], int | None] | None = None,
+        _capability: EngineCapability | None = None,
+    ) -> PortableLifecycleResult:
+        capability = _capability or self.engine_probe.probe(backend)
+        if capability.backend != backend:
+            raise PortableBackendError("selected engine capability differs from the request")
         store = self.store_factory(profile)
         store.reconcile_transaction()
         current = store.inspect()
         digest = portable_plan_digest(profile, capability)
+        if _required_run_id is not None and (current is None or current.run_id != _required_run_id):
+            raise PortableBackendError("foreground run ownership changed before activation")
         if current is not None and current.phase != "stopped":
             if current.backend_id != capability.backend or current.plan_digest != digest:
                 raise PortableBackendError(
@@ -470,6 +496,7 @@ class PortableProfileManager:
         if run.phase == "preparing":
             run = store.transition(run.run_id, "starting", expected_revision=run.revision)
         try:
+            self._raise_if_stop_requested(_stop_requested)
             existing = {component.component_id: component for component in run.components}
             expected_ids = [component.component_id for component in plan.components]
             if list(existing) != expected_ids[: len(existing)]:
@@ -477,6 +504,7 @@ class PortableProfileManager:
                     "recorded components differ from the deterministic plan prefix"
                 )
             for component_plan in plan.components:
+                self._raise_if_stop_requested(_stop_requested)
                 recorded = existing.get(component_plan.component_id)
                 if recorded is not None:
                     run = self._recover_component(store, run, component_plan, recorded)
@@ -490,11 +518,13 @@ class PortableProfileManager:
                 )
                 activated = False
                 try:
+                    self._raise_if_stop_requested(_stop_requested)
                     run = store.put_component(
                         run.run_id,
                         component,
                         expected_revision=run.revision,
                     )
+                    self._raise_if_stop_requested(_stop_requested)
                     pending.activate()
                     activated = True
                 except Exception:
@@ -506,14 +536,17 @@ class PortableProfileManager:
                                 "pending component could not be cancelled"
                             ) from cancel_error
                     raise
+                self._raise_if_stop_requested(_stop_requested)
                 if not self.readiness.wait_ready(
                     component_plan,
                     cast(ProcessIdentity, component.process_identity),
                     timeout_seconds=self.readiness_timeout_seconds,
+                    stop_requested=_stop_requested,
                 ):
                     raise PortableBackendError(
                         f"component readiness failed: {component_plan.component_id}"
                     )
+                self._raise_if_stop_requested(_stop_requested)
                 run = store.put_component(
                     run.run_id,
                     replace(component, status="running"),
@@ -525,8 +558,143 @@ class PortableProfileManager:
             raise
         return self._result("start", run, "started")
 
+    def run(
+        self,
+        profile: PortableProfile,
+        *,
+        backend: str,
+        stop_requested: Callable[[], int | None],
+    ) -> PortableLifecycleResult:
+        """Own one newly-created portable run until it stops or fails."""
+
+        capability = self.engine_probe.probe(backend)
+        store = self.store_factory(profile)
+        store.reconcile_transaction()
+        digest = portable_plan_digest(profile, capability)
+        # begin_run performs the active-run test and claim under one exclusive lock.
+        claimed = store.begin_run(backend_id=capability.backend, plan_digest=digest)
+        try:
+            started = self.start(
+                profile,
+                backend=backend,
+                _required_run_id=claimed.run_id,
+                _stop_requested=stop_requested,
+                _capability=capability,
+            )
+        except _ForegroundStopRequested as requested:
+            stopped = self.stop(profile)
+            exit_code = 130 if requested.signal_number == signal.SIGINT else 143
+            return replace(
+                stopped,
+                action="run",
+                status="signal-stopped",
+                exit_code=exit_code,
+            )
+        except Exception as exc:
+            self._rollback_start(store, exc)
+            raise
+        state = store.inspect()
+        if state is None or state.run_id != claimed.run_id:
+            raise PortableBackendError("foreground run did not retain exact run ownership")
+        if state.phase == "stopped":
+            return self._result("run", state, "externally-stopped")
+        if state.phase not in {"running", "stopping"}:
+            raise PortableBackendError("foreground run entered an unexpected durable phase")
+        outcome = self.supervisor.wait_foreground(
+            state,
+            state_reader=store.inspect,
+            stop_requested=stop_requested,
+        )
+        if outcome.disposition == "stop-requested":
+            stopped = self.stop(profile)
+            assert outcome.signal_number is not None
+            exit_code = 130 if outcome.signal_number == signal.SIGINT else 143
+            return replace(
+                stopped,
+                action="run",
+                status="signal-stopped",
+                exit_code=exit_code,
+            )
+        if outcome.disposition == "stopped":
+            final = store.inspect()
+            if final is None or final.run_id != claimed.run_id or final.phase != "stopped":
+                raise PortableBackendError("foreground run stopped without exact final state")
+            return self._result("run", final, "externally-stopped")
+
+        current = store.inspect()
+        if current is None or current.run_id != claimed.run_id:
+            return replace(started, action="run", status="ownership-lost", exit_code=1)
+        target_phase = "orphaned" if outcome.disposition == "orphaned" else "failed"
+        if current.phase not in {"failed", "orphaned", "stopping", "stopped"}:
+            current = store.transition(
+                current.run_id,
+                cast(RunPhase, target_phase),
+                expected_revision=current.revision,
+                failure=FailureRecord(
+                    code=(
+                        "process-identity-mismatch"
+                        if target_phase == "orphaned"
+                        else "component-exited"
+                    ),
+                    summary="A foreground component lost its exact process authority.",
+                ),
+            )
+        with suppress(PortableBackendError, ProfileStateError, SupervisorError):
+            self.stop(profile)
+        return replace(
+            started,
+            action="run",
+            status=target_phase,
+            phase=current.phase,
+            exit_code=1,
+        )
+
+    def logs(
+        self,
+        profile: PortableProfile,
+        *,
+        component: str,
+        run_id: str | None,
+        tail: int,
+    ) -> ProfileLogSnapshot:
+        store = self.store_factory(profile)
+        selected_run_id = run_id
+        if selected_run_id is None:
+            current = store.inspect()
+            if current is None:
+                raise PortableBackendError("profile has no current run")
+            selected_run_id = current.run_id
+        return store.read_log_snapshot(selected_run_id, component, tail=tail)
+
+    def delete(
+        self,
+        profile: PortableProfile,
+        *,
+        run_id: str,
+        confirmation: str,
+    ) -> PortableLifecycleResult:
+        store = self.store_factory(profile)
+        existing = store.deletion_record(run_id)
+        record = store.delete_run(run_id, confirmation=confirmation)
+        state = store.inspect_run(run_id)
+        return PortableLifecycleResult(
+            action="delete",
+            profile=profile,
+            status=(
+                "already-deleted"
+                if existing is not None and existing.status == "complete"
+                else "deleted"
+            ),
+            backend=state.backend_id,
+            run_id=record.run_id,
+            generation=record.generation,
+            phase=state.phase,
+            exit_code=0,
+        )
+
     def status(self, profile: PortableProfile) -> PortableLifecycleResult:
-        state = self.store_factory(profile).inspect()
+        store = self.store_factory(profile)
+        state = store.inspect()
         if state is None:
             return PortableLifecycleResult(
                 action="status",
@@ -538,7 +706,12 @@ class PortableProfileManager:
                 phase=None,
                 exit_code=0,
             )
-        return self._result("status", state, state.phase)
+        deletion = store.deletion_record(state.run_id)
+        return self._result(
+            "status",
+            state,
+            "deleted" if deletion is not None and deletion.status == "complete" else state.phase,
+        )
 
     def stop(self, profile: PortableProfile) -> PortableLifecycleResult:
         store = self.store_factory(profile)
@@ -640,6 +813,19 @@ class PortableProfileManager:
             # for the operator; no ambient cleanup is attempted.
             return
 
+    @staticmethod
+    def _raise_if_stop_requested(
+        stop_requested: Callable[[], int | None] | None,
+    ) -> None:
+        if stop_requested is None:
+            return
+        requested = stop_requested()
+        if requested is None:
+            return
+        if requested not in {signal.SIGINT, signal.SIGTERM}:
+            raise PortableBackendError("foreground stop request is unsupported")
+        raise _ForegroundStopRequested(requested)
+
     def _recover_component(
         self,
         store: ProfileStateStore,
@@ -664,6 +850,7 @@ class PortableProfileManager:
             plan,
             identity,
             timeout_seconds=self.readiness_timeout_seconds,
+            stop_requested=None,
         ):
             raise PortableBackendError(f"component readiness failed: {component.component_id}")
         if component.status == "starting":
@@ -691,6 +878,7 @@ class PortableProfileManager:
                 component_plan,
                 identity,
                 timeout_seconds=self.readiness_timeout_seconds,
+                stop_requested=None,
             ):
                 raise PortableBackendError("running component is no longer ready")
 
