@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
+import io
 import os
 import tarfile
 import zipfile
@@ -11,6 +14,15 @@ from scripts.check_public_markers import scan_archive
 from scripts.validate_installed_python_artifact import (
     offline_environment,
     verify_wheelhouse,
+)
+from scripts.validate_python_artifacts import (
+    SDIST_SOURCE_ONLY_FILES,
+    SDIST_SOURCE_ONLY_IDENTITIES,
+    _require_unique_names,
+    _source_payloads,
+    _validate_exact_source_identity,
+    _validate_wheel_record,
+    _validated_member_name,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -75,3 +87,128 @@ def test_archive_scanner_rejects_private_markers_in_wheel_and_sdist(tmp_path: Pa
     with tarfile.open(sdist, "w:gz") as archive:
         archive.add(payload, arcname="k1s_core-0.1.8a1/README.md")
     assert {finding.rule for finding in scan_archive(sdist)} == {"credential-material"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "/absolute",
+        "../escape",
+        "root/../escape",
+        "root/./file",
+        "root//file",
+        "root\\file",
+        "C:/absolute",
+        "root/\x00file",
+    ],
+)
+def test_artifact_member_paths_fail_closed(name: str) -> None:
+    with pytest.raises(ValueError, match="archive member path"):
+        _validated_member_name(name)
+
+
+def test_artifact_members_must_be_unique(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="duplicate members"):
+        _require_unique_names(["ae/__init__.py", "ae/__init__.py"], artifact=tmp_path / "a.whl")
+
+
+def _record_row(name: str, payload: bytes) -> list[str]:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b"=").decode()
+    return [name, f"sha256={digest}", str(len(payload))]
+
+
+def _write_record_wheel(path: Path, *, corrupt_hash: bool = False) -> tuple[list[str], str]:
+    member = "ae/example.py"
+    payload = b"VALUE = 1\n"
+    dist_info = "k1s_core-0.1.8a1.dist-info"
+    record = f"{dist_info}/RECORD"
+    rows = [_record_row(member, payload), [record, "", ""]]
+    if corrupt_hash:
+        rows[0][1] = "sha256=invalid"
+    output = io.StringIO()
+    csv.writer(output, lineterminator="\n").writerows(rows)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(member, payload)
+        archive.writestr(record, output.getvalue())
+    return [member, record], dist_info
+
+
+def test_wheel_record_covers_every_member_with_exact_hash_and_size(tmp_path: Path) -> None:
+    wheel = tmp_path / "valid.whl"
+    names, dist_info = _write_record_wheel(wheel)
+    with zipfile.ZipFile(wheel) as archive:
+        _validate_wheel_record(
+            archive,
+            names=names,
+            dist_info=dist_info,
+            artifact=wheel,
+        )
+
+
+def test_wheel_record_rejects_changed_hash_or_coverage(tmp_path: Path) -> None:
+    wheel = tmp_path / "changed.whl"
+    names, dist_info = _write_record_wheel(wheel, corrupt_hash=True)
+    with zipfile.ZipFile(wheel) as archive:
+        with pytest.raises(ValueError, match="hash/size mismatch"):
+            _validate_wheel_record(
+                archive,
+                names=names,
+                dist_info=dist_info,
+                artifact=wheel,
+            )
+        with pytest.raises(ValueError, match="coverage mismatch"):
+            _validate_wheel_record(
+                archive,
+                names=[*names, "ae/missing.py"],
+                dist_info=dist_info,
+                artifact=wheel,
+            )
+
+
+def test_runtime_payload_inventory_is_exact() -> None:
+    payload, runtime_data = _source_payloads(ROOT / "pyproject.toml")
+    assert len(runtime_data) == 85
+    assert len([name for name in runtime_data if name.startswith("ae/resources/sql/")]) == 77
+    assert len([name for name in runtime_data if name.endswith(".html")]) == 4
+    assert len([name for name in runtime_data if name.endswith(".txt")]) == 1
+    assert {
+        name for name in runtime_data if name.startswith("ae/observability/static/vendor/")
+    } == {
+        "ae/observability/static/vendor/xterm-addon-fit.js",
+        "ae/observability/static/vendor/xterm.css",
+        "ae/observability/static/vendor/xterm.js",
+    }
+    assert not any(name.endswith(".md") for name in runtime_data)
+    assert "ae/runtime/cri/api/runtime/v1/gogo_pb2.py" in payload
+    assert "ae/storage/csi/api/csi_pb2_grpc.py" in payload
+    assert {"tests/test_apishim_env.py"} == SDIST_SOURCE_ONLY_FILES
+    assert SDIST_SOURCE_ONLY_IDENTITIES == {
+        "tests/test_apishim_env.py": (
+            823,
+            "650f6d4806e5b08f590d1da71ed0b9b38d73c8f05c7945f07e6e4a716d998bbb",
+            "2469965183ea9d90e9c0c5c2ba305ccf0068f9d4",
+        )
+    }
+    assert payload.isdisjoint(SDIST_SOURCE_ONLY_FILES)
+
+
+def test_sdist_only_source_identity_is_frozen() -> None:
+    name = "tests/test_apishim_env.py"
+    identity = SDIST_SOURCE_ONLY_IDENTITIES[name]
+    payload = (ROOT / name).read_bytes()
+    _validate_exact_source_identity(
+        payload,
+        name=name,
+        expected_size=identity[0],
+        expected_sha256=identity[1],
+        expected_git_blob=identity[2],
+    )
+    with pytest.raises(ValueError, match="sdist-only source identity mismatch"):
+        _validate_exact_source_identity(
+            payload + b"\n",
+            name=name,
+            expected_size=identity[0],
+            expected_sha256=identity[1],
+            expected_git_blob=identity[2],
+        )

@@ -14,6 +14,7 @@ from ae import build_info
 from ae.apishim.server import _openapi_v3_stub, _swagger_doc
 from ae.kctl import __version__ as kctl_version
 from ae.runtime.cri.api.runtime.v1 import api_pb2, gogo_pb2
+from ae.storage.csi.api import csi_pb2, csi_pb2_grpc
 
 ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = ROOT / "pyproject.toml"
@@ -58,6 +59,15 @@ def test_distribution_identity_preserves_import_and_commands() -> None:
         "include": ["ae", "ae.*"],
         "namespaces": True,
     }
+    assert data["tool"]["setuptools"]["package-data"] == {
+        "ae.resources": [
+            "ingress/*.txt",
+            "observability/*.html",
+            "sql/apishim/*.sql",
+            "sql/controller/*.sql",
+        ],
+        "ae.observability": ["static/vendor/*.css", "static/vendor/*.js"],
+    }
 
 
 def test_documented_compatibility_entrypoints_remain_importable() -> None:
@@ -93,6 +103,23 @@ def test_cri_gogo_dependency_is_package_local() -> None:
     codegen = (ROOT / "scripts" / "cri_codegen.sh").read_text(encoding="utf-8")
     assert '"$OUT_DIR/gogo_pb2.py"' in codegen
     assert '"$ROOT/src/github"' not in codegen
+
+
+def test_csi_generated_dependencies_are_package_local() -> None:
+    assert csi_pb2_grpc is not None
+    assert csi_pb2_grpc.csi__pb2 is csi_pb2
+    grpc_source = (ROOT / "src" / "ae" / "storage" / "csi" / "api" / "csi_pb2_grpc.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from . import csi_pb2 as csi__pb2" in grpc_source
+    assert "\nimport csi_pb2 as csi__pb2" not in grpc_source
+
+
+def test_obsolete_workerbee_runtime_distribution_cannot_be_built() -> None:
+    assert not (ROOT / "scripts" / "build_workerbee_runtime_wheel.py").exists()
+    project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]
+    assert project["name"] == "k1s-core"
+    assert "k1s-workerbee-runtime" not in PYPROJECT.read_text(encoding="utf-8")
 
 
 def test_publish_workflows_pin_actions_and_preserve_exact_bytes() -> None:

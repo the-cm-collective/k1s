@@ -70,7 +70,13 @@ include = ["ae", "ae.*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"ae.resources" = ["**/*.html", "**/*.md", "**/*.txt", "**/*.sql"]
+"ae.resources" = [
+    "ingress/*.txt",
+    "observability/*.html",
+    "sql/apishim/*.sql",
+    "sql/controller/*.sql",
+]
+"ae.observability" = ["static/vendor/*.css", "static/vendor/*.js"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.in"]}

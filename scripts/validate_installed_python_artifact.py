@@ -148,26 +148,107 @@ socket.socket.connect_ex = _deny
             str(python),
             "-c",
             """from importlib import metadata, resources
+from pathlib import Path
+import os
+import sys
 import ae
 from ae.apishim.server import _openapi_v3_stub, _swagger_doc
 from ae.runtime.cri.api.runtime.v1 import api_pb2, gogo_pb2
-expected = __import__('os').environ['K1S_EXPECTED_VERSION']
+from ae.runtime.cri.api.runtime.v1 import api_pb2_grpc
+from ae.storage.csi.api import csi_pb2, csi_pb2_grpc
+
+expected = os.environ['K1S_EXPECTED_VERSION']
+venv_root = Path(os.environ['K1S_VENV_ROOT']).resolve()
+source_root = Path(os.environ['K1S_SOURCE_ROOT']).resolve()
+
+def under(path, root):
+    try:
+        Path(path).resolve().relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+def files_below(root):
+    found = []
+    for child in root.iterdir():
+        if child.is_dir():
+            found.extend(files_below(child))
+        elif child.is_file():
+            found.append(child)
+    return found
+
 assert ae.__version__ == expected
 assert metadata.version('k1s-core') == expected
+assert under(ae.__file__, venv_root)
+distribution = metadata.distribution('k1s-core')
+assert under(distribution.locate_file(''), venv_root)
+installed_members = {str(item) for item in distribution.files or ()}
+assert not any(
+    member == 'test_apishim_env.py'
+    or member.startswith('test/')
+    or member.startswith('tests/')
+    for member in installed_members
+)
+assert 'k1s-workerbee-runtime' not in {
+    item.metadata['Name'] for item in metadata.distributions()
+}
+assert metadata.packages_distributions().get('ae') == ['k1s-core']
+assert all(not under(entry, source_root) for entry in sys.path if entry)
 assert _swagger_doc()['info']['version'] == expected
 assert _openapi_v3_stub()['info']['version'] == expected
 assert api_pb2.DESCRIPTOR.dependencies[0] is gogo_pb2.DESCRIPTOR
-assert resources.files('ae.resources').joinpath('docs/loader.md').is_file()
+assert api_pb2_grpc.api__pb2 is api_pb2
+assert csi_pb2_grpc is not None
+assert csi_pb2_grpc.csi__pb2 is csi_pb2
+
+resource_root = resources.files('ae.resources')
+resource_files = files_below(resource_root)
+resource_relative = {
+    str(Path(item).relative_to(Path(resource_root))) for item in resource_files
+}
+resource_data = {
+    name
+    for name in resource_relative
+    if name.endswith(('.sql', '.html', '.txt'))
+}
+expected_html = {
+    'observability/dashboard.html',
+    'observability/docs.html',
+    'observability/redoc.html',
+    'observability/swagger.html',
+}
+assert len([name for name in resource_data if name.startswith('sql/apishim/')]) == 13
+assert len([name for name in resource_data if name.startswith('sql/controller/')]) == 64
+assert {name for name in resource_data if name.endswith('.html')} == expected_html
+assert {name for name in resource_data if name.endswith('.txt')} == {
+    'ingress/caddy_site.txt'
+}
+assert len(resource_data) == 82
+assert not any(name.endswith('.md') for name in resource_relative)
+for item in resource_files:
+    if str(item).endswith(('.sql', '.html', '.txt')):
+        assert item.read_bytes()
+
+static_root = resources.files('ae.observability').joinpath('static/vendor')
+static_files = {item.name: item for item in static_root.iterdir() if item.is_file()}
+assert set(static_files) == {'xterm.css', 'xterm.js', 'xterm-addon-fit.js'}
+assert all(item.read_bytes() for item in static_files.values())
+
 scripts = {
     entry.name
-    for entry in metadata.distribution('k1s-core').entry_points
+    for entry in distribution.entry_points
     if entry.group == 'console_scripts'
 }
 assert scripts == {'ae', 'ae-rotate-certs', 'k1s', 'ae-node', 'ae-gateway', 'ae-worker-stub'}
 """,
         ],
         cwd=outside,
-        env={**env, "K1S_EXPECTED_VERSION": expected_version},
+        env={
+            **env,
+            "K1S_EXPECTED_VERSION": expected_version,
+            "K1S_SOURCE_ROOT": str(Path(__file__).resolve().parents[1]),
+            "K1S_VENV_ROOT": str(venv.resolve()),
+        },
     )
     for command in (
         ("ae", "--help"),
@@ -178,6 +259,8 @@ assert scripts == {'ae', 'ae-rotate-certs', 'k1s', 'ae-node', 'ae-gateway', 'ae-
         ("ae-gateway", "--help"),
         ("ae-worker-stub", "--help"),
     ):
+        if not (bin_dir / command[0]).is_file():
+            raise ValueError(f"installed console script is missing: {command[0]}")
         _run([str(bin_dir / command[0]), *command[1:]], cwd=outside, env=env)
 
     manifest = outside / "artifact-smoke.yaml"

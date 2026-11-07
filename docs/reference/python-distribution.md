@@ -25,6 +25,39 @@ The previous distribution requirement `ae` is not an alias for `k1s-core`.
 Dependency declarations and installation commands must migrate to
 `k1s-core`. Runtime imports and scripts do not require migration.
 
+## Runtime package ownership
+
+`k1s-core` is the only distribution that owns the `ae` package. The wheel
+contains every `ae` Python module, the package-local CRI and CSI generated
+modules, the SQL and HTML resources loaded through `ae.resources`, the Caddy
+site template, and the three vendored terminal assets used by the dashboard's
+offline fallback. Package documentation, repository tests, scripts, examples,
+operations files, charts, and environment files are not runtime wheel payload.
+
+The release validator compares the source-owned module and resource inventory
+with the wheel and source distribution. It rejects duplicate or unsafe archive
+paths, links and special members, extra distribution payloads, and incomplete
+or inaccurate wheel `RECORD` entries. Every wheel file other than `RECORD`
+must have its exact SHA-256 and byte size recorded; `RECORD` itself has empty
+hash and size fields.
+
+The former `scripts/build_workerbee_runtime_wheel.py` path is intentionally
+removed. It attempted to create a second `k1s-workerbee-runtime` distribution
+containing another copy of `ae`, and it was incompatible with the canonical
+dynamic version source. WorkerBee consumes the same reviewed `k1s-core` wheel;
+there is no second v1 runtime wheel or package identity.
+
+The installed-artifact gate resolves `ae`, distribution metadata, console
+scripts, protobuf modules, and runtime resources from a fresh virtual
+environment outside the checkout. It disables package indexes, proxy/index
+configuration, Python socket connections, and source-tree `PYTHONPATH`
+fallback. Safe help, version, import, resource, and stub-only planning checks
+run without starting Docker, containerd, CRI, CSI, Kubernetes, or a service.
+
+Profile lifecycle and lab/example helpers that deliberately use repository
+scripts or example manifests are separate experimental or later lifecycle
+contracts. Those repository paths are not copied into the runtime wheel.
+
 ## Version posture
 
 K1s remains pre-1.0. The `v0.1.7` tag and changelog establish the latest
