@@ -19,6 +19,7 @@ from typing import Literal, Protocol, cast
 from ae.kctl.profile_paths import (
     ProfileLayout,
     ProfileRoots,
+    _ensure_private_directory,
     validate_bootstrap_id,
     validate_identifier,
     validate_relative_path,
@@ -973,6 +974,63 @@ class ProfileStateStore:
         self.layout = ProfileLayout.resolve(roots, requested_profile)
         self.clock = clock
         self.random_bytes = random_bytes
+        self._state_root_only = False
+
+    @classmethod
+    def for_explicit_state_root(
+        cls,
+        state_root: Path,
+        requested_profile: str,
+        *,
+        owner_uid: int | None = None,
+        clock: Callable[[], str] = utc_now,
+        random_bytes: Callable[[int], bytes] = secrets.token_bytes,
+    ) -> ProfileStateStore:
+        """Bind only an explicit existing K-P1-3 state root for migration.
+
+        This constructor deliberately does not derive HOME/XDG defaults.  Config,
+        data, and cache are never created or touched by state-only operations.
+        """
+
+        root = Path(state_root)
+        if not root.is_absolute() or root.resolve(strict=True) != root:
+            raise ProfileStateError("destination state root must be absolute and canonical")
+        info = root.lstat()
+        expected_uid = os.geteuid() if owner_uid is None else owner_uid
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != expected_uid
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise ProfileStateError("destination state root must be owner-private")
+        roots = ProfileRoots(
+            config=root,
+            state=root,
+            data=root,
+            cache=root,
+            owner_uid=expected_uid,
+        )
+        store = cls(
+            roots,
+            requested_profile,
+            clock=clock,
+            random_bytes=random_bytes,
+        )
+        store._state_root_only = True
+        return store
+
+    def _ensure_state_profile_only(self) -> None:
+        """Create only state authority directories for an explicit migration."""
+
+        root = self.layout.roots.state
+        _ensure_private_directory(root, owner_uid=self.layout.roots.owner_uid)
+        _ensure_private_directory(root / "profiles", owner_uid=self.layout.roots.owner_uid)
+        _ensure_private_directory(self.layout.profile_state, owner_uid=self.layout.roots.owner_uid)
+        _ensure_private_directory(
+            self.layout.profile_state / "runs",
+            owner_uid=self.layout.roots.owner_uid,
+        )
 
     def locked(
         self,
@@ -982,7 +1040,10 @@ class ProfileStateStore:
         create: bool = True,
     ) -> ProfileLock:
         if create:
-            self.layout.ensure_profile()
+            if self._state_root_only:
+                self._ensure_state_profile_only()
+            else:
+                self.layout.ensure_profile()
         return ProfileLock(
             self.layout.lock,
             owner_uid=self.layout.roots.owner_uid,
@@ -1679,13 +1740,100 @@ class ProfileStateStore:
 
     def _write_run(self, state: RunState) -> None:
         layout = self.layout.for_run(state.run_id)
-        layout.ensure_run()
+        if self._state_root_only:
+            _ensure_private_directory(
+                layout.run_state.parent,
+                owner_uid=self.layout.roots.owner_uid,
+            )
+        else:
+            layout.ensure_run()
         _atomic_json_write(
             layout.run_state,
             state.to_payload(),
             owner_uid=self.layout.roots.owner_uid,
             random_bytes=self.random_bytes,
         )
+
+    def remove_exact_current_payload(self, expected_digest: str) -> None:
+        """Remove the exact current object while an external transaction holds the lock."""
+
+        _validate_digest(expected_digest, field="expected current digest")
+        payload = self._read_current_payload(optional=False)
+        assert payload is not None
+        if _payload_digest(payload) != expected_digest:
+            raise StateConflictError("current state differs from migration authority")
+        _validate_existing_state_target(
+            self.layout.current,
+            owner_uid=self.layout.roots.owner_uid,
+        )
+        self.layout.current.unlink()
+        _fsync_directory(self.layout.current.parent)
+
+    def remove_exact_run_payload(
+        self,
+        run_id: str,
+        expected_digest: str,
+        *,
+        expected_runs_directory_identity: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        """Remove only one exact imported run state and safe empty state directories."""
+
+        validate_run_id(run_id)
+        _validate_digest(expected_digest, field="expected run digest")
+        layout = self.layout.for_run(run_id)
+        runs = layout.run_state.parent.parent
+        if expected_runs_directory_identity is not None:
+            self.require_exact_runs_directory_identity(expected_runs_directory_identity)
+        payload = self._read_run_payload(run_id, optional=False)
+        assert payload is not None
+        if _payload_digest(payload) != expected_digest:
+            raise StateConflictError("run state differs from migration authority")
+        run_directory = layout.run_state.parent
+        info = run_directory.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != self.layout.roots.owner_uid
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise ProfileStateError("imported run directory identity is unsafe")
+        if {item.name for item in run_directory.iterdir()} != {"state.json"}:
+            raise StateConflictError("imported run directory contains unowned state")
+        _validate_existing_state_target(
+            layout.run_state,
+            owner_uid=self.layout.roots.owner_uid,
+        )
+        layout.run_state.unlink()
+        _fsync_directory(run_directory)
+        run_directory.rmdir()
+        _fsync_directory(runs)
+        if expected_runs_directory_identity is not None:
+            self.require_exact_runs_directory_identity(expected_runs_directory_identity)
+            if any(runs.iterdir()):
+                raise StateConflictError("migration-created runs directory is not empty")
+            runs.rmdir()
+            _fsync_directory(runs.parent)
+
+    def require_exact_runs_directory_identity(
+        self,
+        expected_identity: tuple[int, int, int, int],
+    ) -> None:
+        """Require one exact migration-created runs directory before mutation."""
+
+        runs = self.layout.profile_state / "runs"
+        runs_info = runs.lstat()
+        observed_identity = (
+            runs_info.st_dev,
+            runs_info.st_ino,
+            runs_info.st_uid,
+            stat.S_IMODE(runs_info.st_mode),
+        )
+        if (
+            not stat.S_ISDIR(runs_info.st_mode)
+            or stat.S_ISLNK(runs_info.st_mode)
+            or observed_identity != expected_identity
+        ):
+            raise StateConflictError("runs directory differs from migration provenance")
 
     def _write_transaction(self, transaction: StateTransaction) -> None:
         _atomic_json_write(
@@ -1853,102 +2001,109 @@ class ProfileStateStore:
     def _read_run(self, run_id: str) -> RunState:
         raw = self._read_run_payload(run_id, optional=False)
         assert raw is not None
-        schema_version = _require_envelope(raw, kind="ProfileRunState")
-        versioned_keys = (
-            {"backendId", "planDigest"}
-            if schema_version in {PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}
-            else set()
-        )
-        bootstrap_keys = (
-            {"bootstrapId", "privateBootstrapDigest"} if schema_version == SCHEMA_VERSION else set()
-        )
-        _exact_keys(
-            raw,
-            {
-                "apiVersion",
-                "cleanupComplete",
-                "components",
-                "createdAt",
-                "failure",
-                "generation",
-                "kind",
-                "ownerUid",
-                "phase",
-                "profile",
-                "requestedName",
-                "resourceReceipts",
-                "revision",
-                "runId",
-                "schemaVersion",
-                "secretReceipts",
-                "updatedAt",
-            }
-            | versioned_keys
-            | bootstrap_keys,
-            field="run state",
-        )
-        phase = _strict_text(raw["phase"], field="run.phase", maximum=32)
-        if phase not in RUN_PHASES:
-            raise ProfileStateError("unsupported run phase")
-        if type(raw["cleanupComplete"]) is not bool:
-            raise ProfileStateError("cleanupComplete must be a bool")
-        failure = raw["failure"]
-        return RunState(
-            profile=validate_identifier(
-                _strict_text(raw["profile"], field="run.profile"), field="profile"
-            ),
-            requested_name=validate_identifier(
-                _strict_text(raw["requestedName"], field="run.requestedName"),
-                field="requested name",
-            ),
-            run_id=validate_run_id(_strict_text(raw["runId"], field="run.runId")),
-            generation=_strict_int(raw["generation"], field="run.generation", minimum=1),
-            revision=_strict_int(raw["revision"], field="run.revision", minimum=1),
-            owner_uid=_strict_int(raw["ownerUid"], field="run.ownerUid"),
-            phase=phase,
-            created_at=_canonical_timestamp(_strict_text(raw["createdAt"], field="run.createdAt")),
-            updated_at=_canonical_timestamp(_strict_text(raw["updatedAt"], field="run.updatedAt")),
-            backend_id=(
-                None
-                if schema_version == LEGACY_SCHEMA_VERSION or raw["backendId"] is None
-                else _strict_text(raw["backendId"], field="run.backendId", maximum=32)
-            ),
-            plan_digest=(
-                None
-                if schema_version == LEGACY_SCHEMA_VERSION or raw["planDigest"] is None
-                else _strict_text(raw["planDigest"], field="run.planDigest", maximum=71)
-            ),
-            bootstrap_id=(
-                None
-                if schema_version != SCHEMA_VERSION or raw["bootstrapId"] is None
-                else validate_bootstrap_id(
-                    _strict_text(raw["bootstrapId"], field="run.bootstrapId", maximum=35)
-                )
-            ),
-            private_bootstrap_digest=(
-                None
-                if schema_version != SCHEMA_VERSION or raw["privateBootstrapDigest"] is None
-                else _strict_text(
-                    raw["privateBootstrapDigest"],
-                    field="run.privateBootstrapDigest",
-                    maximum=71,
-                )
-            ),
-            components=tuple(
-                ComponentState.from_payload(item)
-                for item in _list(raw["components"], field="run.components")
-            ),
-            resource_receipts=tuple(
-                ResourceReceipt.from_payload(item)
-                for item in _list(raw["resourceReceipts"], field="run.resourceReceipts")
-            ),
-            secret_receipts=tuple(
-                SecretReceipt.from_payload(item)
-                for item in _list(raw["secretReceipts"], field="run.secretReceipts")
-            ),
-            cleanup_complete=raw["cleanupComplete"],
-            failure=None if failure is None else FailureRecord.from_payload(failure),
-        )
+        return run_state_from_payload(raw)
+
+
+def run_state_from_payload(value: Mapping[str, object]) -> RunState:
+    """Parse one canonical run payload for state and migration transactions."""
+
+    raw = dict(value)
+    schema_version = _require_envelope(raw, kind="ProfileRunState")
+    versioned_keys = (
+        {"backendId", "planDigest"}
+        if schema_version in {PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}
+        else set()
+    )
+    bootstrap_keys = (
+        {"bootstrapId", "privateBootstrapDigest"} if schema_version == SCHEMA_VERSION else set()
+    )
+    _exact_keys(
+        raw,
+        {
+            "apiVersion",
+            "cleanupComplete",
+            "components",
+            "createdAt",
+            "failure",
+            "generation",
+            "kind",
+            "ownerUid",
+            "phase",
+            "profile",
+            "requestedName",
+            "resourceReceipts",
+            "revision",
+            "runId",
+            "schemaVersion",
+            "secretReceipts",
+            "updatedAt",
+        }
+        | versioned_keys
+        | bootstrap_keys,
+        field="run state",
+    )
+    phase = _strict_text(raw["phase"], field="run.phase", maximum=32)
+    if phase not in RUN_PHASES:
+        raise ProfileStateError("unsupported run phase")
+    if type(raw["cleanupComplete"]) is not bool:
+        raise ProfileStateError("cleanupComplete must be a bool")
+    failure = raw["failure"]
+    return RunState(
+        profile=validate_identifier(
+            _strict_text(raw["profile"], field="run.profile"), field="profile"
+        ),
+        requested_name=validate_identifier(
+            _strict_text(raw["requestedName"], field="run.requestedName"),
+            field="requested name",
+        ),
+        run_id=validate_run_id(_strict_text(raw["runId"], field="run.runId")),
+        generation=_strict_int(raw["generation"], field="run.generation", minimum=1),
+        revision=_strict_int(raw["revision"], field="run.revision", minimum=1),
+        owner_uid=_strict_int(raw["ownerUid"], field="run.ownerUid"),
+        phase=phase,
+        created_at=_canonical_timestamp(_strict_text(raw["createdAt"], field="run.createdAt")),
+        updated_at=_canonical_timestamp(_strict_text(raw["updatedAt"], field="run.updatedAt")),
+        backend_id=(
+            None
+            if schema_version == LEGACY_SCHEMA_VERSION or raw["backendId"] is None
+            else _strict_text(raw["backendId"], field="run.backendId", maximum=32)
+        ),
+        plan_digest=(
+            None
+            if schema_version == LEGACY_SCHEMA_VERSION or raw["planDigest"] is None
+            else _strict_text(raw["planDigest"], field="run.planDigest", maximum=71)
+        ),
+        bootstrap_id=(
+            None
+            if schema_version != SCHEMA_VERSION or raw["bootstrapId"] is None
+            else validate_bootstrap_id(
+                _strict_text(raw["bootstrapId"], field="run.bootstrapId", maximum=35)
+            )
+        ),
+        private_bootstrap_digest=(
+            None
+            if schema_version != SCHEMA_VERSION or raw["privateBootstrapDigest"] is None
+            else _strict_text(
+                raw["privateBootstrapDigest"],
+                field="run.privateBootstrapDigest",
+                maximum=71,
+            )
+        ),
+        components=tuple(
+            ComponentState.from_payload(item)
+            for item in _list(raw["components"], field="run.components")
+        ),
+        resource_receipts=tuple(
+            ResourceReceipt.from_payload(item)
+            for item in _list(raw["resourceReceipts"], field="run.resourceReceipts")
+        ),
+        secret_receipts=tuple(
+            SecretReceipt.from_payload(item)
+            for item in _list(raw["secretReceipts"], field="run.secretReceipts")
+        ),
+        cleanup_complete=raw["cleanupComplete"],
+        failure=None if failure is None else FailureRecord.from_payload(failure),
+    )
 
 
 def _require_envelope(raw: Mapping[str, object], *, kind: str) -> int:
@@ -2275,5 +2430,6 @@ __all__ = [
     "StateTransaction",
     "StateConflictError",
     "command_digest",
+    "run_state_from_payload",
     "utc_now",
 ]

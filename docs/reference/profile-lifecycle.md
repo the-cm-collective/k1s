@@ -246,3 +246,56 @@ This checkpoint uses only injected engine, process, readiness, transport, and
 signal boundaries in validation. Host preparation, ambient resource adoption,
 WorkerBee live qualification, and distributed/HA ownership remain deferred to
 separately reviewed checkpoints.
+
+## Explicit stopped-profile migration
+
+Compatibility migration is an explicit, state-only transaction. It never
+searches `HOME`, a checkout, processes, or an XDG tree. The caller supplies one
+canonical absolute legacy-record directory, one canonical destination profile,
+and one existing owner-private versioned state root:
+
+```text
+k1s profile migrate plan edge \
+  --legacy-root /absolute/legacy-records \
+  --destination-profile edge-dev \
+  --destination-root /absolute/k1s/v1/state
+
+k1s profile migrate apply edge \
+  --legacy-root /absolute/legacy-records \
+  --destination-profile edge-dev \
+  --destination-root /absolute/k1s/v1/state \
+  --expect-plan-digest sha256:...
+```
+
+Only exact stopped schema-v1 records for `edge`, `edge-core`, and `core-edge`
+are accepted. `edge` and `edge-core` remain development aliases of `edge-dev`;
+they are never promoted to canonical `edge-gateway` or `node`. `core-edge`
+imports canonical `core` stopped composition evidence for `controller` plus
+`nats-core`; it never promotes `core-ha`. Any process identity observed for the
+recorded PID, including a reused PID, is an active conflict. Inspector
+ambiguity also fails closed, and migration never signals or adopts that PID.
+
+`plan` is byte-for-byte nonmutating: it creates no destination directory or
+lock. `apply` revalidates the source and PID immediately before mutation, then
+creates only the exact state authority needed for an imported clean stopped
+run, an immutable receipt, and a distinct migration journal. Imported
+component records are historical stopped-composition evidence, not claims that
+K-P1-3 started or owned a legacy process. Config, data, cache, logs, secrets,
+and process state are untouched.
+
+The apply journal recognizes only its exact before state and each ordered
+receipt/run/current prefix. While it is pending, public planning and ordinary
+lifecycle readers fail closed; an identical digest-bound apply is the only
+roll-forward path. Rollback requires the exact migration ID, original applied
+receipt digest, and `PROFILE/RUN_ID` confirmation. It removes only the exact
+imported current/run objects, retains the legacy source, and replaces the
+receipt with an immutable rolled-back audit record. Replaying rollback is
+accepted only with the original applied-receipt digest. A directory is removed
+only when its exact recorded migration-created identity still matches; an
+empty directory alone is not ownership evidence. Drift, later generations,
+foreign files, symlinks, hardlinks, unsafe modes, malformed records, and
+unknown transaction states all fail closed.
+
+The migration command is installed and offline-safe but is not a live-runtime
+qualification claim. It performs no backend, network, service, host,
+certificate, or WorkerBee action.

@@ -16,6 +16,7 @@ pre-releases. The status vocabulary is deliberately limited to **stable** and
 | Installed profile catalog | stable | `k1s profile list`, `doctor`, and `plan` are deterministic, non-mutating installed-contract commands. |
 | Portable profile lifecycle | experimental | `k1s profile run`, `logs`, and confirmed `delete` are exact-owner contracts for `local`, `core`, `edge-gateway`, and `node`; live backend/transport qualification remains separate. |
 | Canonical role bootstrap | experimental | `k1s profile bootstrap create edge-gateway\|node` creates one immutable owner-private record and returns only a secret-free public projection. |
+| Explicit profile migration | experimental | `k1s profile migrate plan\|apply\|rollback` accepts only caller-selected stopped schema-v1 records and exact digest-bound state authority; it performs no ambient discovery or alias promotion. |
 | Version metadata | stable | Package metadata, CLI build information, OpenAPI v2/v3, and release checks resolve `ae.__version__`. |
 | CRI protobuf resources | stable | Package-local CRI and gogoproto modules ship in wheel and source distributions. |
 
@@ -56,3 +57,12 @@ Experimental surfaces must still fail safely and remain documented, but their
 internal schemas and command details may change in a pre-release. A surface may
 move to the stable table only with implementation, compatibility tests, and a
 changelog entry.
+
+Compatibility migration preserves the development posture of `edge` and
+`edge-core` by mapping them only to `edge-dev`. `core-edge` maps to canonical
+`core` with explicit historical `nats-core` composition evidence. No migration
+maps an old alias to `edge-gateway`, `node`, or `core-ha`. Planning is pure;
+apply and rollback are owner-private state-only transactions with exact source,
+plan, receipt, run, and scaffold identities. The source record is retained.
+Imported records assert stopped composition only and provide no live-runtime,
+process-ownership, backend, or WorkerBee qualification evidence.

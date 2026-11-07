@@ -41,6 +41,11 @@ from ae.kctl.profile_backend import (
 )
 from ae.kctl.profile_bootstrap import ProfileBootstrapStore
 from ae.kctl.profile_engine import SelectedEngineProbe
+from ae.kctl.profile_migration import (
+    MIGRATION_PROFILES,
+    ProfileMigrationManager,
+    render_migration_text,
+)
 from ae.kctl.profile_paths import ProfilePathError, ProfileRoots
 from ae.kctl.profile_state import ProfileStateError
 from ae.kctl.profiles import (
@@ -289,6 +294,28 @@ def build_parser() -> argparse.ArgumentParser:
     node_p.add_argument("--advertise-endpoint", required=True)
     node_p.add_argument("--credential-file", type=Path, required=True)
     node_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    migrate_p = profile_sub.add_parser(
+        "migrate",
+        help="Plan or transact one exact stopped legacy profile migration",
+    )
+    migrate_sub = migrate_p.add_subparsers(dest="migration_action", required=True)
+    for migration_action in ("plan", "apply", "rollback"):
+        action_p = migrate_sub.add_parser(
+            migration_action,
+            help=f"{migration_action.capitalize()} an explicit legacy migration",
+        )
+        action_p.add_argument("legacy_profile", choices=MIGRATION_PROFILES)
+        action_p.add_argument("--legacy-root", type=Path, required=True)
+        action_p.add_argument("--destination-profile", required=True)
+        action_p.add_argument("--destination-root", type=Path, required=True)
+        action_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+        if migration_action == "apply":
+            action_p.add_argument("--expect-plan-digest", required=True)
+        elif migration_action == "rollback":
+            action_p.add_argument("--migration-id", required=True)
+            action_p.add_argument("--expect-receipt-digest", required=True)
+            action_p.add_argument("--confirm-rollback", required=True)
 
     return p
 
@@ -692,6 +719,12 @@ def profile_doctor_probe_factory() -> ReadOnlyDoctorProbe:
     return SystemDoctorProbe()
 
 
+def profile_migration_manager_factory() -> ProfileMigrationManager:
+    """Return the explicit migration manager without deriving HOME/XDG roots."""
+
+    return ProfileMigrationManager()
+
+
 @dataclass(slots=True)
 class _SignalRequest:
     signal_number: int | None = None
@@ -722,6 +755,43 @@ def _foreground_signal_requests() -> Iterator[_SignalRequest]:
 
 def handle_profile(ns: argparse.Namespace) -> int:
     """Inspect profile contracts or execute one explicit legacy lifecycle action."""
+
+    if ns.profile_action == "migrate":
+        migration_manager = profile_migration_manager_factory()
+        try:
+            if ns.migration_action == "plan":
+                payload = migration_manager.plan(
+                    ns.legacy_profile,
+                    legacy_root=ns.legacy_root,
+                    destination_profile=ns.destination_profile,
+                    destination_root=ns.destination_root,
+                ).public_payload()
+            elif ns.migration_action == "apply":
+                payload = migration_manager.apply(
+                    ns.legacy_profile,
+                    legacy_root=ns.legacy_root,
+                    destination_profile=ns.destination_profile,
+                    destination_root=ns.destination_root,
+                    expected_plan_digest=ns.expect_plan_digest,
+                ).public_payload()
+            else:
+                payload = migration_manager.rollback(
+                    ns.legacy_profile,
+                    legacy_root=ns.legacy_root,
+                    destination_profile=ns.destination_profile,
+                    destination_root=ns.destination_root,
+                    migration_id=ns.migration_id,
+                    expected_receipt_digest=ns.expect_receipt_digest,
+                    confirmation=ns.confirm_rollback,
+                ).public_payload()
+            if ns.output == "json":
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(render_migration_text(payload))
+            return 0
+        except (OSError, ProfilePathError, ProfileStateError):
+            print("profile migration failed closed", file=sys.stderr)
+            return 1
 
     if ns.profile_action == "list":
         payload = profile_catalog_payload()

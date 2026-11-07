@@ -543,6 +543,182 @@ def test_profile_bootstrap_error_never_renders_private_exception(
     assert "/private/" not in captured.err
 
 
+def test_profile_migration_cli_routes_only_explicit_authority_and_redacts_paths(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    plan_digest = "sha256:" + "1" * 64
+    receipt_digest = "sha256:" + "2" * 64
+    migration_id = "m1-" + "3" * 32
+    run_id = "r1-" + "4" * 32
+
+    class Result:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def public_payload(self) -> dict[str, object]:
+            return self.payload
+
+    class Manager:
+        def plan(self, legacy_profile, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(("plan", {"legacy_profile": legacy_profile, **kwargs}))
+            return Result(
+                {
+                    "apiVersion": "k1s.dev/v1alpha1",
+                    "destinationProfile": "edge-dev",
+                    "destinationStatus": "available",
+                    "kind": "ProfileMigrationPlan",
+                    "legacyProfile": "edge",
+                    "migrationId": migration_id,
+                    "mutating": False,
+                    "planDigest": plan_digest,
+                    "runId": run_id,
+                    "schemaVersion": 1,
+                }
+            )
+
+        def apply(self, legacy_profile, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(("apply", {"legacy_profile": legacy_profile, **kwargs}))
+            return Result(
+                {
+                    "action": "apply",
+                    "apiVersion": "k1s.dev/v1alpha1",
+                    "destinationProfile": "edge-dev",
+                    "kind": "ProfileMigrationResult",
+                    "legacyProfile": "edge",
+                    "migrationId": migration_id,
+                    "planDigest": plan_digest,
+                    "receiptDigest": receipt_digest,
+                    "runId": run_id,
+                    "schemaVersion": 1,
+                    "status": "applied",
+                }
+            )
+
+        def rollback(self, legacy_profile, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(("rollback", {"legacy_profile": legacy_profile, **kwargs}))
+            return Result(
+                {
+                    "action": "rollback",
+                    "apiVersion": "k1s.dev/v1alpha1",
+                    "destinationProfile": "edge-dev",
+                    "kind": "ProfileMigrationResult",
+                    "legacyProfile": "edge",
+                    "migrationId": migration_id,
+                    "planDigest": plan_digest,
+                    "receiptDigest": receipt_digest,
+                    "runId": run_id,
+                    "schemaVersion": 1,
+                    "status": "rolled-back",
+                }
+            )
+
+    manager = Manager()
+    monkeypatch.setattr(kctl_main, "profile_migration_manager_factory", lambda: manager)
+    legacy_root = tmp_path / "private-legacy"
+    destination_root = tmp_path / "private-state"
+
+    common = [
+        "edge",
+        "--legacy-root",
+        str(legacy_root),
+        "--destination-profile",
+        "edge-dev",
+        "--destination-root",
+        str(destination_root),
+        "-o",
+        "json",
+    ]
+    assert main(["profile", "migrate", "plan", *common]) == 0
+    plan_output = capsys.readouterr().out
+    assert (
+        main(
+            [
+                "profile",
+                "migrate",
+                "apply",
+                *common,
+                "--expect-plan-digest",
+                plan_digest,
+            ]
+        )
+        == 0
+    )
+    apply_output = capsys.readouterr().out
+    assert (
+        main(
+            [
+                "profile",
+                "migrate",
+                "rollback",
+                *common,
+                "--migration-id",
+                migration_id,
+                "--expect-receipt-digest",
+                receipt_digest,
+                "--confirm-rollback",
+                f"edge-dev/{run_id}",
+            ]
+        )
+        == 0
+    )
+    rollback_output = capsys.readouterr().out
+
+    assert [item[0] for item in calls] == ["plan", "apply", "rollback"]
+    assert calls[0][1]["legacy_root"] == legacy_root
+    assert calls[0][1]["destination_root"] == destination_root
+    assert calls[1][1]["expected_plan_digest"] == plan_digest
+    assert calls[2][1]["expected_receipt_digest"] == receipt_digest
+    rendered = plan_output + apply_output + rollback_output
+    assert str(legacy_root) not in rendered
+    assert str(destination_root) not in rendered
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        kctl_main.ProfileStateError("DO-NOT-PRINT-/private/state"),
+        OSError("DO-NOT-PRINT-/private/legacy"),
+        kctl_main.ProfilePathError("DO-NOT-PRINT-/private/root"),
+    ],
+)
+def test_profile_migration_cli_errors_are_generic(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+    failure: Exception,
+) -> None:
+    class Manager:
+        def plan(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise failure
+
+    monkeypatch.setattr(kctl_main, "profile_migration_manager_factory", Manager)
+    assert (
+        main(
+            [
+                "profile",
+                "migrate",
+                "plan",
+                "edge",
+                "--legacy-root",
+                str(tmp_path / "private-legacy"),
+                "--destination-profile",
+                "edge-dev",
+                "--destination-root",
+                str(tmp_path / "private-state"),
+            ]
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == "profile migration failed closed"
+    assert "DO-NOT-PRINT" not in captured.err
+    assert "/private/" not in captured.err
+
+
 def test_canonical_node_lifecycle_routes_exact_bootstrap_without_fallback(
     monkeypatch,
     capsys,

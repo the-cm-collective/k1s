@@ -17,6 +17,7 @@ from ae.kctl.profiles import (
     ProfileResourceError,
     _load_profile_catalog_resource,
     _parse_profile_catalog_bytes,
+    legacy_migration_target,
     profile_catalog_payload,
     profile_doctor_payload,
     profile_plan_payload,
@@ -193,6 +194,37 @@ def test_profile_aliases_resolve_exactly(
 
     assert resolved.profile.name == canonical
     assert (resolved.alias.compatibility_variant if resolved.alias else None) == variant
+
+
+@pytest.mark.parametrize(
+    ("legacy", "canonical", "variant", "components"),
+    [
+        ("edge", "edge-dev", None, ("gateway", "worker-stub")),
+        ("edge-core", "edge-dev", "core-peering", ("gateway", "worker-stub")),
+        ("core-edge", "core", "nats-core", ("controller", "nats-core")),
+    ],
+)
+def test_legacy_migration_targets_preserve_development_and_composition_contracts(
+    legacy: str,
+    canonical: str,
+    variant: str | None,
+    components: tuple[str, ...],
+) -> None:
+    target = legacy_migration_target(legacy)
+
+    assert target.legacy_name == legacy
+    assert target.canonical_name == canonical
+    assert target.compatibility_variant == variant
+    assert target.components == components
+
+
+@pytest.mark.parametrize(
+    "unsupported",
+    ["local", "core", "edge-dev", "edge-gateway", "node", "core-ha"],
+)
+def test_legacy_migration_never_promotes_canonical_or_preview_roles(unsupported: str) -> None:
+    with pytest.raises(ValueError, match="unsupported legacy migration profile"):
+        legacy_migration_target(unsupported)
 
 
 def test_production_edge_gateway_never_uses_the_development_stub() -> None:

@@ -241,6 +241,27 @@ def test_existing_state_without_authoritative_lock_fails_instead_of_repairing(
     assert not store.layout.lock.exists()
 
 
+def test_ordinary_lifecycle_reader_rejects_pending_migration_transaction(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path, "edge-dev")
+    store.layout.ensure_profile()
+    store.layout.lock.touch(mode=0o600)
+    _atomic_json_write(
+        store.layout.transaction,
+        {
+            "apiVersion": "k1s.dev/v1alpha1",
+            "kind": "ProfileMigrationTransaction",
+            "schemaVersion": 1,
+        },
+        owner_uid=os.geteuid(),
+        random_bytes=lambda length: b"x" * length,
+    )
+
+    with pytest.raises(ProfileStateError, match="transaction"):
+        store.inspect()
+
+
 def test_state_machine_requires_legal_transition_and_revision(tmp_path: Path) -> None:
     store = _store(tmp_path)
     state = store.begin_run()

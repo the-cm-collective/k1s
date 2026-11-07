@@ -66,6 +66,16 @@ class ResolvedProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class LegacyMigrationTarget:
+    """Exact compatibility mapping accepted by the explicit migration command."""
+
+    legacy_name: str
+    canonical_name: str
+    compatibility_variant: str | None
+    components: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class InstalledProfileFacts:
     """Read-only installation facts consumed by the pure doctor evaluator."""
 
@@ -225,7 +235,17 @@ def _validate_catalog_semantics(
         raise ProfileResourceError("edge-dev must retain its explicit worker-stub component")
     if aliases_by_name["edge"].canonical_name != "edge-dev":
         raise ProfileResourceError("legacy edge alias must remain development-only")
-    if aliases_by_name["edge-core"].canonical_name != "edge-dev":
+    if aliases_by_name["edge"].compatibility_variant is not None:
+        raise ProfileResourceError("legacy edge alias must not gain a compatibility variant")
+    if (
+        aliases_by_name["core-edge"].canonical_name != "core"
+        or aliases_by_name["core-edge"].compatibility_variant != "nats-core"
+    ):
+        raise ProfileResourceError("legacy core-edge migration mapping changed")
+    if (
+        aliases_by_name["edge-core"].canonical_name != "edge-dev"
+        or aliases_by_name["edge-core"].compatibility_variant != "core-peering"
+    ):
         raise ProfileResourceError("legacy edge-core alias must remain development-only")
 
 
@@ -392,6 +412,25 @@ def resolve_profile(name: str) -> ResolvedProfile:
         requested_name=name,
         profile=_PROFILES_BY_NAME[alias.canonical_name],
         alias=alias,
+    )
+
+
+def legacy_migration_target(name: str) -> LegacyMigrationTarget:
+    """Return one frozen stopped-record migration target without promoting aliases."""
+
+    resolved = resolve_profile(name)
+    alias = resolved.alias
+    if alias is None or name not in {"edge", "edge-core", "core-edge"}:
+        expected = "edge, edge-core, core-edge"
+        raise ValueError(
+            f"unsupported legacy migration profile {name!r}; expected one of: {expected}"
+        )
+    components = ("controller", "nats-core") if name == "core-edge" else resolved.profile.components
+    return LegacyMigrationTarget(
+        legacy_name=name,
+        canonical_name=resolved.profile.name,
+        compatibility_variant=alias.compatibility_variant,
+        components=components,
     )
 
 
