@@ -15,6 +15,7 @@ import requests
 
 from ae.accelerators import link_metric_inventory, normalize_capabilities
 from ae.controller.health import HealthReport
+from ae.controller.node_identity import NodeIdentityConflictError
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
@@ -232,7 +233,9 @@ class EtcdHttpClient:
             os.getenv("AE_ETCD_RETRY_BACKOFF", "100ms"),
             0.1,
         )
-        self._retry_jitter = max(0.0, min(1.0, float(os.getenv("AE_ETCD_RETRY_JITTER", "0.2") or "0.2")))
+        self._retry_jitter = max(
+            0.0, min(1.0, float(os.getenv("AE_ETCD_RETRY_JITTER", "0.2") or "0.2"))
+        )
         self._verify: bool | str = True
         if ca_cert:
             self._verify = ca_cert
@@ -263,7 +266,7 @@ class EtcdHttpClient:
         base = max(0.0, self._retry_backoff_s)
         if base <= 0:
             return
-        delay = base * (2**max(0, attempt - 1))
+        delay = base * (2 ** max(0, attempt - 1))
         if self._retry_jitter > 0:
             jitter = (random.random() * 2 - 1) * self._retry_jitter
             delay *= max(0.0, 1.0 + jitter)
@@ -811,9 +814,7 @@ class EtcdStateStore(SQLiteStateStore):
             admission=self._json_object(rec.get("admission")),
             conditions=self._json_object(rec.get("conditions")),
             restarts=int(rec.get("restarts", 0) or 0),
-            last_error=(
-                str(rec.get("last_error")) if rec.get("last_error") is not None else None
-            ),
+            last_error=(str(rec.get("last_error")) if rec.get("last_error") is not None else None),
             source=str(rec.get("source", "unknown")),
             updated_at=_dt_from_iso(
                 rec.get("updated_at"),
@@ -839,9 +840,7 @@ class EtcdStateStore(SQLiteStateStore):
             desired=int(rec.get("desired", 0) or 0),
             current=int(rec.get("current", 0) or 0),
             ready=int(rec.get("ready", 0) or 0),
-            last_error=(
-                str(rec.get("last_error")) if rec.get("last_error") is not None else None
-            ),
+            last_error=(str(rec.get("last_error")) if rec.get("last_error") is not None else None),
             source=str(rec.get("source", "unknown")),
             updated_at=_dt_from_iso(
                 rec.get("updated_at"),
@@ -1251,9 +1250,7 @@ class EtcdStateStore(SQLiteStateStore):
         items.sort(key=lambda item: item.created_at, reverse=True)
         return items[: max(1, int(limit))]
 
-    def get_fabric_advisory_request(
-        self, request_id: str
-    ) -> FabricAdvisoryRequestRecord | None:
+    def get_fabric_advisory_request(self, request_id: str) -> FabricAdvisoryRequestRecord | None:
         rec, _mod_rev = self._get_json(self._fabric_advisory_request_key(request_id))
         return advisory_request_from_payload(rec) if rec else None
 
@@ -1280,15 +1277,11 @@ class EtcdStateStore(SQLiteStateStore):
         items.sort(key=lambda item: item.created_at, reverse=True)
         return items[: max(1, int(limit))]
 
-    def get_fabric_advisory_response(
-        self, request_id: str
-    ) -> FabricAdvisoryResponseRecord | None:
+    def get_fabric_advisory_response(self, request_id: str) -> FabricAdvisoryResponseRecord | None:
         rec, _mod_rev = self._get_json(self._fabric_advisory_response_key(request_id))
         return advisory_response_from_payload(rec) if rec else None
 
-    def upsert_fabric_advisory_proposal(
-        self, record: FabricAdvisoryProposalRecord
-    ) -> None:
+    def upsert_fabric_advisory_proposal(self, record: FabricAdvisoryProposalRecord) -> None:
         payload = advisory_proposal_payload(record)
         key = self._fabric_advisory_proposal_key(payload["proposal_id"])
         existing, _mod_rev = self._get_json(key)
@@ -1336,9 +1329,7 @@ class EtcdStateStore(SQLiteStateStore):
         items.sort(key=lambda item: item.updated_at, reverse=True)
         return items[: max(1, int(limit))]
 
-    def _upsert_fabric_advisory_proposal_for_trace(
-        self, trace: FabricDecisionTraceRecord
-    ) -> None:
+    def _upsert_fabric_advisory_proposal_for_trace(self, trace: FabricDecisionTraceRecord) -> None:
         self.upsert_fabric_advisory_proposal(
             build_fabric_advisory_proposal(
                 trace,
@@ -1507,9 +1498,7 @@ class EtcdStateStore(SQLiteStateStore):
         items.sort(key=lambda item: item.created_at, reverse=True)
         return items[: max(1, int(limit))]
 
-    def upsert_fabric_transfer_capability(
-        self, record: FabricTransferCapabilityRecord
-    ) -> None:
+    def upsert_fabric_transfer_capability(self, record: FabricTransferCapabilityRecord) -> None:
         payload = transfer_capability_payload(record)
         key = self._fabric_transfer_capability_key(payload["capability_id"])
         existing, _mod_rev = self._get_json(key)
@@ -1786,7 +1775,9 @@ class EtcdStateStore(SQLiteStateStore):
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }
-        return self._create_json_if_absent(self._inference_port_lease_key(node_id, int(port)), payload)
+        return self._create_json_if_absent(
+            self._inference_port_lease_key(node_id, int(port)), payload
+        )
 
     def reserve_inference_port_from_range(
         self,
@@ -1926,9 +1917,7 @@ class EtcdStateStore(SQLiteStateStore):
             self._put_json(self._k("pods", app_name, pod.pod_name), payload)
 
         try:
-            ttl_seconds = int(
-                os.getenv("AE_POD_STATUS_TTL_SECONDS", "30") or "30"
-            )
+            ttl_seconds = int(os.getenv("AE_POD_STATUS_TTL_SECONDS", "30") or "30")
         except Exception:
             ttl_seconds = 30
         if ttl_seconds > 0 and existing:
@@ -1971,9 +1960,7 @@ class EtcdStateStore(SQLiteStateStore):
             payload = {"pod_name": pod_name, "node_id": node_id, "updated_at": ts}
             self._put_json(self._k("pod_nodes", app_name, pod_name), payload)
         try:
-            node_ttl_seconds = int(
-                os.getenv("AE_POD_NODE_TTL_SECONDS", "300") or "300"
-            )
+            node_ttl_seconds = int(os.getenv("AE_POD_NODE_TTL_SECONDS", "300") or "300")
         except Exception:
             node_ttl_seconds = 300
         if node_ttl_seconds > 0 and existing_nodes:
@@ -2092,7 +2079,9 @@ class EtcdStateStore(SQLiteStateStore):
         items.sort(key=lambda p: p.pod_name)
         return items
 
-    def list_pod_nodes(self, app_name: str) -> list[tuple[str, str | None, bool, bool, str, str, str]]:
+    def list_pod_nodes(
+        self, app_name: str
+    ) -> list[tuple[str, str | None, bool, bool, str, str, str]]:
         pods = {p.pod_name: p for p in self.list_pods(app_name)}
         nodes = {
             key.split("/")[-1]: rec.get("node_id")
@@ -2128,7 +2117,9 @@ class EtcdStateStore(SQLiteStateStore):
         rows.sort(key=lambda r: r[0], reverse=True)
         entries: list[ProbeHistoryEntry] = []
         for _key, rec, _rev in rows[: int(limit)]:
-            check_time = _dt_from_iso(rec.get("check_time"), default=datetime.fromtimestamp(0, tz=timezone.utc))
+            check_time = _dt_from_iso(
+                rec.get("check_time"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
             entries.append(
                 ProbeHistoryEntry(
                     pod_name=str(rec.get("pod_name", "")),
@@ -2233,7 +2224,9 @@ class EtcdStateStore(SQLiteStateStore):
                 continue
             spec = rec.get("spec") or {}
             man = AppManifest.model_validate(spec)
-            updated = _dt_from_iso(rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
+            updated = _dt_from_iso(
+                rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
             out.append(
                 RegistryEntry(
                     app_name=str(rec.get("app_name", "")),
@@ -2259,7 +2252,9 @@ class EtcdStateStore(SQLiteStateStore):
         if not rec:
             return None
         spec = rec.get("spec") or {}
-        updated = _dt_from_iso(rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
+        updated = _dt_from_iso(
+            rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+        )
         return RegistryEntry(
             app_name=app_name,
             manifest=AppManifest.model_validate(spec),
@@ -2355,7 +2350,9 @@ class EtcdStateStore(SQLiteStateStore):
             "status": status or {},
             "updated_at": _now_iso(),
         }
-        conflict_key = self._authority_object_conflict_key(group, version, resource, namespace, name)
+        conflict_key = self._authority_object_conflict_key(
+            group, version, resource, namespace, name
+        )
         if expected_resource_version is None:
             self._put_json(key, payload)
             return self._get_json(key)[1]
@@ -2433,7 +2430,9 @@ class EtcdStateStore(SQLiteStateStore):
         namespace: str | None,
         name: str,
     ) -> AuthorityObjectEntry | None:
-        rec, mod_rev = self._get_json(self._authority_key(group, version, resource, namespace, name))
+        rec, mod_rev = self._get_json(
+            self._authority_key(group, version, resource, namespace, name)
+        )
         if not rec:
             return None
         namespace_value = rec.get("namespace")
@@ -2726,7 +2725,10 @@ class EtcdStateStore(SQLiteStateStore):
         self._put_json(key, payload)
 
     def list_events(self, app_name: str, limit: int = 20) -> list[AppEvent]:
-        return [self._app_event_from_record(app_name, rec) for _key, rec, _rev in self._event_rows(app_name, limit=int(limit))]
+        return [
+            self._app_event_from_record(app_name, rec)
+            for _key, rec, _rev in self._event_rows(app_name, limit=int(limit))
+        ]
 
     def list_events_paginated(
         self, app_name: str, limit: int, offset: int
@@ -2835,6 +2837,28 @@ class EtcdStateStore(SQLiteStateStore):
         return summary
 
     # --- Node leases (lab-edge) ----------------------------------------
+    @staticmethod
+    def _node_lease_from_payload(payload: dict[str, Any]) -> NodeLease:
+        now = _now()
+        return NodeLease(
+            node_id=str(payload.get("node_id") or ""),
+            site_id=str(payload.get("site_id") or ""),
+            session_id=str(payload.get("session_id") or ""),
+            lease_id=str(payload.get("lease_id") or ""),
+            generation=max(1, int(payload.get("generation") or 1)),
+            controller_epoch=int(payload.get("controller_epoch") or 0),
+            lease_ttl_ms=int(payload.get("lease_ttl_ms") or 0),
+            renew_after_ms=int(payload.get("renew_after_ms") or 0),
+            last_renew_at=_dt_from_iso(payload.get("last_renew_at"), default=now) or now,
+            expires_at=_dt_from_iso(payload.get("expires_at"), default=now) or now,
+        )
+
+    def _find_node_lease(self, node_id: str) -> tuple[str, dict[str, Any], int] | None:
+        for key, rec, revision in self._list_prefix(self._k("node_leases")):
+            if str(rec.get("node_id") or "") == str(node_id):
+                return key, rec, revision
+        return None
+
     def acquire_lease(
         self,
         site_id: str,
@@ -2843,8 +2867,34 @@ class EtcdStateStore(SQLiteStateStore):
         lease_ttl_ms: int,
         renew_after_ms: int,
         controller_epoch: int,
+        *,
+        now: datetime | None = None,
     ) -> NodeLease:
-        now = _now()
+        if not str(node_id):
+            raise ValueError("node_id required")
+        if not str(session_id):
+            raise ValueError("session_id required")
+        if int(lease_ttl_ms) <= 0:
+            raise ValueError("lease_ttl_ms must be positive")
+        if int(renew_after_ms) <= 0 or int(renew_after_ms) >= int(lease_ttl_ms):
+            raise ValueError("renew_after_ms must be positive and less than lease_ttl_ms")
+        now = now or _now()
+        key = self._k("node_leases", site_id, node_id)
+        existing, revision = self._get_json(key)
+        generation = 1
+        if existing:
+            current = self._node_lease_from_payload(existing)
+            if current.expires_at > now:
+                if current.session_id == str(session_id):
+                    return current
+                raise NodeIdentityConflictError("active_identity")
+            generation = current.generation + 1
+        else:
+            legacy_node = self.get_node(node_id)
+            if legacy_node is not None and legacy_node[1] is not None:
+                legacy_status = legacy_node[1]
+                if legacy_status.seen_at + timedelta(milliseconds=int(lease_ttl_ms)) > now:
+                    raise NodeIdentityConflictError("legacy_identity_active")
         lease_id = str(uuid.uuid4())
         expires_at = now + timedelta(milliseconds=int(lease_ttl_ms))
         payload = {
@@ -2852,24 +2902,39 @@ class EtcdStateStore(SQLiteStateStore):
             "site_id": site_id,
             "session_id": session_id,
             "lease_id": lease_id,
+            "generation": generation,
             "controller_epoch": int(controller_epoch),
             "lease_ttl_ms": int(lease_ttl_ms),
             "renew_after_ms": int(renew_after_ms),
             "last_renew_at": now.isoformat(),
             "expires_at": expires_at.isoformat(),
         }
-        self._put_json(self._k("node_leases", site_id, node_id), payload)
-        return NodeLease(
-            node_id=node_id,
-            site_id=site_id,
-            session_id=session_id,
-            lease_id=lease_id,
-            controller_epoch=int(controller_epoch),
-            lease_ttl_ms=int(lease_ttl_ms),
-            renew_after_ms=int(renew_after_ms),
-            last_renew_at=now,
-            expires_at=expires_at,
+        compare = (
+            [{"key": _b64encode(key), "target": "MOD", "modRevision": str(revision)}]
+            if revision
+            else [{"key": _b64encode(key), "target": "CREATE", "createRevision": "0"}]
         )
+        success = [
+            {
+                "requestPut": {
+                    "key": _b64encode(key),
+                    "value": _b64encode(self._encode(payload)),
+                }
+            }
+        ]
+        response = self._client.txn(
+            compare,
+            success,
+            [{"requestRange": {"key": _b64encode(key), "limit": 1}}],
+        )
+        if not bool(response.get("succeeded")):
+            winner, _winner_revision = self._get_json(key)
+            if winner:
+                current = self._node_lease_from_payload(winner)
+                if current.session_id == str(session_id) and current.expires_at > now:
+                    return current
+            raise NodeIdentityConflictError("active_identity")
+        return self._node_lease_from_payload(payload)
 
     def renew_lease(
         self,
@@ -2880,45 +2945,42 @@ class EtcdStateStore(SQLiteStateStore):
         now: datetime | None = None,
     ) -> tuple[NodeLease | None, str | None]:
         now_dt = now or _now()
-        # search for lease by node_id across sites
-        rows = self._list_prefix(self._k("node_leases"))
-        lease_rec: dict | None = None
-        for _key, rec, _rev in rows:
-            if str(rec.get("node_id")) == str(node_id):
-                lease_rec = rec
-                break
-        if not lease_rec:
+        found = self._find_node_lease(node_id)
+        if found is None:
             return None, "unknown_lease"
+        key, lease_rec, revision = found
         if str(lease_rec.get("session_id")) != str(session_id):
             return None, "invalid_session"
         if str(lease_rec.get("lease_id")) != str(lease_id):
             return None, "unknown_lease"
-        expires_at = _dt_from_iso(lease_rec.get("expires_at"), default=now_dt - timedelta(seconds=1))
+        expires_at = _dt_from_iso(
+            lease_rec.get("expires_at"), default=now_dt - timedelta(seconds=1)
+        )
         if expires_at and expires_at <= now_dt:
-            site_id = str(lease_rec.get("site_id", ""))
-            self._delete(self._k("node_leases", site_id, node_id))
             return None, "expired"
         lease_ttl_ms = int(lease_rec.get("lease_ttl_ms", 0))
-        renew_after_ms = int(lease_rec.get("renew_after_ms", 0))
         new_expires = now_dt + timedelta(milliseconds=lease_ttl_ms)
         lease_rec["last_renew_at"] = now_dt.isoformat()
         lease_rec["expires_at"] = new_expires.isoformat()
-        site_id = str(lease_rec.get("site_id", ""))
-        self._put_json(self._k("node_leases", site_id, node_id), lease_rec)
-        return (
-            NodeLease(
-                node_id=str(lease_rec.get("node_id")),
-                site_id=site_id,
-                session_id=str(lease_rec.get("session_id")),
-                lease_id=str(lease_rec.get("lease_id")),
-                controller_epoch=int(lease_rec.get("controller_epoch", 0)),
-                lease_ttl_ms=lease_ttl_ms,
-                renew_after_ms=renew_after_ms,
-                last_renew_at=now_dt,
-                expires_at=new_expires,
-            ),
-            None,
+        response = self._client.txn(
+            [{"key": _b64encode(key), "target": "MOD", "modRevision": str(revision)}],
+            [
+                {
+                    "requestPut": {
+                        "key": _b64encode(key),
+                        "value": _b64encode(self._encode(lease_rec)),
+                    }
+                }
+            ],
+            [{"requestRange": {"key": _b64encode(key), "limit": 1}}],
         )
+        if not bool(response.get("succeeded")):
+            return None, "identity_conflict"
+        return self._node_lease_from_payload(lease_rec), None
+
+    def get_node_lease(self, node_id: str) -> NodeLease | None:
+        found = self._find_node_lease(node_id)
+        return self._node_lease_from_payload(found[1]) if found is not None else None
 
     # --- Work queue (lab-edge) -----------------------------------------
     def enqueue_work(self, work_id: str, attempt: int, site_id: str, payload: dict) -> None:
@@ -3341,7 +3403,9 @@ class EtcdStateStore(SQLiteStateStore):
     def mark_work_done(self, work_id: str, attempt: int) -> None:
         rows = self._list_prefix(self._k("work_queue"))
         for key, rec, _rev in rows:
-            if str(rec.get("work_id")) == str(work_id) and int(rec.get("attempt", 0)) == int(attempt):
+            if str(rec.get("work_id")) == str(work_id) and int(rec.get("attempt", 0)) == int(
+                attempt
+            ):
                 rec["state"] = "Done"
                 rec["updated_at"] = _now_iso()
                 rec["lease_id"] = None
@@ -3668,7 +3732,9 @@ class EtcdStateStore(SQLiteStateStore):
         rec, _ = self._get_json(self._k("services", app_name))
         if not rec:
             return None
-        return ServiceRecord(app_name=app_name, cluster_ip=rec.get("cluster_ip", ""), ports=rec.get("ports") or {})
+        return ServiceRecord(
+            app_name=app_name, cluster_ip=rec.get("cluster_ip", ""), ports=rec.get("ports") or {}
+        )
 
     def upsert_service_endpoints(self, app_name: str, endpoints: list[ServiceEndpoint]) -> None:
         prefix = self._k("services", app_name, "endpoints")
@@ -3761,16 +3827,34 @@ class EtcdStateStore(SQLiteStateStore):
             return
         self._put_with_node_lease(key=node_key, payload=payload, node_id=node_id, lease_id=lease_id)
 
-    def record_heartbeat(self, node_id: str, status: str) -> None:
-        lease_id, lease_rotated = self._grant_node_lease(node_id)
+    def record_heartbeat(
+        self,
+        node_id: str,
+        status: str,
+        *,
+        session_id: str | None = None,
+        lease_id: str | None = None,
+    ) -> NodeLease | None:
+        identity_lease: NodeLease | None = None
+        if session_id is not None or lease_id is not None:
+            if not session_id or not lease_id:
+                raise NodeIdentityConflictError("identity_fence_required")
+            identity_lease, reason = self.renew_lease(node_id, session_id, lease_id)
+            if identity_lease is None:
+                raise NodeIdentityConflictError(reason or "identity_fence_rejected")
+        elif self.get_node_lease(node_id) is not None:
+            raise NodeIdentityConflictError("identity_fence_required")
+        if self.get_node(node_id) is None:
+            raise ValueError(f"unknown node_id: {node_id}")
+        storage_lease_id, lease_rotated = self._grant_node_lease(node_id)
         now_iso = _now_iso()
         payload = {"node_id": node_id, "status": status, "seen_at": now_iso}
         status_key = self._k("node_status", self._site_id, node_id)
-        lease_id, retry_rotated = self._put_with_node_lease(
+        storage_lease_id, retry_rotated = self._put_with_node_lease(
             key=status_key,
             payload=payload,
             node_id=node_id,
-            lease_id=lease_id,
+            lease_id=storage_lease_id,
         )
         lease_rotated = lease_rotated or retry_rotated
         node_rewrite = False
@@ -3778,14 +3862,15 @@ class EtcdStateStore(SQLiteStateStore):
             node_key = self._k("nodes", self._site_id, node_id)
             existing, _ = self._get_json(node_key)
             if existing:
-                lease_id, _ = self._put_with_node_lease(
+                storage_lease_id, _ = self._put_with_node_lease(
                     key=node_key,
                     payload=existing,
                     node_id=node_id,
-                    lease_id=lease_id,
+                    lease_id=storage_lease_id,
                 )
                 node_rewrite = True
         self._record_heartbeat_metrics(node_rewrite=node_rewrite)
+        return identity_lease
 
     def run_maintenance_watchdog(
         self,
@@ -3821,7 +3906,9 @@ class EtcdStateStore(SQLiteStateStore):
         usage_pct = int((db_size * 100) / quota)
         alarm_items = alarms.get("alarms") if isinstance(alarms, dict) else []
         alarm_items = alarm_items if isinstance(alarm_items, list) else []
-        nospace = any(str((item or {}).get("alarm") or "").upper() == "NOSPACE" for item in alarm_items)
+        nospace = any(
+            str((item or {}).get("alarm") or "").upper() == "NOSPACE" for item in alarm_items
+        )
         should_reclaim = nospace or usage_pct >= threshold
         result: dict[str, Any] = {
             "triggered": bool(should_reclaim),
@@ -3914,13 +4001,21 @@ class EtcdStateStore(SQLiteStateStore):
     def list_nodes(self) -> list[tuple[NodeRecord, NodeStatus | None]]:
         rows = self._list_prefix(self._k("nodes"))
         statuses = {
-            key.split("/")[-1]: rec
-            for key, rec, _rev in self._list_prefix(self._k("node_status"))
+            key.split("/")[-1]: rec for key, rec, _rev in self._list_prefix(self._k("node_status"))
+        }
+        identity_leases = {
+            str(rec.get("node_id") or ""): rec
+            for _key, rec, _rev in self._list_prefix(self._k("node_leases"))
+            if rec.get("node_id")
         }
         out: list[tuple[NodeRecord, NodeStatus | None]] = []
         for _key, rec, _rev in rows:
-            created = _dt_from_iso(rec.get("created_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
-            updated = _dt_from_iso(rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
+            created = _dt_from_iso(
+                rec.get("created_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
+            updated = _dt_from_iso(
+                rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
             node = NodeRecord(
                 node_id=str(rec.get("node_id", "")),
                 name=rec.get("name"),
@@ -3939,8 +4034,22 @@ class EtcdStateStore(SQLiteStateStore):
             status_rec = statuses.get(node.node_id)
             status = None
             if status_rec:
-                seen = _dt_from_iso(status_rec.get("seen_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
-                status = NodeStatus(node_id=node.node_id, status=str(status_rec.get("status", "")), seen_at=seen)
+                seen = _dt_from_iso(
+                    status_rec.get("seen_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+                )
+                lease_rec = identity_leases.get(node.node_id) or {}
+                generation = max(0, int(lease_rec.get("generation") or 0))
+                lease_expires_at = _dt_from_iso(lease_rec.get("expires_at"))
+                status = NodeStatus(
+                    node_id=node.node_id,
+                    status=str(status_rec.get("status", "")),
+                    seen_at=seen,
+                    identity_version=1 if generation > 0 and lease_expires_at else 0,
+                    identity_mode=("explicit" if generation > 0 and lease_expires_at else "legacy"),
+                    generation=generation,
+                    site_id=str(lease_rec.get("site_id")) if lease_rec.get("site_id") else None,
+                    lease_expires_at=lease_expires_at,
+                )
             out.append((node, status))
         return out
 
@@ -3948,8 +4057,12 @@ class EtcdStateStore(SQLiteStateStore):
         rec, _ = self._get_json(self._k("nodes", self._site_id, node_id))
         if not rec:
             return None
-        created = _dt_from_iso(rec.get("created_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
-        updated = _dt_from_iso(rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
+        created = _dt_from_iso(
+            rec.get("created_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+        )
+        updated = _dt_from_iso(
+            rec.get("updated_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+        )
         node = NodeRecord(
             node_id=str(rec.get("node_id", "")),
             name=rec.get("name"),
@@ -3968,8 +4081,22 @@ class EtcdStateStore(SQLiteStateStore):
         status_rec, _ = self._get_json(self._k("node_status", self._site_id, node_id))
         status = None
         if status_rec:
-            seen = _dt_from_iso(status_rec.get("seen_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
-            status = NodeStatus(node_id=node.node_id, status=str(status_rec.get("status", "")), seen_at=seen)
+            seen = _dt_from_iso(
+                status_rec.get("seen_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
+            identity_lease = self.get_node_lease(node_id)
+            generation = identity_lease.generation if identity_lease else 0
+            lease_expires_at = identity_lease.expires_at if identity_lease else None
+            status = NodeStatus(
+                node_id=node.node_id,
+                status=str(status_rec.get("status", "")),
+                seen_at=seen,
+                identity_version=1 if identity_lease else 0,
+                identity_mode="explicit" if identity_lease else "legacy",
+                generation=generation,
+                site_id=identity_lease.site_id or None if identity_lease else None,
+                lease_expires_at=lease_expires_at,
+            )
         return node, status
 
     def get_node_capabilities(self, node_id: str) -> dict:
@@ -3995,7 +4122,9 @@ class EtcdStateStore(SQLiteStateStore):
             for metric in link_metric_inventory(node.capabilities):
                 item = dict(metric)
                 raw_source = str(item.get("source") or "").strip()
-                source = raw_source if raw_source and raw_source != "node-capability" else node.node_id
+                source = (
+                    raw_source if raw_source and raw_source != "node-capability" else node.node_id
+                )
                 item["source"] = source
                 key = (
                     str(item.get("from_site") or ""),
@@ -4029,7 +4158,9 @@ class EtcdStateStore(SQLiteStateStore):
         rows = self._list_prefix(self._k("storage", "attachments", app_name))
         out: list[VolumeAttachment] = []
         for _key, rec, _rev in rows:
-            created = _dt_from_iso(rec.get("created_at"), default=datetime.fromtimestamp(0, tz=timezone.utc))
+            created = _dt_from_iso(
+                rec.get("created_at"), default=datetime.fromtimestamp(0, tz=timezone.utc)
+            )
             out.append(
                 VolumeAttachment(
                     app_name=str(rec.get("app_name", app_name)),

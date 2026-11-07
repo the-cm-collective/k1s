@@ -23,6 +23,27 @@ from ae.runtime.base import PodState, RuntimeAdapter, RuntimeResult
 from ae.runtime.containerd_runtime import ContainerdRuntime
 
 
+def test_explicit_local_node_registers_when_other_nodes_exist(tmp_path, monkeypatch) -> None:
+    store = SQLiteStateStore(tmp_path / "state.db")
+    store.upsert_node("remote-node", name="remote", endpoint="http://remote:9109")
+    store.record_heartbeat("remote-node", "Ready")
+    monkeypatch.setenv("AE_REGISTER_LOCAL_NODE", "1")
+    monkeypatch.setenv("AE_NODE_ID", "local-node")
+
+    reconciler = Reconciler(StubRuntime(), store)
+    reconciler.heartbeat_local_node()
+
+    local = store.get_node("local-node")
+    assert local is not None
+    assert local[1] is not None
+    assert local[1].identity_version == 1
+    assert local[1].generation == 1
+    assert {node.node_id for node, _status in store.list_nodes()} == {
+        "local-node",
+        "remote-node",
+    }
+
+
 class StubRuntime(RuntimeAdapter):
     def __init__(self) -> None:
         self.last_manifest: AppManifest | None = None
@@ -39,11 +60,7 @@ class StubRuntime(RuntimeAdapter):
     ) -> RuntimeResult:
         _ = (keep_old, limit_create, node_id)
         self.last_manifest = manifest
-        name = (
-            pod_names[0]
-            if pod_names
-            else f"{manifest.metadata.name}-rev{revision}-0"
-        )
+        name = pod_names[0] if pod_names else f"{manifest.metadata.name}-rev{revision}-0"
         return RuntimeResult(
             revision=revision,
             created=1,
@@ -1158,9 +1175,7 @@ def test_reconciler_degrades_when_secret_injection_fails(tmp_path: Path) -> None
     assert any(event.event_type == "ApplyFailed" for event in events)
 
 
-def test_reconciler_secret_fallback_requires_explicit_opt_in(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_reconciler_secret_fallback_requires_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AE_RECONCILE_ALLOW_CONFIG_SECRET_FALLBACK", "1")
     runtime = StubRuntime()
     state = SQLiteStateStore(tmp_path / "state.db")

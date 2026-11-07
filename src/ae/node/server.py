@@ -9,6 +9,7 @@ import os
 import socket
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from ae.accelerators import (
     merge_projected_gpu_labels,
 )
 from ae.config.transport import TransportConfig, check_nats_connectivity
+from ae.controller.node_identity import IDENTITY_VERSION, NodeIdentityError, validate_node_id
 from ae.controller.spec import AppManifest, app_key_for_manifest
 from ae.ha.fencing import SQLiteFenceStore, parse_envelope
 from ae.observability.http_api import record_ha_fence_event
@@ -496,7 +498,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                                 self,
                                 200,
                                 _result_to_dict(result)
-                                | ({"ok": True, "duplicate": True} if status == "duplicate" else {}),
+                                | (
+                                    {"ok": True, "duplicate": True} if status == "duplicate" else {}
+                                ),
                             )
                             return
                         raise
@@ -887,6 +891,15 @@ def _parse_labels(raw: str | None) -> dict:
     return labels
 
 
+def _resolve_node_identity(cli_node_id: str | None) -> tuple[str, str | None]:
+    """Resolve the stable explicit ID while retaining legacy hostname fallback."""
+
+    configured = cli_node_id if cli_node_id is not None else os.getenv("AE_NODE_ID")
+    if configured is None:
+        return socket.gethostname(), None
+    return validate_node_id(configured), str(uuid.uuid4())
+
+
 def _start_heartbeat_loop(
     controller_url: str | None,
     node_id: str,
@@ -904,14 +917,17 @@ def _start_heartbeat_loop(
     ca_file: str | None = None,
     client_cert: str | None = None,
     client_key: str | None = None,
+    identity_session_id: str | None = None,
 ) -> None:
     if not controller_url:
         LOGGER.info("heartbeat disabled (AE_CONTROLLER_URL not set)")
         return
 
     def _loop():
+        lease_id: str | None = None
+        next_interval = max(1.0, float(interval))
         while True:
-            payload = {
+            payload: dict[str, object] = {
                 "node_id": node_id,
                 "name": name,
                 "backend": backend,
@@ -924,6 +940,15 @@ def _start_heartbeat_loop(
                 "wg_pubkey": wg_pubkey,
                 "rp_pubkey": rp_pubkey,
             }
+            if identity_session_id:
+                payload.update(
+                    {
+                        "identity_version": IDENTITY_VERSION,
+                        "session_id": identity_session_id,
+                    }
+                )
+                if lease_id:
+                    payload["lease_id"] = lease_id
             try:
                 headers = {}
                 if token:
@@ -937,10 +962,25 @@ def _start_heartbeat_loop(
                     kwargs["verify"] = ca_file
                 if client_cert and client_key:
                     kwargs["cert"] = (client_cert, client_key)
-                requests.post(controller_url.rstrip("/") + "/v1/heartbeat", **kwargs)
+                response = requests.post(controller_url.rstrip("/") + "/v1/heartbeat", **kwargs)
+                body = response.json() if response.content else {}
+                if response.status_code == 200 and body.get("accepted"):
+                    lease_id = str(body.get("lease_id") or "") or lease_id
+                    renew_after_ms = int(body.get("renew_after_ms") or 0)
+                    if renew_after_ms > 0:
+                        next_interval = max(1.0, renew_after_ms / 1000.0)
+                elif response.status_code == 409:
+                    reason = str(body.get("reason") or body.get("error") or "identity_conflict")
+                    if reason in {"expired", "unknown_lease", "identity_conflict"}:
+                        lease_id = None
+                    LOGGER.warning("heartbeat identity rejected for %s: %s", node_id, reason)
+                elif response.status_code >= 400:
+                    LOGGER.warning(
+                        "heartbeat rejected for %s: HTTP %s", node_id, response.status_code
+                    )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.debug("heartbeat send failed: %s", exc)
-            time.sleep(max(1, interval))
+            time.sleep(next_interval)
 
     threading.Thread(target=_loop, daemon=True, name="agent-heartbeat").start()
 
@@ -1103,6 +1143,7 @@ def serve(
     controller_ca: str | None = None,
     controller_client_cert: str | None = None,
     controller_client_key: str | None = None,
+    identity_session_id: str | None = None,
 ) -> None:
     if ensure_pod_net and pod_cidr:
         try:
@@ -1131,6 +1172,7 @@ def serve(
         ca_file=controller_ca,
         client_cert=controller_client_cert,
         client_key=controller_client_key,
+        identity_session_id=identity_session_id,
     )
     try:
         interval = int(os.getenv("AE_AGENT_SERVICE_PROXY_INTERVAL", "5") or 5)
@@ -1198,6 +1240,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--controller-url", default=os.getenv("AE_CONTROLLER_URL"))
     parser.add_argument(
+        "--node-id",
+        default=None,
+        help="stable explicit node id (overrides AE_NODE_ID)",
+    )
+    parser.add_argument(
         "--heartbeat-interval",
         type=int,
         default=int(os.getenv("AE_AGENT_HEARTBEAT_SECONDS", "30") or 30),
@@ -1264,7 +1311,10 @@ def main(argv: list[str] | None = None) -> int:
         runtime = ContainerdRuntime()
     else:
         runtime = PodmanRuntime() if args.runtime_backend == "podman" else DockerRuntime()
-    node_id = os.getenv("AE_NODE_ID", socket.gethostname())
+    try:
+        node_id, identity_session_id = _resolve_node_identity(args.node_id)
+    except NodeIdentityError as exc:
+        raise SystemExit(str(exc)) from exc
     node_name = os.getenv("AE_NODE_NAME", node_id)
     node_labels = _parse_labels(os.getenv("AE_NODE_LABELS"))
     node_capabilities = detect_nvidia_accelerator_capabilities()
@@ -1361,6 +1411,7 @@ def main(argv: list[str] | None = None) -> int:
         controller_ca=args.controller_ca,
         controller_client_cert=args.controller_client_cert,
         controller_client_key=args.controller_client_key,
+        identity_session_id=identity_session_id,
     )
     return 0
 

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -22,6 +23,14 @@ from ae.accelerators import (
     preferred_gpu_models,
 )
 from ae.controller.state import SQLiteStateStore
+from ae.controller.node_identity import (
+    IDENTITY_VERSION,
+    NodeIdentityConflictError,
+    NodeIdentityError,
+    identity_view,
+    node_lease_timing,
+    validate_node_id,
+)
 
 try:  # Optional: Phase 3 pod CIDR allocator
     from ae.network.pod_cidr import PodCIDRAllocator
@@ -60,6 +69,34 @@ def _serialize_nodes(store: SQLiteStateStore) -> list[dict]:
         labels = node.labels or {}
         capabilities = getattr(node, "capabilities", {}) or {}
         gpu_count = preferred_gpu_count(labels, capabilities)
+        try:
+            public_identity = identity_view(
+                node.node_id,
+                generation=int(getattr(status, "generation", 0) or 0),
+                heartbeat_seen_at=getattr(status, "seen_at", None),
+                lease_expires_at=getattr(status, "lease_expires_at", None),
+            )
+            identity_payload = {
+                "identity_version": public_identity.identity_version,
+                "identity_mode": public_identity.identity_mode,
+                "generation": public_identity.generation,
+                "site_id": public_identity.site_id,
+                "local_node_id": public_identity.local_node_id,
+                "lease_expires_at": (
+                    public_identity.lease_expires_at.isoformat()
+                    if public_identity.lease_expires_at
+                    else None
+                ),
+            }
+        except NodeIdentityError:
+            identity_payload = {
+                "identity_version": 0,
+                "identity_mode": "legacy",
+                "generation": 0,
+                "site_id": None,
+                "local_node_id": node.node_id,
+                "lease_expires_at": None,
+            }
         items.append(
             {
                 "node_id": node.node_id,
@@ -77,6 +114,7 @@ def _serialize_nodes(store: SQLiteStateStore) -> list[dict]:
                 "cordoned": bool(getattr(node, "cordoned", False)),
                 "status": status.status if status else None,
                 "seen_at": status.seen_at.isoformat() if status else None,
+                **identity_payload,
             }
         )
     return items
@@ -147,7 +185,13 @@ def _payload_label(payload: dict, key: str) -> str:
 def _edge_admission_env(path: str) -> str | None:
     clean = path.split("?", 1)[0].strip("/")
     parts = clean.split("/")
-    if len(parts) == 5 and parts[0] == "k1s" and parts[1] == "envs" and parts[3] == "edge" and parts[4] == "admission":
+    if (
+        len(parts) == 5
+        and parts[0] == "k1s"
+        and parts[1] == "envs"
+        and parts[3] == "edge"
+        and parts[4] == "admission"
+    ):
         return parts[2]
     return None
 
@@ -288,9 +332,34 @@ def make_handler(
                     return
 
             if env_admission is not None:
-                node_id = str(payload.get("node_id") or payload.get("gateway_id") or payload.get("id") or "").strip()
+                raw_node_id = (
+                    payload.get("node_id") or payload.get("gateway_id") or payload.get("id") or ""
+                )
             else:
-                node_id = str(payload.get("node_id") or payload.get("id") or "").strip()
+                raw_node_id = payload.get("node_id") or payload.get("id") or ""
+            identity_requested = any(
+                key in payload for key in ("identity_version", "session_id", "lease_id")
+            )
+            session_id: str | None = None
+            requested_lease_id: str | None = None
+            try:
+                if identity_requested:
+                    if int(payload.get("identity_version") or 0) != IDENTITY_VERSION:
+                        raise NodeIdentityError(f"identity_version must be {IDENTITY_VERSION}")
+                    node_id = validate_node_id(raw_node_id)
+                    session_id = str(payload.get("session_id") or "")
+                    if not session_id or session_id != session_id.strip():
+                        raise NodeIdentityError("session_id is required without whitespace")
+                    try:
+                        uuid.UUID(session_id)
+                    except (ValueError, AttributeError) as exc:
+                        raise NodeIdentityError("session_id must be a UUID") from exc
+                    requested_lease_id = str(payload.get("lease_id") or "") or None
+                else:
+                    node_id = str(raw_node_id).strip()
+            except (NodeIdentityError, TypeError, ValueError) as exc:
+                _json(self, 400, {"ok": False, "accepted": False, "error": str(exc)})
+                return
             status = str(payload.get("status") or "Ready")
             if not node_id:
                 _json(self, 400, {"error": "node_id required"})
@@ -396,6 +465,52 @@ def make_handler(
             wg_pubkey = payload.get("wg_pubkey")
             rp_pubkey = payload.get("rp_pubkey")
 
+            identity_lease = None
+            try:
+                if identity_requested:
+                    ttl_ms, renew_after_ms = node_lease_timing(
+                        os.getenv("AE_NODE_NOTREADY_AFTER", "40")
+                    )
+                    if requested_lease_id:
+                        identity_lease, reason = store.renew_lease(
+                            node_id,
+                            session_id or "",
+                            requested_lease_id,
+                        )
+                        if identity_lease is None:
+                            raise NodeIdentityConflictError(reason or "identity_fence_rejected")
+                    else:
+                        identity_lease = store.acquire_lease(
+                            site_id=str(labels.get("site_id") or labels.get("site") or ""),
+                            node_id=node_id,
+                            session_id=session_id or "",
+                            lease_ttl_ms=ttl_ms,
+                            renew_after_ms=renew_after_ms,
+                            controller_epoch=0,
+                        )
+                elif store.get_node_lease(node_id) is not None:
+                    raise NodeIdentityConflictError("identity_fence_required")
+            except NodeIdentityConflictError as exc:
+                _json(
+                    self,
+                    409,
+                    {
+                        "ok": False,
+                        "accepted": False,
+                        "node_id": node_id,
+                        "error": exc.reason,
+                        "reason": exc.reason,
+                    },
+                )
+                return
+            except ValueError as exc:
+                _json(self, 400, {"ok": False, "accepted": False, "error": str(exc)})
+                return
+
+            existing_node = store.get_node(node_id)
+            if pod_cidr in (None, "") and existing_node is not None:
+                pod_cidr = existing_node[0].pod_cidr
+
             # Optional: assign a Pod CIDR if not provided by the agent
             assigned_cidr = None
             if pod_cidr in (None, "") and cidr_allocator is not None:
@@ -429,12 +544,44 @@ def make_handler(
                     wg_pubkey=wg_pubkey,
                     rp_pubkey=rp_pubkey,
                 )
-                store.record_heartbeat(node_id, status)
+                refreshed_lease = store.record_heartbeat(
+                    node_id,
+                    status,
+                    session_id=session_id if identity_requested else None,
+                    lease_id=identity_lease.lease_id if identity_lease else None,
+                )
+                if refreshed_lease is not None:
+                    identity_lease = refreshed_lease
+            except NodeIdentityConflictError as exc:
+                _json(
+                    self,
+                    409,
+                    {
+                        "ok": False,
+                        "accepted": False,
+                        "node_id": node_id,
+                        "error": exc.reason,
+                        "reason": exc.reason,
+                    },
+                )
+                return
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("heartbeat failed for %s", node_id)
                 _json(self, 500, {"error": str(exc)})
                 return
-            response = {"ok": True}
+            response: dict[str, object] = {"ok": True}
+            if identity_lease is not None:
+                response.update(
+                    {
+                        "accepted": True,
+                        "identity_version": IDENTITY_VERSION,
+                        "node_id": node_id,
+                        "generation": identity_lease.generation,
+                        "lease_id": identity_lease.lease_id,
+                        "lease_expires_at": identity_lease.expires_at.isoformat(),
+                        "renew_after_ms": identity_lease.renew_after_ms,
+                    }
+                )
             if env_admission is not None:
                 response.update(
                     {

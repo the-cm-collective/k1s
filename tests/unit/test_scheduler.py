@@ -5,7 +5,7 @@ import pytest
 from ae.apishim.store import ObjectStore
 from ae.controller.scheduler import Scheduler
 from ae.controller.spec import AppManifest, AppSpec, Metadata
-from ae.controller.state import SQLiteStateStore
+from ae.controller.state import NodeStatus, SQLiteStateStore
 
 
 def _manifest(name: str = "app", replicas: int = 3) -> AppManifest:
@@ -20,6 +20,32 @@ def _manifest(name: str = "app", replicas: int = 3) -> AppManifest:
 def _store_with_nodes(tmp_path):
     store = SQLiteStateStore(tmp_path / "state.db")
     return store
+
+
+def test_identity_v1_readiness_uses_authoritative_lease_expiry() -> None:
+    now = datetime.now(UTC)
+    fresh_seen = now - timedelta(hours=1)
+    active = NodeStatus(
+        node_id="node-1",
+        status="Ready",
+        seen_at=fresh_seen,
+        identity_version=1,
+        identity_mode="explicit",
+        generation=1,
+        lease_expires_at=now + timedelta(seconds=1),
+    )
+    expired = NodeStatus(
+        node_id="node-1",
+        status="Ready",
+        seen_at=now,
+        identity_version=1,
+        identity_mode="explicit",
+        generation=1,
+        lease_expires_at=now,
+    )
+
+    assert Scheduler._is_ready(active, now, grace=40) is True
+    assert Scheduler._is_ready(expired, now, grace=40) is False
 
 
 @pytest.fixture(autouse=True)
