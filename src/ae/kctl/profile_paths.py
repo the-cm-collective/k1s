@@ -14,6 +14,7 @@ from ae.kctl.profiles import resolve_profile
 _ID_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _PATH_SEGMENT_RE = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?")
 _RUN_ID_RE = re.compile(r"r1-[0-9a-f]{32}")
+_BOOTSTRAP_ID_RE = re.compile(r"b1-[0-9a-f]{32}")
 
 
 class ProfilePathError(ValueError):
@@ -42,6 +43,14 @@ def validate_run_id(value: str) -> str:
 
     if not isinstance(value, str) or _RUN_ID_RE.fullmatch(value) is None:
         raise ProfilePathError("run ID must use the r1-<32 lowercase hex> format")
+    return value
+
+
+def validate_bootstrap_id(value: str) -> str:
+    """Return one exact immutable bootstrap identifier or fail closed."""
+
+    if not isinstance(value, str) or _BOOTSTRAP_ID_RE.fullmatch(value) is None:
+        raise ProfilePathError("bootstrap ID must use the b1-<32 lowercase hex> format")
     return value
 
 
@@ -209,6 +218,17 @@ class ProfileLayout:
         return self.roots.state / "profiles" / self.canonical_profile
 
     @property
+    def profile_config(self) -> Path:
+        return self.roots.config / "profiles" / self.canonical_profile
+
+    @property
+    def bootstraps(self) -> Path:
+        return self.profile_config / "bootstraps"
+
+    def bootstrap_path(self, bootstrap_id: str) -> Path:
+        return self.bootstraps / f"{validate_bootstrap_id(bootstrap_id)}.json"
+
+    @property
     def lock(self) -> Path:
         return self.profile_state / "profile.lock"
 
@@ -272,6 +292,14 @@ class ProfileLayout:
         _ensure_private_directory(self.profile_state, owner_uid=self.roots.owner_uid)
         _ensure_private_directory(self.profile_state / "runs", owner_uid=self.roots.owner_uid)
 
+    def ensure_bootstrap_directory(self) -> None:
+        """Create only the exact private configuration hierarchy for this role."""
+
+        self.roots.ensure()
+        _ensure_private_directory(self.roots.config / "profiles", owner_uid=self.roots.owner_uid)
+        _ensure_private_directory(self.profile_config, owner_uid=self.roots.owner_uid)
+        _ensure_private_directory(self.bootstraps, owner_uid=self.roots.owner_uid)
+
     def ensure_run(self) -> None:
         self.ensure_profile()
         for path in (
@@ -288,6 +316,7 @@ __all__ = [
     "ProfileLayout",
     "ProfilePathError",
     "ProfileRoots",
+    "validate_bootstrap_id",
     "validate_identifier",
     "validate_relative_path",
     "validate_run_id",

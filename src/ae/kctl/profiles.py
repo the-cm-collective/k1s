@@ -117,6 +117,8 @@ class SystemDoctorProbe:
 
 _EXPECTED_PROFILE_NAMES = ("local", "core", "edge-gateway", "node", "edge-dev", "core-ha")
 _EXPECTED_ALIAS_NAMES = ("edge", "core-edge", "edge-core")
+_PORTABLE_PROFILE_NAMES = {"local", "core", "edge-gateway", "node"}
+_ENGINE_PROFILE_NAMES = {"local", "core", "node"}
 _PROFILE_KEYS = {
     "aliases",
     "components",
@@ -281,7 +283,7 @@ def _parse_profile_catalog_bytes(
         if type(production_eligible) is not bool:
             raise ProfileResourceError(f"{context}.productionEligible must be a boolean")
         execution_status = _text(profile["executionStatus"], context=f"{context}.executionStatus")
-        expected_execution = "portable" if name in {"local", "core"} else "deferred"
+        expected_execution = "portable" if name in _PORTABLE_PROFILE_NAMES else "deferred"
         if execution_status != expected_execution:
             raise ProfileResourceError(f"{context}.executionStatus differs")
         qualification_posture = _text(
@@ -471,8 +473,9 @@ def profile_plan_payload(name: str) -> dict[str, object]:
         **_resolution_payload(resolved),
         "components": list(resolved.profile.components),
         "requirements": list(resolved.profile.requirements),
+        "bootstrapRequired": resolved.profile.name in {"edge-gateway", "node"},
         "supportedBackends": (
-            ["podman", "docker"] if resolved.profile.execution_status == "portable" else []
+            ["podman", "docker"] if resolved.profile.name in _ENGINE_PROFILE_NAMES else []
         ),
         "warnings": warnings,
     }
@@ -576,12 +579,12 @@ def profile_doctor_payload(
 
     engine_payload: dict[str, object] | None = None
     if engine is not None:
-        if resolved.profile.execution_status != "portable":
+        if resolved.profile.name not in _ENGINE_PROFILE_NAMES:
             checks.append(
                 _doctor_check(
                     "backend.capability",
                     "fail",
-                    "An engine probe is not applicable to a deferred profile.",
+                    "An engine probe is not applicable to this profile.",
                 )
             )
         elif engine_probe is None:

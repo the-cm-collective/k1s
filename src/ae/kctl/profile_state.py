@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -18,13 +19,15 @@ from typing import Literal, Protocol, cast
 from ae.kctl.profile_paths import (
     ProfileLayout,
     ProfileRoots,
+    validate_bootstrap_id,
     validate_identifier,
     validate_relative_path,
     validate_run_id,
 )
 
 API_VERSION = "k1s.dev/v1alpha1"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+PREVIOUS_SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
 TRANSACTION_SCHEMA_VERSION = 1
 DELETION_SCHEMA_VERSION = 1
@@ -796,6 +799,8 @@ class RunState:
     updated_at: str
     backend_id: str | None = None
     plan_digest: str | None = None
+    bootstrap_id: str | None = None
+    private_bootstrap_digest: str | None = None
     components: tuple[ComponentState, ...] = ()
     resource_receipts: tuple[ResourceReceipt, ...] = ()
     secret_receipts: tuple[SecretReceipt, ...] = ()
@@ -816,10 +821,20 @@ class RunState:
         if (self.backend_id is None) != (self.plan_digest is None):
             raise ProfileStateError("backend identity and execution plan digest must be paired")
         if self.backend_id is not None:
-            if self.backend_id not in {"podman", "docker"}:
+            if self.backend_id not in {"podman", "docker", "gateway"}:
                 raise ProfileStateError("run backend identity is unsupported")
             assert self.plan_digest is not None
             _validate_digest(self.plan_digest, field="execution plan digest")
+        if (self.bootstrap_id is None) != (self.private_bootstrap_digest is None):
+            raise ProfileStateError("bootstrap ID and private digest must be paired")
+        if self.bootstrap_id is not None:
+            validate_bootstrap_id(self.bootstrap_id)
+            assert self.private_bootstrap_digest is not None
+            _validate_digest(self.private_bootstrap_digest, field="private bootstrap digest")
+            if self.profile not in {"edge-gateway", "node"}:
+                raise ProfileStateError("bootstrap identity is not valid for this profile")
+        elif self.profile in {"edge-gateway", "node"}:
+            raise ProfileStateError("canonical edge and node runs require bootstrap identity")
         if type(self.cleanup_complete) is not bool:
             raise ProfileStateError("cleanupComplete must be a bool")
         if self.phase == "stopped" and not self.cleanup_complete:
@@ -862,6 +877,7 @@ class RunState:
         return {
             "apiVersion": API_VERSION,
             "backendId": self.backend_id,
+            "bootstrapId": self.bootstrap_id,
             "cleanupComplete": self.cleanup_complete,
             "components": [component.to_payload() for component in self.components],
             "createdAt": self.created_at,
@@ -871,6 +887,7 @@ class RunState:
             "ownerUid": self.owner_uid,
             "phase": self.phase,
             "planDigest": self.plan_digest,
+            "privateBootstrapDigest": self.private_bootstrap_digest,
             "profile": self.profile,
             "requestedName": self.requested_name,
             "resourceReceipts": [receipt.to_payload() for receipt in self.resource_receipts],
@@ -979,6 +996,8 @@ class ProfileStateStore:
         *,
         backend_id: str | None = None,
         plan_digest: str | None = None,
+        bootstrap_id: str | None = None,
+        private_bootstrap_digest: str | None = None,
     ) -> RunState:
         with self.locked():
             self._require_no_transaction()
@@ -1012,6 +1031,8 @@ class ProfileStateStore:
                 updated_at=timestamp,
                 backend_id=backend_id,
                 plan_digest=plan_digest,
+                bootstrap_id=bootstrap_id,
+                private_bootstrap_digest=private_bootstrap_digest,
             )
             run_layout = self.layout.for_run(run_id)
             if run_layout.run_state.parent.exists():
@@ -1319,6 +1340,66 @@ class ProfileStateStore:
             )
             self._persist_mutation(current, updated)
             return updated, receipt
+
+    def verify_secret(self, run_id: str, secret_id: str, payload: bytes) -> Path:
+        """Privately revalidate one exact receipt and its expected secret bytes."""
+
+        validate_run_id(run_id)
+        secret = validate_identifier(secret_id, field="secret ID")
+        if not isinstance(payload, bytes) or not payload:
+            raise ProfileStateError("expected secret payload must be nonempty bytes")
+        with self.locked(shared=True, create=False):
+            state, _current = self._load_consistent_run(run_id, None)
+            matches = [receipt for receipt in state.secret_receipts if receipt.secret_id == secret]
+            if len(matches) != 1:
+                raise StateConflictError("exact generated secret receipt is unavailable")
+            receipt = matches[0]
+            path = self.layout.for_run(run_id).secret_path(secret)
+            expected_relative = path.relative_to(self.layout.roots.data).as_posix()
+            if (
+                receipt.relative_path != expected_relative
+                or receipt.owner_profile != state.profile
+                or receipt.owner_run_id != state.run_id
+            ):
+                raise StateConflictError("generated secret receipt ownership differs")
+            flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+            try:
+                fd = os.open(path, flags)
+            except OSError as exc:
+                raise StateConflictError("generated secret is unavailable or unsafe") from exc
+            try:
+                before = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_uid != self.layout.roots.owner_uid
+                    or stat.S_IMODE(before.st_mode) != 0o600
+                    or before.st_nlink != 1
+                    or (before.st_dev, before.st_ino) != (receipt.device, receipt.inode)
+                    or before.st_size != len(payload)
+                ):
+                    raise StateConflictError("generated secret identity differs")
+                chunks: list[bytes] = []
+                remaining = before.st_size
+                while remaining:
+                    chunk = os.read(fd, min(remaining, 64 * 1024))
+                    if not chunk:
+                        raise StateConflictError("generated secret changed while being read")
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                if os.read(fd, 1):
+                    raise StateConflictError("generated secret changed while being read")
+                after = os.fstat(fd)
+                if (before.st_dev, before.st_ino, before.st_size) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                ) or after.st_nlink != 1:
+                    raise StateConflictError("generated secret changed while being read")
+            finally:
+                os.close(fd)
+            if not hmac.compare_digest(b"".join(chunks), payload):
+                raise StateConflictError("generated secret content differs")
+            return path
 
     def add_resource(
         self,
@@ -1773,7 +1854,14 @@ class ProfileStateStore:
         raw = self._read_run_payload(run_id, optional=False)
         assert raw is not None
         schema_version = _require_envelope(raw, kind="ProfileRunState")
-        versioned_keys = {"backendId", "planDigest"} if schema_version == SCHEMA_VERSION else set()
+        versioned_keys = (
+            {"backendId", "planDigest"}
+            if schema_version in {PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}
+            else set()
+        )
+        bootstrap_keys = (
+            {"bootstrapId", "privateBootstrapDigest"} if schema_version == SCHEMA_VERSION else set()
+        )
         _exact_keys(
             raw,
             {
@@ -1795,7 +1883,8 @@ class ProfileStateStore:
                 "secretReceipts",
                 "updatedAt",
             }
-            | versioned_keys,
+            | versioned_keys
+            | bootstrap_keys,
             field="run state",
         )
         phase = _strict_text(raw["phase"], field="run.phase", maximum=32)
@@ -1829,6 +1918,22 @@ class ProfileStateStore:
                 if schema_version == LEGACY_SCHEMA_VERSION or raw["planDigest"] is None
                 else _strict_text(raw["planDigest"], field="run.planDigest", maximum=71)
             ),
+            bootstrap_id=(
+                None
+                if schema_version != SCHEMA_VERSION or raw["bootstrapId"] is None
+                else validate_bootstrap_id(
+                    _strict_text(raw["bootstrapId"], field="run.bootstrapId", maximum=35)
+                )
+            ),
+            private_bootstrap_digest=(
+                None
+                if schema_version != SCHEMA_VERSION or raw["privateBootstrapDigest"] is None
+                else _strict_text(
+                    raw["privateBootstrapDigest"],
+                    field="run.privateBootstrapDigest",
+                    maximum=71,
+                )
+            ),
             components=tuple(
                 ComponentState.from_payload(item)
                 for item in _list(raw["components"], field="run.components")
@@ -1849,7 +1954,11 @@ class ProfileStateStore:
 def _require_envelope(raw: Mapping[str, object], *, kind: str) -> int:
     if raw["apiVersion"] != API_VERSION:
         raise ProfileStateError("profile state API version mismatch")
-    if raw["schemaVersion"] not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
+    if raw["schemaVersion"] not in {
+        LEGACY_SCHEMA_VERSION,
+        PREVIOUS_SCHEMA_VERSION,
+        SCHEMA_VERSION,
+    }:
         raise ProfileStateError("profile state schema version mismatch")
     if raw["kind"] != kind:
         raise ProfileStateError("profile state kind mismatch")

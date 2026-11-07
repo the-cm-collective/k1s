@@ -82,16 +82,16 @@ def test_profile_catalog_is_ordered_and_has_frozen_postures() -> None:
     assert [profile["executionStatus"] for profile in profiles] == [
         "portable",
         "portable",
-        "deferred",
-        "deferred",
+        "portable",
+        "portable",
         "deferred",
         "deferred",
     ]
     assert [profile["qualificationPosture"] for profile in profiles] == [
         "source-validated/unqualified",
         "source-validated/unqualified",
-        "not-applicable",
-        "not-applicable",
+        "source-validated/unqualified",
+        "source-validated/unqualified",
         "not-applicable",
         "not-applicable",
     ]
@@ -223,7 +223,11 @@ def test_plan_is_declarative_and_contains_no_executable_or_state_paths() -> None
     for name in PROFILE_INPUT_NAMES:
         plan = profile_plan_payload(name)
         assert plan["mutating"] is False
-        expected = "portable" if plan["canonicalName"] in {"local", "core"} else "deferred"
+        expected = (
+            "portable"
+            if plan["canonicalName"] in {"local", "core", "edge-gateway", "node"}
+            else "deferred"
+        )
         assert plan["executionStatus"] == expected
         assert "command" not in plan
         assert "statePath" not in plan

@@ -66,7 +66,8 @@ contract with the Python API, and exercises non-mutating `profile list`,
 
 The wheel also owns `ae.kctl.profile_paths`, `ae.kctl.profile_state`,
 `ae.kctl.profile_supervisor`, `ae.kctl.profile_engine`,
-`ae.kctl.profile_component_runner`, and `ae.kctl.profile_backend`. The strict
+`ae.kctl.profile_bootstrap`, `ae.kctl.profile_component_runner`, and
+`ae.kctl.profile_backend`. The strict
 installed-artifact gate imports them outside the checkout and exercises a
 synthetic state-machine run only beneath a disposable owner-private XDG root.
 That smoke verifies read-only absent-state inspection, canonical state,
@@ -76,9 +77,14 @@ real HOME/XDG directories. The installed smoke constructs the deterministic
 local plan with a synthetic injected capability but never probes an engine,
 opens a socket, launches a process, or activates a runtime.
 
-Canonical `local` and `core` expose the installed portable lifecycle source
-path as `source-validated/unqualified`; this posture is not live Podman or
-Docker qualification. Other compatibility actions and lab/example helpers
+Canonical `local`, `core`, `edge-gateway`, and `node` expose installed portable
+lifecycle source paths as `source-validated/unqualified`; this posture is not
+live Podman, Docker, gateway transport, or node qualification. The installed
+artifact smoke creates and reloads synthetic owner-private gateway/node
+bootstraps, verifies their secret-free public projection and private drift
+fence, and constructs injected non-service plans outside the checkout. It
+does not invoke an engine, transport, process, socket, service, or real user
+credential. Development/preview compatibility actions and lab/example helpers
 deliberately use repository scripts. Those repository paths are not copied
 into the runtime wheel.
 

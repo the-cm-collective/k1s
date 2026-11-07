@@ -23,6 +23,20 @@ twice is idempotent. Applying a different scope to an already scoped ID is an
 error. `name`, hostname, endpoint, labels, and session identifiers are not node
 identity.
 
+The canonical installed `node` profile requires an immutable owner-private
+identity-v1 bootstrap created with `k1s profile bootstrap create node`. The
+bootstrap records the exact node ID, controller and advertise endpoints,
+listen address, and one selected Podman or Docker backend. Portable execution
+always passes that explicit ID to the node agent; it does not derive identity
+from hostname, profile name, an alias, or a development stub. The private node
+token is delivered only to the child process and is not part of public plan,
+status, log, error, or digest output.
+
+The canonical `edge-gateway` bootstrap scopes its explicit local ID as
+`<site_id>--<local_node_id>` and starts only the gateway component. The
+development aliases `edge` and `edge-core` continue to resolve to `edge-dev`;
+they never select or reinterpret this production identity contract.
+
 Hostname fallback remains a pre-v1 compatibility mode. Such records have
 `identity_version: 0` and `identity_mode: legacy`; consumers must not treat
 them as the stable explicit contract.
@@ -99,6 +113,9 @@ process incarnation.
 ## Deliberate limits
 
 K1s continues to use controller-epoch fencing for mutating runtime commands.
-Node-incarnation fencing does not replace it. Per-node credentials, persistent
-host installation identity, XDG ownership, node drain or eviction, lifecycle
-profiles, and the WorkerBee adapter are separate checkpoints.
+Node-incarnation fencing does not replace it. Per-node credential issuance,
+persistent host installation identity, node drain or eviction, and the
+WorkerBee live adapter remain separate checkpoints. The installed lifecycle
+stores credential material and private bootstrap identity only in exact
+owner-private XDG records; that proves deterministic request construction and
+ownership, not live runtime enforcement.

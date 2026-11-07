@@ -43,16 +43,17 @@ start a supervisor, or activate a runtime.
 | --- | --- | --- | --- | --- |
 | `local` | GA | yes | controller, local node | portable; source-validated/unqualified |
 | `core` | GA | yes | controller | portable; source-validated/unqualified |
-| `edge-gateway` | GA | yes | gateway only | deferred |
-| `node` | GA | yes | node agent | deferred |
+| `edge-gateway` | GA | yes | gateway only | portable; source-validated/unqualified |
+| `node` | GA | yes | node agent | portable; source-validated/unqualified |
 | `edge-dev` | development-only | no | gateway, worker stub | deferred |
 | `core-ha` | preview | no | controller replica set, HA control plane | deferred |
 
 GA describes the stability of the installed catalog and plan schema. The
-`portable` execution status for `local` and `core` says that an installed
-source path exists; it does not claim that Podman, Docker, or the profile is
-live-qualified. Both remain `source-validated/unqualified` until the later
-isolated WorkerBee/runtime lane qualifies an exact engine and environment.
+`portable` execution status for `local`, `core`, `edge-gateway`, and `node`
+says that an installed source path exists; it does not claim that Podman,
+Docker, the gateway transport, or the profile is live-qualified. All four
+remain `source-validated/unqualified` until a later isolated WorkerBee/runtime
+lane qualifies an exact engine, transport, and environment.
 
 `core-ha` is not production eligible until a later release-qualification
 checkpoint explicitly promotes it.
@@ -97,17 +98,19 @@ command or a mutable state path. A recognized canonical role or alias returns
 zero; invalid usage returns 2.
 
 Installed `profile start`, `status`, `stop`, and `restart` use the portable
-path for canonical `local` and `core`. Other names retain the repository-local
-compatibility runner; `--legacy` makes that boundary explicit where supported.
-There is no automatic Podman/Docker fallback.
+path for canonical `local`, `core`, `edge-gateway`, and `node`. Development
+and preview names retain the repository-local compatibility runner where one
+exists. Canonical portable roles do not accept `--legacy`. There is no
+automatic Podman/Docker fallback and no canonical-role fallback to
+`edge-dev`.
 
-Three additional installed surfaces are deliberately limited to `local` and
-`core`:
+The same exact-owner lifecycle surfaces accept the four portable roles:
 
 ```text
 k1s profile run local|core [--backend podman|docker]
-k1s profile logs local|core --component ID [--run-id RUN] [--tail N]
-k1s profile delete local|core --run-id RUN --confirm-delete PROFILE/RUN
+k1s profile run edge-gateway|node --bootstrap-id BOOTSTRAP
+k1s profile logs ROLE --component ID [--run-id RUN] [--tail N]
+k1s profile delete ROLE --run-id RUN --confirm-delete ROLE/RUN
 ```
 
 `run` claims a newly generated run under the same exclusive profile lock used
@@ -189,9 +192,57 @@ ownership. Logs are retained until the exact stopped-run deletion contract is
 invoked. State authority and its digest-bound deletion tombstone are retained;
 ambient pruning and broad filesystem cleanup are not supported.
 
+## Canonical edge and node bootstrap
+
+Canonical edge execution begins with one explicit owner-private bootstrap:
+
+```text
+k1s profile bootstrap create edge-gateway \
+  --site-id SITE --node-id NODE --transport-url tls://HOST:PORT \
+  --credential-file /absolute/owner-private/nats.creds
+
+k1s profile bootstrap create node \
+  --node-id NODE --controller-url https://HOST:PORT \
+  --runtime-backend podman|docker --listen-host IP --listen-port PORT \
+  --advertise-endpoint https://HOST:PORT \
+  --credential-file /absolute/owner-private/token
+```
+
+The command writes one immutable canonical JSON record at the standard
+owner-private XDG config location and returns only its random versioned
+bootstrap ID plus the public role/identity/endpoint facts. There is no output
+path option, alias selection, `latest` pointer, directory scan, or orphan
+adoption. The credential input must be an absolute, owner-owned, mode-`0600`,
+single-link regular file opened without following symlinks. Bootstrap files
+and containing directories remain owner-private.
+
+Every public execution-plan digest and lifecycle result is derived solely
+from a secret-free projection: canonical role, bootstrap ID, identity-v1 node
+ID, site and endpoint facts, selected backend/listen facts, component order,
+engine executable identity where applicable, and installed Python executable
+identity. Credential bytes, credential digests, the full bootstrap-record
+digest, source/stored credential paths, and stored bootstrap path never enter
+public output, status, logs, errors, or public digests. Exact full-record
+digest and file identity stay only in private run state. The manager reopens
+and revalidates that identity before every use; private replacement or drift
+fails even when the public projection is unchanged.
+
+`edge-gateway` launches exactly one gateway component. It has no hidden node,
+worker stub, engine probe, or engine-manager fallback. Its NATS credential is
+materialized as one exact mode-`0600` run-owned secret receipt and the child
+receives only that private path. `node` launches exactly one node-agent,
+always passes the bootstrap's explicit identity-v1 node ID, and uses exactly
+the Podman or Docker executable identity selected by the bootstrap; its token
+is supplied only through the narrowly allowlisted child environment, which is
+excluded from plan repr/rendering and durable public state.
+
+`edge`, `edge-core`, and `edge-dev` remain the development profile with its
+worker stub. They cannot create or consume a canonical gateway/node bootstrap
+and never enter portable dispatch.
+
 These are packaged source contracts and deterministic fakeable boundaries,
-not evidence of live Podman/Docker qualification. This checkpoint uses only
-injected engine, process, readiness, and signal boundaries in validation.
-Host preparation, ambient resource adoption, WorkerBee live
-qualification, and distributed/HA ownership remain deferred to separately
-reviewed checkpoints.
+not evidence of live Podman/Docker, gateway transport, or node qualification.
+This checkpoint uses only injected engine, process, readiness, transport, and
+signal boundaries in validation. Host preparation, ambient resource adoption,
+WorkerBee live qualification, and distributed/HA ownership remain deferred to
+separately reviewed checkpoints.

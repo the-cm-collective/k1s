@@ -39,7 +39,9 @@ from ae.kctl.profile_backend import (
     PortableLifecycleResult,
     PortableProfileManager,
 )
+from ae.kctl.profile_bootstrap import ProfileBootstrapStore
 from ae.kctl.profile_engine import SelectedEngineProbe
+from ae.kctl.profile_paths import ProfilePathError, ProfileRoots
 from ae.kctl.profile_state import ProfileStateError
 from ae.kctl.profiles import (
     PROFILE_INPUT_NAMES,
@@ -232,10 +234,20 @@ def build_parser() -> argparse.ArgumentParser:
         )
         if action in {"start", "restart"}:
             action_p.add_argument("--backend", choices=("podman", "docker"), default=None)
+            action_p.add_argument(
+                "--bootstrap-id",
+                default=None,
+                help="Exact owner-private bootstrap identity for edge-gateway or node",
+            )
 
-    run_p = profile_sub.add_parser("run", help="Run a local/core profile in the foreground")
+    run_p = profile_sub.add_parser("run", help="Run a portable profile in the foreground")
     run_p.add_argument("profile", choices=PORTABLE_PROFILES)
-    run_p.add_argument("--backend", choices=("podman", "docker"), default="podman")
+    run_p.add_argument("--backend", choices=("podman", "docker"), default=None)
+    run_p.add_argument(
+        "--bootstrap-id",
+        default=None,
+        help="Exact owner-private bootstrap identity for edge-gateway or node",
+    )
     run_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
 
     logs_profile_p = profile_sub.add_parser("logs", help="Read an exact owned component log")
@@ -252,6 +264,31 @@ def build_parser() -> argparse.ArgumentParser:
     delete_profile_p.add_argument("--run-id", required=True)
     delete_profile_p.add_argument("--confirm-delete", required=True)
     delete_profile_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    bootstrap_p = profile_sub.add_parser(
+        "bootstrap",
+        help="Create one immutable owner-private canonical role bootstrap",
+    )
+    bootstrap_sub = bootstrap_p.add_subparsers(dest="bootstrap_action", required=True)
+    create_p = bootstrap_sub.add_parser("create", help="Create one exact bootstrap record")
+    create_sub = create_p.add_subparsers(dest="bootstrap_profile", required=True)
+
+    gateway_p = create_sub.add_parser("edge-gateway", help="Create a gateway-only bootstrap")
+    gateway_p.add_argument("--site-id", required=True)
+    gateway_p.add_argument("--node-id", required=True)
+    gateway_p.add_argument("--transport-url", required=True)
+    gateway_p.add_argument("--credential-file", type=Path, required=True)
+    gateway_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    node_p = create_sub.add_parser("node", help="Create an identity-v1 node bootstrap")
+    node_p.add_argument("--node-id", required=True)
+    node_p.add_argument("--controller-url", required=True)
+    node_p.add_argument("--runtime-backend", choices=("podman", "docker"), required=True)
+    node_p.add_argument("--listen-host", required=True)
+    node_p.add_argument("--listen-port", type=int, required=True)
+    node_p.add_argument("--advertise-endpoint", required=True)
+    node_p.add_argument("--credential-file", type=Path, required=True)
+    node_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
 
     return p
 
@@ -632,9 +669,15 @@ def profile_lifecycle_manager_factory() -> LifecycleManager:
 
 
 def portable_profile_manager_factory() -> PortableProfileManager:
-    """Return the installed local/core manager only for an explicit lifecycle action."""
+    """Return the installed portable manager only for an explicit lifecycle action."""
 
     return PortableProfileManager.system()
+
+
+def profile_bootstrap_store_factory(profile: str) -> ProfileBootstrapStore:
+    """Return the exact owner-private bootstrap store for a canonical role."""
+
+    return ProfileBootstrapStore(ProfileRoots.from_environment(), profile)
 
 
 def profile_engine_probe_factory() -> SelectedEngineProbe:
@@ -709,7 +752,47 @@ def handle_profile(ns: argparse.Namespace) -> int:
             print(render_profile_text(payload))
         return exit_code
 
+    if ns.profile_action == "bootstrap":
+        try:
+            store = profile_bootstrap_store_factory(ns.bootstrap_profile)
+            if ns.bootstrap_profile == "edge-gateway":
+                record = store.create_edge_gateway(
+                    site_id=ns.site_id,
+                    node_id=ns.node_id,
+                    transport_url=ns.transport_url,
+                    credential_file=ns.credential_file,
+                )
+            else:
+                record = store.create_node(
+                    node_id=ns.node_id,
+                    controller_url=ns.controller_url,
+                    runtime_backend=ns.runtime_backend,
+                    listen_host=ns.listen_host,
+                    listen_port=ns.listen_port,
+                    advertise_endpoint=ns.advertise_endpoint,
+                    credential_file=ns.credential_file,
+                )
+            payload = record.public_projection()
+            if ns.output == "json":
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(
+                    f"profile={payload['profile']} bootstrap={payload['bootstrapId']} "
+                    f"node={payload['nodeId']}"
+                )
+            return 0
+        except (OSError, ProfilePathError, ProfileStateError):
+            print("profile bootstrap failed closed", file=sys.stderr)
+            return 1
+
     if ns.profile_action in {"run", "logs", "delete"}:
+        if (
+            ns.profile_action == "run"
+            and ns.profile in {"edge-gateway", "node"}
+            and ns.bootstrap_id is None
+        ):
+            print("profile command failed closed", file=sys.stderr)
+            return 1
         manager = portable_profile_manager_factory()
         try:
             if ns.profile_action == "run":
@@ -717,6 +800,7 @@ def handle_profile(ns: argparse.Namespace) -> int:
                     run_result = manager.run(
                         ns.profile,
                         backend=ns.backend,
+                        bootstrap_id=ns.bootstrap_id,
                         stop_requested=lambda: request.signal_number,
                     )
                 payload = run_result.to_dict()
@@ -761,18 +845,27 @@ def handle_profile(ns: argparse.Namespace) -> int:
 
     legacy = bool(ns.legacy)
     backend = getattr(ns, "backend", None)
+    bootstrap_id = getattr(ns, "bootstrap_id", None)
     result: PortableLifecycleResult | LifecycleResult
     if ns.profile in PORTABLE_PROFILES and not legacy:
+        if (
+            ns.profile_action in {"start", "restart"}
+            and ns.profile in {"edge-gateway", "node"}
+            and bootstrap_id is None
+        ):
+            print("profile command failed closed", file=sys.stderr)
+            return 1
         result = portable_profile_manager_factory().perform(
             ns.profile_action,
             ns.profile,
             backend=backend,
+            bootstrap_id=bootstrap_id,
         )
     else:
-        if ns.profile == "local":
-            raise ValueError("local has no repository-local legacy lifecycle runner")
-        if backend is not None:
-            raise ValueError("--backend is available only for portable local/core execution")
+        if ns.profile in PORTABLE_PROFILES:
+            raise ValueError(f"{ns.profile} has no repository-local legacy lifecycle runner")
+        if backend is not None or bootstrap_id is not None:
+            raise ValueError("portable execution options are unavailable to legacy profiles")
         result = profile_lifecycle_manager_factory().perform(ns.profile_action, ns.profile)
     result_payload = result.to_dict()
     if ns.output == "json":

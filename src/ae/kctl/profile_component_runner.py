@@ -1,8 +1,8 @@
 """Activation-gated entry point for portable profile components.
 
 The runner is intentionally not a general command launcher.  It accepts only
-the two installed Python component entry points required by the local/core
-profile contract and waits for one byte from an inherited activation pipe
+the installed Python component entry points required by the portable profile
+contracts and waits for one byte from an inherited activation pipe
 before importing either component.
 """
 
@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal, cast
 
-ComponentKind = Literal["controller", "node-local"]
+ComponentKind = Literal["controller", "node-local", "gateway", "node-agent"]
 ACTIVATE_BYTE = b"1"
 
 
@@ -44,33 +44,54 @@ def run_component(
     argv: Sequence[str],
     *,
     gate_fd: int,
-    engine_backend: str,
-    engine_executable: Path,
-    engine_device: int,
-    engine_inode: int,
+    engine_backend: str | None,
+    engine_executable: Path | None,
+    engine_device: int | None,
+    engine_inode: int | None,
     controller_main: Callable[[list[str] | None], int] | None = None,
     node_main: Callable[[list[str] | None], int] | None = None,
+    gateway_main: Callable[[list[str] | None], int] | None = None,
 ) -> int:
     """Wait for activation and invoke one allowlisted in-process entry point."""
 
-    if kind not in {"controller", "node-local"}:
+    if kind not in {"controller", "node-local", "gateway", "node-agent"}:
         raise ComponentGateError("component kind is not allowlisted")
     arguments = list(argv)
     if any(not isinstance(item, str) or "\x00" in item for item in arguments):
         raise ComponentGateError("component arguments are invalid")
     await_activation(gate_fd)
-    validate_engine_identity(
-        backend=engine_backend,
-        executable=engine_executable,
-        device=engine_device,
-        inode=engine_inode,
-    )
+    if kind == "gateway":
+        if any(
+            value is not None
+            for value in (engine_backend, engine_executable, engine_device, engine_inode)
+        ):
+            raise ComponentGateError("gateway component must not receive engine identity")
+    else:
+        if (
+            engine_backend is None
+            or engine_executable is None
+            or engine_device is None
+            or engine_inode is None
+        ):
+            raise ComponentGateError("engine-backed component identity is incomplete")
+        validate_engine_identity(
+            backend=engine_backend,
+            executable=engine_executable,
+            device=engine_device,
+            inode=engine_inode,
+        )
     if kind == "controller":
         if controller_main is not None:
             return int(controller_main(arguments))
         from ae.controller.__main__ import main as controller_entry
 
         return int(controller_entry(arguments))
+    if kind == "gateway":
+        if gateway_main is not None:
+            return int(gateway_main(arguments))
+        from ae.gateway.__main__ import main as gateway_entry
+
+        return int(gateway_entry(arguments))
     if node_main is not None:
         return int(node_main(arguments))
     from ae.node.server import main as node_entry
@@ -102,11 +123,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=int(os.environ.get("K1S_COMPONENT_GATE_FD", "-1")),
     )
-    parser.add_argument("--kind", required=True, choices=("controller", "node-local"))
-    parser.add_argument("--engine-backend", required=True, choices=("podman", "docker"))
-    parser.add_argument("--engine-executable", required=True, type=Path)
-    parser.add_argument("--engine-device", required=True, type=int)
-    parser.add_argument("--engine-inode", required=True, type=int)
+    parser.add_argument(
+        "--kind",
+        required=True,
+        choices=("controller", "node-local", "gateway", "node-agent"),
+    )
+    parser.add_argument("--engine-backend", choices=("podman", "docker"), default=None)
+    parser.add_argument("--engine-executable", type=Path, default=None)
+    parser.add_argument("--engine-device", type=int, default=None)
+    parser.add_argument("--engine-inode", type=int, default=None)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     return parser
 

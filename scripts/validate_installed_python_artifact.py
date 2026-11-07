@@ -169,9 +169,11 @@ import json
 from pathlib import Path
 import os
 import sys
+from dataclasses import replace
 import ae
 from ae.apishim.server import _openapi_v3_stub, _swagger_doc
 from ae.kctl.profile_backend import build_execution_plan, portable_plan_digest
+from ae.kctl.profile_bootstrap import ProfileBootstrapError, ProfileBootstrapStore
 from ae.kctl.profile_engine import EngineCapability, QUALIFICATION_POSTURE
 from ae.kctl.profile_paths import ProfileRoots
 from ae.kctl.profile_state import FailureRecord, ProfileStateStore
@@ -278,8 +280,12 @@ assert profile_by_name['core-ha']['contractPosture'] == 'preview'
 assert profile_by_name['core-ha']['productionEligible'] is False
 assert profile_by_name['local']['executionStatus'] == 'portable'
 assert profile_by_name['core']['executionStatus'] == 'portable'
+assert profile_by_name['edge-gateway']['executionStatus'] == 'portable'
+assert profile_by_name['node']['executionStatus'] == 'portable'
 assert profile_by_name['local']['qualificationPosture'] == QUALIFICATION_POSTURE
 assert profile_by_name['core']['qualificationPosture'] == QUALIFICATION_POSTURE
+assert profile_by_name['edge-gateway']['qualificationPosture'] == QUALIFICATION_POSTURE
+assert profile_by_name['node']['qualificationPosture'] == QUALIFICATION_POSTURE
 
 # Exercise only the additive installed state contract in an owner-private disposable root.
 # This never launches a component, resolves a backend, or touches the real HOME/XDG roots.
@@ -349,6 +355,111 @@ assert parse_proc_stat is not None
 assert under(roots.state, profile_smoke_root)
 assert roots.state.stat().st_mode & 0o777 == 0o700
 
+# Canonical edge/node construction uses only synthetic owner-private inputs and injected
+# engine identity. It never starts a process, opens a socket, or calls a backend.
+node_private = 'installed-private-node-value'
+node_credential = profile_smoke_root / 'node-credential'
+node_credential.write_text(node_private, encoding='utf-8')
+node_credential.chmod(0o600)
+node_bootstraps = ProfileBootstrapStore(roots, 'node')
+node_bootstrap = node_bootstraps.create_node(
+    node_id='node-installed',
+    controller_url='https://controller.example.invalid:9443',
+    runtime_backend='podman',
+    listen_host='127.0.0.1',
+    listen_port=9109,
+    advertise_endpoint='https://node.example.invalid:9109',
+    credential_file=node_credential,
+)
+node_public = node_bootstrap.public_projection()
+assert node_public['identityVersion'] == 1
+assert node_public['nodeId'] == 'node-installed'
+assert node_private not in json.dumps(node_public, sort_keys=True)
+assert str(node_credential) not in json.dumps(node_public, sort_keys=True)
+node_digest = portable_plan_digest(
+    'node', synthetic_engine, bootstrap=node_bootstrap,
+    python_executable=Path(sys.executable).resolve(),
+)
+private_variant = replace(
+    node_bootstrap,
+    credential='installed-private-node-other',
+    private_record_digest='sha256:' + 'f' * 64,
+)
+assert portable_plan_digest(
+    'node', synthetic_engine, bootstrap=private_variant,
+    python_executable=Path(sys.executable).resolve(),
+) == node_digest
+try:
+    node_bootstraps.revalidate(private_variant)
+except ProfileBootstrapError:
+    pass
+else:
+    raise AssertionError('private bootstrap drift was not rejected')
+node_store = ProfileStateStore(roots, 'node')
+node_run = node_store.begin_run(
+    backend_id='podman',
+    plan_digest=node_digest,
+    bootstrap_id=node_bootstrap.bootstrap_id,
+    private_bootstrap_digest=node_bootstrap.private_record_digest,
+)
+node_plan = build_execution_plan(
+    'node', synthetic_engine, node_run, node_store,
+    python_executable=Path(sys.executable).resolve(),
+    bootstrap=node_bootstrap,
+    credential_path=None,
+)
+assert [item.component_id for item in node_plan.components] == ['node-agent']
+assert '--node-id' in node_plan.components[0].argv
+assert node_plan.components[0].argv[node_plan.components[0].argv.index('--node-id') + 1] == (
+    'node-installed'
+)
+assert node_private not in repr(node_plan)
+assert node_bootstrap.private_record_digest not in repr(node_plan)
+assert str(node_bootstrap.path) not in repr(node_plan)
+assert node_run.secret_receipts == ()
+assert list(node_store.layout.for_run(node_run.run_id).run_secrets.iterdir()) == []
+
+gateway_private = 'installed-private-gateway-value'
+gateway_credential = profile_smoke_root / 'gateway-credential'
+gateway_credential.write_text(gateway_private, encoding='utf-8')
+gateway_credential.chmod(0o600)
+gateway_bootstraps = ProfileBootstrapStore(roots, 'edge-gateway')
+gateway_bootstrap = gateway_bootstraps.create_edge_gateway(
+    site_id='site-installed',
+    node_id='gateway-installed',
+    transport_url='tls://nats.example.invalid:4222',
+    credential_file=gateway_credential,
+)
+gateway_digest = portable_plan_digest(
+    'edge-gateway', None, bootstrap=gateway_bootstrap,
+    python_executable=Path(sys.executable).resolve(),
+)
+gateway_store = ProfileStateStore(roots, 'edge-gateway')
+gateway_run = gateway_store.begin_run(
+    backend_id='gateway',
+    plan_digest=gateway_digest,
+    bootstrap_id=gateway_bootstrap.bootstrap_id,
+    private_bootstrap_digest=gateway_bootstrap.private_record_digest,
+)
+gateway_run, _ = gateway_store.create_secret(
+    gateway_run.run_id,
+    'gateway-credentials',
+    gateway_private.encode('utf-8'),
+    expected_revision=gateway_run.revision,
+)
+gateway_secret = gateway_store.verify_secret(
+    gateway_run.run_id, 'gateway-credentials', gateway_private.encode('utf-8')
+)
+gateway_plan = build_execution_plan(
+    'edge-gateway', None, gateway_run, gateway_store,
+    python_executable=Path(sys.executable).resolve(),
+    bootstrap=gateway_bootstrap,
+    credential_path=gateway_secret,
+)
+assert gateway_plan.engine is None
+assert [item.component_id for item in gateway_plan.components] == ['gateway']
+assert gateway_private not in repr(gateway_plan)
+
 static_root = resources.files('ae.observability').joinpath('static/vendor')
 static_files = {item.name: item for item in static_root.iterdir() if item.is_file()}
 assert set(static_files) == {'xterm.css', 'xterm.js', 'xterm-addon-fit.js'}
@@ -410,7 +521,7 @@ assert scripts == {'ae', 'ae-rotate-certs', 'k1s', 'ae-node', 'ae-gateway', 'ae-
             cwd=outside,
             env=env,
         )
-        portable_names = {"local", "core", "core-edge"}
+        portable_names = {"local", "core", "core-edge", "edge-gateway", "node"}
         expected_status = "portable" if profile_name in portable_names else "deferred"
         if plan.get("mutating") is not False or plan.get("executionStatus") != expected_status:
             raise ValueError(f"installed profile plan is not static: {profile_name}")

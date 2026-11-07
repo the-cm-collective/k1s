@@ -9,6 +9,7 @@ from ae.kctl.profile_paths import (
     ProfileLayout,
     ProfilePathError,
     ProfileRoots,
+    validate_bootstrap_id,
     validate_identifier,
     validate_relative_path,
     validate_run_id,
@@ -185,3 +186,19 @@ def test_run_id_is_versioned_random_hex_only() -> None:
     ):
         with pytest.raises(ProfilePathError, match="run ID"):
             validate_run_id(invalid)
+
+
+def test_bootstrap_id_and_standard_private_path_are_exact(tmp_path: Path) -> None:
+    identifier = "b1-0123456789abcdef0123456789abcdef"
+    layout = ProfileLayout.resolve(_roots(tmp_path), "node")
+
+    assert validate_bootstrap_id(identifier) == identifier
+    assert layout.bootstrap_path(identifier) == (
+        tmp_path / f"config/k1s/v1/profiles/node/bootstraps/{identifier}.json"
+    )
+    layout.ensure_bootstrap_directory()
+    assert layout.bootstraps.stat().st_mode & 0o777 == 0o700
+
+    for invalid in ("b1-short", "B1-" + "a" * 32, "b2-" + "a" * 32):
+        with pytest.raises(ProfilePathError, match="bootstrap ID"):
+            validate_bootstrap_id(invalid)

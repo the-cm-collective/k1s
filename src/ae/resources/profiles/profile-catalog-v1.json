@@ -46,13 +46,14 @@
         "gateway"
       ],
       "contractPosture": "ga",
-      "executionStatus": "deferred",
+      "executionStatus": "portable",
       "name": "edge-gateway",
       "productionEligible": true,
-      "qualificationPosture": "not-applicable",
+      "qualificationPosture": "source-validated/unqualified",
       "requirements": [
+        "bootstrap-record",
         "explicit-node-identity",
-        "controller-endpoint"
+        "transport-endpoint"
       ],
       "summary": "Production gateway-only edge contract."
     },
@@ -62,11 +63,12 @@
         "node-agent"
       ],
       "contractPosture": "ga",
-      "executionStatus": "deferred",
+      "executionStatus": "portable",
       "name": "node",
       "productionEligible": true,
-      "qualificationPosture": "not-applicable",
+      "qualificationPosture": "source-validated/unqualified",
       "requirements": [
+        "bootstrap-record",
         "explicit-node-identity",
         "controller-endpoint",
         "runtime-backend"

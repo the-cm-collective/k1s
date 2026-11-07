@@ -103,7 +103,7 @@ def test_portable_backend_and_plan_identity_are_persisted_as_one_pair(tmp_path: 
     assert state.backend_id == "podman"
     assert state.plan_digest == digest
     payload = json.loads(store.layout.for_run(state.run_id).run_state.read_text(encoding="utf-8"))
-    assert payload["schemaVersion"] == 2
+    assert payload["schemaVersion"] == 3
     assert payload["backendId"] == "podman"
     assert payload["planDigest"] == digest
 
@@ -164,6 +164,8 @@ def test_legacy_schema_is_read_and_next_mutation_migrates_transaction_safely(
     run_payload["schemaVersion"] = 1
     run_payload.pop("backendId")
     run_payload.pop("planDigest")
+    run_payload.pop("bootstrapId")
+    run_payload.pop("privateBootstrapDigest")
     for path, payload in ((current_path, current_payload), (run_path, run_payload)):
         path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -179,11 +181,42 @@ def test_legacy_schema_is_read_and_next_mutation_migrates_transaction_safely(
     )
 
     assert migrated.phase == "starting"
-    assert json.loads(current_path.read_text(encoding="utf-8"))["schemaVersion"] == 2
+    assert json.loads(current_path.read_text(encoding="utf-8"))["schemaVersion"] == 3
     migrated_payload = json.loads(run_path.read_text(encoding="utf-8"))
-    assert migrated_payload["schemaVersion"] == 2
+    assert migrated_payload["schemaVersion"] == 3
     assert migrated_payload["backendId"] is None
     assert migrated_payload["planDigest"] is None
+    assert migrated_payload["bootstrapId"] is None
+    assert migrated_payload["privateBootstrapDigest"] is None
+
+
+def test_bootstrap_private_identity_is_persisted_but_never_required_for_local(
+    tmp_path: Path,
+) -> None:
+    digest = "sha256:" + "d" * 64
+    store = _store(tmp_path, "node")
+
+    state = store.begin_run(
+        backend_id="podman",
+        plan_digest="sha256:" + "a" * 64,
+        bootstrap_id="b1-" + "1" * 32,
+        private_bootstrap_digest=digest,
+    )
+    loaded = store.inspect()
+
+    assert loaded == state
+    assert loaded is not None and loaded.bootstrap_id == "b1-" + "1" * 32
+    assert loaded.private_bootstrap_digest == digest
+    payload = json.loads(store.layout.for_run(state.run_id).run_state.read_text(encoding="utf-8"))
+    assert payload["bootstrapId"] == state.bootstrap_id
+    assert payload["privateBootstrapDigest"] == digest
+
+    with pytest.raises(ProfileStateError, match="bootstrap ID and private digest"):
+        _store(tmp_path / "other").begin_run(
+            backend_id="podman",
+            plan_digest="sha256:" + "b" * 64,
+            bootstrap_id="b1-" + "2" * 32,
+        )
 
 
 def test_empty_inspection_is_read_only_and_creates_no_xdg_paths(tmp_path: Path) -> None:

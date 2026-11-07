@@ -14,6 +14,7 @@ from ae.kctl.profile_backend import (
     build_execution_plan,
     validate_dependency_order,
 )
+from ae.kctl.profile_bootstrap import ProfileBootstrapStore
 from ae.kctl.profile_engine import EngineCapability
 from ae.kctl.profile_paths import ProfileRoots
 from ae.kctl.profile_state import ComponentState, ProcessIdentity, ProfileStateStore, command_digest
@@ -103,6 +104,8 @@ class Supervisor:
     def __init__(self) -> None:
         self.prepared: list[str] = []
         self.pending: list[Pending] = []
+        self.environments: list[dict[str, str]] = []
+        self.argv: list[tuple[str, ...]] = []
         self.stop_calls: list[int] = []
         self.foreground_result = ForegroundWaitResult("stop-requested", signal_number=2)
 
@@ -115,10 +118,12 @@ class Supervisor:
         environment: Mapping[str, str],
         log_path: Path,
     ) -> tuple[ComponentState, Pending]:
-        del cwd, environment
+        del cwd
         pid = 101 + len(self.prepared)
         pending = Pending(pid)
         self.prepared.append(component_id)
+        self.environments.append(dict(environment))
+        self.argv.append(tuple(argv))
         self.pending.append(pending)
         return (
             ComponentState(
@@ -173,18 +178,43 @@ def _manager(
     engine: EngineProbe | None = None,
     supervisor: Supervisor | None = None,
     readiness: Readiness | None = None,
+    bootstrap_store: ProfileBootstrapStore | None = None,
 ) -> tuple[PortableProfileManager, EngineProbe, Supervisor, Readiness]:
     actual_engine = engine or EngineProbe()
     actual_supervisor = supervisor or Supervisor()
     actual_readiness = readiness or Readiness()
     manager = PortableProfileManager(
         store_factory=lambda _profile: store,
+        bootstrap_store_factory=(
+            None if bootstrap_store is None else lambda _profile: bootstrap_store
+        ),
         engine_probe=actual_engine,
         supervisor=actual_supervisor,  # type: ignore[arg-type]
         readiness=actual_readiness,
         python_executable=Path("/usr/bin/python3"),
     )
     return manager, actual_engine, actual_supervisor, actual_readiness
+
+
+def _credential(tmp_path: Path, name: str, payload: str) -> Path:
+    path = tmp_path / name
+    path.write_text(payload, encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def _bootstrap_store(
+    tmp_path: Path,
+    profile: str,
+    *,
+    byte: int = 91,
+) -> ProfileBootstrapStore:
+    return ProfileBootstrapStore(
+        _roots(tmp_path),
+        profile,
+        clock=lambda: NOW,
+        random_bytes=lambda length: bytes([byte]) * length,
+    )
 
 
 def test_local_start_is_dependency_ordered_gated_and_exactly_owned(tmp_path: Path) -> None:
@@ -572,3 +602,171 @@ def test_start_recovers_exact_gated_component_after_coordinator_crash(
         "running",
         "running",
     ]
+
+
+def test_gateway_start_is_gateway_only_without_engine_fallback(tmp_path: Path) -> None:
+    state_store = _store(tmp_path, "edge-gateway")
+    bootstrap_store = _bootstrap_store(tmp_path, "edge-gateway")
+    credential = _credential(tmp_path, "gateway.creds", "gateway-private-credential")
+    bootstrap = bootstrap_store.create_edge_gateway(
+        site_id="site-a",
+        node_id="gateway-a",
+        transport_url="tls://nats.example.test:4222",
+        credential_file=credential,
+    )
+    manager, engine, supervisor, readiness = _manager(
+        state_store,
+        bootstrap_store=bootstrap_store,
+    )
+
+    result = manager.start(
+        "edge-gateway",
+        backend=None,
+        bootstrap_id=bootstrap.bootstrap_id,
+    )
+
+    assert result.status == "started"
+    assert result.backend == "gateway"
+    assert engine.calls == []
+    assert supervisor.prepared == ["gateway"]
+    assert readiness.calls == ["gateway"]
+    assert "--kind" in supervisor.argv[0]
+    assert "gateway" in supervisor.argv[0]
+    assert "node-agent" not in supervisor.argv[0]
+    environment = supervisor.environments[0]
+    assert environment["AE_NODE_ID"] == "site-a--gateway-a"
+    assert environment["AE_NATS_CREDS"].endswith("/secrets/gateway-credentials")
+    state = state_store.inspect()
+    assert state is not None and state.bootstrap_id == bootstrap.bootstrap_id
+    assert state.private_bootstrap_digest == bootstrap.private_record_digest
+
+
+def test_node_start_uses_explicit_identity_v1_and_private_child_token(
+    tmp_path: Path,
+) -> None:
+    state_store = _store(tmp_path, "node")
+    bootstrap_store = _bootstrap_store(tmp_path, "node")
+    bootstrap = bootstrap_store.create_node(
+        node_id="node-a",
+        controller_url="https://controller.example.test:9443",
+        runtime_backend="podman",
+        listen_host="127.0.0.1",
+        listen_port=9109,
+        advertise_endpoint="https://node-a.example.test:9109",
+        credential_file=_credential(tmp_path, "node.token", "node-private-token"),
+    )
+    manager, engine, supervisor, readiness = _manager(
+        state_store,
+        bootstrap_store=bootstrap_store,
+    )
+
+    result = manager.start("node", backend=None, bootstrap_id=bootstrap.bootstrap_id)
+
+    assert result.status == "started"
+    assert result.backend == "podman"
+    assert engine.calls == ["podman"]
+    assert supervisor.prepared == ["node-agent"]
+    assert readiness.calls == ["node-agent"]
+    command = supervisor.argv[0]
+    assert command[command.index("--node-id") + 1] == "node-a"
+    assert command[command.index("--kind") + 1] == "node-agent"
+    environment = supervisor.environments[0]
+    assert environment["AE_AGENT_TOKEN"].startswith("node-private")
+    state = state_store.inspect()
+    assert state is not None
+    assert state.secret_receipts == ()
+    assert list(state_store.layout.for_run(state.run_id).run_secrets.iterdir()) == []
+    plan = build_execution_plan(
+        "node",
+        _capability(),
+        state,
+        state_store,
+        python_executable=manager.python_executable,
+        bootstrap=bootstrap,
+        credential_path=None,
+    )
+    assert "node-private-token" not in repr(plan)
+    assert bootstrap.private_record_digest not in repr(plan)
+    assert str(bootstrap.path) not in repr(plan)
+
+
+def test_gateway_secret_materialization_failure_rolls_back_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_store = _store(tmp_path, "edge-gateway")
+    bootstrap_store = _bootstrap_store(tmp_path, "edge-gateway")
+    bootstrap = bootstrap_store.create_edge_gateway(
+        site_id="site-a",
+        node_id="gateway-a",
+        transport_url="tls://nats.example.test:4222",
+        credential_file=_credential(tmp_path, "gateway.creds", "gateway-private-value"),
+    )
+    manager, _, supervisor, readiness = _manager(
+        state_store,
+        bootstrap_store=bootstrap_store,
+    )
+
+    def fail_secret(*_args: object, **_kwargs: object):
+        raise PortableBackendError("injected private materialization failure")
+
+    monkeypatch.setattr(state_store, "create_secret", fail_secret)
+    with pytest.raises(PortableBackendError, match="injected private materialization"):
+        manager.start("edge-gateway", backend=None, bootstrap_id=bootstrap.bootstrap_id)
+
+    state = state_store.inspect()
+    assert state is not None and state.phase == "stopped"
+    assert state.cleanup_complete is True
+    assert state.secret_receipts == ()
+    assert supervisor.prepared == []
+    assert readiness.calls == []
+
+
+def test_canonical_edge_execution_never_accepts_alias_or_implicit_bootstrap(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path, "node")
+    manager, _, _, _ = _manager(store)
+
+    with pytest.raises(PortableBackendError, match="profile is unsupported"):
+        manager.perform("start", "edge-dev")
+    with pytest.raises(PortableBackendError, match="requires bootstrap ID"):
+        manager.start("node", backend=None)
+    with pytest.raises(PortableBackendError, match="comes from bootstrap identity"):
+        manager.start("node", backend="podman", bootstrap_id="b1-" + "1" * 32)
+
+
+def test_edge_restart_requires_explicit_bootstrap_before_stop_and_accepts_exact_id(
+    tmp_path: Path,
+) -> None:
+    state_store = _store(tmp_path, "edge-gateway")
+    bootstrap_store = _bootstrap_store(tmp_path, "edge-gateway")
+    bootstrap = bootstrap_store.create_edge_gateway(
+        site_id="site-a",
+        node_id="gateway-a",
+        transport_url="tls://nats.example.test:4222",
+        credential_file=_credential(tmp_path, "gateway.creds", "gateway-private-credential"),
+    )
+    manager, engine, _, _ = _manager(
+        state_store,
+        bootstrap_store=bootstrap_store,
+    )
+    manager.start("edge-gateway", backend=None, bootstrap_id=bootstrap.bootstrap_id)
+
+    with pytest.raises(PortableBackendError, match="requires an explicit bootstrap ID"):
+        manager.restart("edge-gateway", backend=None)
+    still_running = state_store.inspect()
+    assert still_running is not None and still_running.phase == "running"
+    assert manager.supervisor.stop_calls == []  # type: ignore[attr-defined]
+
+    restarted = manager.restart(
+        "edge-gateway",
+        backend=None,
+        bootstrap_id=bootstrap.bootstrap_id,
+    )
+
+    assert restarted.status == "restarted"
+    assert restarted.backend == "gateway"
+    assert engine.calls == []
+    state = state_store.inspect()
+    assert state is not None and state.bootstrap_id == bootstrap.bootstrap_id

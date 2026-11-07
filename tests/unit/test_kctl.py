@@ -6,6 +6,8 @@ import socket
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import ae.kctl.__main__ as kctl_main
 from ae.kctl.__main__ import build_parser, main
 from ae.kctl.lifecycle import LifecycleResult
@@ -234,7 +236,9 @@ def test_local_and_core_route_to_portable_manager_without_legacy_fallback(
             profile: str,
             *,
             backend: str | None = None,
+            bootstrap_id: str | None = None,
         ) -> PortableLifecycleResult:
+            assert bootstrap_id is None
             calls.append((action, profile, backend))
             return PortableLifecycleResult(
                 action="start",
@@ -302,6 +306,7 @@ def test_profile_help_exposes_non_mutating_contracts_and_legacy_actions() -> Non
         "run",
         "logs",
         "delete",
+        "bootstrap",
     ):
         assert command in help_text
 
@@ -310,7 +315,10 @@ def test_profile_run_records_signal_intent_and_returns_foreground_exit(monkeypat
     calls: list[tuple[str, str]] = []
 
     class Manager:
-        def run(self, profile, *, backend, stop_requested):  # type: ignore[no-untyped-def]
+        def run(  # type: ignore[no-untyped-def]
+            self, profile, *, backend, bootstrap_id, stop_requested
+        ):
+            assert bootstrap_id is None
             calls.append((profile, backend))
             assert stop_requested() is None
             return PortableLifecycleResult(
@@ -326,7 +334,7 @@ def test_profile_run_records_signal_intent_and_returns_foreground_exit(monkeypat
 
     monkeypatch.setattr(kctl_main, "portable_profile_manager_factory", Manager)
     assert main(["profile", "run", "core", "-o", "json"]) == 0
-    assert calls == [("core", "podman")]
+    assert calls == [("core", None)]
     assert json.loads(capsys.readouterr().out)["action"] == "run"
 
 
@@ -416,3 +424,266 @@ def test_profile_run_logs_delete_reject_nonportable_roles_at_parse_time() -> Non
             assert exc.code == 2
         else:  # pragma: no cover - fail closed assertion
             raise AssertionError("nonportable lifecycle role unexpectedly parsed")
+
+
+def test_profile_bootstrap_create_outputs_only_public_projection(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    sentinel = "DO-NOT-PRINT-NODE-TOKEN"
+    source = tmp_path / "node-token"
+    source.write_text(sentinel, encoding="utf-8")
+    source.chmod(0o600)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class Record:
+        def public_projection(self) -> dict[str, object]:
+            return {
+                "advertiseEndpoint": "https://node-a.example.test:9109",
+                "backendId": "podman",
+                "bootstrapId": "b1-" + "1" * 32,
+                "controllerUrl": "https://controller.example.test:9443",
+                "identityVersion": 1,
+                "listenHost": "127.0.0.1",
+                "listenPort": 9109,
+                "nodeId": "node-a",
+                "profile": "node",
+                "siteId": None,
+                "transportUrl": None,
+            }
+
+    class Store:
+        def create_node(self, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(("node", kwargs))
+            return Record()
+
+    monkeypatch.setattr(kctl_main, "profile_bootstrap_store_factory", lambda _profile: Store())
+
+    assert (
+        main(
+            [
+                "profile",
+                "bootstrap",
+                "create",
+                "node",
+                "--node-id",
+                "node-a",
+                "--controller-url",
+                "https://controller.example.test:9443",
+                "--runtime-backend",
+                "podman",
+                "--listen-host",
+                "127.0.0.1",
+                "--listen-port",
+                "9109",
+                "--advertise-endpoint",
+                "https://node-a.example.test:9109",
+                "--credential-file",
+                str(source),
+                "-o",
+                "json",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert calls[0][0] == "node"
+    assert calls[0][1]["credential_file"] == source
+    assert payload["identityVersion"] == 1
+    assert sentinel not in output
+    assert str(source) not in output
+    assert "credential" not in output.lower()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        kctl_main.ProfileStateError("DO-NOT-PRINT-PRIVATE-BOOTSTRAP"),
+        OSError("DO-NOT-PRINT-/private/bootstrap-record"),
+        kctl_main.ProfilePathError("DO-NOT-PRINT-/private/bootstrap-directory"),
+    ],
+)
+def test_profile_bootstrap_error_never_renders_private_exception(
+    monkeypatch,
+    capsys,
+    failure: Exception,
+) -> None:
+    class Store:
+        def create_edge_gateway(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            raise failure
+
+    monkeypatch.setattr(kctl_main, "profile_bootstrap_store_factory", lambda _profile: Store())
+
+    assert (
+        main(
+            [
+                "profile",
+                "bootstrap",
+                "create",
+                "edge-gateway",
+                "--site-id",
+                "site-a",
+                "--node-id",
+                "gateway-a",
+                "--transport-url",
+                "tls://nats.example.test:4222",
+                "--credential-file",
+                "/private/credential",
+            ]
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == "profile bootstrap failed closed"
+    assert "DO-NOT-PRINT" not in captured.err
+    assert "/private/" not in captured.err
+
+
+def test_canonical_node_lifecycle_routes_exact_bootstrap_without_fallback(
+    monkeypatch,
+    capsys,
+) -> None:
+    calls: list[tuple[str, str, str | None, str | None]] = []
+
+    class Manager:
+        def perform(  # type: ignore[no-untyped-def]
+            self, action, profile, *, backend=None, bootstrap_id=None
+        ):
+            calls.append((action, profile, backend, bootstrap_id))
+            return PortableLifecycleResult(
+                action="start",
+                profile="node",
+                status="started",
+                backend="podman",
+                run_id="r1-" + "1" * 32,
+                generation=1,
+                phase="running",
+                exit_code=0,
+            )
+
+    monkeypatch.setattr(kctl_main, "portable_profile_manager_factory", Manager)
+    bootstrap_id = "b1-" + "2" * 32
+
+    assert (
+        main(
+            [
+                "profile",
+                "start",
+                "node",
+                "--bootstrap-id",
+                bootstrap_id,
+                "-o",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert calls == [("start", "node", None, bootstrap_id)]
+    assert json.loads(capsys.readouterr().out)["profile"] == "node"
+
+
+def test_canonical_edge_start_restart_and_run_require_bootstrap_before_manager(
+    monkeypatch,
+    capsys,
+) -> None:
+    calls = 0
+
+    def fail_factory():
+        nonlocal calls
+        calls += 1
+        raise AssertionError("manager must not run without exact bootstrap identity")
+
+    monkeypatch.setattr(kctl_main, "portable_profile_manager_factory", fail_factory)
+
+    for argv in (
+        ["profile", "start", "edge-gateway"],
+        ["profile", "restart", "node"],
+        ["profile", "run", "edge-gateway"],
+    ):
+        assert main(argv) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.strip() == "profile command failed closed"
+    assert calls == 0
+
+
+def test_exact_bootstrap_routes_restart_and_foreground_run(
+    monkeypatch,
+    capsys,
+) -> None:
+    bootstrap_id = "b1-" + "3" * 32
+    calls: list[tuple[str, str, str | None]] = []
+
+    class Manager:
+        def perform(  # type: ignore[no-untyped-def]
+            self, action, profile, *, backend=None, bootstrap_id=None
+        ):
+            assert backend is None
+            calls.append((action, profile, bootstrap_id))
+            return PortableLifecycleResult(
+                action="restart",
+                profile="edge-gateway",
+                status="restarted",
+                backend="gateway",
+                run_id="r1-" + "1" * 32,
+                generation=2,
+                phase="running",
+                exit_code=0,
+            )
+
+        def run(  # type: ignore[no-untyped-def]
+            self, profile, *, backend, bootstrap_id, stop_requested
+        ):
+            assert backend is None and stop_requested() is None
+            calls.append(("run", profile, bootstrap_id))
+            return PortableLifecycleResult(
+                action="run",
+                profile="node",
+                status="externally-stopped",
+                backend="podman",
+                run_id="r1-" + "2" * 32,
+                generation=1,
+                phase="stopped",
+                exit_code=0,
+            )
+
+    monkeypatch.setattr(kctl_main, "portable_profile_manager_factory", Manager)
+
+    assert (
+        main(
+            [
+                "profile",
+                "restart",
+                "edge-gateway",
+                "--bootstrap-id",
+                bootstrap_id,
+                "-o",
+                "json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "profile",
+                "run",
+                "node",
+                "--bootstrap-id",
+                bootstrap_id,
+                "-o",
+                "json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert calls == [
+        ("restart", "edge-gateway", bootstrap_id),
+        ("run", "node", bootstrap_id),
+    ]

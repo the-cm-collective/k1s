@@ -237,6 +237,7 @@ def test_installed_artifact_gate_exercises_state_contract_without_runtime() -> N
 
     assert "from ae.kctl.profile_paths import ProfileRoots" in source
     assert "from ae.kctl.profile_backend import build_execution_plan" in source
+    assert "from ae.kctl.profile_bootstrap import ProfileBootstrapError" in source
     assert "from ae.kctl.profile_engine import EngineCapability" in source
     assert "from ae.kctl.profile_state import FailureRecord, ProfileStateStore" in source
     assert "from ae.kctl.profile_supervisor import classify_identity, parse_proc_stat" in source
@@ -246,13 +247,18 @@ def test_installed_artifact_gate_exercises_state_contract_without_runtime() -> N
     assert "store.cleanup_owned" in source
     assert "portable_plan_digest('local', synthetic_engine)" in source
     assert "assert plan.digest == plan_digest" in source
-    assert 'portable_names = {"local", "core", "core-edge"}' in source
+    assert 'portable_names = {"local", "core", "core-edge", "edge-gateway", "node"}' in source
     assert 'expected_status = "portable" if profile_name in portable_names' in source
     assert '!= "source-validated/unqualified"' in source
     assert "ProfileSupervisor.system" not in source
     assert "SubprocessLauncher(" not in source
     assert "SelectedEngineProbe.system" not in source
     assert "PortableProfileManager.system" not in source
+    assert "ProfileBootstrapStore(roots, 'node')" in source
+    assert "ProfileBootstrapStore(roots, 'edge-gateway')" in source
+    assert "private bootstrap drift was not rejected" in source
+    assert "assert gateway_plan.engine is None" in source
+    assert "assert node_private not in repr(node_plan)" in source
 
 
 def test_sdist_only_source_identity_is_frozen() -> None:

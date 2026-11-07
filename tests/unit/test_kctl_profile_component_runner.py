@@ -68,6 +68,55 @@ def test_activation_gate_invokes_node_without_shell_or_exec(tmp_path: Path) -> N
     assert calls == [["--host", "127.0.0.1"]]
 
 
+def test_gateway_is_the_only_component_without_engine_identity() -> None:
+    calls: list[list[str] | None] = []
+
+    result = run_component(
+        "gateway",
+        ["--site-id", "site-a", "--node-id", "site-a--gateway-a"],
+        gate_fd=_gate(b"1"),
+        engine_backend=None,
+        engine_executable=None,
+        engine_device=None,
+        engine_inode=None,
+        gateway_main=lambda argv: calls.append(argv) or 0,
+    )
+
+    assert result == 0
+    assert calls == [["--site-id", "site-a", "--node-id", "site-a--gateway-a"]]
+
+
+def test_node_agent_requires_exact_engine_and_invokes_node_entry(tmp_path: Path) -> None:
+    calls: list[list[str] | None] = []
+    executable, device, inode = _engine(tmp_path)
+
+    result = run_component(
+        "node-agent",
+        ["--node-id", "node-a"],
+        gate_fd=_gate(b"1"),
+        engine_backend="podman",
+        engine_executable=executable,
+        engine_device=device,
+        engine_inode=inode,
+        node_main=lambda argv: calls.append(argv) or 0,
+    )
+
+    assert result == 0
+    assert calls == [["--node-id", "node-a"]]
+
+    with pytest.raises(ComponentGateError, match="incomplete"):
+        run_component(
+            "node-agent",
+            [],
+            gate_fd=_gate(b"1"),
+            engine_backend=None,
+            engine_executable=None,
+            engine_device=None,
+            engine_inode=None,
+            node_main=lambda _argv: pytest.fail("node must not start"),
+        )
+
+
 @pytest.mark.parametrize("payload", [b"", b"0", b"11"])
 def test_gate_eof_or_noncanonical_activation_fails_closed(payload: bytes, tmp_path: Path) -> None:
     executable, device, inode = _engine(tmp_path)
