@@ -171,7 +171,10 @@ import os
 import sys
 import ae
 from ae.apishim.server import _openapi_v3_stub, _swagger_doc
+from ae.kctl.profile_paths import ProfileRoots
+from ae.kctl.profile_state import FailureRecord, ProfileStateStore
 from ae.kctl.profiles import PROFILE_INPUT_NAMES, PROFILE_NAMES, profile_catalog_payload
+from ae.kctl.profile_supervisor import classify_identity, parse_proc_stat
 from ae.runtime.cri.api.runtime.v1 import api_pb2, gogo_pb2
 from ae.runtime.cri.api.runtime.v1 import api_pb2_grpc
 from ae.storage.csi.api import csi_pb2, csi_pb2_grpc
@@ -272,6 +275,49 @@ assert profile_by_name['edge-gateway']['components'] == ['gateway']
 assert profile_by_name['core-ha']['contractPosture'] == 'preview'
 assert profile_by_name['core-ha']['productionEligible'] is False
 
+# Exercise only the additive installed state contract in an owner-private disposable root.
+# This never launches a component, resolves a backend, or touches the real HOME/XDG roots.
+profile_smoke_root = Path(os.environ['K1S_PROFILE_SMOKE_ROOT']).resolve()
+profile_env = {
+    'XDG_CONFIG_HOME': str(profile_smoke_root / 'config'),
+    'XDG_STATE_HOME': str(profile_smoke_root / 'state'),
+    'XDG_DATA_HOME': str(profile_smoke_root / 'data'),
+    'XDG_CACHE_HOME': str(profile_smoke_root / 'cache'),
+}
+roots = ProfileRoots.from_environment(profile_env)
+store = ProfileStateStore(roots, 'local')
+assert store.inspect() is None
+assert not roots.state.exists()
+run = store.begin_run()
+run = store.transition(
+    run.run_id,
+    'failed',
+    expected_revision=run.revision,
+    failure=FailureRecord('installed-smoke', 'Synthetic installed state smoke.'),
+)
+run = store.transition(run.run_id, 'stopping', expected_revision=run.revision)
+
+class _NoopCleaner:
+    def cleanup_resource(self, _receipt):
+        raise AssertionError('installed state smoke created no runtime resource')
+
+run = store.cleanup_owned(run.run_id, _NoopCleaner())
+run = store.settle_components(run.run_id, expected_revision=run.revision)
+run = store.transition(
+    run.run_id,
+    'stopped',
+    expected_revision=run.revision,
+    cleanup_complete=True,
+)
+assert store.inspect() == run
+assert run.cleanup_complete is True
+assert run.resource_receipts == ()
+assert run.secret_receipts == ()
+assert classify_identity is not None
+assert parse_proc_stat is not None
+assert under(roots.state, profile_smoke_root)
+assert roots.state.stat().st_mode & 0o777 == 0o700
+
 static_root = resources.files('ae.observability').joinpath('static/vendor')
 static_files = {item.name: item for item in static_root.iterdir() if item.is_file()}
 assert set(static_files) == {'xterm.css', 'xterm.js', 'xterm-addon-fit.js'}
@@ -289,6 +335,7 @@ assert scripts == {'ae', 'ae-rotate-certs', 'k1s', 'ae-node', 'ae-gateway', 'ae-
         env={
             **env,
             "K1S_EXPECTED_VERSION": expected_version,
+            "K1S_PROFILE_SMOKE_ROOT": str(outside / "profile-state-smoke"),
             "K1S_SOURCE_ROOT": str(Path(__file__).resolve().parents[1]),
             "K1S_VENV_ROOT": str(venv.resolve()),
         },

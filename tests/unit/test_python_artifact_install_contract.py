@@ -230,6 +230,22 @@ def test_installed_artifact_gate_exercises_static_profile_commands() -> None:
     compile(smoke_programs[0], "<installed-artifact-profile-smoke>", "exec")
 
 
+def test_installed_artifact_gate_exercises_state_contract_without_runtime() -> None:
+    source = (ROOT / "scripts" / "validate_installed_python_artifact.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from ae.kctl.profile_paths import ProfileRoots" in source
+    assert "from ae.kctl.profile_state import FailureRecord, ProfileStateStore" in source
+    assert "from ae.kctl.profile_supervisor import classify_identity, parse_proc_stat" in source
+    assert "K1S_PROFILE_SMOKE_ROOT" in source
+    assert "assert store.inspect() is None" in source
+    assert "assert not roots.state.exists()" in source
+    assert "store.cleanup_owned" in source
+    assert "ProfileSupervisor.system" not in source
+    assert "SubprocessLauncher(" not in source
+
+
 def test_sdist_only_source_identity_is_frozen() -> None:
     name = "tests/test_apishim_env.py"
     identity = SDIST_SOURCE_ONLY_IDENTITIES[name]

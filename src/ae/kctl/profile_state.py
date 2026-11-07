@@ -1,0 +1,1284 @@
+"""Durable, owner-scoped state for installed k1s profile runs."""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import secrets
+import stat
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, suppress
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal, Protocol, cast
+
+from ae.kctl.profile_paths import (
+    ProfileLayout,
+    ProfileRoots,
+    validate_identifier,
+    validate_relative_path,
+    validate_run_id,
+)
+
+API_VERSION = "k1s.dev/v1alpha1"
+SCHEMA_VERSION = 1
+MAX_STATE_BYTES = 1024 * 1024
+
+RunPhase = Literal[
+    "preparing",
+    "starting",
+    "running",
+    "stopping",
+    "stopped",
+    "failed",
+    "orphaned",
+]
+ComponentStatus = Literal["prepared", "starting", "running", "stopping", "stopped", "failed"]
+
+RUN_PHASES: tuple[RunPhase, ...] = (
+    "preparing",
+    "starting",
+    "running",
+    "stopping",
+    "stopped",
+    "failed",
+    "orphaned",
+)
+_TRANSITIONS: Mapping[RunPhase, frozenset[RunPhase]] = {
+    "preparing": frozenset({"starting", "stopping", "failed"}),
+    "starting": frozenset({"running", "stopping", "failed", "orphaned"}),
+    "running": frozenset({"stopping", "failed", "orphaned"}),
+    "stopping": frozenset({"stopped", "failed", "orphaned"}),
+    "failed": frozenset({"stopping"}),
+    "orphaned": frozenset({"stopping"}),
+    "stopped": frozenset(),
+}
+_UNSET = object()
+
+
+class ProfileStateError(RuntimeError):
+    """Profile state is corrupt, contradictory, or unsafe to mutate."""
+
+
+class ProfileBusyError(ProfileStateError):
+    """Another process owns the requested profile lock."""
+
+
+class StateConflictError(ProfileStateError):
+    """A generation, revision, run, or transition precondition failed."""
+
+
+class ResourceCleaner(Protocol):
+    """Allowlisted cleanup boundary for one exact owned resource receipt."""
+
+    def cleanup_resource(self, receipt: ResourceReceipt) -> None: ...
+
+
+def _canonical_timestamp(value: str) -> str:
+    if not isinstance(value, str) or not value.endswith("Z") or value != value.strip():
+        raise ProfileStateError("timestamp must be canonical RFC3339 UTC text")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ProfileStateError("timestamp must be canonical RFC3339 UTC text") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != datetime.resolution * 0:
+        raise ProfileStateError("timestamp must use UTC")
+    canonical = parsed.isoformat().replace("+00:00", "Z")
+    if canonical != value:
+        raise ProfileStateError("timestamp must be canonical RFC3339 UTC text")
+    return value
+
+
+def utc_now() -> str:
+    """Return a canonical audit timestamp; ordering never depends on it."""
+
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def command_digest(argv: Sequence[str]) -> str:
+    """Hash an argv without ambiguous joining or persisting its values."""
+
+    if not argv:
+        raise ProfileStateError("a component command must not be empty")
+    digest = hashlib.sha256()
+    for argument in argv:
+        if not isinstance(argument, str) or "\x00" in argument:
+            raise ProfileStateError("component command arguments must be NUL-free text")
+        encoded = argument.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _strict_int(value: object, *, field: str, minimum: int = 0) -> int:
+    if type(value) is not int or value < minimum:
+        raise ProfileStateError(f"{field} must be an integer >= {minimum}")
+    return value
+
+
+def _strict_text(value: object, *, field: str, maximum: int = 512) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or "\x00" in value
+        or "\n" in value
+        or "\r" in value
+        or len(value) > maximum
+    ):
+        raise ProfileStateError(f"{field} must be canonical single-line text")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessIdentity:
+    """Exact Linux process identity; a PID alone is never authoritative."""
+
+    pid: int
+    process_group_id: int
+    session_id: int
+    boot_id: str
+    start_time_ticks: int
+    executable_device: int
+    executable_inode: int
+
+    def __post_init__(self) -> None:
+        _strict_int(self.pid, field="pid", minimum=1)
+        _strict_int(self.process_group_id, field="processGroupId", minimum=1)
+        _strict_int(self.session_id, field="sessionId", minimum=1)
+        _strict_text(self.boot_id, field="bootId", maximum=128)
+        _strict_int(self.start_time_ticks, field="startTimeTicks")
+        _strict_int(self.executable_device, field="executableDevice")
+        _strict_int(self.executable_inode, field="executableInode", minimum=1)
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "bootId": self.boot_id,
+            "executableDevice": self.executable_device,
+            "executableInode": self.executable_inode,
+            "pid": self.pid,
+            "processGroupId": self.process_group_id,
+            "sessionId": self.session_id,
+            "startTimeTicks": self.start_time_ticks,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> ProcessIdentity:
+        raw = _mapping(value, field="processIdentity")
+        _exact_keys(
+            raw,
+            {
+                "bootId",
+                "executableDevice",
+                "executableInode",
+                "pid",
+                "processGroupId",
+                "sessionId",
+                "startTimeTicks",
+            },
+            field="processIdentity",
+        )
+        return cls(
+            pid=_strict_int(raw["pid"], field="pid", minimum=1),
+            process_group_id=_strict_int(raw["processGroupId"], field="processGroupId", minimum=1),
+            session_id=_strict_int(raw["sessionId"], field="sessionId", minimum=1),
+            boot_id=_strict_text(raw["bootId"], field="bootId", maximum=128),
+            start_time_ticks=_strict_int(raw["startTimeTicks"], field="startTimeTicks"),
+            executable_device=_strict_int(raw["executableDevice"], field="executableDevice"),
+            executable_inode=_strict_int(
+                raw["executableInode"], field="executableInode", minimum=1
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentState:
+    component_id: str
+    command_digest: str
+    log_path: str
+    status: ComponentStatus
+    process_identity: ProcessIdentity | None = None
+
+    def __post_init__(self) -> None:
+        validate_identifier(self.component_id, field="component ID")
+        if not self.command_digest.startswith("sha256:") or len(self.command_digest) != 71:
+            raise ProfileStateError("command digest must be one SHA-256 identity")
+        try:
+            int(self.command_digest.removeprefix("sha256:"), 16)
+        except ValueError as exc:
+            raise ProfileStateError("command digest must be one SHA-256 identity") from exc
+        validate_relative_path(self.log_path, field="component log path")
+        if self.status not in {
+            "prepared",
+            "starting",
+            "running",
+            "stopping",
+            "stopped",
+            "failed",
+        }:
+            raise ProfileStateError("component status is unsupported")
+        active = self.status in {"starting", "running", "stopping"}
+        if active and self.process_identity is None:
+            raise ProfileStateError("an active component requires exact process identity")
+        if not active and self.process_identity is not None:
+            raise ProfileStateError("a non-active component must not retain process authority")
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "commandDigest": self.command_digest,
+            "componentId": self.component_id,
+            "logPath": self.log_path,
+            "processIdentity": (
+                self.process_identity.to_payload() if self.process_identity is not None else None
+            ),
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> ComponentState:
+        raw = _mapping(value, field="component")
+        _exact_keys(
+            raw,
+            {"commandDigest", "componentId", "logPath", "processIdentity", "status"},
+            field="component",
+        )
+        identity = raw["processIdentity"]
+        status = _strict_text(raw["status"], field="component.status", maximum=32)
+        return cls(
+            component_id=validate_identifier(
+                _strict_text(raw["componentId"], field="component.componentId"),
+                field="component ID",
+            ),
+            command_digest=_strict_text(
+                raw["commandDigest"], field="component.commandDigest", maximum=71
+            ),
+            log_path=validate_relative_path(
+                _strict_text(raw["logPath"], field="component.logPath"),
+                field="component log path",
+            ),
+            status=cast(ComponentStatus, status),
+            process_identity=(None if identity is None else ProcessIdentity.from_payload(identity)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SecretReceipt:
+    secret_id: str
+    relative_path: str
+    owner_profile: str
+    owner_run_id: str
+    device: int
+    inode: int
+    mode: int
+    created_at: str
+
+    def __post_init__(self) -> None:
+        validate_identifier(self.secret_id, field="secret ID")
+        validate_relative_path(self.relative_path, field="secret relative path")
+        validate_identifier(self.owner_profile, field="secret owner profile")
+        validate_run_id(self.owner_run_id)
+        _strict_int(self.device, field="secret device")
+        _strict_int(self.inode, field="secret inode", minimum=1)
+        if self.mode != 0o600:
+            raise ProfileStateError("secret receipt mode must be 0600")
+        _canonical_timestamp(self.created_at)
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "createdAt": self.created_at,
+            "device": self.device,
+            "inode": self.inode,
+            "mode": self.mode,
+            "ownerProfile": self.owner_profile,
+            "ownerRunId": self.owner_run_id,
+            "relativePath": self.relative_path,
+            "secretId": self.secret_id,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> SecretReceipt:
+        raw = _mapping(value, field="secret receipt")
+        _exact_keys(
+            raw,
+            {
+                "createdAt",
+                "device",
+                "inode",
+                "mode",
+                "ownerProfile",
+                "ownerRunId",
+                "relativePath",
+                "secretId",
+            },
+            field="secret receipt",
+        )
+        return cls(
+            secret_id=validate_identifier(
+                _strict_text(raw["secretId"], field="secretId"), field="secret ID"
+            ),
+            relative_path=validate_relative_path(
+                _strict_text(raw["relativePath"], field="secret relativePath"),
+                field="secret relative path",
+            ),
+            owner_profile=validate_identifier(
+                _strict_text(raw["ownerProfile"], field="secret ownerProfile"),
+                field="secret owner profile",
+            ),
+            owner_run_id=validate_run_id(
+                _strict_text(raw["ownerRunId"], field="secret ownerRunId")
+            ),
+            device=_strict_int(raw["device"], field="secret device"),
+            inode=_strict_int(raw["inode"], field="secret inode", minimum=1),
+            mode=_strict_int(raw["mode"], field="secret mode"),
+            created_at=_canonical_timestamp(
+                _strict_text(raw["createdAt"], field="secret createdAt")
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceReceipt:
+    resource_type: str
+    resource_id: str
+    cleanup_handler_id: str
+    ordinal: int
+    owner_profile: str
+    owner_run_id: str
+    created_at: str
+
+    def __post_init__(self) -> None:
+        validate_identifier(self.resource_type, field="resource type")
+        validate_identifier(self.resource_id, field="resource ID")
+        validate_identifier(self.cleanup_handler_id, field="cleanup handler ID")
+        _strict_int(self.ordinal, field="resource ordinal")
+        validate_identifier(self.owner_profile, field="resource owner profile")
+        validate_run_id(self.owner_run_id)
+        _canonical_timestamp(self.created_at)
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "cleanupHandlerId": self.cleanup_handler_id,
+            "createdAt": self.created_at,
+            "ordinal": self.ordinal,
+            "ownerProfile": self.owner_profile,
+            "ownerRunId": self.owner_run_id,
+            "resourceId": self.resource_id,
+            "resourceType": self.resource_type,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> ResourceReceipt:
+        raw = _mapping(value, field="resource receipt")
+        _exact_keys(
+            raw,
+            {
+                "cleanupHandlerId",
+                "createdAt",
+                "ordinal",
+                "ownerProfile",
+                "ownerRunId",
+                "resourceId",
+                "resourceType",
+            },
+            field="resource receipt",
+        )
+        return cls(
+            resource_type=validate_identifier(
+                _strict_text(raw["resourceType"], field="resourceType"),
+                field="resource type",
+            ),
+            resource_id=validate_identifier(
+                _strict_text(raw["resourceId"], field="resourceId"), field="resource ID"
+            ),
+            cleanup_handler_id=validate_identifier(
+                _strict_text(raw["cleanupHandlerId"], field="cleanupHandlerId"),
+                field="cleanup handler ID",
+            ),
+            ordinal=_strict_int(raw["ordinal"], field="resource ordinal"),
+            owner_profile=validate_identifier(
+                _strict_text(raw["ownerProfile"], field="resource ownerProfile"),
+                field="resource owner profile",
+            ),
+            owner_run_id=validate_run_id(
+                _strict_text(raw["ownerRunId"], field="resource ownerRunId")
+            ),
+            created_at=_canonical_timestamp(
+                _strict_text(raw["createdAt"], field="resource createdAt")
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FailureRecord:
+    code: str
+    summary: str
+
+    def __post_init__(self) -> None:
+        validate_identifier(self.code, field="failure code")
+        _strict_text(self.summary, field="failure summary", maximum=256)
+
+    def to_payload(self) -> dict[str, str]:
+        return {"code": self.code, "summary": self.summary}
+
+    @classmethod
+    def from_payload(cls, value: object) -> FailureRecord:
+        raw = _mapping(value, field="failure")
+        _exact_keys(raw, {"code", "summary"}, field="failure")
+        return cls(
+            code=validate_identifier(
+                _strict_text(raw["code"], field="failure.code"), field="failure code"
+            ),
+            summary=_strict_text(raw["summary"], field="failure.summary", maximum=256),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentState:
+    profile: str
+    run_id: str
+    generation: int
+    revision: int
+    owner_uid: int
+    updated_at: str
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "apiVersion": API_VERSION,
+            "generation": self.generation,
+            "kind": "ProfileCurrent",
+            "ownerUid": self.owner_uid,
+            "profile": self.profile,
+            "revision": self.revision,
+            "runId": self.run_id,
+            "schemaVersion": SCHEMA_VERSION,
+            "updatedAt": self.updated_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RunState:
+    profile: str
+    requested_name: str
+    run_id: str
+    generation: int
+    revision: int
+    owner_uid: int
+    phase: RunPhase
+    created_at: str
+    updated_at: str
+    components: tuple[ComponentState, ...] = ()
+    resource_receipts: tuple[ResourceReceipt, ...] = ()
+    secret_receipts: tuple[SecretReceipt, ...] = ()
+    cleanup_complete: bool = False
+    failure: FailureRecord | None = None
+
+    def __post_init__(self) -> None:
+        validate_identifier(self.profile, field="profile")
+        validate_identifier(self.requested_name, field="requested name")
+        validate_run_id(self.run_id)
+        _strict_int(self.generation, field="generation", minimum=1)
+        _strict_int(self.revision, field="revision", minimum=1)
+        _strict_int(self.owner_uid, field="ownerUid")
+        if self.phase not in RUN_PHASES:
+            raise ProfileStateError("unsupported run phase")
+        _canonical_timestamp(self.created_at)
+        _canonical_timestamp(self.updated_at)
+        if type(self.cleanup_complete) is not bool:
+            raise ProfileStateError("cleanupComplete must be a bool")
+        if self.phase == "stopped" and not self.cleanup_complete:
+            raise ProfileStateError("stopped state requires complete cleanup")
+        if self.cleanup_complete and (self.resource_receipts or self.secret_receipts):
+            raise ProfileStateError("complete cleanup cannot retain owned receipts")
+        if self.phase == "stopped" and any(
+            component.status != "stopped" or component.process_identity is not None
+            for component in self.components
+        ):
+            raise ProfileStateError("stopped state cannot retain live component authority")
+        _require_unique(
+            (component.component_id for component in self.components), field="component ID"
+        )
+        _require_unique((receipt.secret_id for receipt in self.secret_receipts), field="secret ID")
+        _require_unique(
+            (
+                f"{receipt.resource_type}:{receipt.resource_id}"
+                for receipt in self.resource_receipts
+            ),
+            field="resource receipt",
+        )
+        ordinals = [receipt.ordinal for receipt in self.resource_receipts]
+        if ordinals != sorted(ordinals) or len(ordinals) != len(set(ordinals)):
+            raise ProfileStateError("resource receipt ordinals must be unique and ordered")
+        for secret_receipt in self.secret_receipts:
+            if (
+                secret_receipt.owner_profile != self.profile
+                or secret_receipt.owner_run_id != self.run_id
+            ):
+                raise ProfileStateError("receipt ownership differs from its run")
+        for resource_receipt in self.resource_receipts:
+            if (
+                resource_receipt.owner_profile != self.profile
+                or resource_receipt.owner_run_id != self.run_id
+            ):
+                raise ProfileStateError("receipt ownership differs from its run")
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "apiVersion": API_VERSION,
+            "cleanupComplete": self.cleanup_complete,
+            "components": [component.to_payload() for component in self.components],
+            "createdAt": self.created_at,
+            "failure": self.failure.to_payload() if self.failure is not None else None,
+            "generation": self.generation,
+            "kind": "ProfileRunState",
+            "ownerUid": self.owner_uid,
+            "phase": self.phase,
+            "profile": self.profile,
+            "requestedName": self.requested_name,
+            "resourceReceipts": [receipt.to_payload() for receipt in self.resource_receipts],
+            "revision": self.revision,
+            "runId": self.run_id,
+            "schemaVersion": SCHEMA_VERSION,
+            "secretReceipts": [receipt.to_payload() for receipt in self.secret_receipts],
+            "updatedAt": self.updated_at,
+        }
+
+
+class ProfileLock(AbstractContextManager["ProfileLock"]):
+    """Stable owner-private advisory lock for one canonical profile."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        owner_uid: int,
+        shared: bool = False,
+        blocking: bool = False,
+        create: bool = True,
+    ) -> None:
+        self.path = path
+        self.owner_uid = owner_uid
+        self.shared = shared
+        self.blocking = blocking
+        self.create = create
+        self._fd: int | None = None
+
+    def __enter__(self) -> ProfileLock:
+        flags = os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW
+        if self.create:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                fd = os.open(self.path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                fd = os.open(self.path, flags)
+        else:
+            try:
+                fd = os.open(self.path, flags)
+            except FileNotFoundError as exc:
+                raise ProfileStateError("authoritative profile lock is missing") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != self.owner_uid:
+                raise ProfileStateError("profile lock is not an owner-controlled regular file")
+            if stat.S_IMODE(info.st_mode) != 0o600:
+                raise ProfileStateError("profile lock must have mode 0600")
+            operation = fcntl.LOCK_SH if self.shared else fcntl.LOCK_EX
+            if not self.blocking:
+                operation |= fcntl.LOCK_NB
+            try:
+                fcntl.flock(fd, operation)
+            except BlockingIOError as exc:
+                raise ProfileBusyError("profile_busy") from exc
+        except Exception:
+            os.close(fd)
+            raise
+        self._fd = fd
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self._fd)
+                self._fd = None
+
+
+class ProfileStateStore:
+    """Canonical state, receipts, and lock ownership for one profile."""
+
+    def __init__(
+        self,
+        roots: ProfileRoots,
+        requested_profile: str,
+        *,
+        clock: Callable[[], str] = utc_now,
+        random_bytes: Callable[[int], bytes] = secrets.token_bytes,
+    ) -> None:
+        self.layout = ProfileLayout.resolve(roots, requested_profile)
+        self.clock = clock
+        self.random_bytes = random_bytes
+
+    def locked(
+        self,
+        *,
+        shared: bool = False,
+        blocking: bool = False,
+        create: bool = True,
+    ) -> ProfileLock:
+        if create:
+            self.layout.ensure_profile()
+        return ProfileLock(
+            self.layout.lock,
+            owner_uid=self.layout.roots.owner_uid,
+            shared=shared,
+            blocking=blocking,
+            create=create,
+        )
+
+    def begin_run(self) -> RunState:
+        with self.locked():
+            current = self._read_current(optional=True)
+            generation = 1
+            if current is not None:
+                previous = self._read_run(current.run_id)
+                self._require_consistent(current, previous)
+                if previous.phase != "stopped" or not previous.cleanup_complete:
+                    raise StateConflictError("the current profile run is not cleanly terminal")
+                generation = previous.generation + 1
+
+            raw = self.random_bytes(16)
+            if len(raw) != 16:
+                raise ProfileStateError("run ID randomness source returned the wrong size")
+            run_id = validate_run_id(f"r1-{raw.hex()}")
+            timestamp = _canonical_timestamp(self.clock())
+            state = RunState(
+                profile=self.layout.canonical_profile,
+                requested_name=self.layout.requested_profile,
+                run_id=run_id,
+                generation=generation,
+                revision=1,
+                owner_uid=self.layout.roots.owner_uid,
+                phase="preparing",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            run_layout = self.layout.for_run(run_id)
+            if run_layout.run_state.parent.exists():
+                raise StateConflictError("generated run ID already exists")
+            run_layout.ensure_run()
+            self._write_run(state)
+            self._write_current(self._current_for(state))
+            return state
+
+    def inspect(self) -> RunState | None:
+        try:
+            profile_info = self.layout.profile_state.lstat()
+        except FileNotFoundError:
+            return None
+        if (
+            not stat.S_ISDIR(profile_info.st_mode)
+            or stat.S_ISLNK(profile_info.st_mode)
+            or profile_info.st_uid != self.layout.roots.owner_uid
+            or stat.S_IMODE(profile_info.st_mode) != 0o700
+        ):
+            raise ProfileStateError("profile state directory is not owner-private")
+        with self.locked(shared=True, create=False):
+            current = self._read_current(optional=True)
+            if current is None:
+                return None
+            state = self._read_run(current.run_id)
+            self._require_consistent(current, state)
+            return state
+
+    def transition(
+        self,
+        run_id: str,
+        phase: RunPhase,
+        *,
+        expected_revision: int | None = None,
+        failure: FailureRecord | None | object = _UNSET,
+        cleanup_complete: bool | None = None,
+    ) -> RunState:
+        if phase not in RUN_PHASES:
+            raise ProfileStateError("unsupported run phase")
+
+        def mutate(state: RunState) -> RunState:
+            if phase not in _TRANSITIONS[state.phase]:
+                raise StateConflictError(f"illegal run transition: {state.phase} -> {phase}")
+            next_cleanup = state.cleanup_complete if cleanup_complete is None else cleanup_complete
+            next_failure = (
+                state.failure if failure is _UNSET else cast(FailureRecord | None, failure)
+            )
+            return replace(
+                state,
+                phase=phase,
+                cleanup_complete=next_cleanup,
+                failure=next_failure,
+            )
+
+        return self._mutate(run_id, mutate, expected_revision=expected_revision)
+
+    def put_component(
+        self,
+        run_id: str,
+        component: ComponentState,
+        *,
+        expected_revision: int | None = None,
+    ) -> RunState:
+        def mutate(state: RunState) -> RunState:
+            by_id = {item.component_id: item for item in state.components}
+            by_id[component.component_id] = component
+            return replace(state, components=tuple(by_id[key] for key in sorted(by_id)))
+
+        return self._mutate(run_id, mutate, expected_revision=expected_revision)
+
+    def create_secret(
+        self,
+        run_id: str,
+        secret_id: str,
+        payload: bytes,
+        *,
+        expected_revision: int | None = None,
+    ) -> tuple[RunState, SecretReceipt]:
+        validate_run_id(run_id)
+        secret = validate_identifier(secret_id, field="secret ID")
+        if not isinstance(payload, bytes) or not payload:
+            raise ProfileStateError("generated secret payload must be nonempty bytes")
+        with self.locked():
+            state, current = self._load_consistent_run(run_id, expected_revision)
+            if any(receipt.secret_id == secret for receipt in state.secret_receipts):
+                raise StateConflictError("secret receipt already exists")
+            layout = self.layout.for_run(run_id)
+            layout.ensure_run()
+            path = layout.secret_path(secret)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+            try:
+                fd = os.open(path, flags, 0o600)
+            except FileExistsError as exc:
+                raise StateConflictError("generated secret already exists") from exc
+            try:
+                _write_all(fd, payload)
+                os.fsync(fd)
+                info = os.fstat(fd)
+            finally:
+                os.close(fd)
+            _fsync_directory(path.parent)
+            receipt = SecretReceipt(
+                secret_id=secret,
+                relative_path=path.relative_to(self.layout.roots.data).as_posix(),
+                owner_profile=state.profile,
+                owner_run_id=state.run_id,
+                device=info.st_dev,
+                inode=info.st_ino,
+                mode=stat.S_IMODE(info.st_mode),
+                created_at=_canonical_timestamp(self.clock()),
+            )
+            updated = self._next_revision(
+                replace(state, secret_receipts=(*state.secret_receipts, receipt))
+            )
+            self._persist_mutation(current, updated)
+            return updated, receipt
+
+    def add_resource(
+        self,
+        run_id: str,
+        *,
+        resource_type: str,
+        resource_id: str,
+        cleanup_handler_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[RunState, ResourceReceipt]:
+        def mutate(state: RunState) -> RunState:
+            key = (resource_type, resource_id)
+            if any(
+                (receipt.resource_type, receipt.resource_id) == key
+                for receipt in state.resource_receipts
+            ):
+                raise StateConflictError("resource receipt already exists")
+            receipt = ResourceReceipt(
+                resource_type=resource_type,
+                resource_id=resource_id,
+                cleanup_handler_id=cleanup_handler_id,
+                ordinal=len(state.resource_receipts),
+                owner_profile=state.profile,
+                owner_run_id=state.run_id,
+                created_at=_canonical_timestamp(self.clock()),
+            )
+            return replace(state, resource_receipts=(*state.resource_receipts, receipt))
+
+        updated = self._mutate(run_id, mutate, expected_revision=expected_revision)
+        return updated, updated.resource_receipts[-1]
+
+    def cleanup_owned(self, run_id: str, cleaner: ResourceCleaner) -> RunState:
+        """Clean only exact recorded resources and secrets, retaining retry state."""
+
+        with self.locked():
+            state, current = self._load_consistent_run(run_id, None)
+            if state.phase not in {"stopping", "failed", "orphaned"}:
+                raise StateConflictError(
+                    f"cleanup is not authorized while the run is {state.phase}"
+                )
+            resources = list(state.resource_receipts)
+            for index in range(len(resources) - 1, -1, -1):
+                receipt = resources[index]
+                self._require_receipt_owner(state, receipt.owner_profile, receipt.owner_run_id)
+                try:
+                    cleaner.cleanup_resource(receipt)
+                except Exception as exc:
+                    failure = FailureRecord(
+                        code="resource-cleanup-failed",
+                        summary=f"cleanup handler failed for resource ordinal {receipt.ordinal}",
+                    )
+                    failed = self._next_revision(replace(state, failure=failure))
+                    self._persist_mutation(current, failed)
+                    raise ProfileStateError("owned resource cleanup failed") from exc
+                resources.pop(index)
+                state = self._next_revision(replace(state, resource_receipts=tuple(resources)))
+                current = self._persist_mutation(current, state)
+
+            remaining_secrets: list[SecretReceipt] = []
+            for secret_receipt in state.secret_receipts:
+                self._require_receipt_owner(
+                    state,
+                    secret_receipt.owner_profile,
+                    secret_receipt.owner_run_id,
+                )
+                self._remove_exact_secret(secret_receipt)
+            state = self._next_revision(
+                replace(
+                    state,
+                    secret_receipts=tuple(remaining_secrets),
+                    cleanup_complete=True,
+                )
+            )
+            self._persist_mutation(current, state)
+            return state
+
+    def settle_components(self, run_id: str, *, expected_revision: int) -> RunState:
+        """Remove process authority after every recorded component is known stopped."""
+
+        def mutate(state: RunState) -> RunState:
+            if state.phase != "stopping":
+                raise StateConflictError("components can settle only while the run is stopping")
+            return replace(
+                state,
+                components=tuple(
+                    replace(component, status="stopped", process_identity=None)
+                    for component in state.components
+                ),
+            )
+
+        return self._mutate(run_id, mutate, expected_revision=expected_revision)
+
+    def _remove_exact_secret(self, receipt: SecretReceipt) -> None:
+        path = self.layout.roots.data / receipt.relative_path
+        canonical = path.resolve(strict=False)
+        if canonical != path or self.layout.roots.data not in path.parents:
+            raise ProfileStateError("secret receipt escapes the owned data root")
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != self.layout.roots.owner_uid
+            or info.st_dev != receipt.device
+            or info.st_ino != receipt.inode
+            or stat.S_IMODE(info.st_mode) != receipt.mode
+        ):
+            raise ProfileStateError("secret identity differs from its receipt")
+        path.unlink()
+        _fsync_directory(path.parent)
+
+    def _mutate(
+        self,
+        run_id: str,
+        mutation: Callable[[RunState], RunState],
+        *,
+        expected_revision: int | None,
+    ) -> RunState:
+        with self.locked():
+            state, current = self._load_consistent_run(run_id, expected_revision)
+            updated = self._next_revision(mutation(state))
+            self._persist_mutation(current, updated)
+            return updated
+
+    def _next_revision(self, state: RunState) -> RunState:
+        return replace(
+            state,
+            revision=state.revision + 1,
+            updated_at=_canonical_timestamp(self.clock()),
+        )
+
+    def _load_consistent_run(
+        self, run_id: str, expected_revision: int | None
+    ) -> tuple[RunState, CurrentState]:
+        validate_run_id(run_id)
+        current = self._read_current(optional=False)
+        assert current is not None
+        if current.run_id != run_id:
+            raise StateConflictError("requested run is not current")
+        state = self._read_run(run_id)
+        self._require_consistent(current, state)
+        if state.phase == "stopped":
+            raise StateConflictError("a stopped run is immutable")
+        if expected_revision is not None and state.revision != expected_revision:
+            raise StateConflictError("run revision changed")
+        return state, current
+
+    def _require_consistent(self, current: CurrentState, state: RunState) -> None:
+        if (
+            current.profile != self.layout.canonical_profile
+            or state.profile != self.layout.canonical_profile
+            or current.run_id != state.run_id
+            or current.generation != state.generation
+            or current.revision != state.revision
+            or current.owner_uid != state.owner_uid
+            or state.owner_uid != self.layout.roots.owner_uid
+        ):
+            raise StateConflictError("current and run state identities differ")
+
+    @staticmethod
+    def _require_receipt_owner(state: RunState, profile: str, run_id: str) -> None:
+        if profile != state.profile or run_id != state.run_id:
+            raise ProfileStateError("receipt is not owned by the current run")
+
+    def _current_for(self, state: RunState) -> CurrentState:
+        return CurrentState(
+            profile=state.profile,
+            run_id=state.run_id,
+            generation=state.generation,
+            revision=state.revision,
+            owner_uid=state.owner_uid,
+            updated_at=state.updated_at,
+        )
+
+    def _persist_mutation(self, current: CurrentState, state: RunState) -> CurrentState:
+        if current.run_id != state.run_id or current.generation != state.generation:
+            raise StateConflictError("mutation changed immutable run identity")
+        self._write_run(state)
+        next_current = self._current_for(state)
+        self._write_current(next_current)
+        return next_current
+
+    def _write_current(self, state: CurrentState) -> None:
+        _atomic_json_write(
+            self.layout.current,
+            state.to_payload(),
+            owner_uid=self.layout.roots.owner_uid,
+            random_bytes=self.random_bytes,
+        )
+
+    def _write_run(self, state: RunState) -> None:
+        layout = self.layout.for_run(state.run_id)
+        layout.ensure_run()
+        _atomic_json_write(
+            layout.run_state,
+            state.to_payload(),
+            owner_uid=self.layout.roots.owner_uid,
+            random_bytes=self.random_bytes,
+        )
+
+    def _read_current(self, *, optional: bool) -> CurrentState | None:
+        raw = _read_canonical_json(
+            self.layout.current,
+            owner_uid=self.layout.roots.owner_uid,
+            optional=optional,
+        )
+        if raw is None:
+            return None
+        _exact_keys(
+            raw,
+            {
+                "apiVersion",
+                "generation",
+                "kind",
+                "ownerUid",
+                "profile",
+                "revision",
+                "runId",
+                "schemaVersion",
+                "updatedAt",
+            },
+            field="current state",
+        )
+        _require_envelope(raw, kind="ProfileCurrent")
+        return CurrentState(
+            profile=validate_identifier(
+                _strict_text(raw["profile"], field="current.profile"), field="profile"
+            ),
+            run_id=validate_run_id(_strict_text(raw["runId"], field="current.runId")),
+            generation=_strict_int(raw["generation"], field="current.generation", minimum=1),
+            revision=_strict_int(raw["revision"], field="current.revision", minimum=1),
+            owner_uid=_strict_int(raw["ownerUid"], field="current.ownerUid"),
+            updated_at=_canonical_timestamp(
+                _strict_text(raw["updatedAt"], field="current.updatedAt")
+            ),
+        )
+
+    def _read_run(self, run_id: str) -> RunState:
+        layout = self.layout.for_run(run_id)
+        raw = _read_canonical_json(
+            layout.run_state,
+            owner_uid=self.layout.roots.owner_uid,
+            optional=False,
+        )
+        assert raw is not None
+        _exact_keys(
+            raw,
+            {
+                "apiVersion",
+                "cleanupComplete",
+                "components",
+                "createdAt",
+                "failure",
+                "generation",
+                "kind",
+                "ownerUid",
+                "phase",
+                "profile",
+                "requestedName",
+                "resourceReceipts",
+                "revision",
+                "runId",
+                "schemaVersion",
+                "secretReceipts",
+                "updatedAt",
+            },
+            field="run state",
+        )
+        _require_envelope(raw, kind="ProfileRunState")
+        phase = _strict_text(raw["phase"], field="run.phase", maximum=32)
+        if phase not in RUN_PHASES:
+            raise ProfileStateError("unsupported run phase")
+        if type(raw["cleanupComplete"]) is not bool:
+            raise ProfileStateError("cleanupComplete must be a bool")
+        failure = raw["failure"]
+        return RunState(
+            profile=validate_identifier(
+                _strict_text(raw["profile"], field="run.profile"), field="profile"
+            ),
+            requested_name=validate_identifier(
+                _strict_text(raw["requestedName"], field="run.requestedName"),
+                field="requested name",
+            ),
+            run_id=validate_run_id(_strict_text(raw["runId"], field="run.runId")),
+            generation=_strict_int(raw["generation"], field="run.generation", minimum=1),
+            revision=_strict_int(raw["revision"], field="run.revision", minimum=1),
+            owner_uid=_strict_int(raw["ownerUid"], field="run.ownerUid"),
+            phase=phase,
+            created_at=_canonical_timestamp(_strict_text(raw["createdAt"], field="run.createdAt")),
+            updated_at=_canonical_timestamp(_strict_text(raw["updatedAt"], field="run.updatedAt")),
+            components=tuple(
+                ComponentState.from_payload(item)
+                for item in _list(raw["components"], field="run.components")
+            ),
+            resource_receipts=tuple(
+                ResourceReceipt.from_payload(item)
+                for item in _list(raw["resourceReceipts"], field="run.resourceReceipts")
+            ),
+            secret_receipts=tuple(
+                SecretReceipt.from_payload(item)
+                for item in _list(raw["secretReceipts"], field="run.secretReceipts")
+            ),
+            cleanup_complete=raw["cleanupComplete"],
+            failure=None if failure is None else FailureRecord.from_payload(failure),
+        )
+
+
+def _require_envelope(raw: Mapping[str, object], *, kind: str) -> None:
+    if raw["apiVersion"] != API_VERSION:
+        raise ProfileStateError("profile state API version mismatch")
+    if raw["schemaVersion"] != SCHEMA_VERSION:
+        raise ProfileStateError("profile state schema version mismatch")
+    if raw["kind"] != kind:
+        raise ProfileStateError("profile state kind mismatch")
+
+
+def _mapping(value: object, *, field: str) -> dict[str, object]:
+    if type(value) is not dict:
+        raise ProfileStateError(f"{field} must be an object")
+    return cast(dict[str, object], value)
+
+
+def _list(value: object, *, field: str) -> list[object]:
+    if type(value) is not list:
+        raise ProfileStateError(f"{field} must be an array")
+    return cast(list[object], value)
+
+
+def _exact_keys(value: Mapping[str, object], expected: set[str], *, field: str) -> None:
+    if set(value) != expected:
+        raise ProfileStateError(f"{field} has missing or unknown keys")
+
+
+def _require_unique(values: Iterator[str], *, field: str) -> None:
+    materialized = tuple(values)
+    if len(materialized) != len(set(materialized)):
+        raise ProfileStateError(f"duplicate {field}")
+
+
+def _pairs_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProfileStateError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ProfileStateError(f"unsupported JSON number: {value}")
+
+
+def _read_canonical_json(path: Path, *, owner_uid: int, optional: bool) -> dict[str, object] | None:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        if optional:
+            return None
+        raise ProfileStateError(f"required profile state is missing: {path.name}") from None
+    except OSError as exc:
+        raise ProfileStateError(f"profile state cannot be opened safely: {path.name}") from exc
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != owner_uid
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > MAX_STATE_BYTES
+        ):
+            raise ProfileStateError(f"profile state has unsafe ownership or mode: {path.name}")
+        chunks: list[bytes] = []
+        remaining = MAX_STATE_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if not payload or len(payload) > MAX_STATE_BYTES or b"\x00" in payload or b"\r" in payload:
+        raise ProfileStateError(f"profile state bytes are invalid: {path.name}")
+    try:
+        text = payload.decode("utf-8")
+        value = json.loads(
+            text,
+            object_pairs_hook=_pairs_without_duplicates,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProfileStateError(f"profile state is not canonical JSON: {path.name}") from exc
+    raw = _mapping(value, field=path.name)
+    canonical = json.dumps(raw, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if text != canonical:
+        raise ProfileStateError(f"profile state is not canonical JSON: {path.name}")
+    return raw
+
+
+def _atomic_json_write(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    owner_uid: int,
+    random_bytes: Callable[[int], bytes],
+) -> None:
+    parent_info = path.parent.lstat()
+    if (
+        not stat.S_ISDIR(parent_info.st_mode)
+        or stat.S_ISLNK(parent_info.st_mode)
+        or parent_info.st_uid != owner_uid
+        or stat.S_IMODE(parent_info.st_mode) != 0o700
+    ):
+        raise ProfileStateError("profile state parent is not owner-private")
+    _validate_existing_state_target(path, owner_uid=owner_uid)
+    data = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
+    token = random_bytes(16)
+    if len(token) != 16:
+        raise ProfileStateError("temporary-file randomness source returned the wrong size")
+    temporary = path.parent / f".{path.name}.tmp-{token.hex()}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        _write_all(fd, data)
+        os.fsync(fd)
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != owner_uid
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise ProfileStateError("temporary state file is not owner-private")
+    except Exception:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+        raise
+    finally:
+        os.close(fd)
+    try:
+        _validate_existing_state_target(path, owner_uid=owner_uid)
+        os.replace(temporary, path)
+    except Exception:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+        raise
+    _fsync_directory(path.parent)
+
+
+def _validate_existing_state_target(path: Path, *, owner_uid: int) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_uid != owner_uid
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        raise ProfileStateError(f"existing state target is unsafe: {path.name}")
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise ProfileStateError("short write while persisting profile state")
+        view = view[written:]
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+__all__ = [
+    "API_VERSION",
+    "ComponentState",
+    "CurrentState",
+    "FailureRecord",
+    "ProcessIdentity",
+    "ProfileBusyError",
+    "ProfileLock",
+    "ProfileStateError",
+    "ProfileStateStore",
+    "ResourceCleaner",
+    "ResourceReceipt",
+    "RunPhase",
+    "RunState",
+    "SecretReceipt",
+    "StateConflictError",
+    "command_digest",
+    "utc_now",
+]

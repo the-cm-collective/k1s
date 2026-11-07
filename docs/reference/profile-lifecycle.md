@@ -95,3 +95,50 @@ The existing `profile start`, `status`, `stop`, and `restart` commands remain
 legacy compatibility actions backed by the repository-local profile runner.
 They are not redefined by this installed contract and are not evidence that
 the deferred role execution paths above are ready.
+
+## Installed state and supervision primitives
+
+`k1s-core` includes an additive, internal state and supervision layer for a
+later portable lifecycle adapter. It is not wired to the profile CLI in this
+checkpoint, does not select a backend, and starts nothing merely by being
+imported. The existing lifecycle commands and the catalog's `deferred`
+execution posture remain unchanged.
+
+The layer derives versioned application roots from the four XDG base
+directories: `k1s/v1` below config, state, data, and cache. Explicit XDG paths
+must be absolute and canonical. `HOME` is required only when a base needs its
+standard fallback. Owned roots and run directories are mode `0700`; locks,
+state, logs, and generated secrets are mode `0600`. Symlinks, foreign owners,
+unsafe modes, traversal, and noncanonical identifiers fail closed and are
+never repaired with `chown` or permission widening.
+
+Each canonical profile owns a stable `profile.lock`, `current.json`, and an
+immutable `runs/r1-<random-hex>/` directory. Canonical JSON records the
+profile, owner UID, monotonically increasing generation and revision, exact
+run ID, phase, component process identities, and owned secret/resource
+receipts. Atomic writes use owner-private same-directory temporary files,
+file and directory `fsync`, and reject an unsafe existing destination before
+replacement. Inspection is read-only: an absent profile returns absent
+without creating XDG directories or a lock; authoritative state without its
+pre-existing valid lock is an error.
+
+The durable phases are `preparing`, `starting`, `running`, `stopping`,
+`stopped`, `failed`, and `orphaned`, with explicit legal transitions. Process
+authority requires PID, process group, session, kernel boot ID, procfs start
+time, and executable device/inode. Stop and recovery revalidate the complete
+identity before every process-group signal. A reused PID or any identity
+mismatch is fenced as orphaned and is never signalled.
+
+Generated secrets and non-process resources carry exact run/profile ownership
+receipts. Cleanup uses only the recorded allowlisted handler and exact secret
+device/inode, in reverse resource order. Successful receipts are removed;
+failed and pending receipts remain for deterministic same-run retry. No glob,
+prefix, process scan, socket scan, or ambient backend discovery grants
+ownership. Logs and stopped-run state are retained; deletion and pruning are
+later lifecycle work.
+
+These are packaged source contracts and deterministic fakeable boundaries,
+not evidence of live supervisor or backend enforcement. Portable backends,
+CLI activation, legacy-state migration, restart policy, host preparation,
+run deletion, WorkerBee integration, and distributed/HA ownership remain
+deferred to separately reviewed checkpoints.

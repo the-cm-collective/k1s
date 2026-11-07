@@ -64,6 +64,16 @@ virtual environment outside the checkout, compares its schema and role
 contract with the Python API, and exercises non-mutating `profile list`,
 `doctor`, and `plan` commands with indexes and network sockets disabled.
 
+The wheel also owns the additive `ae.kctl.profile_paths`,
+`ae.kctl.profile_state`, and `ae.kctl.profile_supervisor` modules. The strict
+installed-artifact gate imports them outside the checkout and exercises a
+synthetic state-machine run only beneath a disposable owner-private XDG root.
+That smoke verifies read-only absent-state inspection, canonical state,
+cleanup completion, and module provenance without launching a process,
+selecting a backend, contacting a socket, or touching the invoking user's
+real HOME/XDG directories. These modules do not alter the catalog or activate
+the legacy lifecycle commands.
+
 The existing `profile start|status|stop|restart` compatibility actions and
 lab/example helpers deliberately use repository scripts. They remain separate
 experimental or later lifecycle contracts. Those repository paths are not
