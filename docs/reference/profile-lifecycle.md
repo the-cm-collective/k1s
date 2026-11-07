@@ -41,18 +41,18 @@ start a supervisor, or activate a runtime.
 
 | Role | Contract posture | Production eligible | Components | Execution |
 | --- | --- | --- | --- | --- |
-| `local` | GA | yes | controller, local node | deferred |
-| `core` | GA | yes | controller | deferred |
+| `local` | GA | yes | controller, local node | portable; source-validated/unqualified |
+| `core` | GA | yes | controller | portable; source-validated/unqualified |
 | `edge-gateway` | GA | yes | gateway only | deferred |
 | `node` | GA | yes | node agent | deferred |
 | `edge-dev` | development-only | no | gateway, worker stub | deferred |
 | `core-ha` | preview | no | controller replica set, HA control plane | deferred |
 
-GA describes the stability of the installed catalog and plan schema. It does
-not claim that a stateful profile execution path has been implemented or
-release-qualified. Stateful execution, supervision, state ownership, backend
-selection, host preparation, and rollback belong to later lifecycle
-checkpoints.
+GA describes the stability of the installed catalog and plan schema. The
+`portable` execution status for `local` and `core` says that an installed
+source path exists; it does not claim that Podman, Docker, or the profile is
+live-qualified. Both remain `source-validated/unqualified` until the later
+isolated WorkerBee/runtime lane qualifies an exact engine and environment.
 
 `core-ha` is not production eligible until a later release-qualification
 checkpoint explicitly promotes it.
@@ -79,30 +79,38 @@ adapter metadata, not additional public profile aliases.
 `profile list` emits all canonical roles, aliases, postures, component IDs,
 and deferred requirements. It exits zero.
 
-`profile doctor` performs static installation checks only: supported Python,
+Without `--engine`, `profile doctor` performs static installation checks only:
+supported Python,
 Linux platform, the `ae` import, `k1s-core` distribution metadata, the `k1s`
 console entry point, catalog consistency, and profile posture. It does not
 enumerate or print environment values. A failed installed contract returns
 exit code 1; warnings such as preview/development posture or deferred
-execution return zero. Invalid command usage returns 2.
+execution return zero. `profile doctor local|core --engine podman|docker`
+performs one explicitly selected, bounded, read-only capability query. It
+does not fall back to another engine, start a daemon or machine, create XDG
+state, acquire a mutation lock, or promote live qualification. Invalid command
+usage returns 2.
 
 `profile plan` returns declarative component identifiers, prerequisites,
 posture warnings, and compatibility context. It never returns an executable
 command or a mutable state path. A recognized canonical role or alias returns
 zero; invalid usage returns 2.
 
-The existing `profile start`, `status`, `stop`, and `restart` commands remain
-legacy compatibility actions backed by the repository-local profile runner.
-They are not redefined by this installed contract and are not evidence that
-the deferred role execution paths above are ready.
+Installed `profile start`, `status`, `stop`, and `restart` use the portable
+path for canonical `local` and `core`. Other names retain the repository-local
+compatibility runner; `--legacy` makes that boundary explicit where supported.
+There is no automatic Podman/Docker fallback.
 
-## Installed state and supervision primitives
+## Portable local/core transaction
 
-`k1s-core` includes an additive, internal state and supervision layer for a
-later portable lifecycle adapter. It is not wired to the profile CLI in this
-checkpoint, does not select a backend, and starts nothing merely by being
-imported. The existing lifecycle commands and the catalog's `deferred`
-execution posture remain unchanged.
+`k1s-core` includes an installed portable local/core adapter. Importing it,
+listing profiles, and planning profiles start nothing. An explicit start first
+probes exactly the requested engine, persists its absolute executable identity
+and deterministic plan digest, writes an exact current/run transaction
+journal, and launches components behind an activation gate. The gate opens
+only after exact process identity is durable. Bounded loopback readiness then
+advances components in controller-before-node order. Stop revalidates complete
+process identity and uses reverse dependency order.
 
 The layer derives versioned application roots from the four XDG base
 directories: `k1s/v1` below config, state, data, and cache. Explicit XDG paths
@@ -112,11 +120,16 @@ state, logs, and generated secrets are mode `0600`. Symlinks, foreign owners,
 unsafe modes, traversal, and noncanonical identifiers fail closed and are
 never repaired with `chown` or permission widening.
 
-Each canonical profile owns a stable `profile.lock`, `current.json`, and an
-immutable `runs/r1-<random-hex>/` directory. Canonical JSON records the
+Each canonical profile owns a stable `profile.lock`, `current.json`,
+`transaction.json`, and an immutable `runs/r1-<random-hex>/` directory.
+Canonical JSON records the
 profile, owner UID, monotonically increasing generation and revision, exact
 run ID, phase, component process identities, and owned secret/resource
-receipts. Atomic writes use owner-private same-directory temporary files,
+receipts. The transaction journal records complete before/after identities
+for each current/run mutation. Recovery accepts only an exact before pair, an
+exact completed pair, or the recognized run-after/current-before intermediate
+pair; every other mixture fails closed. Atomic writes use owner-private
+same-directory temporary files,
 file and directory `fsync`, and reject an unsafe existing destination before
 replacement. Inspection is read-only: an absent profile returns absent
 without creating XDG directories or a lock; authoritative state without its
@@ -138,7 +151,8 @@ ownership. Logs and stopped-run state are retained; deletion and pruning are
 later lifecycle work.
 
 These are packaged source contracts and deterministic fakeable boundaries,
-not evidence of live supervisor or backend enforcement. Portable backends,
-CLI activation, legacy-state migration, restart policy, host preparation,
-run deletion, WorkerBee integration, and distributed/HA ownership remain
-deferred to separately reviewed checkpoints.
+not evidence of live Podman/Docker qualification. This checkpoint uses only
+injected engine, process, readiness, and signal boundaries in validation.
+Host preparation, ambient resource adoption, run deletion, WorkerBee live
+qualification, and distributed/HA ownership remain deferred to separately
+reviewed checkpoints.

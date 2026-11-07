@@ -29,7 +29,13 @@ from ae.observability.logging import configure_logging
 from ae.controller.reconciler import Reconciler
 from ae.controller.state import RegistryConflictError, SQLiteStateStore, state_store_from_env
 from ae.ingress.service import IngressService
-from ae.kctl.lifecycle import LIFECYCLE_ACTIONS, PROFILE_NAMES, LifecycleManager
+from ae.kctl.lifecycle import LIFECYCLE_ACTIONS, PROFILE_NAMES, LifecycleManager, LifecycleResult
+from ae.kctl.profile_backend import (
+    PORTABLE_PROFILES,
+    PortableLifecycleResult,
+    PortableProfileManager,
+)
+from ae.kctl.profile_engine import SelectedEngineProbe
 from ae.kctl.profiles import (
     PROFILE_INPUT_NAMES,
     ReadOnlyDoctorProbe,
@@ -202,10 +208,25 @@ def build_parser() -> argparse.ArgumentParser:
         )
         action_p.add_argument("profile", choices=PROFILE_INPUT_NAMES)
         action_p.add_argument("-o", "--output", choices=["text", "json"], default="text")
+        if action == "doctor":
+            action_p.add_argument(
+                "--engine",
+                choices=("podman", "docker"),
+                default=None,
+                help="Explicit bounded read-only engine capability query",
+            )
+    lifecycle_names = tuple(dict.fromkeys((*PORTABLE_PROFILES, *PROFILE_NAMES)))
     for action in LIFECYCLE_ACTIONS:
         action_p = profile_sub.add_parser(action, help=f"{action.capitalize()} a runtime profile")
-        action_p.add_argument("profile", choices=PROFILE_NAMES)
+        action_p.add_argument("profile", choices=lifecycle_names)
         action_p.add_argument("-o", "--output", choices=["text", "json"], default="text")
+        action_p.add_argument(
+            "--legacy",
+            action="store_true",
+            help="Use the repository-local compatibility runner where supported",
+        )
+        if action in {"start", "restart"}:
+            action_p.add_argument("--backend", choices=("podman", "docker"), default=None)
 
     return p
 
@@ -585,6 +606,18 @@ def profile_lifecycle_manager_factory() -> LifecycleManager:
     return LifecycleManager.from_environment()
 
 
+def portable_profile_manager_factory() -> PortableProfileManager:
+    """Return the installed local/core manager only for an explicit lifecycle action."""
+
+    return PortableProfileManager.system()
+
+
+def profile_engine_probe_factory() -> SelectedEngineProbe:
+    """Return the bounded read-only probe only after ``doctor --engine``."""
+
+    return SelectedEngineProbe.system()
+
+
 def profile_doctor_probe_factory() -> ReadOnlyDoctorProbe:
     """Return the static installed-package probe used by ``profile doctor``."""
 
@@ -611,22 +644,48 @@ def handle_profile(ns: argparse.Namespace) -> int:
         return 0
 
     if ns.profile_action == "doctor":
-        payload, exit_code = profile_doctor_payload(ns.profile, profile_doctor_probe_factory())
+        payload, exit_code = profile_doctor_payload(
+            ns.profile,
+            profile_doctor_probe_factory(),
+            engine=ns.engine,
+            engine_probe=(profile_engine_probe_factory() if ns.engine is not None else None),
+        )
         if ns.output == "json":
             print(json.dumps(payload, sort_keys=True))
         else:
             print(render_profile_text(payload))
         return exit_code
 
-    result = profile_lifecycle_manager_factory().perform(ns.profile_action, ns.profile)
+    legacy = bool(ns.legacy)
+    backend = getattr(ns, "backend", None)
+    result: PortableLifecycleResult | LifecycleResult
+    if ns.profile in PORTABLE_PROFILES and not legacy:
+        result = portable_profile_manager_factory().perform(
+            ns.profile_action,
+            ns.profile,
+            backend=backend,
+        )
+    else:
+        if ns.profile == "local":
+            raise ValueError("local has no repository-local legacy lifecycle runner")
+        if backend is not None:
+            raise ValueError("--backend is available only for portable local/core execution")
+        result = profile_lifecycle_manager_factory().perform(ns.profile_action, ns.profile)
+    result_payload = result.to_dict()
     if ns.output == "json":
-        print(json.dumps(result.to_dict(), sort_keys=True))
+        print(json.dumps(result_payload, sort_keys=True))
     else:
         details = [f"profile={result.profile}", f"status={result.status}"]
-        if result.pid is not None:
-            details.append(f"pid={result.pid}")
-        if result.command:
-            details.append(f"command={' '.join(result.command)}")
+        pid = result_payload.get("pid")
+        command = result_payload.get("command")
+        if pid is not None:
+            details.append(f"pid={pid}")
+        if isinstance(command, (list, tuple)) and all(isinstance(item, str) for item in command):
+            details.append(f"command={' '.join(command)}")
+        if result_payload.get("backend"):
+            details.append(f"backend={result_payload['backend']}")
+        if result_payload.get("run_id"):
+            details.append(f"run={result_payload['run_id']}")
         print(" ".join(details))
     return result.exit_code
 

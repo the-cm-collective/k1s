@@ -207,6 +207,26 @@ class _RuntimeStub:
         return list(self.app_containers)
 
 
+def test_healthz_is_static_and_does_not_cross_runtime_boundary() -> None:
+    class RuntimeMustNotBeUsed:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"healthz crossed runtime boundary: {name}")
+
+    output = io.BytesIO()
+    handler = _GetHandler(path="/healthz", wfile=output, runtime=RuntimeMustNotBeUsed())
+
+    AgentHandler.do_GET(handler)
+
+    assert handler.status_codes == [200]
+    payload = json.loads(output.getvalue().split(b"\r\n\r\n", 1)[-1])
+    assert payload == {
+        "apiVersion": "k1s.dev/v1alpha1",
+        "kind": "NodeAgentHealth",
+        "nodeId": "node-test",
+        "ready": True,
+    }
+
+
 class _ContainerdRuntimeStub(_RuntimeStub):
     pass
 

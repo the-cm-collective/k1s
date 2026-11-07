@@ -64,21 +64,23 @@ virtual environment outside the checkout, compares its schema and role
 contract with the Python API, and exercises non-mutating `profile list`,
 `doctor`, and `plan` commands with indexes and network sockets disabled.
 
-The wheel also owns the additive `ae.kctl.profile_paths`,
-`ae.kctl.profile_state`, and `ae.kctl.profile_supervisor` modules. The strict
+The wheel also owns `ae.kctl.profile_paths`, `ae.kctl.profile_state`,
+`ae.kctl.profile_supervisor`, `ae.kctl.profile_engine`,
+`ae.kctl.profile_component_runner`, and `ae.kctl.profile_backend`. The strict
 installed-artifact gate imports them outside the checkout and exercises a
 synthetic state-machine run only beneath a disposable owner-private XDG root.
 That smoke verifies read-only absent-state inspection, canonical state,
 cleanup completion, and module provenance without launching a process,
 selecting a backend, contacting a socket, or touching the invoking user's
-real HOME/XDG directories. These modules do not alter the catalog or activate
-the legacy lifecycle commands.
+real HOME/XDG directories. The installed smoke constructs the deterministic
+local plan with a synthetic injected capability but never probes an engine,
+opens a socket, launches a process, or activates a runtime.
 
-The existing `profile start|status|stop|restart` compatibility actions and
-lab/example helpers deliberately use repository scripts. They remain separate
-experimental or later lifecycle contracts. Those repository paths are not
-copied into the runtime wheel, and the static catalog does not make their
-stateful behavior part of the installed package contract.
+Canonical `local` and `core` expose the installed portable lifecycle source
+path as `source-validated/unqualified`; this posture is not live Podman or
+Docker qualification. Other compatibility actions and lab/example helpers
+deliberately use repository scripts. Those repository paths are not copied
+into the runtime wheel.
 
 ## Version posture
 

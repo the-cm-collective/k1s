@@ -24,7 +24,9 @@ from ae.kctl.profile_paths import (
 )
 
 API_VERSION = "k1s.dev/v1alpha1"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSION = 1
+TRANSACTION_SCHEMA_VERSION = 1
 MAX_STATE_BYTES = 1024 * 1024
 
 RunPhase = Literal[
@@ -111,6 +113,23 @@ def command_digest(argv: Sequence[str]) -> str:
         digest.update(len(encoded).to_bytes(8, "big"))
         digest.update(encoded)
     return f"sha256:{digest.hexdigest()}"
+
+
+def _validate_digest(value: str, *, field: str) -> str:
+    if not isinstance(value, str) or not value.startswith("sha256:") or len(value) != 71:
+        raise ProfileStateError(f"{field} must be one SHA-256 identity")
+    try:
+        int(value.removeprefix("sha256:"), 16)
+    except ValueError as exc:
+        raise ProfileStateError(f"{field} must be one SHA-256 identity") from exc
+    return value
+
+
+def _payload_digest(value: Mapping[str, object] | None) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _strict_int(value: object, *, field: str, minimum: int = 0) -> int:
@@ -204,12 +223,7 @@ class ComponentState:
 
     def __post_init__(self) -> None:
         validate_identifier(self.component_id, field="component ID")
-        if not self.command_digest.startswith("sha256:") or len(self.command_digest) != 71:
-            raise ProfileStateError("command digest must be one SHA-256 identity")
-        try:
-            int(self.command_digest.removeprefix("sha256:"), 16)
-        except ValueError as exc:
-            raise ProfileStateError("command digest must be one SHA-256 identity") from exc
+        _validate_digest(self.command_digest, field="command digest")
         validate_relative_path(self.log_path, field="component log path")
         if self.status not in {
             "prepared",
@@ -457,6 +471,185 @@ class CurrentState:
             "updatedAt": self.updated_at,
         }
 
+    @classmethod
+    def from_payload(cls, value: object) -> CurrentState:
+        raw = _mapping(value, field="current state")
+        _exact_keys(
+            raw,
+            {
+                "apiVersion",
+                "generation",
+                "kind",
+                "ownerUid",
+                "profile",
+                "revision",
+                "runId",
+                "schemaVersion",
+                "updatedAt",
+            },
+            field="current state",
+        )
+        _require_envelope(raw, kind="ProfileCurrent")
+        return cls(
+            profile=validate_identifier(
+                _strict_text(raw["profile"], field="current.profile"), field="profile"
+            ),
+            run_id=validate_run_id(_strict_text(raw["runId"], field="current.runId")),
+            generation=_strict_int(raw["generation"], field="current.generation", minimum=1),
+            revision=_strict_int(raw["revision"], field="current.revision", minimum=1),
+            owner_uid=_strict_int(raw["ownerUid"], field="current.ownerUid"),
+            updated_at=_canonical_timestamp(
+                _strict_text(raw["updatedAt"], field="current.updatedAt")
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StateTransaction:
+    """One exact current/run two-file mutation and its before/after identities."""
+
+    profile: str
+    run_id: str
+    generation: int
+    owner_uid: int
+    before_current: dict[str, object] | None
+    before_run: dict[str, object] | None
+    after_current: dict[str, object]
+    after_run: dict[str, object]
+    before_current_digest: str
+    before_run_digest: str
+    after_current_digest: str
+    after_run_digest: str
+
+    def __post_init__(self) -> None:
+        validate_identifier(self.profile, field="transaction profile")
+        validate_run_id(self.run_id)
+        _strict_int(self.generation, field="transaction generation", minimum=1)
+        _strict_int(self.owner_uid, field="transaction ownerUid")
+        expected = (
+            (self.before_current_digest, self.before_current, "before current digest"),
+            (self.before_run_digest, self.before_run, "before run digest"),
+            (self.after_current_digest, self.after_current, "after current digest"),
+            (self.after_run_digest, self.after_run, "after run digest"),
+        )
+        for digest, payload, field in expected:
+            _validate_digest(digest, field=field)
+            if digest != _payload_digest(payload):
+                raise ProfileStateError(f"{field} differs from its payload")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        profile: str,
+        run_id: str,
+        generation: int,
+        owner_uid: int,
+        before_current: Mapping[str, object] | None,
+        before_run: Mapping[str, object] | None,
+        after_current: Mapping[str, object],
+        after_run: Mapping[str, object],
+    ) -> StateTransaction:
+        before_current_copy = None if before_current is None else dict(before_current)
+        before_run_copy = None if before_run is None else dict(before_run)
+        after_current_copy = dict(after_current)
+        after_run_copy = dict(after_run)
+        return cls(
+            profile=profile,
+            run_id=run_id,
+            generation=generation,
+            owner_uid=owner_uid,
+            before_current=before_current_copy,
+            before_run=before_run_copy,
+            after_current=after_current_copy,
+            after_run=after_run_copy,
+            before_current_digest=_payload_digest(before_current_copy),
+            before_run_digest=_payload_digest(before_run_copy),
+            after_current_digest=_payload_digest(after_current_copy),
+            after_run_digest=_payload_digest(after_run_copy),
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "afterCurrent": self.after_current,
+            "afterCurrentDigest": self.after_current_digest,
+            "afterRun": self.after_run,
+            "afterRunDigest": self.after_run_digest,
+            "apiVersion": API_VERSION,
+            "beforeCurrent": self.before_current,
+            "beforeCurrentDigest": self.before_current_digest,
+            "beforeRun": self.before_run,
+            "beforeRunDigest": self.before_run_digest,
+            "generation": self.generation,
+            "kind": "ProfileStateTransaction",
+            "ownerUid": self.owner_uid,
+            "profile": self.profile,
+            "runId": self.run_id,
+            "schemaVersion": TRANSACTION_SCHEMA_VERSION,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> StateTransaction:
+        raw = _mapping(value, field="state transaction")
+        _exact_keys(
+            raw,
+            {
+                "afterCurrent",
+                "afterCurrentDigest",
+                "afterRun",
+                "afterRunDigest",
+                "apiVersion",
+                "beforeCurrent",
+                "beforeCurrentDigest",
+                "beforeRun",
+                "beforeRunDigest",
+                "generation",
+                "kind",
+                "ownerUid",
+                "profile",
+                "runId",
+                "schemaVersion",
+            },
+            field="state transaction",
+        )
+        if (
+            raw["apiVersion"] != API_VERSION
+            or raw["kind"] != "ProfileStateTransaction"
+            or raw["schemaVersion"] != TRANSACTION_SCHEMA_VERSION
+        ):
+            raise ProfileStateError("state transaction envelope differs")
+
+        def optional_mapping(payload: object, *, field: str) -> dict[str, object] | None:
+            return None if payload is None else _mapping(payload, field=field)
+
+        return cls(
+            profile=validate_identifier(
+                _strict_text(raw["profile"], field="transaction.profile"),
+                field="transaction profile",
+            ),
+            run_id=validate_run_id(_strict_text(raw["runId"], field="transaction.runId")),
+            generation=_strict_int(raw["generation"], field="transaction.generation", minimum=1),
+            owner_uid=_strict_int(raw["ownerUid"], field="transaction.ownerUid"),
+            before_current=optional_mapping(
+                raw["beforeCurrent"], field="transaction.beforeCurrent"
+            ),
+            before_run=optional_mapping(raw["beforeRun"], field="transaction.beforeRun"),
+            after_current=_mapping(raw["afterCurrent"], field="transaction.afterCurrent"),
+            after_run=_mapping(raw["afterRun"], field="transaction.afterRun"),
+            before_current_digest=_strict_text(
+                raw["beforeCurrentDigest"], field="transaction.beforeCurrentDigest", maximum=71
+            ),
+            before_run_digest=_strict_text(
+                raw["beforeRunDigest"], field="transaction.beforeRunDigest", maximum=71
+            ),
+            after_current_digest=_strict_text(
+                raw["afterCurrentDigest"], field="transaction.afterCurrentDigest", maximum=71
+            ),
+            after_run_digest=_strict_text(
+                raw["afterRunDigest"], field="transaction.afterRunDigest", maximum=71
+            ),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class RunState:
@@ -469,6 +662,8 @@ class RunState:
     phase: RunPhase
     created_at: str
     updated_at: str
+    backend_id: str | None = None
+    plan_digest: str | None = None
     components: tuple[ComponentState, ...] = ()
     resource_receipts: tuple[ResourceReceipt, ...] = ()
     secret_receipts: tuple[SecretReceipt, ...] = ()
@@ -486,6 +681,13 @@ class RunState:
             raise ProfileStateError("unsupported run phase")
         _canonical_timestamp(self.created_at)
         _canonical_timestamp(self.updated_at)
+        if (self.backend_id is None) != (self.plan_digest is None):
+            raise ProfileStateError("backend identity and execution plan digest must be paired")
+        if self.backend_id is not None:
+            if self.backend_id not in {"podman", "docker"}:
+                raise ProfileStateError("run backend identity is unsupported")
+            assert self.plan_digest is not None
+            _validate_digest(self.plan_digest, field="execution plan digest")
         if type(self.cleanup_complete) is not bool:
             raise ProfileStateError("cleanupComplete must be a bool")
         if self.phase == "stopped" and not self.cleanup_complete:
@@ -527,6 +729,7 @@ class RunState:
     def to_payload(self) -> dict[str, object]:
         return {
             "apiVersion": API_VERSION,
+            "backendId": self.backend_id,
             "cleanupComplete": self.cleanup_complete,
             "components": [component.to_payload() for component in self.components],
             "createdAt": self.created_at,
@@ -535,6 +738,7 @@ class RunState:
             "kind": "ProfileRunState",
             "ownerUid": self.owner_uid,
             "phase": self.phase,
+            "planDigest": self.plan_digest,
             "profile": self.profile,
             "requestedName": self.requested_name,
             "resourceReceipts": [receipt.to_payload() for receipt in self.resource_receipts],
@@ -638,9 +842,18 @@ class ProfileStateStore:
             create=create,
         )
 
-    def begin_run(self) -> RunState:
+    def begin_run(
+        self,
+        *,
+        backend_id: str | None = None,
+        plan_digest: str | None = None,
+    ) -> RunState:
         with self.locked():
-            current = self._read_current(optional=True)
+            self._require_no_transaction()
+            current_payload = self._read_current_payload(optional=True)
+            current = (
+                None if current_payload is None else CurrentState.from_payload(current_payload)
+            )
             generation = 1
             if current is not None:
                 previous = self._read_run(current.run_id)
@@ -664,13 +877,18 @@ class ProfileStateStore:
                 phase="preparing",
                 created_at=timestamp,
                 updated_at=timestamp,
+                backend_id=backend_id,
+                plan_digest=plan_digest,
             )
             run_layout = self.layout.for_run(run_id)
             if run_layout.run_state.parent.exists():
                 raise StateConflictError("generated run ID already exists")
             run_layout.ensure_run()
-            self._write_run(state)
-            self._write_current(self._current_for(state))
+            self._persist_pair(
+                before_current=current_payload,
+                before_run=None,
+                state=state,
+            )
             return state
 
     def inspect(self) -> RunState | None:
@@ -686,6 +904,8 @@ class ProfileStateStore:
         ):
             raise ProfileStateError("profile state directory is not owner-private")
         with self.locked(shared=True, create=False):
+            if self._read_transaction(optional=True) is not None:
+                raise StateConflictError("profile state transaction requires explicit recovery")
             current = self._read_current(optional=True)
             if current is None:
                 return None
@@ -918,6 +1138,7 @@ class ProfileStateStore:
         self, run_id: str, expected_revision: int | None
     ) -> tuple[RunState, CurrentState]:
         validate_run_id(run_id)
+        self._require_no_transaction()
         current = self._read_current(optional=False)
         assert current is not None
         if current.run_id != run_id:
@@ -960,10 +1181,86 @@ class ProfileStateStore:
     def _persist_mutation(self, current: CurrentState, state: RunState) -> CurrentState:
         if current.run_id != state.run_id or current.generation != state.generation:
             raise StateConflictError("mutation changed immutable run identity")
-        self._write_run(state)
+        before_current = self._read_current_payload(optional=False)
+        assert before_current is not None
+        if CurrentState.from_payload(before_current) != current:
+            raise StateConflictError("current state changed before mutation journaling")
+        before_run = self._read_run_payload(state.run_id, optional=False)
+        assert before_run is not None
+        before_state = self._read_run(state.run_id)
+        if before_state.run_id != state.run_id:
+            raise StateConflictError("run state changed before mutation journaling")
+        return self._persist_pair(
+            before_current=before_current,
+            before_run=before_run,
+            state=state,
+        )
+
+    def _persist_pair(
+        self,
+        *,
+        before_current: Mapping[str, object] | None,
+        before_run: Mapping[str, object] | None,
+        state: RunState,
+    ) -> CurrentState:
+        self._require_no_transaction()
         next_current = self._current_for(state)
+        transaction = StateTransaction.create(
+            profile=state.profile,
+            run_id=state.run_id,
+            generation=state.generation,
+            owner_uid=state.owner_uid,
+            before_current=before_current,
+            before_run=before_run,
+            after_current=next_current.to_payload(),
+            after_run=state.to_payload(),
+        )
+        self._write_transaction(transaction)
+        self._write_run(state)
         self._write_current(next_current)
+        self._remove_transaction()
         return next_current
+
+    def reconcile_transaction(self) -> str:
+        """Repair only a recognized journal state under the exclusive lock."""
+
+        with self.locked():
+            transaction = self._read_transaction(optional=True)
+            if transaction is None:
+                return "clean"
+            if (
+                transaction.profile != self.layout.canonical_profile
+                or transaction.owner_uid != self.layout.roots.owner_uid
+            ):
+                raise StateConflictError("state transaction ownership differs")
+            current = self._read_current_payload(optional=True)
+            run = self._read_run_payload(transaction.run_id, optional=True)
+            current_digest = _payload_digest(current)
+            run_digest = _payload_digest(run)
+            before = (
+                transaction.before_current_digest,
+                transaction.before_run_digest,
+            )
+            after = (
+                transaction.after_current_digest,
+                transaction.after_run_digest,
+            )
+            observed = (current_digest, run_digest)
+            if observed == before:
+                self._remove_transaction()
+                return "aborted"
+            if observed == after:
+                self._remove_transaction()
+                return "completed"
+            if observed == (transaction.before_current_digest, transaction.after_run_digest):
+                self._write_current_payload(transaction.after_current)
+                self._remove_transaction()
+                return "advanced-current"
+            raise StateConflictError("state transaction does not match a recoverable exact state")
+
+    def _require_no_transaction(self) -> None:
+        if self._read_transaction(optional=True) is not None:
+            raise StateConflictError("profile state transaction requires explicit recovery")
 
     def _write_current(self, state: CurrentState) -> None:
         _atomic_json_write(
@@ -983,12 +1280,59 @@ class ProfileStateStore:
             random_bytes=self.random_bytes,
         )
 
-    def _read_current(self, *, optional: bool) -> CurrentState | None:
+    def _write_transaction(self, transaction: StateTransaction) -> None:
+        _atomic_json_write(
+            self.layout.transaction,
+            transaction.to_payload(),
+            owner_uid=self.layout.roots.owner_uid,
+            random_bytes=self.random_bytes,
+        )
+
+    def _write_current_payload(self, payload: Mapping[str, object]) -> None:
+        # Parse before writing so reconciliation never promotes malformed bytes.
+        CurrentState.from_payload(payload)
+        _atomic_json_write(
+            self.layout.current,
+            payload,
+            owner_uid=self.layout.roots.owner_uid,
+            random_bytes=self.random_bytes,
+        )
+
+    def _remove_transaction(self) -> None:
+        _validate_existing_state_target(
+            self.layout.transaction,
+            owner_uid=self.layout.roots.owner_uid,
+        )
+        try:
+            self.layout.transaction.unlink()
+        except FileNotFoundError as exc:
+            raise StateConflictError("state transaction disappeared during mutation") from exc
+        _fsync_directory(self.layout.transaction.parent)
+
+    def _read_transaction(self, *, optional: bool) -> StateTransaction | None:
         raw = _read_canonical_json(
+            self.layout.transaction,
+            owner_uid=self.layout.roots.owner_uid,
+            optional=optional,
+        )
+        return None if raw is None else StateTransaction.from_payload(raw)
+
+    def _read_current_payload(self, *, optional: bool) -> dict[str, object] | None:
+        return _read_canonical_json(
             self.layout.current,
             owner_uid=self.layout.roots.owner_uid,
             optional=optional,
         )
+
+    def _read_run_payload(self, run_id: str, *, optional: bool) -> dict[str, object] | None:
+        return _read_canonical_json(
+            self.layout.for_run(run_id).run_state,
+            owner_uid=self.layout.roots.owner_uid,
+            optional=optional,
+        )
+
+    def _read_current(self, *, optional: bool) -> CurrentState | None:
+        raw = self._read_current_payload(optional=optional)
         if raw is None:
             return None
         _exact_keys(
@@ -1006,28 +1350,13 @@ class ProfileStateStore:
             },
             field="current state",
         )
-        _require_envelope(raw, kind="ProfileCurrent")
-        return CurrentState(
-            profile=validate_identifier(
-                _strict_text(raw["profile"], field="current.profile"), field="profile"
-            ),
-            run_id=validate_run_id(_strict_text(raw["runId"], field="current.runId")),
-            generation=_strict_int(raw["generation"], field="current.generation", minimum=1),
-            revision=_strict_int(raw["revision"], field="current.revision", minimum=1),
-            owner_uid=_strict_int(raw["ownerUid"], field="current.ownerUid"),
-            updated_at=_canonical_timestamp(
-                _strict_text(raw["updatedAt"], field="current.updatedAt")
-            ),
-        )
+        return CurrentState.from_payload(raw)
 
     def _read_run(self, run_id: str) -> RunState:
-        layout = self.layout.for_run(run_id)
-        raw = _read_canonical_json(
-            layout.run_state,
-            owner_uid=self.layout.roots.owner_uid,
-            optional=False,
-        )
+        raw = self._read_run_payload(run_id, optional=False)
         assert raw is not None
+        schema_version = _require_envelope(raw, kind="ProfileRunState")
+        versioned_keys = {"backendId", "planDigest"} if schema_version == SCHEMA_VERSION else set()
         _exact_keys(
             raw,
             {
@@ -1048,10 +1377,10 @@ class ProfileStateStore:
                 "schemaVersion",
                 "secretReceipts",
                 "updatedAt",
-            },
+            }
+            | versioned_keys,
             field="run state",
         )
-        _require_envelope(raw, kind="ProfileRunState")
         phase = _strict_text(raw["phase"], field="run.phase", maximum=32)
         if phase not in RUN_PHASES:
             raise ProfileStateError("unsupported run phase")
@@ -1073,6 +1402,16 @@ class ProfileStateStore:
             phase=phase,
             created_at=_canonical_timestamp(_strict_text(raw["createdAt"], field="run.createdAt")),
             updated_at=_canonical_timestamp(_strict_text(raw["updatedAt"], field="run.updatedAt")),
+            backend_id=(
+                None
+                if schema_version == LEGACY_SCHEMA_VERSION or raw["backendId"] is None
+                else _strict_text(raw["backendId"], field="run.backendId", maximum=32)
+            ),
+            plan_digest=(
+                None
+                if schema_version == LEGACY_SCHEMA_VERSION or raw["planDigest"] is None
+                else _strict_text(raw["planDigest"], field="run.planDigest", maximum=71)
+            ),
             components=tuple(
                 ComponentState.from_payload(item)
                 for item in _list(raw["components"], field="run.components")
@@ -1090,13 +1429,14 @@ class ProfileStateStore:
         )
 
 
-def _require_envelope(raw: Mapping[str, object], *, kind: str) -> None:
+def _require_envelope(raw: Mapping[str, object], *, kind: str) -> int:
     if raw["apiVersion"] != API_VERSION:
         raise ProfileStateError("profile state API version mismatch")
-    if raw["schemaVersion"] != SCHEMA_VERSION:
+    if raw["schemaVersion"] not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
         raise ProfileStateError("profile state schema version mismatch")
     if raw["kind"] != kind:
         raise ProfileStateError("profile state kind mismatch")
+    return raw["schemaVersion"]
 
 
 def _mapping(value: object, *, field: str) -> dict[str, object]:
@@ -1278,6 +1618,7 @@ __all__ = [
     "RunPhase",
     "RunState",
     "SecretReceipt",
+    "StateTransaction",
     "StateConflictError",
     "command_digest",
     "utc_now",

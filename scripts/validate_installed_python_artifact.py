@@ -171,6 +171,8 @@ import os
 import sys
 import ae
 from ae.apishim.server import _openapi_v3_stub, _swagger_doc
+from ae.kctl.profile_backend import build_execution_plan, portable_plan_digest
+from ae.kctl.profile_engine import EngineCapability, QUALIFICATION_POSTURE
 from ae.kctl.profile_paths import ProfileRoots
 from ae.kctl.profile_state import FailureRecord, ProfileStateStore
 from ae.kctl.profiles import PROFILE_INPUT_NAMES, PROFILE_NAMES, profile_catalog_payload
@@ -274,6 +276,10 @@ profile_by_name = {profile['name']: profile for profile in profile_catalog['prof
 assert profile_by_name['edge-gateway']['components'] == ['gateway']
 assert profile_by_name['core-ha']['contractPosture'] == 'preview'
 assert profile_by_name['core-ha']['productionEligible'] is False
+assert profile_by_name['local']['executionStatus'] == 'portable'
+assert profile_by_name['core']['executionStatus'] == 'portable'
+assert profile_by_name['local']['qualificationPosture'] == QUALIFICATION_POSTURE
+assert profile_by_name['core']['qualificationPosture'] == QUALIFICATION_POSTURE
 
 # Exercise only the additive installed state contract in an owner-private disposable root.
 # This never launches a component, resolves a backend, or touches the real HOME/XDG roots.
@@ -288,7 +294,32 @@ roots = ProfileRoots.from_environment(profile_env)
 store = ProfileStateStore(roots, 'local')
 assert store.inspect() is None
 assert not roots.state.exists()
-run = store.begin_run()
+synthetic_engine = EngineCapability(
+    backend='podman',
+    executable=Path(sys.executable).resolve(),
+    executable_device=0,
+    executable_inode=1,
+    version='installed-source-smoke',
+    rootless=True,
+)
+plan_digest = portable_plan_digest('local', synthetic_engine)
+run = store.begin_run(backend_id='podman', plan_digest=plan_digest)
+plan = build_execution_plan(
+    'local', synthetic_engine, run, store, python_executable=Path(sys.executable).resolve()
+)
+assert plan.digest == plan_digest
+assert [component.component_id for component in plan.components] == [
+    'controller', 'node-local'
+]
+expected_python = Path(sys.executable).resolve()
+assert all(Path(component.argv[0]) == expected_python for component in plan.components)
+assert not under(expected_python, source_root)
+assert all('HTTP_PROXY' not in dict(component.child_environment) for component in plan.components)
+assert all(
+    target.port in {9108, 9109, 9110}
+    for component in plan.components
+    for target in component.readiness
+)
 run = store.transition(
     run.run_id,
     'failed',
@@ -379,8 +410,17 @@ assert scripts == {'ae', 'ae-rotate-certs', 'k1s', 'ae-node', 'ae-gateway', 'ae-
             cwd=outside,
             env=env,
         )
-        if plan.get("mutating") is not False or plan.get("executionStatus") != "deferred":
+        portable_names = {"local", "core", "core-edge"}
+        expected_status = "portable" if profile_name in portable_names else "deferred"
+        if plan.get("mutating") is not False or plan.get("executionStatus") != expected_status:
             raise ValueError(f"installed profile plan is not static: {profile_name}")
+        if (
+            profile_name in portable_names
+            and plan.get("qualificationPosture") != "source-validated/unqualified"
+        ):
+            raise ValueError(
+                f"installed portable profile plan overclaims qualification: {profile_name}"
+            )
     for profile_name in ("local", "core", "edge-gateway", "node", "edge-dev", "core-ha"):
         doctor = _run_json(
             [str(bin_dir / "k1s"), "profile", "doctor", profile_name, "--output", "json"],

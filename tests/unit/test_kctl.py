@@ -9,6 +9,8 @@ from pathlib import Path
 import ae.kctl.__main__ as kctl_main
 from ae.kctl.__main__ import build_parser, main
 from ae.kctl.lifecycle import LifecycleResult
+from ae.kctl.profile_backend import PortableLifecycleResult
+from ae.kctl.profile_engine import EngineCapability
 from ae.kctl.profiles import InstalledProfileFacts
 
 
@@ -144,6 +146,8 @@ def test_profile_inspection_cli_is_non_mutating(monkeypatch, tmp_path, capsys) -
         guard.setattr(kctl_main, "profile_doctor_probe_factory", StaticProbe)
         guard.setattr(kctl_main, "_setup", fail)
         guard.setattr(kctl_main, "profile_lifecycle_manager_factory", fail)
+        guard.setattr(kctl_main, "portable_profile_manager_factory", fail)
+        guard.setattr(kctl_main, "profile_engine_probe_factory", fail)
         guard.setattr(kctl_main, "runtime_factory", fail)
         guard.setattr(kctl_main, "state_store_from_env", fail)
         guard.setattr(subprocess, "Popen", fail)
@@ -176,6 +180,83 @@ def test_profile_inspection_cli_is_non_mutating(monkeypatch, tmp_path, capsys) -
     assert Path.cwd() == cwd_before
     assert dict(os.environ) == environment_before
     assert tuple(tmp_path.iterdir()) == files_before
+
+
+def test_profile_doctor_probes_only_the_explicit_selected_engine(
+    monkeypatch,
+    capsys,
+) -> None:
+    class StaticProbe:
+        def inspect(self) -> InstalledProfileFacts:
+            return InstalledProfileFacts(
+                python_version=(3, 13),
+                platform="linux",
+                ae_importable=True,
+                distribution_version="0.1.8a1",
+                k1s_console_present=True,
+            )
+
+    calls: list[str] = []
+
+    class EngineProbe:
+        def probe(self, backend: str) -> EngineCapability:
+            calls.append(backend)
+            return EngineCapability(
+                backend="podman",
+                executable=Path("/usr/bin/podman"),
+                executable_device=1,
+                executable_inode=2,
+                version="5.0.0",
+                rootless=True,
+            )
+
+    monkeypatch.setattr(kctl_main, "profile_doctor_probe_factory", StaticProbe)
+    monkeypatch.setattr(kctl_main, "profile_engine_probe_factory", EngineProbe)
+
+    assert main(["profile", "doctor", "local", "--engine", "podman", "-o", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert calls == ["podman"]
+    assert payload["engineCapability"]["backend"] == "podman"
+    assert payload["qualificationPosture"] == "source-validated/unqualified"
+
+
+def test_local_and_core_route_to_portable_manager_without_legacy_fallback(
+    monkeypatch,
+    capsys,
+) -> None:
+    calls: list[tuple[str, str, str | None]] = []
+
+    class PortableManager:
+        def perform(
+            self,
+            action: str,
+            profile: str,
+            *,
+            backend: str | None = None,
+        ) -> PortableLifecycleResult:
+            calls.append((action, profile, backend))
+            return PortableLifecycleResult(
+                action="start",
+                profile="local",
+                status="started",
+                backend="podman",
+                run_id="r1-00000000000000000000000000000000",
+                generation=1,
+                phase="running",
+                exit_code=0,
+            )
+
+    monkeypatch.setattr(kctl_main, "portable_profile_manager_factory", PortableManager)
+    monkeypatch.setattr(
+        kctl_main,
+        "profile_lifecycle_manager_factory",
+        lambda: (_ for _ in ()).throw(AssertionError("legacy fallback used")),
+    )
+
+    assert main(["profile", "start", "local", "--backend", "podman", "-o", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert calls == [("start", "local", "podman")]
+    assert payload["qualification_posture"] == "source-validated/unqualified"
 
 
 def test_profile_inspection_json_never_discloses_environment_values(

@@ -109,6 +109,7 @@ def test_profile_layout_resolves_alias_before_constructing_owned_paths(tmp_path:
     assert layout.canonical_profile == "core"
     assert layout.lock == roots.state / "profiles/core/profile.lock"
     assert layout.current == roots.state / "profiles/core/current.json"
+    assert layout.transaction == roots.state / "profiles/core/transaction.json"
     assert layout.run_state == roots.state / f"profiles/core/runs/{run_id}/state.json"
     assert layout.log_path("controller") == (
         roots.state / f"profiles/core/runs/{run_id}/logs/controller.log"

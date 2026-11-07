@@ -57,6 +57,36 @@ class FakeLauncher:
         return self.pid
 
 
+class FakePending:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.activated = False
+        self.cancelled = False
+
+    def activate(self) -> None:
+        self.activated = True
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+class FakeGatedLauncher(FakeLauncher):
+    def __init__(self, pid: int = 42) -> None:
+        super().__init__(pid)
+        self.pending = FakePending(pid)
+
+    def spawn_gated(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        environment: Mapping[str, str],
+        log_path: Path,
+    ) -> FakePending:
+        self.calls.append((tuple(argv), cwd, dict(environment), log_path))
+        return self.pending
+
+
 class FakeSignals:
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
@@ -154,6 +184,40 @@ def test_launch_fails_if_process_exits_before_identity_capture(tmp_path: Path) -
             environment={},
             log_path=tmp_path / "logs/controller.log",
         )
+
+
+def test_prepare_component_captures_exact_identity_before_gated_activation(
+    tmp_path: Path,
+) -> None:
+    expected = _identity()
+    launcher = FakeGatedLauncher()
+    supervisor = ProfileSupervisor(
+        inspector=FakeInspector([expected]),
+        launcher=launcher,
+        signals=FakeSignals(),
+        monotonic=FakeClock(),
+    )
+
+    component, pending = supervisor.prepare_component(
+        "controller",
+        ("/usr/bin/python3", "-m", "ae.kctl.profile_component_runner"),
+        cwd=tmp_path,
+        environment={"SAFE": "1"},
+        log_path=tmp_path / "logs/controller.log",
+    )
+
+    assert component.status == "starting"
+    assert component.process_identity == expected
+    assert pending is launcher.pending
+    assert not launcher.pending.activated
+    assert not launcher.pending.cancelled
+
+
+def test_classify_exact_never_adopts_reused_pid() -> None:
+    expected = _identity()
+    supervisor, _, _, _ = _supervisor([_identity(start=999)])
+
+    assert supervisor.classify_exact(expected) == "orphaned"
 
 
 def test_stop_sends_term_only_after_exact_identity_and_observes_exit() -> None:

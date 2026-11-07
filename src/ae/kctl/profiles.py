@@ -10,6 +10,11 @@ from importlib import metadata
 from typing import Literal, Protocol, cast
 
 from ae.kctl.lifecycle import PROFILE_CONTRACTS
+from ae.kctl.profile_engine import (
+    QUALIFICATION_POSTURE,
+    EngineCapability,
+    EngineCapabilityError,
+)
 from ae.resources import loader as resource_loader
 
 API_VERSION = "k1s.dev/v1alpha1"
@@ -19,6 +24,8 @@ MAX_PROFILE_RESOURCE_BYTES = 64 * 1024
 
 ProfilePosture = Literal["ga", "development-only", "preview"]
 CheckStatus = Literal["pass", "warn", "fail"]
+ExecutionStatus = Literal["portable", "deferred"]
+QualificationPosture = Literal["source-validated/unqualified", "not-applicable"]
 
 
 class ProfileResourceError(ValueError):
@@ -35,6 +42,8 @@ class ProfileDescriptor:
     summary: str
     components: tuple[str, ...]
     requirements: tuple[str, ...]
+    execution_status: ExecutionStatus
+    qualification_posture: QualificationPosture
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +82,12 @@ class ReadOnlyDoctorProbe(Protocol):
     def inspect(self) -> InstalledProfileFacts: ...
 
 
+class ReadOnlyEngineDoctorProbe(Protocol):
+    """Explicit, bounded engine probe used only when the caller requests it."""
+
+    def probe(self, backend: str) -> EngineCapability: ...
+
+
 class SystemDoctorProbe:
     """Inspect only interpreter and installed-package metadata."""
 
@@ -109,6 +124,7 @@ _PROFILE_KEYS = {
     "executionStatus",
     "name",
     "productionEligible",
+    "qualificationPosture",
     "requirements",
     "summary",
 }
@@ -264,8 +280,18 @@ def _parse_profile_catalog_bytes(
         production_eligible = profile["productionEligible"]
         if type(production_eligible) is not bool:
             raise ProfileResourceError(f"{context}.productionEligible must be a boolean")
-        if profile["executionStatus"] != "deferred":
-            raise ProfileResourceError(f"{context}.executionStatus must remain deferred")
+        execution_status = _text(profile["executionStatus"], context=f"{context}.executionStatus")
+        expected_execution = "portable" if name in {"local", "core"} else "deferred"
+        if execution_status != expected_execution:
+            raise ProfileResourceError(f"{context}.executionStatus differs")
+        qualification_posture = _text(
+            profile["qualificationPosture"], context=f"{context}.qualificationPosture"
+        )
+        expected_qualification = (
+            QUALIFICATION_POSTURE if expected_execution == "portable" else "not-applicable"
+        )
+        if qualification_posture != expected_qualification:
+            raise ProfileResourceError(f"{context}.qualificationPosture differs")
         profiles.append(
             ProfileDescriptor(
                 name=name,
@@ -276,6 +302,8 @@ def _parse_profile_catalog_bytes(
                 requirements=_string_tuple(
                     profile["requirements"], context=f"{context}.requirements"
                 ),
+                execution_status=cast(ExecutionStatus, execution_status),
+                qualification_posture=cast(QualificationPosture, qualification_posture),
             )
         )
         raw_aliases = _list(profile["aliases"], context=f"{context}.aliases")
@@ -327,6 +355,10 @@ PROFILE_INPUT_NAMES: tuple[str, ...] = PROFILE_NAMES + tuple(
 _PROFILES_BY_NAME = {profile.name: profile for profile in PROFILE_CATALOG}
 _ALIASES_BY_NAME = {alias.name: alias for alias in PROFILE_ALIASES}
 _EXECUTION_DEFERRED = "Stateful execution is deferred to later lifecycle checkpoints."
+_PORTABLE_UNQUALIFIED = (
+    "The installed portable source path is validated; live Podman/Docker qualification "
+    "requires the separately reviewed isolated runtime lane."
+)
 
 
 def validate_profile_catalog() -> None:
@@ -377,7 +409,8 @@ def _profile_payload(profile: ProfileDescriptor) -> dict[str, object]:
         "name": profile.name,
         "contractPosture": profile.contract_posture,
         "productionEligible": profile.production_eligible,
-        "executionStatus": "deferred",
+        "executionStatus": profile.execution_status,
+        "qualificationPosture": profile.qualification_posture,
         "summary": profile.summary,
         "components": list(profile.components),
         "requirements": list(profile.requirements),
@@ -407,7 +440,8 @@ def _resolution_payload(resolved: ResolvedProfile) -> dict[str, object]:
         "compatibilityVariant": alias.compatibility_variant if alias is not None else None,
         "contractPosture": resolved.profile.contract_posture,
         "productionEligible": resolved.profile.production_eligible,
-        "executionStatus": "deferred",
+        "executionStatus": resolved.profile.execution_status,
+        "qualificationPosture": resolved.profile.qualification_posture,
     }
 
 
@@ -415,7 +449,11 @@ def profile_plan_payload(name: str) -> dict[str, object]:
     """Return a declarative plan without resolving or executing a backend."""
 
     resolved = resolve_profile(name)
-    warnings = [_EXECUTION_DEFERRED]
+    warnings = [
+        _PORTABLE_UNQUALIFIED
+        if resolved.profile.execution_status == "portable"
+        else _EXECUTION_DEFERRED
+    ]
     if resolved.alias is not None:
         warnings.insert(0, resolved.alias.warning)
     if resolved.profile.contract_posture == "development-only":
@@ -433,6 +471,9 @@ def profile_plan_payload(name: str) -> dict[str, object]:
         **_resolution_payload(resolved),
         "components": list(resolved.profile.components),
         "requirements": list(resolved.profile.requirements),
+        "supportedBackends": (
+            ["podman", "docker"] if resolved.profile.execution_status == "portable" else []
+        ),
         "warnings": warnings,
     }
 
@@ -444,6 +485,9 @@ def _doctor_check(check_id: str, status: CheckStatus, summary: str) -> dict[str,
 def profile_doctor_payload(
     name: str,
     probe: ReadOnlyDoctorProbe,
+    *,
+    engine: str | None = None,
+    engine_probe: ReadOnlyEngineDoctorProbe | None = None,
 ) -> tuple[dict[str, object], int]:
     """Evaluate static installation facts and return the report plus exit code."""
 
@@ -524,7 +568,51 @@ def profile_doctor_payload(
             f"Profile posture is {resolved.profile.contract_posture}.",
         )
     )
-    checks.append(_doctor_check("execution.deferred", "warn", _EXECUTION_DEFERRED))
+    if resolved.profile.execution_status == "portable":
+        checks.append(_doctor_check("execution.portable", "pass", _PORTABLE_UNQUALIFIED))
+        checks.append(_doctor_check("backend.qualification", "warn", _PORTABLE_UNQUALIFIED))
+    else:
+        checks.append(_doctor_check("execution.deferred", "warn", _EXECUTION_DEFERRED))
+
+    engine_payload: dict[str, object] | None = None
+    if engine is not None:
+        if resolved.profile.execution_status != "portable":
+            checks.append(
+                _doctor_check(
+                    "backend.capability",
+                    "fail",
+                    "An engine probe is not applicable to a deferred profile.",
+                )
+            )
+        elif engine_probe is None:
+            checks.append(
+                _doctor_check(
+                    "backend.capability",
+                    "fail",
+                    "The explicitly requested read-only engine probe is unavailable.",
+                )
+            )
+        else:
+            try:
+                capability = engine_probe.probe(engine)
+            except EngineCapabilityError as exc:
+                checks.append(_doctor_check("backend.capability", "fail", str(exc)))
+            else:
+                checks.append(
+                    _doctor_check(
+                        "backend.capability",
+                        "pass",
+                        f"Explicit {capability.backend} capability query passed; live "
+                        "qualification remains unclaimed.",
+                    )
+                )
+                engine_payload = {
+                    "backend": capability.backend,
+                    "executable": str(capability.executable),
+                    "qualificationPosture": capability.qualification_posture,
+                    "rootless": capability.rootless,
+                    "version": capability.version,
+                }
 
     statuses = {check["status"] for check in checks}
     overall_status: CheckStatus = (
@@ -538,6 +626,7 @@ def profile_doctor_payload(
         **_resolution_payload(resolved),
         "overallStatus": overall_status,
         "checks": checks,
+        "engineCapability": engine_payload,
     }
     return payload, 1 if overall_status == "fail" else 0
 

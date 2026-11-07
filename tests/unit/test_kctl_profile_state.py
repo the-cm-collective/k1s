@@ -94,6 +94,98 @@ def test_begin_run_persists_canonical_private_current_and_run_state(tmp_path: Pa
         assert raw == canonical + "\n"
 
 
+def test_portable_backend_and_plan_identity_are_persisted_as_one_pair(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    digest = "sha256:" + "a" * 64
+
+    state = store.begin_run(backend_id="podman", plan_digest=digest)
+
+    assert state.backend_id == "podman"
+    assert state.plan_digest == digest
+    payload = json.loads(store.layout.for_run(state.run_id).run_state.read_text(encoding="utf-8"))
+    assert payload["schemaVersion"] == 2
+    assert payload["backendId"] == "podman"
+    assert payload["planDigest"] == digest
+
+
+def test_transaction_recovery_advances_current_after_run_only_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    original = store._write_current
+
+    def crash_before_current(_state: object) -> None:
+        raise RuntimeError("simulated current write crash")
+
+    monkeypatch.setattr(store, "_write_current", crash_before_current)
+    with pytest.raises(RuntimeError, match="simulated current"):
+        store.begin_run(backend_id="podman", plan_digest="sha256:" + "b" * 64)
+    monkeypatch.setattr(store, "_write_current", original)
+
+    assert store.layout.transaction.is_file()
+    with pytest.raises(StateConflictError, match="transaction requires explicit recovery"):
+        store.inspect()
+    assert store.reconcile_transaction() == "advanced-current"
+    recovered = store.inspect()
+    assert recovered is not None and recovered.backend_id == "podman"
+    assert not store.layout.transaction.exists()
+
+
+def test_transaction_recovery_seals_completed_pair_after_unlink_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    original = store._remove_transaction
+
+    def crash_before_unlink() -> None:
+        raise RuntimeError("simulated transaction unlink crash")
+
+    monkeypatch.setattr(store, "_remove_transaction", crash_before_unlink)
+    with pytest.raises(RuntimeError, match="simulated transaction unlink"):
+        store.begin_run(backend_id="docker", plan_digest="sha256:" + "c" * 64)
+    monkeypatch.setattr(store, "_remove_transaction", original)
+
+    assert store.reconcile_transaction() == "completed"
+    recovered = store.inspect()
+    assert recovered is not None and recovered.backend_id == "docker"
+    assert not store.layout.transaction.exists()
+
+
+def test_legacy_schema_is_read_and_next_mutation_migrates_transaction_safely(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    state = store.begin_run()
+    current_path = store.layout.current
+    run_path = store.layout.for_run(state.run_id).run_state
+    current_payload = json.loads(current_path.read_text(encoding="utf-8"))
+    run_payload = json.loads(run_path.read_text(encoding="utf-8"))
+    current_payload["schemaVersion"] = 1
+    run_payload["schemaVersion"] = 1
+    run_payload.pop("backendId")
+    run_payload.pop("planDigest")
+    for path, payload in ((current_path, current_payload), (run_path, run_payload)):
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    legacy = store.inspect()
+    assert legacy is not None and legacy.backend_id is None and legacy.plan_digest is None
+    migrated = store.transition(
+        legacy.run_id,
+        "starting",
+        expected_revision=legacy.revision,
+    )
+
+    assert migrated.phase == "starting"
+    assert json.loads(current_path.read_text(encoding="utf-8"))["schemaVersion"] == 2
+    migrated_payload = json.loads(run_path.read_text(encoding="utf-8"))
+    assert migrated_payload["schemaVersion"] == 2
+    assert migrated_payload["backendId"] is None
+    assert migrated_payload["planDigest"] is None
+
+
 def test_empty_inspection_is_read_only_and_creates_no_xdg_paths(tmp_path: Path) -> None:
     store = _store(tmp_path)
 

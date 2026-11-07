@@ -738,6 +738,18 @@ class AgentHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         try:
+            if self.path == "/healthz":
+                _json_response(
+                    self,
+                    200,
+                    {
+                        "apiVersion": "k1s.dev/v1alpha1",
+                        "kind": "NodeAgentHealth",
+                        "nodeId": self.node_id,
+                        "ready": True,
+                    },
+                )
+                return
             if self.path.startswith("/v1/fabric/sessions"):
                 with self.fabric_lock:
                     items = list(self.fabric_sessions.values())

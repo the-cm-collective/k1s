@@ -236,14 +236,23 @@ def test_installed_artifact_gate_exercises_state_contract_without_runtime() -> N
     )
 
     assert "from ae.kctl.profile_paths import ProfileRoots" in source
+    assert "from ae.kctl.profile_backend import build_execution_plan" in source
+    assert "from ae.kctl.profile_engine import EngineCapability" in source
     assert "from ae.kctl.profile_state import FailureRecord, ProfileStateStore" in source
     assert "from ae.kctl.profile_supervisor import classify_identity, parse_proc_stat" in source
     assert "K1S_PROFILE_SMOKE_ROOT" in source
     assert "assert store.inspect() is None" in source
     assert "assert not roots.state.exists()" in source
     assert "store.cleanup_owned" in source
+    assert "portable_plan_digest('local', synthetic_engine)" in source
+    assert "assert plan.digest == plan_digest" in source
+    assert 'portable_names = {"local", "core", "core-edge"}' in source
+    assert 'expected_status = "portable" if profile_name in portable_names' in source
+    assert '!= "source-validated/unqualified"' in source
     assert "ProfileSupervisor.system" not in source
     assert "SubprocessLauncher(" not in source
+    assert "SelectedEngineProbe.system" not in source
+    assert "PortableProfileManager.system" not in source
 
 
 def test_sdist_only_source_identity_is_frozen() -> None:

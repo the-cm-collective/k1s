@@ -50,6 +50,27 @@ class ProcessLauncher(Protocol):
     ) -> int: ...
 
 
+class GatedProcess(Protocol):
+    """One child that cannot run its component before durable activation."""
+
+    pid: int
+
+    def activate(self) -> None: ...
+
+    def cancel(self) -> None: ...
+
+
+class GatedProcessLauncher(ProcessLauncher, Protocol):
+    def spawn_gated(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        environment: Mapping[str, str],
+        log_path: Path,
+    ) -> GatedProcess: ...
+
+
 class SignalBackend(Protocol):
     """Signal boundary used only after complete identity revalidation."""
 
@@ -67,6 +88,31 @@ class StopResult:
     disposition: StopDisposition
     term_sent: bool = False
     kill_sent: bool = False
+
+
+@dataclass(slots=True)
+class PendingGatedProcess:
+    pid: int
+    activation_fd: int
+    activated: bool = False
+
+    def activate(self) -> None:
+        if self.activated or self.activation_fd < 0:
+            raise SupervisorError("component activation gate is already closed")
+        try:
+            if os.write(self.activation_fd, b"1") != 1:
+                raise SupervisorError("component activation gate write was incomplete")
+        except OSError as exc:
+            raise SupervisorError("component activation gate cannot be written") from exc
+        finally:
+            os.close(self.activation_fd)
+            self.activation_fd = -1
+        self.activated = True
+
+    def cancel(self) -> None:
+        if self.activation_fd >= 0:
+            os.close(self.activation_fd)
+            self.activation_fd = -1
 
 
 class SystemMonotonicClock:
@@ -130,6 +176,80 @@ class SubprocessLauncher:
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     close_fds=True,
+                    start_new_session=True,
+                )
+        finally:
+            os.close(fd)
+        return int(process.pid)
+
+    def spawn_gated(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        environment: Mapping[str, str],
+        log_path: Path,
+    ) -> PendingGatedProcess:
+        command_digest(argv)
+        read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
+        child_environment = dict(environment)
+        child_environment["K1S_COMPONENT_GATE_FD"] = str(read_fd)
+        try:
+            pid = self._spawn_with_fds(
+                argv,
+                cwd=cwd,
+                environment=child_environment,
+                log_path=log_path,
+                pass_fds=(read_fd,),
+            )
+        except Exception:
+            os.close(write_fd)
+            raise
+        finally:
+            os.close(read_fd)
+        return PendingGatedProcess(pid=pid, activation_fd=write_fd)
+
+    def _spawn_with_fds(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        environment: Mapping[str, str],
+        log_path: Path,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        command_digest(argv)
+        if not cwd.is_absolute():
+            raise SupervisorError("component working directory must be absolute")
+        log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        parent = log_path.parent.lstat()
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or stat.S_ISLNK(parent.st_mode)
+            or parent.st_uid != self.owner_uid
+            or stat.S_IMODE(parent.st_mode) != 0o700
+        ):
+            raise SupervisorError("component log directory is not owner-private")
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
+        fd = os.open(log_path, flags, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != self.owner_uid
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise SupervisorError("component log is not owner-private")
+            with os.fdopen(fd, "ab", closefd=False) as log:
+                process = subprocess.Popen(  # noqa: S603
+                    list(argv),
+                    cwd=cwd,
+                    env=dict(environment),
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    close_fds=True,
+                    pass_fds=pass_fds,
                     start_new_session=True,
                 )
         finally:
@@ -274,6 +394,47 @@ class ProfileSupervisor:
             process_identity=identity,
         )
 
+    def prepare_component(
+        self,
+        component_id: str,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        environment: Mapping[str, str],
+        log_path: Path,
+    ) -> tuple[ComponentState, GatedProcess]:
+        """Spawn a blocked child and return its exact identity before activation."""
+
+        spawn_gated = getattr(self.launcher, "spawn_gated", None)
+        if spawn_gated is None:
+            raise SupervisorError("portable components require an activation-gated launcher")
+        pending = spawn_gated(
+            argv,
+            cwd=cwd,
+            environment=environment,
+            log_path=log_path,
+        )
+        try:
+            identity = self.inspector.inspect(pending.pid)
+            if identity is None:
+                raise SupervisorError("gated component exited before exact identity capture")
+            component = ComponentState(
+                component_id=component_id,
+                command_digest=command_digest(argv),
+                log_path=f"logs/{log_path.name}",
+                status="starting",
+                process_identity=identity,
+            )
+        except Exception:
+            pending.cancel()
+            raise
+        return component, pending
+
+    def classify_exact(self, identity: ProcessIdentity) -> ProcessDisposition:
+        """Revalidate one recorded identity without adopting a PID-only match."""
+
+        return classify_identity(identity, self.inspector.inspect(identity.pid))
+
     def stop_exact(self, expected: ProcessIdentity) -> StopResult:
         disposition = classify_identity(expected, self.inspector.inspect(expected.pid))
         if disposition == "exited":
@@ -407,6 +568,9 @@ __all__ = [
     "ProcInspector",
     "ProcessDisposition",
     "ProcessLauncher",
+    "GatedProcess",
+    "GatedProcessLauncher",
+    "PendingGatedProcess",
     "ProfileSupervisor",
     "SignalBackend",
     "StopDisposition",

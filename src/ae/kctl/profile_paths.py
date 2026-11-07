@@ -216,6 +216,12 @@ class ProfileLayout:
     def current(self) -> Path:
         return self.profile_state / "current.json"
 
+    @property
+    def transaction(self) -> Path:
+        """Crash-recovery journal for one exact current/run state mutation."""
+
+        return self.profile_state / "transaction.json"
+
     def for_run(self, run_id: str) -> ProfileLayout:
         return ProfileLayout.resolve(
             self.roots,

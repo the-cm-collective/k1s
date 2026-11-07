@@ -10,9 +10,10 @@
         "node-local"
       ],
       "contractPosture": "ga",
-      "executionStatus": "deferred",
+      "executionStatus": "portable",
       "name": "local",
       "productionEligible": true,
+      "qualificationPosture": "source-validated/unqualified",
       "requirements": [
         "runtime-backend"
       ],
@@ -30,9 +31,10 @@
         "controller"
       ],
       "contractPosture": "ga",
-      "executionStatus": "deferred",
+      "executionStatus": "portable",
       "name": "core",
       "productionEligible": true,
+      "qualificationPosture": "source-validated/unqualified",
       "requirements": [
         "runtime-backend"
       ],
@@ -47,6 +49,7 @@
       "executionStatus": "deferred",
       "name": "edge-gateway",
       "productionEligible": true,
+      "qualificationPosture": "not-applicable",
       "requirements": [
         "explicit-node-identity",
         "controller-endpoint"
@@ -62,6 +65,7 @@
       "executionStatus": "deferred",
       "name": "node",
       "productionEligible": true,
+      "qualificationPosture": "not-applicable",
       "requirements": [
         "explicit-node-identity",
         "controller-endpoint",
@@ -90,6 +94,7 @@
       "executionStatus": "deferred",
       "name": "edge-dev",
       "productionEligible": false,
+      "qualificationPosture": "not-applicable",
       "requirements": [],
       "summary": "Development edge gateway with an in-process worker stub."
     },
@@ -103,6 +108,7 @@
       "executionStatus": "deferred",
       "name": "core-ha",
       "productionEligible": false,
+      "qualificationPosture": "not-applicable",
       "requirements": [
         "external-state-store",
         "ha-transport"

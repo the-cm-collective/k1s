@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+from ae.kctl.profile_engine import EngineCapability
 from ae.kctl.profiles import (
     MAX_PROFILE_RESOURCE_BYTES,
     PROFILE_INPUT_NAMES,
@@ -77,7 +79,22 @@ def test_profile_catalog_is_ordered_and_has_frozen_postures() -> None:
         "development-only",
         "preview",
     ]
-    assert all(profile["executionStatus"] == "deferred" for profile in profiles)
+    assert [profile["executionStatus"] for profile in profiles] == [
+        "portable",
+        "portable",
+        "deferred",
+        "deferred",
+        "deferred",
+        "deferred",
+    ]
+    assert [profile["qualificationPosture"] for profile in profiles] == [
+        "source-validated/unqualified",
+        "source-validated/unqualified",
+        "not-applicable",
+        "not-applicable",
+        "not-applicable",
+        "not-applicable",
+    ]
     assert [profile["productionEligible"] for profile in profiles] == [
         True,
         True,
@@ -206,7 +223,8 @@ def test_plan_is_declarative_and_contains_no_executable_or_state_paths() -> None
     for name in PROFILE_INPUT_NAMES:
         plan = profile_plan_payload(name)
         assert plan["mutating"] is False
-        assert plan["executionStatus"] == "deferred"
+        expected = "portable" if plan["canonicalName"] in {"local", "core"} else "deferred"
+        assert plan["executionStatus"] == expected
         assert "command" not in plan
         assert "statePath" not in plan
         assert "pid" not in plan
@@ -223,8 +241,42 @@ def test_doctor_accepts_blocking_supported_python_lanes(minor: int) -> None:
     assert payload["overallStatus"] == "warn"
     checks = {check["id"]: check for check in payload["checks"]}
     assert checks["python.supported"]["status"] == "pass"
-    assert checks["execution.deferred"]["status"] == "warn"
+    assert checks["execution.portable"]["status"] == "pass"
+    assert checks["backend.qualification"]["status"] == "warn"
     assert probe.calls == 1
+
+
+def test_doctor_engine_probe_is_explicit_bounded_and_remains_unqualified() -> None:
+    class EngineProbe:
+        calls: list[str] = []
+
+        def probe(self, backend: str) -> EngineCapability:
+            self.calls.append(backend)
+            return EngineCapability(
+                backend="podman",
+                executable=Path("/usr/bin/podman"),
+                executable_device=1,
+                executable_inode=2,
+                version="5.0.0",
+                rootless=True,
+            )
+
+    engine_probe = EngineProbe()
+    catalog_only, catalog_exit = profile_doctor_payload("local", StaticProbe(healthy_facts()))
+    probed, probed_exit = profile_doctor_payload(
+        "local",
+        StaticProbe(healthy_facts()),
+        engine="podman",
+        engine_probe=engine_probe,
+    )
+
+    assert catalog_exit == probed_exit == 0
+    assert catalog_only["engineCapability"] is None
+    assert engine_probe.calls == ["podman"]
+    assert probed["engineCapability"]["qualificationPosture"] == ("source-validated/unqualified")
+    checks = {check["id"]: check for check in probed["checks"]}
+    assert checks["backend.capability"]["status"] == "pass"
+    assert checks["backend.qualification"]["status"] == "warn"
 
 
 def test_doctor_marks_exploratory_python_and_non_ga_profiles_as_warnings() -> None:
