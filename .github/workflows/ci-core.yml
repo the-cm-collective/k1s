@@ -236,9 +236,8 @@ jobs:
             echo "GIT_SSL_CAINFO=$RUNNER_TEMP/gitea-ca.crt" >> "$GITHUB_ENV"
             echo "GIT_SSL_NO_VERIFY=" >> "$GITHUB_ENV"
           else
-            git config --global http."https://gitea.core.home.arpa/".sslVerify false
-            echo "GIT_SSL_NO_VERIFY=true" >> "$GITHUB_ENV"
-            echo "GIT_SSL_CAINFO=" >> "$GITHUB_ENV"
+            echo "GITEA_CA_B64 is required for release-image smoke; refusing a TLS bypass" >&2
+            exit 1
           fi
       - uses: actions/checkout@v3
       - name: Normalize runner env
@@ -248,6 +247,7 @@ jobs:
           ci_configure_docker_env
       - name: Build OCI release images smoke
         env:
+          K1S_RELEASE_BUILDER_SCOPE: isolated-ci
           RELEASE_REF_NAME: ci-smoke
           RELEASE_REVISION: ${{ github.sha }}
           RELEASE_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}

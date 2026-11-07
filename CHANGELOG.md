@@ -7,7 +7,9 @@
   contracts for the core, edge, core-edge, and edge-core runtime profiles.
 
 ### Changed
-- No user-facing changes yet.
+- Separated Gitea artifact integration from GitHub-only OIDC publication and
+  made release checkout and OCI builder trust fail closed against TLS bypasses
+  and host-local Docker sockets.
 
 ### Fixed
 - Completed CRI container seccomp/AppArmor and pod sandbox fsGroup,

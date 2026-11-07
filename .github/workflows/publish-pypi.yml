@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   publish-pypi:
+    if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
