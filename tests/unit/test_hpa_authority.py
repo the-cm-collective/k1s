@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from ae.controller.hpa_authority import (
@@ -32,7 +32,7 @@ class _FakeAuthority:
 def _manifest(
     *,
     replicas: int = 1,
-    cpu_request: float | None = None,
+    cpu_request: object | None = None,
     memory_request: str | None = None,
 ):
     resources: dict[str, dict[str, object]] = {}
@@ -87,7 +87,9 @@ def _register_hpa(
 
 def test_workload_metrics_collector_persists_shared_snapshot(tmp_path) -> None:
     state = SQLiteStateStore(tmp_path / "state.db")
-    state.register_app(_manifest(replicas=3, cpu_request=0.5, memory_request="128Mi"), source="test")
+    state.register_app(
+        _manifest(replicas=3, cpu_request=0.5, memory_request="128Mi"), source="test"
+    )
     state.upsert_node("node-a", backend="cri", endpoint="http://node-a:9112")
     state.upsert_node("node-b", backend="cri", endpoint="http://node-b:9112")
     state.record_heartbeat("node-a", "Ready")
@@ -134,6 +136,50 @@ def test_workload_metrics_collector_persists_shared_snapshot(tmp_path) -> None:
     assert snapshot.memory_utilization == 100.0
 
 
+def test_workload_metrics_collector_sums_exact_main_and_sidecar_cpu_requests(tmp_path) -> None:
+    state = SQLiteStateStore(tmp_path / "state.db")
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo", "namespace": "default"},
+            "spec": {
+                "image": "busybox:1.36",
+                "resources": {"requests": {"cpu": "250m"}},
+                "containers": [
+                    {
+                        "name": "sidecar",
+                        "image": "busybox:1.36",
+                        "resources": {"requests": {"cpu": "250m"}},
+                    }
+                ],
+            },
+        }
+    )
+    state.register_app(manifest, source="test")
+    state.upsert_node("node-a", backend="cri", endpoint="http://node-a:9112")
+    state.record_heartbeat("node-a", "Ready")
+    sample = WorkloadMetricSample(
+        app_name="demo",
+        node_id="node-a",
+        collected_at=datetime(2026, 3, 18, 12, 0, tzinfo=UTC),
+        cpu_cores=0.5,
+        memory_bytes=0,
+        pod_count=1,
+    )
+    collector = WorkloadMetricsCollector(
+        state,
+        lambda _node: [sample],
+        authority=_FakeAuthority(is_leader=True, epoch=9),
+    )
+
+    collector.run_once()
+
+    snapshot = state.get_workload_metrics_snapshot("demo")
+    assert snapshot is not None
+    assert snapshot.cpu_utilization == 100.0
+
+
 def test_hpa_authority_controller_scales_on_cpu_utilization(monkeypatch, tmp_path) -> None:
     state = SQLiteStateStore(tmp_path / "state.db")
     state.register_app(_manifest(replicas=1, cpu_request=1.0), source="test")
@@ -165,7 +211,9 @@ def test_hpa_authority_controller_scales_on_cpu_utilization(monkeypatch, tmp_pat
         config=HPAAuthorityControllerConfig(interval_s=15, metrics_max_age_s=45, cooldown_s=0),
         authority=_FakeAuthority(is_leader=True, epoch=7),
     )
-    monkeypatch.setattr(controller, "_now", lambda: datetime(2026, 3, 18, 12, 0, 5, tzinfo=timezone.utc))
+    monkeypatch.setattr(
+        controller, "_now", lambda: datetime(2026, 3, 18, 12, 0, 5, tzinfo=timezone.utc)
+    )
 
     controller.run_once()
 
@@ -214,7 +262,9 @@ def test_hpa_authority_controller_scales_on_memory_average_value(monkeypatch, tm
         config=HPAAuthorityControllerConfig(interval_s=15, metrics_max_age_s=45, cooldown_s=0),
         authority=_FakeAuthority(is_leader=True, epoch=7),
     )
-    monkeypatch.setattr(controller, "_now", lambda: datetime(2026, 3, 18, 12, 0, 5, tzinfo=timezone.utc))
+    monkeypatch.setattr(
+        controller, "_now", lambda: datetime(2026, 3, 18, 12, 0, 5, tzinfo=timezone.utc)
+    )
 
     controller.run_once()
 

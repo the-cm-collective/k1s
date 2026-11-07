@@ -22,11 +22,17 @@ from urllib.request import urlopen
 
 try:
     import grpc
+
     _grpc_import_error: Exception | None = None
 except Exception as exc:  # pragma: no cover - optional dependency
     grpc = None
     _grpc_import_error = exc
 
+from ae.controller.quantities import (
+    CPU_PERIOD_MICROSECONDS,
+    cpu_to_quota,
+    cpu_to_shares,
+)
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
@@ -314,7 +320,10 @@ class CRIRuntime(RuntimeAdapter):
         self._ensure_clients()
         pb2 = self._pb2()
         node_id = str(
-            self._current_node_id or os.getenv("AE_NODE_ID") or socket.gethostname() or "unknown-node"
+            self._current_node_id
+            or os.getenv("AE_NODE_ID")
+            or socket.gethostname()
+            or "unknown-node"
         )
         collected_at = datetime.now(UTC)
         aggregates: dict[str, dict[str, object]] = {}
@@ -364,13 +373,13 @@ class CRIRuntime(RuntimeAdapter):
             if cpu_cores is not None:
                 aggregate["cpu_cores"] = float(aggregate["cpu_cores"]) + float(cpu_cores)
                 aggregate["cpu_seen"] = True
-            aggregate["memory_bytes"] = int(aggregate["memory_bytes"]) + self._stats_memory_bytes(item)
+            aggregate["memory_bytes"] = int(aggregate["memory_bytes"]) + self._stats_memory_bytes(
+                item
+            )
             aggregate["pod_count"] = int(aggregate["pod_count"]) + 1
         out: list[WorkloadMetricSample] = []
         for app_name, aggregate in sorted(aggregates.items()):
-            cpu_cores = (
-                float(aggregate["cpu_cores"]) if bool(aggregate.get("cpu_seen")) else None
-            )
+            cpu_cores = float(aggregate["cpu_cores"]) if bool(aggregate.get("cpu_seen")) else None
             out.append(
                 WorkloadMetricSample(
                     app_name=app_name,
@@ -1272,7 +1281,9 @@ class CRIRuntime(RuntimeAdapter):
             secrets = self._service_account_pull_secrets(manifest)
         if not secrets:
             return {}
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
         auths: dict[str, dict[str, str]] = {}
         for name, ns in secrets:
             if not name:
@@ -1322,7 +1333,9 @@ class CRIRuntime(RuntimeAdapter):
                 out[str(host)] = {"username": str(username), "password": str(password)}
         return out
 
-    def _image_pull_secret_names(self, manifest: AppManifest) -> list[tuple[str | None, str | None]]:
+    def _image_pull_secret_names(
+        self, manifest: AppManifest
+    ) -> list[tuple[str | None, str | None]]:
         secrets: list[tuple[str | None, str | None]] = []
         for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
             if isinstance(sec, dict):
@@ -1337,7 +1350,9 @@ class CRIRuntime(RuntimeAdapter):
         state = self._get_apishim_state()
         if state is None:
             return []
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
         sa_name = getattr(manifest.spec, "service_account_name", None)
         if not sa_name and not self._ha_mode_enabled():
             store = self._get_apishim_store()
@@ -1363,7 +1378,9 @@ class CRIRuntime(RuntimeAdapter):
 
     def _service_account_name_from_store(self, manifest: AppManifest, store: Any) -> str | None:
         name = getattr(getattr(manifest, "metadata", None), "name", None)
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
         if not name:
             return None
         candidates = [
@@ -1385,9 +1402,7 @@ class CRIRuntime(RuntimeAdapter):
                 continue
             template = None
             if resource == "cronjobs":
-                template = (
-                    (spec.get("jobTemplate") or {}).get("spec") or {}
-                ).get("template")
+                template = ((spec.get("jobTemplate") or {}).get("spec") or {}).get("template")
             else:
                 template = spec.get("template")
             if not isinstance(template, dict):
@@ -2066,9 +2081,7 @@ class CRIRuntime(RuntimeAdapter):
                 )
             else:
                 wait_timeout = max(5.0, float(cleanup_timeout))
-                if not self._wait_for_pod_sandbox_name_available(
-                    replica_id, timeout=wait_timeout
-                ):
+                if not self._wait_for_pod_sandbox_name_available(replica_id, timeout=wait_timeout):
                     raise RuntimeError(
                         "timed out waiting for CRI pod sandbox name release for "
                         f"replica {replica_id} during recovery"
@@ -2250,7 +2263,9 @@ class CRIRuntime(RuntimeAdapter):
         seen: set[str] = set()
         with contextlib.suppress(Exception):
             for container in self._list_containers():
-                if not self._container_matches_replica(container, replica_id, container_label="main"):
+                if not self._container_matches_replica(
+                    container, replica_id, container_label="main"
+                ):
                     continue
                 container_id = getattr(container, "id", None)
                 if not container_id:
@@ -2285,7 +2300,9 @@ class CRIRuntime(RuntimeAdapter):
                 reserved_pod_present = self._pod_status(reserved_pod_id) is not None
         if reserved_container_id:
             with contextlib.suppress(Exception):
-                reserved_container_present = self._container_status(reserved_container_id) is not None
+                reserved_container_present = (
+                    self._container_status(reserved_container_id) is not None
+                )
 
         pod_entries: list[dict[str, Any]] = []
         with contextlib.suppress(Exception):
@@ -2313,7 +2330,9 @@ class CRIRuntime(RuntimeAdapter):
                 container_id_s = str(container_id or "")
                 if not container_id_s:
                     continue
-                if container_id_s != str(reserved_container_id or "") and not self._container_matches_replica(
+                if container_id_s != str(
+                    reserved_container_id or ""
+                ) and not self._container_matches_replica(
                     container, replica_id, container_label="main"
                 ):
                     continue
@@ -2367,9 +2386,7 @@ class CRIRuntime(RuntimeAdapter):
             )
             blocked_on_sandbox = bool(
                 snapshot["reserved_pod_present"]
-                or (
-                    not allow_reappeared_replica_resources and snapshot["visible_pod_ids"]
-                )
+                or (not allow_reappeared_replica_resources and snapshot["visible_pod_ids"])
             )
             blocked_on_container = bool(
                 snapshot["reserved_container_present"]
@@ -2560,8 +2577,7 @@ class CRIRuntime(RuntimeAdapter):
         wait_timeout = max(5.0, float(timeout))
         if not self._wait_for_pod_sandbox_absent(str(pod_id), timeout=wait_timeout):
             raise RuntimeError(
-                "timed out waiting for CRI pod sandbox "
-                f"{pod_id} to disappear after cleanup"
+                f"timed out waiting for CRI pod sandbox {pod_id} to disappear after cleanup"
             )
         if wait_for_name_release and not self._wait_for_pod_sandbox_name_available(
             replica_id, timeout=wait_timeout
@@ -2613,9 +2629,7 @@ class CRIRuntime(RuntimeAdapter):
         node_id: str | None,
         reserved_name_recovery_deadline: float | None = None,
     ) -> None:
-        recovery_deadline = self._reserved_name_recovery_deadline(
-            reserved_name_recovery_deadline
-        )
+        recovery_deadline = self._reserved_name_recovery_deadline(reserved_name_recovery_deadline)
         reserved_pod_id = self._reserved_pod_sandbox_id_from_error(cause)
         if not reserved_pod_id:
             reserved_pod_id = self._pod_id_for_replica(replica_id)
@@ -2671,9 +2685,7 @@ class CRIRuntime(RuntimeAdapter):
         node_id: str | None,
         reserved_name_recovery_deadline: float | None = None,
     ) -> None:
-        recovery_deadline = self._reserved_name_recovery_deadline(
-            reserved_name_recovery_deadline
-        )
+        recovery_deadline = self._reserved_name_recovery_deadline(reserved_name_recovery_deadline)
         cleanup_timeout = self._pod_cleanup_timeout(manifest)
         reserved_container_name = getattr(cause, "container_name", None)
         expected_container_name = self._expected_main_containerd_name(
@@ -3033,19 +3045,12 @@ class CRIRuntime(RuntimeAdapter):
         cpu_period = None
         mem_limit = None
         if resources and self._spec_value(resources, "cpu") is not None:
-            try:
-                cpu = float(self._spec_value(resources, "cpu"))
-                cpu_period = 100000
-                cpu_quota = int(cpu * cpu_period)
-            except Exception:
-                cpu_quota = None
+            cpu_period = CPU_PERIOD_MICROSECONDS
+            cpu_quota = cpu_to_quota(self._spec_value(resources, "cpu"), period=cpu_period)
         if resources and self._spec_value(resources, "memory") is not None:
             mem_limit = self._parse_memory_bytes(str(self._spec_value(resources, "memory")))
         if requests and self._spec_value(requests, "cpu") is not None:
-            try:
-                cpu_shares = max(2, int(float(self._spec_value(requests, "cpu")) * 1024))
-            except Exception:
-                cpu_shares = None
+            cpu_shares = cpu_to_shares(self._spec_value(requests, "cpu"))
         if not any(x is not None for x in (cpu_shares, cpu_quota, mem_limit)):
             return None
         return pb2.LinuxContainerResources(
@@ -3168,9 +3173,7 @@ class CRIRuntime(RuntimeAdapter):
                 started_at = self._timestamp_dt(getattr(c_status, "started_at", None))
                 finished_at = self._timestamp_dt(getattr(c_status, "finished_at", None))
                 is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
-                ready = (
-                    exit_code == 0 and status == "exited" if is_job else status == "running"
-                )
+                ready = exit_code == 0 and status == "exited" if is_job else status == "running"
             endpoint = self._endpoint_for_manifest(
                 manifest,
                 pod_ip,

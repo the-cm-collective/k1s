@@ -90,6 +90,49 @@ def test_cri_normalize_image_ref_handles_short_and_registry_refs() -> None:
     assert runtime._normalize_image_ref("localhost:5001/demo:1") == "localhost:5001/demo:1"
 
 
+def test_cri_resources_map_exact_cpu_quota_period_and_shares() -> None:
+    resources = CRIRuntime()._build_resources_from_spec(
+        {
+            "limits": {"cpu": "1001m"},
+            "requests": {"cpu": "250m"},
+        }
+    )
+
+    assert resources is not None
+    assert resources.cpu_period == 100_000
+    assert resources.cpu_quota == 100_100
+    assert resources.cpu_shares == 256
+
+
+@pytest.mark.parametrize(
+    ("cpu_limit", "expected_quota"),
+    [("0.009", 1_000), ("0.018", 1_800)],
+)
+def test_cri_resources_avoid_float_quota_regressions(
+    cpu_limit: str,
+    expected_quota: int,
+) -> None:
+    resources = CRIRuntime()._build_resources_from_spec({"limits": {"cpu": cpu_limit}})
+
+    assert resources is not None
+    assert resources.cpu_period == 100_000
+    assert resources.cpu_quota == expected_quota
+
+
+@pytest.mark.parametrize(
+    ("cpu_request", "expected_shares"),
+    [("1m", 2), ("257", 262_144)],
+)
+def test_cri_resources_clamp_cpu_shares(
+    cpu_request: str,
+    expected_shares: int,
+) -> None:
+    resources = CRIRuntime()._build_resources_from_spec({"requests": {"cpu": cpu_request}})
+
+    assert resources is not None
+    assert resources.cpu_shares == expected_shares
+
+
 def test_run_pod_sets_runtime_handler_from_runtime_class_name(monkeypatch) -> None:
     manifest = AppManifest.model_validate(
         {

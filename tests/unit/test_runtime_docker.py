@@ -62,7 +62,9 @@ class FakeContainerManager:
     def __init__(self, client: FakeDockerClient) -> None:
         self._client = client
 
-    def list(self, all: bool = True, filters: dict[str, object] | None = None) -> list[FakeContainer]:
+    def list(
+        self, all: bool = True, filters: dict[str, object] | None = None
+    ) -> list[FakeContainer]:
         _ = all
         containers = list(self._client.containers_by_replica.values())
         if not filters:
@@ -95,6 +97,7 @@ class FakeContainerManager:
         labels=None,
         ports=None,
         restart_policy=None,
+        **kwargs,
     ):  # noqa: ANN001,D401 - mimic docker
         self._client.last_run = {
             "image": image,
@@ -106,6 +109,7 @@ class FakeContainerManager:
             "volumes": volumes,
             "ports": ports,
             "restart_policy": restart_policy,
+            **kwargs,
         }
         pod_name = labels.get("ae.pod_name")
         host_port = self._client.allocate_port()
@@ -272,6 +276,79 @@ def test_docker_runtime_maps_sidecar_command_args_to_entrypoint() -> None:
         "-c",
         "mc alias set local http://minio:9000",
     ]
+
+
+def test_docker_runtime_maps_cpu_resources_without_float_truncation() -> None:
+    client = FakeDockerClient()
+    runtime = DockerRuntime(client=client)
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "cpu-demo"},
+            "spec": {
+                "image": "busybox:1.36",
+                "resources": {
+                    "limits": {"cpu": "1001m"},
+                    "requests": {"cpu": "250m"},
+                },
+            },
+        }
+    )
+
+    runtime._create_container(manifest, "cpu-demo-rev1-0", 1)
+
+    assert client.last_run["nano_cpus"] == 1_001_000_000
+    assert client.last_run["cpu_shares"] == 256
+
+
+def test_docker_resource_field_ref_cpu_divisor_contract() -> None:
+    runtime = DockerRuntime(client=FakeDockerClient())
+    manifest = AppManifest.model_validate(
+        {
+            "apiVersion": "ae.dev/v1alpha1",
+            "kind": "Deployment",
+            "metadata": {"name": "resource-field-demo"},
+            "spec": {
+                "image": "busybox:1.36",
+                "resources": {"limits": {"cpu": "1500m"}},
+            },
+        }
+    )
+
+    def with_divisor(*, supplied: bool, divisor: object = None) -> AppManifest:
+        resource_field_ref: dict[str, object] = {"resource": "limits.cpu"}
+        if supplied:
+            resource_field_ref["divisor"] = divisor
+        return manifest.model_copy(
+            update={
+                "spec": manifest.spec.model_copy(
+                    update={
+                        "env": [
+                            {
+                                "name": "CPU_LIMIT",
+                                "valueFrom": {"resourceFieldRef": resource_field_ref},
+                            }
+                        ]
+                    }
+                )
+            }
+        )
+
+    assert runtime._manifest_env(with_divisor(supplied=False))["CPU_LIMIT"] == "2"
+    assert runtime._manifest_env(with_divisor(supplied=True, divisor="1m"))["CPU_LIMIT"] == "1500"
+    with pytest.raises(ValueError, match="greater than zero"):
+        runtime._manifest_env(with_divisor(supplied=True, divisor="0"))
+
+    missing_cpu = with_divisor(supplied=True, divisor="0").model_copy(
+        update={
+            "spec": with_divisor(supplied=True, divisor="0").spec.model_copy(
+                update={"resources": None}
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="greater than zero"):
+        runtime._manifest_env(missing_cpu)
 
 
 def test_docker_runtime_creates_missing_replicas():

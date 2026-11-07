@@ -4,11 +4,21 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from pathlib import Path
 from typing import List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from ae.controller.quantities import cpu_to_decimal_cores
 
 
 DEFAULT_NAMESPACE = "default"
@@ -217,21 +227,23 @@ class ServiceSpec(BaseModel):
 class ResourceQuantities(BaseModel):
     """CPU and memory quantities.
 
-    cpu: float in cores (e.g., 0.5 for half a core)
+    cpu: exact Kubernetes DecimalSI quantity, stored as Decimal cores
     memory: string with unit (e.g., "256Mi", "1Gi", "512M")
     """
 
-    cpu: Optional[float] = None
+    cpu: Optional[Decimal] = None
     memory: Optional[str] = None
 
-    @field_validator("cpu")
+    @field_validator("cpu", mode="before")
     @classmethod
-    def _cpu_positive(cls, v: Optional[float]):  # noqa: D401 - simple guard
+    def _cpu_quantity(cls, v: object) -> Decimal | None:  # noqa: D401 - exact quantity guard
         if v is None:
             return v
-        if v <= 0:
-            raise ValueError("cpu must be > 0 (cores)")
-        return v
+        return cpu_to_decimal_cores(v)
+
+    @field_serializer("cpu")
+    def _serialize_cpu(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
 
     @field_validator("memory")
     @classmethod
