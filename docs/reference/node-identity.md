@@ -32,6 +32,16 @@ from hostname, profile name, an alias, or a development stub. The private node
 token is delivered only to the child process and is not part of public plan,
 status, log, error, or digest output.
 
+The installed strict-CRI host planner can accept only the bootstrap's public
+identity-v1 projection: node ID, bootstrap ID, and public projection digest.
+They must be supplied in an explicit, canonical, digest-pinned intent; the
+planner never opens XDG bootstrap state. A private/full-record digest,
+credential, token, bootstrap path, raw machine ID, hostname fallback, or
+environment-derived node ID is invalid host-plan authority. This preserves the
+explicit identity contract without claiming that containerd has received or
+enforced it. A later digest-bound CRI node adapter must revalidate private
+bootstrap and host-preparation receipts before starting anything.
+
 The canonical `edge-gateway` bootstrap scopes its explicit local ID as
 `<site_id>--<local_node_id>` and starts only the gateway component. The
 development aliases `edge` and `edge-core` continue to resolve to `edge-dev`;

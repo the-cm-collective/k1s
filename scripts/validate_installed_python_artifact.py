@@ -110,6 +110,135 @@ def _run_json(argv: list[str], *, cwd: Path, env: dict[str, str]) -> dict[str, o
     return value
 
 
+def _canonical_json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def _strict_cri_smoke_documents() -> tuple[dict[str, object], dict[str, object]]:
+    """Return synthetic, non-secret authorities for the installed pure planner."""
+
+    intent: dict[str, object] = {
+        "apiVersion": "k1s.dev/v1alpha1",
+        "cni": {
+            "bridgeName": "k1s0",
+            "configRoot": "/etc/cni/net.d",
+            "cniVersion": "1.0.0",
+            "podCidr": "10.42.0.0/16",
+            "requiredPlugins": ["bridge", "portmap", "firewall", "tuning", "loopback"],
+            "sourceBinRoot": "/opt/k1s/cni-source",
+            "targetBinRoot": "/opt/cni/bin",
+        },
+        "containerd": {
+            "certsRoot": "/etc/containerd/certs.d",
+            "configPath": "/etc/containerd/config.toml",
+        },
+        "cri": {
+            "endpoint": "unix:///run/containerd/containerd.sock",
+            "runtimeHandler": "runc",
+        },
+        "kind": "StrictCRIHostIntent",
+        "nodeIdentity": None,
+        "profileId": "artifact-core",
+        "registry": {"mode": "off"},
+        "role": "core",
+        "schemaVersion": 1,
+        "socketAccess": {"gid": 1000, "mode": "acl", "uid": 1000},
+        "target": {
+            "hostIdentitySha256": "sha256:" + "a" * 64,
+            "ownerGid": 1000,
+            "ownerUid": 1000,
+            "targetId": "artifact-guest",
+        },
+    }
+
+    def present(
+        path: str,
+        object_type: str,
+        inode: int,
+        *,
+        digest: str | None = None,
+        mode: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "device": 7,
+            "gid": 0,
+            "inode": inode,
+            "mode": mode or {"directory": "0755", "regular": "0755", "socket": "0660"}[object_type],
+            "nlink": 2 if object_type == "directory" else 1,
+            "path": path,
+            "sha256": digest if object_type == "regular" else None,
+            "size": 4096 if object_type == "regular" else 0,
+            "state": "present",
+            "type": object_type,
+            "uid": 0,
+        }
+
+    def absent(path: str, inode: int) -> dict[str, object]:
+        return {
+            "parent": {
+                "device": 7,
+                "gid": 0,
+                "inode": inode,
+                "mode": "0755",
+                "nlink": 2,
+                "path": str(Path(path).parent),
+                "type": "directory",
+                "uid": 0,
+            },
+            "path": path,
+            "state": "absent",
+        }
+
+    objects: dict[str, object] = {
+        "cniConfigRoot": present("/etc/cni/net.d", "directory", 1),
+        "cniSourceRoot": present("/opt/k1s/cni-source", "directory", 2),
+        "cniTargetRoot": present("/opt/cni/bin", "directory", 3),
+        "containerdCertsRoot": present("/etc/containerd/certs.d", "directory", 4),
+        "containerdConfig": present(
+            "/etc/containerd/config.toml",
+            "regular",
+            5,
+            digest="sha256:" + "1" * 64,
+            mode="0644",
+        ),
+        "criSocket": present("/run/containerd/containerd.sock", "socket", 6),
+    }
+    plugins = ("bridge", "portmap", "firewall", "tuning", "loopback")
+    for offset, plugin in enumerate(plugins, 10):
+        objects[f"cniSource:{plugin}"] = present(
+            f"/opt/k1s/cni-source/{plugin}",
+            "regular",
+            offset,
+            digest=f"sha256:{offset:064x}",
+        )
+        objects[f"cniTarget:{plugin}"] = absent(f"/opt/cni/bin/{plugin}", 3)
+    for name in ("10-k1s.conflist", "99-loopback.conf"):
+        objects[f"cniConfig:{name}"] = absent(f"/etc/cni/net.d/{name}", 1)
+
+    facts: dict[str, object] = {
+        "apiVersion": "k1s.dev/v1alpha1",
+        "arch": "amd64",
+        "containerd": {
+            "configActive": True,
+            "criApiVersion": "v1",
+            "runtimeHandlers": ["runc"],
+            "version": "1.7.24",
+        },
+        "hostIdentitySha256": "sha256:" + "a" * 64,
+        "kind": "StrictCRIHostFacts",
+        "objects": objects,
+        "ownerGid": 1000,
+        "ownerUid": 1000,
+        "platform": "linux",
+        "rootless": False,
+        "schemaVersion": 1,
+        "targetId": "artifact-guest",
+    }
+    return intent, facts
+
+
 def validate_install(
     *, wheel: Path, wheelhouse: Path, lock: Path, work_root: Path, expected_version: str
 ) -> None:
@@ -175,6 +304,7 @@ from ae.apishim.server import _openapi_v3_stub, _swagger_doc
 from ae.kctl.profile_backend import build_execution_plan, portable_plan_digest
 from ae.kctl.profile_bootstrap import ProfileBootstrapError, ProfileBootstrapStore
 from ae.kctl.profile_engine import EngineCapability, QUALIFICATION_POSTURE
+from ae.kctl.profile_host_plan import PLAN_KIND
 from ae.kctl.profile_paths import ProfileRoots
 from ae.kctl.profile_state import FailureRecord, ProfileStateStore
 from ae.kctl.profiles import PROFILE_INPUT_NAMES, PROFILE_NAMES, profile_catalog_payload
@@ -228,6 +358,7 @@ assert api_pb2.DESCRIPTOR.dependencies[0] is gogo_pb2.DESCRIPTOR
 assert api_pb2_grpc.api__pb2 is api_pb2
 assert csi_pb2_grpc is not None
 assert csi_pb2_grpc.csi__pb2 is csi_pb2
+assert PLAN_KIND == 'StrictCRIHostPlan'
 
 resource_root = resources.files('ae.resources')
 resource_files = files_below(resource_root)
@@ -540,6 +671,58 @@ assert scripts == {'ae', 'ae-rotate-certs', 'k1s', 'ae-node', 'ae-gateway', 'ae-
         )
         if doctor.get("mutating") is not False:
             raise ValueError(f"installed profile doctor is not static: {profile_name}")
+
+    host_plan_root = outside / "strict-cri-host-plan"
+    host_plan_root.mkdir(mode=0o700)
+    intent_value, facts_value = _strict_cri_smoke_documents()
+    intent_path = host_plan_root / "intent.json"
+    facts_path = host_plan_root / "facts.json"
+    intent_raw = _canonical_json_bytes(intent_value)
+    facts_raw = _canonical_json_bytes(facts_value)
+    intent_path.write_bytes(intent_raw)
+    facts_path.write_bytes(facts_raw)
+    intent_path.chmod(0o600)
+    facts_path.chmod(0o600)
+    before_host_plan = {
+        item.name: (item.stat().st_mode, item.stat().st_size, item.stat().st_mtime_ns)
+        for item in host_plan_root.iterdir()
+    }
+    host_plan = _run_json(
+        [
+            str(bin_dir / "k1s"),
+            "profile",
+            "host",
+            "plan",
+            "strict-cri",
+            "--intent",
+            str(intent_path),
+            "--expect-intent-sha256",
+            f"sha256:{hashlib.sha256(intent_raw).hexdigest()}",
+            "--facts",
+            str(facts_path),
+            "--expect-facts-sha256",
+            f"sha256:{hashlib.sha256(facts_raw).hexdigest()}",
+            "--output",
+            "json",
+        ],
+        cwd=outside,
+        env=env,
+    )
+    after_host_plan = {
+        item.name: (item.stat().st_mode, item.stat().st_size, item.stat().st_mtime_ns)
+        for item in host_plan_root.iterdir()
+    }
+    if before_host_plan != after_host_plan or set(after_host_plan) != {"intent.json", "facts.json"}:
+        raise ValueError("installed strict-CRI host plan mutated its exact inputs")
+    if (
+        host_plan.get("kind") != "StrictCRIHostPlan"
+        or host_plan.get("mutating") is not False
+        or host_plan.get("qualificationPosture") != "source-validated/unqualified"
+    ):
+        raise ValueError("installed strict-CRI host plan contract differs")
+    rendered_host_plan = json.dumps(host_plan, sort_keys=True)
+    if str(intent_path) in rendered_host_plan or str(facts_path) in rendered_host_plan:
+        raise ValueError("installed strict-CRI host plan disclosed an authority path")
 
     manifest = outside / "artifact-smoke.yaml"
     manifest.write_text(

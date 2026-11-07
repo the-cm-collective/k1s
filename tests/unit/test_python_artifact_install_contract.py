@@ -230,6 +230,23 @@ def test_installed_artifact_gate_exercises_static_profile_commands() -> None:
     compile(smoke_programs[0], "<installed-artifact-profile-smoke>", "exec")
 
 
+def test_installed_artifact_gate_exercises_pure_strict_cri_host_plan() -> None:
+    source = (ROOT / "scripts" / "validate_installed_python_artifact.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from ae.kctl.profile_host_plan import PLAN_KIND" in source
+    assert '"host",\n            "plan",\n            "strict-cri"' in source
+    assert '"--expect-intent-sha256"' in source
+    assert '"--expect-facts-sha256"' in source
+    assert 'host_plan.get("mutating") is not False' in source
+    assert 'host_plan.get("qualificationPosture") != "source-validated/unqualified"' in source
+    assert "installed strict-CRI host plan mutated its exact inputs" in source
+    assert "installed strict-CRI host plan disclosed an authority path" in source
+    assert "socket.create_connection = _deny" in source
+    assert '"PIP_NO_INDEX": "1"' in source
+
+
 def test_installed_artifact_gate_exercises_state_contract_without_runtime() -> None:
     source = (ROOT / "scripts" / "validate_installed_python_artifact.py").read_text(
         encoding="utf-8"

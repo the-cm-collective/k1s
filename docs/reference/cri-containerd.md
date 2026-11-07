@@ -3,6 +3,42 @@
 This page documents strict CRI workflows in k1s (containerd + CRI), the
 registry-first image flow, and current CRI tooling.
 
+## Installed strict-CRI host plan
+
+`k1s-core` installs one pure, non-mutating host-plan surface:
+
+```text
+k1s profile host plan strict-cri \
+  --intent /absolute/strict-cri-intent.json \
+  --expect-intent-sha256 sha256:<digest> \
+  --facts /absolute/strict-cri-host-facts.json \
+  --expect-facts-sha256 sha256:<digest> \
+  --output json
+```
+
+The command reads only the two explicitly selected, owner-private, canonical
+JSON files. It does not derive authority from HOME, XDG directories, the
+repository, environment variables, aliases, or a latest record. It does not
+inspect target paths, open a CRI socket, invoke `crictl`, containerd, a service
+manager, a helper, or `sudo`, and it writes no state or host file. The supplied
+facts are caller-attested; output is always
+`source-validated/unqualified`, never evidence of live CRI enforcement.
+
+The intent fixes the `core` or `node` role, target identity and owner, Unix CRI
+endpoint, runtime handler, containerd paths, exact CNI source/target/config
+roots and plugins, optional external TLS registry trust, socket-access posture,
+and the public identity-v1 node projection. Unknown keys, noncanonical paths,
+TCP endpoints, rootless/non-Linux targets, insecure registry trust, system
+trust, ambiguous ownership, symlink/hardlink/special-file facts, and digest
+mismatches fail closed. Public output contains no input filename, registry
+credential, raw machine identity, private bootstrap digest, or secret.
+
+Digest-bound host preparation, exact rollback, and the installed CRI node
+adapter are a separate K-P1-7B contract. Live qualification remains a Q1 task
+inside a disposable egress-denied guest. The repository scripts documented
+below are legacy/manual development helpers; they are not called by this
+installed plan and are not its authority model.
+
 For current dev and docs/lab lanes, CRI is best exercised with `k1s-*` profile
 targets. Use raw env exports only when debugging or overriding defaults.
 

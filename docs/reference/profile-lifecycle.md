@@ -37,6 +37,15 @@ This resource is static package construction, not profile installation or
 execution. Reading it does not create state, select a backend, prepare a host,
 start a supervisor, or activate a runtime.
 
+The separate `k1s profile host plan strict-cri` command is also non-mutating,
+but it is not a role-catalog alias or portable backend. It reads two explicit,
+canonical, digest-pinned files and emits a deterministic
+`source-validated/unqualified` Linux/containerd plan. It does not read or
+create profile locks, current/run state, bootstrap state, XDG roots, or backend
+receipts; it performs no target, process, service, socket, or network probe.
+Digest-bound preparation/rollback and CRI node execution remain separate
+reviewed checkpoints and cannot be inferred from a successful plan.
+
 ## Canonical roles
 
 | Role | Contract posture | Production eligible | Components | Execution |

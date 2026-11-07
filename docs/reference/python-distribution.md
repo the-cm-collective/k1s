@@ -17,6 +17,10 @@ Python or command surfaces.
   `edge-dev`; they never represent the production `edge-gateway` role.
 - Existing commands `ae`, `ae-rotate-certs`, `ae-node`, `ae-gateway`, and
   `ae-worker-stub` remain installed by `k1s-core`.
+- `k1s profile host plan strict-cri` is an installed, deterministic,
+  non-mutating command. It consumes two explicit canonical digest-pinned files
+  and reports `source-validated/unqualified`; it never probes or prepares a
+  host and does not add another console entry point.
 - CRI protobuf modules remain under
   `ae.runtime.cri.api.runtime.v1`. The gogo descriptor keeps its canonical
   `github.com/gogo` protobuf identity internally, but no top-level `github`
@@ -67,7 +71,7 @@ contract with the Python API, and exercises non-mutating `profile list`,
 The wheel also owns `ae.kctl.profile_paths`, `ae.kctl.profile_state`,
 `ae.kctl.profile_supervisor`, `ae.kctl.profile_engine`,
 `ae.kctl.profile_bootstrap`, `ae.kctl.profile_component_runner`, and
-`ae.kctl.profile_backend`. The strict
+`ae.kctl.profile_backend`, plus the pure `ae.kctl.profile_host_plan` module. The strict
 installed-artifact gate imports them outside the checkout and exercises a
 synthetic state-machine run only beneath a disposable owner-private XDG root.
 That smoke verifies read-only absent-state inspection, canonical state,
@@ -87,6 +91,13 @@ does not invoke an engine, transport, process, socket, service, or real user
 credential. Development/preview compatibility actions and lab/example helpers
 deliberately use repository scripts. Those repository paths are not copied
 into the runtime wheel.
+
+The off-checkout gate also creates synthetic owner-private strict-CRI intent
+and host-fact files, runs the installed host-plan command with both exact
+digests, and proves the two files and their directory are unchanged. Python
+socket operations remain disabled. The smoke does not open the stated CRI
+endpoint, inspect target paths, invoke a helper or service, or claim that the
+synthetic facts describe a live host.
 
 ## Version posture
 

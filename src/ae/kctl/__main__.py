@@ -41,6 +41,12 @@ from ae.kctl.profile_backend import (
 )
 from ae.kctl.profile_bootstrap import ProfileBootstrapStore
 from ae.kctl.profile_engine import SelectedEngineProbe
+from ae.kctl.profile_host_plan import (
+    ProfileHostPlanError,
+    plan_strict_cri_from_files,
+    render_strict_cri_host_plan_json,
+    render_strict_cri_host_plan_text,
+)
 from ae.kctl.profile_migration import (
     MIGRATION_PROFILES,
     ProfileMigrationManager,
@@ -316,6 +322,23 @@ def build_parser() -> argparse.ArgumentParser:
             action_p.add_argument("--migration-id", required=True)
             action_p.add_argument("--expect-receipt-digest", required=True)
             action_p.add_argument("--confirm-rollback", required=True)
+
+    host_p = profile_sub.add_parser(
+        "host",
+        help="Plan an explicit host contract without probing or mutating the host",
+    )
+    host_sub = host_p.add_subparsers(dest="host_action", required=True)
+    host_plan_p = host_sub.add_parser("plan", help="Create one pure host plan")
+    host_plan_sub = host_plan_p.add_subparsers(dest="host_profile", required=True)
+    strict_cri_p = host_plan_sub.add_parser(
+        "strict-cri",
+        help="Plan explicit Linux containerd CRI-v1 preparation",
+    )
+    strict_cri_p.add_argument("--intent", required=True)
+    strict_cri_p.add_argument("--expect-intent-sha256", required=True)
+    strict_cri_p.add_argument("--facts", required=True)
+    strict_cri_p.add_argument("--expect-facts-sha256", required=True)
+    strict_cri_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
 
     return p
 
@@ -755,6 +778,23 @@ def _foreground_signal_requests() -> Iterator[_SignalRequest]:
 
 def handle_profile(ns: argparse.Namespace) -> int:
     """Inspect profile contracts or execute one explicit legacy lifecycle action."""
+
+    if ns.profile_action == "host":
+        try:
+            payload = plan_strict_cri_from_files(
+                intent_path=ns.intent,
+                expected_intent_digest=ns.expect_intent_sha256,
+                facts_path=ns.facts,
+                expected_facts_digest=ns.expect_facts_sha256,
+            )
+            if ns.output == "json":
+                print(render_strict_cri_host_plan_json(payload), end="")
+            else:
+                print(render_strict_cri_host_plan_text(payload), end="")
+            return 0
+        except ProfileHostPlanError:
+            print("strict CRI host plan failed closed", file=sys.stderr)
+            return 1
 
     if ns.profile_action == "migrate":
         migration_manager = profile_migration_manager_factory()

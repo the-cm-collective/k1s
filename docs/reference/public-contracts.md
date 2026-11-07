@@ -17,6 +17,7 @@ pre-releases. The status vocabulary is deliberately limited to **stable** and
 | Portable profile lifecycle | experimental | `k1s profile run`, `logs`, and confirmed `delete` are exact-owner contracts for `local`, `core`, `edge-gateway`, and `node`; live backend/transport qualification remains separate. |
 | Canonical role bootstrap | experimental | `k1s profile bootstrap create edge-gateway\|node` creates one immutable owner-private record and returns only a secret-free public projection. |
 | Explicit profile migration | experimental | `k1s profile migrate plan\|apply\|rollback` accepts only caller-selected stopped schema-v1 records and exact digest-bound state authority; it performs no ambient discovery or alias promotion. |
+| Strict-CRI host plan | experimental | `k1s profile host plan strict-cri` consumes only two explicit canonical digest-pinned files and emits a deterministic secret-free `source-validated/unqualified` plan without target probing, state creation, socket access, or host mutation. |
 | Version metadata | stable | Package metadata, CLI build information, OpenAPI v2/v3, and release checks resolve `ae.__version__`. |
 | CRI protobuf resources | stable | Package-local CRI and gogoproto modules ship in wheel and source distributions. |
 
@@ -66,3 +67,9 @@ apply and rollback are owner-private state-only transactions with exact source,
 plan, receipt, run, and scaffold identities. The source record is retained.
 Imported records assert stopped composition only and provide no live-runtime,
 process-ownership, backend, or WorkerBee qualification evidence.
+
+The strict-CRI host plan likewise is not live qualification. Its caller-attested
+facts and public plan digest do not prove containerd/CNI configuration, socket
+access, registry trust, runtime-handler availability, or node operation. Those
+claims require the separately reviewed digest-bound prepare/rollback and node
+adapter plus disposable-guest qualification.

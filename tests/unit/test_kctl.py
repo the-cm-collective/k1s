@@ -307,8 +307,100 @@ def test_profile_help_exposes_non_mutating_contracts_and_legacy_actions() -> Non
         "logs",
         "delete",
         "bootstrap",
+        "host",
     ):
         assert command in help_text
+
+
+def test_strict_cri_host_plan_cli_routes_only_exact_authority(monkeypatch, capsys) -> None:
+    calls: list[dict[str, object]] = []
+    payload = {
+        "kind": "StrictCRIHostPlan",
+        "mutating": False,
+        "planDigest": "sha256:" + "1" * 64,
+        "profileId": "core-a",
+        "qualificationPosture": "source-validated/unqualified",
+        "role": "core",
+        "target": {"targetId": "guest-a"},
+        "actions": [],
+        "warnings": [],
+    }
+
+    def plan(**kwargs):
+        calls.append(kwargs)
+        return payload
+
+    monkeypatch.setattr(kctl_main, "plan_strict_cri_from_files", plan)
+    monkeypatch.setattr(
+        kctl_main,
+        "_setup",
+        lambda: (_ for _ in ()).throw(AssertionError("workload runtime initialized")),
+    )
+    assert (
+        main(
+            [
+                "profile",
+                "host",
+                "plan",
+                "strict-cri",
+                "--intent",
+                "/private/intent.json",
+                "--expect-intent-sha256",
+                "sha256:" + "a" * 64,
+                "--facts",
+                "/private/facts.json",
+                "--expect-facts-sha256",
+                "sha256:" + "b" * 64,
+                "--output",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert calls == [
+        {
+            "expected_facts_digest": "sha256:" + "b" * 64,
+            "expected_intent_digest": "sha256:" + "a" * 64,
+            "facts_path": "/private/facts.json",
+            "intent_path": "/private/intent.json",
+        }
+    ]
+    rendered = json.loads(capsys.readouterr().out)
+    assert rendered == payload
+    assert rendered["mutating"] is False
+    assert rendered["qualificationPosture"] == "source-validated/unqualified"
+
+
+def test_strict_cri_host_plan_cli_error_is_generic_and_redacted(monkeypatch, capsys) -> None:
+    private = "DO-NOT-PRINT-/private/intent.json"
+
+    def fail(**_kwargs):
+        raise kctl_main.ProfileHostPlanError(private)
+
+    monkeypatch.setattr(kctl_main, "plan_strict_cri_from_files", fail)
+    assert (
+        main(
+            [
+                "profile",
+                "host",
+                "plan",
+                "strict-cri",
+                "--intent",
+                private,
+                "--expect-intent-sha256",
+                "sha256:" + "a" * 64,
+                "--facts",
+                "/private/facts.json",
+                "--expect-facts-sha256",
+                "sha256:" + "b" * 64,
+            ]
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == "strict CRI host plan failed closed"
+    assert private not in captured.err
 
 
 def test_profile_run_records_signal_intent_and_returns_foreground_exit(monkeypatch, capsys) -> None:
