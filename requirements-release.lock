@@ -1,0 +1,27 @@
+# CPython 3.11, linux/amd64 runtime closure for the k1s-core artifact gate.
+# Every entry binds the exact reviewed wheel filename and digest. Regenerate only
+# through a separately reviewed dependency-qualification lane.
+annotated-types==0.8.0 --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0  # annotated_types-0.8.0-py3-none-any.whl
+certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1  # certifi-2026.10.23-py3-none-any.whl
+cffi==2.1.1 --hash=sha256:34e261f78cb6ceaaa36f42f2613f4380d94d9c759a9c73c769ee6e0247364632  # cffi-2.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+charset-normalizer==3.5.2 --hash=sha256:211d5a3eb6af8f513b8d4ca19a8c1b7accab1b5f0d3175f9826b03c1a920dc1f  # charset_normalizer-3.5.2-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+croniter==6.2.4 --hash=sha256:8ef3d544107a5c05a150a2d78f8bf5a8eb9c5c4d93405a736b824109574e3f4d  # croniter-6.2.4-py3-none-any.whl
+docker==7.2.0 --hash=sha256:a3f45fdeb9165e2d25d9a1d02ddf3bc70fb572cf5ebbf9b58558c22caf29b71f  # docker-7.2.0-py3-none-any.whl
+grpcio==1.85.1 --hash=sha256:83aced2a1c05648cee0de34e531351118b14c58238f0a61b43559ac8851647a8  # grpcio-1.85.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+idna==3.20 --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c  # idna-3.20-py3-none-any.whl
+nats-py==2.16.0 --hash=sha256:aeb1ff123966c05833d26c7df7e1d54c1c6d32b612428b21677a2e921f1fecae  # nats_py-2.16.0-py3-none-any.whl
+nkeys==0.2.1 --hash=sha256:39172db9662faff74649e4682712bd5ae2be1aea422ff419e9ba5a0e75540b64  # nkeys-0.2.1-py3-none-any.whl
+protobuf==7.36.2 --hash=sha256:89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2  # protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl
+psycopg==3.3.7 --hash=sha256:d592e88a077e01ff57f22d59f16e828b92f2b2d9f439b6679d582b48d74cf306  # psycopg-3.3.7-py3-none-any.whl
+psycopg-binary==3.3.7 --hash=sha256:652a6029e53635ef3106c726ef3b4c01429a586372dd516fc56e75ab8a2bd934  # psycopg_binary-3.3.7-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+pycparser==3.12 --hash=sha256:a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e  # pycparser-3.12-py3-none-any.whl
+pydantic==2.14.2 --hash=sha256:7efbf7507b937931cd32a5755acb00ea1cf5ccb1d4e8067a5850d5069e382118  # pydantic-2.14.2-py3-none-any.whl
+pydantic_core==2.50.2 --hash=sha256:86e7abd24a67f61a4bfe8df059b67a2bdd8bf33705178e98463195d140bd3780  # pydantic_core-2.50.2-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+PyNaCl==1.6.2 --hash=sha256:c8a231e36ec2cab018c4ad4358c386e36eede0319a0c41fed24f840b1dac59f6  # pynacl-1.6.2-cp38-abi3-manylinux_2_34_x86_64.whl
+python-dateutil==4.0.0 --hash=sha256:a5e246f79eb80475e691bf93862cead98decd8a498cf53ba0516fcdc0f50dc1c  # python_dateutil-4.0.0-py3-none-any.whl
+PyYAML==6.0.3 --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d  # pyyaml-6.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+requests==2.34.2 --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0  # requests-2.34.2-py3-none-any.whl
+typing_extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8  # typing_extensions-4.16.0-py3-none-any.whl
+typing-inspection==0.4.4 --hash=sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147  # typing_inspection-0.4.4-py3-none-any.whl
+tzdata==2026.6 --hash=sha256:0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec  # tzdata-2026.6-py2.py3-none-any.whl
+urllib3==2.8.0 --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3  # urllib3-2.8.0-py3-none-any.whl

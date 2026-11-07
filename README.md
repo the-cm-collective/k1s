@@ -52,6 +52,7 @@ Production guidance:
 - CI examples: `docs/ops/ci-gh-actions.md`
 - Python distribution identity and release compatibility:
   `docs/reference/python-distribution.md`
+- Stable and experimental public contracts: `docs/reference/public-contracts.md`
 
 ## Integrated Dashboard & Interactive Playground
 

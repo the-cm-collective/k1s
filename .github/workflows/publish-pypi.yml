@@ -29,6 +29,7 @@ jobs:
       url: https://pypi.org/p/k1s-core
     permissions:
       actions: read
+      attestations: read
       contents: read
       id-token: write
     steps:
@@ -63,6 +64,13 @@ jobs:
           python scripts/validate_python_artifacts.py
           --dist bundle/dist
           --verify-manifest bundle/SHA256SUMS
+      - name: Verify GitHub build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify bundle/dist/*.whl --repo "$GITHUB_REPOSITORY"
+          gh attestation verify bundle/dist/*.tar.gz --repo "$GITHUB_REPOSITORY"
+          gh attestation verify bundle/SHA256SUMS --repo "$GITHUB_REPOSITORY"
       - name: Publish exact TestPyPI bytes to PyPI with OIDC
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:

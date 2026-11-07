@@ -34,9 +34,11 @@ candidate for the distribution transition. `1.0.0a1` is intentionally not
 used because the repository does not yet declare or validate a 1.0
 compatibility contract.
 
-The canonical runtime version is `ae.__version__`. Distribution metadata, the
-`ae.kctl` compatibility module, controller OpenAPI, API-shim OpenAPI, and
-committed OpenAPI snapshots must match it.
+The canonical runtime version is the literal `ae.__version__` in
+`src/ae/__init__.py`. Setuptools reads that literal as dynamic distribution
+metadata. The `ae.kctl` compatibility module, controller OpenAPI, API-shim
+OpenAPI, committed OpenAPI snapshots, and release checks must match it; no
+second version literal belongs in `pyproject.toml`.
 
 ## Artifact promotion
 
@@ -51,5 +53,12 @@ bytes with OIDC. Production never rebuilds or resolves a package from an
 index.
 
 Local acceptance repeats the controlled build, checks byte-for-byte equality,
-runs Twine and archive namespace audits, and installs exclusively from a local
-wheelhouse with package indexes disabled.
+runs Twine, archive namespace, and public-marker audits, and installs
+exclusively from the hash-locked `requirements-release.lock` wheelhouse with
+package indexes and Python socket access disabled. The installed-artifact gate
+runs from outside the checkout, checks package resources and CRI protobufs,
+exercises every compatibility console with `--help`, and runs an `ae plan`
+smoke with only the stub runtime selected. GitHub attaches build-provenance
+attestations to the exact wheel, source distribution, and `SHA256SUMS` file;
+the production workflow verifies those attestations before its OIDC publish
+step.

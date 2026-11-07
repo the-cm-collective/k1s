@@ -8,8 +8,16 @@ import hashlib
 import tarfile
 import tomllib
 import zipfile
+from email.message import Message
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
+
+try:
+    from scripts.check_public_markers import scan_archive
+    from scripts.project_version import read_project_version
+except ModuleNotFoundError:  # direct execution from scripts/
+    from check_public_markers import scan_archive  # type: ignore[import-not-found,no-redef]
+    from project_version import read_project_version  # type: ignore[import-not-found,no-redef]
 
 
 def _sha256(path: Path) -> str:
@@ -22,7 +30,43 @@ def _sha256(path: Path) -> str:
 
 def _project_identity(pyproject: Path) -> tuple[str, str]:
     project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
-    return str(project["name"]), str(project["version"])
+    return str(project["name"]), read_project_version(pyproject)
+
+
+def _validate_public_markers(path: Path) -> None:
+    findings = scan_archive(path)
+    if findings:
+        rendered = ", ".join(
+            f"{finding.rule}:{finding.path}:{finding.line}" for finding in findings[:10]
+        )
+        raise ValueError(f"artifact contains non-public markers: {rendered}")
+
+
+def _validate_metadata(metadata: Message, *, version: str, artifact: Path) -> None:
+    if metadata["Name"] != "k1s-core" or metadata["Version"] != version:
+        identity = f"Name={metadata['Name']!r} Version={metadata['Version']!r}"
+        raise ValueError(f"artifact identity mismatch in {artifact}: {identity}")
+    if metadata["Requires-Python"] != ">=3.11":
+        raise ValueError(f"artifact Python floor mismatch in {artifact}")
+    if metadata["License-Expression"] != "Apache-2.0":
+        raise ValueError(f"artifact SPDX license mismatch in {artifact}")
+
+    expected_urls = {
+        "Homepage, https://github.com/the-cm-collective/k1s",
+        "Repository, https://github.com/the-cm-collective/k1s",
+        "Documentation, https://github.com/the-cm-collective/k1s/tree/main/docs",
+        "Issues, https://github.com/the-cm-collective/k1s/issues",
+        "Changelog, https://github.com/the-cm-collective/k1s/blob/main/CHANGELOG.md",
+    }
+    if set(metadata.get_all("Project-URL", [])) != expected_urls:
+        raise ValueError(f"artifact project URLs mismatch in {artifact}")
+
+    classifiers = set(metadata.get_all("Classifier", []))
+    required_python = {f"Programming Language :: Python :: 3.{minor}" for minor in (11, 12, 13)}
+    if not required_python.issubset(classifiers):
+        raise ValueError(f"artifact supported-Python classifiers mismatch in {artifact}")
+    if "Programming Language :: Python :: 3.14" in classifiers:
+        raise ValueError(f"artifact must not advertise exploratory Python 3.14: {artifact}")
 
 
 def _validate_wheel(path: Path, *, version: str) -> None:
@@ -37,9 +81,7 @@ def _validate_wheel(path: Path, *, version: str) -> None:
         if len(metadata_names) != 1:
             raise ValueError(f"wheel must contain exactly one METADATA file: {path}")
         metadata = Parser().parsestr(archive.read(metadata_names[0]).decode("utf-8"))
-        if metadata["Name"] != "k1s-core" or metadata["Version"] != version:
-            identity = f"Name={metadata['Name']!r} Version={metadata['Version']!r}"
-            raise ValueError(f"wheel identity mismatch: {identity}")
+        _validate_metadata(metadata, version=version, artifact=path)
 
 
 def _validate_sdist(path: Path, *, version: str) -> None:
@@ -58,9 +100,7 @@ def _validate_sdist(path: Path, *, version: str) -> None:
         if member is None:
             raise ValueError(f"unable to read sdist PKG-INFO: {path}")
         metadata = Parser().parsestr(member.read().decode("utf-8"))
-        if metadata["Name"] != "k1s-core" or metadata["Version"] != version:
-            identity = f"Name={metadata['Name']!r} Version={metadata['Version']!r}"
-            raise ValueError(f"sdist identity mismatch: {identity}")
+        _validate_metadata(metadata, version=version, artifact=path)
 
 
 def validate(dist: Path, *, pyproject: Path) -> list[Path]:
@@ -75,6 +115,8 @@ def validate(dist: Path, *, pyproject: Path) -> list[Path]:
         raise ValueError(f"expected exactly one wheel and one sdist in {dist}, found {found}")
     _validate_wheel(wheels[0], version=version)
     _validate_sdist(sdists[0], version=version)
+    for artifact in artifacts:
+        _validate_public_markers(artifact)
     return artifacts
 
 

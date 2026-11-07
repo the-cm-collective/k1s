@@ -31,8 +31,10 @@ git push origin v0.1.0
 
 ## Post-release bump
 
-- Immediately after tagging, bump `pyproject.toml` to the next dev version
-  (example: `0.1.0a2.dev0`) so new work is clearly ahead of the tag.
+- Immediately after tagging, bump the authoritative `ae.__version__` literal to
+  the next dev version (example: `0.1.0a2.dev0`) so new work is clearly ahead of
+  the tag. `pyproject.toml` resolves that literal through setuptools dynamic
+  metadata; it must not contain a second version literal.
 
 ## Changelog flow
 
@@ -42,10 +44,13 @@ git push origin v0.1.0
 
 ## Automation
 
-- `scripts/check_versioning.py` enforces PEP 440 formatting, changelog parity, and
-  tag/version matching in CI and pre-commit.
+- `src/ae/__init__.py` is the single authoritative version source. Packaging,
+  compatibility CLIs, OpenAPI documents, and release checks resolve it without
+  maintaining independent version literals.
+- `scripts/check_versioning.py` enforces the dynamic metadata contract, PEP 440
+  formatting, changelog parity, and tag/version matching in CI and pre-commit.
 - `scripts/bump_version.py --dry-run` previews the next `.dev0` version; run it
-  without `--dry-run` after tagging to bump `pyproject.toml`.
+  without `--dry-run` after tagging to update the authoritative package literal.
 
 ## Current status
 

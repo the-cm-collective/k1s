@@ -64,6 +64,10 @@ jobs:
     if: ${{ needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - name: Trust Gitea cert for checkout
         run: |
@@ -91,7 +95,7 @@ jobs:
         if: ${{ env.ACT != 'true' || env.GITEA_ACTIONS == 'true' }}
         uses: actions/setup-python@v4
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Normalize runner env
         run: |
           source scripts/ci/lib.sh
