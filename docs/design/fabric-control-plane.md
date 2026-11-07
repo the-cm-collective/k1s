@@ -162,6 +162,29 @@ Workloads may opt into advisory status evidence with
 `ae status --json --wide` and `ae fabric runtime-profile advisory -f <manifest>`
 then include the latest stored profile for that track as advisory evidence only.
 
+## WorkerBee Complementary Evidence Boundary
+
+WorkerBee WBRR artifacts are external lifecycle evidence around a k1s
+environment, not k1s runtime API objects. k1s may reference WorkerBee
+application profiles, target-manager records, runtime probe packs, operation
+traces, export manifests, and static proof summaries during environment
+promotion or operator review, but those records do not replace controller-owned
+reconcile, scheduling, admission, or rollback decisions.
+
+The compatibility boundary is:
+
+- WorkerBee owns project-scoped build, probe, export, security review, and
+  evidence packaging contracts.
+- k1s owns workload state, node state, fabric phase gates, reconcile decisions,
+  and runtime admission behavior.
+- Promotion workflows may attach WorkerBee evidence as advisory input or
+  provenance, but must still pass k1s-native gates before changing runtime
+  behavior.
+- WorkerBee validators should not be duplicated into k1s runtime code. If k1s
+  needs to consume a WorkerBee artifact, it should validate only the minimal
+  envelope required for provenance and keep detailed contract validation in
+  WorkerBee.
+
 ## Later Hyperon Path
 
 Hyperon belongs at the control-plane and fabric layer, but in a bounded sequence:
