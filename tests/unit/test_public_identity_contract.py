@@ -102,3 +102,17 @@ def test_public_contract_inventory_uses_tested_status_vocabulary() -> None:
     assert "Install releases as `k1s-core`; `ae` is not the distribution name." in text
     assert "`import ae`" in text
     assert "`k1s --help`" in text
+    assert "`k1s profile list`, `doctor`, and `plan`" in text
+    assert "`local`,\n`core`, `edge-gateway`, and `node` are GA" in text
+    assert "`edge-dev` is\ndevelopment-only" in text
+    assert "production `edge-gateway` contract never includes the development worker stub" in text
+
+
+def test_profile_lifecycle_reference_preserves_role_and_alias_postures() -> None:
+    text = (ROOT / "docs" / "reference" / "profile-lifecycle.md").read_text(encoding="utf-8")
+    for role in ("local", "core", "edge-gateway", "node", "edge-dev", "core-ha"):
+        assert f"`{role}`" in text
+    assert "`edge` | `edge-dev`" in text
+    assert "`edge-core` | `edge-dev`" in text
+    assert "never resolves through `edge-dev`" in text
+    assert "do not start a backend" in text

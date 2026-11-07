@@ -1,10 +1,15 @@
 """k1s (kubectl-like) CLI smoke tests."""
 
+import json
+import os
+import socket
+import subprocess
 from pathlib import Path
 
 import ae.kctl.__main__ as kctl_main
 from ae.kctl.__main__ import build_parser, main
 from ae.kctl.lifecycle import LifecycleResult
+from ae.kctl.profiles import InstalledProfileFacts
 
 
 def write_manifest(path: Path, image: str = "alpine:3.20") -> None:
@@ -114,3 +119,95 @@ def test_k1s_help_preserves_workload_commands_and_adds_profile_lifecycle() -> No
     for command in ("get", "describe", "apply", "rollout", "logs", "events", "delete", "scale"):
         assert command in help_text
     assert "profile" in help_text
+
+
+def test_profile_inspection_cli_is_non_mutating(monkeypatch, tmp_path, capsys) -> None:
+    class StaticProbe:
+        def inspect(self) -> InstalledProfileFacts:
+            return InstalledProfileFacts(
+                python_version=(3, 13),
+                platform="linux",
+                ae_importable=True,
+                distribution_version="0.1.8a1",
+                k1s_console_present=True,
+            )
+
+    def fail(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("non-mutating profile command crossed a side-effect boundary")
+
+    cwd_before = Path.cwd()
+    environment_before = dict(os.environ)
+    files_before = tuple(tmp_path.iterdir())
+
+    with monkeypatch.context() as guard:
+        guard.setattr(kctl_main, "profile_doctor_probe_factory", StaticProbe)
+        guard.setattr(kctl_main, "_setup", fail)
+        guard.setattr(kctl_main, "profile_lifecycle_manager_factory", fail)
+        guard.setattr(kctl_main, "runtime_factory", fail)
+        guard.setattr(kctl_main, "state_store_from_env", fail)
+        guard.setattr(subprocess, "Popen", fail)
+        guard.setattr(subprocess, "run", fail)
+        guard.setattr(socket, "create_connection", fail)
+        guard.setattr(os, "kill", fail)
+        guard.setattr(os, "killpg", fail)
+        guard.setattr(os, "putenv", fail)
+        guard.setattr(os, "unsetenv", fail)
+        guard.setattr(Path, "mkdir", fail)
+        guard.setattr(Path, "write_text", fail)
+        guard.setattr(Path, "write_bytes", fail)
+        guard.setattr(Path, "unlink", fail)
+        guard.setattr(Path, "replace", fail)
+
+        assert main(["profile", "list", "--output", "json"]) == 0
+        catalog = json.loads(capsys.readouterr().out)
+        assert catalog["mutating"] is False
+
+        assert main(["profile", "plan", "edge-gateway", "--output", "json"]) == 0
+        plan = json.loads(capsys.readouterr().out)
+        assert plan["components"] == ["gateway"]
+        assert "worker-stub" not in plan["components"]
+
+        assert main(["profile", "doctor", "core", "--output", "json"]) == 0
+        doctor = json.loads(capsys.readouterr().out)
+        assert doctor["mutating"] is False
+        assert doctor["overallStatus"] == "warn"
+
+    assert Path.cwd() == cwd_before
+    assert dict(os.environ) == environment_before
+    assert tuple(tmp_path.iterdir()) == files_before
+
+
+def test_profile_inspection_json_never_discloses_environment_values(
+    monkeypatch,
+    capsys,
+) -> None:
+    sentinel = "DO-NOT-PRINT-THIS-SECRET"
+    monkeypatch.setenv("K1S_PROFILE_TEST_SECRET", sentinel)
+
+    class StaticProbe:
+        def inspect(self) -> InstalledProfileFacts:
+            return InstalledProfileFacts(
+                python_version=(3, 13),
+                platform="linux",
+                ae_importable=True,
+                distribution_version="0.1.8a1",
+                k1s_console_present=True,
+            )
+
+    monkeypatch.setattr(kctl_main, "profile_doctor_probe_factory", StaticProbe)
+    assert main(["profile", "doctor", "edge-dev", "--output", "json"]) == 0
+    output = capsys.readouterr().out
+    assert sentinel not in output
+    assert "K1S_PROFILE_TEST_SECRET" not in output
+
+
+def test_profile_help_exposes_non_mutating_contracts_and_legacy_actions() -> None:
+    parser = build_parser()
+    profile_action = next(
+        action for action in parser._actions if getattr(action, "dest", None) == "cmd"
+    )
+    profile_parser = profile_action.choices["profile"]
+    help_text = profile_parser.format_help()
+    for command in ("list", "doctor", "plan", "start", "status", "stop", "restart"):
+        assert command in help_text

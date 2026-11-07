@@ -10,10 +10,11 @@ Python or command surfaces.
 - Python imports remain under `ae`, including `import ae` and all
   `ae.runtime.cri` modules.
 - The primary operator command remains `k1s`.
-- `k1s profile start|status|stop|restart` provides one stable lifecycle
-  contract for the `core`, `edge`, `core-edge`, and `edge-core` profiles. It
-  delegates to the existing profile runner and keeps per-profile PID/log state
-  separate from workload reconciliation state.
+- `k1s profile list|doctor|plan` provides a deterministic, non-mutating
+  installed contract for the canonical `local`, `core`, `edge-gateway`,
+  `node`, `edge-dev`, and `core-ha` roles. Compatibility aliases remain
+  inspectable, but `edge` and `edge-core` resolve only to development-only
+  `edge-dev`; they never represent the production `edge-gateway` role.
 - Existing commands `ae`, `ae-rotate-certs`, `ae-node`, `ae-gateway`, and
   `ae-worker-stub` remain installed by `k1s-core`.
 - CRI protobuf modules remain under
@@ -54,9 +55,11 @@ configuration, Python socket connections, and source-tree `PYTHONPATH`
 fallback. Safe help, version, import, resource, and stub-only planning checks
 run without starting Docker, containerd, CRI, CSI, Kubernetes, or a service.
 
-Profile lifecycle and lab/example helpers that deliberately use repository
-scripts or example manifests are separate experimental or later lifecycle
-contracts. Those repository paths are not copied into the runtime wheel.
+The existing `profile start|status|stop|restart` compatibility actions and
+lab/example helpers deliberately use repository scripts. They remain separate
+experimental or later lifecycle contracts. Those repository paths are not
+copied into the runtime wheel. Installed wheel/sdist proof for the new pure
+profile catalog is deferred to its dedicated artifact checkpoint.
 
 ## Version posture
 

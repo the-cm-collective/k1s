@@ -3,8 +3,15 @@
 ## Unreleased
 
 ### Added
+- Added deterministic, non-mutating `k1s profile list`, `doctor`, and `plan`
+  contracts for the installed local, core, edge-gateway, node, edge-dev, and
+  core-ha role catalog.
 - Added deterministic `k1s profile start|status|stop|restart` lifecycle
   contracts for the core, edge, core-edge, and edge-core runtime profiles.
+
+### Security
+- Kept production `edge-gateway` distinct from the development-only `edge`
+  and `edge-core` compatibility aliases that include the worker stub.
 
 ### Changed
 - Separated Gitea artifact integration from GitHub-only OIDC publication and

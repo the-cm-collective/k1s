@@ -30,6 +30,15 @@ from ae.controller.reconciler import Reconciler
 from ae.controller.state import RegistryConflictError, SQLiteStateStore, state_store_from_env
 from ae.ingress.service import IngressService
 from ae.kctl.lifecycle import LIFECYCLE_ACTIONS, PROFILE_NAMES, LifecycleManager
+from ae.kctl.profiles import (
+    PROFILE_INPUT_NAMES,
+    ReadOnlyDoctorProbe,
+    SystemDoctorProbe,
+    profile_catalog_payload,
+    profile_doctor_payload,
+    profile_plan_payload,
+    render_profile_text,
+)
 from ae.controller.__main__ import service_controller_factory
 
 
@@ -181,9 +190,18 @@ def build_parser() -> argparse.ArgumentParser:
     sc_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
     sc_p.add_argument("--replicas", type=int, required=True)
 
-    # k1s profile start|status|stop|restart <core|edge|core-edge|edge-core>
+    # Installed, non-mutating profile inspection plus legacy lifecycle actions.
     profile_p = sub.add_parser("profile", help="Manage a supported k1s runtime profile")
     profile_sub = profile_p.add_subparsers(dest="profile_action", required=True)
+    list_p = profile_sub.add_parser("list", help="List installed profile contracts")
+    list_p.add_argument("-o", "--output", choices=["text", "json"], default="text")
+    for action in ("doctor", "plan"):
+        action_p = profile_sub.add_parser(
+            action,
+            help=f"{action.capitalize()} a profile without mutating the host",
+        )
+        action_p.add_argument("profile", choices=PROFILE_INPUT_NAMES)
+        action_p.add_argument("-o", "--output", choices=["text", "json"], default="text")
     for action in LIFECYCLE_ACTIONS:
         action_p = profile_sub.add_parser(action, help=f"{action.capitalize()} a runtime profile")
         action_p.add_argument("profile", choices=PROFILE_NAMES)
@@ -567,8 +585,38 @@ def profile_lifecycle_manager_factory() -> LifecycleManager:
     return LifecycleManager.from_environment()
 
 
+def profile_doctor_probe_factory() -> ReadOnlyDoctorProbe:
+    """Return the static installed-package probe used by ``profile doctor``."""
+
+    return SystemDoctorProbe()
+
+
 def handle_profile(ns: argparse.Namespace) -> int:
-    """Execute one explicit profile lifecycle action."""
+    """Inspect profile contracts or execute one explicit legacy lifecycle action."""
+
+    if ns.profile_action == "list":
+        payload = profile_catalog_payload()
+        if ns.output == "json":
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(render_profile_text(payload))
+        return 0
+
+    if ns.profile_action == "plan":
+        payload = profile_plan_payload(ns.profile)
+        if ns.output == "json":
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(render_profile_text(payload))
+        return 0
+
+    if ns.profile_action == "doctor":
+        payload, exit_code = profile_doctor_payload(ns.profile, profile_doctor_probe_factory())
+        if ns.output == "json":
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(render_profile_text(payload))
+        return exit_code
 
     result = profile_lifecycle_manager_factory().perform(ns.profile_action, ns.profile)
     if ns.output == "json":
