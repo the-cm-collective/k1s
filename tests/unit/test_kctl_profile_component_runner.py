@@ -117,6 +117,42 @@ def test_node_agent_requires_exact_engine_and_invokes_node_entry(tmp_path: Path)
         )
 
 
+def test_node_agent_accepts_only_paired_strict_cri_host_authority() -> None:
+    calls: list[list[str] | None] = []
+    plan_digest = "sha256:" + "a" * 64
+    receipt_digest = "sha256:" + "b" * 64
+
+    result = run_component(
+        "node-agent",
+        ["--node-id", "node-a", "--runtime-backend", "cri"],
+        gate_fd=_gate(b"1"),
+        engine_backend="strict-cri",
+        engine_executable=None,
+        engine_device=None,
+        engine_inode=None,
+        host_plan_digest=plan_digest,
+        host_receipt_digest=receipt_digest,
+        node_main=lambda argv: calls.append(argv) or 0,
+    )
+
+    assert result == 0
+    assert calls == [["--node-id", "node-a", "--runtime-backend", "cri"]]
+
+    with pytest.raises(ComponentGateError, match="authority is incomplete"):
+        run_component(
+            "node-agent",
+            [],
+            gate_fd=_gate(b"1"),
+            engine_backend="strict-cri",
+            engine_executable=None,
+            engine_device=None,
+            engine_inode=None,
+            host_plan_digest=plan_digest,
+            host_receipt_digest=None,
+            node_main=lambda _argv: pytest.fail("node must not start"),
+        )
+
+
 @pytest.mark.parametrize("payload", [b"", b"0", b"11"])
 def test_gate_eof_or_noncanonical_activation_fails_closed(payload: bytes, tmp_path: Path) -> None:
     executable, device, inode = _engine(tmp_path)

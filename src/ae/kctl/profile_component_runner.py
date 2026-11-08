@@ -11,12 +11,14 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal, cast
 
 ComponentKind = Literal["controller", "node-local", "gateway", "node-agent"]
 ACTIVATE_BYTE = b"1"
+_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class ComponentGateError(RuntimeError):
@@ -48,6 +50,8 @@ def run_component(
     engine_executable: Path | None,
     engine_device: int | None,
     engine_inode: int | None,
+    host_plan_digest: str | None = None,
+    host_receipt_digest: str | None = None,
     controller_main: Callable[[list[str] | None], int] | None = None,
     node_main: Callable[[list[str] | None], int] | None = None,
     gateway_main: Callable[[list[str] | None], int] | None = None,
@@ -63,10 +67,29 @@ def run_component(
     if kind == "gateway":
         if any(
             value is not None
-            for value in (engine_backend, engine_executable, engine_device, engine_inode)
+            for value in (
+                engine_backend,
+                engine_executable,
+                engine_device,
+                engine_inode,
+                host_plan_digest,
+                host_receipt_digest,
+            )
         ):
             raise ComponentGateError("gateway component must not receive engine identity")
+    elif kind == "node-agent" and engine_backend == "strict-cri":
+        if any(value is not None for value in (engine_executable, engine_device, engine_inode)):
+            raise ComponentGateError("strict-CRI node must not receive engine executable identity")
+        if (
+            type(host_plan_digest) is not str
+            or type(host_receipt_digest) is not str
+            or _DIGEST_RE.fullmatch(host_plan_digest) is None
+            or _DIGEST_RE.fullmatch(host_receipt_digest) is None
+        ):
+            raise ComponentGateError("strict-CRI node authority is incomplete")
     else:
+        if host_plan_digest is not None or host_receipt_digest is not None:
+            raise ComponentGateError("engine component must not receive strict-CRI authority")
         if (
             engine_backend is None
             or engine_executable is None
@@ -128,10 +151,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         choices=("controller", "node-local", "gateway", "node-agent"),
     )
-    parser.add_argument("--engine-backend", choices=("podman", "docker"), default=None)
+    parser.add_argument(
+        "--engine-backend", choices=("podman", "docker", "strict-cri"), default=None
+    )
     parser.add_argument("--engine-executable", type=Path, default=None)
     parser.add_argument("--engine-device", type=int, default=None)
     parser.add_argument("--engine-inode", type=int, default=None)
+    parser.add_argument("--host-plan-digest", default=None)
+    parser.add_argument("--host-receipt-digest", default=None)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     return parser
 
@@ -149,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
         engine_executable=namespace.engine_executable,
         engine_device=namespace.engine_device,
         engine_inode=namespace.engine_inode,
+        host_plan_digest=namespace.host_plan_digest,
+        host_receipt_digest=namespace.host_receipt_digest,
     )
 
 

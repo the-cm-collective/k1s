@@ -43,8 +43,21 @@ canonical, digest-pinned files and emits a deterministic
 `source-validated/unqualified` Linux/containerd plan. It does not read or
 create profile locks, current/run state, bootstrap state, XDG roots, or backend
 receipts; it performs no target, process, service, socket, or network probe.
-Digest-bound preparation/rollback and CRI node execution remain separate
-reviewed checkpoints and cannot be inferred from a successful plan.
+Digest-bound `profile host prepare strict-cri` and `rollback strict-cri` are
+explicit reviewed mutations. They require the exact plan authorities,
+caller-supplied expected digests and confirmation, an owner-private
+transaction root, and pre-opened anonymous-pipe file descriptors for a helper
+that the CLI never launches or discovers. The installed strict-CRI node path
+requires a paired exact plan and applied-receipt digest. A successful plan or
+source-only prepare smoke is never a live qualification claim.
+
+Preparation journals `planned`, `snapshotting`, `snapshotted`, `applying`, and
+`applied`; rollback journals `rolling-back` and `rolled-back`. Writes are
+canonical, descriptor-relative, no-follow, owner-private, same-device, atomic,
+and fsynced. Crash recovery accepts only the exact write-ahead zero-progress
+state or a contiguous action prefix/suffix. Unknown, duplicate, reordered,
+divergent, or partially observed authority fails closed. No stale-lock timeout
+or takeover exists.
 
 ## Canonical roles
 

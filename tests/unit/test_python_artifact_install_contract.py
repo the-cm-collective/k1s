@@ -247,6 +247,40 @@ def test_installed_artifact_gate_exercises_pure_strict_cri_host_plan() -> None:
     assert '"PIP_NO_INDEX": "1"' in source
 
 
+def test_installed_artifact_gate_exercises_synthetic_strict_cri_transaction() -> None:
+    source = (ROOT / "scripts" / "validate_installed_python_artifact.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "installed_transaction_program = r" in source
+    assert "StrictCRIHostHelperEngine" in source
+    assert "PipeHostHelperClient" in source
+    assert "StrictCRIHostTransactionManager" in source
+    assert "StrictCRINodeAdapter" in source
+    assert "request_read, request_write = os.pipe()" in source
+    assert "response_read, response_write = os.pipe()" in source
+    assert "transaction_root_fd" in source
+    assert "assert prepare.status == 'prepared'" in source
+    assert "assert rollback.status == 'rolled-back'" in source
+    assert "assert public['qualificationPosture'] == 'source-validated/unqualified'" in source
+    assert "assert not server_errors" in source
+    assert 'rendered[program_index] = "<bounded-installed-smoke-program>"' in source
+    assert "subprocess.Popen" not in source
+    assert "sudo" not in source
+
+    tree = ast.parse(source)
+    smoke_programs = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "K1S_STRICT_TRANSACTION_SMOKE_ROOT" in node.value
+        and "StrictCRIHostTransactionManager" in node.value
+    ]
+    assert len(smoke_programs) == 1
+    compile(smoke_programs[0], "<installed-artifact-strict-cri-transaction>", "exec")
+
+
 def test_installed_artifact_gate_exercises_state_contract_without_runtime() -> None:
     source = (ROOT / "scripts" / "validate_installed_python_artifact.py").read_text(
         encoding="utf-8"

@@ -47,12 +47,18 @@ from ae.kctl.profile_host_plan import (
     render_strict_cri_host_plan_json,
     render_strict_cri_host_plan_text,
 )
+from ae.kctl.profile_host_transaction import (
+    PipeHostHelperClient,
+    ProfileHostTransactionError,
+    StrictCRIHostTransactionManager,
+)
 from ae.kctl.profile_migration import (
     MIGRATION_PROFILES,
     ProfileMigrationManager,
     render_migration_text,
 )
 from ae.kctl.profile_paths import ProfilePathError, ProfileRoots
+from ae.kctl.profile_node_adapter import StrictCRINodeInputs
 from ae.kctl.profile_state import ProfileStateError
 from ae.kctl.profiles import (
     PROFILE_INPUT_NAMES,
@@ -250,6 +256,14 @@ def build_parser() -> argparse.ArgumentParser:
                 default=None,
                 help="Exact owner-private bootstrap identity for edge-gateway or node",
             )
+            for option in (
+                "host-plan",
+                "expect-host-plan-sha256",
+                "expect-host-plan-digest",
+                "host-receipt",
+                "expect-host-receipt-sha256",
+            ):
+                action_p.add_argument(f"--{option}", default=None)
 
     run_p = profile_sub.add_parser("run", help="Run a portable profile in the foreground")
     run_p.add_argument("profile", choices=PORTABLE_PROFILES)
@@ -259,6 +273,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Exact owner-private bootstrap identity for edge-gateway or node",
     )
+    for option in (
+        "host-plan",
+        "expect-host-plan-sha256",
+        "expect-host-plan-digest",
+        "host-receipt",
+        "expect-host-receipt-sha256",
+    ):
+        run_p.add_argument(f"--{option}", default=None)
     run_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
 
     logs_profile_p = profile_sub.add_parser("logs", help="Read an exact owned component log")
@@ -294,7 +316,9 @@ def build_parser() -> argparse.ArgumentParser:
     node_p = create_sub.add_parser("node", help="Create an identity-v1 node bootstrap")
     node_p.add_argument("--node-id", required=True)
     node_p.add_argument("--controller-url", required=True)
-    node_p.add_argument("--runtime-backend", choices=("podman", "docker"), required=True)
+    node_p.add_argument(
+        "--runtime-backend", choices=("podman", "docker", "strict-cri"), required=True
+    )
     node_p.add_argument("--listen-host", required=True)
     node_p.add_argument("--listen-port", type=int, required=True)
     node_p.add_argument("--advertise-endpoint", required=True)
@@ -339,6 +363,32 @@ def build_parser() -> argparse.ArgumentParser:
     strict_cri_p.add_argument("--facts", required=True)
     strict_cri_p.add_argument("--expect-facts-sha256", required=True)
     strict_cri_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    for host_action in ("prepare", "rollback"):
+        action_p = host_sub.add_parser(
+            host_action,
+            help=f"{host_action.capitalize()} one digest-bound strict-CRI host transaction",
+        )
+        action_sub = action_p.add_subparsers(dest="host_profile", required=True)
+        strict_p = action_sub.add_parser("strict-cri")
+        strict_p.add_argument("--transaction-root", type=Path, required=True)
+        strict_p.add_argument("--transaction-id", required=True)
+        strict_p.add_argument("--helper-request-fd", type=int, required=True)
+        strict_p.add_argument("--helper-response-fd", type=int, required=True)
+        strict_p.add_argument("--expect-helper-identity-sha256", required=True)
+        strict_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+        if host_action == "prepare":
+            strict_p.add_argument("--intent", type=Path, required=True)
+            strict_p.add_argument("--expect-intent-sha256", required=True)
+            strict_p.add_argument("--facts", type=Path, required=True)
+            strict_p.add_argument("--expect-facts-sha256", required=True)
+            strict_p.add_argument("--plan", type=Path, required=True)
+            strict_p.add_argument("--expect-plan-sha256", required=True)
+            strict_p.add_argument("--expect-plan-digest", required=True)
+            strict_p.add_argument("--confirm-prepare", required=True)
+        else:
+            strict_p.add_argument("--expect-applied-receipt-sha256", required=True)
+            strict_p.add_argument("--confirm-rollback", required=True)
 
     return p
 
@@ -748,6 +798,38 @@ def profile_migration_manager_factory() -> ProfileMigrationManager:
     return ProfileMigrationManager()
 
 
+def profile_host_transaction_manager_factory(
+    request_fd: int, response_fd: int
+) -> StrictCRIHostTransactionManager:
+    """Bind only caller-inherited helper pipes; never discover or launch a helper."""
+
+    return StrictCRIHostTransactionManager(
+        PipeHostHelperClient(request_fd=request_fd, response_fd=response_fd)
+    )
+
+
+def _strict_cri_node_inputs(ns: argparse.Namespace) -> StrictCRINodeInputs | None:
+    names = (
+        "host_plan",
+        "expect_host_plan_sha256",
+        "expect_host_plan_digest",
+        "host_receipt",
+        "expect_host_receipt_sha256",
+    )
+    values = [getattr(ns, name, None) for name in names]
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ProfileStateError("strict-CRI node authority is incomplete")
+    return StrictCRINodeInputs(
+        plan_path=Path(str(values[0])),
+        expected_plan_file_digest=str(values[1]),
+        expected_plan_digest=str(values[2]),
+        receipt_path=Path(str(values[3])),
+        expected_receipt_digest=str(values[4]),
+    )
+
+
 @dataclass(slots=True)
 class _SignalRequest:
     signal_number: int | None = None
@@ -781,19 +863,58 @@ def handle_profile(ns: argparse.Namespace) -> int:
 
     if ns.profile_action == "host":
         try:
-            payload = plan_strict_cri_from_files(
-                intent_path=ns.intent,
-                expected_intent_digest=ns.expect_intent_sha256,
-                facts_path=ns.facts,
-                expected_facts_digest=ns.expect_facts_sha256,
+            if ns.host_action == "plan":
+                payload = plan_strict_cri_from_files(
+                    intent_path=ns.intent,
+                    expected_intent_digest=ns.expect_intent_sha256,
+                    facts_path=ns.facts,
+                    expected_facts_digest=ns.expect_facts_sha256,
+                )
+                if ns.output == "json":
+                    print(render_strict_cri_host_plan_json(payload), end="")
+                else:
+                    print(render_strict_cri_host_plan_text(payload), end="")
+                return 0
+            host_manager = profile_host_transaction_manager_factory(
+                ns.helper_request_fd, ns.helper_response_fd
             )
-            if ns.output == "json":
-                print(render_strict_cri_host_plan_json(payload), end="")
+            if ns.host_action == "prepare":
+                host_result = host_manager.prepare(
+                    intent_path=ns.intent,
+                    expected_intent_digest=ns.expect_intent_sha256,
+                    facts_path=ns.facts,
+                    expected_facts_digest=ns.expect_facts_sha256,
+                    plan_path=ns.plan,
+                    expected_plan_file_digest=ns.expect_plan_sha256,
+                    expected_plan_digest=ns.expect_plan_digest,
+                    transaction_root=ns.transaction_root,
+                    transaction_id=ns.transaction_id,
+                    confirmation=ns.confirm_prepare,
+                    expected_helper_identity_digest=ns.expect_helper_identity_sha256,
+                )
             else:
-                print(render_strict_cri_host_plan_text(payload), end="")
+                host_result = host_manager.rollback(
+                    transaction_root=ns.transaction_root,
+                    transaction_id=ns.transaction_id,
+                    expected_applied_receipt_digest=ns.expect_applied_receipt_sha256,
+                    confirmation=ns.confirm_rollback,
+                    expected_helper_identity_digest=ns.expect_helper_identity_sha256,
+                )
+            result_payload = host_result.public_payload()
+            if ns.output == "json":
+                print(json.dumps(result_payload, sort_keys=True))
+            else:
+                print(
+                    f"action={host_result.action} status={host_result.status} "
+                    f"target={host_result.target_id} "
+                    f"transaction={host_result.transaction_id} "
+                    f"planDigest={host_result.plan_digest} "
+                    f"receiptDigest={host_result.receipt_digest}"
+                )
             return 0
-        except ProfileHostPlanError:
-            print("strict CRI host plan failed closed", file=sys.stderr)
+        except (ProfileHostPlanError, ProfileHostTransactionError):
+            operation = getattr(ns, "host_action", "plan")
+            print(f"strict CRI host {operation} failed closed", file=sys.stderr)
             return 1
 
     if ns.profile_action == "migrate":
@@ -905,14 +1026,24 @@ def handle_profile(ns: argparse.Namespace) -> int:
             return 1
         manager = portable_profile_manager_factory()
         try:
+            strict_cri_inputs = _strict_cri_node_inputs(ns)
             if ns.profile_action == "run":
                 with _foreground_signal_requests() as request:
-                    run_result = manager.run(
-                        ns.profile,
-                        backend=ns.backend,
-                        bootstrap_id=ns.bootstrap_id,
-                        stop_requested=lambda: request.signal_number,
-                    )
+                    if strict_cri_inputs is None:
+                        run_result = manager.run(
+                            ns.profile,
+                            backend=ns.backend,
+                            bootstrap_id=ns.bootstrap_id,
+                            stop_requested=lambda: request.signal_number,
+                        )
+                    else:
+                        run_result = manager.run(
+                            ns.profile,
+                            backend=ns.backend,
+                            bootstrap_id=ns.bootstrap_id,
+                            strict_cri_inputs=strict_cri_inputs,
+                            stop_requested=lambda: request.signal_number,
+                        )
                 payload = run_result.to_dict()
                 if ns.output == "json":
                     print(json.dumps(payload, sort_keys=True))
@@ -956,6 +1087,11 @@ def handle_profile(ns: argparse.Namespace) -> int:
     legacy = bool(ns.legacy)
     backend = getattr(ns, "backend", None)
     bootstrap_id = getattr(ns, "bootstrap_id", None)
+    try:
+        strict_cri_inputs = _strict_cri_node_inputs(ns)
+    except ProfileStateError:
+        print("profile command failed closed", file=sys.stderr)
+        return 1
     result: PortableLifecycleResult | LifecycleResult
     if ns.profile in PORTABLE_PROFILES and not legacy:
         if (
@@ -965,16 +1101,25 @@ def handle_profile(ns: argparse.Namespace) -> int:
         ):
             print("profile command failed closed", file=sys.stderr)
             return 1
-        result = portable_profile_manager_factory().perform(
-            ns.profile_action,
-            ns.profile,
-            backend=backend,
-            bootstrap_id=bootstrap_id,
-        )
+        if strict_cri_inputs is None:
+            result = portable_profile_manager_factory().perform(
+                ns.profile_action,
+                ns.profile,
+                backend=backend,
+                bootstrap_id=bootstrap_id,
+            )
+        else:
+            result = portable_profile_manager_factory().perform(
+                ns.profile_action,
+                ns.profile,
+                backend=backend,
+                bootstrap_id=bootstrap_id,
+                strict_cri_inputs=strict_cri_inputs,
+            )
     else:
         if ns.profile in PORTABLE_PROFILES:
             raise ValueError(f"{ns.profile} has no repository-local legacy lifecycle runner")
-        if backend is not None or bootstrap_id is not None:
+        if backend is not None or bootstrap_id is not None or strict_cri_inputs is not None:
             raise ValueError("portable execution options are unavailable to legacy profiles")
         result = profile_lifecycle_manager_factory().perform(ns.profile_action, ns.profile)
     result_payload = result.to_dict()

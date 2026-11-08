@@ -33,11 +33,50 @@ trust, ambiguous ownership, symlink/hardlink/special-file facts, and digest
 mismatches fail closed. Public output contains no input filename, registry
 credential, raw machine identity, private bootstrap digest, or secret.
 
-Digest-bound host preparation, exact rollback, and the installed CRI node
-adapter are a separate K-P1-7B contract. Live qualification remains a Q1 task
-inside a disposable egress-denied guest. The repository scripts documented
-below are legacy/manual development helpers; they are not called by this
-installed plan and are not its authority model.
+Digest-bound preparation and exact rollback use the reviewed plan rather than
+an ambient host scan:
+
+```text
+k1s profile host prepare strict-cri \
+  --intent /absolute/intent.json --expect-intent-sha256 sha256:<digest> \
+  --facts /absolute/facts.json --expect-facts-sha256 sha256:<digest> \
+  --plan /absolute/plan.json --expect-plan-sha256 sha256:<file-digest> \
+  --expect-plan-digest sha256:<plan-digest> \
+  --transaction-root /absolute/owner-private/root \
+  --transaction-id ht1-<32-lowercase-hex> \
+  --confirm TARGET:sha256:<plan-digest> \
+  --helper-request-fd FD --helper-response-fd FD
+
+k1s profile host rollback strict-cri \
+  --transaction-root /absolute/owner-private/root \
+  --transaction-id ht1-<32-lowercase-hex> \
+  --expect-applied-receipt-digest sha256:<digest> \
+  --confirm TARGET:TRANSACTION:sha256:<applied-receipt-digest> \
+  --helper-request-fd FD --helper-response-fd FD
+```
+
+The coordinator never launches or discovers a helper. It writes an
+owner-private, fsynced transaction journal, exact authority copies, backups,
+and immutable applied/rolled-back receipts. Recovery accepts only the exact
+contiguous snapshot/apply prefix or rollback suffix, including the legitimate
+zero-progress write-ahead boundary immediately after a phase transition.
+Locks are never removed or taken over by age.
+
+The helper independently reconstructs the plan from canonical authority bytes
+read through a no-follow directory-fd chain anchored at the exact transaction
+root. It derives every ordered action; a caller cannot supply an arbitrary
+path, action, before/after identity, or rollback operation. Its implementation
+digest is a protocol compatibility binding, not process authentication.
+Public results omit authority paths, transaction-root paths, helper file
+descriptors, backups, pre-state bytes, ACLs, and private error detail.
+
+An installed strict-CRI node adapter revalidates the exact identity-v1
+bootstrap, plan, applied receipt, and post-state observations before producing
+a secret-safe node execution authority. It does not open the CRI endpoint.
+Live helper identity, privilege, filesystem mutation, CRI enforcement, and
+node operation remain Q1 tasks inside a disposable DNS- and egress-denied
+guest. The repository scripts documented below are legacy/manual development
+helpers; they are not called by these installed contracts.
 
 For current dev and docs/lab lanes, CRI is best exercised with `k1s-*` profile
 targets. Use raw env exports only when debugging or overriding defaults.

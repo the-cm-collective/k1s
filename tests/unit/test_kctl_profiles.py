@@ -251,6 +251,19 @@ def test_production_edge_gateway_never_uses_the_development_stub() -> None:
         )
 
 
+def test_node_catalog_adds_strict_cri_without_changing_other_role_backends() -> None:
+    node = profile_plan_payload("node")
+    gateway = profile_plan_payload("edge-gateway")
+    local = profile_plan_payload("local")
+    core = profile_plan_payload("core")
+
+    assert node["supportedBackends"] == ["podman", "docker", "strict-cri"]
+    assert "strict-cri-host-receipt" in node["requirements"]
+    assert gateway["supportedBackends"] == []
+    assert local["supportedBackends"] == ["podman", "docker"]
+    assert core["supportedBackends"] == ["podman", "docker"]
+
+
 def test_plan_is_declarative_and_contains_no_executable_or_state_paths() -> None:
     for name in PROFILE_INPUT_NAMES:
         plan = profile_plan_payload(name)

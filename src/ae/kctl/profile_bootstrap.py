@@ -43,7 +43,7 @@ MAX_CREDENTIAL_BYTES = 64 * 1024
 MAX_CREATE_ATTEMPTS = 8
 
 BootstrapProfile = Literal["edge-gateway", "node"]
-BootstrapBackend = Literal["gateway", "podman", "docker"]
+BootstrapBackend = Literal["gateway", "podman", "docker", "strict-cri"]
 CredentialKind = Literal["nats-creds", "agent-token"]
 
 _RECORD_KEYS = {
@@ -152,7 +152,7 @@ class ProfileBootstrapRecord:
             _validate_endpoint(self.transport_url, field="transport URL", schemes={"nats", "tls"})
         else:
             if (
-                self.backend_id not in {"podman", "docker"}
+                self.backend_id not in {"podman", "docker", "strict-cri"}
                 or self.credential_kind != "agent-token"
                 or self.site_id is not None
                 or self.transport_url is not None
@@ -275,8 +275,10 @@ class ProfileBootstrapStore:
         with _bootstrap_storage_boundary():
             if self.layout.canonical_profile != "node":
                 raise ProfileBootstrapError("bootstrap role differs from the selected profile")
-            if runtime_backend not in {"podman", "docker"}:
-                raise ProfileBootstrapError("node runtime backend must be podman or docker")
+            if runtime_backend not in {"podman", "docker", "strict-cri"}:
+                raise ProfileBootstrapError(
+                    "node runtime backend must be podman, docker, or strict-cri"
+                )
             host, port = _validate_listen(listen_host, listen_port)
             credential = _read_credential(
                 credential_file,
@@ -560,6 +562,12 @@ def _private_digest(payload: Mapping[str, object]) -> str:
     return f"sha256:{hashlib.sha256(_canonical_bytes(private)).hexdigest()}"
 
 
+def bootstrap_public_digest(record: ProfileBootstrapRecord) -> str:
+    """Digest only the canonical secret-free bootstrap projection."""
+
+    return f"sha256:{hashlib.sha256(_canonical_bytes(record.public_projection())).hexdigest()}"
+
+
 def _record_from_payload(
     raw: Mapping[str, object],
     *,
@@ -580,7 +588,7 @@ def _record_from_payload(
     credential_kind = _text(raw["credentialKind"], "credential kind")
     if profile not in {"edge-gateway", "node"}:
         raise ProfileBootstrapError("bootstrap profile is unsupported")
-    if backend not in {"gateway", "podman", "docker"}:
+    if backend not in {"gateway", "podman", "docker", "strict-cri"}:
         raise ProfileBootstrapError("bootstrap backend is unsupported")
     if credential_kind not in {"nats-creds", "agent-token"}:
         raise ProfileBootstrapError("bootstrap credential kind is unsupported")
@@ -788,4 +796,5 @@ __all__ = [
     "ProfileBootstrapError",
     "ProfileBootstrapRecord",
     "ProfileBootstrapStore",
+    "bootstrap_public_digest",
 ]

@@ -71,7 +71,8 @@
         "bootstrap-record",
         "explicit-node-identity",
         "controller-endpoint",
-        "runtime-backend"
+        "runtime-backend",
+        "strict-cri-host-receipt"
       ],
       "summary": "Explicit node-agent contract."
     },

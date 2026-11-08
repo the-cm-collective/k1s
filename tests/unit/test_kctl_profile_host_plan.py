@@ -12,9 +12,11 @@ from ae.kctl.profile_host_plan import (
     ProfileHostPlanError,
     build_strict_cri_host_plan,
     canonical_json_bytes,
+    load_strict_cri_host_authorities,
     plan_strict_cri_from_files,
     render_strict_cri_host_plan_json,
     render_strict_cri_host_plan_text,
+    strict_cri_action_materials,
 )
 
 
@@ -266,6 +268,32 @@ def test_plan_actions_are_closed_ordered_and_prepare_no_services(tmp_path: Path)
     rendered = render_strict_cri_host_plan_json(plan)
     for forbidden in ("sudo", "systemctl", "restart", "microk8s", "iptables", "credential"):
         assert forbidden not in rendered.lower()
+
+
+def test_execution_authorities_reconstruct_plan_and_derive_action_materials(
+    tmp_path: Path,
+) -> None:
+    _intent, _facts, plan, intent_path, facts_path = _from_files(tmp_path, role="node")
+    plan_path = tmp_path / "plan.json"
+    plan_file_digest = _write_document(plan_path, plan)
+
+    authorities = load_strict_cri_host_authorities(
+        intent_path=str(intent_path),
+        expected_intent_digest=_digest(intent_path.read_bytes()),
+        facts_path=str(facts_path),
+        expected_facts_digest=_digest(facts_path.read_bytes()),
+        plan_path=str(plan_path),
+        expected_plan_file_digest=plan_file_digest,
+        expected_plan_digest=plan["planDigest"],
+    )
+    materials = strict_cri_action_materials(authorities)
+
+    assert [material.index for material in materials] == list(range(len(materials)))
+    assert [material.action_id for material in materials] == [
+        action["id"] for action in plan["actions"]
+    ]
+    assert all(material.target.startswith("/") for material in materials)
+    assert all(material.expected_before_digest.startswith("sha256:") for material in materials)
 
 
 def test_node_identity_v1_is_public_but_private_authority_is_absent(tmp_path: Path) -> None:

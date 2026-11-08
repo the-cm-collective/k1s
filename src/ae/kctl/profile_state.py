@@ -27,8 +27,9 @@ from ae.kctl.profile_paths import (
 )
 
 API_VERSION = "k1s.dev/v1alpha1"
-SCHEMA_VERSION = 3
-PREVIOUS_SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
+PREVIOUS_SCHEMA_VERSION = 3
+BACKEND_SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
 TRANSACTION_SCHEMA_VERSION = 1
 DELETION_SCHEMA_VERSION = 1
@@ -802,6 +803,8 @@ class RunState:
     plan_digest: str | None = None
     bootstrap_id: str | None = None
     private_bootstrap_digest: str | None = None
+    host_plan_digest: str | None = None
+    host_receipt_digest: str | None = None
     components: tuple[ComponentState, ...] = ()
     resource_receipts: tuple[ResourceReceipt, ...] = ()
     secret_receipts: tuple[SecretReceipt, ...] = ()
@@ -822,7 +825,7 @@ class RunState:
         if (self.backend_id is None) != (self.plan_digest is None):
             raise ProfileStateError("backend identity and execution plan digest must be paired")
         if self.backend_id is not None:
-            if self.backend_id not in {"podman", "docker", "gateway"}:
+            if self.backend_id not in {"podman", "docker", "gateway", "strict-cri"}:
                 raise ProfileStateError("run backend identity is unsupported")
             assert self.plan_digest is not None
             _validate_digest(self.plan_digest, field="execution plan digest")
@@ -836,6 +839,16 @@ class RunState:
                 raise ProfileStateError("bootstrap identity is not valid for this profile")
         elif self.profile in {"edge-gateway", "node"}:
             raise ProfileStateError("canonical edge and node runs require bootstrap identity")
+        if (self.host_plan_digest is None) != (self.host_receipt_digest is None):
+            raise ProfileStateError("host plan and receipt digests must be paired")
+        if self.host_plan_digest is not None:
+            _validate_digest(self.host_plan_digest, field="host plan digest")
+            assert self.host_receipt_digest is not None
+            _validate_digest(self.host_receipt_digest, field="host receipt digest")
+            if self.profile != "node" or self.backend_id != "strict-cri":
+                raise ProfileStateError("host authority is valid only for a strict-CRI node")
+        elif self.backend_id == "strict-cri":
+            raise ProfileStateError("strict-CRI node state requires host authority")
         if type(self.cleanup_complete) is not bool:
             raise ProfileStateError("cleanupComplete must be a bool")
         if self.phase == "stopped" and not self.cleanup_complete:
@@ -884,6 +897,8 @@ class RunState:
             "createdAt": self.created_at,
             "failure": self.failure.to_payload() if self.failure is not None else None,
             "generation": self.generation,
+            "hostPlanDigest": self.host_plan_digest,
+            "hostReceiptDigest": self.host_receipt_digest,
             "kind": "ProfileRunState",
             "ownerUid": self.owner_uid,
             "phase": self.phase,
@@ -1059,6 +1074,8 @@ class ProfileStateStore:
         plan_digest: str | None = None,
         bootstrap_id: str | None = None,
         private_bootstrap_digest: str | None = None,
+        host_plan_digest: str | None = None,
+        host_receipt_digest: str | None = None,
     ) -> RunState:
         with self.locked():
             self._require_no_transaction()
@@ -1094,6 +1111,8 @@ class ProfileStateStore:
                 plan_digest=plan_digest,
                 bootstrap_id=bootstrap_id,
                 private_bootstrap_digest=private_bootstrap_digest,
+                host_plan_digest=host_plan_digest,
+                host_receipt_digest=host_receipt_digest,
             )
             run_layout = self.layout.for_run(run_id)
             if run_layout.run_state.parent.exists():
@@ -2011,11 +2030,16 @@ def run_state_from_payload(value: Mapping[str, object]) -> RunState:
     schema_version = _require_envelope(raw, kind="ProfileRunState")
     versioned_keys = (
         {"backendId", "planDigest"}
-        if schema_version in {PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}
+        if schema_version in {BACKEND_SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}
         else set()
     )
     bootstrap_keys = (
-        {"bootstrapId", "privateBootstrapDigest"} if schema_version == SCHEMA_VERSION else set()
+        {"bootstrapId", "privateBootstrapDigest"}
+        if schema_version in {PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}
+        else set()
+    )
+    host_keys = (
+        {"hostPlanDigest", "hostReceiptDigest"} if schema_version == SCHEMA_VERSION else set()
     )
     _exact_keys(
         raw,
@@ -2039,7 +2063,8 @@ def run_state_from_payload(value: Mapping[str, object]) -> RunState:
             "updatedAt",
         }
         | versioned_keys
-        | bootstrap_keys,
+        | bootstrap_keys
+        | host_keys,
         field="run state",
     )
     phase = _strict_text(raw["phase"], field="run.phase", maximum=32)
@@ -2075,19 +2100,31 @@ def run_state_from_payload(value: Mapping[str, object]) -> RunState:
         ),
         bootstrap_id=(
             None
-            if schema_version != SCHEMA_VERSION or raw["bootstrapId"] is None
+            if schema_version not in {PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}
+            or raw["bootstrapId"] is None
             else validate_bootstrap_id(
                 _strict_text(raw["bootstrapId"], field="run.bootstrapId", maximum=35)
             )
         ),
         private_bootstrap_digest=(
             None
-            if schema_version != SCHEMA_VERSION or raw["privateBootstrapDigest"] is None
+            if schema_version not in {PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}
+            or raw["privateBootstrapDigest"] is None
             else _strict_text(
                 raw["privateBootstrapDigest"],
                 field="run.privateBootstrapDigest",
                 maximum=71,
             )
+        ),
+        host_plan_digest=(
+            None
+            if schema_version != SCHEMA_VERSION or raw["hostPlanDigest"] is None
+            else _strict_text(raw["hostPlanDigest"], field="run.hostPlanDigest", maximum=71)
+        ),
+        host_receipt_digest=(
+            None
+            if schema_version != SCHEMA_VERSION or raw["hostReceiptDigest"] is None
+            else _strict_text(raw["hostReceiptDigest"], field="run.hostReceiptDigest", maximum=71)
         ),
         components=tuple(
             ComponentState.from_payload(item)
@@ -2111,6 +2148,7 @@ def _require_envelope(raw: Mapping[str, object], *, kind: str) -> int:
         raise ProfileStateError("profile state API version mismatch")
     if raw["schemaVersion"] not in {
         LEGACY_SCHEMA_VERSION,
+        BACKEND_SCHEMA_VERSION,
         PREVIOUS_SCHEMA_VERSION,
         SCHEMA_VERSION,
     }:

@@ -514,7 +514,9 @@ def profile_plan_payload(name: str) -> dict[str, object]:
         "requirements": list(resolved.profile.requirements),
         "bootstrapRequired": resolved.profile.name in {"edge-gateway", "node"},
         "supportedBackends": (
-            ["podman", "docker"] if resolved.profile.name in _ENGINE_PROFILE_NAMES else []
+            ["podman", "docker", "strict-cri"]
+            if resolved.profile.name == "node"
+            else (["podman", "docker"] if resolved.profile.name in _ENGINE_PROFILE_NAMES else [])
         ),
         "warnings": warnings,
     }

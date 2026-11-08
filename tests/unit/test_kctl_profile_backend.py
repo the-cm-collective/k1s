@@ -16,6 +16,7 @@ from ae.kctl.profile_backend import (
 )
 from ae.kctl.profile_bootstrap import ProfileBootstrapStore
 from ae.kctl.profile_engine import EngineCapability
+from ae.kctl.profile_node_adapter import StrictCRINodeAuthority, StrictCRINodeInputs
 from ae.kctl.profile_paths import ProfileRoots
 from ae.kctl.profile_state import ComponentState, ProcessIdentity, ProfileStateStore, command_digest
 from ae.kctl.profile_supervisor import ForegroundWaitResult, StopResult
@@ -179,6 +180,7 @@ def _manager(
     supervisor: Supervisor | None = None,
     readiness: Readiness | None = None,
     bootstrap_store: ProfileBootstrapStore | None = None,
+    node_adapter_factory=None,  # type: ignore[no-untyped-def]
 ) -> tuple[PortableProfileManager, EngineProbe, Supervisor, Readiness]:
     actual_engine = engine or EngineProbe()
     actual_supervisor = supervisor or Supervisor()
@@ -192,6 +194,7 @@ def _manager(
         supervisor=actual_supervisor,  # type: ignore[arg-type]
         readiness=actual_readiness,
         python_executable=Path("/usr/bin/python3"),
+        node_adapter_factory=node_adapter_factory,
     )
     return manager, actual_engine, actual_supervisor, actual_readiness
 
@@ -688,6 +691,112 @@ def test_node_start_uses_explicit_identity_v1_and_private_child_token(
     assert "node-private-token" not in repr(plan)
     assert bootstrap.private_record_digest not in repr(plan)
     assert str(bootstrap.path) not in repr(plan)
+
+
+def test_strict_cri_node_uses_receipt_bound_adapter_without_engine_probe(
+    tmp_path: Path,
+) -> None:
+    state_store = _store(tmp_path, "node")
+    bootstrap_store = _bootstrap_store(tmp_path, "node")
+    bootstrap = bootstrap_store.create_node(
+        node_id="node-a",
+        controller_url="https://controller.example.test:9443",
+        runtime_backend="strict-cri",
+        listen_host="127.0.0.1",
+        listen_port=9109,
+        advertise_endpoint="https://node-a.example.test:9109",
+        credential_file=_credential(tmp_path, "strict-cri-token", "private-node-token"),
+    )
+    authority = StrictCRINodeAuthority(
+        bootstrap_id=bootstrap.bootstrap_id,
+        node_id=bootstrap.node_id,
+        controller_url=bootstrap.controller_url or "",
+        listen_host=bootstrap.listen_host or "",
+        listen_port=bootstrap.listen_port or 0,
+        advertise_endpoint=bootstrap.advertise_endpoint or "",
+        cri_endpoint="unix:///run/containerd/containerd.sock",
+        runtime_handler="runc",
+        plan_digest="sha256:" + "a" * 64,
+        receipt_digest="sha256:" + "b" * 64,
+        execution_digest="sha256:" + "c" * 64,
+        child_environment=(
+            ("AE_AGENT_TOKEN", bootstrap.credential),
+            ("AE_CONTROLLER_URL", bootstrap.controller_url or ""),
+            ("AE_CRI_ENDPOINT", "unix:///run/containerd/containerd.sock"),
+            ("AE_NODE_ID", bootstrap.node_id),
+            ("AE_RUNTIME_BACKEND", "cri"),
+            ("LC_ALL", "C.UTF-8"),
+            ("PYTHONUNBUFFERED", "1"),
+            ("TZ", "UTC"),
+        ),
+    )
+
+    class Adapter:
+        def resolve(self, record, *, inputs):  # type: ignore[no-untyped-def]
+            assert record == bootstrap
+            assert inputs.expected_plan_digest == authority.plan_digest
+            return authority
+
+    manager, engine, supervisor, readiness = _manager(
+        state_store,
+        bootstrap_store=bootstrap_store,
+        node_adapter_factory=lambda _store: Adapter(),
+    )
+    inputs = StrictCRINodeInputs(
+        plan_path=tmp_path / "plan.json",
+        expected_plan_file_digest="sha256:" + "d" * 64,
+        expected_plan_digest=authority.plan_digest,
+        receipt_path=tmp_path / "receipt.json",
+        expected_receipt_digest=authority.receipt_digest,
+    )
+
+    result = manager.start(
+        "node",
+        backend=None,
+        bootstrap_id=bootstrap.bootstrap_id,
+        strict_cri_inputs=inputs,
+    )
+
+    assert result.backend == "strict-cri"
+    assert engine.calls == []
+    assert supervisor.prepared == ["node-agent"]
+    assert readiness.calls == ["node-agent"]
+    command = supervisor.argv[0]
+    assert command[command.index("--engine-backend") + 1] == "strict-cri"
+    assert command[command.index("--host-plan-digest") + 1] == authority.plan_digest
+    assert command[command.index("--host-receipt-digest") + 1] == authority.receipt_digest
+    assert dict(supervisor.environments[0])["AE_RUNTIME_BACKEND"] == "cri"
+    state = state_store.inspect()
+    assert state is not None
+    assert state.host_plan_digest == authority.plan_digest
+    assert state.host_receipt_digest == authority.receipt_digest
+    assert state.secret_receipts == ()
+
+
+def test_strict_cri_node_fails_closed_without_explicit_adapter_authority(
+    tmp_path: Path,
+) -> None:
+    state_store = _store(tmp_path, "node")
+    bootstrap_store = _bootstrap_store(tmp_path, "node")
+    bootstrap = bootstrap_store.create_node(
+        node_id="node-a",
+        controller_url="https://controller.example.test:9443",
+        runtime_backend="strict-cri",
+        listen_host="127.0.0.1",
+        listen_port=9109,
+        advertise_endpoint="https://node-a.example.test:9109",
+        credential_file=_credential(tmp_path, "strict-cri-token", "private-node-token"),
+    )
+    manager, engine, supervisor, readiness = _manager(
+        state_store,
+        bootstrap_store=bootstrap_store,
+    )
+
+    with pytest.raises(PortableBackendError, match="adapter authority is required"):
+        manager.start("node", backend=None, bootstrap_id=bootstrap.bootstrap_id)
+    assert engine.calls == []
+    assert supervisor.prepared == []
+    assert readiness.calls == []
 
 
 def test_gateway_secret_materialization_failure_rolls_back_before_spawn(

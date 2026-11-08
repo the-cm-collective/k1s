@@ -103,9 +103,51 @@ def test_portable_backend_and_plan_identity_are_persisted_as_one_pair(tmp_path: 
     assert state.backend_id == "podman"
     assert state.plan_digest == digest
     payload = json.loads(store.layout.for_run(state.run_id).run_state.read_text(encoding="utf-8"))
-    assert payload["schemaVersion"] == 3
+    assert payload["schemaVersion"] == 4
     assert payload["backendId"] == "podman"
     assert payload["planDigest"] == digest
+
+
+def test_schema_v4_persists_strict_cri_host_plan_and_receipt_as_one_pair(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path, "node")
+    plan_digest = "sha256:" + "a" * 64
+    receipt_digest = "sha256:" + "b" * 64
+    state = store.begin_run(
+        backend_id="strict-cri",
+        plan_digest="sha256:" + "c" * 64,
+        bootstrap_id="b1-" + "1" * 32,
+        private_bootstrap_digest="sha256:" + "d" * 64,
+        host_plan_digest=plan_digest,
+        host_receipt_digest=receipt_digest,
+    )
+
+    payload = json.loads(store.layout.for_run(state.run_id).run_state.read_text())
+    assert payload["schemaVersion"] == 4
+    assert payload["hostPlanDigest"] == plan_digest
+    assert payload["hostReceiptDigest"] == receipt_digest
+    assert store.inspect() == state
+
+    other = _store(tmp_path / "missing", "node")
+    with pytest.raises(ProfileStateError, match="requires host authority"):
+        other.begin_run(
+            backend_id="strict-cri",
+            plan_digest="sha256:" + "c" * 64,
+            bootstrap_id="b1-" + "1" * 32,
+            private_bootstrap_digest="sha256:" + "d" * 64,
+        )
+
+    engine = _store(tmp_path / "engine", "node")
+    with pytest.raises(ProfileStateError, match="valid only for a strict-CRI node"):
+        engine.begin_run(
+            backend_id="podman",
+            plan_digest="sha256:" + "c" * 64,
+            bootstrap_id="b1-" + "1" * 32,
+            private_bootstrap_digest="sha256:" + "d" * 64,
+            host_plan_digest=plan_digest,
+            host_receipt_digest=receipt_digest,
+        )
 
 
 def test_transaction_recovery_advances_current_after_run_only_crash(
@@ -166,6 +208,8 @@ def test_legacy_schema_is_read_and_next_mutation_migrates_transaction_safely(
     run_payload.pop("planDigest")
     run_payload.pop("bootstrapId")
     run_payload.pop("privateBootstrapDigest")
+    run_payload.pop("hostPlanDigest")
+    run_payload.pop("hostReceiptDigest")
     for path, payload in ((current_path, current_payload), (run_path, run_payload)):
         path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -181,9 +225,9 @@ def test_legacy_schema_is_read_and_next_mutation_migrates_transaction_safely(
     )
 
     assert migrated.phase == "starting"
-    assert json.loads(current_path.read_text(encoding="utf-8"))["schemaVersion"] == 3
+    assert json.loads(current_path.read_text(encoding="utf-8"))["schemaVersion"] == 4
     migrated_payload = json.loads(run_path.read_text(encoding="utf-8"))
-    assert migrated_payload["schemaVersion"] == 3
+    assert migrated_payload["schemaVersion"] == 4
     assert migrated_payload["backendId"] is None
     assert migrated_payload["planDigest"] is None
     assert migrated_payload["bootstrapId"] is None

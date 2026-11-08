@@ -24,6 +24,11 @@ from ae.kctl.profile_bootstrap import (
     ProfileBootstrapStore,
 )
 from ae.kctl.profile_engine import EngineCapability, SelectedEngineProbe
+from ae.kctl.profile_node_adapter import (
+    StrictCRINodeAdapter,
+    StrictCRINodeAuthority,
+    StrictCRINodeInputs,
+)
 from ae.kctl.profile_paths import ProfileRoots
 from ae.kctl.profile_state import (
     ComponentState,
@@ -45,7 +50,7 @@ from ae.kctl.profile_supervisor import (
 )
 
 PortableProfile = Literal["local", "core", "edge-gateway", "node"]
-ExecutionBackend = Literal["podman", "docker", "gateway"]
+ExecutionBackend = Literal["podman", "docker", "gateway", "strict-cri"]
 PortableAction = Literal["start", "status", "stop", "restart", "run", "delete"]
 PORTABLE_PROFILES: tuple[PortableProfile, ...] = (
     "local",
@@ -129,6 +134,10 @@ class StoreFactory(Protocol):
 
 class BootstrapStoreFactory(Protocol):
     def __call__(self, profile: str) -> ProfileBootstrapStore: ...
+
+
+class NodeAdapterFactory(Protocol):
+    def __call__(self, store: ProfileBootstrapStore) -> StrictCRINodeAdapter: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +260,7 @@ def build_execution_plan(
     python_executable: Path | None = None,
     bootstrap: ProfileBootstrapRecord | None = None,
     credential_path: Path | None = None,
+    strict_cri_authority: StrictCRINodeAuthority | None = None,
 ) -> ExecutionPlan:
     """Construct one deterministic installed plan without touching a runtime."""
 
@@ -269,15 +279,29 @@ def build_execution_plan(
         if run.backend_id != backend:
             raise PortableBackendError("run backend differs from the bootstrap record")
         if profile == "node":
-            if capability is None or capability.backend != backend:
+            if backend == "strict-cri":
+                if capability is not None or strict_cri_authority is None:
+                    raise PortableBackendError("strict-CRI node authority is incomplete")
+                if (
+                    run.host_plan_digest != strict_cri_authority.plan_digest
+                    or run.host_receipt_digest != strict_cri_authority.receipt_digest
+                ):
+                    raise PortableBackendError(
+                        "strict-CRI host authority differs from durable state"
+                    )
+            elif capability is None or capability.backend != backend:
                 raise PortableBackendError("node engine differs from the bootstrap record")
         elif capability is not None:
             raise PortableBackendError("gateway plan must not receive engine identity")
-        expected_digest = portable_plan_digest(
-            profile,
-            capability,
-            bootstrap=bootstrap,
-            python_executable=executable,
+        expected_digest = (
+            strict_cri_authority.execution_digest
+            if strict_cri_authority is not None
+            else portable_plan_digest(
+                profile,
+                capability,
+                bootstrap=bootstrap,
+                python_executable=executable,
+            )
         )
         if run.plan_digest != expected_digest:
             raise PortableBackendError("execution plan identity differs from durable state")
@@ -302,6 +326,16 @@ def build_execution_plan(
                 str(capability.executable_device),
                 "--engine-inode",
                 str(capability.executable_inode),
+            )
+        elif strict_cri_authority is not None:
+            runner = (
+                *runner,
+                "--engine-backend",
+                "strict-cri",
+                "--host-plan-digest",
+                strict_cri_authority.plan_digest,
+                "--host-receipt-digest",
+                strict_cri_authority.receipt_digest,
             )
         layout = store.layout.for_run(run.run_id)
         if profile == "edge-gateway":
@@ -342,22 +376,27 @@ def build_execution_plan(
                 ),
             )
         else:
-            assert capability is not None
             assert bootstrap.controller_url is not None
             assert bootstrap.listen_host is not None
             assert bootstrap.listen_port is not None
             assert bootstrap.advertise_endpoint is not None
-            environment = {
-                "AE_AGENT_TOKEN": bootstrap.credential,
-                "AE_CONTROLLER_URL": bootstrap.controller_url,
-                "AE_NODE_ID": bootstrap.node_id,
-                "AE_RUNTIME_BACKEND": capability.backend,
-                "LC_ALL": "C.UTF-8",
-                "PYTHONUNBUFFERED": "1",
-                "TZ": "UTC",
-            }
-            if capability.backend == "podman":
-                environment["AE_PODMAN_BIN"] = str(capability.executable)
+            if strict_cri_authority is not None:
+                environment = dict(strict_cri_authority.child_environment)
+                runtime_backend = "cri"
+            else:
+                assert capability is not None
+                environment = {
+                    "AE_AGENT_TOKEN": bootstrap.credential,
+                    "AE_CONTROLLER_URL": bootstrap.controller_url,
+                    "AE_NODE_ID": bootstrap.node_id,
+                    "AE_RUNTIME_BACKEND": capability.backend,
+                    "LC_ALL": "C.UTF-8",
+                    "PYTHONUNBUFFERED": "1",
+                    "TZ": "UTC",
+                }
+                if capability.backend == "podman":
+                    environment["AE_PODMAN_BIN"] = str(capability.executable)
+                runtime_backend = capability.backend
             edge_components = (
                 ComponentPlan(
                     component_id="node-agent",
@@ -376,7 +415,7 @@ def build_execution_plan(
                         "--node-id",
                         bootstrap.node_id,
                         "--runtime-backend",
-                        capability.backend,
+                        runtime_backend,
                         "--advertise-endpoint",
                         bootstrap.advertise_endpoint,
                     ),
@@ -595,6 +634,7 @@ class _ExecutionContext:
     bootstrap: ProfileBootstrapRecord | None
     plan_digest: str
     private_bootstrap_digest: str | None
+    strict_cri_authority: StrictCRINodeAuthority | None = None
 
 
 class PortableProfileManager:
@@ -605,6 +645,7 @@ class PortableProfileManager:
         *,
         store_factory: StoreFactory,
         bootstrap_store_factory: BootstrapStoreFactory | None = None,
+        node_adapter_factory: NodeAdapterFactory | None = None,
         engine_probe: EngineProbe,
         supervisor: ProfileSupervisor,
         readiness: ReadinessProbe,
@@ -613,6 +654,7 @@ class PortableProfileManager:
     ) -> None:
         self.store_factory = store_factory
         self.bootstrap_store_factory = bootstrap_store_factory
+        self.node_adapter_factory = node_adapter_factory
         self.engine_probe = engine_probe
         self.supervisor = supervisor
         self.readiness = readiness
@@ -646,6 +688,7 @@ class PortableProfileManager:
         *,
         backend: str | None = None,
         bootstrap_id: str | None = None,
+        strict_cri_inputs: StrictCRINodeInputs | None = None,
     ) -> PortableLifecycleResult:
         if action not in PORTABLE_ACTIONS:
             raise PortableBackendError("unsupported portable lifecycle action")
@@ -654,7 +697,7 @@ class PortableProfileManager:
         selected_profile = profile
         selected_action = action
         if selected_action in {"status", "stop"} and (
-            backend is not None or bootstrap_id is not None
+            backend is not None or bootstrap_id is not None or strict_cri_inputs is not None
         ):
             raise PortableBackendError("status and stop use only the durable execution identity")
         if selected_action == "start":
@@ -662,12 +705,18 @@ class PortableProfileManager:
                 selected_profile,
                 backend=backend,
                 bootstrap_id=bootstrap_id,
+                strict_cri_inputs=strict_cri_inputs,
             )
         if selected_action == "status":
             return self.status(selected_profile)
         if selected_action == "stop":
             return self.stop(selected_profile)
-        return self.restart(selected_profile, backend=backend, bootstrap_id=bootstrap_id)
+        return self.restart(
+            selected_profile,
+            backend=backend,
+            bootstrap_id=bootstrap_id,
+            strict_cri_inputs=strict_cri_inputs,
+        )
 
     def start(
         self,
@@ -675,10 +724,12 @@ class PortableProfileManager:
         *,
         backend: str | None,
         bootstrap_id: str | None = None,
+        strict_cri_inputs: StrictCRINodeInputs | None = None,
         _required_run_id: str | None = None,
         _stop_requested: Callable[[], int | None] | None = None,
         _capability: EngineCapability | None = None,
         _bootstrap: ProfileBootstrapRecord | None = None,
+        _strict_cri_authority: StrictCRINodeAuthority | None = None,
     ) -> PortableLifecycleResult:
         context = self._execution_context(
             profile,
@@ -686,6 +737,8 @@ class PortableProfileManager:
             bootstrap_id=bootstrap_id,
             capability=_capability,
             bootstrap=_bootstrap,
+            strict_cri_inputs=strict_cri_inputs,
+            strict_cri_authority=_strict_cri_authority,
         )
         capability = context.capability
         store = self.store_factory(profile)
@@ -700,6 +753,18 @@ class PortableProfileManager:
                 or current.bootstrap_id
                 != (context.bootstrap.bootstrap_id if context.bootstrap is not None else None)
                 or current.private_bootstrap_digest != context.private_bootstrap_digest
+                or current.host_plan_digest
+                != (
+                    context.strict_cri_authority.plan_digest
+                    if context.strict_cri_authority is not None
+                    else None
+                )
+                or current.host_receipt_digest
+                != (
+                    context.strict_cri_authority.receipt_digest
+                    if context.strict_cri_authority is not None
+                    else None
+                )
             ):
                 raise PortableBackendError(
                     "current portable run differs from the selected exact plan"
@@ -715,6 +780,16 @@ class PortableProfileManager:
                     context.bootstrap.bootstrap_id if context.bootstrap is not None else None
                 ),
                 private_bootstrap_digest=context.private_bootstrap_digest,
+                host_plan_digest=(
+                    context.strict_cri_authority.plan_digest
+                    if context.strict_cri_authority is not None
+                    else None
+                ),
+                host_receipt_digest=(
+                    context.strict_cri_authority.receipt_digest
+                    if context.strict_cri_authority is not None
+                    else None
+                ),
             )
         try:
             credential_path: Path | None = None
@@ -735,6 +810,7 @@ class PortableProfileManager:
                 python_executable=self.python_executable,
                 bootstrap=context.bootstrap,
                 credential_path=credential_path,
+                strict_cri_authority=context.strict_cri_authority,
             )
             if run.phase == "running":
                 self._validate_running_plan(run, plan)
@@ -817,6 +893,7 @@ class PortableProfileManager:
         *,
         backend: str | None,
         bootstrap_id: str | None = None,
+        strict_cri_inputs: StrictCRINodeInputs | None = None,
         stop_requested: Callable[[], int | None],
     ) -> PortableLifecycleResult:
         """Own one newly-created portable run until it stops or fails."""
@@ -825,6 +902,7 @@ class PortableProfileManager:
             profile,
             backend=backend,
             bootstrap_id=bootstrap_id,
+            strict_cri_inputs=strict_cri_inputs,
         )
         store = self.store_factory(profile)
         store.reconcile_transaction()
@@ -836,16 +914,28 @@ class PortableProfileManager:
                 context.bootstrap.bootstrap_id if context.bootstrap is not None else None
             ),
             private_bootstrap_digest=context.private_bootstrap_digest,
+            host_plan_digest=(
+                context.strict_cri_authority.plan_digest
+                if context.strict_cri_authority is not None
+                else None
+            ),
+            host_receipt_digest=(
+                context.strict_cri_authority.receipt_digest
+                if context.strict_cri_authority is not None
+                else None
+            ),
         )
         try:
             started = self.start(
                 profile,
                 backend=backend,
                 bootstrap_id=bootstrap_id,
+                strict_cri_inputs=strict_cri_inputs,
                 _required_run_id=claimed.run_id,
                 _stop_requested=stop_requested,
                 _capability=context.capability,
                 _bootstrap=context.bootstrap,
+                _strict_cri_authority=context.strict_cri_authority,
             )
         except _ForegroundStopRequested as requested:
             stopped = self.stop(profile)
@@ -1053,6 +1143,7 @@ class PortableProfileManager:
         *,
         backend: str | None,
         bootstrap_id: str | None = None,
+        strict_cri_inputs: StrictCRINodeInputs | None = None,
     ) -> PortableLifecycleResult:
         store = self.store_factory(profile)
         store.reconcile_transaction()
@@ -1067,6 +1158,7 @@ class PortableProfileManager:
                 profile,
                 backend=backend,
                 bootstrap_id=bootstrap_id,
+                strict_cri_inputs=strict_cri_inputs,
             )
             selected = None
         else:
@@ -1078,8 +1170,10 @@ class PortableProfileManager:
             profile,
             backend=selected,
             bootstrap_id=bootstrap_id,
+            strict_cri_inputs=strict_cri_inputs,
             _capability=None if context is None else context.capability,
             _bootstrap=None if context is None else context.bootstrap,
+            _strict_cri_authority=(None if context is None else context.strict_cri_authority),
         )
         return replace(started, action="restart", status="restarted")
 
@@ -1091,9 +1185,16 @@ class PortableProfileManager:
         bootstrap_id: str | None,
         capability: EngineCapability | None = None,
         bootstrap: ProfileBootstrapRecord | None = None,
+        strict_cri_inputs: StrictCRINodeInputs | None = None,
+        strict_cri_authority: StrictCRINodeAuthority | None = None,
     ) -> _ExecutionContext:
         if profile in {"local", "core"}:
-            if bootstrap_id is not None or bootstrap is not None:
+            if (
+                bootstrap_id is not None
+                or bootstrap is not None
+                or strict_cri_inputs is not None
+                or strict_cri_authority is not None
+            ):
                 raise PortableBackendError(
                     "local/core execution does not accept bootstrap identity"
                 )
@@ -1107,6 +1208,7 @@ class PortableProfileManager:
                 bootstrap=None,
                 plan_digest=portable_plan_digest(profile, local_capability),
                 private_bootstrap_digest=None,
+                strict_cri_authority=None,
             )
 
         if backend is not None:
@@ -1121,24 +1223,46 @@ class PortableProfileManager:
             raise PortableBackendError("bootstrap role differs from the requested profile")
         bootstrap_capability: EngineCapability | None
         if profile == "node":
-            bootstrap_capability = capability or self.engine_probe.probe(bootstrap.backend_id)
-            if bootstrap_capability.backend != bootstrap.backend_id:
-                raise PortableBackendError("node engine capability differs from bootstrap")
+            if bootstrap.backend_id == "strict-cri":
+                if capability is not None:
+                    raise PortableBackendError("strict-CRI node must not probe an engine")
+                if strict_cri_authority is None:
+                    if strict_cri_inputs is None or self.node_adapter_factory is None:
+                        raise PortableBackendError("strict-CRI node adapter authority is required")
+                    strict_cri_authority = self.node_adapter_factory(
+                        self._bootstrap_store(profile)
+                    ).resolve(bootstrap, inputs=strict_cri_inputs)
+                bootstrap_capability = None
+            else:
+                if strict_cri_inputs is not None or strict_cri_authority is not None:
+                    raise PortableBackendError("engine node must not receive strict-CRI authority")
+                bootstrap_capability = capability or self.engine_probe.probe(bootstrap.backend_id)
+                if bootstrap_capability.backend != bootstrap.backend_id:
+                    raise PortableBackendError("node engine capability differs from bootstrap")
         else:
-            if capability is not None:
+            if (
+                capability is not None
+                or strict_cri_inputs is not None
+                or strict_cri_authority is not None
+            ):
                 raise PortableBackendError("gateway execution must not probe an engine")
             bootstrap_capability = None
         return _ExecutionContext(
             backend=bootstrap.backend_id,
             capability=bootstrap_capability,
             bootstrap=bootstrap,
-            plan_digest=portable_plan_digest(
-                profile,
-                bootstrap_capability,
-                bootstrap=bootstrap,
-                python_executable=self.python_executable,
+            plan_digest=(
+                strict_cri_authority.execution_digest
+                if strict_cri_authority is not None
+                else portable_plan_digest(
+                    profile,
+                    bootstrap_capability,
+                    bootstrap=bootstrap,
+                    python_executable=self.python_executable,
+                )
             ),
             private_bootstrap_digest=bootstrap.private_record_digest,
+            strict_cri_authority=strict_cri_authority,
         )
 
     def _bootstrap_store(self, profile: PortableProfile) -> ProfileBootstrapStore:

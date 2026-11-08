@@ -90,7 +90,12 @@ def offline_environment(*, home: Path, temporary: Path, guard: Path) -> dict[str
 
 
 def _run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> None:
-    print("+", " ".join(argv))
+    rendered = list(argv)
+    if "-c" in rendered:
+        program_index = rendered.index("-c") + 1
+        if program_index < len(rendered):
+            rendered[program_index] = "<bounded-installed-smoke-program>"
+    print("+", " ".join(rendered))
     subprocess.run(argv, cwd=cwd, env=env, check=True)  # noqa: S603
 
 
@@ -119,6 +124,8 @@ def _canonical_json_bytes(value: object) -> bytes:
 def _strict_cri_smoke_documents() -> tuple[dict[str, object], dict[str, object]]:
     """Return synthetic, non-secret authorities for the installed pure planner."""
 
+    owner_uid = os.getuid()
+    owner_gid = os.getgid()
     intent: dict[str, object] = {
         "apiVersion": "k1s.dev/v1alpha1",
         "cni": {
@@ -144,11 +151,11 @@ def _strict_cri_smoke_documents() -> tuple[dict[str, object], dict[str, object]]
         "registry": {"mode": "off"},
         "role": "core",
         "schemaVersion": 1,
-        "socketAccess": {"gid": 1000, "mode": "acl", "uid": 1000},
+        "socketAccess": {"gid": owner_gid, "mode": "acl", "uid": owner_uid},
         "target": {
             "hostIdentitySha256": "sha256:" + "a" * 64,
-            "ownerGid": 1000,
-            "ownerUid": 1000,
+            "ownerGid": owner_gid,
+            "ownerUid": owner_uid,
             "targetId": "artifact-guest",
         },
     }
@@ -229,8 +236,8 @@ def _strict_cri_smoke_documents() -> tuple[dict[str, object], dict[str, object]]
         "hostIdentitySha256": "sha256:" + "a" * 64,
         "kind": "StrictCRIHostFacts",
         "objects": objects,
-        "ownerGid": 1000,
-        "ownerUid": 1000,
+        "ownerGid": owner_gid,
+        "ownerUid": owner_uid,
         "platform": "linux",
         "rootless": False,
         "schemaVersion": 1,
@@ -723,6 +730,238 @@ assert scripts == {'ae', 'ae-rotate-certs', 'k1s', 'ae-node', 'ae-gateway', 'ae-
     rendered_host_plan = json.dumps(host_plan, sort_keys=True)
     if str(intent_path) in rendered_host_plan or str(facts_path) in rendered_host_plan:
         raise ValueError("installed strict-CRI host plan disclosed an authority path")
+
+    installed_transaction_program = r"""import hashlib
+import json
+import os
+import stat
+import threading
+from pathlib import Path
+
+from ae.kctl.profile_bootstrap import ProfileBootstrapStore, bootstrap_public_digest
+from ae.kctl.profile_host_helper import (
+    HelperRequest,
+    StrictCRIHostHelperEngine,
+    helper_implementation_digest,
+    read_protocol_message,
+    write_protocol_message,
+)
+from ae.kctl.profile_host_plan import (
+    StrictCRIHostAuthorities,
+    build_strict_cri_host_plan,
+    canonical_json_bytes,
+    strict_cri_action_materials,
+)
+from ae.kctl.profile_host_transaction import (
+    PipeHostHelperClient,
+    StrictCRIHostTransactionManager,
+)
+from ae.kctl.profile_node_adapter import StrictCRINodeAdapter, StrictCRINodeInputs
+from ae.kctl.profile_paths import ProfileRoots
+
+
+def digest(raw):
+    return 'sha256:' + hashlib.sha256(raw).hexdigest()
+
+
+root = Path(os.environ['K1S_STRICT_TRANSACTION_SMOKE_ROOT']).resolve()
+root.mkdir(mode=0o700)
+bootstrap_root = root / 'bootstrap-xdg'
+profile_roots = ProfileRoots.from_environment({
+    'XDG_CONFIG_HOME': str(bootstrap_root / 'config'),
+    'XDG_STATE_HOME': str(bootstrap_root / 'state'),
+    'XDG_DATA_HOME': str(bootstrap_root / 'data'),
+    'XDG_CACHE_HOME': str(bootstrap_root / 'cache'),
+})
+credential = root / 'node-token'
+credential.write_text('installed-strict-node-token', encoding='utf-8')
+credential.chmod(0o600)
+bootstrap_store = ProfileBootstrapStore(profile_roots, 'node')
+bootstrap = bootstrap_store.create_node(
+    node_id='node-installed-strict',
+    controller_url='https://controller.example.invalid:9443',
+    runtime_backend='strict-cri',
+    listen_host='127.0.0.1',
+    listen_port=9109,
+    advertise_endpoint='https://node.example.invalid:9109',
+    credential_file=credential,
+)
+
+intent = json.loads(Path(os.environ['K1S_HOST_INTENT']).read_text(encoding='utf-8'))
+facts = json.loads(Path(os.environ['K1S_HOST_FACTS']).read_text(encoding='utf-8'))
+intent['profileId'] = 'artifact-node'
+intent['role'] = 'node'
+intent['nodeIdentity'] = {
+    'bootstrapId': bootstrap.bootstrap_id,
+    'bootstrapPublicDigest': bootstrap_public_digest(bootstrap),
+    'identityVersion': 1,
+    'nodeId': bootstrap.node_id,
+}
+authority_input = root / 'input'
+authority_input.mkdir(mode=0o700)
+intent_path = authority_input / 'intent.json'
+facts_path = authority_input / 'facts.json'
+intent_raw = canonical_json_bytes(intent)
+facts_raw = canonical_json_bytes(facts)
+intent_path.write_bytes(intent_raw)
+facts_path.write_bytes(facts_raw)
+intent_path.chmod(0o600)
+facts_path.chmod(0o600)
+plan = build_strict_cri_host_plan(
+    intent,
+    facts,
+    intent_digest=digest(intent_raw),
+    facts_digest=digest(facts_raw),
+)
+plan_path = authority_input / 'plan.json'
+plan_raw = canonical_json_bytes(plan)
+plan_path.write_bytes(plan_raw)
+plan_path.chmod(0o600)
+
+
+class Boundary:
+    def __init__(self):
+        self.calls = []
+
+    def execute(
+        self,
+        *,
+        operation,
+        transaction_id,
+        transaction_root_fd,
+        material,
+        rollback_authorization_digest,
+    ):
+        info = os.fstat(transaction_root_fd)
+        assert stat.S_ISDIR(info.st_mode)
+        assert stat.S_IMODE(info.st_mode) == 0o700
+        self.calls.append((operation, material.index, transaction_id))
+        if operation == 'rollback':
+            assert rollback_authorization_digest is not None
+        else:
+            assert rollback_authorization_digest is None
+        return {
+            'snapshot': material.expected_before_digest,
+            'apply': material.desired_after_digest,
+            'rollback': material.expected_before_digest,
+            'verify': material.desired_after_digest,
+        }[operation]
+
+
+request_read, request_write = os.pipe()
+response_read, response_write = os.pipe()
+boundary = Boundary()
+engine = StrictCRIHostHelperEngine(boundary)
+materials = strict_cri_action_materials(
+    StrictCRIHostAuthorities(
+        intent=intent,
+        facts=facts,
+        plan=plan,
+        intent_digest=digest(intent_raw),
+        facts_digest=digest(facts_raw),
+        plan_file_digest=digest(plan_raw),
+        plan_digest=plan['planDigest'],
+    )
+)
+expected_calls = (2 * len(materials)) + sum(item.rollback != 'none' for item in materials)
+server_errors = []
+
+
+def serve():
+    try:
+        for _index in range(expected_calls):
+            request = HelperRequest.from_payload(read_protocol_message(request_read))
+            write_protocol_message(response_write, engine.handle(request).to_payload())
+    except BaseException as error:
+        server_errors.append(error)
+
+
+thread = threading.Thread(target=serve, daemon=True)
+thread.start()
+transaction_root = root / 'private-transaction'
+transaction_root.mkdir(mode=0o700)
+manager = StrictCRIHostTransactionManager(
+    PipeHostHelperClient(request_write, response_read)
+)
+transaction_id = 'ht1-' + ('4' * 32)
+target_id = plan['target']['targetId']
+prepare = manager.prepare(
+    intent_path=intent_path,
+    expected_intent_digest=digest(intent_raw),
+    facts_path=facts_path,
+    expected_facts_digest=digest(facts_raw),
+    plan_path=plan_path,
+    expected_plan_file_digest=digest(plan_raw),
+    expected_plan_digest=plan['planDigest'],
+    transaction_root=transaction_root,
+    transaction_id=transaction_id,
+    confirmation=f"{target_id}:{plan['planDigest']}",
+    expected_helper_identity_digest=helper_implementation_digest(),
+)
+assert prepare.status == 'prepared'
+
+
+class Verifier:
+    def verify(self, authorities, receipt):
+        del receipt
+        return tuple(
+            material.desired_after_digest
+            for material in strict_cri_action_materials(authorities)
+        )
+
+
+adapter = StrictCRINodeAdapter(
+    bootstrap_store=bootstrap_store,
+    verifier=Verifier(),
+    python_executable=Path(os.environ['K1S_INSTALLED_PYTHON']).resolve(),
+)
+authority = adapter.resolve(
+    bootstrap,
+    inputs=StrictCRINodeInputs(
+        plan_path=plan_path,
+        expected_plan_file_digest=digest(plan_raw),
+        expected_plan_digest=plan['planDigest'],
+        receipt_path=transaction_root / 'receipts' / f'{transaction_id}.applied.json',
+        expected_receipt_digest=prepare.receipt_digest,
+    ),
+)
+public = authority.public_projection()
+assert public['nodeId'] == 'node-installed-strict'
+assert public['planDigest'] == plan['planDigest']
+assert public['receiptDigest'] == prepare.receipt_digest
+assert public['qualificationPosture'] == 'source-validated/unqualified'
+assert bootstrap.credential not in repr(authority)
+assert bootstrap.private_record_digest not in repr(authority)
+assert str(transaction_root) not in json.dumps(public, sort_keys=True)
+
+rollback = manager.rollback(
+    transaction_root=transaction_root,
+    transaction_id=transaction_id,
+    expected_applied_receipt_digest=prepare.receipt_digest,
+    confirmation=f'{target_id}:{transaction_id}:{prepare.receipt_digest}',
+    expected_helper_identity_digest=helper_implementation_digest(),
+)
+assert rollback.status == 'rolled-back'
+thread.join(timeout=10)
+assert not thread.is_alive()
+assert not server_errors
+assert len(boundary.calls) == expected_calls
+os.close(request_read)
+os.close(request_write)
+os.close(response_read)
+os.close(response_write)
+"""
+    _run(
+        [str(python), "-c", installed_transaction_program],
+        cwd=outside,
+        env={
+            **env,
+            "K1S_HOST_FACTS": str(facts_path),
+            "K1S_HOST_INTENT": str(intent_path),
+            "K1S_INSTALLED_PYTHON": str(python),
+            "K1S_STRICT_TRANSACTION_SMOKE_ROOT": str(outside / "strict-cri-transaction-smoke"),
+        },
+    )
 
     manifest = outside / "artifact-smoke.yaml"
     manifest.write_text(

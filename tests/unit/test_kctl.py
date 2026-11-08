@@ -13,6 +13,11 @@ from ae.kctl.__main__ import build_parser, main
 from ae.kctl.lifecycle import LifecycleResult
 from ae.kctl.profile_backend import PortableLifecycleResult
 from ae.kctl.profile_engine import EngineCapability
+from ae.kctl.profile_host_transaction import (
+    HostTransactionResult,
+    ProfileHostTransactionError,
+)
+from ae.kctl.profile_node_adapter import StrictCRINodeInputs
 from ae.kctl.profile_state import ProfileLogSnapshot
 from ae.kctl.profiles import InstalledProfileFacts
 
@@ -955,3 +960,172 @@ def test_exact_bootstrap_routes_restart_and_foreground_run(
         ("restart", "edge-gateway", bootstrap_id),
         ("run", "node", bootstrap_id),
     ]
+
+
+def test_host_prepare_cli_passes_only_explicit_authority_and_renders_public_result(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Manager:
+        def prepare(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return HostTransactionResult(
+                action="prepare",
+                status="prepared",
+                transaction_id="ht1-" + "1" * 32,
+                target_id="guest-a",
+                plan_digest="sha256:" + "a" * 64,
+                receipt_digest="sha256:" + "b" * 64,
+                applied_receipt_digest="sha256:" + "b" * 64,
+            )
+
+    monkeypatch.setattr(
+        kctl_main,
+        "profile_host_transaction_manager_factory",
+        lambda request_fd, response_fd: (
+            captured.update({"request_fd": request_fd, "response_fd": response_fd}) or Manager()
+        ),
+    )
+    args = [
+        "profile",
+        "host",
+        "prepare",
+        "strict-cri",
+        "--intent",
+        str(tmp_path / "intent.json"),
+        "--expect-intent-sha256",
+        "sha256:" + "1" * 64,
+        "--facts",
+        str(tmp_path / "facts.json"),
+        "--expect-facts-sha256",
+        "sha256:" + "2" * 64,
+        "--plan",
+        str(tmp_path / "plan.json"),
+        "--expect-plan-sha256",
+        "sha256:" + "3" * 64,
+        "--expect-plan-digest",
+        "sha256:" + "a" * 64,
+        "--transaction-root",
+        str(tmp_path / "private"),
+        "--transaction-id",
+        "ht1-" + "1" * 32,
+        "--helper-request-fd",
+        "8",
+        "--helper-response-fd",
+        "9",
+        "--expect-helper-identity-sha256",
+        "sha256:" + "4" * 64,
+        "--confirm-prepare",
+        "guest-a:sha256:" + "a" * 64,
+        "-o",
+        "json",
+    ]
+
+    assert main(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "prepared"
+    assert captured["request_fd"] == 8
+    assert captured["response_fd"] == 9
+    assert captured["intent_path"] == tmp_path / "intent.json"
+    assert str(tmp_path) not in json.dumps(payload)
+
+
+def test_host_transaction_cli_errors_are_generic_and_redacted(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    private = str(tmp_path / "private-authority")
+
+    class Manager:
+        def rollback(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise ProfileHostTransactionError(private)
+
+    monkeypatch.setattr(
+        kctl_main,
+        "profile_host_transaction_manager_factory",
+        lambda _request_fd, _response_fd: Manager(),
+    )
+    assert (
+        main(
+            [
+                "profile",
+                "host",
+                "rollback",
+                "strict-cri",
+                "--transaction-root",
+                private,
+                "--transaction-id",
+                "ht1-" + "1" * 32,
+                "--helper-request-fd",
+                "8",
+                "--helper-response-fd",
+                "9",
+                "--expect-helper-identity-sha256",
+                "sha256:" + "4" * 64,
+                "--expect-applied-receipt-sha256",
+                "sha256:" + "5" * 64,
+                "--confirm-rollback",
+                "guest-a:confirmation",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.strip() == "strict CRI host rollback failed closed"
+    assert private not in output.err
+
+
+def test_strict_cri_node_cli_passes_paired_explicit_inputs_without_engine_fallback(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    bootstrap_id = "b1-" + "6" * 32
+    captured: dict[str, object] = {}
+
+    class Manager:
+        def perform(self, action, profile, **kwargs):  # type: ignore[no-untyped-def]
+            captured.update({"action": action, "profile": profile, **kwargs})
+            return PortableLifecycleResult(
+                action="start",
+                profile="node",
+                status="started",
+                backend="strict-cri",
+                run_id="r1-" + "7" * 32,
+                generation=1,
+                phase="running",
+                exit_code=0,
+            )
+
+    monkeypatch.setattr(kctl_main, "portable_profile_manager_factory", Manager)
+    plan = tmp_path / "plan.json"
+    receipt = tmp_path / "receipt.json"
+    assert (
+        main(
+            [
+                "profile",
+                "start",
+                "node",
+                "--bootstrap-id",
+                bootstrap_id,
+                "--host-plan",
+                str(plan),
+                "--expect-host-plan-sha256",
+                "sha256:" + "1" * 64,
+                "--expect-host-plan-digest",
+                "sha256:" + "2" * 64,
+                "--host-receipt",
+                str(receipt),
+                "--expect-host-receipt-sha256",
+                "sha256:" + "3" * 64,
+                "-o",
+                "json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    inputs = captured["strict_cri_inputs"]
+    assert isinstance(inputs, StrictCRINodeInputs)
+    assert inputs.plan_path == plan
+    assert inputs.receipt_path == receipt
+    assert captured["backend"] is None

@@ -39,8 +39,12 @@ planner never opens XDG bootstrap state. A private/full-record digest,
 credential, token, bootstrap path, raw machine ID, hostname fallback, or
 environment-derived node ID is invalid host-plan authority. This preserves the
 explicit identity contract without claiming that containerd has received or
-enforced it. A later digest-bound CRI node adapter must revalidate private
-bootstrap and host-preparation receipts before starting anything.
+enforced it. The installed digest-bound CRI node adapter revalidates the
+private bootstrap, exact applied host-preparation receipt, reconstructed plan,
+and synthetic/read-only post-state observations before it returns a node
+execution authority. The node token remains only in the repr-hidden child
+environment; host plan/receipt digests form a paired schema-v4 private run
+authority. Live CRI operation remains unqualified until Q1.
 
 The canonical `edge-gateway` bootstrap scopes its explicit local ID as
 `<site_id>--<local_node_id>` and starts only the gateway component. The

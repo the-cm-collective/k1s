@@ -14,6 +14,7 @@ import json
 import os
 import re
 import stat
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -35,6 +36,35 @@ _MODE_RE = re.compile(r"0[0-7]{3}")
 
 class ProfileHostPlanError(ValueError):
     """A generic, intentionally redacted strict-CRI planning failure."""
+
+
+@dataclass(frozen=True, slots=True)
+class StrictCRIHostAuthorities:
+    """Exact canonical authorities independently reconstructed for execution."""
+
+    intent: dict[str, Any]
+    facts: dict[str, Any]
+    plan: dict[str, Any]
+    intent_digest: str
+    facts_digest: str
+    plan_file_digest: str
+    plan_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class StrictCRIActionMaterial:
+    """One ordered helper action derived only from canonical authorities."""
+
+    index: int
+    action_id: str
+    kind: str
+    target: str
+    expected_before: dict[str, Any]
+    expected_before_digest: str
+    desired_after_digest: str
+    rollback: str
+    source: dict[str, Any] | None = None
+    content: bytes | None = None
 
 
 def _fail() -> ProfileHostPlanError:
@@ -911,6 +941,131 @@ def plan_strict_cri_from_files(
         intent_digest=intent_digest,
         facts_digest=facts_digest,
     )
+
+
+def load_strict_cri_host_authorities(
+    *,
+    intent_path: object,
+    expected_intent_digest: object,
+    facts_path: object,
+    expected_facts_digest: object,
+    plan_path: object,
+    expected_plan_file_digest: object,
+    expected_plan_digest: object,
+) -> StrictCRIHostAuthorities:
+    """Reload and byte-for-byte reconstruct all execution authorities.
+
+    This function is intentionally suitable for use on both sides of the
+    helper protocol.  It never accepts an action list from the coordinator.
+    """
+
+    intent_raw, intent_digest = _load_canonical_document(intent_path, expected_intent_digest)
+    facts_raw, facts_digest = _load_canonical_document(facts_path, expected_facts_digest)
+    plan_raw, plan_file_digest = _load_canonical_document(plan_path, expected_plan_file_digest)
+    rebuilt = build_strict_cri_host_plan(
+        intent_raw,
+        facts_raw,
+        intent_digest=intent_digest,
+        facts_digest=facts_digest,
+    )
+    plan_digest = _require_digest(expected_plan_digest)
+    if plan_raw != rebuilt or canonical_json_bytes(plan_raw) != canonical_json_bytes(rebuilt):
+        raise _fail()
+    if plan_raw.get("planDigest") != plan_digest:
+        raise _fail()
+    return StrictCRIHostAuthorities(
+        intent=intent_raw,
+        facts=facts_raw,
+        plan=plan_raw,
+        intent_digest=intent_digest,
+        facts_digest=facts_digest,
+        plan_file_digest=plan_file_digest,
+        plan_digest=plan_digest,
+    )
+
+
+def strict_cri_action_materials(
+    authorities: StrictCRIHostAuthorities,
+) -> tuple[StrictCRIActionMaterial, ...]:
+    """Derive the closed ordered helper action set from canonical authorities."""
+
+    intent = authorities.intent
+    facts = authorities.facts
+    plan = authorities.plan
+    objects = facts["objects"]
+    before_by_action: dict[str, dict[str, Any]] = {
+        "validate-cri-socket": objects["criSocket"],
+        "validate-containerd-config": objects["containerdConfig"],
+        "cri-socket-access": objects["criSocket"],
+    }
+    source_by_action: dict[str, dict[str, Any]] = {}
+    content_by_action: dict[str, bytes] = {}
+    for plugin in REQUIRED_CNI_PLUGINS:
+        action_id = f"cni-plugin-{plugin}"
+        before_by_action[action_id] = objects[f"cniTarget:{plugin}"]
+        source_by_action[action_id] = objects[f"cniSource:{plugin}"]
+    for name in CONFIG_TARGETS:
+        action_id = f"cni-config-{name}"
+        before_by_action[action_id] = objects[f"cniConfig:{name}"]
+        content_by_action[action_id] = _cni_config_bytes(intent, name)
+    if intent["registry"]["mode"] == "external-tls":
+        before_by_action["registry-ca"] = objects["registryCaTarget"]
+        source_by_action["registry-ca"] = objects[intent["registry"]["caObject"]]
+        before_by_action["registry-hosts"] = objects["registryHostsTarget"]
+        content_by_action["registry-hosts"] = _registry_hosts_bytes(intent)
+
+    result: list[StrictCRIActionMaterial] = []
+    actions = plan.get("actions")
+    if type(actions) is not list:
+        raise _fail()
+    for index, raw in enumerate(actions):
+        if type(raw) is not dict or set(raw) != {
+            "desiredAfterDigest",
+            "expectedBeforeDigest",
+            "id",
+            "kind",
+            "rollback",
+            "target",
+        }:
+            raise _fail()
+        action_id = _require_text(raw["id"], maximum=63)
+        if action_id not in before_by_action:
+            raise _fail()
+        before = before_by_action[action_id]
+        if raw["expectedBeforeDigest"] != _digest_value(before):
+            raise _fail()
+        target = _canonical_absolute_path(raw["target"])
+        if target != before["path"]:
+            raise _fail()
+        kind = _require_text(raw["kind"], maximum=32)
+        rollback = _require_text(raw["rollback"], maximum=32)
+        if kind not in {
+            "validate",
+            "verify",
+            "copy-regular",
+            "write-canonical",
+            "grant-exact-acl",
+        }:
+            raise _fail()
+        if rollback not in {"none", "remove-created", "restore-exact-before"}:
+            raise _fail()
+        result.append(
+            StrictCRIActionMaterial(
+                index=index,
+                action_id=action_id,
+                kind=kind,
+                target=target,
+                expected_before=before,
+                expected_before_digest=_require_digest(raw["expectedBeforeDigest"]),
+                desired_after_digest=_require_digest(raw["desiredAfterDigest"]),
+                rollback=rollback,
+                source=source_by_action.get(action_id),
+                content=content_by_action.get(action_id),
+            )
+        )
+    if [item.action_id for item in result] != [str(item["id"]) for item in actions]:
+        raise _fail()
+    return tuple(result)
 
 
 def render_strict_cri_host_plan_json(plan: dict[str, Any]) -> str:

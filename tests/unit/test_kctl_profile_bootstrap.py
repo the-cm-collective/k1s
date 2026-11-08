@@ -166,6 +166,25 @@ def test_node_bootstrap_uses_explicit_identity_v1_and_exact_backend(tmp_path: Pa
     }
 
 
+def test_node_bootstrap_accepts_strict_cri_as_an_explicit_additive_backend(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path, "node")
+    record = store.create_node(
+        node_id="node-a",
+        controller_url="https://controller.example.test:9443",
+        runtime_backend="strict-cri",
+        listen_host="127.0.0.1",
+        listen_port=9109,
+        advertise_endpoint="https://node-a.example.test:9109",
+        credential_file=_credential(tmp_path, "strict-cri-token", "private-alpha"),
+    )
+
+    assert record.backend_id == "strict-cri"
+    assert store.load(record.bootstrap_id) == record
+    assert record.public_projection()["backendId"] == "strict-cri"
+
+
 def test_public_plan_digest_ignores_credential_bytes_but_private_revalidation_detects_drift(
     tmp_path: Path,
 ) -> None:
