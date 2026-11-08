@@ -125,15 +125,47 @@ second version literal belongs in `pyproject.toml`.
 
 ## Artifact promotion
 
-The TestPyPI workflow builds one wheel and one source distribution under a
-fixed `SOURCE_DATE_EPOCH`, normalizes sdist container timestamps and ownership,
-validates their names and metadata, writes `SHA256SUMS`, and publishes that
-bundle with OIDC trusted publishing. The
+All release artifacts are constructed by the committed
+`scripts/build_python_artifacts.py` helper from an exact full commit and tree.
+The helper reads blob bytes and modes from Git objects, never from checkout
+permissions: Git `100644` becomes `0644`, Git `100755` becomes `0755`, and
+synthesized directories become `0755`. Unsupported modes, symlinks, gitlinks,
+unsafe or colliding paths, protected local paths, missing objects, and any
+workspace-mode influence fail closed.
+
+The helper builds without isolation or indexes under the fixed
+`SOURCE_DATE_EPOCH=1793664000`. It canonicalizes both artifacts rather than
+trusting backend container metadata. Wheel entries have stable ordering,
+timestamps, regular-file modes, ZIP attributes and compression, and the helper
+rebuilds complete `RECORD` ownership. Source-distribution entries have stable
+ordering, Git-derived modes, timestamps, ownership, PAX policy, and gzip
+headers. Inputs are immutable and normalized outputs are atomically created as
+new files.
+
+Every verified bundle contains the wheel, normalized source distribution,
+canonical source/wheel/sdist member manifests, `artifact-manifest.json`, and
+`SHA256SUMS`. The manifest binds the exact commit/tree, toolchain, release lock,
+reviewed 24-wheel closure, artifact identities, member manifests, and validator
+results without retaining checkout paths, hostnames, temporary names, or an
+environment dump. Construction and verification deny network sockets and use
+`PIP_NO_INDEX=1` with `PIP_CONFIG_FILE=/dev/null`.
+
+CI builds from the same commit under umasks `022` and `077` and requires every
+bundle byte to match. CI has no publication authority. The TestPyPI workflow
+uses the same helper once, independently verifies and attests the complete
+bundle, and publishes only its `dist/` directory with OIDC trusted publishing.
+It does not contain an alternate `python -m build`, mode-repair, normalizer, or
+manifest-construction path. The
 production workflow accepts the successful TestPyPI workflow run ID and source
 commit, downloads the named artifact from that run, verifies the workflow
 identity, commit, file set, and every SHA256 value, and publishes those exact
 bytes with OIDC. Production never rebuilds or resolves a package from an
 index.
+
+The canonicalization checkpoint intentionally establishes a new artifact
+container identity before public alpha. Earlier RC evidence hashes remain
+review evidence only and are not publication inputs. Distribution identity,
+version, Python payload, resources, and console contracts are unchanged.
 
 Local acceptance repeats the controlled build, checks byte-for-byte equality,
 runs Twine, archive namespace, and public-marker audits, and installs
