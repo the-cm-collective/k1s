@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scripts.qualification import kp1_q1_capsule as capsule
@@ -109,12 +110,52 @@ def _inputs(tmp_path: Path):
 
 
 def _plan(tmp_path: Path, *, run_id: str = "q1-1234567890abcdef1234567890abcdef"):
+    tmp_path.chmod(0o700)
     return capsule.build_plan(
         run_id=run_id,
+        capsule_parent=capsule.capsule_parent_identity(str(tmp_path)),
         source_commit="1" * 40,
         source_tree="2" * 40,
         ssh_host_port=40222,
         **_inputs(tmp_path),
+    )
+
+
+def _kvm(*, gid: int = 108, inode: int = 41) -> dict[str, object]:
+    return {
+        "device": 7,
+        "gid": gid,
+        "inode": inode,
+        "major": 10,
+        "minor": 232,
+        "mode": "0660",
+        "path": "/dev/kvm",
+        "type": "character",
+        "uid": 0,
+    }
+
+
+def _observation(
+    *,
+    checked_at: int = 1_000,
+    cpu_count: int = capsule.VCPU_COUNT,
+    memory_bytes: int = capsule.MIN_MEMORY_BYTES,
+    free_bytes: int = capsule.MIN_FREE_START_BYTES,
+    port_available: bool = True,
+    gid: int = 108,
+    resolved_gid: int | None = 108,
+    access: bool = True,
+    inode: int = 41,
+) -> capsule.HostObservation:
+    return capsule.HostObservation(
+        checked_at_unix=checked_at,
+        cpu_count=cpu_count,
+        memory_bytes=memory_bytes,
+        selected_filesystem_free_bytes=free_bytes,
+        ssh_port_available=port_available,
+        kvm=_kvm(gid=gid, inode=inode),
+        expected_group_gid=resolved_gid,
+        kvm_access=access,
     )
 
 
@@ -127,10 +168,67 @@ def test_plan_is_canonical_deterministic_digest_bound_and_nonmutating(tmp_path: 
     assert first["qualificationPosture"] == "source-validated/unqualified"
     assert first["mutating"] is False
     assert first["acceptanceStages"] == list(capsule.ACCEPTANCE_STAGES)
+    assert first["capsuleParent"]["path"] == str(tmp_path)
+    assert first["layout"]["root"] == str(tmp_path / f"k1s-{first['runId']}")
     unsigned = dict(first)
     unsigned.pop("planDigest")
     assert first["planDigest"] == _digest(capsule.canonical_json_bytes(unsigned))
-    assert not (capsule.CAPSULE_PARENT / f"k1s-{first['runId']}").exists()
+    assert not (tmp_path / f"k1s-{first['runId']}").exists()
+
+
+def test_parent_is_explicit_private_local_and_symlink_free(tmp_path: Path) -> None:
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    identity = capsule.capsule_parent_identity(str(private), filesystem_type="tmpfs")
+    assert identity.path == str(private)
+    assert identity.mode == "0700"
+    assert identity.filesystem_type == "tmpfs"
+
+    link = tmp_path / "link"
+    link.symlink_to(private, target_is_directory=True)
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.capsule_parent_identity(str(link), filesystem_type="tmpfs")
+
+    private.chmod(0o750)
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.capsule_parent_identity(str(private), filesystem_type="tmpfs")
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.capsule_parent_identity(str(Path("/") / "tmp"), filesystem_type="tmpfs")
+
+
+@pytest.mark.parametrize("identity_field", ["device", "inode"])
+def test_parent_owner_and_plan_identity_drift_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    identity_field: str,
+) -> None:
+    tmp_path.chmod(0o700)
+    actual_uid = os.getuid()
+    monkeypatch.setattr(capsule.os, "getuid", lambda: actual_uid + 1)
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.capsule_parent_identity(str(tmp_path), filesystem_type="tmpfs")
+    monkeypatch.setattr(capsule.os, "getuid", lambda: actual_uid)
+
+    plan = _plan(tmp_path)
+    parent = dict(plan["capsuleParent"])
+    parent[identity_field] += 1
+    plan["capsuleParent"] = parent
+    unsigned = dict(plan)
+    unsigned.pop("planDigest")
+    plan["planDigest"] = _digest(capsule.canonical_json_bytes(unsigned))
+    assert capsule.verify_plan(plan) == plan
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule._revalidate_capsule_parent(plan)
+
+
+def test_tmp_parent_is_supported_only_when_explicit_private_and_digest_bound(
+    tmp_path: Path,
+) -> None:
+    plan = _plan(tmp_path)
+    parent = capsule.capsule_parent_identity(str(tmp_path))
+    assert plan["capsuleParent"] == parent.to_payload()
+    assert plan["layout"]["root"] == str(tmp_path / f"k1s-{plan['runId']}")
+    assert str(plan["planDigest"]).startswith("sha256:")
 
 
 @pytest.mark.parametrize(
@@ -236,6 +334,177 @@ def test_guest_manifest_rejects_mutable_or_incomplete_identity(tmp_path: Path) -
         )
 
 
+def test_host_preflight_binds_capacity_tools_port_parent_and_kvm(tmp_path: Path) -> None:
+    plan = _plan(tmp_path)
+    receipt = capsule.build_host_preflight(plan, _observation())
+
+    assert receipt["status"] == "pass"
+    assert receipt["mutating"] is False
+    assert receipt["capsuleParent"] == plan["capsuleParent"]
+    assert receipt["tools"] == plan["tools"]
+    assert receipt["sshPort"] == {
+        "address": "127.0.0.1",
+        "availableAtCheck": True,
+        "port": 40222,
+        "reservationClaimed": False,
+    }
+    assert receipt["expectedGroup"] == {"gid": 108, "name": "kvm"}
+    assert capsule.verify_host_preflight(receipt, plan, now_unix=1_001) == receipt
+
+
+@pytest.mark.parametrize(
+    ("observation", "failure"),
+    [
+        (_observation(cpu_count=capsule.VCPU_COUNT - 1), "insufficient-vcpus"),
+        (
+            _observation(memory_bytes=capsule.MIN_MEMORY_BYTES - 1),
+            "insufficient-memory",
+        ),
+        (
+            _observation(free_bytes=capsule.MIN_FREE_START_BYTES - 1),
+            "insufficient-selected-filesystem-space",
+        ),
+        (_observation(port_available=False), "ssh-port-unavailable"),
+        (_observation(gid=42_427, resolved_gid=108), "kvm-group-mismatch"),
+        (_observation(access=False), "kvm-access-denied"),
+    ],
+)
+def test_host_preflight_reports_exact_fail_closed_reasons(
+    tmp_path: Path,
+    observation: capsule.HostObservation,
+    failure: str,
+) -> None:
+    receipt = capsule.build_host_preflight(_plan(tmp_path), observation)
+    assert receipt["status"] == "fail"
+    assert failure in receipt["failures"]
+
+
+def test_port_probe_reports_occupied_without_claiming_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _OccupiedSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def setsockopt(self, *_args):
+            return None
+
+        def bind(self, _address):
+            raise OSError("occupied")
+
+    monkeypatch.setattr(capsule.socket, "socket", lambda *_args: _OccupiedSocket())
+    assert capsule._ssh_port_available(40222) is False
+
+
+def test_gate_a_is_fresh_plan_parent_group_and_kvm_identity_bound(tmp_path: Path) -> None:
+    plan = _plan(tmp_path)
+    preflight = capsule.build_host_preflight(plan, _observation())
+    attestation = capsule.build_gate_a_attestation(
+        plan,
+        preflight,
+        _observation(),
+        issued_at_unix=1_000,
+        expires_at_unix=1_000 + capsule.GATE_A_TTL_SECONDS,
+    )
+    assert attestation["expectedGroupName"] == "kvm"
+    assert attestation["expectedGroupGid"] == 108
+    assert attestation["capsuleParent"] == plan["capsuleParent"]
+    assert (
+        capsule.validate_gate_a_attestation(
+            attestation,
+            plan,
+            preflight,
+            _observation(checked_at=1_001),
+            now_unix=1_001,
+        )
+        == attestation
+    )
+
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.validate_gate_a_attestation(
+            attestation,
+            plan,
+            preflight,
+            _observation(checked_at=2_000),
+            now_unix=2_000,
+        )
+
+    tampered = dict(attestation)
+    tampered["expectedGroupGid"] = 42_427
+    unsigned = dict(tampered)
+    unsigned.pop("attestationDigest")
+    tampered["attestationDigest"] = _digest(capsule.canonical_json_bytes(unsigned))
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.validate_gate_a_attestation(
+            tampered,
+            plan,
+            preflight,
+            _observation(checked_at=1_001),
+            now_unix=1_001,
+        )
+
+
+def test_gate_a_allows_separate_access_grant_only_after_exact_reobservation(
+    tmp_path: Path,
+) -> None:
+    plan = _plan(tmp_path)
+    denied = capsule.build_host_preflight(plan, _observation(access=False))
+    assert denied["failures"] == ["kvm-access-denied"]
+    granted = _observation(access=True)
+    attestation = capsule.build_gate_a_attestation(
+        plan,
+        denied,
+        granted,
+        issued_at_unix=1_000,
+        expires_at_unix=1_000 + capsule.GATE_A_TTL_SECONDS,
+    )
+    assert attestation["accessStatus"] == "read-write"
+
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.build_gate_a_attestation(
+            plan,
+            denied,
+            _observation(access=True, inode=99),
+            issued_at_unix=1_000,
+            expires_at_unix=1_000 + capsule.GATE_A_TTL_SECONDS,
+        )
+
+
+def test_gate_a_rejects_cross_run_replay_and_symbolic_group_mismatch(tmp_path: Path) -> None:
+    plan = _plan(tmp_path)
+    preflight = capsule.build_host_preflight(plan, _observation())
+    attestation = capsule.build_gate_a_attestation(
+        plan,
+        preflight,
+        _observation(),
+        issued_at_unix=1_000,
+        expires_at_unix=1_000 + capsule.GATE_A_TTL_SECONDS,
+    )
+    other_root = tmp_path / "other"
+    other_root.mkdir(mode=0o700)
+    other = _plan(other_root, run_id="q1-ffffffffffffffffffffffffffffffff")
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.validate_gate_a_attestation(
+            attestation,
+            other,
+            preflight,
+            _observation(checked_at=1_001),
+            now_unix=1_001,
+        )
+    mismatch = capsule.build_host_preflight(plan, _observation(gid=42_427, resolved_gid=108))
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.build_gate_a_attestation(
+            plan,
+            mismatch,
+            _observation(gid=42_427, resolved_gid=108),
+            issued_at_unix=1_000,
+            expires_at_unix=1_000 + capsule.GATE_A_TTL_SECONDS,
+        )
+
+
 class _RecordingRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
@@ -252,9 +521,7 @@ def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_id = "q1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    root = capsule.CAPSULE_PARENT / f"k1s-{run_id}"
-    if root.exists():
-        shutil.rmtree(root)
+    root = tmp_path / f"k1s-{run_id}"
     plan = _plan(tmp_path, run_id=run_id)
     runner = _RecordingRunner()
     monkeypatch.setattr(capsule, "_validate_gate_a", lambda *_args, **_kwargs: {"valid": True})
@@ -269,9 +536,12 @@ def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
             plan,
             expected_plan_digest=str(plan["planDigest"]),
             confirmation=f"{run_id}:{plan['planDigest']}",
+            host_preflight_path=tmp_path / "host-preflight.json",
+            expected_host_preflight_digest="sha256:" + "8" * 64,
             gate_a_path=tmp_path / "gate-a.json",
             expected_gate_a_digest="sha256:" + "9" * 64,
             runner=runner,
+            port_checker=lambda _port: True,
         )
         assert created == root
         assert [call[1] for call in runner.calls[:2]] == ["create", "-output"]
@@ -302,6 +572,8 @@ def test_run_boundary_rejects_confirmation_collision_and_insufficient_disk(
             plan,
             expected_plan_digest=str(plan["planDigest"]),
             confirmation="wrong",
+            host_preflight_path=tmp_path / "host-preflight.json",
+            expected_host_preflight_digest="sha256:" + "8" * 64,
             gate_a_path=tmp_path / "gate-a.json",
             expected_gate_a_digest="sha256:" + "9" * 64,
             runner=_RecordingRunner(),
@@ -316,6 +588,8 @@ def test_run_boundary_rejects_confirmation_collision_and_insufficient_disk(
             plan,
             expected_plan_digest=str(plan["planDigest"]),
             confirmation=f"{run_id}:{plan['planDigest']}",
+            host_preflight_path=tmp_path / "host-preflight.json",
+            expected_host_preflight_digest="sha256:" + "8" * 64,
             gate_a_path=tmp_path / "gate-a.json",
             expected_gate_a_digest="sha256:" + "9" * 64,
             runner=_RecordingRunner(),
@@ -352,11 +626,12 @@ def test_evidence_seal_is_deterministic_and_metadata_safe(tmp_path: Path) -> Non
     assert "credential" not in rendered.lower()
 
 
-def test_teardown_requires_absent_process_and_removes_only_exact_private_trees() -> None:
+def test_teardown_requires_absent_process_and_removes_only_exact_private_trees(
+    tmp_path: Path,
+) -> None:
     run_id = "q1-cccccccccccccccccccccccccccccccc"
-    root = capsule.CAPSULE_PARENT / f"k1s-{run_id}"
-    if root.exists():
-        shutil.rmtree(root)
+    tmp_path.chmod(0o700)
+    root = tmp_path / f"k1s-{run_id}"
     root.mkdir(mode=0o700)
     for name in capsule.LAYOUT_NAMES:
         path = root / name
@@ -380,23 +655,33 @@ def test_teardown_requires_absent_process_and_removes_only_exact_private_trees()
     run_file_digest = capsule._file_digest(run_receipt_path)
     confirmation = f"{run_id}:{run_receipt['receiptDigest']}"
     try:
+        wrong_parent = tmp_path / "wrong"
+        wrong_parent.mkdir(mode=0o700)
         with pytest.raises(capsule.CapsulePolicyError):
             capsule.teardown_private_layout(
-                root,
+                wrong_parent,
+                expect_run_id=run_id,
+                expected_run_receipt_file_digest=run_file_digest,
+                confirmation=confirmation,
+                process_absent=True,
+            )
+        with pytest.raises(capsule.CapsulePolicyError):
+            capsule.teardown_private_layout(
+                tmp_path,
                 expect_run_id=run_id,
                 expected_run_receipt_file_digest=run_file_digest,
                 confirmation=confirmation,
                 process_absent=False,
             )
         cleanup_receipt = capsule.teardown_private_layout(
-            root,
+            tmp_path,
             expect_run_id=run_id,
             expected_run_receipt_file_digest=run_file_digest,
             confirmation=confirmation,
             process_absent=True,
         )
         capsule.verify_clean(
-            root,
+            tmp_path,
             expect_run_id=run_id,
             receipt_path=cleanup_receipt,
             expected_receipt_file_digest=capsule._file_digest(cleanup_receipt),
@@ -405,6 +690,50 @@ def test_teardown_requires_absent_process_and_removes_only_exact_private_trees()
     finally:
         if root.exists():
             shutil.rmtree(root)
+
+
+def test_teardown_and_clean_reject_run_root_device_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = "q1-dddddddddddddddddddddddddddddddd"
+    tmp_path.chmod(0o700)
+    root = tmp_path / f"k1s-{run_id}"
+    root.mkdir(mode=0o700)
+    marker = root / "foreign-content"
+    marker.write_bytes(b"preserve")
+    marker.chmod(0o600)
+    real_lstat = os.lstat
+    actual = real_lstat(root)
+
+    def drifted_lstat(path: os.PathLike[str] | str):
+        observed = real_lstat(path)
+        if Path(path) == root:
+            return SimpleNamespace(
+                st_dev=actual.st_dev + 1,
+                st_ino=actual.st_ino,
+                st_mode=actual.st_mode,
+                st_uid=actual.st_uid,
+            )
+        return observed
+
+    monkeypatch.setattr(capsule.os, "lstat", drifted_lstat)
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.teardown_private_layout(
+            tmp_path,
+            expect_run_id=run_id,
+            expected_run_receipt_file_digest="sha256:" + "1" * 64,
+            confirmation="not-authority",
+            process_absent=True,
+        )
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.verify_clean(
+            tmp_path,
+            expect_run_id=run_id,
+            receipt_path=root / "cleanup" / "cleanup.json",
+            expected_receipt_file_digest="sha256:" + "2" * 64,
+        )
+    assert marker.read_bytes() == b"preserve"
 
 
 def test_cli_help_is_static_and_does_not_create_capsule(tmp_path: Path, capsys) -> None:

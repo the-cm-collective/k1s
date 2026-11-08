@@ -24,7 +24,16 @@ One run is allowed only when all of these immutable inputs are present:
 - a fresh ephemeral SSH public key supplied explicitly, never discovered from
   `HOME`;
 - a loopback SSH port selected by an exact collision gate; and
-- at least 64 GiB of free space on the filesystem containing `/tmp`.
+- an explicit existing capsule parent that is canonical, absolute, free of
+  symlink components, owned by the invoking user, mode `0700`, writable, and
+  on a supported local filesystem with at least 64 GiB free.
+
+The approved local operator target is
+`/srv/storage/k1s/q1-qualification`. Creating or repairing that directory is a
+separate host operation; QH0 does not do it. A private directory below `/tmp`
+is compatible only when the operator selects it explicitly and it passes the
+same owner, mode, path, and local-filesystem checks. `/tmp` itself is not an
+acceptable parent.
 
 The guest manifest is canonical JSON with API version
 `k1s.dev/q1-capsule/v1`, kind `K1sQ1GuestManifest`, and schema version 1. It
@@ -41,13 +50,16 @@ pins the external manifest digest and the guest must contain the same bytes.
 no-follow, owner, mode, link-count, size, stability, and digest checks. It
 creates no run root, overlay, ISO, socket, process, service, or runtime state.
 The result binds all inputs, the source commit/tree, limits, QEMU argv, network
-posture, acceptance order, and exact `/tmp/k1s-q1-<32-hex>` layout.
+posture, acceptance order, selected-parent device/inode/path identity, and
+exact `<capsule-parent>/k1s-<run-id>` layout. Caller umask, current directory,
+`HOME`, and a module-global temporary path are not authority.
 
 Example shape:
 
 ```text
 python3 scripts/qualification/kp1_q1_capsule.py plan \
   --run-id q1-0123456789abcdef0123456789abcdef \
+  --capsule-parent /srv/storage/k1s/q1-qualification \
   --source-commit COMMIT --source-tree TREE \
   --base-image /absolute/base.qcow2 \
   --expect-base-image-sha256 sha256:... \
@@ -70,13 +82,54 @@ python3 scripts/qualification/kp1_q1_capsule.py plan \
   --seed-builder /usr/bin/genisoimage \
   --expect-seed-builder-sha256 sha256:... \
   --ssh-host-port PORT \
-  --output-root /tmp/k1s-q1-0123456789abcdef0123456789abcdef \
   --output /absolute/private/plan.json
 ```
 
 The output file's parent must already be an owner-only mode-`0700`
 directory. The plan remains private because it contains exact host input
 paths. Public evidence contains identities and outcomes, not those paths.
+
+## QH0 and QH1 operator flow
+
+QH0 produces the pure plan above. QH1 then performs a read-only host
+preflight against exactly that plan:
+
+```text
+python3 scripts/qualification/kp1_q1_capsule.py preflight \
+  --plan /absolute/private/plan.json \
+  --expect-plan-sha256 sha256:... \
+  --output /absolute/private/host-preflight.json
+```
+
+The canonical preflight receipt binds the run ID and plan digest, selected
+parent identity and free space, four-vCPU and 8-GiB host capacity, exact QEMU
+tool identities, the symbolic group name `kvm` and its resolved GID, the full
+`/dev/kvm` device/inode/owner/group/mode/major/minor identity, invoking UID and
+current read/write access, and loopback SSH-port availability. The port check
+is a point-in-time observation, never a reservation. The later execution
+boundary must recheck and bind the port immediately before QEMU launch or fail
+closed. Receipts expire after five minutes.
+
+`gate-a-inspect` is a read-only verifier for an already produced Gate A
+attestation. It validates the plan, preflight, attestation, current parent,
+symbolic group, and current KVM identity and access, and returns only a
+sanitized `valid-current` result. It does not grant access or modify the host:
+
+```text
+python3 scripts/qualification/kp1_q1_capsule.py gate-a-inspect \
+  --plan /absolute/private/plan.json \
+  --expect-plan-sha256 sha256:... \
+  --host-preflight /absolute/private/host-preflight.json \
+  --expect-host-preflight-sha256 sha256:... \
+  --gate-a-attestation /absolute/private/gate-a.json \
+  --expect-gate-a-sha256 sha256:...
+```
+
+On the currently reviewed host, `/dev/kvm` has group GID `42427` while the
+symbolic `kvm` group resolves to GID `108`. QH1 must report
+`kvm-group-mismatch` and Gate A must fail closed until a separately reviewed
+host repair makes those identities agree. These source changes do not repair
+the mismatch and do not qualify K1s `0.1.8a1`.
 
 ## Isolation and limits
 
@@ -104,20 +157,31 @@ install host packages, select a different accelerator, or fall back to TCG.
 
 Before `run`, a trusted-host operator attests an existing character device
 with major/minor `10:232`, `root:kvm`, mode `0660`, a stable inode/device
-identity, and access for the exact user. If the exact user lacks access, the
+identity, the exact selected-parent and plan identities, a bounded timestamp,
+and access for the exact invoking UID. The attestation includes its own
+canonical digest and expires after five minutes. A stale, replayed, tampered,
+cross-plan, cross-parent, or numerically matching but symbolically different
+group attestation fails closed. If the exact user lacks access, the
 only separately approved host mutation is one temporary `rw` ACL entry on that
 already-attested device. Rollback removes only the newly added ACL entry after
 the same identity is revalidated. The capsule never creates or removes the
-device and never changes its owner or mode.
+device and never changes its owner or mode. QH0/QH1 implement no grant, apply,
+or rollback command; that remains a separately paired privileged action.
 
-`run` requires the canonical Gate A attestation, its file digest, the exact
-plan digest, and the literal confirmation `RUN_ID:PLAN_DIGEST`.
+`run` requires the canonical unexpired host-preflight receipt and Gate A
+attestation, both exact file digests, the exact plan digest, and the literal
+confirmation `RUN_ID:PLAN_DIGEST`. It revalidates the selected parent, every
+input, the current KVM identity and access, and the SSH port before invoking
+the already plan-bound QEMU command. A failed recheck does not select another
+port or engine.
 
 Teardown is also digest- and confirmation-bound. It accepts only the exact
 canonical `guest/run.json`, its file digest, and
 `RUN_ID:RUN_RECEIPT_DIGEST`, after the recorded QEMU identity is absent.
 `verify-clean` accepts the exact canonical cleanup receipt and its file digest;
-neither command performs ambient process or filesystem discovery.
+both commands require the same explicit revalidated capsule parent plus the
+run ID. Neither command performs ambient process or filesystem discovery or
+uses a hidden default root.
 
 ### Gate B: guest strict-CRI helper
 

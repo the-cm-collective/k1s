@@ -13,18 +13,20 @@ boundaries before any live qualification is authorized.
 from __future__ import annotations
 
 import argparse
+import grp
 import hashlib
 import json
 import os
 import re
 import resource
 import shutil
+import socket
 import stat
 import subprocess
 import sys
 import time
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol, cast
@@ -34,6 +36,9 @@ PLAN_KIND = "K1sQ1QualificationPlan"
 GUEST_MANIFEST_KIND = "K1sQ1GuestManifest"
 EVIDENCE_KIND = "K1sQ1EvidenceManifest"
 SEAL_KIND = "K1sQ1EvidenceSeal"
+HOST_PREFLIGHT_KIND = "K1sQ1HostPreflightReceipt"
+GATE_A_KIND = "K1sQ1GateAAttestation"
+GATE_A_INSPECTION_KIND = "K1sQ1GateAInspection"
 SCHEMA_VERSION = 1
 QUALIFICATION_POSTURE = "source-validated/unqualified"
 
@@ -59,7 +64,25 @@ HOST_NOFILE_LIMIT = 1024
 VCPU_COUNT = 4
 MEMORY_MIB = 8192
 OVERLAY_SIZE = "24G"
-CAPSULE_PARENT = Path("/tmp")  # noqa: S108 - fixed, policy-bound capsule parent
+HOST_PREFLIGHT_TTL_SECONDS = 5 * 60
+GATE_A_TTL_SECONDS = 5 * 60
+EXPECTED_KVM_GROUP = "kvm"
+KVM_PATH = Path("/dev/kvm")
+MIN_MEMORY_BYTES = MEMORY_MIB * 1024 * 1024
+
+LOCAL_FILESYSTEM_TYPES = frozenset(
+    {
+        "btrfs",
+        "ext2",
+        "ext3",
+        "ext4",
+        "f2fs",
+        "overlay",
+        "tmpfs",
+        "xfs",
+        "zfs",
+    }
+)
 
 ACCEPTANCE_STAGES = (
     "boot-containment",
@@ -227,6 +250,53 @@ def _path_parts_are_not_links(path: Path, *, include_leaf: bool) -> None:
             raise _fail()
 
 
+def _mountinfo_path(value: str) -> Path:
+    decoded = value
+    for encoded, character in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
+        decoded = decoded.replace(encoded, character)
+    return Path(decoded)
+
+
+def _filesystem_type(path: Path) -> str:
+    """Return the exact local mount type containing ``path``.
+
+    Linux mountinfo is read-only authority for the filesystem class. The
+    selected parent device must match the chosen mount and unknown, remote, or
+    shared filesystems fail closed.
+    """
+
+    try:
+        device = os.lstat(path).st_dev
+        raw = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise _fail() from exc
+    candidates: list[tuple[int, str]] = []
+    for line in raw.splitlines():
+        try:
+            before, after = line.split(" - ", 1)
+            fields = before.split()
+            tail = after.split()
+            major_text, minor_text = fields[2].split(":", 1)
+            mountpoint = _mountinfo_path(fields[4])
+            filesystem_type = tail[0]
+            mount_device = os.makedev(int(major_text), int(minor_text))
+        except (IndexError, ValueError) as exc:
+            raise _fail() from exc
+        if mount_device != device:
+            continue
+        try:
+            path.relative_to(mountpoint)
+        except ValueError:
+            continue
+        candidates.append((len(mountpoint.parts), filesystem_type))
+    if not candidates:
+        raise _fail()
+    filesystem_type = max(candidates)[1]
+    if filesystem_type not in LOCAL_FILESYSTEM_TYPES:
+        raise _fail()
+    return filesystem_type
+
+
 @dataclass(frozen=True, slots=True)
 class FileIdentity:
     path: str
@@ -249,6 +319,112 @@ class FileIdentity:
             "size": self.size,
             "uid": self.uid,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class CapsuleParentIdentity:
+    path: str
+    device: int
+    inode: int
+    uid: int
+    gid: int
+    mode: str
+    filesystem_type: str
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "device": self.device,
+            "filesystemType": self.filesystem_type,
+            "gid": self.gid,
+            "inode": self.inode,
+            "mode": self.mode,
+            "path": self.path,
+            "uid": self.uid,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class HostObservation:
+    checked_at_unix: int
+    cpu_count: int
+    memory_bytes: int
+    selected_filesystem_free_bytes: int
+    ssh_port_available: bool
+    kvm: dict[str, object] | None
+    expected_group_gid: int | None
+    kvm_access: bool
+
+
+def capsule_parent_identity(
+    raw_path: object,
+    *,
+    filesystem_type: str | None = None,
+) -> CapsuleParentIdentity:
+    """Validate one explicit existing owner-private local capsule parent."""
+
+    path = _canonical_absolute_path(raw_path)
+    _path_parts_are_not_links(path, include_leaf=True)
+    try:
+        resolved = path.resolve(strict=True)
+        info = os.lstat(path)
+        filesystem = filesystem_type or _filesystem_type(path)
+        filesystem_info = os.statvfs(path)
+        writable = os.access(path, os.W_OK | os.X_OK, effective_ids=True)
+    except (OSError, RuntimeError) as exc:
+        raise _fail() from exc
+    if (
+        resolved != path
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != PRIVATE_MODE
+        or info.st_nlink < 2
+        or not writable
+        or filesystem_info.f_flag & getattr(os, "ST_RDONLY", 1)
+        or filesystem not in LOCAL_FILESYSTEM_TYPES
+    ):
+        raise _fail()
+    return CapsuleParentIdentity(
+        path=str(path),
+        device=info.st_dev,
+        inode=info.st_ino,
+        uid=info.st_uid,
+        gid=info.st_gid,
+        mode=f"0{stat.S_IMODE(info.st_mode):03o}",
+        filesystem_type=filesystem,
+    )
+
+
+def _parent_identity_from_payload(value: object) -> CapsuleParentIdentity:
+    item = _require_closed(
+        value,
+        {"device", "filesystemType", "gid", "inode", "mode", "path", "uid"},
+    )
+    path = _canonical_absolute_path(item["path"])
+    integers = [item[field] for field in ("device", "gid", "inode", "uid")]
+    if (
+        any(type(number) is not int or number < 0 for number in integers)
+        or item["mode"] != "0700"
+        or type(item["filesystemType"]) is not str
+        or item["filesystemType"] not in LOCAL_FILESYSTEM_TYPES
+    ):
+        raise _fail()
+    return CapsuleParentIdentity(
+        path=str(path),
+        device=cast(int, item["device"]),
+        inode=cast(int, item["inode"]),
+        uid=cast(int, item["uid"]),
+        gid=cast(int, item["gid"]),
+        mode="0700",
+        filesystem_type=item["filesystemType"],
+    )
+
+
+def _revalidate_capsule_parent(plan: dict[str, object]) -> CapsuleParentIdentity:
+    expected = _parent_identity_from_payload(plan["capsuleParent"])
+    current = capsule_parent_identity(expected.path)
+    if current != expected:
+        raise _fail()
+    return current
 
 
 def file_identity(
@@ -505,8 +681,8 @@ def validate_guest_manifest(
     }
 
 
-def _layout(run_id: str) -> dict[str, str]:
-    root = CAPSULE_PARENT / f"k1s-{run_id}"
+def _layout(capsule_parent: CapsuleParentIdentity, run_id: str) -> dict[str, str]:
+    root = Path(capsule_parent.path) / f"k1s-{run_id}"
     return {
         "root": str(root),
         **{name: str(root / name) for name in LAYOUT_NAMES},
@@ -565,6 +741,7 @@ def _tool_payload(identity: FileIdentity) -> dict[str, object]:
 def build_plan(
     *,
     run_id: str,
+    capsule_parent: CapsuleParentIdentity,
     source_commit: str,
     source_tree: str,
     base_image: FileIdentity,
@@ -606,7 +783,8 @@ def build_plan(
         },
         "guestIdentity": manifest,
         "kind": PLAN_KIND,
-        "layout": _layout(run_id),
+        "capsuleParent": capsule_parent.to_payload(),
+        "layout": _layout(capsule_parent, run_id),
         "limits": {
             "guestProcessCount": GUEST_PROCESS_LIMIT,
             "hostNoFile": HOST_NOFILE_LIMIT,
@@ -656,6 +834,7 @@ def verify_plan(value: object) -> dict[str, object]:
         "acceptanceStages",
         "apiVersion",
         "artifacts",
+        "capsuleParent",
         "guestIdentity",
         "kind",
         "layout",
@@ -711,7 +890,8 @@ def verify_plan(value: object) -> dict[str, object]:
     )
     if normalized_guest != value["guestIdentity"]:
         raise _fail()
-    expected_layout = _layout(str(value["runId"]))
+    capsule_parent = _parent_identity_from_payload(value["capsuleParent"])
+    expected_layout = _layout(capsule_parent, str(value["runId"]))
     expected_limits = {
         "guestProcessCount": GUEST_PROCESS_LIMIT,
         "hostNoFile": HOST_NOFILE_LIMIT,
@@ -759,6 +939,432 @@ def verify_plan(value: object) -> dict[str, object]:
     return value
 
 
+def _normalize_kvm_identity(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    item = _require_closed(
+        value,
+        {"device", "gid", "inode", "major", "minor", "mode", "path", "type", "uid"},
+    )
+    integers = [item[field] for field in ("device", "gid", "inode", "major", "minor", "uid")]
+    if (
+        any(type(number) is not int or number < 0 for number in integers)
+        or item["path"] != str(KVM_PATH)
+        or item["type"] != "character"
+        or type(item["mode"]) is not str
+        or re.fullmatch(r"0[0-7]{3}", item["mode"]) is None
+    ):
+        raise _fail()
+    return dict(item)
+
+
+def _observe_kvm(path: Path = KVM_PATH) -> dict[str, object] | None:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _fail() from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISCHR(info.st_mode):
+        return None
+    return {
+        "device": info.st_dev,
+        "gid": info.st_gid,
+        "inode": info.st_ino,
+        "major": os.major(info.st_rdev),
+        "minor": os.minor(info.st_rdev),
+        "mode": f"0{stat.S_IMODE(info.st_mode):03o}",
+        "path": str(path),
+        "type": "character",
+        "uid": info.st_uid,
+    }
+
+
+def _host_memory_bytes() -> int:
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError) as exc:
+        raise _fail() from exc
+    if type(pages) is not int or type(page_size) is not int or pages <= 0 or page_size <= 0:
+        raise _fail()
+    return pages * page_size
+
+
+def _ssh_port_available(port: int) -> bool:
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise _fail()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            listener.bind(("127.0.0.1", port))
+    except OSError:
+        return False
+    return True
+
+
+def observe_host(
+    plan: dict[str, object],
+    *,
+    now_unix: int | None = None,
+    port_checker: Callable[[int], bool] | None = None,
+) -> HostObservation:
+    """Read the exact QH0/QH1 host facts without changing host state."""
+
+    plan = verify_plan(plan)
+    parent = _revalidate_capsule_parent(plan)
+    _revalidate_plan_inputs(plan)
+    network = cast(dict[str, object], plan["network"])
+    cpu_count = os.cpu_count()
+    if type(cpu_count) is not int or cpu_count <= 0:
+        raise _fail()
+    try:
+        expected_group_gid = grp.getgrnam(EXPECTED_KVM_GROUP).gr_gid
+    except KeyError:
+        expected_group_gid = None
+    except OSError as exc:
+        raise _fail() from exc
+    kvm = _observe_kvm()
+    checker = port_checker or _ssh_port_available
+    return HostObservation(
+        checked_at_unix=int(time.time()) if now_unix is None else now_unix,
+        cpu_count=cpu_count,
+        memory_bytes=_host_memory_bytes(),
+        selected_filesystem_free_bytes=shutil.disk_usage(parent.path).free,
+        ssh_port_available=checker(cast(int, network["sshHostPort"])),
+        kvm=kvm,
+        expected_group_gid=expected_group_gid,
+        kvm_access=kvm is not None and os.access(KVM_PATH, os.R_OK | os.W_OK),
+    )
+
+
+def _host_failure_codes(
+    *,
+    capacity: dict[str, object],
+    ssh_port: dict[str, object],
+    kvm: dict[str, object] | None,
+    expected_group: dict[str, object],
+    access_status: str,
+) -> list[str]:
+    failures: list[str] = []
+    if cast(int, capacity["vcpus"]) < VCPU_COUNT:
+        failures.append("insufficient-vcpus")
+    if cast(int, capacity["memoryBytes"]) < MIN_MEMORY_BYTES:
+        failures.append("insufficient-memory")
+    if cast(int, capacity["selectedFilesystemFreeBytes"]) < MIN_FREE_START_BYTES:
+        failures.append("insufficient-selected-filesystem-space")
+    if ssh_port["availableAtCheck"] is not True:
+        failures.append("ssh-port-unavailable")
+    if kvm is None or kvm["major"] != 10 or kvm["minor"] != 232:
+        failures.append("kvm-missing-or-invalid")
+    else:
+        if expected_group["gid"] is None:
+            failures.append("kvm-group-unresolved")
+        elif kvm["gid"] != expected_group["gid"]:
+            failures.append("kvm-group-mismatch")
+        if kvm["uid"] != 0:
+            failures.append("kvm-owner-mismatch")
+        if kvm["mode"] != "0660":
+            failures.append("kvm-mode-mismatch")
+        if access_status != "read-write":
+            failures.append("kvm-access-denied")
+    return failures
+
+
+def build_host_preflight(
+    plan: dict[str, object],
+    observation: HostObservation,
+) -> dict[str, object]:
+    """Build a canonical non-mutating QH0/QH1 host preflight receipt."""
+
+    plan = verify_plan(plan)
+    parent = _revalidate_capsule_parent(plan)
+    _revalidate_plan_inputs(plan)
+    if (
+        type(observation.checked_at_unix) is not int
+        or observation.checked_at_unix < 0
+        or type(observation.cpu_count) is not int
+        or observation.cpu_count < 0
+        or type(observation.memory_bytes) is not int
+        or observation.memory_bytes < 0
+        or type(observation.selected_filesystem_free_bytes) is not int
+        or observation.selected_filesystem_free_bytes < 0
+        or type(observation.ssh_port_available) is not bool
+        or type(observation.kvm_access) is not bool
+        or (
+            observation.expected_group_gid is not None
+            and (
+                type(observation.expected_group_gid) is not int
+                or observation.expected_group_gid < 0
+            )
+        )
+    ):
+        raise _fail()
+    kvm = _normalize_kvm_identity(observation.kvm)
+    capacity: dict[str, object] = {
+        "memoryBytes": observation.memory_bytes,
+        "selectedFilesystemFreeBytes": observation.selected_filesystem_free_bytes,
+        "vcpus": observation.cpu_count,
+    }
+    network = cast(dict[str, object], plan["network"])
+    ssh_port: dict[str, object] = {
+        "address": "127.0.0.1",
+        "availableAtCheck": observation.ssh_port_available,
+        "port": network["sshHostPort"],
+        "reservationClaimed": False,
+    }
+    expected_group: dict[str, object] = {
+        "gid": observation.expected_group_gid,
+        "name": EXPECTED_KVM_GROUP,
+    }
+    access_status = "read-write" if observation.kvm_access else "denied"
+    failures = _host_failure_codes(
+        capacity=capacity,
+        ssh_port=ssh_port,
+        kvm=kvm,
+        expected_group=expected_group,
+        access_status=access_status,
+    )
+    tools = cast(dict[str, object], plan["tools"])
+    receipt = {
+        "accessStatus": access_status,
+        "apiVersion": API_VERSION,
+        "capsuleParent": parent.to_payload(),
+        "checkedAtUnix": observation.checked_at_unix,
+        "expiresAtUnix": observation.checked_at_unix + HOST_PREFLIGHT_TTL_SECONDS,
+        "expectedGroup": expected_group,
+        "failures": failures,
+        "hostCapacity": capacity,
+        "kind": HOST_PREFLIGHT_KIND,
+        "kvm": kvm,
+        "mutating": False,
+        "planDigest": plan["planDigest"],
+        "qualificationPosture": QUALIFICATION_POSTURE,
+        "runId": plan["runId"],
+        "schemaVersion": SCHEMA_VERSION,
+        "sshPort": ssh_port,
+        "status": "pass" if not failures else "fail",
+        "tools": tools,
+        "userUid": os.getuid(),
+    }
+    return _bind_receipt(receipt)
+
+
+def verify_host_preflight(
+    value: object,
+    plan: dict[str, object],
+    *,
+    now_unix: int,
+) -> dict[str, object]:
+    plan = verify_plan(plan)
+    receipt = _verify_bound_receipt(
+        value,
+        {
+            "accessStatus",
+            "apiVersion",
+            "capsuleParent",
+            "checkedAtUnix",
+            "expiresAtUnix",
+            "expectedGroup",
+            "failures",
+            "hostCapacity",
+            "kind",
+            "kvm",
+            "mutating",
+            "planDigest",
+            "qualificationPosture",
+            "runId",
+            "schemaVersion",
+            "sshPort",
+            "status",
+            "tools",
+            "userUid",
+        },
+    )
+    capacity = _require_closed(
+        receipt["hostCapacity"], {"memoryBytes", "selectedFilesystemFreeBytes", "vcpus"}
+    )
+    ssh_port = _require_closed(
+        receipt["sshPort"], {"address", "availableAtCheck", "port", "reservationClaimed"}
+    )
+    expected_group = _require_closed(receipt["expectedGroup"], {"gid", "name"})
+    kvm = _normalize_kvm_identity(receipt["kvm"])
+    integers = [
+        receipt["checkedAtUnix"],
+        receipt["expiresAtUnix"],
+        receipt["userUid"],
+        capacity["memoryBytes"],
+        capacity["selectedFilesystemFreeBytes"],
+        capacity["vcpus"],
+    ]
+    checked_at = receipt["checkedAtUnix"]
+    expires_at = receipt["expiresAtUnix"]
+    if (
+        any(type(number) is not int or number < 0 for number in integers)
+        or type(now_unix) is not int
+        or type(checked_at) is not int
+        or type(expires_at) is not int
+        or not checked_at <= now_unix <= expires_at
+        or expires_at - checked_at != HOST_PREFLIGHT_TTL_SECONDS
+        or receipt["apiVersion"] != API_VERSION
+        or receipt["kind"] != HOST_PREFLIGHT_KIND
+        or receipt["schemaVersion"] != SCHEMA_VERSION
+        or receipt["qualificationPosture"] != QUALIFICATION_POSTURE
+        or receipt["mutating"] is not False
+        or receipt["runId"] != plan["runId"]
+        or receipt["planDigest"] != plan["planDigest"]
+        or receipt["capsuleParent"] != plan["capsuleParent"]
+        or receipt["tools"] != plan["tools"]
+        or receipt["userUid"] != os.getuid()
+        or expected_group["name"] != EXPECTED_KVM_GROUP
+        or (
+            expected_group["gid"] is not None
+            and (type(expected_group["gid"]) is not int or expected_group["gid"] < 0)
+        )
+        or ssh_port["address"] != "127.0.0.1"
+        or ssh_port["port"] != cast(dict[str, object], plan["network"])["sshHostPort"]
+        or type(ssh_port["availableAtCheck"]) is not bool
+        or ssh_port["reservationClaimed"] is not False
+        or receipt["accessStatus"] not in {"denied", "read-write"}
+    ):
+        raise _fail()
+    expected_failures = _host_failure_codes(
+        capacity=capacity,
+        ssh_port=ssh_port,
+        kvm=kvm,
+        expected_group=expected_group,
+        access_status=receipt["accessStatus"],
+    )
+    if receipt["failures"] != expected_failures or receipt["status"] != (
+        "pass" if not expected_failures else "fail"
+    ):
+        raise _fail()
+    return receipt
+
+
+def _bind_attestation(value: dict[str, object]) -> dict[str, object]:
+    if "attestationDigest" in value:
+        raise _fail()
+    result = dict(value)
+    result["attestationDigest"] = _digest_bytes(canonical_json_bytes(value))
+    return result
+
+
+def build_gate_a_attestation(
+    plan: dict[str, object],
+    preflight: dict[str, object],
+    observation: HostObservation,
+    *,
+    issued_at_unix: int,
+    expires_at_unix: int,
+) -> dict[str, object]:
+    plan = verify_plan(plan)
+    preflight = verify_host_preflight(preflight, plan, now_unix=issued_at_unix)
+    allowed_preflight_failures = ["kvm-access-denied"]
+    if preflight["failures"] not in ([], allowed_preflight_failures):
+        raise _fail()
+    kvm = _normalize_kvm_identity(observation.kvm)
+    if (
+        kvm is None
+        or kvm != preflight["kvm"]
+        or observation.expected_group_gid
+        != cast(dict[str, object], preflight["expectedGroup"])["gid"]
+        or observation.kvm_access is not True
+        or type(issued_at_unix) is not int
+        or type(expires_at_unix) is not int
+        or expires_at_unix - issued_at_unix != GATE_A_TTL_SECONDS
+    ):
+        raise _fail()
+    return _bind_attestation(
+        {
+            "accessStatus": "read-write",
+            "apiVersion": API_VERSION,
+            "capsuleParent": plan["capsuleParent"],
+            "expectedGroupGid": observation.expected_group_gid,
+            "expectedGroupName": EXPECTED_KVM_GROUP,
+            "expiresAtUnix": expires_at_unix,
+            "issuedAtUnix": issued_at_unix,
+            "kind": GATE_A_KIND,
+            "kvm": kvm,
+            "planDigest": plan["planDigest"],
+            "preflightReceiptDigest": preflight["receiptDigest"],
+            "runId": plan["runId"],
+            "schemaVersion": SCHEMA_VERSION,
+            "userUid": os.getuid(),
+        }
+    )
+
+
+def validate_gate_a_attestation(
+    value: object,
+    plan: dict[str, object],
+    preflight: dict[str, object],
+    observation: HostObservation,
+    *,
+    now_unix: int,
+) -> dict[str, object]:
+    plan = verify_plan(plan)
+    preflight = verify_host_preflight(preflight, plan, now_unix=now_unix)
+    attestation = _require_closed(
+        value,
+        {
+            "accessStatus",
+            "apiVersion",
+            "attestationDigest",
+            "capsuleParent",
+            "expectedGroupGid",
+            "expectedGroupName",
+            "expiresAtUnix",
+            "issuedAtUnix",
+            "kind",
+            "kvm",
+            "planDigest",
+            "preflightReceiptDigest",
+            "runId",
+            "schemaVersion",
+            "userUid",
+        },
+    )
+    unsigned = dict(attestation)
+    digest = unsigned.pop("attestationDigest")
+    kvm = _normalize_kvm_identity(attestation["kvm"])
+    expected_group = cast(dict[str, object], preflight["expectedGroup"])
+    allowed_preflight_failures = ["kvm-access-denied"]
+    if (
+        _digest(digest) != _digest_bytes(canonical_json_bytes(unsigned))
+        or attestation["apiVersion"] != API_VERSION
+        or attestation["kind"] != GATE_A_KIND
+        or attestation["schemaVersion"] != SCHEMA_VERSION
+        or attestation["runId"] != plan["runId"]
+        or attestation["planDigest"] != plan["planDigest"]
+        or attestation["capsuleParent"] != plan["capsuleParent"]
+        or attestation["preflightReceiptDigest"] != preflight["receiptDigest"]
+        or attestation["expectedGroupName"] != EXPECTED_KVM_GROUP
+        or attestation["expectedGroupGid"] != expected_group["gid"]
+        or attestation["userUid"] != os.getuid()
+        or attestation["accessStatus"] != "read-write"
+        or type(attestation["issuedAtUnix"]) is not int
+        or type(attestation["expiresAtUnix"]) is not int
+        or not attestation["issuedAtUnix"] <= now_unix <= attestation["expiresAtUnix"]
+        or attestation["expiresAtUnix"] - attestation["issuedAtUnix"] != GATE_A_TTL_SECONDS
+        or preflight["failures"] not in ([], allowed_preflight_failures)
+        or kvm is None
+        or kvm != preflight["kvm"]
+        or kvm != _normalize_kvm_identity(observation.kvm)
+        or observation.expected_group_gid != expected_group["gid"]
+        or kvm["gid"] != expected_group["gid"]
+        or kvm["uid"] != 0
+        or kvm["mode"] != "0660"
+        or kvm["major"] != 10
+        or kvm["minor"] != 232
+        or observation.kvm_access is not True
+    ):
+        raise _fail()
+    if _revalidate_capsule_parent(plan).to_payload() != attestation["capsuleParent"]:
+        raise _fail()
+    return attestation
+
+
 def _write_private(path: Path, raw: bytes) -> None:
     if path.exists() or path.is_symlink():
         raise _fail()
@@ -791,24 +1397,57 @@ def _write_private_json(path: Path, value: object) -> None:
 
 
 def _make_layout(plan: dict[str, object]) -> dict[str, Path]:
+    parent = _revalidate_capsule_parent(plan)
     layout = _require_closed(
         plan["layout"], {"cleanup", "evidence", "guest", "input", "root", "vm"}
     )
     root = _canonical_absolute_path(layout["root"])
-    if root != CAPSULE_PARENT / f"k1s-{validate_run_id(plan['runId'])}":
+    if root != Path(parent.path) / f"k1s-{validate_run_id(plan['runId'])}":
         raise _fail()
-    if root.exists() or root.is_symlink():
-        raise _fail()
-    root.mkdir(mode=PRIVATE_MODE)
-    root.chmod(PRIVATE_MODE)
-    result = {"root": root}
-    for name in LAYOUT_NAMES:
-        path = _canonical_absolute_path(layout[name])
-        if path.parent != root:
+    parent_descriptor = os.open(
+        parent.path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    try:
+        parent_info = os.fstat(parent_descriptor)
+        if (
+            parent_info.st_dev != parent.device
+            or parent_info.st_ino != parent.inode
+            or parent_info.st_uid != parent.uid
+            or stat.S_IMODE(parent_info.st_mode) != PRIVATE_MODE
+        ):
             raise _fail()
-        path.mkdir(mode=PRIVATE_MODE)
-        path.chmod(PRIVATE_MODE)
-        result[name] = path
+        try:
+            os.mkdir(root.name, PRIVATE_MODE, dir_fd=parent_descriptor)
+        except OSError as exc:
+            raise _fail() from exc
+        root_descriptor = os.open(
+            root.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+        try:
+            root_info = os.fstat(root_descriptor)
+            if (
+                root_info.st_dev != parent.device
+                or root_info.st_uid != os.getuid()
+                or stat.S_IMODE(root_info.st_mode) != PRIVATE_MODE
+            ):
+                raise _fail()
+            result = {"root": root}
+            for name in LAYOUT_NAMES:
+                path = _canonical_absolute_path(layout[name])
+                if path.parent != root or path.name != name:
+                    raise _fail()
+                try:
+                    os.mkdir(name, PRIVATE_MODE, dir_fd=root_descriptor)
+                except OSError as exc:
+                    raise _fail() from exc
+                result[name] = path
+        finally:
+            os.close(root_descriptor)
+    finally:
+        os.close(parent_descriptor)
     return result
 
 
@@ -939,57 +1578,38 @@ def _revalidate_plan_inputs(plan: dict[str, object]) -> None:
             raise _fail()
 
 
-def _validate_gate_a(path: Path, expected_digest: str, run_id: str) -> dict[str, object]:
-    identity = file_identity(str(path), expected_digest=expected_digest, maximum=MAX_JSON_BYTES)
-    value = _load_canonical_json(identity)
-    expected_keys = {
-        "apiVersion",
-        "device",
-        "gid",
-        "inode",
-        "kind",
-        "major",
-        "minor",
-        "mode",
-        "runId",
-        "schemaVersion",
-        "uid",
-        "userUid",
-    }
-    if (
-        set(value) != expected_keys
-        or value["apiVersion"] != API_VERSION
-        or value["kind"] != "K1sQ1GateAAttestation"
-        or value["schemaVersion"] != SCHEMA_VERSION
-        or value["runId"] != run_id
-        or value["major"] != 10
-        or value["minor"] != 232
-        or value["uid"] != 0
-        or value["mode"] != "0660"
-        or value["userUid"] != os.getuid()
-        or any(
-            type(number) is not int or number < 0
-            for number in (value["device"], value["gid"], value["inode"])
-        )
-    ):
-        raise _fail()
-    try:
-        current = os.stat("/dev/kvm", follow_symlinks=False)
-    except OSError as exc:
-        raise _fail() from exc
-    if (
-        not stat.S_ISCHR(current.st_mode)
-        or os.major(current.st_rdev) != 10
-        or os.minor(current.st_rdev) != 232
-        or current.st_dev != value["device"]
-        or current.st_ino != value["inode"]
-        or current.st_uid != value["uid"]
-        or current.st_gid != value["gid"]
-        or f"0{stat.S_IMODE(current.st_mode):03o}" != value["mode"]
-        or not os.access("/dev/kvm", os.R_OK | os.W_OK)
-    ):
-        raise _fail()
-    return value
+def _validate_gate_a(
+    plan: dict[str, object],
+    *,
+    host_preflight_path: Path,
+    expected_host_preflight_digest: str,
+    gate_a_path: Path,
+    expected_gate_a_digest: str,
+    now_unix: int,
+) -> dict[str, object]:
+    preflight_identity = file_identity(
+        str(host_preflight_path),
+        expected_digest=expected_host_preflight_digest,
+        maximum=MAX_JSON_BYTES,
+    )
+    preflight = verify_host_preflight(
+        _load_canonical_json(preflight_identity),
+        plan,
+        now_unix=now_unix,
+    )
+    attestation_identity = file_identity(
+        str(gate_a_path),
+        expected_digest=expected_gate_a_digest,
+        maximum=MAX_JSON_BYTES,
+    )
+    observation = observe_host(plan, now_unix=now_unix)
+    return validate_gate_a_attestation(
+        _load_canonical_json(attestation_identity),
+        plan,
+        preflight,
+        observation,
+        now_unix=now_unix,
+    )
 
 
 def execute_plan(
@@ -997,9 +1617,13 @@ def execute_plan(
     *,
     expected_plan_digest: str,
     confirmation: str,
+    host_preflight_path: Path,
+    expected_host_preflight_digest: str,
     gate_a_path: Path,
     expected_gate_a_digest: str,
     runner: CommandRunner | None = None,
+    now_unix: int | None = None,
+    port_checker: Callable[[int], bool] | None = None,
 ) -> Path:
     """Cross the explicit run boundary after all immutable checks succeed."""
 
@@ -1011,15 +1635,24 @@ def execute_plan(
     if confirmation != f"{run_id}:{plan_digest}":
         raise _fail()
     _revalidate_plan_inputs(plan)
-    _validate_gate_a(gate_a_path, expected_gate_a_digest, run_id)
-    if shutil.disk_usage(CAPSULE_PARENT).free < MIN_FREE_START_BYTES:
+    parent = _revalidate_capsule_parent(plan)
+    current_time = int(time.time()) if now_unix is None else now_unix
+    _validate_gate_a(
+        plan,
+        host_preflight_path=host_preflight_path,
+        expected_host_preflight_digest=expected_host_preflight_digest,
+        gate_a_path=gate_a_path,
+        expected_gate_a_digest=expected_gate_a_digest,
+        now_unix=current_time,
+    )
+    if shutil.disk_usage(parent.path).free < MIN_FREE_START_BYTES:
         raise _fail()
     started = time.monotonic()
 
     def check_limits() -> None:
         if (
             time.monotonic() - started > WALL_TIME_SECONDS
-            or shutil.disk_usage(CAPSULE_PARENT).free < MIN_FREE_ABORT_BYTES
+            or shutil.disk_usage(parent.path).free < MIN_FREE_ABORT_BYTES
         ):
             raise _fail()
 
@@ -1090,6 +1723,10 @@ def execute_plan(
     _record_step(paths["evidence"], sequence=2, name="seed", argv=seed_argv, result=result)
     check_limits()
 
+    checker = port_checker or _ssh_port_available
+    network = cast(dict[str, object], plan["network"])
+    if not checker(cast(int, network["sshHostPort"])):
+        raise _fail()
     qemu_argv = [str(item) for item in cast(list[object], plan["qemuArgv"])]
     result = runner.run(
         qemu_argv,
@@ -1257,8 +1894,29 @@ def _load_run_receipt(root: Path, expected_file_digest: str) -> dict[str, object
     return receipt
 
 
+def _exact_run_root(capsule_parent: Path, run_id: object) -> Path:
+    """Return one exact owner-private run root on the selected parent device."""
+
+    validated_run_id = validate_run_id(run_id)
+    parent = capsule_parent_identity(str(capsule_parent))
+    root = Path(parent.path) / f"k1s-{validated_run_id}"
+    try:
+        root_info = os.lstat(root)
+    except OSError as exc:
+        raise _fail() from exc
+    if (
+        stat.S_ISLNK(root_info.st_mode)
+        or not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_uid != os.getuid()
+        or stat.S_IMODE(root_info.st_mode) != PRIVATE_MODE
+        or root_info.st_dev != parent.device
+    ):
+        raise _fail()
+    return root
+
+
 def teardown_private_layout(
-    root: Path,
+    capsule_parent: Path,
     *,
     expect_run_id: str,
     expected_run_receipt_file_digest: str,
@@ -1273,18 +1931,11 @@ def teardown_private_layout(
     """
 
     run_id = validate_run_id(expect_run_id)
-    expected = CAPSULE_PARENT / f"k1s-{run_id}"
-    if root != expected or not process_absent:
+    root = _exact_run_root(capsule_parent, run_id)
+    if not process_absent:
         raise _fail()
     run_receipt = _load_run_receipt(root, expected_run_receipt_file_digest)
     if run_receipt["runId"] != run_id or confirmation != f"{run_id}:{run_receipt['receiptDigest']}":
-        raise _fail()
-    root_info = os.lstat(root)
-    if (
-        not stat.S_ISDIR(root_info.st_mode)
-        or stat.S_IMODE(root_info.st_mode) != PRIVATE_MODE
-        or root_info.st_uid != os.getuid()
-    ):
         raise _fail()
     for name in ("input", "vm", "guest"):
         path = root / name
@@ -1309,15 +1960,14 @@ def teardown_private_layout(
 
 
 def verify_clean(
-    root: Path,
+    capsule_parent: Path,
     *,
     expect_run_id: str,
     receipt_path: Path,
     expected_receipt_file_digest: str,
 ) -> None:
     run_id = validate_run_id(expect_run_id)
-    if root != CAPSULE_PARENT / f"k1s-{run_id}":
-        raise _fail()
+    root = _exact_run_root(capsule_parent, run_id)
     if receipt_path != root / "cleanup" / "cleanup.json":
         raise _fail()
     names = sorted(item.name for item in root.iterdir())
@@ -1372,11 +2022,24 @@ def _read_plan(path: Path, expected_file_digest: str) -> dict[str, object]:
     return verify_plan(_load_canonical_json(identity))
 
 
+def _emit_json(value: object, output: Path | None) -> None:
+    raw = canonical_json_bytes(value)
+    if output is None:
+        sys.stdout.buffer.write(raw)
+        return
+    path = _canonical_absolute_path(str(output))
+    parent = capsule_parent_identity(str(path.parent))
+    if path.parent != Path(parent.path):
+        raise _fail()
+    _write_private(path, raw)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     plan = sub.add_parser("plan", help="Build a pure digest-bound capsule plan")
     plan.add_argument("--run-id", required=True)
+    plan.add_argument("--capsule-parent", type=Path, required=True)
     plan.add_argument("--source-commit", required=True)
     plan.add_argument("--source-tree", required=True)
     for name in (
@@ -1394,25 +2057,41 @@ def _build_parser() -> argparse.ArgumentParser:
         plan.add_argument(f"--{name}", type=Path, required=True)
         plan.add_argument(f"--expect-{name}-sha256", required=True)
     plan.add_argument("--ssh-host-port", type=int, required=True)
-    plan.add_argument("--output-root", type=Path, required=True)
     plan.add_argument("--output", type=Path)
+
+    preflight = sub.add_parser("preflight", help="Inspect QH0/QH1 host readiness read-only")
+    preflight.add_argument("--plan", type=Path, required=True)
+    preflight.add_argument("--expect-plan-sha256", required=True)
+    preflight.add_argument("--output", type=Path)
+
+    gate = sub.add_parser("gate-a-inspect", help="Inspect an existing Gate A attestation")
+    gate.add_argument("--plan", type=Path, required=True)
+    gate.add_argument("--expect-plan-sha256", required=True)
+    gate.add_argument("--host-preflight", type=Path, required=True)
+    gate.add_argument("--expect-host-preflight-sha256", required=True)
+    gate.add_argument("--gate-a-attestation", type=Path, required=True)
+    gate.add_argument("--expect-gate-a-sha256", required=True)
+    gate.add_argument("--output", type=Path)
 
     run = sub.add_parser("run", help="Cross the explicit Gate A capsule boundary")
     run.add_argument("--plan", type=Path, required=True)
     run.add_argument("--expect-plan-sha256", required=True)
     run.add_argument("--expect-plan-digest", required=True)
     run.add_argument("--confirm", required=True)
+    run.add_argument("--host-preflight", type=Path, required=True)
+    run.add_argument("--expect-host-preflight-sha256", required=True)
     run.add_argument("--gate-a-attestation", type=Path, required=True)
     run.add_argument("--expect-gate-a-sha256", required=True)
 
     teardown = sub.add_parser("teardown", help="Remove exact private state after QEMU stops")
-    teardown.add_argument("--run-root", type=Path, required=True)
+    teardown.add_argument("--capsule-parent", type=Path, required=True)
     teardown.add_argument("--run-id", required=True)
     teardown.add_argument("--expect-run-receipt-sha256", required=True)
     teardown.add_argument("--confirm", required=True)
     teardown.add_argument("--confirm-process-absent", action="store_true")
 
     clean = sub.add_parser("verify-clean", help="Verify only evidence and cleanup remain")
+    clean.add_argument("--capsule-parent", type=Path, required=True)
     clean.add_argument("--run-id", required=True)
     clean.add_argument("--receipt", type=Path, required=True)
     clean.add_argument("--expect-receipt-sha256", required=True)
@@ -1429,10 +2108,10 @@ def _plan_from_namespace(ns: argparse.Namespace) -> dict[str, object]:
         )
 
     run_id = validate_run_id(ns.run_id)
-    if _canonical_absolute_path(str(ns.output_root)) != CAPSULE_PARENT / f"k1s-{run_id}":
-        raise _fail()
+    parent = capsule_parent_identity(str(ns.capsule_parent))
     return build_plan(
         run_id=run_id,
+        capsule_parent=parent,
         source_commit=ns.source_commit,
         source_tree=ns.source_tree,
         base_image=identity("base-image"),
@@ -1455,20 +2134,51 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if ns.command == "plan":
             plan = _plan_from_namespace(ns)
-            raw = canonical_json_bytes(plan)
-            if ns.output is None:
-                sys.stdout.buffer.write(raw)
-            else:
-                output = _canonical_absolute_path(str(ns.output))
-                parent = output.parent
-                parent_info = os.lstat(parent)
-                if (
-                    not stat.S_ISDIR(parent_info.st_mode)
-                    or parent_info.st_uid != os.getuid()
-                    or stat.S_IMODE(parent_info.st_mode) != PRIVATE_MODE
-                ):
-                    raise _fail()
-                _write_private(output, raw)
+            _emit_json(plan, ns.output)
+            return 0
+        if ns.command == "preflight":
+            plan = _read_plan(ns.plan, ns.expect_plan_sha256)
+            receipt = build_host_preflight(plan, observe_host(plan))
+            _emit_json(receipt, ns.output)
+            return 0 if receipt["status"] == "pass" else 1
+        if ns.command == "gate-a-inspect":
+            plan = _read_plan(ns.plan, ns.expect_plan_sha256)
+            now_unix = int(time.time())
+            preflight_identity = file_identity(
+                str(ns.host_preflight),
+                expected_digest=ns.expect_host_preflight_sha256,
+                maximum=MAX_JSON_BYTES,
+            )
+            preflight = verify_host_preflight(
+                _load_canonical_json(preflight_identity),
+                plan,
+                now_unix=now_unix,
+            )
+            attestation_identity = file_identity(
+                str(ns.gate_a_attestation),
+                expected_digest=ns.expect_gate_a_sha256,
+                maximum=MAX_JSON_BYTES,
+            )
+            attestation = validate_gate_a_attestation(
+                _load_canonical_json(attestation_identity),
+                plan,
+                preflight,
+                observe_host(plan, now_unix=now_unix),
+                now_unix=now_unix,
+            )
+            inspection = {
+                "apiVersion": API_VERSION,
+                "attestationDigest": attestation["attestationDigest"],
+                "grantApplied": False,
+                "kind": GATE_A_INSPECTION_KIND,
+                "mutating": False,
+                "planDigest": plan["planDigest"],
+                "qualificationPosture": QUALIFICATION_POSTURE,
+                "runId": plan["runId"],
+                "schemaVersion": SCHEMA_VERSION,
+                "status": "valid-current",
+            }
+            _emit_json(inspection, ns.output)
             return 0
         if ns.command == "run":
             plan = _read_plan(ns.plan, ns.expect_plan_sha256)
@@ -1476,13 +2186,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 plan,
                 expected_plan_digest=ns.expect_plan_digest,
                 confirmation=ns.confirm,
+                host_preflight_path=ns.host_preflight,
+                expected_host_preflight_digest=ns.expect_host_preflight_sha256,
                 gate_a_path=ns.gate_a_attestation,
                 expected_gate_a_digest=ns.expect_gate_a_sha256,
             )
             return 0
         if ns.command == "teardown":
             teardown_private_layout(
-                ns.run_root,
+                ns.capsule_parent,
                 expect_run_id=ns.run_id,
                 expected_run_receipt_file_digest=ns.expect_run_receipt_sha256,
                 confirmation=ns.confirm,
@@ -1491,7 +2203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if ns.command == "verify-clean":
             verify_clean(
-                CAPSULE_PARENT / f"k1s-{validate_run_id(ns.run_id)}",
+                ns.capsule_parent,
                 expect_run_id=ns.run_id,
                 receipt_path=ns.receipt,
                 expected_receipt_file_digest=ns.expect_receipt_sha256,
