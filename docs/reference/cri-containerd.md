@@ -78,6 +78,15 @@ node operation remain Q1 tasks inside a disposable DNS- and egress-denied
 guest. The repository scripts documented below are legacy/manual development
 helpers; they are not called by these installed contracts.
 
+The source-validated Q1 capsule contract is documented in
+[Isolated K1s v1 qualification capsule](q1-isolated-qualification.md). Its pure
+plan, synthetic helper tests, and evidence tooling do not promote any profile
+or runtime to live-qualified. A live run requires a sealed guest identity and
+two separate paired approvals: Gate A for exact temporary access to an
+existing `/dev/kvm`, and Gate B for one exact in-guest strict-CRI helper
+transaction. The capsule never repairs host prerequisites or reuses the
+legacy bridge/tap lab lane.
+
 For current dev and docs/lab lanes, CRI is best exercised with `k1s-*` profile
 targets. Use raw env exports only when debugging or overriding defaults.
 
