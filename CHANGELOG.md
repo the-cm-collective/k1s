@@ -8,10 +8,17 @@
   core-ha role catalog.
 - Added deterministic `k1s profile start|status|stop|restart` lifecycle
   contracts for the core, edge, core-edge, and edge-core runtime profiles.
+- Added an experimental, versioned WorkerBee profile evidence adapter inside
+  `k1s-core`. It projects six existing profile JSON results into deterministic
+  metadata-safe evidence without adding a package, console, or live runtime
+  boundary.
 
 ### Security
 - Kept production `edge-gateway` distinct from the development-only `edge`
   and `edge-core` compatibility aliases that include the worker stub.
+- Kept raw logs, connection authorities, credentials, private paths, runtime
+  details, and secret-derived verifiers outside WorkerBee profile evidence;
+  W-P0-1 and Q1 qualification remain mandatory before public alpha.
 
 ### Changed
 - Separated Gitea artifact integration from GitHub-only OIDC publication and

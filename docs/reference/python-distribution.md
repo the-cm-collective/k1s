@@ -72,6 +72,15 @@ virtual environment outside the checkout, compares its schema and role
 contract with the Python API, and exercises non-mutating `profile list`,
 `doctor`, and `plan` commands with indexes and network sockets disabled.
 
+The same profile resource directory contains exactly one additional JSON
+contract, `workerbee-adapter-v1.json`. The wheel owns its exact canonical bytes
+and one `RECORD` row together with `ae.kctl.profile_adapter`; wheel and source
+distribution validators compare both resources to source. This adapter remains
+part of the sole `k1s-core` distribution and adds no seventh console or second
+WorkerBee runtime package. The strict installed gate exercises all six
+synthetic projections, evidence identity verification, redaction, and tamper
+rejection outside the checkout without opening a service or socket.
+
 The wheel also owns `ae.kctl.profile_paths`, `ae.kctl.profile_state`,
 `ae.kctl.profile_supervisor`, `ae.kctl.profile_engine`,
 `ae.kctl.profile_bootstrap`, `ae.kctl.profile_component_runner`, and

@@ -20,11 +20,13 @@ from scripts.validate_python_artifacts import (
     PROFILE_CATALOG_MEMBER,
     SDIST_SOURCE_ONLY_FILES,
     SDIST_SOURCE_ONLY_IDENTITIES,
+    WORKERBEE_ADAPTER_MEMBER,
     _require_unique_names,
     _source_payloads,
     _validate_exact_source_identity,
     _validate_profile_catalog_bytes,
     _validate_wheel_record,
+    _validate_workerbee_adapter_bytes,
     _validated_member_name,
 )
 
@@ -171,11 +173,14 @@ def test_wheel_record_rejects_changed_hash_or_coverage(tmp_path: Path) -> None:
 
 def test_runtime_payload_inventory_is_exact() -> None:
     payload, runtime_data = _source_payloads(ROOT / "pyproject.toml")
-    assert len(runtime_data) == 86
+    assert len(runtime_data) == 87
     assert len([name for name in runtime_data if name.startswith("ae/resources/sql/")]) == 77
     assert len([name for name in runtime_data if name.endswith(".html")]) == 4
     assert len([name for name in runtime_data if name.endswith(".txt")]) == 1
-    assert {name for name in runtime_data if name.endswith(".json")} == {PROFILE_CATALOG_MEMBER}
+    assert {name for name in runtime_data if name.endswith(".json")} == {
+        PROFILE_CATALOG_MEMBER,
+        WORKERBEE_ADAPTER_MEMBER,
+    }
     assert {
         name for name in runtime_data if name.startswith("ae/observability/static/vendor/")
     } == {
@@ -207,12 +212,31 @@ def test_profile_catalog_artifact_member_is_canonical_and_fail_closed() -> None:
         _validate_profile_catalog_bytes(changed, artifact=resource)
 
 
+def test_workerbee_adapter_artifact_member_is_canonical_and_fail_closed() -> None:
+    resource = ROOT / "src" / WORKERBEE_ADAPTER_MEMBER
+    payload = resource.read_bytes()
+
+    _validate_workerbee_adapter_bytes(payload, artifact=resource)
+    with pytest.raises(ValueError, match="WorkerBee adapter"):
+        changed = payload.replace(
+            b'"qualificationPosture": "source-validated/unqualified"',
+            b'"qualificationPosture": "live-qualified"',
+        )
+        _validate_workerbee_adapter_bytes(changed, artifact=resource)
+
+
 def test_installed_artifact_gate_exercises_static_profile_commands() -> None:
     source = (ROOT / "scripts" / "validate_installed_python_artifact.py").read_text(
         encoding="utf-8"
     )
 
     assert "profiles/profile-catalog-v1.json" in source
+    assert "profiles/workerbee-adapter-v1.json" in source
+    assert "adapt_workerbee_profile_evidence" in source
+    assert "verify_workerbee_profile_evidence" in source
+    assert "installed adapter accepted a tampered evidence identity" in source
+    for operation in ("list", "doctor", "plan", "status", "logs", "bootstrap"):
+        assert f"'{operation}':" in source
     assert '"profile", "list", "--output", "json"' in source
     assert '"profile", "plan", profile_name, "--output", "json"' in source
     assert '"profile", "doctor", profile_name, "--output", "json"' in source

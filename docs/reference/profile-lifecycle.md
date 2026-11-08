@@ -77,6 +77,14 @@ Docker, the gateway transport, or the profile is live-qualified. All four
 remain `source-validated/unqualified` until a later isolated WorkerBee/runtime
 lane qualifies an exact engine, transport, and environment.
 
+The installed metadata-safe WorkerBee adapter is a reader/projector of already
+selected JSON results, not another lifecycle command. It maps list, doctor,
+plan, status, owned logs metadata, and bootstrap into an exact v1 evidence
+schema while omitting raw logs, paths, process authority, runtime endpoints,
+credentials, and free-form warnings. It never acquires a profile lock or
+creates state. See `docs/reference/workerbee-profile-adapter.md`; W-P0-1 and Q1
+remain deferred.
+
 `core-ha` is not production eligible until a later release-qualification
 checkpoint explicitly promotes it.
 

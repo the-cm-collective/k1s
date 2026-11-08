@@ -309,12 +309,27 @@ from dataclasses import replace
 import ae
 from ae.apishim.server import _openapi_v3_stub, _swagger_doc
 from ae.kctl.profile_backend import build_execution_plan, portable_plan_digest
+from ae.kctl.profile_adapter import (
+    NODE_OBSERVATION_API_VERSION,
+    ProfileAdapterError,
+    adapt_workerbee_profile_evidence,
+    load_workerbee_adapter_contract,
+    render_workerbee_profile_evidence_json,
+    verify_workerbee_profile_evidence,
+)
 from ae.kctl.profile_bootstrap import ProfileBootstrapError, ProfileBootstrapStore
 from ae.kctl.profile_engine import EngineCapability, QUALIFICATION_POSTURE
 from ae.kctl.profile_host_plan import PLAN_KIND
 from ae.kctl.profile_paths import ProfileRoots
 from ae.kctl.profile_state import FailureRecord, ProfileStateStore
-from ae.kctl.profiles import PROFILE_INPUT_NAMES, PROFILE_NAMES, profile_catalog_payload
+from ae.kctl.profiles import (
+    PROFILE_INPUT_NAMES,
+    PROFILE_NAMES,
+    InstalledProfileFacts,
+    profile_catalog_payload,
+    profile_doctor_payload,
+    profile_plan_payload,
+)
 from ae.kctl.profile_supervisor import classify_identity, parse_proc_stat
 from ae.runtime.cri.api.runtime.v1 import api_pb2, gogo_pb2
 from ae.runtime.cri.api.runtime.v1 import api_pb2_grpc
@@ -346,8 +361,12 @@ assert under(ae.__file__, venv_root)
 distribution = metadata.distribution('k1s-core')
 assert under(distribution.locate_file(''), venv_root)
 installed_members = {str(item) for item in distribution.files or ()}
-profile_member = 'ae/resources/profiles/profile-catalog-v1.json'
-assert list(str(item) for item in distribution.files or ()).count(profile_member) == 1
+profile_members = {
+    'ae/resources/profiles/profile-catalog-v1.json',
+    'ae/resources/profiles/workerbee-adapter-v1.json',
+}
+for profile_member in profile_members:
+    assert list(str(item) for item in distribution.files or ()).count(profile_member) == 1
 assert not any(
     member == 'test_apishim_env.py'
     or member.startswith('test/')
@@ -390,9 +409,10 @@ assert {name for name in resource_data if name.endswith('.txt')} == {
     'ingress/caddy_site.txt'
 }
 assert {name for name in resource_data if name.endswith('.json')} == {
-    'profiles/profile-catalog-v1.json'
+    'profiles/profile-catalog-v1.json',
+    'profiles/workerbee-adapter-v1.json',
 }
-assert len(resource_data) == 83
+assert len(resource_data) == 84
 assert not any(name.endswith('.md') for name in resource_relative)
 for item in resource_files:
     if str(item).endswith(('.sql', '.html', '.txt', '.json')):
@@ -424,6 +444,98 @@ assert profile_by_name['local']['qualificationPosture'] == QUALIFICATION_POSTURE
 assert profile_by_name['core']['qualificationPosture'] == QUALIFICATION_POSTURE
 assert profile_by_name['edge-gateway']['qualificationPosture'] == QUALIFICATION_POSTURE
 assert profile_by_name['node']['qualificationPosture'] == QUALIFICATION_POSTURE
+
+adapter_path = resource_root.joinpath('profiles', 'workerbee-adapter-v1.json')
+assert under(adapter_path, venv_root)
+adapter_raw = adapter_path.read_bytes()
+adapter_text = adapter_raw.decode('utf-8')
+adapter_contract = json.loads(adapter_text)
+assert adapter_text == json.dumps(
+    adapter_contract, ensure_ascii=False, indent=2, sort_keys=True
+) + '\\n'
+assert [item.name for item in load_workerbee_adapter_contract().operations] == [
+    'list', 'doctor', 'plan', 'status', 'logs', 'bootstrap'
+]
+
+class StaticProbe:
+    def inspect(self):
+        return InstalledProfileFacts(
+            python_version=(3, 11),
+            platform='linux',
+            ae_importable=True,
+            distribution_version=expected,
+            k1s_console_present=True,
+        )
+
+doctor_source, doctor_exit = profile_doctor_payload('core', StaticProbe())
+adapter_sources = {
+    'list': (profile_catalog_payload(), 0, None),
+    'doctor': (doctor_source, doctor_exit, None),
+    'plan': (profile_plan_payload('node'), 0, None),
+    'status': ({
+        'action': 'status',
+        'backend': 'podman',
+        'exit_code': 0,
+        'generation': 7,
+        'phase': 'running',
+        'profile': 'node',
+        'qualification_posture': 'source-validated/unqualified',
+        'run_id': 'r1-0123456789abcdef0123456789abcdef',
+        'status': 'running',
+    }, 0, None),
+    'logs': ({
+        'apiVersion': 'k1s.dev/v1alpha1',
+        'component': 'node-agent',
+        'kind': 'ProfileLogSnapshot',
+        'lines': ['secret-like material omitted from evidence'],
+        'profile': 'node',
+        'runId': 'r1-0123456789abcdef0123456789abcdef',
+        'truncated': False,
+    }, 0, None),
+    'bootstrap': ({
+        'advertiseEndpoint': 'https://node.example:9109',
+        'backendId': 'podman',
+        'bootstrapId': 'b1-0123456789abcdef0123456789abcdef',
+        'controllerUrl': 'https://controller.example:9443',
+        'identityVersion': 1,
+        'listenHost': '127.0.0.1',
+        'listenPort': 9109,
+        'nodeId': 'node-a',
+        'profile': 'node',
+        'siteId': None,
+        'transportUrl': None,
+    }, 0, {
+        'apiVersion': NODE_OBSERVATION_API_VERSION,
+        'generation': 11,
+        'identityMode': 'explicit',
+        'identityVersion': 1,
+        'kind': 'NodeLeaseObservation',
+        'nodeId': 'node-a',
+        'provenance': 'k1s-controller-lease',
+        'schemaVersion': 1,
+    }),
+}
+for operation, (source, exit_code, observation) in adapter_sources.items():
+    evidence = adapt_workerbee_profile_evidence(
+        operation,
+        source,
+        source_exit_code=exit_code,
+        node_observation=observation,
+    )
+    rendered = render_workerbee_profile_evidence_json(evidence)
+    assert verify_workerbee_profile_evidence(rendered) == evidence
+    assert 'controller.example' not in rendered
+    assert 'node.example' not in rendered
+    assert 'secret-like material' not in rendered
+
+tampered = dict(evidence)
+tampered['evidenceId'] = 'sha256:' + '0' * 64
+try:
+    verify_workerbee_profile_evidence(tampered)
+except ProfileAdapterError as exc:
+    assert exc.code == 'unsupported-schema'
+else:
+    raise AssertionError('installed adapter accepted a tampered evidence identity')
 
 # Exercise only the additive installed state contract in an owner-private disposable root.
 # This never launches a component, resolves a backend, or touches the real HOME/XDG roots.

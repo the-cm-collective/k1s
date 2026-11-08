@@ -59,3 +59,7 @@ git push origin v0.1.0
   distribution name to `k1s-core` while retaining the `ae` Python import and
   compatibility commands. A `1.0.0a1` version remains deferred until the
   project documents and validates a 1.0 compatibility contract.
+- The WorkerBee profile evidence adapter is an experimental v1 wire contract
+  within `k1s-core`; its `v1` schema identifier does not declare K1s 1.0 API
+  stability. Unknown fields/versions fail closed. W-P0-1 and Q1 remain release
+  holds before public alpha or live-qualified claims.

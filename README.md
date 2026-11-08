@@ -53,6 +53,8 @@ Production guidance:
 - Python distribution identity and release compatibility:
   `docs/reference/python-distribution.md`
 - Stable and experimental public contracts: `docs/reference/public-contracts.md`
+- Experimental metadata-safe WorkerBee profile evidence contract:
+  `docs/reference/workerbee-profile-adapter.md`
 
 ## Integrated Dashboard & Interactive Playground
 
@@ -176,6 +178,13 @@ Legacy `edge` and `edge-core` aliases remain development-only. Existing
 compatibility behavior pending later stateful lifecycle work. See
 `docs/reference/profile-lifecycle.md` for the exact role, alias, schema, and
 exit-code contracts.
+
+The installed `k1s-core` package also contains a versioned, metadata-safe
+WorkerBee profile evidence adapter. It projects already selected JSON results;
+it adds no command, starts nothing, emits no raw log or connection value, and
+remains `source-validated/unqualified`. W-P0-1 and disposable-guest Q1 live
+qualification remain required before public alpha. See
+`docs/reference/workerbee-profile-adapter.md`.
 
 API endpoints (when started with `--metrics-port`): see `docs/reference/http-api.md`.
 

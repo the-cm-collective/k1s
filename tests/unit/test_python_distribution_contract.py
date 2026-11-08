@@ -38,6 +38,11 @@ from ae import __version__ as ae_version
 from ae import build_info
 from ae.apishim.server import _openapi_v3_stub, _swagger_doc
 from ae.kctl import __version__ as kctl_version
+from ae.kctl.profile_adapter import (
+    ADAPTER_API_VERSION,
+    EVIDENCE_API_VERSION,
+    load_workerbee_adapter_contract,
+)
 from ae.runtime.cri.api.runtime.v1 import api_pb2, gogo_pb2
 from ae.storage.csi.api import csi_pb2, csi_pb2_grpc
 
@@ -96,6 +101,36 @@ def test_distribution_identity_preserves_import_and_commands() -> None:
         ],
         "ae.observability": ["static/vendor/*.css", "static/vendor/*.js"],
     }
+
+
+def test_workerbee_adapter_is_one_package_resource_not_a_distribution_or_console() -> None:
+    resource = ROOT / "src" / "ae" / "resources" / "profiles" / "workerbee-adapter-v1.json"
+    raw = resource.read_bytes()
+    value = json.loads(raw)
+    assert raw == (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    contract = load_workerbee_adapter_contract()
+    assert value["apiVersion"] == ADAPTER_API_VERSION
+    assert value["evidenceApiVersion"] == EVIDENCE_API_VERSION
+    assert [descriptor.name for descriptor in contract.operations] == [
+        "list",
+        "doctor",
+        "plan",
+        "status",
+        "logs",
+        "bootstrap",
+    ]
+    project = _project()
+    assert set(project["scripts"]) == {
+        "ae",
+        "ae-rotate-certs",
+        "k1s",
+        "ae-node",
+        "ae-gateway",
+        "ae-worker-stub",
+    }
+    assert project["name"] == "k1s-core"
 
 
 def test_documented_compatibility_entrypoints_remain_importable() -> None:
@@ -215,6 +250,21 @@ def test_release_documentation_records_pre_v1_compatibility() -> None:
     assert "Python imports remain under `ae`" in distribution
     assert "Production never rebuilds" in distribution
     assert PROTECTED_PATHS.isdisjoint(distribution.splitlines())
+
+
+def test_workerbee_adapter_documentation_preserves_experimental_release_holds() -> None:
+    adapter = (ROOT / "docs" / "reference" / "workerbee-profile-adapter.md").read_text(
+        encoding="utf-8"
+    )
+    public = (ROOT / "docs" / "reference" / "public-contracts.md").read_text(encoding="utf-8")
+    assert "source-validated/unqualified" in adapter
+    assert "W-P0-1 and Q1" in adapter
+    assert "adds no distribution" in adapter
+    assert "No line, substring" in adapter
+    assert "k1s-workerbee-run-ref-v1" in adapter
+    assert "k1s-workerbee-profile-evidence-v1" in adapter
+    assert "WorkerBee profile evidence adapter | experimental" in public
+    assert PROTECTED_PATHS.isdisjoint(adapter.splitlines())
 
 
 def test_sdist_normalization_is_exact_byte_reproducible(tmp_path: Path) -> None:

@@ -53,12 +53,14 @@ RUNTIME_DATA_GLOBS = {
     "ae/resources/sql/controller": ("*.sql", 64),
     "ae/resources/observability": ("*.html", 4),
     "ae/resources/ingress": ("*.txt", 1),
-    "ae/resources/profiles": ("*.json", 1),
+    "ae/resources/profiles": ("*.json", 2),
     "ae/observability/static/vendor": ("*.css", 1),
     "ae/observability/static/vendor#js": ("*.js", 2),
 }
 PROFILE_CATALOG_MEMBER = "ae/resources/profiles/profile-catalog-v1.json"
+WORKERBEE_ADAPTER_MEMBER = "ae/resources/profiles/workerbee-adapter-v1.json"
 MAX_PROFILE_CATALOG_BYTES = 64 * 1024
+MAX_WORKERBEE_ADAPTER_BYTES = 64 * 1024
 CANONICAL_SOURCE_DATE_EPOCH = 1793664000
 MAX_ARCHIVE_MEMBERS = 10_000
 MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
@@ -174,6 +176,158 @@ def _validate_profile_catalog_bytes(payload: bytes, *, artifact: Path) -> None:
         raise ValueError(f"profile catalog role order differs in {artifact}")
 
 
+def _validate_workerbee_adapter_bytes(payload: bytes, *, artifact: Path) -> None:
+    if not payload or len(payload) > MAX_WORKERBEE_ADAPTER_BYTES:
+        raise ValueError(f"WorkerBee adapter contract size is invalid in {artifact}")
+    if payload.startswith(b"\xef\xbb\xbf") or b"\x00" in payload or b"\r" in payload:
+        raise ValueError(f"WorkerBee adapter contract encoding is not canonical in {artifact}")
+    try:
+        text = payload.decode("utf-8")
+        value = json.loads(text, object_pairs_hook=_profile_object_without_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"WorkerBee adapter contract is not canonical JSON in {artifact}") from exc
+    canonical = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if text != canonical or type(value) is not dict:
+        raise ValueError(f"WorkerBee adapter contract bytes are not canonical in {artifact}")
+    contract = cast(dict[str, object], value)
+    if set(contract) != {
+        "apiVersion",
+        "evidenceApiVersion",
+        "kind",
+        "operations",
+        "qualificationPosture",
+        "schemaVersion",
+    }:
+        raise ValueError(f"WorkerBee adapter contract keys differ in {artifact}")
+    if (
+        contract["apiVersion"] != "k1s.dev/workerbee-profile-adapter/v1"
+        or contract["evidenceApiVersion"] != "k1s.dev/workerbee-profile-evidence/v1"
+        or contract["kind"] != "WorkerBeeProfileAdapterContract"
+        or contract["qualificationPosture"] != "source-validated/unqualified"
+        or type(contract["schemaVersion"]) is not int
+        or contract["schemaVersion"] != 1
+        or type(contract["operations"]) is not list
+    ):
+        raise ValueError(f"WorkerBee adapter contract identity differs in {artifact}")
+    operations = cast(list[object], contract["operations"])
+    if len(operations) != 6:
+        raise ValueError(f"WorkerBee adapter operation count differs in {artifact}")
+    expected = (
+        (
+            "list",
+            [0],
+            "forbidden",
+            "k1s.dev/v1alpha1",
+            "ProfileCatalog",
+            "profile-list-json",
+            False,
+            1,
+        ),
+        (
+            "doctor",
+            [0, 1],
+            "forbidden",
+            "k1s.dev/v1alpha1",
+            "ProfileDoctorReport",
+            "profile-doctor-catalog-json",
+            False,
+            1,
+        ),
+        (
+            "plan",
+            [0],
+            "forbidden",
+            "k1s.dev/v1alpha1",
+            "ProfilePlan",
+            "profile-plan-json",
+            False,
+            1,
+        ),
+        (
+            "status",
+            [0],
+            "forbidden",
+            None,
+            "PortableLifecycleResult",
+            "profile-status-portable-json",
+            False,
+            None,
+        ),
+        (
+            "logs",
+            [0],
+            "forbidden",
+            "k1s.dev/v1alpha1",
+            "ProfileLogSnapshot",
+            "profile-logs-owned-json",
+            False,
+            None,
+        ),
+        (
+            "bootstrap",
+            [0],
+            "optional",
+            None,
+            "ProfileBootstrapPublicProjection",
+            "profile-bootstrap-create-json",
+            True,
+            None,
+        ),
+    )
+    names: list[object] = []
+    for descriptor, expected_identity in zip(operations, expected, strict=True):
+        if type(descriptor) is not dict:
+            raise ValueError(f"WorkerBee adapter operation is not an object in {artifact}")
+        operation = cast(dict[str, object], descriptor)
+        if set(operation) != {
+            "acceptedExitCodes",
+            "adapterMutating",
+            "name",
+            "nodeObservation",
+            "sourceApiVersion",
+            "sourceKind",
+            "sourceMode",
+            "sourceMutating",
+            "sourceSchemaVersion",
+        }:
+            raise ValueError(f"WorkerBee adapter operation keys differ in {artifact}")
+        if (
+            type(operation["acceptedExitCodes"]) is not list
+            or any(
+                type(code) is not int for code in cast(list[object], operation["acceptedExitCodes"])
+            )
+            or operation["adapterMutating"] is not False
+            or operation["nodeObservation"] not in {"forbidden", "optional"}
+            or type(operation["name"]) is not str
+            or type(operation["sourceKind"]) is not str
+            or type(operation["sourceMode"]) is not str
+            or type(operation["sourceMutating"]) is not bool
+            or not (
+                operation["sourceApiVersion"] is None or type(operation["sourceApiVersion"]) is str
+            )
+            or not (
+                operation["sourceSchemaVersion"] is None
+                or type(operation["sourceSchemaVersion"]) is int
+            )
+        ):
+            raise ValueError(f"WorkerBee adapter operation identity differs in {artifact}")
+        identity = (
+            operation["name"],
+            operation["acceptedExitCodes"],
+            operation["nodeObservation"],
+            operation["sourceApiVersion"],
+            operation["sourceKind"],
+            operation["sourceMode"],
+            operation["sourceMutating"],
+            operation["sourceSchemaVersion"],
+        )
+        if identity != expected_identity:
+            raise ValueError(f"WorkerBee adapter operation literals differ in {artifact}")
+        names.append(operation["name"])
+    if names != ["list", "doctor", "plan", "status", "logs", "bootstrap"]:
+        raise ValueError(f"WorkerBee adapter operation order differs in {artifact}")
+
+
 def _validate_exact_source_identity(
     payload: bytes,
     *,
@@ -214,14 +368,19 @@ def _source_payloads(pyproject: Path) -> tuple[set[str], set[str]]:
                 f"expected {expected_count}, found {len(members)}"
             )
         runtime_data.update(members)
-    if len(runtime_data) != 86:
+    if len(runtime_data) != 87:
         raise ValueError(
-            f"runtime resource inventory must contain 86 files, found {len(runtime_data)}"
+            f"runtime resource inventory must contain 87 files, found {len(runtime_data)}"
         )
     profile_catalog = source_root / PROFILE_CATALOG_MEMBER
     _validate_profile_catalog_bytes(
         profile_catalog.read_bytes(),
         artifact=profile_catalog,
+    )
+    workerbee_adapter = source_root / WORKERBEE_ADAPTER_MEMBER
+    _validate_workerbee_adapter_bytes(
+        workerbee_adapter.read_bytes(),
+        artifact=workerbee_adapter,
     )
     return python_members | runtime_data, runtime_data
 
@@ -407,6 +566,11 @@ def _validate_wheel(
         if profile_payload != source_payload:
             raise ValueError(f"wheel profile catalog differs from source: {path}")
         _validate_profile_catalog_bytes(profile_payload, artifact=path)
+        adapter_payload = archive.read(WORKERBEE_ADAPTER_MEMBER)
+        adapter_source = (pyproject.parent / "src" / WORKERBEE_ADAPTER_MEMBER).read_bytes()
+        if adapter_payload != adapter_source:
+            raise ValueError(f"wheel WorkerBee adapter contract differs from source: {path}")
+        _validate_workerbee_adapter_bytes(adapter_payload, artifact=path)
 
 
 def _validate_sdist(
@@ -515,6 +679,14 @@ def _validate_sdist(
         if profile_payload != source_payload:
             raise ValueError(f"sdist profile catalog differs from source: {path}")
         _validate_profile_catalog_bytes(profile_payload, artifact=path)
+        adapter_member = archive.extractfile(f"{root}/src/{WORKERBEE_ADAPTER_MEMBER}")
+        if adapter_member is None:
+            raise ValueError(f"unable to read sdist WorkerBee adapter contract: {path}")
+        adapter_payload = adapter_member.read()
+        adapter_source = (pyproject.parent / "src" / WORKERBEE_ADAPTER_MEMBER).read_bytes()
+        if adapter_payload != adapter_source:
+            raise ValueError(f"sdist WorkerBee adapter contract differs from source: {path}")
+        _validate_workerbee_adapter_bytes(adapter_payload, artifact=path)
         pkg_info_name = f"{root}/PKG-INFO"
         if pkg_info_name not in names:
             raise ValueError(f"sdist is missing root PKG-INFO: {path}")

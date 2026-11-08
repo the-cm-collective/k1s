@@ -124,6 +124,17 @@ Consumers of the stable contract accept only `identity_version: 1` and
 `generation`. A changed generation invalidates assumptions about the previous
 process incarnation.
 
+The experimental K1s-side WorkerBee evidence adapter accepts an optional
+`k1s.dev/node-lease-observation/v1` only for a matching bootstrap result. It
+requires explicit identity v1, the exact bootstrap node ID, a positive signed
+64-bit generation, and `k1s-controller-lease` provenance. Without that exact
+observation, bootstrap evidence retains the explicit node ID but sets
+generation to null and provenance to `unobserved`. Other evidence operations
+always use null node identity. Profile-state `profileGeneration` is a distinct
+counter and never supplies node lease generation. This is structural binding,
+not controller peer or transport authentication; W-P0-1 and Q1 own that live
+boundary.
+
 ## Deliberate limits
 
 K1s continues to use controller-epoch fencing for mutating runtime commands.

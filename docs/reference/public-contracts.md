@@ -19,6 +19,7 @@ pre-releases. The status vocabulary is deliberately limited to **stable** and
 | Explicit profile migration | experimental | `k1s profile migrate plan\|apply\|rollback` accepts only caller-selected stopped schema-v1 records and exact digest-bound state authority; it performs no ambient discovery or alias promotion. |
 | Strict-CRI host plan | experimental | `k1s profile host plan strict-cri` consumes only two explicit canonical digest-pinned files and emits a deterministic secret-free `source-validated/unqualified` plan without target probing, state creation, socket access, or host mutation. |
 | Strict-CRI prepare/rollback and node adapter | experimental | Explicit digest-bound prepare/rollback journals exact owner-private authority and uses only a caller-supplied anonymous-pipe helper protocol; the node adapter requires the exact applied receipt. Source validation does not claim helper authentication or live CRI qualification. |
+| WorkerBee profile evidence adapter | experimental | `ae.kctl.profile_adapter` projects six already selected profile JSON results into exact metadata-safe v1 evidence. It adds no command or distribution and remains source-validated/unqualified pending W-P0-1 and Q1. |
 | Version metadata | stable | Package metadata, CLI build information, OpenAPI v2/v3, and release checks resolve `ae.__version__`. |
 | CRI protobuf resources | stable | Package-local CRI and gogoproto modules ship in wheel and source distributions. |
 
@@ -76,3 +77,10 @@ access, registry trust, runtime-handler availability, or node operation. Those
 claims require Q1 disposable-guest qualification of the exact guest image,
 helper bytes and launch authority, process/fd topology, peer identity, applied
 host state, and CRI node behavior.
+
+The WorkerBee adapter is likewise structural evidence, not a live channel. Its
+installed resource fixes operation/source identities, its payloads are strict
+allowlists, and its optional node observation binds only an explicit
+identity-v1 node ID and server lease generation. Raw logs and endpoint values
+are omitted. Unknown fields or versions fail closed. The complete byte and
+redaction contract is `docs/reference/workerbee-profile-adapter.md`.
