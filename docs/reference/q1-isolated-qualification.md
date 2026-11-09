@@ -532,13 +532,72 @@ must pass the capsule's existing closed validator before the extractor emits a
 canonical inventory receipt. Builder output alone therefore cannot assert its
 own guest contents.
 
-B0 proves source contracts and synthetic adapter behavior only. B1 must add a
-separately reviewed live builder adapter; later QH5-B checkpoints must build
-both lanes, compare exact image and manifest identities, boot the accepted
-artifact under the sealed Q1 capsule, replay inventory independently, complete
-the ordered acceptance matrix, and prove teardown and host-inventory equality.
-Until all those gates pass, the posture remains
-`source-validated/unqualified`.
+B0 proves source contracts and synthetic adapter behavior only. B1 adds the
+separately reviewed base-acquisition adapter below. The live builder remains
+B3: later QH5-B checkpoints must close the bill of materials, build both lanes,
+compare exact image and manifest identities, boot the accepted artifact under
+the sealed Q1 capsule, replay inventory independently, complete the ordered
+acceptance matrix, and prove teardown and host-inventory equality. Until all
+those gates pass, the posture remains `source-validated/unqualified`.
+
+## QH5-B B1 authenticated base acquisition
+
+`scripts/qualification/kp1_q1_base_acquisition.py` is the only B1 network
+boundary. Its canonical specification binds the QH5-B transaction by file
+digest, the exact K1s source commit/tree, and the exact local `curl`, `gpgv`,
+and `qemu-img` executable identities. It accepts one dated Canonical Jammy
+release directory and creates one absent owner-private root directly below
+`/srv/storage/k1s`.
+
+The adapter downloads exactly `SHA256SUMS`, `SHA256SUMS.gpg`, the requested
+package manifest, and the requested qcow2. Curl is restricted to HTTPS with a
+clean environment, fixed time and size ceilings, and no shell. Before the
+image is accepted, `gpgv` must authenticate the checksum set with the pinned
+Canonical keyring and the transaction's exact signing fingerprint. Both local
+artifacts must match the signed checksum rows and transaction digests. The
+only image operation is `qemu-img info --output=json`; B1 requires qcow2, no
+backing file, and bounded actual and virtual sizes. It never invokes a QEMU
+system binary or `/dev/kvm`.
+
+The operator first produces and reviews a canonical plan:
+
+```text
+python3 scripts/qualification/kp1_q1_base_acquisition.py plan \
+  --spec /absolute/private/b1-spec.json \
+  --expect-spec-sha256 sha256:... \
+  --output /absolute/private/b1-plan.json
+```
+
+Acquisition requires the exact plan file digest and a confirmation containing
+the plan's canonical digest:
+
+```text
+python3 scripts/qualification/kp1_q1_base_acquisition.py acquire \
+  --plan /absolute/private/b1-plan.json \
+  --expect-plan-sha256 sha256:... \
+  --confirm ACQUIRE-Q1-BASE:sha256:...
+```
+
+Success retains four authenticated upstream files plus a canonical receipt,
+local checksum set, and evidence seal, all mode `0400` under a mode-`0700`
+root. Independent replay re-enumerates that exact seven-file set, rehashes the
+actual bytes, validates every receipt/seal relation, and can require the exact
+seal-file digest:
+
+```text
+python3 scripts/qualification/kp1_q1_base_acquisition.py verify-root \
+  --plan /absolute/private/b1-plan.json \
+  --expect-plan-sha256 sha256:... \
+  --expect-seal-file-sha256 sha256:...
+```
+
+On failure, B1 first writes one sibling failure receipt, then removes only its
+new root if every member belongs to the closed B1 filename set and is an
+owner-owned, single-link regular file on the same filesystem. An unexpected
+entry, link, device, owner, mode, or filesystem identity blocks cleanup rather
+than broadening it. B1 changes no source checkout, host package, permission,
+service, runtime, release endpoint, or publication state and cannot promote
+the release beyond `source-validated/unqualified`.
 
 ## Required acceptance order
 
