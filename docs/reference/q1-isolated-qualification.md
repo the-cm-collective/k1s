@@ -664,15 +664,19 @@ python3 scripts/qualification/kp1_q1_guest_inputs.py acquire \
 regular files beneath the private staging root. It refuses links, special
 files, protected dotenv names, duplicate paths/roles, missing authorities,
 guest-to-payload digest drift, and unexpected modes. It emits a deterministic,
-uncompressed USTAR payload with fixed owner, group, mode, timestamp, member
-order, and an embedded canonical member manifest.
+uncompressed POSIX PAX payload with fixed owner, group, mode, timestamp, member
+order, and an embedded canonical member manifest. PAX is required because one
+accepted wheel has a standards-required basename longer than USTAR's 100-byte
+name field. Only a `path` header equal to the validated member path is allowed
+when the complete member name exceeds 100 bytes; all other PAX metadata is
+rejected.
 
 B2's gate uses two paths:
 
 1. the existing B0 `validate_bom()` schema and guest-manifest validator check
    the separately retained canonical BOM; and
 2. the independent payload replay enumerates the tar, rehashes each member,
-   validates fixed USTAR metadata, reads the embedded manifest, and reconstructs
+   validates fixed PAX metadata, reads the embedded manifest, and reconstructs
    the BOM from the retained payload bytes.
 
 Both paths must produce the same canonical BOM digest. Independent retained

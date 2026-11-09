@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -55,8 +56,13 @@ def _populate(root: Path) -> tuple[dict[str, str], dict[str, object]]:
         wheelhouse_raw,
     )
     roles["q1/wheelhouse/wheelhouse-manifest.json"] = "wheelhouse-manifest"
-    _write(root, "q1/wheelhouse/wheels/source.whl", b"wheel")
-    roles["q1/wheelhouse/wheels/source.whl"] = "wheel"
+    wheel_path = (
+        "q1/wheelhouse/wheels/"
+        "charset_normalizer-3.5.2-cp311-cp311-manylinux2014_x86_64."
+        "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+    )
+    _write(root, wheel_path, b"wheel")
+    roles[wheel_path] = "wheel"
     cni_raw = guest_bom.canonical_json_bytes(
         {
             "cniVersion": "1.0.0",
@@ -177,6 +183,11 @@ def test_payload_is_deterministic_and_replays_to_same_bom(tmp_path: Path) -> Non
     )
     assert result["status"] == "two-validator-match"
     assert result["schemaValidatorSha256"] == result["replayValidatorSha256"]
+    with tarfile.open(payload_a, "r:") as archive:
+        wheel = next(
+            info for info in archive.getmembers() if "charset_normalizer" in info.name
+        )
+        assert wheel.pax_headers == {"path": wheel.name}
 
 
 def test_replay_rejects_payload_tamper(tmp_path: Path) -> None:

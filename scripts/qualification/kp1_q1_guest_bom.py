@@ -544,7 +544,12 @@ def _tar_info(name: str, *, size: int, mode: int) -> tarfile.TarInfo:
     info.gid = 0
     info.uname = "root"
     info.gname = "root"
+    info.pax_headers = _expected_pax_headers(name)
     return info
+
+
+def _expected_pax_headers(name: str) -> dict[str, str]:
+    return {"path": name} if len(name.encode("utf-8")) > 100 else {}
 
 
 def _open_member(staging_root: Path, member: PayloadMember) -> BinaryIO:
@@ -607,7 +612,7 @@ def write_payload(
         with os.fdopen(descriptor, "wb") as raw:
             output = _DigestingWriter(raw)
             with tarfile.open(
-                fileobj=cast(BinaryIO, output), mode="w|", format=tarfile.USTAR_FORMAT
+                fileobj=cast(BinaryIO, output), mode="w|", format=tarfile.PAX_FORMAT
             ) as archive:
                 archive.addfile(
                     _tar_info(MANIFEST_NAME, size=len(manifest_raw), mode=0o644),
@@ -681,7 +686,7 @@ def replay_payload(
                 or manifest_info.gid != 0
                 or manifest_info.uname != "root"
                 or manifest_info.gname != "root"
-                or manifest_info.pax_headers
+                or manifest_info.pax_headers != _expected_pax_headers(manifest_info.name)
             ):
                 raise _fail()
             manifest_stream = archive.extractfile(manifest_info)
@@ -705,7 +710,7 @@ def replay_payload(
                     or info.gid != 0
                     or info.uname != "root"
                     or info.gname != "root"
-                    or info.pax_headers
+                    or info.pax_headers != _expected_pax_headers(info.name)
                 ):
                     raise _fail()
                 selected = archive.extractfile(info)
