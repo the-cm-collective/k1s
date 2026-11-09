@@ -348,6 +348,55 @@ separate paired live authorization must install and invoke the exact endpoint
 inside the disposable guest, and only independent acceptance of the entire Q1
 matrix may change the release posture from `source-validated/unqualified`.
 
+## QH3 ordered conductor contract
+
+QH3 adds the dependency-free source-side conductor contract in
+`scripts/qualification/kp1_q1_conductor.py`. It is still a synthetic
+checkpoint: the module does not implement SSH, QMP, host-process discovery,
+privilege changes, guest creation, or teardown. A later live capsule must
+supply separately reviewed adapters for those transports.
+
+The conductor fixes all 14 acceptance stages, transport classes, targets,
+argument-vector identities, per-stage limits, and total deadline. It accepts
+no shell command text and offers no fallback transport. Before the first
+adapter call it verifies the exact bundle bytes, then binds the run,
+transaction, plan, bundle, source commit, source tree, stage schema, fixed
+45-minute total deadline, and replay claim. Every adapter request carries that
+complete authority plus one monotonic deadline and the fixed output/evidence
+ceilings. A missing, unreadable, or already divergent bundle prevents both the
+replay claim and every adapter call.
+
+Each adapter response must return the complete run, transaction, plan, bundle,
+source commit, and source tree identity, an integer exit code, timeout flag,
+bounded byte streams, and typed evidence descriptors. Raw output and adapter
+exceptions never enter the public receipt; receipts contain only sizes,
+SHA-256 identities, fixed classifications, and bounded metadata. The bundle
+identity is re-read before and after every adapter call; pre-call drift blocks
+that call. Malformed responses, identity or bundle drift, timeout, nonzero
+exit, excessive output, excessive evidence, adapter error, and total-deadline
+expiry fail the current stage closed.
+
+The first failed stage stops adapter execution. Every later stage receives a
+canonical `not-run` receipt, and the top-level receipt records the failed stage
+and schedules teardown. A passed stage cannot appear after a failure. Stage
+and top-level receipts are canonical JSON with independent SHA-256 digests;
+validation rejects unknown fields, reordering, skipped stages, changed command
+identities, altered authority, inconsistent status, oversized metadata, or
+receipt tampering. The replay ledger prevents a second conductor invocation
+for the same authority. The fixed total deadline participates in the receipt
+ID and top-level receipt, passed stages must carry the authority's exact bundle
+digest, and `not-run` stages must carry canonical empty output descriptors.
+
+The nonmutating schema command exposes the closed contract for review:
+
+```text
+python3 scripts/qualification/kp1_q1_conductor.py schema
+```
+
+QH3 does not make `source-validated/unqualified` live-qualified. The concrete
+SSH/QMP/process adapters, exact process teardown, retained-evidence sealing,
+independent replay, and zero-residue proof remain later paired checkpoints.
+
 ## Required acceptance order
 
 An accepted run records these stages in order:
