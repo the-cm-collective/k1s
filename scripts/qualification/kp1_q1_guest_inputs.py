@@ -40,9 +40,11 @@ from pathlib import Path, PurePosixPath
 from typing import Protocol, cast
 
 try:
+    from scripts.qualification import kp1_q1_base_acquisition as base_acquisition
     from scripts.qualification import kp1_q1_guest_bom as guest_bom
     from scripts.qualification import kp1_q1_guest_image as guest_image
 except ModuleNotFoundError:  # Direct execution from scripts/qualification.
+    import kp1_q1_base_acquisition as base_acquisition  # type: ignore[import-not-found,no-redef]
     import kp1_q1_guest_bom as guest_bom  # type: ignore[import-not-found,no-redef]
     import kp1_q1_guest_image as guest_image  # type: ignore[import-not-found,no-redef]
 
@@ -517,6 +519,187 @@ def _verify_bound(value: object, keys: set[str], field: str) -> dict[str, object
     return item
 
 
+def _authority_json(identity: FileIdentity, *, canonical: bool) -> dict[str, object]:
+    raw = _read_file(Path(identity.path))
+    if len(raw) != identity.size or _digest_bytes(raw) != identity.sha256:
+        raise _fail()
+    return _json(raw, canonical=canonical)
+
+
+def _hex_digest(value: object) -> str:
+    if type(value) is not str or HEX_DIGEST_RE.fullmatch(value) is None:
+        raise _fail()
+    return value
+
+
+def _validate_base_authority(inputs: Mapping[str, object]) -> None:
+    receipt_identity = _identity(inputs["baseAcquisitionReceipt"])
+    manifest_identity = _identity(inputs["basePackageManifest"])
+    receipt = _authority_json(receipt_identity, canonical=True)
+    try:
+        verified = base_acquisition.verify_receipt(
+            receipt,
+            expected_plan_digest=receipt.get("planDigest"),
+        )
+    except Exception as exc:
+        raise _fail() from exc
+    source = cast(dict[str, object], verified["source"])
+    if source.get("version") != CANDIDATE_VERSION:
+        raise _fail()
+    rows = [
+        cast(dict[str, object], row)
+        for row in cast(list[object], verified["artifacts"])
+        if cast(dict[str, object], row).get("filename")
+        == "ubuntu-22.04-server-cloudimg-amd64-disk-kvm.manifest"
+    ]
+    if len(rows) != 1:
+        raise _fail()
+    row = rows[0]
+    if row.get("sha256") != manifest_identity.sha256 or row.get("size") != manifest_identity.size:
+        raise _fail()
+
+
+def _validate_qh5a_authority(inputs: Mapping[str, object], *, wheelhouse_count: int) -> None:
+    completion = _authority_json(_identity(inputs["qh5aCompletion"]), canonical=False)
+    required = {
+        "acceptedCandidate",
+        "artifactAssemblyStatus",
+        "boundaries",
+        "completedAt",
+        "inputs",
+        "installedSmoke",
+        "liveQualificationStatus",
+        "qualificationPosture",
+        "releasePromotionStatus",
+        "reproducibility",
+        "schema",
+        "setupCorrections",
+        "source",
+        "status",
+        "toolchain",
+    }
+    if set(completion) != required or (
+        completion["schema"] != "k1s-qh5a-completion/v1"
+        or completion["status"] != "completed"
+        or completion["artifactAssemblyStatus"] != "completed"
+        or completion["liveQualificationStatus"] != "not-started"
+        or completion["releasePromotionStatus"] != "not-started"
+        or completion["qualificationPosture"] != QUALIFICATION_POSTURE
+    ):
+        raise _fail()
+    source = _closed(
+        completion["source"],
+        {"branch", "commit", "fullStatus", "repository", "trackedStatus", "tree", "version"},
+    )
+    _object_id(source["commit"])
+    _object_id(source["tree"])
+    if source["version"] != CANDIDATE_VERSION or source["trackedStatus"] != "":
+        raise _fail()
+    boundaries = _closed(
+        completion["boundaries"],
+        {
+            "artifactPublished",
+            "hostServiceChanged",
+            "packageIndexUsed",
+            "qemuOrKvmInvoked",
+            "runtimeWorkloadStarted",
+            "sourceCommitCreated",
+            "sourceFilesModified",
+            "tagOrPushPerformed",
+        },
+    )
+    if any(value is not False for value in boundaries.values()):
+        raise _fail()
+    reproducibility = cast(dict[str, object], completion["reproducibility"])
+    installed_smoke = cast(dict[str, object], completion["installedSmoke"])
+    if (
+        reproducibility.get("byteIdentical") is not True
+        or installed_smoke.get("status") != "passed"
+        or installed_smoke.get("pipCheck") != "passed"
+        or installed_smoke.get("networkIndexMode") != "--no-index"
+    ):
+        raise _fail()
+    accepted = _closed(
+        completion["acceptedCandidate"],
+        {
+            "artifactManifestSha256",
+            "artifacts",
+            "derivedFrom",
+            "files",
+            "independentVerificationReceiptSha256",
+            "independentVerificationStatus",
+            "path",
+            "sha256sumsSha256",
+            "sourceManifestSha256",
+        },
+    )
+    if (
+        accepted["independentVerificationStatus"] != "verified"
+        or accepted["path"] != "accepted-candidate"
+    ):
+        raise _fail()
+    for name in (
+        "artifactManifestSha256",
+        "independentVerificationReceiptSha256",
+        "sha256sumsSha256",
+        "sourceManifestSha256",
+    ):
+        _hex_digest(accepted[name])
+    artifacts = _closed(accepted["artifacts"], {"sdist", "wheel"})
+    expected_artifacts = {
+        "sdist": (
+            "acceptedSdist",
+            "dist/k1s_core-0.1.8a1.tar.gz",
+        ),
+        "wheel": (
+            "acceptedWheel",
+            "dist/k1s_core-0.1.8a1-py3-none-any.whl",
+        ),
+    }
+    for name, (input_name, filename) in expected_artifacts.items():
+        row = _closed(
+            artifacts[name],
+            {"filename", "memberCount", "memberManifestSha256", "sha256", "size"},
+        )
+        identity = _identity(inputs[input_name])
+        if (
+            row["filename"] != filename
+            or row["sha256"] != identity.sha256.removeprefix("sha256:")
+            or row["size"] != identity.size
+            or type(row["memberCount"]) is not int
+            or cast(int, row["memberCount"]) < 1
+        ):
+            raise _fail()
+        _hex_digest(row["memberManifestSha256"])
+    authority_inputs = _closed(
+        completion["inputs"],
+        {
+            "requirementsLockSha256",
+            "runtimeWheelhouseCount",
+            "runtimeWheelhouseIdentity",
+            "wheelhouseManifestContentSha256",
+            "wheelhouseManifestFileSha256",
+            "wheelhouseReverificationReceiptSha256",
+        },
+    )
+    for name in (
+        "requirementsLockSha256",
+        "runtimeWheelhouseIdentity",
+        "wheelhouseManifestContentSha256",
+        "wheelhouseManifestFileSha256",
+        "wheelhouseReverificationReceiptSha256",
+    ):
+        _hex_digest(authority_inputs[name])
+    if (
+        authority_inputs["runtimeWheelhouseCount"] != wheelhouse_count
+        or authority_inputs["requirementsLockSha256"]
+        != _identity(inputs["requirementsLock"]).sha256.removeprefix("sha256:")
+        or authority_inputs["wheelhouseManifestFileSha256"]
+        != _identity(inputs["wheelhouseManifest"]).sha256.removeprefix("sha256:")
+    ):
+        raise _fail()
+
+
 def build_plan(
     spec_value: object,
     *,
@@ -566,6 +749,8 @@ def build_plan(
             raise _fail()
         tools[name] = identity.as_dict()
     wheelhouse = _wheelhouse(spec["wheelhouseRoot"], _identity(inputs["wheelhouseManifest"]))
+    _validate_base_authority(inputs)
+    _validate_qh5a_authority(inputs, wheelhouse_count=len(wheelhouse))
     plan: dict[str, object] = {
         "apiVersion": API_VERSION,
         "apt": {

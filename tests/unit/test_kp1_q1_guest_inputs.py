@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,12 @@ def _write(path: Path, raw: bytes, *, executable: bool = False) -> dict[str, str
     path.write_bytes(raw)
     path.chmod(0o700 if executable else 0o600)
     return {"expectedSha256": _digest(raw), "path": str(path)}
+
+
+def _bound(value: dict[str, object], field: str) -> dict[str, object]:
+    result = copy.deepcopy(value)
+    result[field] = _digest(guest_inputs.canonical_json_bytes(result))
+    return result
 
 
 def _fixture(tmp_path: Path):
@@ -52,6 +59,128 @@ def _fixture(tmp_path: Path):
     manifest_path = Path(inputs["wheelhouseManifest"]["path"])
     manifest_path.write_bytes(manifest_raw)
     inputs["wheelhouseManifest"]["expectedSha256"] = _digest(manifest_raw)
+    base = guest_inputs.base_acquisition
+    base_manifest = inputs["basePackageManifest"]
+    base_artifacts = []
+    for filename in sorted(base.DOWNLOAD_ORDER):
+        if filename == "ubuntu-22.04-server-cloudimg-amd64-disk-kvm.manifest":
+            sha256 = base_manifest["expectedSha256"]
+            size = Path(base_manifest["path"]).stat().st_size
+        else:
+            raw = filename.encode()
+            sha256 = _digest(raw)
+            size = len(raw)
+        base_artifacts.append(
+            {"filename": filename, "mode": "0400", "sha256": sha256, "size": size}
+        )
+    base_receipt = _bound(
+        {
+            "apiVersion": base.API_VERSION,
+            "artifacts": base_artifacts,
+            "completedAtUnix": 1_800_000_001,
+            "image": {
+                "actualSize": 1024,
+                "format": "qcow2",
+                "hasBackingFile": False,
+                "virtualSize": base.MIN_VIRTUAL_SIZE,
+            },
+            "kind": base.RECEIPT_KIND,
+            "planDigest": _digest(b"base-plan"),
+            "qualificationPosture": base.QUALIFICATION_POSTURE,
+            "schemaVersion": base.SCHEMA_VERSION,
+            "signature": {
+                "fingerprint": "A" * 40,
+                "stderrSha256": _digest(b"stderr"),
+                "stderrSize": 0,
+                "stdoutSha256": _digest(b"stdout"),
+                "stdoutSize": 0,
+            },
+            "source": {"commit": "3" * 40, "tree": "4" * 40, "version": "0.1.8a1"},
+            "startedAtUnix": 1_800_000_000,
+            "status": "acquired-and-authenticated",
+        },
+        "receiptDigest",
+    )
+    base_receipt_raw = guest_inputs.canonical_json_bytes(base_receipt)
+    base_receipt_path = Path(inputs["baseAcquisitionReceipt"]["path"])
+    base_receipt_path.write_bytes(base_receipt_raw)
+    inputs["baseAcquisitionReceipt"]["expectedSha256"] = _digest(base_receipt_raw)
+    accepted_artifacts = {}
+    for name, input_name, filename in (
+        ("sdist", "acceptedSdist", "dist/k1s_core-0.1.8a1.tar.gz"),
+        ("wheel", "acceptedWheel", "dist/k1s_core-0.1.8a1-py3-none-any.whl"),
+    ):
+        identity = inputs[input_name]
+        accepted_artifacts[name] = {
+            "filename": filename,
+            "memberCount": 1,
+            "memberManifestSha256": hashlib.sha256(f"{name}-members".encode()).hexdigest(),
+            "sha256": identity["expectedSha256"].removeprefix("sha256:"),
+            "size": Path(identity["path"]).stat().st_size,
+        }
+    qh5a = {
+        "acceptedCandidate": {
+            "artifactManifestSha256": hashlib.sha256(b"artifact-manifest").hexdigest(),
+            "artifacts": accepted_artifacts,
+            "derivedFrom": "test lanes",
+            "files": [],
+            "independentVerificationReceiptSha256": hashlib.sha256(b"verify").hexdigest(),
+            "independentVerificationStatus": "verified",
+            "path": "accepted-candidate",
+            "sha256sumsSha256": hashlib.sha256(b"sums").hexdigest(),
+            "sourceManifestSha256": hashlib.sha256(b"source-manifest").hexdigest(),
+        },
+        "artifactAssemblyStatus": "completed",
+        "boundaries": {
+            "artifactPublished": False,
+            "hostServiceChanged": False,
+            "packageIndexUsed": False,
+            "qemuOrKvmInvoked": False,
+            "runtimeWorkloadStarted": False,
+            "sourceCommitCreated": False,
+            "sourceFilesModified": False,
+            "tagOrPushPerformed": False,
+        },
+        "completedAt": "2026-11-09T18:00:00Z",
+        "inputs": {
+            "requirementsLockSha256": inputs["requirementsLock"]["expectedSha256"].removeprefix(
+                "sha256:"
+            ),
+            "runtimeWheelhouseCount": len(wheel_rows),
+            "runtimeWheelhouseIdentity": hashlib.sha256(b"wheelhouse").hexdigest(),
+            "wheelhouseManifestContentSha256": hashlib.sha256(manifest_raw).hexdigest(),
+            "wheelhouseManifestFileSha256": inputs["wheelhouseManifest"][
+                "expectedSha256"
+            ].removeprefix("sha256:"),
+            "wheelhouseReverificationReceiptSha256": hashlib.sha256(b"reverify").hexdigest(),
+        },
+        "installedSmoke": {
+            "networkIndexMode": "--no-index",
+            "pipCheck": "passed",
+            "status": "passed",
+        },
+        "liveQualificationStatus": "not-started",
+        "qualificationPosture": guest_inputs.QUALIFICATION_POSTURE,
+        "releasePromotionStatus": "not-started",
+        "reproducibility": {"byteIdentical": True},
+        "schema": "k1s-qh5a-completion/v1",
+        "setupCorrections": [],
+        "source": {
+            "branch": "test",
+            "commit": "5" * 40,
+            "fullStatus": "",
+            "repository": str(tmp_path),
+            "trackedStatus": "",
+            "tree": "6" * 40,
+            "version": "0.1.8a1",
+        },
+        "status": "completed",
+        "toolchain": {},
+    }
+    qh5a_raw = guest_inputs.canonical_json_bytes(qh5a)
+    qh5a_path = Path(inputs["qh5aCompletion"]["path"])
+    qh5a_path.write_bytes(qh5a_raw)
+    inputs["qh5aCompletion"]["expectedSha256"] = _digest(qh5a_raw)
     tools: dict[str, dict[str, str]] = {}
     tool_paths: dict[str, str] = {}
     for name in guest_inputs.TOOL_NAMES:
@@ -74,7 +203,7 @@ def _fixture(tmp_path: Path):
         allowed_output_parent=parent,
         expected_tool_paths=tool_paths,
     )
-    return plan, parent
+    return plan, parent, spec
 
 
 def _stage_file(root: Path, relative: str, raw: bytes, *, executable: bool = False) -> str:
@@ -211,7 +340,7 @@ class _Adapter:
 
 
 def test_plan_binds_closed_sources_tools_and_authorities(tmp_path: Path) -> None:
-    plan, parent = _fixture(tmp_path)
+    plan, parent, _spec = _fixture(tmp_path)
 
     assert guest_inputs.verify_plan(plan, allowed_output_parent=parent) == plan
     assert len(plan["wheelhouse"]) == 24
@@ -230,15 +359,52 @@ def test_plan_binds_closed_sources_tools_and_authorities(tmp_path: Path) -> None
     ],
 )
 def test_plan_rejects_drift(tmp_path: Path, mutation) -> None:
-    plan, parent = _fixture(tmp_path)
+    plan, parent, _spec = _fixture(tmp_path)
     changed = copy.deepcopy(plan)
     mutation(changed)
     with pytest.raises(guest_inputs.GuestInputPolicyError, match="failed closed"):
         guest_inputs.verify_plan(changed, allowed_output_parent=parent)
 
 
+@pytest.mark.parametrize(
+    ("input_name", "mutate"),
+    [
+        (
+            "baseAcquisitionReceipt",
+            lambda value: next(
+                row
+                for row in value["artifacts"]
+                if row["filename"] == "ubuntu-22.04-server-cloudimg-amd64-disk-kvm.manifest"
+            ).update(sha256=_digest(b"unrelated-base-manifest")),
+        ),
+        (
+            "qh5aCompletion",
+            lambda value: value["acceptedCandidate"]["artifacts"]["wheel"].update(
+                sha256=hashlib.sha256(b"unrelated-wheel").hexdigest()
+            ),
+        ),
+    ],
+)
+def test_plan_rejects_semantically_unrelated_authority(
+    tmp_path: Path, input_name: str, mutate
+) -> None:
+    _plan, parent, spec = _fixture(tmp_path)
+    path = Path(spec["inputs"][input_name]["path"])
+    value = json.loads(path.read_bytes())
+    mutate(value)
+    if input_name == "baseAcquisitionReceipt":
+        value.pop("receiptDigest")
+        value = _bound(value, "receiptDigest")
+    raw = guest_inputs.canonical_json_bytes(value)
+    path.write_bytes(raw)
+    spec["inputs"][input_name]["expectedSha256"] = _digest(raw)
+
+    with pytest.raises(guest_inputs.GuestInputPolicyError, match="failed closed"):
+        guest_inputs.build_plan(spec, allowed_output_parent=parent)
+
+
 def test_acquisition_seals_and_independently_replays_root(tmp_path: Path) -> None:
-    plan, parent = _fixture(tmp_path)
+    plan, parent, _spec = _fixture(tmp_path)
     receipt, seal = guest_inputs.execute_acquisition(
         plan,
         confirmation=f"ACQUIRE-Q1-BOM:{plan['planDigest']}",
@@ -261,7 +427,7 @@ def test_acquisition_seals_and_independently_replays_root(tmp_path: Path) -> Non
 
 
 def test_acquisition_rejects_confirmation_and_retained_tamper(tmp_path: Path) -> None:
-    plan, parent = _fixture(tmp_path)
+    plan, parent, _spec = _fixture(tmp_path)
     with pytest.raises(guest_inputs.GuestInputPolicyError):
         guest_inputs.execute_acquisition(
             plan,
