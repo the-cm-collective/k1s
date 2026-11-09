@@ -475,6 +475,71 @@ bundle, move retained evidence without substitution, and demonstrate teardown
 and host-inventory equality inside the disposable egress-denied guest before
 any `live-qualified` claim.
 
+## QH5-B B0 deterministic guest-image source contract
+
+QH5-B B0 adds two independent, dependency-free source contracts. It does not
+download a base image, install packages, invoke QEMU/KVM, create a qcow2 image,
+start a guest, or promote the release posture.
+
+`scripts/qualification/kp1_q1_guest_image.py` validates an exact private build
+specification and emits a canonical plan for two independent lanes:
+
+1. `lane-a` uses umask `0022`;
+2. `lane-b` uses umask `0077`.
+
+Each lane must execute the same closed stage order:
+
+1. `authenticate-base`;
+2. `validate-offline-bom`;
+3. `stage-inputs`;
+4. `create-image`;
+5. `provision-offline`;
+6. `finalize-image`;
+7. `extract-inventory`; and
+8. `validate-guest-manifest`.
+
+The plan accepts only a dated immutable Canonical Jammy release URL, exact
+source commit and tree, canonical offline BOM, digest-bound local inputs and
+tools, an owner-private mode-`0700` output parent, fixed stage and total
+deadlines, and absent lane output paths. It records file device, inode, owner,
+mode, size, and SHA-256 so a later adapter must detect substitution before
+execution. The module defines a typed adapter boundary and canonical receipt,
+but ships no live image-builder adapter. Synthetic tests prove stage ordering,
+identity binding, bounded output, fail-closed timeout/error handling, and exact
+lane artifact equality. The historical generic Packer lane is not accepted as
+Q1 authority by this contract.
+
+The nonmutating plan and verification surfaces are:
+
+```text
+python3 scripts/qualification/kp1_q1_guest_image.py plan \
+  --spec /absolute/private/q1-guest-image-spec.json \
+  --expect-spec-sha256 sha256:... \
+  --output /absolute/private/q1-guest-image-plan.json
+
+python3 scripts/qualification/kp1_q1_guest_image.py verify-plan \
+  --plan /absolute/private/q1-guest-image-plan.json \
+  --expect-plan-sha256 sha256:...
+```
+
+`scripts/qualification/kp1_q1_guest_inventory.py` is independent of the image
+builder. A later guest adapter must return bounded regular-file observations
+and exact argv results; no shell command text is accepted. The extractor reads
+fixed OS, kernel, Python, runtime, CNI, and offline-evidence paths, validates
+their modes and identities, executes only bounded version/package queries, and
+reconstructs the complete `k1s.dev/q1-capsule/v1` guest manifest. That manifest
+must pass the capsule's existing closed validator before the extractor emits a
+canonical inventory receipt. Builder output alone therefore cannot assert its
+own guest contents.
+
+B0 proves source contracts and synthetic adapter behavior only. B1 must add a
+separately reviewed live builder adapter; later QH5-B checkpoints must build
+both lanes, compare exact image and manifest identities, boot the accepted
+artifact under the sealed Q1 capsule, replay inventory independently, complete
+the ordered acceptance matrix, and prove teardown and host-inventory equality.
+Until all those gates pass, the posture remains
+`source-validated/unqualified`.
+
 ## Required acceptance order
 
 An accepted run records these stages in order:
