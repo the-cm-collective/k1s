@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -347,6 +348,29 @@ def test_plan_binds_closed_sources_tools_and_authorities(tmp_path: Path) -> None
     assert len(plan["oci"]) == 9
     assert plan["apt"]["snapshotId"] == guest_inputs.SNAPSHOT_ID
     assert not Path(plan["outputRoot"]).exists()
+
+
+def test_deb_fields_uses_value_only_show_format(tmp_path: Path, monkeypatch) -> None:
+    deb = tmp_path / "package.deb"
+    deb.write_bytes(b"deb")
+
+    def run(command, *, cwd, **_kwargs):
+        assert command == (
+            "/usr/bin/dpkg-deb",
+            "--show",
+            "--showformat=${Package}\n${Version}\n${Architecture}\n",
+            str(deb),
+        )
+        assert cwd == tmp_path
+        return subprocess.CompletedProcess(command, 0, b"package\n1.2.3\namd64\n", b"")
+
+    monkeypatch.setattr(guest_inputs, "_run", run)
+
+    assert guest_inputs._deb_fields("/usr/bin/dpkg-deb", deb, cwd=tmp_path) == (
+        "package",
+        "1.2.3",
+        "amd64",
+    )
 
 
 @pytest.mark.parametrize(

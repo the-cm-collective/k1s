@@ -1051,6 +1051,25 @@ def _first_version_line(result: subprocess.CompletedProcess[bytes]) -> str:
     return lines[0]
 
 
+def _deb_fields(dpkg_deb: str, deb: Path, *, cwd: Path) -> tuple[str, str, str]:
+    result = _run(
+        (
+            dpkg_deb,
+            "--show",
+            "--showformat=${Package}\n${Version}\n${Architecture}\n",
+            str(deb),
+        ),
+        cwd=cwd,
+    )
+    try:
+        fields = [line.strip() for line in result.stdout.decode("utf-8").splitlines()]
+    except UnicodeDecodeError as exc:
+        raise _fail() from exc
+    if len(fields) != 3 or any(not field for field in fields):
+        raise _fail()
+    return fields[0], fields[1], fields[2]
+
+
 @dataclass(frozen=True, slots=True)
 class StageResult:
     guest: dict[str, object]
@@ -1528,24 +1547,7 @@ class LiveAcquisitionAdapter:
         package_rows: list[dict[str, object]] = []
         package_files: dict[str, tuple[Path, str]] = {}
         for deb in debs:
-            result = _run(
-                (
-                    dpkg_deb,
-                    "--field",
-                    str(deb),
-                    "Package",
-                    "Version",
-                    "Architecture",
-                ),
-                cwd=apt_work,
-            )
-            try:
-                fields = [line.strip() for line in result.stdout.decode("utf-8").splitlines()]
-            except UnicodeDecodeError as exc:
-                raise _fail() from exc
-            if len(fields) != 3 or any(not field for field in fields):
-                raise _fail()
-            package, version, architecture = fields
+            package, version, architecture = _deb_fields(dpkg_deb, deb, cwd=apt_work)
             if architecture not in {"all", "amd64"} or package in package_files:
                 raise _fail()
             identity = file_identity(str(deb))
