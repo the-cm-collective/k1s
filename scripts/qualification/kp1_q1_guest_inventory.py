@@ -719,7 +719,12 @@ def verify_receipt(
         _digest(row["sha256"])
         if int(row["mode"], 8) & 0o022:
             raise _fail()
-        if type(row["size"]) is not int or not 1 <= row["size"] <= MAX_FILE_BYTES:
+        # Receipts include both content-captured files (bounded by
+        # MAX_FILE_BYTES) and digest-only executable observations (bounded by
+        # MAX_DIGEST_FILE_BYTES).  The extraction policy decides which mode is
+        # valid before binding the receipt; independent receipt verification
+        # must accept the larger bounded evidence rows it can emit.
+        if type(row["size"]) is not int or not 1 <= row["size"] <= MAX_DIGEST_FILE_BYTES:
             raise _fail()
     command_argvs: set[tuple[str, ...]] = set()
     for raw in commands:

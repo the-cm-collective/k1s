@@ -278,6 +278,15 @@ def test_inventory_accepts_digest_only_large_executable_observations() -> None:
         and row["size"] == inventory.MAX_FILE_BYTES + 1
         for row in receipt["files"]
     )
+    manifest_digest = _digest(capsule.canonical_json_bytes(manifest))
+    assert (
+        inventory.verify_receipt(
+            receipt,
+            expected_build_plan_digest=spec["authority"]["buildPlanDigest"],
+            expected_manifest_digest=manifest_digest,
+        )
+        == receipt
+    )
 
 
 @pytest.mark.parametrize(
