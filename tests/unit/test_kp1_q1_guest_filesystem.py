@@ -104,8 +104,12 @@ def test_shared_artifacts_ignore_lane_image_identity_but_bind_semantics() -> Non
 def test_policy_exclusions_remain_narrow_and_explicit() -> None:
     policy = filesystem.POLICY
     excluded = set(policy["excludedMountTrees"]) | set(policy["ephemeralTrees"])
+    exact = set(policy["ephemeralExactPaths"])
     assert not excluded & {"/etc", "/opt", "/usr", "/var"}
     assert "/var/lib/cloud" in excluded
     assert "/var/lib/snapd/device" in excluded
-    assert "/var/lib/snapd/state.json" in set(policy["ephemeralExactPaths"])
+    assert "/var/lib/snapd/state.json" in exact
+    assert "/var/snap/lxd/common/lxd/unix.socket" in exact
+    assert "/etc/ssh/ssh_host_ed25519_key" in exact
+    assert not exact & {"/etc/ssh", "/var/snap/lxd"}
     assert policy["includedPersistentMountTrees"] == ["/boot/efi"]

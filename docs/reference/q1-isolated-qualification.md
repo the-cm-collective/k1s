@@ -739,8 +739,11 @@ guest manifest. A separately bound filesystem-policy module validates every
 persistent path by type, mode, uid/gid, content or link/device identity, and
 extended-attribute digest. The root filesystem and the explicitly persistent
 `/boot/efi` mount are included. The narrow policy excludes explicit runtime
-mounts and reviewed first-boot state; it never excludes broad persistent roots
-such as `/etc`, `/opt`, `/usr`, or `/var`.
+mounts and reviewed first-boot state. Snapshot verification boots regenerate
+the six SSH host-key files and the LXD Unix socket, so those seven exact paths
+are excluded while the rest of `/etc/ssh` and `/var/snap/lxd` remains covered.
+The policy never excludes broad persistent roots such as `/etc`, `/opt`,
+`/usr`, or `/var`.
 
 The final stage requires exact equality of the two canonical filesystem
 manifest SHA-256 values, filesystem-policy SHA-256 values, and semantic guest

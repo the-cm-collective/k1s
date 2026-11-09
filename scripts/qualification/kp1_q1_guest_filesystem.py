@@ -37,10 +37,17 @@ POLICY: dict[str, object] = {
     "excludedMountTrees": ["/dev", "/proc", "/run", "/snap", "/sys"],
     "ephemeralExactPaths": [
         "/etc/machine-id",
+        "/etc/ssh/ssh_host_ecdsa_key",
+        "/etc/ssh/ssh_host_ecdsa_key.pub",
+        "/etc/ssh/ssh_host_ed25519_key",
+        "/etc/ssh/ssh_host_ed25519_key.pub",
+        "/etc/ssh/ssh_host_rsa_key",
+        "/etc/ssh/ssh_host_rsa_key.pub",
         "/var/lib/dbus/machine-id",
         "/var/lib/snapd/state.json",
         "/var/lib/systemd/random-seed",
         "/var/lib/update-notifier/updates-available",
+        "/var/snap/lxd/common/lxd/unix.socket",
     ],
     "ephemeralTrees": [
         "/tmp",  # noqa: S108 - guest policy path, not a host temporary file
