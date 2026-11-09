@@ -433,7 +433,7 @@ find / -xdev -path /snap -prune -o \
   -exec touch -h --date='@{guest_image.SOURCE_DATE_EPOCH}' {{}} +
 sync
 echo {PROVISION_MARKER.decode('ascii')} >/dev/ttyS0
-poweroff -f
+/usr/bin/systemctl poweroff --no-wall
 """
     return script.encode("utf-8")
 
@@ -567,7 +567,7 @@ K1S_Q1_COLLECTOR
 /usr/bin/python3.11 /run/k1s-q1-inventory.py >/dev/ttyS0
 echo {INVENTORY_MARKER.decode('ascii')} >/dev/ttyS0
 sync
-poweroff -f
+/usr/bin/systemctl poweroff --no-wall
 """
     return shell.encode("utf-8")
 

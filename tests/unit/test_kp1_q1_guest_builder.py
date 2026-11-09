@@ -100,6 +100,8 @@ def test_provision_script_is_offline_block_bound_and_contains_no_host_mount() ->
     assert "find / -xdev -path /snap -prune -o" in text
     assert "umask 0077" in text
     assert "K1S_Q1_PROVISION_OK" in text
+    assert "/usr/bin/systemctl poweroff --no-wall" in text
+    assert "poweroff -f" not in text
     assert "-net" not in text
     assert "/home/" not in text
     assert "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a" not in text
@@ -111,6 +113,8 @@ def test_inventory_script_contains_closed_collection_and_serial_marker() -> None
 
     assert "/usr/bin/python3.11" in text
     assert "K1S_Q1_INVENTORY_OK" in text
+    assert "/usr/bin/systemctl poweroff --no-wall" in text
+    assert "poweroff -f" not in text
     assert "K1S_Q1_INVENTORY:" in base64.b64decode(
         text.split("<<'K1S_Q1_COLLECTOR'\n", 1)[1].split("\nK1S_Q1_COLLECTOR", 1)[0]
     ).decode()
