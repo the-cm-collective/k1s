@@ -415,7 +415,8 @@ rm -f /etc/ssh/ssh_host_* /var/lib/systemd/random-seed /var/lib/dbus/machine-id
 cloud-init clean --logs --machine-id || true
 find /tmp /var/tmp -mindepth 1 -xdev -delete
 find /var/log -type f -xdev -exec truncate --size 0 {{}} +
-find / -xdev -exec touch -h --date='@{guest_image.SOURCE_DATE_EPOCH}' {{}} +
+find / -xdev -path /snap -prune -o \
+  -exec touch -h --date='@{guest_image.SOURCE_DATE_EPOCH}' {{}} +
 sync
 echo {PROVISION_MARKER.decode('ascii')} >/dev/ttyS0
 poweroff -f

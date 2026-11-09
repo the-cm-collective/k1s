@@ -92,6 +92,7 @@ def test_provision_script_is_offline_block_bound_and_contains_no_host_mount() ->
     assert '[[ "$package" = /* ]]' in text
     assert "--no-download --no-install-recommends" not in text
     assert "--no-index" in text
+    assert "find / -xdev -path /snap -prune -o" in text
     assert "umask 0077" in text
     assert "K1S_Q1_PROVISION_OK" in text
     assert "-net" not in text
