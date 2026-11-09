@@ -188,7 +188,12 @@ def test_live_builder_requires_new_authority_inputs() -> None:
         "b1EvidenceSeal",
         "b2AcquisitionPlan",
         "b2EvidenceSeal",
+        "baseAcquisitionModule",
+        "guestBomModule",
         "guestBundle",
+        "guestCapsuleModule",
+        "guestImageModule",
+        "guestInputsModule",
         "inventoryModule",
         "liveBuilder",
     } <= builder.guest_image.INPUT_NAMES

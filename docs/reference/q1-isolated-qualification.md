@@ -705,9 +705,11 @@ artifact while ensuring that unrecorded builder code cannot produce evidence.
 
 Before creating either lane, B3 independently replays the complete retained B1
 root and complete retained B2 root against their exact plan and seal-file
-digests. It also binds the live builder, inventory module, guest helper bundle,
-QEMU system binary, `qemu-img`, Python, `gpgv`, and ISO seed builder by regular
-file identity and SHA-256.
+digests. It also binds every imported qualification module, the live builder,
+inventory module, guest helper bundle, QEMU system binary, `qemu-img`, Python,
+`gpgv`, and ISO seed builder by regular file identity and SHA-256. The live
+adapter verifies that its executing source bytes equal those plan-bound copies
+before creating a lane.
 
 The host adapter has no shell-command surface. It invokes only exact argv lists
 through a clean environment and creates two absent owner-private lane roots.

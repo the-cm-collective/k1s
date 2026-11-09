@@ -27,11 +27,15 @@ from typing import Protocol, cast
 
 try:
     from scripts.qualification import kp1_q1_base_acquisition as base_acquisition
+    from scripts.qualification import kp1_q1_capsule as guest_capsule
+    from scripts.qualification import kp1_q1_guest_bom as guest_bom
     from scripts.qualification import kp1_q1_guest_image as guest_image
     from scripts.qualification import kp1_q1_guest_inputs as guest_inputs
     from scripts.qualification import kp1_q1_guest_inventory as guest_inventory
 except ModuleNotFoundError:  # Direct execution from scripts/qualification.
     import kp1_q1_base_acquisition as base_acquisition  # type: ignore[import-not-found,no-redef]
+    import kp1_q1_capsule as guest_capsule  # type: ignore[import-not-found,no-redef]
+    import kp1_q1_guest_bom as guest_bom  # type: ignore[import-not-found,no-redef]
     import kp1_q1_guest_image as guest_image  # type: ignore[import-not-found,no-redef]
     import kp1_q1_guest_inputs as guest_inputs  # type: ignore[import-not-found,no-redef]
     import kp1_q1_guest_inventory as guest_inventory  # type: ignore[import-not-found,no-redef]
@@ -52,6 +56,15 @@ QEMU_CPUS = 4
 QEMU_ICOUNT = "shift=3,align=off,sleep=off"
 QEMU_UUID = "00000000-0000-4000-8000-000000000001"
 QEMU_RTC = "2026-12-03T00:00:00"
+
+BOUND_SOURCE_MODULES = {
+    "baseAcquisitionModule": base_acquisition,
+    "guestBomModule": guest_bom,
+    "guestCapsuleModule": guest_capsule,
+    "guestImageModule": guest_image,
+    "guestInputsModule": guest_inputs,
+    "inventoryModule": guest_inventory,
+}
 
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 SAFE_ENVIRONMENT = {
@@ -169,6 +182,22 @@ def _read_identity(
     if not 1 <= len(raw) <= maximum:
         raise _fail()
     return raw
+
+
+def verify_executing_sources(plan: Mapping[str, object]) -> None:
+    inputs = cast(dict[str, object], plan["inputs"])
+    sources: dict[str, Path] = {}
+    for name, module in BOUND_SOURCE_MODULES.items():
+        module_path = getattr(module, "__file__", None)
+        if type(module_path) is not str:
+            raise _fail()
+        sources[name] = Path(module_path)
+    sources["liveBuilder"] = Path(__file__)
+    for name, source_path in sources.items():
+        identity = cast(dict[str, object], inputs[name])
+        actual_digest, actual_size = _digest_path(source_path)
+        if actual_digest != identity["sha256"] or actual_size != identity["size"]:
+            raise _fail()
 
 
 def _write_new(path: Path, raw: bytes, *, mode: int = 0o600) -> None:
@@ -685,10 +714,10 @@ def _create_seed(
     )
     if result.stdout or result.stderr:
         pass
+    os.chmod(output, 0o600)
     digest, size = _digest_path(output, maximum=64 * 1024 * 1024)
     if DIGEST_RE.fullmatch(digest) is None or size <= 0:
         raise _fail()
-    os.chmod(output, 0o600)
     return output
 
 
@@ -754,6 +783,7 @@ class LiveBuildAdapter:
         runner: CommandRunner | None = None,
     ) -> None:
         self.plan = guest_image.verify_plan(plan_value)
+        verify_executing_sources(self.plan)
         self.runner = runner or SubprocessRunner()
         self._b2: dict[str, object] | None = None
 
