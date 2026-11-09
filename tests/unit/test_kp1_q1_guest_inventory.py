@@ -39,7 +39,7 @@ def _spec() -> dict[str, object]:
             },
             "kernelImage": f"/boot/vmlinuz-{release}",
             "offlineEvidence": "/etc/k1s-q1/offline-evidence.json",
-            "osRelease": "/etc/os-release",
+            "osRelease": "/usr/lib/os-release",
             "python": "/usr/bin/python3.11",
             "runtime": {name: f"/usr/bin/{name}" for name in inventory.RUNTIME_NAMES},
         },
@@ -58,7 +58,7 @@ class _Adapter:
         def add_file(path: str, raw: bytes, mode: int = 0o644) -> None:
             self.files[path] = inventory.FileObservation(path, raw, mode, 0, 0)
 
-        add_file("/etc/os-release", b'ID=ubuntu\nVERSION_ID="22.04"\n')
+        add_file("/usr/lib/os-release", b'ID=ubuntu\nVERSION_ID="22.04"\n')
         add_file(paths["kernelImage"], b"kernel-image")
         add_file(paths["python"], b"python-binary", 0o755)
         for name, path in paths["runtime"].items():
@@ -184,9 +184,9 @@ def test_inventory_rejects_os_kernel_python_and_offline_drift() -> None:
     cases = []
     for mutate in (
         lambda adapter, _spec_value: adapter.files.__setitem__(
-            "/etc/os-release",
+            "/usr/lib/os-release",
             inventory.FileObservation(
-                "/etc/os-release", b'ID=debian\nVERSION_ID="12"\n', 0o644, 0, 0
+                "/usr/lib/os-release", b'ID=debian\nVERSION_ID="12"\n', 0o644, 0, 0
             ),
         ),
         lambda adapter, _spec_value: adapter.commands.__setitem__(
@@ -237,6 +237,14 @@ def test_inventory_rejects_unsafe_file_observation(failure: str) -> None:
         )
     with pytest.raises(inventory.GuestInventoryPolicyError):
         inventory.extract_inventory(spec, adapter=adapter)
+
+
+def test_validate_spec_requires_canonical_regular_os_release_target() -> None:
+    spec = _spec()
+    spec["paths"]["osRelease"] = "/etc/os-release"
+
+    with pytest.raises(inventory.GuestInventoryPolicyError):
+        inventory.validate_spec(spec)
 
 
 def test_inventory_accepts_digest_only_large_executable_observations() -> None:

@@ -40,7 +40,7 @@ def _inventory_spec() -> dict[str, object]:
             },
             "kernelImage": f"/boot/vmlinuz-{release}",
             "offlineEvidence": "/etc/k1s-q1/offline-evidence.json",
-            "osRelease": "/etc/os-release",
+            "osRelease": "/usr/lib/os-release",
             "python": "/usr/bin/python3.11",
             "runtime": {name: f"/usr/bin/{name}" for name in inventory.RUNTIME_NAMES},
         },

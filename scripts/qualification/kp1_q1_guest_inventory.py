@@ -247,14 +247,14 @@ def validate_spec(value: object) -> dict[str, object]:
         {"cni", "kernelImage", "offlineEvidence", "osRelease", "python", "runtime"},
     )
     kernel_path = f"/boot/vmlinuz-{expected['kernelRelease']}"
-    if paths["kernelImage"] != kernel_path or paths["osRelease"] != "/etc/os-release":
+    if paths["kernelImage"] != kernel_path or paths["osRelease"] != "/usr/lib/os-release":
         raise _fail()
     paths["python"] = _safe_path(
         paths["python"],
         roots=("/usr/bin/", "/usr/local/bin/", "/opt/k1s-q1/"),
     )
     paths["kernelImage"] = _safe_path(paths["kernelImage"], roots=("/boot/",))
-    paths["osRelease"] = _safe_path(paths["osRelease"], roots=("/etc/",))
+    paths["osRelease"] = _safe_path(paths["osRelease"], roots=("/usr/lib/",))
     paths["offlineEvidence"] = _safe_path(
         paths["offlineEvidence"],
         roots=("/etc/k1s-q1/",),

@@ -1113,7 +1113,7 @@ class LiveBuildAdapter:
                 },
                 "kernelImage": f"/boot/vmlinuz-{kernel['release']}",
                 "offlineEvidence": "/etc/k1s-q1/offline-evidence.json",
-                "osRelease": "/etc/os-release",
+                "osRelease": "/usr/lib/os-release",
                 "python": "/usr/bin/python3.11",
                 "runtime": {
                     "containerd": "/usr/bin/containerd",
