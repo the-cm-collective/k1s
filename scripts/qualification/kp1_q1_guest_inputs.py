@@ -126,6 +126,13 @@ PRIMARY_PACKAGES = (
     ("uidmap", None),
 )
 
+RUNTIME_BINARY_PATHS = {
+    "containerd": ("usr/bin/containerd",),
+    "docker": ("usr/bin/docker",),
+    "podman": ("usr/bin/podman",),
+    "runc": ("usr/bin/runc",),
+}
+
 CRICTL_VERSION = "1.30.1"
 CRICTL_FILENAME = f"crictl-v{CRICTL_VERSION}-linux-amd64.tar.gz"
 CRICTL_SHA256 = "sha256:71873cdeeeb6c9ee0f79c27b45db38066da81f0c30dcda909b4eedc3aff63f59"
@@ -1757,14 +1764,8 @@ class LiveAcquisitionAdapter:
         python_version = self._binary_version(python, inspect_root)
         if python_version != "Python 3.11.18":
             raise _fail()
-        runtime_candidates = {
-            "containerd": ("usr/bin/containerd",),
-            "docker": ("usr/bin/docker",),
-            "podman": ("usr/bin/podman",),
-            "runc": ("usr/bin/runc", "usr/sbin/runc"),
-        }
         runtime: dict[str, dict[str, str]] = {}
-        for name, candidates in runtime_candidates.items():
+        for name, candidates in RUNTIME_BINARY_PATHS.items():
             binary = self._inspect_file(inspect_root, candidates, executable=True)
             runtime[name] = {
                 "sha256": file_identity(str(binary), executable=True).sha256,

@@ -373,6 +373,20 @@ def test_deb_fields_uses_value_only_show_format(tmp_path: Path, monkeypatch) -> 
     )
 
 
+def test_runtime_binary_paths_pin_canonical_runc_location(tmp_path: Path) -> None:
+    canonical = tmp_path / "usr/bin/runc"
+    duplicate = tmp_path / "usr/sbin/runc"
+    _write(canonical, b"runc", executable=True)
+    _write(duplicate, b"runc", executable=True)
+
+    assert guest_inputs.RUNTIME_BINARY_PATHS["runc"] == ("usr/bin/runc",)
+    assert guest_inputs.LiveAcquisitionAdapter._inspect_file(
+        tmp_path,
+        guest_inputs.RUNTIME_BINARY_PATHS["runc"],
+        executable=True,
+    ) == canonical
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
