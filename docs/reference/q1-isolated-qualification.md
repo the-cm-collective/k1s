@@ -205,6 +205,149 @@ path, ACL, byte content, or receipt detail.
 Gate A grants only KVM access. Gate B grants only one exact in-guest
 transaction. Neither approval implies the other.
 
+## QH2 sealed input bundle and Gate B bridge
+
+QH2 is a source-and-synthetic-test checkpoint. It neither creates a guest
+image nor installs or starts the Gate B endpoint. The bundle builder and
+validator are dependency-free and are the only construction boundary for the
+candidate guest payload. The candidate is exactly `k1s-core` `0.1.8a1`; a
+different distribution or version fails closed.
+
+The uncompressed canonical USTAR bundle has one leading `manifest.json` and
+exactly 30 payload members in UTF-8 byte order:
+
+- the accepted `k1s_core-0.1.8a1-py3-none-any.whl` and normalized
+  `k1s_core-0.1.8a1.tar.gz`;
+- `requirements-release.lock`, the canonical wheelhouse manifest, and the
+  exact 24 dependency wheels;
+- `kp1_q1_guest_helper.py`; and
+- the same dependency-free `kp1_q1_bundle.py` validator used by the guest.
+
+The canonical manifest binds every member path, role, mode, size, and SHA-256;
+the source commit/tree, run ID, capsule plan digest, fixed source epoch, exact
+offline-install posture, and the Gate B endpoint. Regular members are either
+mode `0644` or `0755`; uid/gid are zero in the archive; timestamps are fixed;
+and uname/gname and PAX metadata are empty. Symlinks, hardlinks, special
+members, duplicate or case-fold-colliding names, traversal, protected names,
+unsupported fields or versions, input replacement, and noncanonical archive
+bytes are rejected. The bundle ID is the SHA-256 of the domain-separated
+canonical manifest with `bundleId` omitted. A consumed bundle ID cannot be
+accepted by another transaction.
+
+Construction takes one owner-only mode-`0600` canonical JSON specification.
+Each `inputs` row contains exactly `sourcePath`, `bundlePath`, `role`, and
+`expectedSha256`; no source path is written to the bundle. The specification
+also contains `runId`, `planDigest`, `sourceCommit`, `sourceTree`, and an
+`endpoint` object with the expected Python, `setfacl`, and `getfacl` digests.
+All referenced inputs must be canonical absolute, single-link regular files
+owned by the invoking user, mode `0644` or `0755`, and stable during reading.
+The absent output is created mode `0600` below an existing owner-only mode
+`0700` directory:
+
+```text
+python3 scripts/qualification/kp1_q1_bundle.py build \
+  --spec /absolute/private/q1-bundle-spec.json \
+  --expect-spec-sha256 sha256:... \
+  --output /absolute/private/k1s-q1-input.bundle
+
+python3 scripts/qualification/kp1_q1_bundle.py verify \
+  --bundle /absolute/private/k1s-q1-input.bundle \
+  --expect-bundle-sha256 sha256:... \
+  --run-id q1-0123456789abcdef0123456789abcdef \
+  --plan-digest sha256:... \
+  --bundle-id sha256:...
+```
+
+The capsule `run` command additionally requires
+`--input-bundle`, `--expect-input-bundle-sha256`, and `--expect-bundle-id`.
+It validates the bundle before creating the run layout, copies exact bytes to
+`input/k1s-q1-input.bundle`, validates the copy again, and includes only that
+private copy in the seed input. Any bundle drift precedes and prevents the
+first external command.
+
+```text
+python3 scripts/qualification/kp1_q1_capsule.py run \
+  --plan /absolute/private/plan.json \
+  --expect-plan-sha256 sha256:... \
+  --expect-plan-digest sha256:... \
+  --confirm RUN_ID:PLAN_DIGEST \
+  --host-preflight /absolute/private/host-preflight.json \
+  --expect-host-preflight-sha256 sha256:... \
+  --gate-a-attestation /absolute/private/gate-a.json \
+  --expect-gate-a-sha256 sha256:... \
+  --input-bundle /absolute/private/k1s-q1-input.bundle \
+  --expect-input-bundle-sha256 sha256:... \
+  --expect-bundle-id sha256:...
+```
+
+The Gate B endpoint descriptor is itself digest-bound. It names the
+single-transaction nonpersistent service `k1s-q1-gate-b`, uid/gid zero, the
+exact helper and bundle-validator paths and digests, `/usr/bin/python3.11`,
+`setfacl`, and `getfacl` digests, request FD 3, response FD 4, `cwd=/`, umask
+`0077`, the exact clean environment, 30-second total deadline, 64-request and
+256-KiB protocol ceilings, and no shell or ambient sudo. The canonical
+five-minute attestation additionally binds the bundle and manifest identities,
+run and plan, transaction and target, access uid/gid, request count, and the
+exact rollback receipt digest. Unknown, expired, divergent, replayed, or
+cross-bundle authority fails closed.
+
+The endpoint descriptor is a protocol and compatibility identity, not proof of
+peer-process identity. Anonymous pipes alone do not authenticate the process at
+their other end. The later paired live gate must independently bind the guest
+image, installed module bytes, root launch authority, process identity, and FD
+topology before sending any request.
+
+Inside a future disposable guest, the helper independently revalidates the
+private mode-`0600` bundle and Gate B attestation, its own bytes, the validator,
+Python, and ACL tools. It requires root, `/`, umask `077`, the exact environment,
+and two anonymous pipe descriptors. Framing reads and writes share the single
+deadline and fixed size ceiling. Every request must match the one transaction,
+target, and plan; rollback additionally must carry the attested receipt digest.
+Public failure output is the single generic failed-closed message.
+
+The future root launcher must create anonymous pipes as FDs 3 and 4, set the
+exact environment and umask before exec, and invoke only the pinned
+interpreter and helper without a shell:
+
+```text
+/usr/bin/python3.11 /opt/k1s-q1/kp1_q1_guest_helper.py \
+  --request-fd 3 --response-fd 4 \
+  --input-bundle /opt/k1s-q1/input/k1s-q1-input.bundle \
+  --expect-input-bundle-sha256 sha256:... \
+  --expect-bundle-id sha256:... \
+  --run-id RUN_ID --plan-digest sha256:... \
+  --gate-b-attestation /run/k1s-q1/private/gate-b.json \
+  --expect-gate-b-sha256 sha256:... \
+  --acceptance-receipt \
+    /run/k1s-q1/private/acceptance/BUNDLE_ID_HEX.json \
+  --setfacl /usr/bin/setfacl --getfacl /usr/bin/getfacl
+```
+
+Those paths are fixed by the sealed endpoint and are illustrative only until
+the independently reviewed live launcher has installed the exact bytes and
+proven their owner, mode, digest, process, and FD identities.
+
+The acceptance directory must already exist as a root-owned mode-`0700`
+directory. The receipt filename is derived only from the bundle ID and is
+therefore the same for every attempted transaction using those exact bundle
+bytes. After process context, bundle, attestation, and every executable
+identity pass—but before the first request is read—the helper atomically
+creates one canonical root-owned mode-`0600` `accepted-once` receipt. It uses
+an exclusive no-follow pending file and an exclusive hard-link publication so
+the final path is never overwritten. The receipt binds the bundle, bundle
+manifest, run, plan, and transaction. An existing final path of any kind,
+malformed or divergent receipt, unsafe parent, owner/mode/link/device drift, or
+second invocation fails closed. Only a pending file created by the failing
+invocation may be removed; a final receipt is retained as replay authority.
+
+The offline installation contract is fixed to `PIP_CONFIG_FILE=/dev/null`,
+`PIP_NO_INDEX=1`, `--no-index`, `--require-hashes`, and the exact 24-wheel
+closure. QH2 performs no install, service creation, privilege transition,
+network access, guest-image construction, ISO creation, or QEMU action. A
+separate paired live authorization must install and invoke the exact endpoint
+inside the disposable guest, and only independent acceptance of the entire Q1
+matrix may change the release posture from `source-validated/unqualified`.
+
 ## Required acceptance order
 
 An accepted run records these stages in order:

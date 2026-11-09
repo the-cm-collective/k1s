@@ -31,6 +31,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol, cast
 
+try:
+    from scripts.qualification import kp1_q1_bundle as q1_bundle
+except ModuleNotFoundError:  # Direct execution from scripts/qualification.
+    import kp1_q1_bundle as q1_bundle  # type: ignore[import-not-found,no-redef]
+
 API_VERSION = "k1s.dev/q1-capsule/v1"
 PLAN_KIND = "K1sQ1QualificationPlan"
 GUEST_MANIFEST_KIND = "K1sQ1GuestManifest"
@@ -1621,6 +1626,9 @@ def execute_plan(
     expected_host_preflight_digest: str,
     gate_a_path: Path,
     expected_gate_a_digest: str,
+    input_bundle_path: Path,
+    expected_input_bundle_digest: str,
+    expected_bundle_id: str,
     runner: CommandRunner | None = None,
     now_unix: int | None = None,
     port_checker: Callable[[int], bool] | None = None,
@@ -1635,6 +1643,21 @@ def execute_plan(
     if confirmation != f"{run_id}:{plan_digest}":
         raise _fail()
     _revalidate_plan_inputs(plan)
+    try:
+        bundle_authority = q1_bundle.validate_bundle_file(
+            input_bundle_path,
+            expected_sha256=expected_input_bundle_digest,
+            expected_run_id=run_id,
+            expected_plan_digest=plan_digest,
+            expected_bundle_id=expected_bundle_id,
+        )
+    except q1_bundle.Q1BundleError as exc:
+        raise _fail() from exc
+    bundle_identity = file_identity(
+        str(input_bundle_path),
+        expected_digest=expected_input_bundle_digest,
+        maximum=q1_bundle.MAX_BUNDLE_BYTES,
+    )
     parent = _revalidate_capsule_parent(plan)
     current_time = int(time.time()) if now_unix is None else now_unix
     _validate_gate_a(
@@ -1657,6 +1680,23 @@ def execute_plan(
             raise _fail()
 
     paths = _make_layout(plan)
+    bundle_copy = paths["input"] / "k1s-q1-input.bundle"
+    _write_private(
+        bundle_copy,
+        _read_identity_bytes(bundle_identity, maximum=q1_bundle.MAX_BUNDLE_BYTES),
+    )
+    try:
+        copied_authority = q1_bundle.validate_bundle_file(
+            bundle_copy,
+            expected_sha256=expected_input_bundle_digest,
+            expected_run_id=run_id,
+            expected_plan_digest=plan_digest,
+            expected_bundle_id=expected_bundle_id,
+        )
+    except q1_bundle.Q1BundleError as exc:
+        raise _fail() from exc
+    if copied_authority != bundle_authority:
+        raise _fail()
     runner = runner or SubprocessCommandRunner()
     environment = _clean_environment()
     tools = plan["tools"]
@@ -1713,6 +1753,7 @@ def execute_plan(
         "-rock",
         str(paths["input"] / "user-data"),
         str(paths["input"] / "meta-data"),
+        str(bundle_copy),
     ]
     result = runner.run(
         seed_argv,
@@ -2082,6 +2123,9 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--expect-host-preflight-sha256", required=True)
     run.add_argument("--gate-a-attestation", type=Path, required=True)
     run.add_argument("--expect-gate-a-sha256", required=True)
+    run.add_argument("--input-bundle", type=Path, required=True)
+    run.add_argument("--expect-input-bundle-sha256", required=True)
+    run.add_argument("--expect-bundle-id", required=True)
 
     teardown = sub.add_parser("teardown", help="Remove exact private state after QEMU stops")
     teardown.add_argument("--capsule-parent", type=Path, required=True)
@@ -2190,6 +2234,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_host_preflight_digest=ns.expect_host_preflight_sha256,
                 gate_a_path=ns.gate_a_attestation,
                 expected_gate_a_digest=ns.expect_gate_a_sha256,
+                input_bundle_path=ns.input_bundle,
+                expected_input_bundle_digest=ns.expect_input_bundle_sha256,
+                expected_bundle_id=ns.expect_bundle_id,
             )
             return 0
         if ns.command == "teardown":

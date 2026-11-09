@@ -517,6 +517,33 @@ class _RecordingRunner:
         return capsule.CommandResult(0, b"", b"")
 
 
+def _bundle_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    plan: dict[str, object],
+) -> dict[str, object]:
+    path = tmp_path / "sealed-input.bundle"
+    raw = b"sealed-q1-input-bundle"
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    authority = SimpleNamespace(
+        bundle_id="sha256:" + "7" * 64,
+        plan_digest=plan["planDigest"],
+        raw_sha256=_digest(raw),
+        run_id=plan["runId"],
+    )
+    monkeypatch.setattr(
+        capsule.q1_bundle,
+        "validate_bundle_file",
+        lambda *_args, **_kwargs: authority,
+    )
+    return {
+        "input_bundle_path": path,
+        "expected_input_bundle_digest": _digest(raw),
+        "expected_bundle_id": authority.bundle_id,
+    }
+
+
 def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -524,6 +551,7 @@ def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
     root = tmp_path / f"k1s-{run_id}"
     plan = _plan(tmp_path, run_id=run_id)
     runner = _RecordingRunner()
+    bundle_arguments = _bundle_arguments(tmp_path, monkeypatch, plan)
     monkeypatch.setattr(capsule, "_validate_gate_a", lambda *_args, **_kwargs: {"valid": True})
     monkeypatch.setattr(
         capsule.shutil,
@@ -542,6 +570,7 @@ def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
             expected_gate_a_digest="sha256:" + "9" * 64,
             runner=runner,
             port_checker=lambda _port: True,
+            **bundle_arguments,
         )
         assert created == root
         assert [call[1] for call in runner.calls[:2]] == ["create", "-output"]
@@ -555,6 +584,8 @@ def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
         assert b"sudo: false" in user_data
         assert b"q1 hard nproc 512" in user_data
         assert b"q1 hard nofile 1024" in user_data
+        assert (root / "input" / "k1s-q1-input.bundle").read_bytes() == (b"sealed-q1-input-bundle")
+        assert str(root / "input" / "k1s-q1-input.bundle") in runner.calls[1]
         assert all(stat.S_IMODE(item.stat().st_mode) == 0o700 for item in root.iterdir())
     finally:
         if root.exists():
@@ -566,6 +597,7 @@ def test_run_boundary_rejects_confirmation_collision_and_insufficient_disk(
 ) -> None:
     run_id = "q1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     plan = _plan(tmp_path, run_id=run_id)
+    bundle_arguments = _bundle_arguments(tmp_path, monkeypatch, plan)
     monkeypatch.setattr(capsule, "_validate_gate_a", lambda *_args, **_kwargs: {"valid": True})
     with pytest.raises(capsule.CapsulePolicyError):
         capsule.execute_plan(
@@ -577,6 +609,7 @@ def test_run_boundary_rejects_confirmation_collision_and_insufficient_disk(
             gate_a_path=tmp_path / "gate-a.json",
             expected_gate_a_digest="sha256:" + "9" * 64,
             runner=_RecordingRunner(),
+            **bundle_arguments,
         )
     monkeypatch.setattr(
         capsule.shutil,
@@ -593,6 +626,7 @@ def test_run_boundary_rejects_confirmation_collision_and_insufficient_disk(
             gate_a_path=tmp_path / "gate-a.json",
             expected_gate_a_digest="sha256:" + "9" * 64,
             runner=_RecordingRunner(),
+            **bundle_arguments,
         )
 
 

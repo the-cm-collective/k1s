@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scripts.qualification import kp1_q1_guest_helper as guest_helper
@@ -143,6 +144,60 @@ def test_clean_environment_is_exact_and_rejects_ambient_values() -> None:
     with pytest.raises(guest_helper.QualificationHelperError, match="failed closed"):
         guest_helper.validate_clean_environment(
             {**guest_helper.ALLOWED_ENVIRONMENT, "PATH": "/unsafe:/usr/bin"}
+        )
+
+
+def test_gate_b_request_binds_exact_transaction_plan_target_and_rollback_receipt() -> None:
+    approval = {
+        "planDigest": "sha256:" + "1" * 64,
+        "rollbackReceiptSha256": "sha256:" + "2" * 64,
+        "targetId": "strict-cri",
+        "transactionId": "ht1-" + "3" * 32,
+    }
+    base = {
+        "authorities": SimpleNamespace(plan_digest=approval["planDigest"]),
+        "operation": "apply",
+        "rollback_authorization_digest": None,
+        "target_id": approval["targetId"],
+        "transaction_id": approval["transactionId"],
+    }
+    guest_helper._validate_gate_b_request(SimpleNamespace(**base), approval)
+    rollback = {
+        **base,
+        "operation": "rollback",
+        "rollback_authorization_digest": approval["rollbackReceiptSha256"],
+    }
+    guest_helper._validate_gate_b_request(SimpleNamespace(**rollback), approval)
+    for field, value in (
+        ("transaction_id", "ht1-" + "4" * 32),
+        ("target_id", "other"),
+        ("rollback_authorization_digest", "sha256:" + "5" * 64),
+    ):
+        changed = {**rollback, field: value}
+        with pytest.raises(guest_helper.QualificationHelperError, match="failed closed"):
+            guest_helper._validate_gate_b_request(SimpleNamespace(**changed), approval)
+    for operation in ("apply", "snapshot"):
+        stray = {
+            **base,
+            "operation": operation,
+            "rollback_authorization_digest": approval["rollbackReceiptSha256"],
+        }
+        with pytest.raises(guest_helper.QualificationHelperError, match="failed closed"):
+            guest_helper._validate_gate_b_request(SimpleNamespace(**stray), approval)
+
+
+def test_protocol_timeout_and_output_bound_fail_closed(monkeypatch) -> None:
+    def timeout(*_args, **_kwargs):
+        raise guest_helper.QualificationHelperError("K1s Q1 guest helper failed closed")
+
+    monkeypatch.setattr(guest_helper, "_wait_for_fd", timeout)
+    with pytest.raises(guest_helper.QualificationHelperError, match="failed closed"):
+        guest_helper._read_protocol_bounded(3, deadline=1.0)
+    with pytest.raises(guest_helper.QualificationHelperError, match="failed closed"):
+        guest_helper._write_protocol_bounded(
+            4,
+            {"value": "x" * guest_helper.q1_bundle.GATE_B_MAX_PROTOCOL_BYTES},
+            deadline=1.0,
         )
 
 
@@ -580,6 +635,18 @@ def test_main_rejects_dirty_environment_before_opening_fds(monkeypatch, capsys) 
             "/private/gate.json",
             "--expect-gate-b-sha256",
             "sha256:" + "0" * 64,
+            "--input-bundle",
+            "/private/input.bundle",
+            "--expect-input-bundle-sha256",
+            "sha256:" + "1" * 64,
+            "--expect-bundle-id",
+            "sha256:" + "2" * 64,
+            "--run-id",
+            "q1-0123456789abcdef0123456789abcdef",
+            "--plan-digest",
+            "sha256:" + "3" * 64,
+            "--acceptance-receipt",
+            "/run/k1s-q1/private/acceptance/" + "2" * 64 + ".json",
             "--setfacl",
             "/usr/bin/setfacl",
             "--getfacl",
@@ -590,3 +657,42 @@ def test_main_rejects_dirty_environment_before_opening_fds(monkeypatch, capsys) 
     error = capsys.readouterr().err
     assert error == "K1s Q1 guest helper failed closed\n"
     assert "/private" not in error
+
+
+def test_main_normalizes_schema_type_error_to_generic_failure(monkeypatch, capsys) -> None:
+    def malformed_schema() -> None:
+        raise TypeError("private malformed scalar")
+
+    monkeypatch.setattr(guest_helper, "validate_clean_environment", malformed_schema)
+    result = guest_helper.main(
+        [
+            "--request-fd",
+            "3",
+            "--response-fd",
+            "4",
+            "--gate-b-attestation",
+            "/private/gate.json",
+            "--expect-gate-b-sha256",
+            "sha256:" + "0" * 64,
+            "--input-bundle",
+            "/private/input.bundle",
+            "--expect-input-bundle-sha256",
+            "sha256:" + "1" * 64,
+            "--expect-bundle-id",
+            "sha256:" + "2" * 64,
+            "--run-id",
+            "q1-0123456789abcdef0123456789abcdef",
+            "--plan-digest",
+            "sha256:" + "3" * 64,
+            "--acceptance-receipt",
+            "/run/k1s-q1/private/acceptance/" + "2" * 64 + ".json",
+            "--setfacl",
+            "/usr/bin/setfacl",
+            "--getfacl",
+            "/usr/bin/getfacl",
+        ]
+    )
+    assert result == 2
+    error = capsys.readouterr().err
+    assert error == "K1s Q1 guest helper failed closed\n"
+    assert "private malformed scalar" not in error

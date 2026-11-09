@@ -17,13 +17,20 @@ import hashlib
 import json
 import os
 import re
+import select
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol, cast
+
+try:
+    from scripts.qualification import kp1_q1_bundle as q1_bundle
+except ModuleNotFoundError:  # Direct execution from /opt/k1s-q1.
+    import kp1_q1_bundle as q1_bundle  # type: ignore[import-not-found,no-redef]
 
 from ae.kctl.profile_host_helper import (
     MAX_BACKUP_FILE_BYTES,
@@ -32,8 +39,6 @@ from ae.kctl.profile_host_helper import (
     HostActionBoundary,
     ProfileHostHelperError,
     StrictCRIHostHelperEngine,
-    read_protocol_message,
-    write_protocol_message,
 )
 from ae.kctl.profile_host_plan import StrictCRIActionMaterial, canonical_json_bytes
 
@@ -45,12 +50,7 @@ TRANSACTION_RE = re.compile(r"ht1-[0-9a-f]{32}")
 ACTION_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,61}[a-z0-9])?")
 ACL_RE = re.compile(r"(?:user|group):[0-9]*:[r-][w-][x-]|mask::[r-][w-][x-]|other::[r-][w-][x-]")
 
-ALLOWED_ENVIRONMENT = {
-    "LC_ALL": "C.UTF-8",
-    "PATH": "/usr/bin:/bin",
-    "PYTHONDONTWRITEBYTECODE": "1",
-    "TZ": "UTC",
-}
+ALLOWED_ENVIRONMENT = q1_bundle.ALLOWED_ENVIRONMENT
 SYSTEM_TEMP = Path("/tmp")  # noqa: S108 - fixed system temporary directory
 SYSTEM_TEMP_OWNER_UID = 0
 PROTECTED_LEAF_NAMES = {
@@ -115,6 +115,81 @@ def validate_clean_environment(environment: dict[str, str] | None = None) -> Non
     value = dict(os.environ if environment is None else environment)
     if value != ALLOWED_ENVIRONMENT:
         raise _fail()
+
+
+def _wait_for_fd(fd: int, *, readable: bool, deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise _fail()
+    try:
+        readers, writers, errors = select.select(
+            [fd] if readable else [],
+            [] if readable else [fd],
+            [fd],
+            remaining,
+        )
+    except (OSError, ValueError) as exc:
+        raise _fail() from exc
+    if errors or (readable and not readers) or (not readable and not writers):
+        raise _fail()
+
+
+def _read_exact_bounded(fd: int, size: int, *, deadline: float) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        _wait_for_fd(fd, readable=True, deadline=deadline)
+        try:
+            block = os.read(fd, remaining)
+        except BlockingIOError:
+            continue
+        except OSError as exc:
+            raise _fail() from exc
+        if not block:
+            raise _fail()
+        chunks.append(block)
+        remaining -= len(block)
+    return b"".join(chunks)
+
+
+def _read_protocol_bounded(fd: int, *, deadline: float) -> dict[str, object]:
+    if type(fd) is not int or fd < 3:
+        raise _fail()
+    header = _read_exact_bounded(fd, 9, deadline=deadline)
+    if header[8:] != b"\n":
+        raise _fail()
+    try:
+        size = int(header[:8], 16)
+    except ValueError as exc:
+        raise _fail() from exc
+    if not 1 <= size <= q1_bundle.GATE_B_MAX_PROTOCOL_BYTES:
+        raise _fail()
+    raw = _read_exact_bounded(fd, size, deadline=deadline)
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _fail() from exc
+    if type(value) is not dict or canonical_json_bytes(value) != raw:
+        raise _fail()
+    return value
+
+
+def _write_protocol_bounded(fd: int, payload: object, *, deadline: float) -> None:
+    raw = canonical_json_bytes(payload)
+    if len(raw) > q1_bundle.GATE_B_MAX_PROTOCOL_BYTES or type(fd) is not int or fd < 3:
+        raise _fail()
+    view = memoryview(f"{len(raw):08x}\n".encode("ascii") + raw)
+    while view:
+        _wait_for_fd(fd, readable=False, deadline=deadline)
+        try:
+            written = os.write(fd, view)
+        except BlockingIOError:
+            continue
+        except OSError as exc:
+            raise _fail() from exc
+        if written <= 0:
+            raise _fail()
+        view = view[written:]
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,7 +959,13 @@ class QualificationHostActionBoundary(HostActionBoundary):
             os.close(backup_fd)
 
 
-def _load_gate_b(path: Path, expected_digest: str) -> dict[str, object]:
+def _load_gate_b(
+    path: Path,
+    expected_digest: str,
+    authority: q1_bundle.BundleAuthority,
+    *,
+    now_unix: int,
+) -> dict[str, object]:
     expected_digest = _digest(expected_digest)
     path = _canonical_path(str(path))
     parent_fd = _open_directory_chain(path.parent, expected_uid=os.getuid())
@@ -917,47 +998,33 @@ def _load_gate_b(path: Path, expected_digest: str) -> dict[str, object]:
         value = json.loads(raw, object_pairs_hook=_unique_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _fail() from exc
-    required = {
-        "accessGid",
-        "accessUid",
-        "apiVersion",
-        "getfaclSha256",
-        "helperSha256",
-        "kind",
-        "planDigest",
-        "pythonSha256",
-        "requestCount",
-        "schemaVersion",
-        "setfaclSha256",
-        "targetId",
-        "transactionId",
-    }
-    if (
-        type(value) is not dict
-        or set(value) != required
-        or canonical_json_bytes(value) != raw
-        or value["apiVersion"] != API_VERSION
-        or value["kind"] != "K1sQ1GateBAttestation"
-        or value["schemaVersion"] != SCHEMA_VERSION
-        or type(value["requestCount"]) is not int
-        or not 1 <= value["requestCount"] <= 4096
-        or TRANSACTION_RE.fullmatch(str(value["transactionId"])) is None
-        or type(value["targetId"]) is not str
-        or any(
-            type(value[field]) is not int or value[field] < 0
-            for field in ("accessUid", "accessGid")
+    if type(value) is not dict or q1_bundle.canonical_json_bytes(value) != raw:
+        raise _fail()
+    try:
+        return q1_bundle.validate_gate_b_attestation(
+            value,
+            authority,
+            now_unix=now_unix,
         )
+    except q1_bundle.Q1BundleError as exc:
+        raise _fail() from exc
+
+
+def _validate_gate_b_request(
+    request: HelperRequest,
+    approval: dict[str, object],
+) -> None:
+    if (
+        request.transaction_id != approval["transactionId"]
+        or request.target_id != approval["targetId"]
+        or request.authorities.plan_digest != approval["planDigest"]
+        or (
+            request.operation == "rollback"
+            and request.rollback_authorization_digest != approval["rollbackReceiptSha256"]
+        )
+        or (request.operation != "rollback" and request.rollback_authorization_digest is not None)
     ):
         raise _fail()
-    for field in (
-        "getfaclSha256",
-        "helperSha256",
-        "planDigest",
-        "pythonSha256",
-        "setfaclSha256",
-    ):
-        _digest(value[field])
-    return value
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -966,6 +1033,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--response-fd", type=int, required=True)
     parser.add_argument("--gate-b-attestation", type=Path, required=True)
     parser.add_argument("--expect-gate-b-sha256", required=True)
+    parser.add_argument("--input-bundle", type=Path, required=True)
+    parser.add_argument("--expect-input-bundle-sha256", required=True)
+    parser.add_argument("--expect-bundle-id", required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--plan-digest", required=True)
+    parser.add_argument("--acceptance-receipt", type=Path, required=True)
     parser.add_argument("--setfacl", type=Path, required=True)
     parser.add_argument("--getfacl", type=Path, required=True)
     return parser
@@ -976,18 +1049,87 @@ def main(argv: Sequence[str] | None = None) -> int:
     ns = parser.parse_args(argv)
     try:
         validate_clean_environment()
-        if ns.request_fd < 3 or ns.response_fd < 3 or ns.request_fd == ns.response_fd:
+        previous_umask = os.umask(0o077)
+        os.umask(previous_umask)
+        request_info = os.fstat(ns.request_fd)
+        response_info = os.fstat(ns.response_fd)
+        q1_bundle.validate_endpoint_context(
+            euid=os.geteuid(),
+            egid=os.getegid(),
+            cwd=os.getcwd(),
+            umask=previous_umask,
+            request_fd_mode=request_info.st_mode,
+            response_fd_mode=response_info.st_mode,
+            request_fd_device=request_info.st_dev,
+            request_fd_inode=request_info.st_ino,
+            response_fd_device=response_info.st_dev,
+            response_fd_inode=response_info.st_ino,
+            request_fd=ns.request_fd,
+            response_fd=ns.response_fd,
+            environment=dict(os.environ),
+        )
+        authority = q1_bundle.validate_bundle_file(
+            ns.input_bundle,
+            expected_sha256=ns.expect_input_bundle_sha256,
+            expected_run_id=ns.run_id,
+            expected_plan_digest=ns.plan_digest,
+            expected_bundle_id=ns.expect_bundle_id,
+        )
+        now_unix = int(time.time())
+        approval = _load_gate_b(
+            ns.gate_b_attestation,
+            ns.expect_gate_b_sha256,
+            authority,
+            now_unix=now_unix,
+        )
+        endpoint = cast(dict[str, object], authority.manifest["gateB"])
+
+        def endpoint_tool(name: str) -> tuple[Path, str]:
+            value = cast(dict[str, object], endpoint[name])
+            path = _canonical_path(value["path"])
+            return path, _digest(value["sha256"])
+
+        validator_path = getattr(q1_bundle, "__file__", None)
+        if type(validator_path) is not str:
             raise _fail()
-        approval = _load_gate_b(ns.gate_b_attestation, ns.expect_gate_b_sha256)
-        helper = executable_identity(
-            Path(__file__).resolve(),
-            str(approval["helperSha256"]),
+        expected_validator_path, expected_validator_digest = endpoint_tool("bundleValidator")
+        if Path(validator_path) != expected_validator_path:
+            raise _fail()
+        validator = executable_identity(
+            Path(validator_path),
+            expected_validator_digest,
             require_executable=False,
         )
-        python = executable_identity(Path(sys.executable).resolve(), str(approval["pythonSha256"]))
-        setfacl = executable_identity(ns.setfacl, str(approval["setfaclSha256"]))
-        getfacl = executable_identity(ns.getfacl, str(approval["getfaclSha256"]))
-        del helper, python
+        expected_helper_path, expected_helper_digest = endpoint_tool("helper")
+        if Path(__file__) != expected_helper_path:
+            raise _fail()
+        helper = executable_identity(
+            Path(__file__),
+            expected_helper_digest,
+            require_executable=False,
+        )
+        expected_python_path, expected_python_digest = endpoint_tool("python")
+        expected_setfacl_path, expected_setfacl_digest = endpoint_tool("setfacl")
+        expected_getfacl_path, expected_getfacl_digest = endpoint_tool("getfacl")
+        if (
+            Path(sys.executable) != expected_python_path
+            or ns.setfacl != expected_setfacl_path
+            or ns.getfacl != expected_getfacl_path
+        ):
+            raise _fail()
+        python = executable_identity(expected_python_path, expected_python_digest)
+        setfacl = executable_identity(expected_setfacl_path, expected_setfacl_digest)
+        getfacl = executable_identity(expected_getfacl_path, expected_getfacl_digest)
+        del helper, python, validator
+        acceptance_receipt = q1_bundle.validate_acceptance_receipt_output_path(
+            ns.acceptance_receipt,
+            authority,
+        )
+        q1_bundle.create_acceptance_receipt(
+            acceptance_receipt,
+            authority,
+            transaction_id=cast(str, approval["transactionId"]),
+        )
         boundary = QualificationHostActionBoundary(
             access_uid=cast(int, approval["accessUid"]),
             access_gid=cast(int, approval["accessGid"]),
@@ -995,18 +1137,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             getfacl=getfacl,
         )
         engine = StrictCRIHostHelperEngine(boundary)
+        os.set_blocking(ns.request_fd, False)
+        os.set_blocking(ns.response_fd, False)
+        deadline = time.monotonic() + q1_bundle.GATE_B_TIMEOUT_SECONDS
         for _index in range(cast(int, approval["requestCount"])):
-            request = HelperRequest.from_payload(read_protocol_message(ns.request_fd))
-            if (
-                request.transaction_id != approval["transactionId"]
-                or request.target_id != approval["targetId"]
-                or request.authorities.plan_digest != approval["planDigest"]
-            ):
-                raise _fail()
+            request = HelperRequest.from_payload(
+                _read_protocol_bounded(ns.request_fd, deadline=deadline)
+            )
+            _validate_gate_b_request(request, approval)
             response = engine.handle(request)
-            write_protocol_message(ns.response_fd, response.to_payload())
+            _write_protocol_bounded(
+                ns.response_fd,
+                response.to_payload(),
+                deadline=deadline,
+            )
         return 0
-    except (QualificationHelperError, ProfileHostHelperError, OSError, ValueError):
+    except (
+        QualificationHelperError,
+        ProfileHostHelperError,
+        q1_bundle.Q1BundleError,
+        OSError,
+        TypeError,
+        ValueError,
+    ):
         print("K1s Q1 guest helper failed closed", file=sys.stderr)
         return 2
 
