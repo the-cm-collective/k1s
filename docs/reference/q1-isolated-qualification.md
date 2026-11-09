@@ -397,6 +397,84 @@ QH3 does not make `source-validated/unqualified` live-qualified. The concrete
 SSH/QMP/process adapters, exact process teardown, retained-evidence sealing,
 independent replay, and zero-residue proof remain later paired checkpoints.
 
+## QH4 exact shutdown and evidence replay contract
+
+QH4 adds the dependency-free source-side contract in
+`scripts/qualification/kp1_q1_teardown.py`. It remains synthetic-only: the
+module defines typed QMP, process-observer, clock, inventory, and filesystem
+boundaries but provides no socket, subprocess, signal, service, privilege, or
+runtime implementation. Tests supply fakes and owner-private temporary trees.
+
+The shutdown model is exact and closed. It first revalidates the recorded
+process by PID, start-time ticks, canonical executable, and the complete argv.
+Only then may the injected QMP adapter receive the ordered commands
+`query-status`, `system_powerdown`, bounded `query-status` polls ending in
+`shutdown`, and `quit`. Every request binds the complete QH3 authority, a
+domain-separated digest of the private process identity, a monotonic deadline,
+the fixed 64-KiB response ceiling, and an exact sequence number. The contract
+never signals or discovers a process by name, pattern, port, or executable.
+After QMP completion, bounded exact-PID observations must prove absence; a
+reused PID or any start-time, executable, or argv substitution fails closed.
+Public receipts contain only the process-identity digest and bounded QMP
+payload digests and sizes, never the PID, executable, argv, QMP path, or raw
+output.
+
+Host inventory snapshots are canonical sorted sets of typed opaque SHA-256
+identities. The allowed kinds are `file`, `listener`, `network-interface`,
+`process`, and `runtime-object`. Before and after inventories must be exactly
+equal; duplicates, unknown kinds, reordered rows, changed identities, or more
+than 4096 entries fail. The zero-residue receipt additionally requires the
+exact `k1s-RUN_ID` root to be absent beneath the revalidated owner-private
+capsule parent. It binds only domain-separated parent, run-root, retained
+evidence-root, process, shutdown, and inventory-comparison digests; private host
+paths are not rendered.
+
+The retained evidence directory is an existing owner-owned mode-`0700`
+directory and initially contains exactly these owner-owned, single-link,
+mode-`0600` canonical JSON files:
+
+1. `conductor-receipt.json`
+2. `inventory-after.json`
+3. `inventory-before.json`
+4. `inventory-comparison.json`
+5. `shutdown-receipt.json`
+6. `zero-residue.json`
+
+Sealing independently validates every relation, reconstructs lexical member
+rows, and exclusively creates `Q1-EVIDENCE-MANIFEST.json`, `SHA256SUMS`, and
+`Q1-EVIDENCE-SEAL.json`. It refuses overwrite, links, special files, foreign
+owner/device/mode, noncanonical or duplicate-key JSON, unexpected members,
+oversize input, authority drift, or inconsistent receipts. Replay enumerates
+the exact nine-file directory without following links, reconstructs every
+member row and checksum from actual bytes, revalidates the conductor,
+shutdown, inventory, and zero-residue relations, and optionally requires the
+exact seal-file digest. A recomputed checksum file cannot make false manifest
+or receipt claims acceptable.
+
+The schema, seal, and independent replay CLI surfaces are:
+
+```text
+python3 scripts/qualification/kp1_q1_teardown.py schema
+
+python3 scripts/qualification/kp1_q1_teardown.py seal \
+  --root /absolute/private/retained-evidence \
+  --authority /absolute/private/run-authority.json \
+  --expect-authority-sha256 sha256:...
+
+python3 scripts/qualification/kp1_q1_teardown.py replay \
+  --root /absolute/private/retained-evidence \
+  --authority /absolute/private/run-authority.json \
+  --expect-authority-sha256 sha256:... \
+  --expect-seal-sha256 sha256:...
+```
+
+These source contracts do not perform QMP, inspect a host process, remove a
+capsule, or qualify the release. A later paired live gate must provide and
+independently review the exact QMP and process observers, preserve the sealed
+bundle, move retained evidence without substitution, and demonstrate teardown
+and host-inventory equality inside the disposable egress-denied guest before
+any `live-qualified` claim.
+
 ## Required acceptance order
 
 An accepted run records these stages in order:
