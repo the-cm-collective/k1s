@@ -120,7 +120,8 @@ class _Adapter:
 
     def read_file(self, path: str, *, maximum_bytes: int) -> inventory.FileObservation:
         value = self.files[path]
-        assert len(value.raw) <= maximum_bytes
+        if value.raw is not None:
+            assert len(value.raw) <= maximum_bytes
         return value
 
     def execute(
@@ -234,6 +235,114 @@ def test_inventory_rejects_unsafe_file_observation(failure: str) -> None:
         adapter.files[path] = inventory.FileObservation(
             path, b"x" * (inventory.MAX_FILE_BYTES + 1), 0o755, 0, 0
         )
+    with pytest.raises(inventory.GuestInventoryPolicyError):
+        inventory.extract_inventory(spec, adapter=adapter)
+
+
+def test_inventory_accepts_digest_only_large_executable_observations() -> None:
+    spec = _spec()
+    expected_manifest, _ = inventory.extract_inventory(spec, adapter=_Adapter(spec))
+    adapter = _Adapter(spec)
+    executable_paths = [
+        spec["paths"]["kernelImage"],
+        spec["paths"]["python"],
+        *spec["paths"]["runtime"].values(),
+        *spec["paths"]["cni"]["plugins"].values(),
+    ]
+    for path in executable_paths:
+        original = adapter.files[path]
+        assert original.raw is not None
+        adapter.files[path] = inventory.FileObservation(
+            path=path,
+            raw=None,
+            mode=original.mode,
+            uid=original.uid,
+            gid=original.gid,
+            sha256=_digest(original.raw),
+            size=inventory.MAX_FILE_BYTES + 1,
+        )
+
+    manifest, receipt = inventory.extract_inventory(spec, adapter=adapter)
+
+    assert manifest == expected_manifest
+    assert any(
+        row["path"] == spec["paths"]["runtime"]["containerd"]
+        and row["size"] == inventory.MAX_FILE_BYTES + 1
+        for row in receipt["files"]
+    )
+
+
+@pytest.mark.parametrize(
+    "path_selector",
+    [
+        lambda spec: spec["paths"]["osRelease"],
+        lambda spec: spec["paths"]["cni"]["config"],
+        lambda spec: spec["paths"]["offlineEvidence"],
+    ],
+)
+def test_inventory_rejects_digest_only_content_required_observations(path_selector) -> None:
+    spec = _spec()
+    adapter = _Adapter(spec)
+    path = path_selector(spec)
+    original = adapter.files[path]
+    assert original.raw is not None
+    adapter.files[path] = inventory.FileObservation(
+        path=path,
+        raw=None,
+        mode=original.mode,
+        uid=original.uid,
+        gid=original.gid,
+        sha256=_digest(original.raw),
+        size=len(original.raw),
+    )
+
+    with pytest.raises(inventory.GuestInventoryPolicyError):
+        inventory.extract_inventory(spec, adapter=adapter)
+
+
+@pytest.mark.parametrize("field", ["sha256", "size"])
+def test_inventory_rejects_raw_digest_metadata_mismatch(field: str) -> None:
+    spec = _spec()
+    adapter = _Adapter(spec)
+    path = spec["paths"]["python"]
+    original = adapter.files[path]
+    assert original.raw is not None
+    values = {
+        "sha256": _digest(original.raw),
+        "size": len(original.raw),
+    }
+    values[field] = _digest(b"wrong") if field == "sha256" else len(original.raw) + 1
+    adapter.files[path] = inventory.FileObservation(
+        path=path,
+        raw=original.raw,
+        mode=original.mode,
+        uid=original.uid,
+        gid=original.gid,
+        sha256=values["sha256"],
+        size=values["size"],
+    )
+
+    with pytest.raises(inventory.GuestInventoryPolicyError):
+        inventory.extract_inventory(spec, adapter=adapter)
+
+
+@pytest.mark.parametrize("size", [0, inventory.MAX_DIGEST_FILE_BYTES + 1])
+def test_inventory_rejects_digest_only_observation_outside_size_bound(size: int) -> None:
+    spec = _spec()
+    adapter = _Adapter(spec)
+    path = spec["paths"]["python"]
+    original = adapter.files[path]
+    assert original.raw is not None
+    adapter.files[path] = inventory.FileObservation(
+        path=path,
+        raw=None,
+        mode=original.mode,
+        uid=original.uid,
+        gid=original.gid,
+        sha256=_digest(original.raw),
+        size=size,
+    )
+
     with pytest.raises(inventory.GuestInventoryPolicyError):
         inventory.extract_inventory(spec, adapter=adapter)
 

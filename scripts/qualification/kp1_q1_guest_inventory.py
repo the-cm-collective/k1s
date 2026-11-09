@@ -34,6 +34,7 @@ RECEIPT_KIND = "K1sQ1GuestInventoryReceipt"
 OFFLINE_KIND = "K1sQ1GuestOfflineEvidence"
 
 MAX_FILE_BYTES = 16 * 1024 * 1024
+MAX_DIGEST_FILE_BYTES = 256 * 1024 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 COMMAND_TIMEOUT_SECONDS = 15
 
@@ -182,13 +183,15 @@ def _authority(value: object) -> dict[str, object]:
 @dataclass(frozen=True, slots=True)
 class FileObservation:
     path: str
-    raw: bytes
+    raw: bytes | None
     mode: int
     uid: int
     gid: int
     regular: bool = True
     symlink: bool = False
     link_count: int = 1
+    sha256: str | None = None
+    size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,7 +286,8 @@ def _file(
     path: str,
     *,
     executable: bool = False,
-) -> tuple[bytes, dict[str, object]]:
+    require_content: bool = False,
+) -> tuple[bytes | None, dict[str, object]]:
     try:
         observed = adapter.read_file(path, maximum_bytes=MAX_FILE_BYTES)
     except Exception as exc:
@@ -291,14 +295,13 @@ def _file(
     if (
         type(observed) is not FileObservation
         or observed.path != path
-        or type(observed.raw) is not bytes
+        or (observed.raw is not None and type(observed.raw) is not bytes)
         or type(observed.regular) is not bool
         or not observed.regular
         or type(observed.symlink) is not bool
         or observed.symlink
         or type(observed.link_count) is not int
         or observed.link_count != 1
-        or not 1 <= len(observed.raw) <= MAX_FILE_BYTES
         or type(observed.mode) is not int
         or not 0 <= observed.mode <= 0o777
         or observed.mode & 0o022
@@ -308,6 +311,26 @@ def _file(
         or observed.gid < 0
     ):
         raise _fail()
+    if observed.raw is None:
+        if (
+            require_content
+            or type(observed.sha256) is not str
+            or DIGEST_RE.fullmatch(observed.sha256) is None
+            or type(observed.size) is not int
+            or not 1 <= observed.size <= MAX_DIGEST_FILE_BYTES
+        ):
+            raise _fail()
+        digest = observed.sha256
+        size = observed.size
+    else:
+        if not 1 <= len(observed.raw) <= MAX_FILE_BYTES:
+            raise _fail()
+        digest = _digest_bytes(observed.raw)
+        size = len(observed.raw)
+        if observed.sha256 is not None and observed.sha256 != digest:
+            raise _fail()
+        if observed.size is not None and observed.size != size:
+            raise _fail()
     if executable and not observed.mode & 0o100:
         raise _fail()
     if not executable and observed.mode & 0o111:
@@ -315,8 +338,8 @@ def _file(
     evidence = {
         "mode": f"{observed.mode:04o}",
         "path": path,
-        "sha256": _digest_bytes(observed.raw),
-        "size": len(observed.raw),
+        "sha256": digest,
+        "size": size,
     }
     return observed.raw, evidence
 
@@ -473,13 +496,18 @@ def extract_inventory(
     files: list[dict[str, object]] = []
     commands: list[dict[str, object]] = []
 
-    os_raw, evidence = _file(adapter, cast(str, paths["osRelease"]))
+    os_raw, evidence = _file(
+        adapter,
+        cast(str, paths["osRelease"]),
+        require_content=True,
+    )
     files.append(evidence)
+    assert os_raw is not None
     os_id, os_version = _os_release(os_raw)
     os_release_sha = _digest_bytes(os_raw)
 
-    kernel_raw, evidence = _file(adapter, cast(str, paths["kernelImage"]))
-    files.append(evidence)
+    _, kernel_evidence = _file(adapter, cast(str, paths["kernelImage"]))
+    files.append(kernel_evidence)
     kernel_release, evidence = _command(adapter, ("/usr/bin/uname", "-r"))
     commands.append(evidence)
     if kernel_release != expected["kernelRelease"]:
@@ -504,8 +532,8 @@ def extract_inventory(
         raise _fail()
 
     python_path = cast(str, paths["python"])
-    python_raw, evidence = _file(adapter, python_path, executable=True)
-    files.append(evidence)
+    _, python_evidence = _file(adapter, python_path, executable=True)
+    files.append(python_evidence)
     python_version, evidence = _command(adapter, (python_path, "--version"))
     commands.append(evidence)
     match = re.fullmatch(r"Python (3\.11\.[0-9]+)", python_version)
@@ -516,28 +544,47 @@ def extract_inventory(
     runtime: dict[str, dict[str, str]] = {}
     for name in RUNTIME_NAMES:
         component_path = cast(str, runtime_paths[name])
-        component_raw, evidence = _file(adapter, component_path, executable=True)
-        files.append(evidence)
+        _, component_evidence = _file(adapter, component_path, executable=True)
+        files.append(component_evidence)
         version, evidence = _command(adapter, (component_path, "--version"))
         commands.append(evidence)
-        runtime[name] = {"sha256": _digest_bytes(component_raw), "version": version}
+        runtime[name] = {
+            "sha256": cast(str, component_evidence["sha256"]),
+            "version": version,
+        }
 
     cni_paths = cast(dict[str, object], paths["cni"])
-    cni_raw, evidence = _file(adapter, cast(str, cni_paths["config"]))
+    cni_raw, evidence = _file(
+        adapter,
+        cast(str, cni_paths["config"]),
+        require_content=True,
+    )
     files.append(evidence)
+    assert cni_raw is not None
     _validate_cni_config(cni_raw)
     cni_plugins: list[dict[str, str]] = []
     plugin_paths = cast(dict[str, object], cni_paths["plugins"])
     for name in CNI_NAMES:
         plugin_path = cast(str, plugin_paths[name])
-        plugin_raw, evidence = _file(adapter, plugin_path, executable=True)
-        files.append(evidence)
+        _, plugin_evidence = _file(adapter, plugin_path, executable=True)
+        files.append(plugin_evidence)
         version, evidence = _command(adapter, (plugin_path, "--version"))
         commands.append(evidence)
-        cni_plugins.append({"name": name, "sha256": _digest_bytes(plugin_raw), "version": version})
+        cni_plugins.append(
+            {
+                "name": name,
+                "sha256": cast(str, plugin_evidence["sha256"]),
+                "version": version,
+            }
+        )
 
-    offline_raw, evidence = _file(adapter, cast(str, paths["offlineEvidence"]))
+    offline_raw, evidence = _file(
+        adapter,
+        cast(str, paths["offlineEvidence"]),
+        require_content=True,
+    )
     files.append(evidence)
+    assert offline_raw is not None
     offline = _offline_evidence(_canonical_json(offline_raw), authority)
     manifest: dict[str, object] = {
         "apiVersion": q1_capsule.API_VERSION,
@@ -550,14 +597,14 @@ def extract_inventory(
         "image": {"format": "qcow2", "sha256": authority["imageSha256"]},
         "images": offline["images"],
         "kernel": {
-            "imageSha256": _digest_bytes(kernel_raw),
+            "imageSha256": cast(str, kernel_evidence["sha256"]),
             "package": expected["kernelPackage"],
             "release": kernel_release,
         },
         "kind": q1_capsule.GUEST_MANIFEST_KIND,
         "os": {"id": os_id, "releaseSha256": os_release_sha, "version": os_version},
         "python": {
-            "executableSha256": _digest_bytes(python_raw),
+            "executableSha256": cast(str, python_evidence["sha256"]),
             "version": match.group(1),
         },
         "registry": offline["registry"],
