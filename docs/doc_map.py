@@ -11,6 +11,7 @@ DOCS_MAPPING = {
     "reference/nvidia-development-baseline.md": "nvidia-development-baseline.html",
     "reference/apishim-roadmap.md": "apishim-roadmap.html",
     "reference/cri-containerd.md": "cri-containerd.html",
+    "reference/q1-isolated-qualification.md": "q1-isolated-qualification.html",
     "guides/multinode-lab.md": "multinode-lab.html",
     "reference/http-api.md": "http-api.html",
     "reference/api-shim.md": "api-shim.html",

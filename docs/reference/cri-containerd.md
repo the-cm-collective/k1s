@@ -79,7 +79,7 @@ guest. The repository scripts documented below are legacy/manual development
 helpers; they are not called by these installed contracts.
 
 The source-validated Q1 capsule contract is documented in
-[Isolated K1s v1 qualification capsule](q1-isolated-qualification.md). Its pure
+[Isolated K1s v1 qualification capsule](q1-isolated-qualification.html). Its pure
 plan, synthetic helper tests, and evidence tooling do not promote any profile
 or runtime to live-qualified. A live run requires a sealed guest identity and
 two separate paired approvals: Gate A for exact temporary access to an

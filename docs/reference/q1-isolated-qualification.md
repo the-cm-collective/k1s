@@ -499,12 +499,14 @@ Each lane must execute the same closed stage order:
 8. `validate-guest-manifest`.
 
 The plan accepts only a dated immutable Canonical Jammy release URL, exact
-source commit and tree, canonical offline BOM, digest-bound local inputs and
+accepted-candidate source commit and tree, canonical offline BOM, retained B1
+and B2 plan/seal authorities, digest-bound qualification sources and local
 tools, an owner-private mode-`0700` output parent, fixed stage and total
 deadlines, and absent lane output paths. It records file device, inode, owner,
 mode, size, and SHA-256 so a later adapter must detect substitution before
 execution. The module defines a typed adapter boundary and canonical receipt,
-but ships no live image-builder adapter. Synthetic tests prove stage ordering,
+and B3 supplies the separately bound live image-builder adapter. Synthetic
+tests prove stage ordering,
 identity binding, bounded output, fail-closed timeout/error handling, and exact
 lane artifact equality. The historical generic Packer lane is not accepted as
 Q1 authority by this contract.
@@ -533,8 +535,8 @@ canonical inventory receipt. Builder output alone therefore cannot assert its
 own guest contents.
 
 B0 proves source contracts and synthetic adapter behavior only. B1 adds the
-separately reviewed base-acquisition adapter below. The live builder remains
-B3: later QH5-B checkpoints must close the bill of materials, build both lanes,
+separately reviewed base-acquisition adapter below. The live builder is B3:
+later QH5-B checkpoints must build both lanes,
 compare exact image and manifest identities, boot the accepted artifact under
 the sealed Q1 capsule, replay inventory independently, complete the ordered
 acceptance matrix, and prove teardown and host-inventory equality. Until all
@@ -692,6 +694,60 @@ python3 scripts/qualification/kp1_q1_guest_inputs.py verify-root \
 
 Success closes B2 only. B3 remains a separate reviewed boundary for two image
 lanes and is never implied by acquisition or replay success.
+
+## QH5-B B3 offline two-lane guest construction
+
+QH5-B B3 adds `scripts/qualification/kp1_q1_guest_builder.py`. The accepted
+candidate identity remains the commit and tree retained by B2; qualification
+code added after candidate acceptance is independently digest-bound as B3 plan
+input. This avoids relabeling a later tooling commit as the accepted K1s
+artifact while ensuring that unrecorded builder code cannot produce evidence.
+
+Before creating either lane, B3 independently replays the complete retained B1
+root and complete retained B2 root against their exact plan and seal-file
+digests. It also binds the live builder, inventory module, guest helper bundle,
+QEMU system binary, `qemu-img`, Python, `gpgv`, and ISO seed builder by regular
+file identity and SHA-256.
+
+The host adapter has no shell-command surface. It invokes only exact argv lists
+through a clean environment and creates two absent owner-private lane roots.
+Each lane:
+
+1. copies and expands the authenticated Jammy qcow2;
+2. boots QEMU TCG with a fixed machine, CPU, virtual clock, UUID, memory, and
+   CPU count, with `-nic none` and no KVM dependency;
+3. exposes the retained B2 tar as one read-only raw virtio block device;
+4. installs the exact 160-package closure, `crictl`, CNI plugins, accepted K1s
+   wheel, and 24-wheel Python closure without an index or network device;
+5. removes generated cloud identity, logs, SSH keys, and random seed, normalizes
+   file timestamps, and powers off;
+6. converts through raw into a normalized standalone qcow2; and
+7. boots that image with QEMU snapshot writes and collects a bounded inventory
+   over the serial port.
+
+The inventory boot has no SSH credential, host mount, source checkout, `HOME`,
+socket, TAP, bridge, firewall, container runtime, or network device. Large
+executables are represented by bounded streamed digest/size observations;
+configuration and offline-evidence files remain bounded raw observations. The
+host-side independent inventory module reconstructs and validates the closed
+guest manifest. The final stage requires exact equality of the two lane image
+SHA-256 and size, guest-manifest SHA-256, and inventory-receipt SHA-256.
+
+The reviewed live invocation is explicit and plan-bound:
+
+```text
+python3 scripts/qualification/kp1_q1_guest_builder.py \
+  --plan /absolute/private/q1-guest-image-plan.json \
+  --expect-plan-sha256 sha256:... \
+  --confirm BUILD-Q1-GUEST:sha256:... \
+  --receipt /absolute/private/B3-BUILD-RECEIPT.json
+```
+
+On failure, B3 retains the owner-private lane and a bounded stage failure
+record for review; it does not delete prior B1/B2 evidence or broaden cleanup.
+B3 success remains `source-validated/unqualified`. It does not imply the B4
+capsule/runtime acceptance matrix, release publication, tag, push, upload, or
+artifact pruning.
 
 ## Required acceptance order
 
