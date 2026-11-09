@@ -108,3 +108,4 @@ def test_policy_exclusions_remain_narrow_and_explicit() -> None:
     assert "/var/lib/cloud" in excluded
     assert "/var/lib/snapd/device" in excluded
     assert "/var/lib/snapd/state.json" in set(policy["ephemeralExactPaths"])
+    assert policy["includedPersistentMountTrees"] == ["/boot/efi"]

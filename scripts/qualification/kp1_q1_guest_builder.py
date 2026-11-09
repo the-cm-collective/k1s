@@ -528,6 +528,12 @@ def excluded(path):
                 return True
     return False
 
+def included_persistent_mount(path):
+    for root in filesystem_policy["includedPersistentMountTrees"]:
+        if path == root or path.startswith(root + "/"):
+            return True
+    return False
+
 def digest_xattrs(path):
     rows = []
     for name in sorted(os.listxattr(path, follow_symlinks=False), key=lambda item: item.encode("utf-8")):
@@ -550,7 +556,7 @@ def collect_tree(parent):
         if excluded(path):
             continue
         info = os.lstat(path)
-        if info.st_dev != root_device:
+        if info.st_dev != root_device and not included_persistent_mount(path):
             raise RuntimeError("unexpected cross-device path: " + path)
         row = {
             "gid": info.st_gid,

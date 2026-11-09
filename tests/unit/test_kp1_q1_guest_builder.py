@@ -154,6 +154,7 @@ def test_inventory_script_contains_closed_collection_and_serial_marker() -> None
     ).decode()
     assert "filesystemManifest" in collector
     assert "digest_xattrs" in collector
+    assert "included_persistent_mount" in collector
     assert "unexpected cross-device path" in collector
 
 

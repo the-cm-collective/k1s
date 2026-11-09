@@ -33,6 +33,7 @@ XATTR_RE = re.compile(r"[A-Za-z0-9_.-]{1,255}")
 # embedded in, and digest-bound by, every filesystem manifest.
 POLICY: dict[str, object] = {
     "includedRoot": "/",
+    "includedPersistentMountTrees": ["/boot/efi"],
     "excludedMountTrees": ["/dev", "/proc", "/run", "/snap", "/sys"],
     "ephemeralExactPaths": [
         "/etc/machine-id",
