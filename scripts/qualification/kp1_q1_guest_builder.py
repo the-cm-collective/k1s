@@ -29,6 +29,7 @@ try:
     from scripts.qualification import kp1_q1_base_acquisition as base_acquisition
     from scripts.qualification import kp1_q1_capsule as guest_capsule
     from scripts.qualification import kp1_q1_guest_bom as guest_bom
+    from scripts.qualification import kp1_q1_guest_filesystem as guest_filesystem
     from scripts.qualification import kp1_q1_guest_image as guest_image
     from scripts.qualification import kp1_q1_guest_inputs as guest_inputs
     from scripts.qualification import kp1_q1_guest_inventory as guest_inventory
@@ -36,6 +37,7 @@ except ModuleNotFoundError:  # Direct execution from scripts/qualification.
     import kp1_q1_base_acquisition as base_acquisition  # type: ignore[import-not-found,no-redef]
     import kp1_q1_capsule as guest_capsule  # type: ignore[import-not-found,no-redef]
     import kp1_q1_guest_bom as guest_bom  # type: ignore[import-not-found,no-redef]
+    import kp1_q1_guest_filesystem as guest_filesystem  # type: ignore[import-not-found,no-redef]
     import kp1_q1_guest_image as guest_image  # type: ignore[import-not-found,no-redef]
     import kp1_q1_guest_inputs as guest_inputs  # type: ignore[import-not-found,no-redef]
     import kp1_q1_guest_inventory as guest_inventory  # type: ignore[import-not-found,no-redef]
@@ -44,7 +46,7 @@ API_VERSION = "k1s.dev/q1-guest-live-builder/v1"
 SCHEMA_VERSION = 1
 FAILURE_KIND = "K1sQ1GuestLiveBuildFailure"
 IMAGE_VIRTUAL_SIZE = 16 * 1024 * 1024 * 1024
-MAX_SERIAL_BYTES = 2 * 1024 * 1024
+MAX_SERIAL_BYTES = 64 * 1024 * 1024
 MAX_FAILURE_TEXT = 4096
 INVENTORY_PREFIX = b"K1S_Q1_INVENTORY:"
 PROVISION_MARKER = b"K1S_Q1_PROVISION_OK"
@@ -63,6 +65,7 @@ QEMU_RTC = "2026-12-03T00:00:00"
 BOUND_SOURCE_MODULES = {
     "baseAcquisitionModule": base_acquisition,
     "guestBomModule": guest_bom,
+    "filesystemManifestModule": guest_filesystem,
     "guestCapsuleModule": guest_capsule,
     "guestImageModule": guest_image,
     "guestInputsModule": guest_inputs,
@@ -301,6 +304,7 @@ export DEBIAN_FRONTEND=noninteractive
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PYTHONDONTWRITEBYTECODE=1
 umask {umask}
 
 quiesce_mutable_services() {{
@@ -415,24 +419,39 @@ chmod 0644 /opt/k1s-q1/kp1_q1_bundle.py
 
 /usr/bin/python3.11 -m venv /opt/k1s-q1/venv
 /opt/k1s-q1/venv/bin/pip install \
-  --disable-pip-version-check --no-cache-dir --no-index --require-hashes \
+  --disable-pip-version-check --no-cache-dir --no-compile --no-index --require-hashes \
   --find-links "$PAYLOAD_ROOT/q1/wheelhouse/wheels" \
   --requirement "$PAYLOAD_ROOT/q1/wheelhouse/requirements-release.lock"
 /opt/k1s-q1/venv/bin/pip install \
-  --disable-pip-version-check --no-cache-dir --no-index --no-deps \
+  --disable-pip-version-check --no-cache-dir --no-compile --no-index --no-deps \
   "$PAYLOAD_ROOT/q1/accepted/k1s_core-0.1.8a1-py3-none-any.whl"
 
 mv "$PAYLOAD_ROOT" /opt/k1s-q1/offline
 quiesce_mutable_services
+find /opt/k1s-q1 -xdev -type d -name __pycache__ -prune -exec rm -rf {{}} +
+find /opt/k1s-q1 -xdev -type f -name '*.py[co]' -delete
+# Normalize all Q1-owned content independently of the adversarial lane umask.
+find /opt/k1s-q1 -xdev -type d -exec chmod 0755 {{}} +
+find /opt/k1s-q1 -xdev -type f -perm /0111 -exec chmod 0755 {{}} +
+find /opt/k1s-q1 -xdev -type f ! -perm /0111 -exec chmod 0644 {{}} +
+chmod 0755 /opt/k1s-q1/kp1_q1_guest_helper.py
+cat >/etc/sudoers.d/90-cloud-init-users <<'EOF'
+# Deterministic Q1 image user policy
+ubuntu ALL=(ALL) NOPASSWD:ALL
+EOF
+chmod 0440 /etc/sudoers.d/90-cloud-init-users
 rm -rf /root/.cache /var/cache/apt/archives/*.deb /var/lib/apt/lists/*
+rm -rf /var/lib/snapd/cgroup /var/lib/snapd/cookie /var/lib/snapd/device \
+  /var/lib/snapd/inhibit
 rm -f /etc/ssh/ssh_host_* /var/lib/systemd/random-seed /var/lib/dbus/machine-id
+chmod 0644 /var/lib/update-notifier/updates-available 2>/dev/null || true
 cloud-init clean --logs --machine-id || true
 find /tmp /var/tmp -mindepth 1 -xdev -delete
 find /var/log -type f -xdev -exec truncate --size 0 {{}} +
 find / -xdev -path /snap -prune -o \
   -exec touch -h --date='@{guest_image.SOURCE_DATE_EPOCH}' {{}} +
 sync
-echo {PROVISION_MARKER.decode('ascii')} >/dev/ttyS0
+echo {PROVISION_MARKER.decode("ascii")} >/dev/ttyS0
 /usr/bin/systemctl poweroff --no-wall
 """
     return script.encode("utf-8")
@@ -465,9 +484,7 @@ def _inventory_collection_plan(spec: Mapping[str, object]) -> dict[str, object]:
     commands.extend(
         [[cast(str, runtime[name]), "--version"] for name in guest_inventory.RUNTIME_NAMES]
     )
-    commands.extend(
-        [[cast(str, plugins[name]), "--version"] for name in guest_inventory.CNI_NAMES]
-    )
+    commands.extend([[cast(str, plugins[name]), "--version"] for name in guest_inventory.CNI_NAMES])
     return {
         "commands": commands,
         "contentPaths": content_paths,
@@ -477,7 +494,8 @@ def _inventory_collection_plan(spec: Mapping[str, object]) -> dict[str, object]:
 
 def render_inventory_script(spec: Mapping[str, object]) -> bytes:
     collection_b64 = _b64(_canonical_json_bytes(_inventory_collection_plan(spec)))
-    collector = r'''import base64
+    filesystem_policy_b64 = _b64(guest_filesystem.canonical_json_bytes(guest_filesystem.POLICY))
+    collector = r"""import base64
 import hashlib
 import json
 import os
@@ -485,8 +503,9 @@ import stat
 import subprocess
 
 plan = json.loads(base64.b64decode("__COLLECTION__"))
+filesystem_policy = json.loads(base64.b64decode("__FILESYSTEM_POLICY__"))
 
-def digest_file(path):
+def digest_file(path, maximum=256 * 1024 * 1024):
     digest = hashlib.sha256()
     size = 0
     with open(path, "rb") as stream:
@@ -495,10 +514,90 @@ def digest_file(path):
             if not block:
                 break
             size += len(block)
-            if size > 256 * 1024 * 1024:
+            if size > maximum:
                 raise RuntimeError("file bound")
             digest.update(block)
     return "sha256:" + digest.hexdigest(), size
+
+def excluded(path):
+    if path in filesystem_policy["ephemeralExactPaths"]:
+        return True
+    for key in ("excludedMountTrees", "ephemeralTrees"):
+        for root in filesystem_policy[key]:
+            if path == root or path.startswith(root + "/"):
+                return True
+    return False
+
+def digest_xattrs(path):
+    rows = []
+    for name in sorted(os.listxattr(path, follow_symlinks=False), key=lambda item: item.encode("utf-8")):
+        raw = os.getxattr(path, name, follow_symlinks=False)
+        rows.append({
+            "name": name,
+            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "size": len(raw),
+        })
+    return rows
+
+root_device = os.lstat("/").st_dev
+filesystem_entries = []
+regular_bytes = 0
+
+def collect_tree(parent):
+    global regular_bytes
+    for name in sorted(os.listdir(parent), key=lambda item: item.encode("utf-8")):
+        path = "/" + name if parent == "/" else parent + "/" + name
+        if excluded(path):
+            continue
+        info = os.lstat(path)
+        if info.st_dev != root_device:
+            raise RuntimeError("unexpected cross-device path: " + path)
+        row = {
+            "gid": info.st_gid,
+            "mode": format(stat.S_IMODE(info.st_mode), "04o"),
+            "path": path,
+            "uid": info.st_uid,
+            "xattrs": digest_xattrs(path),
+        }
+        if stat.S_ISDIR(info.st_mode):
+            row["type"] = "directory"
+            filesystem_entries.append(row)
+            collect_tree(path)
+        elif stat.S_ISREG(info.st_mode):
+            digest, size = digest_file(path, 16 * 1024 * 1024 * 1024)
+            regular_bytes += size
+            row.update({
+                "linkCount": info.st_nlink,
+                "sha256": digest,
+                "size": size,
+                "type": "regular",
+            })
+            filesystem_entries.append(row)
+        elif stat.S_ISLNK(info.st_mode):
+            row.update({"target": os.readlink(path), "type": "symlink"})
+            filesystem_entries.append(row)
+        elif stat.S_ISBLK(info.st_mode) or stat.S_ISCHR(info.st_mode):
+            row.update({
+                "major": os.major(info.st_rdev),
+                "minor": os.minor(info.st_rdev),
+                "type": "block" if stat.S_ISBLK(info.st_mode) else "character",
+            })
+            filesystem_entries.append(row)
+        else:
+            raise RuntimeError("unsupported persistent object: " + path)
+
+collect_tree("/")
+filesystem_entries.sort(key=lambda row: row["path"].encode("utf-8"))
+filesystem_manifest = {
+    "apiVersion": "__FILESYSTEM_API__",
+    "entries": filesystem_entries,
+    "entryCount": len(filesystem_entries),
+    "kind": "__FILESYSTEM_KIND__",
+    "policy": filesystem_policy,
+    "policySha256": "__FILESYSTEM_POLICY_SHA256__",
+    "regularBytes": regular_bytes,
+    "schemaVersion": __FILESYSTEM_SCHEMA__,
+}
 
 files = []
 for path in plan["contentPaths"] + plan["digestPaths"]:
@@ -545,7 +644,7 @@ for argv in plan["commands"]:
         "timedOut": timed_out,
     })
 
-value = {"commands": commands, "files": files}
+value = {"commands": commands, "files": files, "filesystemManifest": filesystem_manifest}
 raw = (
     json.dumps(
         value,
@@ -557,7 +656,15 @@ raw = (
     + "\n"
 ).encode()
 print("K1S_Q1_INVENTORY:" + base64.b64encode(raw).decode("ascii"), flush=True)
-'''.replace("__COLLECTION__", collection_b64)
+"""
+    collector = (
+        collector.replace("__COLLECTION__", collection_b64)
+        .replace("__FILESYSTEM_POLICY__", filesystem_policy_b64)
+        .replace("__FILESYSTEM_API__", guest_filesystem.API_VERSION)
+        .replace("__FILESYSTEM_KIND__", guest_filesystem.KIND)
+        .replace("__FILESYSTEM_POLICY_SHA256__", guest_filesystem.policy_digest())
+        .replace("__FILESYSTEM_SCHEMA__", str(guest_filesystem.SCHEMA_VERSION))
+    )
     collector_b64 = _b64(collector.encode("utf-8"))
     shell = f"""#!/bin/bash
 set -euo pipefail
@@ -565,7 +672,7 @@ base64 --decode >/run/k1s-q1-inventory.py <<'K1S_Q1_COLLECTOR'
 {collector_b64}
 K1S_Q1_COLLECTOR
 /usr/bin/python3.11 /run/k1s-q1-inventory.py >/dev/ttyS0
-echo {INVENTORY_MARKER.decode('ascii')} >/dev/ttyS0
+echo {INVENTORY_MARKER.decode("ascii")} >/dev/ttyS0
 sync
 /usr/bin/systemctl poweroff --no-wall
 """
@@ -586,12 +693,22 @@ def _decode_b64(value: object, *, maximum: int) -> bytes:
 
 class SerializedInventoryAdapter:
     def __init__(self, value: object) -> None:
-        if type(value) is not dict or set(value) != {"commands", "files"}:
+        if type(value) is not dict or set(value) != {
+            "commands",
+            "files",
+            "filesystemManifest",
+        }:
             raise _fail()
         files = value["files"]
         commands = value["commands"]
         if type(files) is not list or type(commands) is not list:
             raise _fail()
+        try:
+            self.filesystem_manifest = guest_filesystem.validate_manifest(
+                value["filesystemManifest"]
+            )
+        except guest_filesystem.GuestFilesystemPolicyError as exc:
+            raise _fail() from exc
         self.files: dict[str, guest_inventory.FileObservation] = {}
         self.commands: dict[tuple[str, ...], guest_inventory.CommandObservation] = {}
         for raw in files:
@@ -1121,9 +1238,7 @@ class LiveBuildAdapter:
             "paths": {
                 "cni": {
                     "config": "/etc/cni/net.d/10-k1s-bridge.conflist",
-                    "plugins": {
-                        name: f"/opt/cni/bin/{name}" for name in guest_inventory.CNI_NAMES
-                    },
+                    "plugins": {name: f"/opt/cni/bin/{name}" for name in guest_inventory.CNI_NAMES},
                 },
                 "kernelImage": f"/boot/vmlinuz-{kernel['release']}",
                 "offlineEvidence": "/etc/k1s-q1/offline-evidence.json",
@@ -1169,9 +1284,12 @@ class LiveBuildAdapter:
         manifest, receipt = guest_inventory.extract_inventory(spec, adapter=adapter)
         manifest_raw = guest_image.q1_capsule.canonical_json_bytes(manifest)
         receipt_raw = guest_inventory.canonical_json_bytes(receipt)
+        filesystem_raw = guest_filesystem.canonical_json_bytes(adapter.filesystem_manifest)
         _write_new(root / "guest-manifest.json", manifest_raw)
         _write_new(root / "inventory-receipt.json", receipt_raw)
+        _write_new(root / "filesystem-manifest.json", filesystem_raw)
         return {
+            "filesystemManifestSha256": _digest_bytes(filesystem_raw),
             "guestManifestSha256": _digest_bytes(manifest_raw),
             "inventorySha256": _digest_bytes(receipt_raw),
         }
@@ -1186,6 +1304,17 @@ class LiveBuildAdapter:
             actual.pop(key, None)
         if actual != expected:
             raise _fail()
+        guest_semantic_raw = _canonical_json_bytes(actual)
+        try:
+            filesystem = guest_filesystem.validate_manifest(
+                _canonical_json(
+                    (root / "filesystem-manifest.json").read_bytes(),
+                    maximum=guest_filesystem.MAX_MANIFEST_BYTES,
+                )
+            )
+        except (OSError, guest_filesystem.GuestFilesystemPolicyError) as exc:
+            raise _fail() from exc
+        filesystem_raw = guest_filesystem.canonical_json_bytes(filesystem)
         image_digest, image_size = _digest_path(
             root / "guest.qcow2",
             maximum=guest_image.MAX_IMAGE_BYTES,
@@ -1195,7 +1324,10 @@ class LiveBuildAdapter:
             raise _fail()
         inventory_raw = (root / "inventory-receipt.json").read_bytes()
         return {
+            "filesystemManifestSha256": _digest_bytes(filesystem_raw),
+            "filesystemPolicySha256": guest_filesystem.policy_digest(),
             "guestManifestSha256": _digest_bytes(manifest_raw),
+            "guestSemanticSha256": _digest_bytes(guest_semantic_raw),
             "imageSha256": image_digest,
             "imageSize": image_size,
             "inventorySha256": _digest_bytes(inventory_raw),

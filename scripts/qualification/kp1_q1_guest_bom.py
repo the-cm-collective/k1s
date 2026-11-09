@@ -500,7 +500,7 @@ def bom_from_manifest(
             "sha256": _digest(payload_sha256),
             "size": payload_size,
         },
-        "schemaVersion": guest_image.SCHEMA_VERSION,
+        "schemaVersion": guest_image.BOM_SCHEMA_VERSION,
         "sourceCommit": source["commit"],
         "sourceDateEpoch": source["sourceDateEpoch"],
         "sourceTree": source["tree"],

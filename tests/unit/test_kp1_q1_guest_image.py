@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from scripts.qualification import kp1_q1_guest_filesystem as guest_filesystem
 from scripts.qualification import kp1_q1_guest_image as guest_image
 
 
@@ -86,6 +87,7 @@ def _fixture(tmp_path: Path) -> tuple[dict[str, object], Path]:
         "guestHelper": b"guest-helper",
         "guestImageModule": b"guest-image-module",
         "guestInputsModule": b"guest-inputs-module",
+        "filesystemManifestModule": b"filesystem-manifest-module",
         "inventoryModule": b"inventory-module",
         "liveBuilder": b"live-builder",
         "offlinePayload": b"offline-payload",
@@ -107,7 +109,7 @@ def _fixture(tmp_path: Path) -> tuple[dict[str, object], Path]:
             "sha256": digests["offlinePayload"],
             "size": len(raw_inputs["offlinePayload"]),
         },
-        "schemaVersion": guest_image.SCHEMA_VERSION,
+        "schemaVersion": guest_image.BOM_SCHEMA_VERSION,
         "sourceCommit": "1" * 40,
         "sourceDateEpoch": guest_image.SOURCE_DATE_EPOCH,
         "sourceTree": "2" * 40,
@@ -169,17 +171,26 @@ class _Clock:
 
 
 class _Adapter:
-    def __init__(self, *, mismatch: bool = False) -> None:
+    def __init__(self, *, image_mismatch: bool = False, semantic_mismatch: bool = False) -> None:
         self.calls: list[guest_image.StageRequest] = []
-        self.mismatch = mismatch
+        self.image_mismatch = image_mismatch
+        self.semantic_mismatch = semantic_mismatch
 
     def execute(self, request: guest_image.StageRequest) -> guest_image.StageObservation:
         self.calls.append(request)
         artifacts = None
         if request.stage == guest_image.STAGES[-1]:
-            image_raw = b"lane-b" if self.mismatch and request.lane == "lane-b" else b"image"
+            image_raw = b"lane-b" if self.image_mismatch and request.lane == "lane-b" else b"image"
+            filesystem_raw = (
+                b"lane-b-filesystem"
+                if self.semantic_mismatch and request.lane == "lane-b"
+                else b"filesystem"
+            )
             artifacts = {
+                "filesystemManifestSha256": _digest(filesystem_raw),
+                "filesystemPolicySha256": guest_filesystem.policy_digest(),
                 "guestManifestSha256": _digest(b"manifest"),
+                "guestSemanticSha256": _digest(b"semantic"),
                 "imageSha256": _digest(image_raw),
                 "imageSize": 1024,
                 "inventorySha256": _digest(b"inventory"),
@@ -280,13 +291,27 @@ def test_synthetic_build_runs_exact_stage_order_and_verifies(tmp_path: Path) -> 
     )
 
 
-def test_synthetic_build_rejects_lane_divergence(tmp_path: Path) -> None:
+def test_synthetic_build_accepts_lane_specific_image_identity(tmp_path: Path) -> None:
+    spec, _ = _fixture(tmp_path)
+    plan = guest_image.build_plan(spec)
+    receipt = guest_image.run_build(
+        plan,
+        adapter=_Adapter(image_mismatch=True),
+        clock=_Clock(),
+        revalidate_files=False,
+    )
+    lanes = receipt["lanes"]
+    assert lanes[0]["artifacts"]["imageSha256"] != lanes[1]["artifacts"]["imageSha256"]
+    assert guest_image.verify_receipt(receipt, expected_plan_digest=plan["planDigest"])
+
+
+def test_synthetic_build_rejects_semantic_lane_divergence(tmp_path: Path) -> None:
     spec, _ = _fixture(tmp_path)
     plan = guest_image.build_plan(spec)
     with pytest.raises(guest_image.GuestImagePolicyError):
         guest_image.run_build(
             plan,
-            adapter=_Adapter(mismatch=True),
+            adapter=_Adapter(semantic_mismatch=True),
             clock=_Clock(),
             revalidate_files=False,
         )
@@ -327,7 +352,10 @@ def test_synthetic_build_rejects_stage_failure(tmp_path: Path, failure: str) -> 
                 0,
                 False,
                 artifacts={
+                    "filesystemManifestSha256": _digest(b"filesystem"),
+                    "filesystemPolicySha256": guest_filesystem.policy_digest(),
                     "guestManifestSha256": _digest(b"manifest"),
+                    "guestSemanticSha256": _digest(b"semantic"),
                     "imageSha256": _digest(b"image"),
                     "imageSize": 1024,
                     "inventorySha256": _digest(b"inventory"),

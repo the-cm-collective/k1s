@@ -28,9 +28,10 @@ try:
 except ModuleNotFoundError:  # Direct execution from scripts/qualification.
     import kp1_q1_capsule as q1_capsule  # type: ignore[import-not-found,no-redef]
 
-API_VERSION = "k1s.dev/q1-guest-image-build/v1"
+API_VERSION = "k1s.dev/q1-guest-image-build/v2"
 BOM_API_VERSION = "k1s.dev/q1-guest-build-bom/v1"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+BOM_SCHEMA_VERSION = 1
 SPEC_KIND = "K1sQ1GuestImageBuildSpec"
 PLAN_KIND = "K1sQ1GuestImageBuildPlan"
 RECEIPT_KIND = "K1sQ1GuestImageBuildReceipt"
@@ -78,6 +79,7 @@ INPUT_NAMES = {
     "guestHelper",
     "guestImageModule",
     "guestInputsModule",
+    "filesystemManifestModule",
     "inventoryModule",
     "liveBuilder",
     "offlineBom",
@@ -488,7 +490,7 @@ def validate_bom(value: object) -> dict[str, object]:
     if (
         item["apiVersion"] != BOM_API_VERSION
         or item["kind"] != BOM_KIND
-        or item["schemaVersion"] != SCHEMA_VERSION
+        or item["schemaVersion"] != BOM_SCHEMA_VERSION
         or item["sourceDateEpoch"] != SOURCE_DATE_EPOCH
     ):
         raise _fail()
@@ -770,13 +772,52 @@ def stage_identity(plan: Mapping[str, object], *, lane: str, stage: str) -> dict
 def _stage_artifacts(value: object) -> dict[str, object]:
     item = _closed(
         value,
-        {"guestManifestSha256", "imageSha256", "imageSize", "inventorySha256"},
+        {
+            "filesystemManifestSha256",
+            "filesystemPolicySha256",
+            "guestManifestSha256",
+            "guestSemanticSha256",
+            "imageSha256",
+            "imageSize",
+            "inventorySha256",
+        },
     )
-    for key in ("guestManifestSha256", "imageSha256", "inventorySha256"):
+    for key in (
+        "filesystemManifestSha256",
+        "filesystemPolicySha256",
+        "guestManifestSha256",
+        "guestSemanticSha256",
+        "imageSha256",
+        "inventorySha256",
+    ):
         _digest(item[key])
     if type(item["imageSize"]) is not int or not 1 <= item["imageSize"] <= MAX_IMAGE_BYTES:
         raise _fail()
     return item
+
+
+def _shared_artifacts(value: object) -> dict[str, object]:
+    item = _closed(
+        value,
+        {
+            "filesystemManifestSha256",
+            "filesystemPolicySha256",
+            "guestSemanticSha256",
+        },
+    )
+    for key in item:
+        _digest(item[key])
+    return item
+
+
+def _shared_from_lane(value: Mapping[str, object]) -> dict[str, object]:
+    return _shared_artifacts(
+        {
+            "filesystemManifestSha256": value["filesystemManifestSha256"],
+            "filesystemPolicySha256": value["filesystemPolicySha256"],
+            "guestSemanticSha256": value["guestSemanticSha256"],
+        }
+    )
 
 
 def run_build(
@@ -861,11 +902,12 @@ def run_build(
         )
     first = cast(dict[str, object], lane_receipts[0]["artifacts"])
     second = cast(dict[str, object], lane_receipts[1]["artifacts"])
-    if first != second:
+    shared = _shared_from_lane(first)
+    if shared != _shared_from_lane(second):
         raise _fail()
     unsigned: dict[str, object] = {
         "apiVersion": API_VERSION,
-        "artifacts": first,
+        "artifacts": shared,
         "completedAtUnix": active_clock.wall_time(),
         "kind": RECEIPT_KIND,
         "lanes": lane_receipts,
@@ -906,7 +948,7 @@ def verify_receipt(value: object, *, expected_plan_digest: object) -> dict[str, 
             raise _fail()
     if cast(int, receipt["completedAtUnix"]) < cast(int, receipt["startedAtUnix"]):
         raise _fail()
-    artifacts = _stage_artifacts(receipt["artifacts"])
+    artifacts = _shared_artifacts(receipt["artifacts"])
     lanes = receipt["lanes"]
     if type(lanes) is not list or len(lanes) != len(LANES):
         raise _fail()
@@ -914,7 +956,8 @@ def verify_receipt(value: object, *, expected_plan_digest: object) -> dict[str, 
         lane = _closed(raw, {"artifacts", "name", "stages", "umask"})
         if lane["name"] != expected[0] or lane["umask"] != expected[1]:
             raise _fail()
-        if _stage_artifacts(lane["artifacts"]) != artifacts:
+        lane_artifacts = _stage_artifacts(lane["artifacts"])
+        if _shared_from_lane(lane_artifacts) != artifacts:
             raise _fail()
         stages = lane["stages"]
         if type(stages) is not list or len(stages) != len(STAGES):

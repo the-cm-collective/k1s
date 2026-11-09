@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from scripts.qualification import kp1_q1_guest_builder as builder
+from scripts.qualification import kp1_q1_guest_filesystem as filesystem
 from scripts.qualification import kp1_q1_guest_inventory as inventory
 
 
@@ -73,6 +74,28 @@ def _serial_value() -> dict[str, object]:
                 "uid": 0,
             }
         ],
+        "filesystemManifest": {
+            "apiVersion": filesystem.API_VERSION,
+            "entries": [
+                {
+                    "gid": 0,
+                    "linkCount": 1,
+                    "mode": "0755",
+                    "path": "/usr/bin/containerd",
+                    "sha256": _digest(b"containerd"),
+                    "size": len(b"containerd"),
+                    "type": "regular",
+                    "uid": 0,
+                    "xattrs": [],
+                }
+            ],
+            "entryCount": 1,
+            "kind": filesystem.KIND,
+            "policy": filesystem.POLICY,
+            "policySha256": filesystem.policy_digest(),
+            "regularBytes": len(b"containerd"),
+            "schemaVersion": filesystem.SCHEMA_VERSION,
+        },
     }
 
 
@@ -92,6 +115,7 @@ def test_provision_script_is_offline_block_bound_and_contains_no_host_mount() ->
     assert '[[ "$package" = /* ]]' in text
     assert "--no-download --no-install-recommends" not in text
     assert "--no-index" in text
+    assert text.count("--no-compile") == 2
     assert "quiesce_mutable_services" in text
     assert text.count("quiesce_mutable_services") == 3
     assert "snapd.socket snapd.service snapd.seeded.service" in text
@@ -99,6 +123,10 @@ def test_provision_script_is_offline_block_bound_and_contains_no_host_mount() ->
     assert "'snap.*.service' || true" in text
     assert "find / -xdev -path /snap -prune -o" in text
     assert "umask 0077" in text
+    assert "find /opt/k1s-q1 -xdev -type d -exec chmod 0755" in text
+    assert "find /opt/k1s-q1 -xdev -type f ! -perm /0111 -exec chmod 0644" in text
+    assert "# Deterministic Q1 image user policy" in text
+    assert "rm -rf /var/lib/snapd/cgroup /var/lib/snapd/cookie /var/lib/snapd/device" in text
     assert "K1S_Q1_PROVISION_OK" in text
     assert "/usr/bin/systemctl poweroff --no-wall" in text
     assert "poweroff -f" not in text
@@ -115,9 +143,18 @@ def test_inventory_script_contains_closed_collection_and_serial_marker() -> None
     assert "K1S_Q1_INVENTORY_OK" in text
     assert "/usr/bin/systemctl poweroff --no-wall" in text
     assert "poweroff -f" not in text
-    assert "K1S_Q1_INVENTORY:" in base64.b64decode(
+    assert (
+        "K1S_Q1_INVENTORY:"
+        in base64.b64decode(
+            text.split("<<'K1S_Q1_COLLECTOR'\n", 1)[1].split("\nK1S_Q1_COLLECTOR", 1)[0]
+        ).decode()
+    )
+    collector = base64.b64decode(
         text.split("<<'K1S_Q1_COLLECTOR'\n", 1)[1].split("\nK1S_Q1_COLLECTOR", 1)[0]
     ).decode()
+    assert "filesystemManifest" in collector
+    assert "digest_xattrs" in collector
+    assert "unexpected cross-device path" in collector
 
 
 def test_serialized_inventory_adapter_preserves_bounded_digest_evidence() -> None:
@@ -144,6 +181,7 @@ def test_serialized_inventory_adapter_preserves_bounded_digest_evidence() -> Non
     assert observed.sha256 == _digest(b"containerd")
     assert observed.size == 48_000_000
     assert command.stdout == b"5.15.0-1112-kvm\n"
+    assert filesystem.validate_manifest(adapter.filesystem_manifest) == adapter.filesystem_manifest
 
 
 @pytest.mark.parametrize("mutation", ["missing-marker", "duplicate", "noncanonical"])
@@ -208,6 +246,7 @@ def test_live_builder_requires_new_authority_inputs() -> None:
         "guestCapsuleModule",
         "guestImageModule",
         "guestInputsModule",
+        "filesystemManifestModule",
         "inventoryModule",
         "liveBuilder",
     } <= builder.guest_image.INPUT_NAMES

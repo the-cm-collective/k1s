@@ -707,7 +707,8 @@ Before creating either lane, B3 independently replays the complete retained B1
 root and complete retained B2 root against their exact plan and seal-file
 digests. It also binds every imported qualification module, the live builder,
 inventory module, guest helper bundle, QEMU system binary, `qemu-img`, Python,
-`gpgv`, and ISO seed builder by regular file identity and SHA-256. The live
+filesystem-manifest policy module, `gpgv`, and ISO seed builder by regular file
+identity and SHA-256. The live
 adapter verifies that its executing source bytes equal those plan-bound copies
 before creating a lane.
 
@@ -721,19 +722,33 @@ Each lane:
 3. exposes the retained B2 tar as one read-only raw virtio block device;
 4. installs the exact 160-package closure, `crictl`, CNI plugins, accepted K1s
    wheel, and 24-wheel Python closure without an index or network device;
-5. removes generated cloud identity, logs, SSH keys, and random seed, normalizes
-   file timestamps, and powers off;
+5. removes generated cloud identity, logs, SSH keys, random seed, Python
+   bytecode, and snap device identity; normalizes Q1-owned modes independently
+   of the lane umask; normalizes file timestamps; and powers off gracefully;
 6. converts through raw into a normalized standalone qcow2; and
-7. boots that image with QEMU snapshot writes and collects a bounded inventory
-   over the serial port.
+7. boots that image with QEMU snapshot writes and collects both the bounded
+   runtime inventory and a complete persistent-filesystem manifest over the
+   serial port.
 
 The inventory boot has no SSH credential, host mount, source checkout, `HOME`,
 socket, TAP, bridge, firewall, container runtime, or network device. Large
 executables are represented by bounded streamed digest/size observations;
 configuration and offline-evidence files remain bounded raw observations. The
 host-side independent inventory module reconstructs and validates the closed
-guest manifest. The final stage requires exact equality of the two lane image
-SHA-256 and size, guest-manifest SHA-256, and inventory-receipt SHA-256.
+guest manifest. A separately bound filesystem-policy module validates every
+persistent path by type, mode, uid/gid, content or link/device identity, and
+extended-attribute digest. The narrow policy excludes explicit runtime mounts
+and reviewed first-boot state; it never excludes broad persistent roots such as
+`/etc`, `/opt`, `/usr`, or `/var`.
+
+The final stage requires exact equality of the two canonical filesystem
+manifest SHA-256 values, filesystem-policy SHA-256 values, and semantic guest
+manifest SHA-256 values. Each lane retains its own exact qcow2 SHA-256 and
+size, complete guest-manifest SHA-256, and inventory-receipt SHA-256. Physical
+qcow2 bytes, ext4 allocation geometry, journal sequence, and time metadata are
+not cross-lane equality fields because each lane is independently booted and
+mutated. B3 still fails closed on any persistent path, ownership, mode,
+content, link, device, xattr, guest semantic, or policy divergence.
 
 The reviewed live invocation is explicit and plan-bound:
 
