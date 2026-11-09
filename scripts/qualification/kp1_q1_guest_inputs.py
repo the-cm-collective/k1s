@@ -64,6 +64,7 @@ DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 HEX_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 OBJECT_RE = re.compile(r"[0-9a-f]{40}")
 FINGERPRINT_RE = re.compile(r"[0-9A-F]{40}")
+APT_PACKAGE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9+.-]{0,63}")
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -908,8 +909,24 @@ def _safe_stage_path(root: Path, relative: str) -> Path:
         or any(part in {"", ".", ".."} or part in PROTECTED_NAMES for part in pure.parts)
     ):
         raise _fail()
+    current = root
+    for part in pure.parts[:-1]:
+        current /= part
+        with contextlib.suppress(FileExistsError):
+            current.mkdir(mode=0o700)
+        try:
+            info = os.lstat(current)
+        except OSError as exc:
+            raise _fail() from exc
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.getuid()
+        ):
+            raise _fail()
+        if stat.S_IMODE(info.st_mode) != 0o700:
+            current.chmod(0o700)
     target = root.joinpath(*pure.parts)
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _path_chain_no_links(target.parent)
     if target.exists() or target.is_symlink():
         raise _fail()
@@ -1075,6 +1092,13 @@ def _deb_fields(dpkg_deb: str, deb: Path, *, cwd: Path) -> tuple[str, str, str]:
     if len(fields) != 3 or any(not field for field in fields):
         raise _fail()
     return fields[0], fields[1], fields[2]
+
+
+def _apt_payload_filename(package: str, sha256: str) -> str:
+    digest = _digest(sha256).removeprefix("sha256:")
+    if APT_PACKAGE_NAME_RE.fullmatch(package) is None:
+        raise _fail()
+    return f"{package}-{digest[:32]}.deb"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1552,12 +1576,13 @@ class LiveAcquisitionAdapter:
         if not 1 <= len(debs) <= 512:
             raise _fail()
         package_rows: list[dict[str, object]] = []
-        package_files: dict[str, tuple[Path, str]] = {}
+        package_files: dict[str, tuple[Path, str, str]] = {}
         for deb in debs:
             package, version, architecture = _deb_fields(dpkg_deb, deb, cwd=apt_work)
             if architecture not in {"all", "amd64"} or package in package_files:
                 raise _fail()
             identity = file_identity(str(deb))
+            payload_filename = _apt_payload_filename(package, identity.sha256)
             show = _run(
                 (apt_cache, *options, "show", f"{package}={version}"),
                 cwd=apt_work,
@@ -1572,11 +1597,11 @@ class LiveAcquisitionAdapter:
             }
             if identity.sha256 not in advertised:
                 raise _fail()
-            package_files[package] = (deb, version)
+            package_files[package] = (deb, version, payload_filename)
             package_rows.append(
                 {
                     "architecture": architecture,
-                    "filename": deb.name,
+                    "filename": payload_filename,
                     "package": package,
                     "sha256": identity.sha256,
                     "size": identity.size,
@@ -1635,8 +1660,9 @@ class LiveAcquisitionAdapter:
             destination = metadata_root / path.name
             self._copy_file(path, destination)
             roles[destination.relative_to(staging_root).as_posix()] = "apt-metadata"
-        for deb in debs:
-            destination = package_root / deb.name
+        for package in sorted(package_files, key=lambda value: value.encode("utf-8")):
+            deb, _version, payload_filename = package_files[package]
+            destination = package_root / payload_filename
             self._copy_file(deb, destination)
             roles[destination.relative_to(staging_root).as_posix()] = "apt-package"
         ledger = {

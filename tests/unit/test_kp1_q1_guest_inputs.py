@@ -387,6 +387,30 @@ def test_runtime_binary_paths_pin_canonical_runc_location(tmp_path: Path) -> Non
     ) == canonical
 
 
+def test_apt_payload_filename_is_portable_and_digest_bound() -> None:
+    digest = _digest(b"package")
+
+    assert guest_inputs._apt_payload_filename("libaudit1", digest) == (
+        "libaudit1-"
+        f"{digest.removeprefix('sha256:')[:32]}.deb"
+    )
+    assert "%" not in guest_inputs._apt_payload_filename("libaudit1", digest)
+    assert "~" not in guest_inputs._apt_payload_filename("libaudit1", digest)
+    with pytest.raises(guest_inputs.GuestInputPolicyError):
+        guest_inputs._apt_payload_filename("invalid/package", digest)
+
+
+def test_safe_stage_path_makes_private_intermediate_directories(tmp_path: Path) -> None:
+    root = tmp_path / "payload"
+    root.mkdir(mode=0o700)
+
+    target = guest_inputs._safe_stage_path(root, "apt/packages/package.deb")
+
+    assert target == root / "apt/packages/package.deb"
+    assert (root / "apt").stat().st_mode & 0o7777 == 0o700
+    assert (root / "apt/packages").stat().st_mode & 0o7777 == 0o700
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
