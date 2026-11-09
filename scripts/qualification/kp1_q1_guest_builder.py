@@ -303,6 +303,19 @@ export LC_ALL=C.UTF-8
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask {umask}
 
+quiesce_mutable_services() {{
+  # The cloud image starts snapd/LXD and PackageKit before cloud-final.  Stop
+  # their sockets and services so they cannot create or replace files while
+  # the image tree is normalized below.  Some units are optional across base
+  # image revisions, so a missing/inactive unit is not a normalization error.
+  systemctl stop \
+    snapd.socket snapd.service snapd.seeded.service \
+    packagekit.service unattended-upgrades.service \
+    'snap.*.service' || true
+}}
+
+quiesce_mutable_services
+
 PAYLOAD_DEVICE=/dev/vdb
 PAYLOAD_ROOT=/opt/k1s-q1/stage
 test "$(blockdev --getsize64 "$PAYLOAD_DEVICE")" = "{payload_size}"
@@ -410,6 +423,7 @@ chmod 0644 /opt/k1s-q1/kp1_q1_bundle.py
   "$PAYLOAD_ROOT/q1/accepted/k1s_core-0.1.8a1-py3-none-any.whl"
 
 mv "$PAYLOAD_ROOT" /opt/k1s-q1/offline
+quiesce_mutable_services
 rm -rf /root/.cache /var/cache/apt/archives/*.deb /var/lib/apt/lists/*
 rm -f /etc/ssh/ssh_host_* /var/lib/systemd/random-seed /var/lib/dbus/machine-id
 cloud-init clean --logs --machine-id || true
