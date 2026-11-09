@@ -53,7 +53,10 @@ QEMU_MACHINE = "pc-i440fx-6.2,accel=tcg"
 QEMU_CPU = "qemu64,-rdrand,-rdseed"
 QEMU_MEMORY_MIB = 8192
 QEMU_CPUS = 4
-QEMU_ICOUNT = "shift=3,align=off,sleep=off"
+# Keep TCG virtual time near host monotonic time.  A fixed accelerated shift
+# with sleep disabled can expire systemd device deadlines before host-backed
+# virtio I/O and udev have completed, even though the kernel found the device.
+QEMU_ICOUNT = "shift=auto,align=off,sleep=on"
 QEMU_UUID = "00000000-0000-4000-8000-000000000001"
 QEMU_RTC = "2026-12-03T00:00:00"
 

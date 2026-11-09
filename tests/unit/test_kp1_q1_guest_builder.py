@@ -177,6 +177,7 @@ def test_qemu_argv_is_tcg_networkless_read_only_and_snapshot_capable(
     )
 
     assert argv[argv.index("-machine") + 1] == builder.QEMU_MACHINE
+    assert argv[argv.index("-icount") + 1] == "shift=auto,align=off,sleep=on"
     assert argv[argv.index("-nic") + 1] == "none"
     assert "-snapshot" in argv
     assert not any(item == "user" or "hostfwd=" in item or "tap," in item for item in argv)
