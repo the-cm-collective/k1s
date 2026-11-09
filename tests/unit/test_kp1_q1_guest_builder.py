@@ -87,7 +87,10 @@ def test_provision_script_is_offline_block_bound_and_contains_no_host_mount() ->
     text = raw.decode()
 
     assert "PAYLOAD_DEVICE=/dev/vdb" in text
-    assert "--no-download" in text
+    assert "Dir::Etc::SourceList=/opt/k1s-q1/empty-sources.list" in text
+    assert "Dir::Etc::SourceParts=/opt/k1s-q1/empty-sources.list.d" in text
+    assert '[[ "$package" = /* ]]' in text
+    assert "--no-download --no-install-recommends" not in text
     assert "--no-index" in text
     assert "umask 0077" in text
     assert "K1S_Q1_PROVISION_OK" in text

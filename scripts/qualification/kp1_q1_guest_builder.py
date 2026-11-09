@@ -360,15 +360,23 @@ cat >/usr/sbin/policy-rc.d <<'EOF'
 exit 101
 EOF
 chmod 0755 /usr/sbin/policy-rc.d
+install -d -m 0755 /opt/k1s-q1/empty-sources.list.d
+install -m 0644 /dev/null /opt/k1s-q1/empty-sources.list
 mapfile -d '' packages < <(
   find "$PAYLOAD_ROOT/apt/packages" -maxdepth 1 -type f -name '*.deb' -print0 | sort -z
 )
 test "${{#packages[@]}}" = 160
+for package in "${{packages[@]}}"; do
+  [[ "$package" = /* ]]
+done
+# The guest has no NIC and no configured package sources.  Do not add
+# --no-download here: apt 2.4 loses command-line local-deb paths in that mode
+# and rejects their basenames as non-absolute before invoking dpkg.
 apt-get \
-  -o Dir::Etc::sourcelist=/dev/null \
-  -o Dir::Etc::sourceparts=- \
+  -o Dir::Etc::SourceList=/opt/k1s-q1/empty-sources.list \
+  -o Dir::Etc::SourceParts=/opt/k1s-q1/empty-sources.list.d \
   -o APT::Get::List-Cleanup=0 \
-  --no-download --no-install-recommends -y install "${{packages[@]}}"
+  --no-install-recommends -y install "${{packages[@]}}"
 dpkg --audit
 rm -f /usr/sbin/policy-rc.d
 
