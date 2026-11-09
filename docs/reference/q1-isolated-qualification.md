@@ -599,6 +599,96 @@ than broadening it. B1 changes no source checkout, host package, permission,
 service, runtime, release endpoint, or publication state and cannot promote
 the release beyond `source-validated/unqualified`.
 
+## QH5-B B2 closed guest bill of materials
+
+QH5-B B2 closes the complete offline input set consumed by the B0 image
+builder. It still does not install a host package, start a runtime, build or
+boot a guest, invoke QEMU/KVM, mount source or `HOME`, publish an artifact, or
+advance the release posture.
+
+`scripts/qualification/kp1_q1_guest_inputs.py` defines the only B2 network
+boundary. Its canonical plan binds the exact source commit/tree, accepted
+QH5-A wheel, sdist, 24-wheel closure, requirement lock and completion receipt,
+the B1 base receipt and package manifest, the qualification helper, all local
+tool identities, one absent owner-private root below `/srv/storage/k1s`, and
+these external authorities:
+
+- Ubuntu snapshot `20261107T000000Z`, with exact signed `jammy`,
+  `jammy-updates`, and `jammy-security` `InRelease` bytes and the pinned Ubuntu
+  archive signer;
+- the exact signed deadsnakes Jammy `InRelease` needed for CPython `3.11.18`,
+  with its pinned PPA signer and keyring;
+- exact primary versions for the GA KVM kernel, containerd, `runc`, Docker,
+  rootless Podman, CNI plugins, and Python, plus an isolated resolver closure;
+- cri-tools `1.30.1` with the vendor-published SHA-256; and
+- nine source tags used only for discovery, each paired with an expected
+  `linux/amd64` manifest digest: registry, pause, busybox, etcd, NATS,
+  PostgreSQL, Envoy, rathole, and Caddy.
+
+APT runs with an empty status database, private cache/list directories, no
+ambient source parts, no recommendations, no host install, and only the four
+explicit source rows. B2 retains the authenticated `InRelease` and package
+index bytes, both keyrings, every exact `.deb`, and a canonical package ledger.
+The ledger independently matches each downloaded package SHA-256 against the
+authenticated APT metadata. Extracted package files are inspection inputs only:
+they establish the expected kernel, OS release, Python, runtime, and five CNI
+binary identities without changing the host.
+
+The internal OCI distribution client accepts HTTPS only, handles anonymous
+Bearer challenges, requires exactly one `linux/amd64` platform descriptor,
+verifies every manifest/config/layer digest and size, and emits deterministic
+USTAR OCI layouts. It never imports into Docker, Podman, containerd, or a host
+registry. Mutable tags are not retained as authority; the final selected
+manifest digest and archive SHA-256 are.
+
+The operator first writes and reviews a canonical plan:
+
+```text
+python3 scripts/qualification/kp1_q1_guest_inputs.py plan \
+  --spec /absolute/private/b2-spec.json \
+  --expect-spec-sha256 sha256:... \
+  --output /absolute/private/b2-plan.json
+```
+
+Acquisition requires the plan file digest and its canonical plan digest in the
+explicit confirmation:
+
+```text
+python3 scripts/qualification/kp1_q1_guest_inputs.py acquire \
+  --plan /absolute/private/b2-plan.json \
+  --expect-plan-sha256 sha256:... \
+  --confirm ACQUIRE-Q1-BOM:sha256:...
+```
+
+`scripts/qualification/kp1_q1_guest_bom.py` then enumerates only the declared
+regular files beneath the private staging root. It refuses links, special
+files, protected dotenv names, duplicate paths/roles, missing authorities,
+guest-to-payload digest drift, and unexpected modes. It emits a deterministic,
+uncompressed USTAR payload with fixed owner, group, mode, timestamp, member
+order, and an embedded canonical member manifest.
+
+B2's gate uses two paths:
+
+1. the existing B0 `validate_bom()` schema and guest-manifest validator check
+   the separately retained canonical BOM; and
+2. the independent payload replay enumerates the tar, rehashes each member,
+   validates fixed USTAR metadata, reads the embedded manifest, and reconstructs
+   the BOM from the retained payload bytes.
+
+Both paths must produce the same canonical BOM digest. Independent retained
+root replay also compares the staged source bytes, payload, member manifest,
+receipt, local checksum set, and evidence seal:
+
+```text
+python3 scripts/qualification/kp1_q1_guest_inputs.py verify-root \
+  --plan /absolute/private/b2-plan.json \
+  --expect-plan-sha256 sha256:... \
+  --expect-seal-file-sha256 sha256:...
+```
+
+Success closes B2 only. B3 remains a separate reviewed boundary for two image
+lanes and is never implied by acquisition or replay success.
+
 ## Required acceptance order
 
 An accepted run records these stages in order:
