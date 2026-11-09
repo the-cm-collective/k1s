@@ -754,6 +754,12 @@ not cross-lane equality fields because each lane is independently booted and
 mutated. B3 still fails closed on any persistent path, ownership, mode,
 content, link, device, xattr, guest semantic, or policy divergence.
 
+Ordinary build stages retain a 20-minute deadline. The complete inventory
+stage has a separately plan-bound 40-minute deadline because the isolated TCG
+guest hashes every included regular file and extended attribute before it can
+emit the canonical manifest. The two-hour whole-build deadline remains the
+outer bound across both lanes.
+
 The reviewed live invocation is explicit and plan-bound:
 
 ```text

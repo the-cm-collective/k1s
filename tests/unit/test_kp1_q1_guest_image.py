@@ -213,6 +213,10 @@ def test_build_plan_is_closed_deterministic_and_two_lane(tmp_path: Path) -> None
     assert [lane["name"] for lane in plan["lanes"]] == ["lane-a", "lane-b"]
     assert [lane["umask"] for lane in plan["lanes"]] == ["0022", "0077"]
     assert all(lane["stages"] == list(guest_image.STAGES) for lane in plan["lanes"])
+    assert plan["limits"]["stageTimeoutSeconds"] == 20 * 60
+    assert plan["limits"]["inventoryStageTimeoutSeconds"] == 40 * 60
+    assert guest_image.stage_timeout_seconds("extract-inventory") == 40 * 60
+    assert guest_image.stage_timeout_seconds("provision-offline") == 20 * 60
     assert guest_image.build_plan(spec)["planDigest"] == plan["planDigest"]
     assert not (root / "lane-a").exists()
 

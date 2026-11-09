@@ -44,6 +44,7 @@ MAX_INPUT_BYTES = 8 * 1024 * 1024 * 1024
 MAX_STAGE_OUTPUT_BYTES = 1024 * 1024
 MAX_IMAGE_BYTES = 64 * 1024 * 1024 * 1024
 STAGE_TIMEOUT_SECONDS = 20 * 60
+INVENTORY_STAGE_TIMEOUT_SECONDS = 40 * 60
 TOTAL_TIMEOUT_SECONDS = 2 * 60 * 60
 
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
@@ -64,6 +65,16 @@ STAGES = (
     "extract-inventory",
     "validate-guest-manifest",
 )
+
+
+def stage_timeout_seconds(stage: str) -> int:
+    if stage not in STAGES:
+        raise _fail()
+    if stage == "extract-inventory":
+        return INVENTORY_STAGE_TIMEOUT_SECONDS
+    return STAGE_TIMEOUT_SECONDS
+
+
 INPUT_NAMES = {
     "acceptedSdist",
     "acceptedWheel",
@@ -617,6 +628,7 @@ def build_plan(spec_value: object) -> dict[str, object]:
         "lanes": lanes,
         "limits": {
             "imageBytes": MAX_IMAGE_BYTES,
+            "inventoryStageTimeoutSeconds": INVENTORY_STAGE_TIMEOUT_SECONDS,
             "stageOutputBytes": MAX_STAGE_OUTPUT_BYTES,
             "stageTimeoutSeconds": STAGE_TIMEOUT_SECONDS,
             "totalTimeoutSeconds": TOTAL_TIMEOUT_SECONDS,
@@ -687,10 +699,17 @@ def verify_plan(value: object) -> dict[str, object]:
             raise _fail()
     limits = _closed(
         plan["limits"],
-        {"imageBytes", "stageOutputBytes", "stageTimeoutSeconds", "totalTimeoutSeconds"},
+        {
+            "imageBytes",
+            "inventoryStageTimeoutSeconds",
+            "stageOutputBytes",
+            "stageTimeoutSeconds",
+            "totalTimeoutSeconds",
+        },
     )
     if limits != {
         "imageBytes": MAX_IMAGE_BYTES,
+        "inventoryStageTimeoutSeconds": INVENTORY_STAGE_TIMEOUT_SECONDS,
         "stageOutputBytes": MAX_STAGE_OUTPUT_BYTES,
         "stageTimeoutSeconds": STAGE_TIMEOUT_SECONDS,
         "totalTimeoutSeconds": TOTAL_TIMEOUT_SECONDS,
@@ -842,6 +861,7 @@ def run_build(
             if stage_started - start_monotonic >= TOTAL_TIMEOUT_SECONDS:
                 raise _fail()
             identity = stage_identity(plan, lane=lane, stage=stage)
+            stage_timeout = stage_timeout_seconds(stage)
             request = StageRequest(
                 authority=identity,
                 plan=plan,
@@ -849,7 +869,7 @@ def run_build(
                 root=cast(str, lane_value["root"]),
                 stage=stage,
                 umask=cast(str, lane_value["umask"]),
-                deadline_monotonic=stage_started + STAGE_TIMEOUT_SECONDS,
+                deadline_monotonic=stage_started + stage_timeout,
             )
             try:
                 observation = adapter.execute(request)
@@ -869,7 +889,7 @@ def run_build(
                 or type(observation.stdout) is not bytes
                 or type(observation.stderr) is not bytes
                 or elapsed < 0
-                or elapsed >= STAGE_TIMEOUT_SECONDS
+                or elapsed >= stage_timeout
                 or total_elapsed < 0
                 or total_elapsed >= TOTAL_TIMEOUT_SECONDS
                 or len(observation.stdout) + len(observation.stderr) > MAX_STAGE_OUTPUT_BYTES
@@ -985,7 +1005,7 @@ def verify_receipt(value: object, *, expected_plan_digest: object) -> dict[str, 
             _digest(stage["outputSha256"])
             if (
                 type(stage["durationMilliseconds"]) is not int
-                or not 0 <= stage["durationMilliseconds"] < STAGE_TIMEOUT_SECONDS * 1000
+                or not 0 <= stage["durationMilliseconds"] < stage_timeout_seconds(stage_name) * 1000
                 or type(stage["outputSize"]) is not int
                 or not 0 <= stage["outputSize"] <= MAX_STAGE_OUTPUT_BYTES
             ):
