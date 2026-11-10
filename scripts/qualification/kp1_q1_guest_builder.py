@@ -499,11 +499,15 @@ def render_inventory_script(spec: Mapping[str, object]) -> bytes:
 import hashlib
 import json
 import os
+import signal
 import stat
 import subprocess
 
 plan = json.loads(base64.b64decode("__COLLECTION__"))
 filesystem_policy = json.loads(base64.b64decode("__FILESYSTEM_POLICY__"))
+
+def progress(phase):
+    print("K1S_Q1_PROGRESS:" + phase, flush=True)
 
 def digest_file(path, maximum=256 * 1024 * 1024):
     digest = hashlib.sha256()
@@ -568,6 +572,8 @@ def collect_tree(parent):
         if stat.S_ISDIR(info.st_mode):
             row["type"] = "directory"
             filesystem_entries.append(row)
+            if len(filesystem_entries) % 10000 == 0:
+                progress("filesystem-entries-" + str(len(filesystem_entries)))
             collect_tree(path)
         elif stat.S_ISREG(info.st_mode):
             digest, size = digest_file(path, 16 * 1024 * 1024 * 1024)
@@ -579,9 +585,13 @@ def collect_tree(parent):
                 "type": "regular",
             })
             filesystem_entries.append(row)
+            if len(filesystem_entries) % 10000 == 0:
+                progress("filesystem-entries-" + str(len(filesystem_entries)))
         elif stat.S_ISLNK(info.st_mode):
             row.update({"target": os.readlink(path), "type": "symlink"})
             filesystem_entries.append(row)
+            if len(filesystem_entries) % 10000 == 0:
+                progress("filesystem-entries-" + str(len(filesystem_entries)))
         elif stat.S_ISBLK(info.st_mode) or stat.S_ISCHR(info.st_mode):
             row.update({
                 "major": os.major(info.st_rdev),
@@ -589,22 +599,12 @@ def collect_tree(parent):
                 "type": "block" if stat.S_ISBLK(info.st_mode) else "character",
             })
             filesystem_entries.append(row)
+            if len(filesystem_entries) % 10000 == 0:
+                progress("filesystem-entries-" + str(len(filesystem_entries)))
         else:
             raise RuntimeError("unsupported persistent object: " + path)
 
-collect_tree("/")
-filesystem_entries.sort(key=lambda row: row["path"].encode("utf-8"))
-filesystem_manifest = {
-    "apiVersion": "__FILESYSTEM_API__",
-    "entries": filesystem_entries,
-    "entryCount": len(filesystem_entries),
-    "kind": "__FILESYSTEM_KIND__",
-    "policy": filesystem_policy,
-    "policySha256": "__FILESYSTEM_POLICY_SHA256__",
-    "regularBytes": regular_bytes,
-    "schemaVersion": __FILESYSTEM_SCHEMA__,
-}
-
+progress("bounded-files-start")
 files = []
 for path in plan["contentPaths"] + plan["digestPaths"]:
     info = os.lstat(path)
@@ -626,20 +626,30 @@ for path in plan["contentPaths"] + plan["digestPaths"]:
         "symlink": stat.S_ISLNK(info.st_mode),
         "uid": info.st_uid,
     })
+progress("bounded-files-complete")
 
 commands = []
-for argv in plan["commands"]:
+for index, argv in enumerate(plan["commands"]):
+    progress("command-" + str(index) + "-start")
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     try:
-        completed = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+        stdout, stderr = process.communicate(timeout=15)
         timed_out = False
-        exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as exc:
+        exit_code = process.returncode
+    except subprocess.TimeoutExpired:
         timed_out = True
         exit_code = -1
-        stdout = exc.stdout or b""
-        stderr = exc.stderr or b""
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate(timeout=5)
     if len(stdout) + len(stderr) > 64 * 1024:
         raise RuntimeError("command bound")
     commands.append({
@@ -649,6 +659,23 @@ for argv in plan["commands"]:
         "stdout": base64.b64encode(stdout).decode("ascii"),
         "timedOut": timed_out,
     })
+    progress("command-" + str(index) + "-complete")
+
+progress("filesystem-start")
+collect_tree("/")
+progress("filesystem-traversal-complete")
+filesystem_entries.sort(key=lambda row: row["path"].encode("utf-8"))
+filesystem_manifest = {
+    "apiVersion": "__FILESYSTEM_API__",
+    "entries": filesystem_entries,
+    "entryCount": len(filesystem_entries),
+    "kind": "__FILESYSTEM_KIND__",
+    "policy": filesystem_policy,
+    "policySha256": "__FILESYSTEM_POLICY_SHA256__",
+    "regularBytes": regular_bytes,
+    "schemaVersion": __FILESYSTEM_SCHEMA__,
+}
+progress("filesystem-manifest-complete")
 
 value = {"commands": commands, "files": files, "filesystemManifest": filesystem_manifest}
 raw = (
@@ -661,6 +688,7 @@ raw = (
     )
     + "\n"
 ).encode()
+progress("serialization-complete")
 print("K1S_Q1_INVENTORY:" + base64.b64encode(raw).decode("ascii"), flush=True)
 """
     collector = (

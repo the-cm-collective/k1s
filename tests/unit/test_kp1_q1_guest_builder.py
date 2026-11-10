@@ -156,6 +156,13 @@ def test_inventory_script_contains_closed_collection_and_serial_marker() -> None
     assert "digest_xattrs" in collector
     assert "included_persistent_mount" in collector
     assert "unexpected cross-device path" in collector
+    assert "start_new_session=True" in collector
+    assert "os.killpg(process.pid, signal.SIGKILL)" in collector
+    assert "K1S_Q1_PROGRESS:" in collector
+    assert collector.index('progress("command-"') < collector.index('progress("filesystem-start")')
+    assert collector.index('progress("filesystem-traversal-complete")') < collector.index(
+        'progress("serialization-complete")'
+    )
 
 
 def test_serialized_inventory_adapter_preserves_bounded_digest_evidence() -> None:
