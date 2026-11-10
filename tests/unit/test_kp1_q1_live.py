@@ -186,6 +186,46 @@ def test_remove_verified_run_root_refuses_nonprivate_root(tmp_path: Path) -> Non
         live._remove_verified_run_root(root)
 
 
+def test_failed_runtime_evidence_retains_bounded_serial_and_stderr(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    vm = run_root / "vm"
+    retained = tmp_path / "retained"
+    vm.mkdir(mode=0o700, parents=True)
+    run_root.chmod(0o700)
+    retained.mkdir(mode=0o700)
+    serial = vm / "serial.log"
+    stderr = vm / "qemu-host.stderr"
+    serial.write_bytes(b"guest serial\n")
+    stderr.write_bytes(b"qemu stderr\n")
+    serial.chmod(0o600)
+    stderr.chmod(0o600)
+
+    live._retain_failed_runtime_evidence(run_root, retained)
+
+    assert (retained / "failed-serial.log").read_bytes() == b"guest serial\n"
+    assert (retained / "failed-qemu-host.stderr").read_bytes() == b"qemu stderr\n"
+    receipt = json.loads((retained / "failed-runtime-evidence.json").read_text())
+    assert [member["name"] for member in receipt["members"]] == [
+        "failed-serial.log",
+        "failed-qemu-host.stderr",
+    ]
+
+
+def test_failed_runtime_evidence_rejects_symlink(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    vm = run_root / "vm"
+    retained = tmp_path / "retained"
+    vm.mkdir(mode=0o700, parents=True)
+    run_root.chmod(0o700)
+    retained.mkdir(mode=0o700)
+    target = tmp_path / "foreign"
+    target.write_bytes(b"foreign")
+    (vm / "serial.log").symlink_to(target)
+
+    with pytest.raises(live.LivePolicyError):
+        live._retain_failed_runtime_evidence(run_root, retained)
+
+
 def test_execute_live_recovers_exact_context_after_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

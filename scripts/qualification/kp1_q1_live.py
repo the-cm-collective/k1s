@@ -575,6 +575,73 @@ def _exact_process_present(observer: ProcObserver, expected: q1_teardown.Process
     return True
 
 
+def _retain_failed_runtime_evidence(run_root: Path, retained_evidence_root: Path) -> None:
+    root_info = run_root.lstat()
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or stat.S_ISLNK(root_info.st_mode)
+        or root_info.st_uid != os.getuid()
+        or stat.S_IMODE(root_info.st_mode) != 0o700
+    ):
+        _fail()
+    vm_info = (run_root / "vm").lstat()
+    if (
+        not stat.S_ISDIR(vm_info.st_mode)
+        or stat.S_ISLNK(vm_info.st_mode)
+        or vm_info.st_uid != os.getuid()
+        or vm_info.st_dev != root_info.st_dev
+        or stat.S_IMODE(vm_info.st_mode) != 0o700
+    ):
+        _fail()
+    retained: list[dict[str, object]] = []
+    for source_name, retained_name in (
+        ("serial.log", "failed-serial.log"),
+        ("qemu-host.stderr", "failed-qemu-host.stderr"),
+    ):
+        source = run_root / "vm" / source_name
+        if not source.exists() and not source.is_symlink():
+            continue
+        info = source.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != os.getuid()
+            or info.st_dev != root_info.st_dev
+            or not 0 < info.st_size <= q1_teardown.MAX_EVIDENCE_MEMBER_BYTES
+        ):
+            _fail()
+        raw = source.read_bytes()
+        observed = source.lstat()
+        if (
+            len(raw) != info.st_size
+            or observed.st_dev != info.st_dev
+            or observed.st_ino != info.st_ino
+            or observed.st_mode != info.st_mode
+            or observed.st_uid != info.st_uid
+            or observed.st_size != info.st_size
+        ):
+            _fail()
+        _write_private(retained_evidence_root / retained_name, raw)
+        retained.append(
+            {
+                "name": retained_name,
+                "sha256": digest_bytes(raw),
+                "size": len(raw),
+            }
+        )
+    _write_evidence(
+        retained_evidence_root,
+        "failed-runtime-evidence.json",
+        {
+            "apiVersion": API_VERSION,
+            "kind": "K1sQ1FailedRuntimeEvidence",
+            "members": retained,
+            "schemaVersion": SCHEMA_VERSION,
+        },
+    )
+
+
 def _recover_failed_capsule(
     *,
     run_root: Path,
@@ -595,6 +662,7 @@ def _recover_failed_capsule(
             time.sleep(0.25)
         else:
             _fail()
+    _retain_failed_runtime_evidence(run_root, retained_evidence_root)
     run_receipt = run_root / "guest/run.json"
     run_receipt_digest = file_digest(run_receipt, maximum=q1_capsule.MAX_JSON_BYTES)
     run_receipt_value = json.loads(run_receipt.read_text(encoding="utf-8"))
