@@ -158,11 +158,21 @@ def test_inventory_script_contains_closed_collection_and_serial_marker() -> None
     assert "unexpected cross-device path" in collector
     assert "start_new_session=True" in collector
     assert "os.killpg(process.pid, signal.SIGKILL)" in collector
+    assert "FILESYSTEM_OPERATION_TIMEOUT_SECONDS = 60" in collector
+    assert "FILESYSTEM_PATH_PROGRESS_INTERVAL = 100" in collector
+    assert "signal.setitimer(signal.ITIMER_REAL" in collector
+    assert 'progress("filesystem-timeout-" + current_filesystem_operation)' in collector
+    assert 'bounded_filesystem_operation("listdir"' in collector
+    assert '"digest", path, lambda: digest_file(path' in collector
     assert "K1S_Q1_PROGRESS:" in collector
     assert collector.index('progress("command-"') < collector.index('progress("filesystem-start")')
     assert collector.index('progress("filesystem-traversal-complete")') < collector.index(
         'progress("serialization-complete")'
     )
+    assert "/usr/bin/timeout --signal=KILL 30s /usr/bin/systemctl stop" in text
+    assert "docker.socket docker.service containerd.service podman.socket" in text
+    assert "'snap.lxd.*' 'snap.*.service' || true" in text
+    assert "/usr/bin/python3.11 /run/k1s-q1-inventory.py >/dev/ttyS0 2>&1" in text
 
 
 def test_serialized_inventory_adapter_preserves_bounded_digest_evidence() -> None:

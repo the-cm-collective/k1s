@@ -506,8 +506,30 @@ import subprocess
 plan = json.loads(base64.b64decode("__COLLECTION__"))
 filesystem_policy = json.loads(base64.b64decode("__FILESYSTEM_POLICY__"))
 
+FILESYSTEM_OPERATION_TIMEOUT_SECONDS = 60
+FILESYSTEM_PATH_PROGRESS_INTERVAL = 100
+current_filesystem_operation = ""
+
 def progress(phase):
     print("K1S_Q1_PROGRESS:" + phase, flush=True)
+
+def encoded_path(path):
+    return base64.urlsafe_b64encode(path.encode("utf-8")).decode("ascii").rstrip("=")
+
+def filesystem_timeout(_signum, _frame):
+    progress("filesystem-timeout-" + current_filesystem_operation)
+    raise RuntimeError("filesystem operation timeout: " + current_filesystem_operation)
+
+def bounded_filesystem_operation(operation, path, callback):
+    global current_filesystem_operation
+    current_filesystem_operation = operation + "-" + encoded_path(path)
+    signal.setitimer(signal.ITIMER_REAL, FILESYSTEM_OPERATION_TIMEOUT_SECONDS)
+    try:
+        return callback()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
+signal.signal(signal.SIGALRM, filesystem_timeout)
 
 def digest_file(path, maximum=256 * 1024 * 1024):
     digest = hashlib.sha256()
@@ -540,7 +562,8 @@ def included_persistent_mount(path):
 
 def digest_xattrs(path):
     rows = []
-    for name in sorted(os.listxattr(path, follow_symlinks=False), key=lambda item: item.encode("utf-8")):
+    names = os.listxattr(path, follow_symlinks=False)
+    for name in sorted(names, key=lambda item: item.encode("utf-8")):
         raw = os.getxattr(path, name, follow_symlinks=False)
         rows.append({
             "name": name,
@@ -555,11 +578,19 @@ regular_bytes = 0
 
 def collect_tree(parent):
     global regular_bytes
-    for name in sorted(os.listdir(parent), key=lambda item: item.encode("utf-8")):
+    names = bounded_filesystem_operation("listdir", parent, lambda: os.listdir(parent))
+    for name in sorted(names, key=lambda item: item.encode("utf-8")):
         path = "/" + name if parent == "/" else parent + "/" + name
         if excluded(path):
             continue
-        info = os.lstat(path)
+        if len(filesystem_entries) % FILESYSTEM_PATH_PROGRESS_INTERVAL == 0:
+            progress(
+                "filesystem-path-"
+                + str(len(filesystem_entries))
+                + "-"
+                + encoded_path(path)
+            )
+        info = bounded_filesystem_operation("lstat", path, lambda: os.lstat(path))
         if info.st_dev != root_device and not included_persistent_mount(path):
             raise RuntimeError("unexpected cross-device path: " + path)
         row = {
@@ -567,7 +598,9 @@ def collect_tree(parent):
             "mode": format(stat.S_IMODE(info.st_mode), "04o"),
             "path": path,
             "uid": info.st_uid,
-            "xattrs": digest_xattrs(path),
+            "xattrs": bounded_filesystem_operation(
+                "xattrs", path, lambda: digest_xattrs(path)
+            ),
         }
         if stat.S_ISDIR(info.st_mode):
             row["type"] = "directory"
@@ -576,7 +609,9 @@ def collect_tree(parent):
                 progress("filesystem-entries-" + str(len(filesystem_entries)))
             collect_tree(path)
         elif stat.S_ISREG(info.st_mode):
-            digest, size = digest_file(path, 16 * 1024 * 1024 * 1024)
+            digest, size = bounded_filesystem_operation(
+                "digest", path, lambda: digest_file(path, 16 * 1024 * 1024 * 1024)
+            )
             regular_bytes += size
             row.update({
                 "linkCount": info.st_nlink,
@@ -588,7 +623,8 @@ def collect_tree(parent):
             if len(filesystem_entries) % 10000 == 0:
                 progress("filesystem-entries-" + str(len(filesystem_entries)))
         elif stat.S_ISLNK(info.st_mode):
-            row.update({"target": os.readlink(path), "type": "symlink"})
+            target = bounded_filesystem_operation("readlink", path, lambda: os.readlink(path))
+            row.update({"target": target, "type": "symlink"})
             filesystem_entries.append(row)
             if len(filesystem_entries) % 10000 == 0:
                 progress("filesystem-entries-" + str(len(filesystem_entries)))
@@ -702,10 +738,18 @@ print("K1S_Q1_INVENTORY:" + base64.b64encode(raw).decode("ascii"), flush=True)
     collector_b64 = _b64(collector.encode("utf-8"))
     shell = f"""#!/bin/bash
 set -euo pipefail
+/usr/bin/timeout --signal=KILL 30s /usr/bin/systemctl stop \
+  apt-daily.timer apt-daily-upgrade.timer \
+  apt-daily.service apt-daily-upgrade.service \
+  docker.socket docker.service containerd.service podman.socket \
+  snapd.socket snapd.service snapd.seeded.service \
+  packagekit.service unattended-upgrades.service \
+  'snap.lxd.*' 'snap.*.service' || true
+/usr/bin/sync
 base64 --decode >/run/k1s-q1-inventory.py <<'K1S_Q1_COLLECTOR'
 {collector_b64}
 K1S_Q1_COLLECTOR
-/usr/bin/python3.11 /run/k1s-q1-inventory.py >/dev/ttyS0
+/usr/bin/python3.11 /run/k1s-q1-inventory.py >/dev/ttyS0 2>&1
 echo {INVENTORY_MARKER.decode("ascii")} >/dev/ttyS0
 sync
 /usr/bin/systemctl poweroff --no-wall
