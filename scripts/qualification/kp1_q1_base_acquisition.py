@@ -38,7 +38,7 @@ TRANSACTION_SCHEMA = "k1s-qh5b-guest-image-transaction/v1"
 QUALIFICATION_POSTURE = "source-validated/unqualified"
 
 DEFAULT_OUTPUT_PARENT = Path("/srv/storage/k1s")
-OUTPUT_RE = re.compile(r"qh5b-b1-1\.0\.0a1-[0-9a-f]{8}-20[0-9]{6}T[0-9]{6}Z")
+OUTPUT_RE = re.compile(r"qh5b-b1-1\.0\.0a2-[0-9a-f]{8}-20[0-9]{6}T[0-9]{6}Z")
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 HEX_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 OBJECT_RE = re.compile(r"[0-9a-f]{40}")
@@ -473,7 +473,7 @@ def build_plan(
     source = _closed(spec["source"], {"commit", "tree", "version"})
     _object_id(source["commit"])
     _object_id(source["tree"])
-    if source["version"] != "1.0.0a1":
+    if source["version"] != "1.0.0a2":
         raise _fail()
     parent = _absolute_path(spec["outputParent"])
     if parent != allowed_output_parent:
@@ -622,7 +622,7 @@ def verify_plan(
     source = _closed(plan["source"], {"commit", "tree", "version"})
     _object_id(source["commit"])
     _object_id(source["tree"])
-    if source["version"] != "1.0.0a1":
+    if source["version"] != "1.0.0a2":
         raise _fail()
     fingerprint = plan["signerFingerprint"]
     if type(fingerprint) is not str or FINGERPRINT_RE.fullmatch(fingerprint) is None:

@@ -42,7 +42,7 @@ def healthy_facts(
     python_version: tuple[int, int] = (3, 13),
     platform: str = "linux",
     ae_importable: bool = True,
-    distribution_version: str | None = "1.0.0a1",
+    distribution_version: str | None = "1.0.0a2",
     k1s_console_present: bool = True,
 ) -> InstalledProfileFacts:
     return InstalledProfileFacts(

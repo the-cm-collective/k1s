@@ -57,10 +57,13 @@ git push origin v0.1.0
 - `0.1.7` (2026-08-27) is the latest stable release.
 - `0.1.8a1` changed the distribution name to `k1s-core` while retaining the
   `ae` Python import and compatibility commands.
-- `1.0.0a1` is the current candidate. It begins the documented 1.0-alpha
-  compatibility contract after isolated Q1 qualification of the accepted
-  implementation baseline. Stable `1.0.0` remains gated by exact-candidate
-  publication, WorkerBee integration, combined qualification, and RC review.
+- `1.0.0a1` established the documented 1.0-alpha compatibility contract but
+  stopped at the GitHub TestPyPI build gate before any package upload.
+- `1.0.0a2` is the current candidate. It retains the qualified implementation
+  and compatibility boundary while adding reproducible, digest-bound synthesis
+  for a source-only dependency in the publication wheelhouse. Stable `1.0.0`
+  remains gated by exact-candidate publication, WorkerBee integration, combined
+  qualification, and RC review.
 - The WorkerBee profile evidence adapter is an experimental v1 wire contract
   within `k1s-core`; its `v1` schema identifier does not declare K1s 1.0 API
   stability. Unknown fields/versions fail closed. Its exact public K1s rebind

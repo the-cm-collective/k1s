@@ -10,7 +10,7 @@ docker==7.2.0 --hash=sha256:a3f45fdeb9165e2d25d9a1d02ddf3bc70fb572cf5ebbf9b58558
 grpcio==1.85.1 --hash=sha256:83aced2a1c05648cee0de34e531351118b14c58238f0a61b43559ac8851647a8  # grpcio-1.85.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
 idna==3.20 --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c  # idna-3.20-py3-none-any.whl
 nats-py==2.16.0 --hash=sha256:aeb1ff123966c05833d26c7df7e1d54c1c6d32b612428b21677a2e921f1fecae  # nats_py-2.16.0-py3-none-any.whl
-nkeys==0.2.1 --hash=sha256:39172db9662faff74649e4682712bd5ae2be1aea422ff419e9ba5a0e75540b64  # nkeys-0.2.1-py3-none-any.whl
+nkeys==0.2.1 --hash=sha256:b2f63a5ca34c36d978eafc71a2f105d2a5a037fc1352e8329269bfcefb294981  # nkeys-0.2.1-py3-none-any.whl
 protobuf==7.36.2 --hash=sha256:89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2  # protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl
 psycopg==3.3.7 --hash=sha256:d592e88a077e01ff57f22d59f16e828b92f2b2d9f439b6679d582b48d74cf306  # psycopg-3.3.7-py3-none-any.whl
 psycopg-binary==3.3.7 --hash=sha256:652a6029e53635ef3106c726ef3b4c01429a586372dd516fc56e75ab8a2bd934  # psycopg_binary-3.3.7-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl

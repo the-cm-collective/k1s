@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.0.0a2 - 2026-11-10
+
+### Fixed
+- Made the GitHub publication wheelhouse reproducible when an exact runtime
+  dependency is available from PyPI only as a source archive. The release gate
+  now binds the `nkeys==0.2.1` source URL and digest, rejects unsafe archive
+  members, builds with the pinned Python and packaging toolchain, normalizes the
+  resulting wheel, and admits it only when its canonical digest matches the
+  reviewed runtime lock.
+- Preserved `v1.0.0a1` as an immutable failed-publication checkpoint. Its
+  TestPyPI build stopped before artifact attestation, environment deployment,
+  or package upload; `1.0.0a2` is the first publishable 1.0 alpha candidate.
+
 ## 1.0.0a1 - 2026-11-10
 
 ### Added
