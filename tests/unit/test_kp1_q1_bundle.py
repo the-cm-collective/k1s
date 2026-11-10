@@ -84,15 +84,15 @@ def _fixture(root: Path) -> _Fixture:
         ),
         (
             "k1s-sdist",
-            "payload/k1s/k1s_core-1.0.0a1.tar.gz",
-            "k1s_core-1.0.0a1.tar.gz",
+            "payload/k1s/k1s_core-1.0.0a2.tar.gz",
+            "k1s_core-1.0.0a2.tar.gz",
             b"canonical-sdist",
             0o644,
         ),
         (
             "k1s-wheel",
-            "payload/k1s/k1s_core-1.0.0a1-py3-none-any.whl",
-            "k1s_core-1.0.0a1-py3-none-any.whl",
+            "payload/k1s/k1s_core-1.0.0a2-py3-none-any.whl",
+            "k1s_core-1.0.0a2-py3-none-any.whl",
             b"canonical-wheel",
             0o644,
         ),
@@ -170,7 +170,7 @@ def test_bundle_is_canonical_deterministic_and_exact_018a1(tmp_path: Path) -> No
 
     assert first.raw == second.raw
     assert first.authority == second.authority
-    assert first.manifest["distribution"] == {"name": "k1s-core", "version": "1.0.0a1"}
+    assert first.manifest["distribution"] == {"name": "k1s-core", "version": "1.0.0a2"}
     assert first.manifest["offlineInstall"] == {
         "indexAccess": "denied",
         "network": "denied",
@@ -280,7 +280,7 @@ def test_bundle_source_links_modes_and_content_drift_fail_closed(tmp_path: Path)
         ("schemaVersion", 2),
         ("sourceDateEpoch", 0),
         ("runId", 1),
-        ("distribution", {"name": "k1s-runtime", "version": "1.0.0a1"}),
+        ("distribution", {"name": "k1s-runtime", "version": "1.0.0a2"}),
         ("offlineInstall", {"network": "allowed"}),
     ],
 )
@@ -392,7 +392,7 @@ def test_archive_links_and_special_members_fail_closed(tmp_path: Path, member_ty
     fixture = _fixture(tmp_path)
     member = tarfile.TarInfo("payload/unsafe")
     member.type = member_type
-    member.linkname = "payload/k1s/k1s_core-1.0.0a1.tar.gz"
+    member.linkname = "payload/k1s/k1s_core-1.0.0a2.tar.gz"
     member.mtime = bundle.SOURCE_DATE_EPOCH
     with pytest.raises(bundle.Q1BundleError):
         bundle.validate_bundle_bytes(

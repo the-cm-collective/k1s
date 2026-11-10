@@ -65,9 +65,9 @@ python3 scripts/qualification/kp1_q1_capsule.py plan \
   --expect-base-image-sha256 sha256:... \
   --guest-manifest /absolute/q1-guest-manifest-v1.json \
   --expect-guest-manifest-sha256 sha256:... \
-  --wheel /absolute/k1s_core-1.0.0a1-py3-none-any.whl \
+  --wheel /absolute/k1s_core-1.0.0a2-py3-none-any.whl \
   --expect-wheel-sha256 sha256:... \
-  --sdist /absolute/k1s_core-1.0.0a1.tar.gz \
+  --sdist /absolute/k1s_core-1.0.0a2.tar.gz \
   --expect-sdist-sha256 sha256:... \
   --wheelhouse-manifest /absolute/wheelhouse-manifest.json \
   --expect-wheelhouse-manifest-sha256 sha256:... \
@@ -129,7 +129,7 @@ On the currently reviewed host, `/dev/kvm` has group GID `42427` while the
 symbolic `kvm` group resolves to GID `108`. QH1 must report
 `kvm-group-mismatch` and Gate A must fail closed until a separately reviewed
 host repair makes those identities agree. These source changes do not repair
-the mismatch and do not qualify K1s `1.0.0a1`.
+the mismatch and do not qualify K1s `1.0.0a2`.
 
 ## Isolation and limits
 
@@ -210,14 +210,14 @@ transaction. Neither approval implies the other.
 QH2 is a source-and-synthetic-test checkpoint. It neither creates a guest
 image nor installs or starts the Gate B endpoint. The bundle builder and
 validator are dependency-free and are the only construction boundary for the
-candidate guest payload. The candidate is exactly `k1s-core` `1.0.0a1`; a
+candidate guest payload. The candidate is exactly `k1s-core` `1.0.0a2`; a
 different distribution or version fails closed.
 
 The uncompressed canonical USTAR bundle has one leading `manifest.json` and
 exactly 31 payload members in UTF-8 byte order:
 
-- the accepted `k1s_core-1.0.0a1-py3-none-any.whl` and normalized
-  `k1s_core-1.0.0a1.tar.gz`;
+- the accepted `k1s_core-1.0.0a2-py3-none-any.whl` and normalized
+  `k1s_core-1.0.0a2.tar.gz`;
 - `requirements-release.lock`, the canonical wheelhouse manifest, and the
   exact 24 dependency wheels;
 - `kp1_q1_guest_helper.py`; and

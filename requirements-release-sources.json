@@ -1,0 +1,30 @@
+{
+  "packages": [
+    {
+      "build": {
+        "python": "3.11.18",
+        "requirements": {
+          "build": "1.2.2.post1",
+          "packaging": "26.3",
+          "pyproject-hooks": "1.3.3",
+          "setuptools": "80.9.0",
+          "wheel": "0.45.1"
+        }
+      },
+      "name": "nkeys",
+      "source": {
+        "filename": "nkeys-0.2.1.tar.gz",
+        "root": "nkeys-0.2.1",
+        "sha256": "3a201dcd203d8bb05ba2884d441b2c92918b2a537a10d324e73738887dde9da3",
+        "url": "https://files.pythonhosted.org/packages/e1/8d/d17254baea57fe4a7dd1ba89827d3cf0a21106988ec8971a46bfc5239b15/nkeys-0.2.1.tar.gz"
+      },
+      "version": "0.2.1",
+      "wheel": {
+        "filename": "nkeys-0.2.1-py3-none-any.whl",
+        "sha256": "b2f63a5ca34c36d978eafc71a2f105d2a5a037fc1352e8329269bfcefb294981"
+      }
+    }
+  ],
+  "schema": "k1s-release-source-wheels/v1",
+  "sourceDateEpoch": 1793664000
+}

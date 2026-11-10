@@ -42,7 +42,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.11"
+          python-version: "3.11.18"
       - name: Record immutable source identity
         id: identity
         run: |
@@ -60,13 +60,12 @@ jobs:
           "setuptools==80.9.0"
           "twine==6.2.0"
           "wheel==0.45.1"
-      - name: Download the reviewed runtime wheel closure
-        run: >-
-          python -m pip download
-          --only-binary=:all:
-          --require-hashes
-          --dest "$RUNNER_TEMP/k1s-core-wheelhouse"
-          -r requirements-release.lock
+      - name: Prepare the reviewed runtime wheel closure
+        run: |
+          python scripts/prepare_release_wheelhouse.py \
+            --requirements-lock "$GITHUB_WORKSPACE/requirements-release.lock" \
+            --source-contract "$GITHUB_WORKSPACE/requirements-release-sources.json" \
+            --wheelhouse "$RUNNER_TEMP/k1s-core-wheelhouse"
       - name: Build and verify the canonical publication bundle
         run: |
           set -euo pipefail
