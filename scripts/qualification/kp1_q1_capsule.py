@@ -562,7 +562,11 @@ def _require_closed(value: object, keys: set[str]) -> dict[str, object]:
     return value
 
 
-def _identity_from_payload(value: object) -> FileIdentity:
+def _identity_from_payload(
+    value: object,
+    *,
+    maximum: int = MAX_INPUT_BYTES,
+) -> FileIdentity:
     item = _require_closed(
         value,
         {"device", "gid", "inode", "mode", "path", "sha256", "size", "uid"},
@@ -573,7 +577,7 @@ def _identity_from_payload(value: object) -> FileIdentity:
     integers = [item[field] for field in ("device", "gid", "inode", "uid")]
     if type(mode) is not str or re.fullmatch(r"0[0-7]{3}", mode) is None:
         raise _fail()
-    if type(size) is not int or not 1 <= size <= MAX_INPUT_BYTES:
+    if type(size) is not int or not 1 <= size <= maximum:
         raise _fail()
     if any(type(number) is not int or number < 0 for number in integers):
         raise _fail()
@@ -887,7 +891,11 @@ def verify_plan(value: object) -> dict[str, object]:
         },
     )
     artifact_identities = {
-        name: _identity_from_payload(payload) for name, payload in artifacts.items()
+        name: _identity_from_payload(
+            payload,
+            maximum=MAX_BASE_IMAGE_BYTES if name == "baseImage" else MAX_INPUT_BYTES,
+        )
+        for name, payload in artifacts.items()
     }
     tools = _require_closed(value["tools"], {"qemu", "qemuImg", "seedBuilder"})
     for payload in tools.values():
@@ -1570,11 +1578,12 @@ def _revalidate_plan_inputs(plan: dict[str, object]) -> None:
     if type(artifacts) is not dict or type(tools) is not dict:
         raise _fail()
     for name, raw in artifacts.items():
-        identity = _identity_from_payload(raw)
+        maximum = MAX_BASE_IMAGE_BYTES if name == "baseImage" else MAX_INPUT_BYTES
+        identity = _identity_from_payload(raw, maximum=maximum)
         current = file_identity(
             identity.path,
             expected_digest=identity.sha256,
-            maximum=MAX_BASE_IMAGE_BYTES if name == "baseImage" else MAX_INPUT_BYTES,
+            maximum=maximum,
         )
         if current != identity:
             raise _fail()

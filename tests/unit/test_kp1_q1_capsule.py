@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -196,6 +197,25 @@ def test_plan_input_revalidation_gives_only_base_image_the_image_size_limit(
     assert observed["base.qcow2"] == capsule.MAX_BASE_IMAGE_BYTES
     assert observed["guest-manifest.json"] == capsule.MAX_INPUT_BYTES
     assert observed["kp1_q1_guest_stages.py"] == capsule.MAX_INPUT_BYTES
+
+
+def test_plan_payload_allows_large_base_image_but_not_large_other_inputs(
+    tmp_path: Path,
+) -> None:
+    plan = _plan(tmp_path)
+    large_base = copy.deepcopy(plan)
+    large_base["artifacts"]["baseImage"]["size"] = capsule.MAX_INPUT_BYTES + 1
+    large_base.pop("planDigest")
+    large_base["planDigest"] = _digest(capsule.canonical_json_bytes(large_base))
+
+    assert capsule.verify_plan(large_base) == large_base
+
+    large_wheel = copy.deepcopy(plan)
+    large_wheel["artifacts"]["wheel"]["size"] = capsule.MAX_INPUT_BYTES + 1
+    large_wheel.pop("planDigest")
+    large_wheel["planDigest"] = _digest(capsule.canonical_json_bytes(large_wheel))
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.verify_plan(large_wheel)
 
 
 def test_parent_is_explicit_private_local_and_symlink_free(tmp_path: Path) -> None:
