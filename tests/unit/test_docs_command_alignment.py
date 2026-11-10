@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+
+from ae.kctl.__main__ import build_parser as build_k1s_parser
 
 ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = ROOT / "Makefile"
@@ -8,6 +11,15 @@ START_HERE = ROOT / "docs" / "getting-started" / "start-here.md"
 DEMOS = ROOT / "docs" / "guides" / "demos-examples.md"
 RUNTIME_PROFILES = ROOT / "docs" / "guides" / "runtime-profiles.md"
 ROLLOUTS = ROOT / "docs" / "reference" / "rollouts.md"
+K1S_CLI = ROOT / "docs" / "reference" / "k1s-cli.md"
+INFERENCE_FABRIC = ROOT / "docs" / "reference" / "inference-fabric.md"
+
+
+def _subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return dict(action.choices)
+    return {}
 
 
 def test_makefile_exposes_premerge_validation_targets() -> None:
@@ -23,7 +35,10 @@ def test_makefile_exposes_premerge_validation_targets() -> None:
     assert "if ! sudo -v >/dev/null; then" in text
     assert 'exec sudo -E env "PATH=$$PATH" $(MAKE) _strict-cri-smoke-root;' in text
     assert 'exec $(MAKE) _strict-cri-smoke-root;' in text
-    assert "AE_STRICT_CRI_PROFILE_SMOKE=1 AE_CRI_IT=1 AE_CRI_SMOKE_PULL=1 ./scripts/dev/strict_cri_smoke.sh" in text
+    assert (
+        "AE_STRICT_CRI_PROFILE_SMOKE=1 AE_CRI_IT=1 AE_CRI_SMOKE_PULL=1 "
+        "./scripts/dev/strict_cri_smoke.sh" in text
+    )
     assert "DOCS_API_BASE=$${DOCS_API_BASE:-https://api.home.arpa:8443}" in text
 
 
@@ -76,3 +91,65 @@ def test_runtime_and_rollout_docs_reference_current_profile_targets() -> None:
     rollout_text = ROLLOUTS.read_text(encoding="utf-8")
     assert 'make demo-legacy ARGS="--demo-rollout -y -d"' in rollout_text
     assert 'make demo ARGS="' not in rollout_text
+
+
+def test_k1s_cli_reference_covers_installed_command_tree() -> None:
+    text = K1S_CLI.read_text(encoding="utf-8")
+    commands = _subcommands(build_k1s_parser())
+    assert set(commands) == {
+        "apply",
+        "delete",
+        "describe",
+        "events",
+        "get",
+        "logs",
+        "profile",
+        "rollout",
+        "scale",
+    }
+    for command in commands:
+        assert f"`k1s {command}" in text
+
+    assert set(_subcommands(commands["rollout"])) == {"history", "undo"}
+
+    profile = _subcommands(commands["profile"])
+    assert set(profile) == {
+        "bootstrap",
+        "delete",
+        "doctor",
+        "host",
+        "list",
+        "logs",
+        "migrate",
+        "plan",
+        "restart",
+        "run",
+        "start",
+        "status",
+        "stop",
+    }
+    for command in profile:
+        assert f"k1s profile {command}" in text
+
+    bootstrap = _subcommands(profile["bootstrap"])
+    assert set(bootstrap) == {"create"}
+    assert set(_subcommands(bootstrap["create"])) == {"edge-gateway", "node"}
+
+    assert set(_subcommands(profile["migrate"])) == {"apply", "plan", "rollback"}
+    host = _subcommands(profile["host"])
+    assert set(host) == {"plan", "prepare", "rollback"}
+    for command in host:
+        assert set(_subcommands(host[command])) == {"strict-cri"}
+
+
+def test_public_inference_reference_uses_application_neutral_examples() -> None:
+    text = INFERENCE_FABRIC.read_text(encoding="utf-8").lower()
+    for project_specific_term in (
+        "nigerian",
+        "ng-translation",
+        "hausa",
+        "igbo",
+        "yoruba",
+        "nitda",
+    ):
+        assert project_specific_term not in text

@@ -55,6 +55,7 @@ Production guidance:
 - CI examples: `docs/ops/ci-gh-actions.md`
 - Python distribution identity and release compatibility:
   `docs/reference/python-distribution.md`
+- Installed `k1s` command reference: `docs/reference/k1s-cli.md`
 - Stable and experimental public contracts: `docs/reference/public-contracts.md`
 - Experimental metadata-safe WorkerBee profile evidence contract:
   `docs/reference/workerbee-profile-adapter.md`
@@ -176,11 +177,15 @@ k1s profile plan edge-gateway --output json
 ```
 
 The production `edge-gateway` role never includes the development worker stub.
-Legacy `edge` and `edge-core` aliases remain development-only. Existing
-`profile start|status|stop|restart` actions retain their checkout-local
-compatibility behavior pending later stateful lifecycle work. See
-`docs/reference/profile-lifecycle.md` for the exact role, alias, schema, and
-exit-code contracts.
+Legacy `edge` and `edge-core` aliases remain development-only. Canonical
+`local`, `core`, `edge-gateway`, and `node` roles use the installed,
+exact-owner portable lifecycle for `start|status|stop|restart`, plus explicit
+`run`, bounded `logs`, and confirmed `delete` commands. Bootstrap, migration,
+and strict-CRI host transactions are explicit experimental surfaces; they do
+not discover ambient authority or silently change roles/backends. See
+`docs/reference/k1s-cli.md` for the command map and
+`docs/reference/profile-lifecycle.md` for the normative state and evidence
+contracts.
 
 The installed `k1s-core` package also contains a versioned, metadata-safe
 WorkerBee profile evidence adapter. It projects already selected JSON results;

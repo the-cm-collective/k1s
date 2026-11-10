@@ -878,7 +878,12 @@ k1s get pods
 k1s get services
 k1s describe app/echo
 k1s logs app/echo --follow --tail 100</code></pre>
-<p>Note: <code>k1s</code> is a thin wrapper over <code>ae</code> for common get/describe/logs/rollout/scale/delete flows. For the full surface (plan/export/registry/tls/nodes/volumes/backup), use <code>ae</code> directly.</p>
+<p><code>k1s</code> also owns the installed runtime-profile contract. Read-only catalog and plan commands are safe without a running controller:</p>
+<pre><code>k1s profile list
+k1s profile doctor core
+k1s profile plan edge-gateway --output json</code></pre>
+<p>Canonical <code>local</code>, <code>core</code>, <code>edge-gateway</code>, and <code>node</code> roles have explicit portable lifecycle, foreground run, bounded logs, confirmed deletion, bootstrap, migration, and strict-CRI host-transaction surfaces. Start with the <a href="k1s-cli.html">k1s CLI reference</a>; use the <a href="profile-lifecycle.html">profile lifecycle reference</a> before any stateful profile action.</p>
+<p>Note: <code>k1s</code> is a compact interface for common get/describe/apply/logs/events/rollout/scale/delete flows and the installed profile contract. For the broader plan/export/registry/TLS/nodes/volumes/backup surface, use <code>ae</code> directly.</p>
 <p>Optional: start the Kubernetes API shim for kubectl/helm parity</p>
 <pre><code>AE_APISHIM_ENABLE=1 AE_APISHIM_TOKEN=devtoken \
   python -m ae.apishim serve --host 127.0.0.1 --port 8445
@@ -1118,7 +1123,7 @@ make demo-hardened</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 21:36:21</span>
+        <span>Built 2026-11-10 19:43:38</span>
       </div>
     </footer>
     <script>
