@@ -138,7 +138,7 @@ def test_profile_inspection_cli_is_non_mutating(monkeypatch, tmp_path, capsys) -
                 python_version=(3, 13),
                 platform="linux",
                 ae_importable=True,
-                distribution_version="1.0.0a2",
+                distribution_version="1.0.0a3",
                 k1s_console_present=True,
             )
 
@@ -200,7 +200,7 @@ def test_profile_doctor_probes_only_the_explicit_selected_engine(
                 python_version=(3, 13),
                 platform="linux",
                 ae_importable=True,
-                distribution_version="1.0.0a2",
+                distribution_version="1.0.0a3",
                 k1s_console_present=True,
             )
 
@@ -282,7 +282,7 @@ def test_profile_inspection_json_never_discloses_environment_values(
                 python_version=(3, 13),
                 platform="linux",
                 ae_importable=True,
-                distribution_version="1.0.0a2",
+                distribution_version="1.0.0a3",
                 k1s_console_present=True,
             )
 

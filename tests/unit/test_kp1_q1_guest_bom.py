@@ -147,7 +147,7 @@ def _source() -> dict[str, object]:
         "commit": "1" * 40,
         "sourceDateEpoch": guest_bom.SOURCE_DATE_EPOCH,
         "tree": "2" * 40,
-        "version": "1.0.0a2",
+        "version": "1.0.0a3",
     }
 
 

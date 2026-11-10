@@ -1045,7 +1045,7 @@ def write_bundle_metadata(
         "validation": validation,
         "version": _project_identity(source_members.parents[2] / "source" / "pyproject.toml")[1]
         if (source_members.parents[2] / "source" / "pyproject.toml").exists()
-        else "1.0.0a2",
+        else "1.0.0a3",
     }
     artifact_manifest.write_bytes(_canonical_json(value))
     files = [artifact_manifest, wheel, sdist, source_members, wheel_members, sdist_members]
@@ -1058,7 +1058,7 @@ def write_bundle_metadata(
 
 
 def _require_bundle_filesystem(bundle: Path) -> dict[str, bytes]:
-    version = "1.0.0a2"
+    version = "1.0.0a3"
     wheel_name = f"k1s_core-{version}-py3-none-any.whl"
     sdist_name = f"k1s_core-{version}.tar.gz"
     expected = {
@@ -1143,7 +1143,7 @@ def _validate_artifact_manifest(
     if (
         value["schema"] != "k1s-python-artifacts/v1"
         or value["distribution"] != DIST_NAME
-        or value["version"] != "1.0.0a2"
+        or value["version"] != "1.0.0a3"
         or value["protectedExclusionPolicy"] != "k1s-eight-path-v1"
         or value["sourceDateEpoch"] != CANONICAL_SOURCE_DATE_EPOCH
         or value["commit"] != expected_commit
@@ -1159,8 +1159,8 @@ def _validate_artifact_manifest(
     artifacts = cast(dict[str, object], artifacts_value)
     _require_exact_keys(artifacts, {"wheel", "sdist"}, label="artifact identities")
     expected_filenames = {
-        "wheel": "dist/k1s_core-1.0.0a2-py3-none-any.whl",
-        "sdist": "dist/k1s_core-1.0.0a2.tar.gz",
+        "wheel": "dist/k1s_core-1.0.0a3-py3-none-any.whl",
+        "sdist": "dist/k1s_core-1.0.0a3.tar.gz",
     }
     typed_artifacts: dict[str, dict[str, object]] = {}
     for kind in ("wheel", "sdist"):

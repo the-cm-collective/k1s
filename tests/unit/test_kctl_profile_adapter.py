@@ -33,7 +33,7 @@ class _StaticProbe:
             python_version=(3, 11),
             platform="linux",
             ae_importable=True,
-            distribution_version="1.0.0a2",
+            distribution_version="1.0.0a3",
             k1s_console_present=True,
         )
 
@@ -575,7 +575,7 @@ def test_source_mode_exit_descriptor_and_operation_fail_closed() -> None:
 def test_evidence_identity_known_answer_and_canonical_bytes() -> None:
     evidence = _adapt("status", _status())
     assert evidence["evidenceId"] == (
-        "sha256:b2ef77c10d5ce4d7b7e899807cfde6faf98c047a7a2e84d36ba70195a39e0f6a"
+        "sha256:43da717ef70594970852884386470b761e23d959adddbc751049f56fe5c61a21"
     )
     rendered = render_workerbee_profile_evidence_json(evidence)
     assert rendered.endswith("\n") and not rendered.endswith("\n\n")
@@ -639,7 +639,7 @@ def test_schema_constants_and_provenance_are_exact() -> None:
     assert evidence["provenance"] == {
         "adapterApiVersion": ADAPTER_API_VERSION,
         "distribution": "k1s-core",
-        "distributionVersion": "1.0.0a2",
+        "distributionVersion": "1.0.0a3",
         "sourceApiVersion": "k1s.dev/v1alpha1",
         "sourceExitCode": 0,
         "sourceKind": "ProfileCatalog",
