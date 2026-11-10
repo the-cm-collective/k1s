@@ -59,11 +59,14 @@ git push origin v0.1.0
   `ae` Python import and compatibility commands.
 - `1.0.0a1` established the documented 1.0-alpha compatibility contract but
   stopped at the GitHub TestPyPI build gate before any package upload.
-- `1.0.0a2` is the current candidate. It retains the qualified implementation
-  and compatibility boundary while adding reproducible, digest-bound synthesis
-  for a source-only dependency in the publication wheelhouse. Stable `1.0.0`
-  remains gated by exact-candidate publication, WorkerBee integration, combined
-  qualification, and RC review.
+- `1.0.0a2` retained that boundary and added reproducible, digest-bound
+  synthesis for a source-only dependency. Its approved TestPyPI job stopped
+  before OIDC upload when a shell glob supplied three subjects to a
+  one-subject attestation command.
+- `1.0.0a3` is the current candidate. It verifies all seven exact publication
+  subjects with one GitHub CLI invocation per subject in both index workflows.
+  Stable `1.0.0` remains gated by exact-candidate publication, WorkerBee
+  integration, combined qualification, and RC review.
 - The WorkerBee profile evidence adapter is an experimental v1 wire contract
   within `k1s-core`; its `v1` schema identifier does not declare K1s 1.0 API
   stability. Unknown fields/versions fail closed. Its exact public K1s rebind

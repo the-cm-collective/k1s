@@ -76,7 +76,7 @@ def test_distribution_identity_preserves_import_and_commands() -> None:
     assert "version" not in data["project"]
     assert "version" in data["project"]["dynamic"]
     assert data["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "ae.__version__"}
-    assert read_project_version(PYPROJECT) == "1.0.0a2"
+    assert read_project_version(PYPROJECT) == "1.0.0a3"
     assert data["project"]["scripts"] == {
         "ae": "ae.cli.__main__:main",
         "ae-rotate-certs": "ae.cli.rotate_certs:main",
@@ -213,7 +213,8 @@ def test_publish_workflows_pin_actions_and_preserve_exact_bytes() -> None:
     assert "actions/attest-build-provenance@1c608d11d69870c2092266b3f9a6f3abbf17002c" in testpypi
     assert "attestations: write" in testpypi
     assert testpypi.count("attestations: read") == 1
-    assert testpypi.count("gh attestation verify") == 5
+    assert testpypi.count("scripts/verify_github_attestations.py") == 1
+    assert "gh attestation verify" not in testpypi
     assert "source-run-id" in pypi
     assert '"success"' in pypi
     assert '".github/workflows/publish-testpypi.yml"' in pypi
@@ -222,7 +223,8 @@ def test_publish_workflows_pin_actions_and_preserve_exact_bytes() -> None:
     assert "python -m build" not in pypi
     assert "--verify-manifest bundle/SHA256SUMS" in pypi
     assert pypi.count("attestations: read") == 1
-    assert pypi.count("gh attestation verify") == 3
+    assert pypi.count("scripts/verify_github_attestations.py") == 1
+    assert "gh attestation verify" not in pypi
 
 
 def test_ci_artifact_job_is_nonpublishing_and_uses_only_the_helper() -> None:
@@ -247,7 +249,7 @@ def test_release_documentation_records_v1_alpha_compatibility() -> None:
         encoding="utf-8"
     )
     assert "0.1.8a1" in versioning
-    assert "1.0.0a2" in versioning
+    assert "1.0.0a3" in versioning
     assert "distribution name to `k1s-core`" in versioning
     assert "1.0 alpha compatibility contract" in versioning
     assert "Python imports remain under `ae`" in distribution
@@ -294,9 +296,9 @@ def test_sdist_normalization_is_exact_byte_reproducible(tmp_path: Path) -> None:
     for index, mtime in enumerate((100, 200)):
         lane = tmp_path / f"lane-{index}"
         lane.mkdir()
-        archive = lane / "k1s_core-1.0.0a2.tar.gz"
+        archive = lane / "k1s_core-1.0.0a3.tar.gz"
         with tarfile.open(archive, "w:gz") as target:
-            info = tarfile.TarInfo("k1s_core-1.0.0a2/payload.txt")
+            info = tarfile.TarInfo("k1s_core-1.0.0a3/payload.txt")
             info.mtime = mtime
             info.uid = index + 1000
             info.gid = index + 1000
@@ -309,7 +311,7 @@ def test_sdist_normalization_is_exact_byte_reproducible(tmp_path: Path) -> None:
             output,
             epoch=1793664000,
             distribution="k1s-core",
-            version="1.0.0a2",
+            version="1.0.0a3",
             source_members=source_manifest,
         )
         with tarfile.open(output, "r:gz") as normalized:
@@ -340,11 +342,11 @@ def _wheel_record(payloads: dict[str, bytes], record: str) -> bytes:
 
 
 def _write_wheel(path: Path, *, unsafe_name: str | None = None) -> None:
-    dist_info = "k1s_core-1.0.0a2.dist-info"
+    dist_info = "k1s_core-1.0.0a3.dist-info"
     record = f"{dist_info}/RECORD"
     payloads = {
-        "ae/__init__.py": b'__version__ = "1.0.0a2"\n',
-        f"{dist_info}/METADATA": b"Metadata-Version: 2.4\nName: k1s-core\nVersion: 1.0.0a2\n\n",
+        "ae/__init__.py": b'__version__ = "1.0.0a3"\n',
+        f"{dist_info}/METADATA": b"Metadata-Version: 2.4\nName: k1s-core\nVersion: 1.0.0a3\n\n",
         f"{dist_info}/WHEEL": b"Wheel-Version: 1.0\nTag: py3-none-any\nRoot-Is-Purelib: true\n\n",
     }
     if unsafe_name is not None:
@@ -356,7 +358,7 @@ def _write_wheel(path: Path, *, unsafe_name: str | None = None) -> None:
 
 
 def test_wheel_normalization_rebuilds_record_modes_order_and_timestamps(tmp_path: Path) -> None:
-    input_wheel = tmp_path / "k1s_core-1.0.0a2-py3-none-any.whl"
+    input_wheel = tmp_path / "k1s_core-1.0.0a3-py3-none-any.whl"
     output_wheel = tmp_path / "canonical.whl"
     _write_wheel(input_wheel)
     members = normalize_wheel(
@@ -364,7 +366,7 @@ def test_wheel_normalization_rebuilds_record_modes_order_and_timestamps(tmp_path
         output_wheel,
         epoch=1793664000,
         distribution="k1s-core",
-        version="1.0.0a2",
+        version="1.0.0a3",
     )
     assert [member.path for member in members] == sorted(
         (member.path for member in members), key=str.encode
@@ -373,13 +375,13 @@ def test_wheel_normalization_rebuilds_record_modes_order_and_timestamps(tmp_path
         assert archive.namelist() == sorted(archive.namelist(), key=str.encode)
         assert all(stat.S_IMODE(info.external_attr >> 16) == 0o644 for info in archive.infolist())
         assert all(info.create_system == 3 for info in archive.infolist())
-        record = archive.read("k1s_core-1.0.0a2.dist-info/RECORD").decode().splitlines()
-        assert record[-1] == "k1s_core-1.0.0a2.dist-info/RECORD,,"
+        record = archive.read("k1s_core-1.0.0a3.dist-info/RECORD").decode().splitlines()
+        assert record[-1] == "k1s_core-1.0.0a3.dist-info/RECORD,,"
 
 
 @pytest.mark.parametrize("unsafe", ["../escape", "/absolute", "ae//double", "ae\\bad.py"])
 def test_wheel_normalization_rejects_unsafe_members(tmp_path: Path, unsafe: str) -> None:
-    wheel = tmp_path / "k1s_core-1.0.0a2-py3-none-any.whl"
+    wheel = tmp_path / "k1s_core-1.0.0a3-py3-none-any.whl"
     _write_wheel(wheel, unsafe_name=unsafe)
     with pytest.raises(WheelNormalizationError):
         normalize_wheel(
@@ -387,7 +389,7 @@ def test_wheel_normalization_rejects_unsafe_members(tmp_path: Path, unsafe: str)
             tmp_path / "output.whl",
             epoch=1793664000,
             distribution="k1s-core",
-            version="1.0.0a2",
+            version="1.0.0a3",
         )
 
 
@@ -550,10 +552,10 @@ def test_sdist_normalization_rejects_links_metadata_and_unowned_members(
         + "\n",
         encoding="utf-8",
     )
-    archive = tmp_path / "k1s_core-1.0.0a2.tar.gz"
+    archive = tmp_path / "k1s_core-1.0.0a3.tar.gz"
     with tarfile.open(archive, "w:gz") as target:
         name = "owned.txt" if failure != "unowned" else "extra.txt"
-        info = tarfile.TarInfo(f"k1s_core-1.0.0a2/{name}")
+        info = tarfile.TarInfo(f"k1s_core-1.0.0a3/{name}")
         if failure == "symlink":
             info.type = tarfile.SYMTYPE
             info.linkname = "owned.txt"
@@ -569,13 +571,13 @@ def test_sdist_normalization_rejects_links_metadata_and_unowned_members(
             tmp_path / "normalized.tar.gz",
             epoch=1793664000,
             distribution="k1s-core",
-            version="1.0.0a2",
+            version="1.0.0a3",
             source_members=source_manifest,
         )
 
 
 def test_normalizers_refuse_existing_outputs(tmp_path: Path) -> None:
-    wheel = tmp_path / "k1s_core-1.0.0a2-py3-none-any.whl"
+    wheel = tmp_path / "k1s_core-1.0.0a3-py3-none-any.whl"
     _write_wheel(wheel)
     existing = tmp_path / "existing.whl"
     existing.write_bytes(b"do not replace")
@@ -585,7 +587,7 @@ def test_normalizers_refuse_existing_outputs(tmp_path: Path) -> None:
             existing,
             epoch=1793664000,
             distribution="k1s-core",
-            version="1.0.0a2",
+            version="1.0.0a3",
         )
 
 
@@ -654,18 +656,18 @@ def _create_valid_bundle(root: Path) -> Path:
 
     raw = root / "raw"
     raw.mkdir()
-    raw_wheel = raw / "k1s_core-1.0.0a2-py3-none-any.whl"
+    raw_wheel = raw / "k1s_core-1.0.0a3-py3-none-any.whl"
     _write_wheel(raw_wheel)
     normalize_wheel(
         raw_wheel,
         dist / raw_wheel.name,
         epoch=1793664000,
         distribution="k1s-core",
-        version="1.0.0a2",
+        version="1.0.0a3",
     )
-    raw_sdist = raw / "k1s_core-1.0.0a2.tar.gz"
+    raw_sdist = raw / "k1s_core-1.0.0a3.tar.gz"
     with tarfile.open(raw_sdist, "w:gz") as archive:
-        info = tarfile.TarInfo("k1s_core-1.0.0a2/payload.txt")
+        info = tarfile.TarInfo("k1s_core-1.0.0a3/payload.txt")
         info.size = len(payload)
         info.mode = 0o600
         archive.addfile(info, io.BytesIO(payload))
@@ -674,7 +676,7 @@ def _create_valid_bundle(root: Path) -> Path:
         dist / raw_sdist.name,
         epoch=1793664000,
         distribution="k1s-core",
-        version="1.0.0a2",
+        version="1.0.0a3",
         source_members=source_members,
     )
     write_bundle_metadata(
@@ -704,8 +706,8 @@ def _read_bundle_manifest(bundle: Path) -> dict[str, object]:
 def _rewrite_sha256sums(bundle: Path) -> None:
     relative_files = (
         "artifact-manifest.json",
-        "dist/k1s_core-1.0.0a2-py3-none-any.whl",
-        "dist/k1s_core-1.0.0a2.tar.gz",
+        "dist/k1s_core-1.0.0a3-py3-none-any.whl",
+        "dist/k1s_core-1.0.0a3.tar.gz",
         "manifests/sdist-members.jsonl",
         "manifests/source-members.jsonl",
         "manifests/wheel-members.jsonl",
@@ -843,8 +845,8 @@ def test_bundle_verifier_rejects_extra_filesystem_entries(tmp_path: Path, entry_
     [
         "artifact-manifest.json",
         "SHA256SUMS",
-        "dist/k1s_core-1.0.0a2-py3-none-any.whl",
-        "dist/k1s_core-1.0.0a2.tar.gz",
+        "dist/k1s_core-1.0.0a3-py3-none-any.whl",
+        "dist/k1s_core-1.0.0a3.tar.gz",
         "manifests/source-members.jsonl",
         "manifests/wheel-members.jsonl",
         "manifests/sdist-members.jsonl",

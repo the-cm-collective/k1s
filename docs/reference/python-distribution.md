@@ -120,13 +120,13 @@ the synthetic facts describe a live host.
 ## Version posture
 
 The `v0.1.7` tag and changelog establish the latest stable lineage. `0.1.8a1`
-introduced the `k1s-core` distribution transition, and `1.0.0a2` is the current
+introduced the `k1s-core` distribution transition, and `1.0.0a3` is the current
 PEP 440 candidate. The alpha begins the public compatibility contract in
 `public-contracts.md`; it does not make experimental surfaces stable or claim
 broad production readiness.
 
 The accepted implementation baseline completed isolated Q1 source/runtime
-qualification before this version transition. The `1.0.0a2` artifacts are
+qualification before this version transition. The `1.0.0a3` artifacts are
 rebuilt from their own immutable commit and must pass deterministic two-lane,
 strict installed-artifact, and publication review gates. Combined
 K1s/WorkerBee qualification remains required before RC promotion.

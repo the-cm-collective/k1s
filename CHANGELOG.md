@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.0.0a3 - 2026-11-10
+
+### Fixed
+- Replaced publication-workflow glob expansion with one tested GitHub
+  attestation verification call per exact bundle subject. Both TestPyPI and
+  PyPI now require the same seven regular, non-symlink subjects and fail closed
+  on missing, extra, or individually invalid provenance.
+- Preserved `v1.0.0a2` as an immutable failed-publication checkpoint. Its
+  approved TestPyPI job verified the exact package bytes, then stopped before
+  OIDC publication because three member manifests were passed to a
+  one-subject GitHub CLI command.
+
 ## 1.0.0a2 - 2026-11-10
 
 ### Fixed
@@ -13,7 +25,8 @@
   reviewed runtime lock.
 - Preserved `v1.0.0a1` as an immutable failed-publication checkpoint. Its
   TestPyPI build stopped before artifact attestation, environment deployment,
-  or package upload; `1.0.0a2` is the first publishable 1.0 alpha candidate.
+  or package upload; `1.0.0a2` retained that candidate while correcting the
+  source-only dependency wheelhouse.
 
 ## 1.0.0a1 - 2026-11-10
 

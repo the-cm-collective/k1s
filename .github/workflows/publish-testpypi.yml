@@ -138,12 +138,10 @@ jobs:
       - name: Verify GitHub build provenance
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh attestation verify bundle/dist/*.whl --repo "$GITHUB_REPOSITORY"
-          gh attestation verify bundle/dist/*.tar.gz --repo "$GITHUB_REPOSITORY"
-          gh attestation verify bundle/artifact-manifest.json --repo "$GITHUB_REPOSITORY"
-          gh attestation verify bundle/SHA256SUMS --repo "$GITHUB_REPOSITORY"
-          gh attestation verify bundle/manifests/*.jsonl --repo "$GITHUB_REPOSITORY"
+        run: >-
+          python scripts/verify_github_attestations.py
+          --bundle-root bundle
+          --repository "$GITHUB_REPOSITORY"
       - name: Publish exact bundle to TestPyPI with OIDC
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:

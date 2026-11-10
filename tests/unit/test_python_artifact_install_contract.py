@@ -101,16 +101,16 @@ def test_outside_checkout_guard_accepts_sibling_tree_and_rejects_descendants(
 
 
 def test_archive_scanner_rejects_private_markers_in_wheel_and_sdist(tmp_path: Path) -> None:
-    wheel = tmp_path / "k1s_core-1.0.0a2-py3-none-any.whl"
+    wheel = tmp_path / "k1s_core-1.0.0a3-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("ae/leak.py", 'SOURCE = "/home/alice/git/private"\n')
     assert {finding.rule for finding in scan_archive(wheel)} == {"private-home"}
 
     payload = tmp_path / "README.md"
     payload.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n", encoding="utf-8")
-    sdist = tmp_path / "k1s_core-1.0.0a2.tar.gz"
+    sdist = tmp_path / "k1s_core-1.0.0a3.tar.gz"
     with tarfile.open(sdist, "w:gz") as archive:
-        archive.add(payload, arcname="k1s_core-1.0.0a2/README.md")
+        archive.add(payload, arcname="k1s_core-1.0.0a3/README.md")
     assert {finding.rule for finding in scan_archive(sdist)} == {"credential-material"}
 
 
@@ -146,7 +146,7 @@ def _record_row(name: str, payload: bytes) -> list[str]:
 def _write_record_wheel(path: Path, *, corrupt_hash: bool = False) -> tuple[list[str], str]:
     member = "ae/example.py"
     payload = b"VALUE = 1\n"
-    dist_info = "k1s_core-1.0.0a2.dist-info"
+    dist_info = "k1s_core-1.0.0a3.dist-info"
     record = f"{dist_info}/RECORD"
     rows = [_record_row(member, payload), [record, "", ""]]
     if corrupt_hash:
