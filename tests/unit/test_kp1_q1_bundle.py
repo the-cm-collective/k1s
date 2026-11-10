@@ -192,6 +192,49 @@ def test_bundle_is_canonical_deterministic_and_exact_018a1(tmp_path: Path) -> No
     )
 
 
+def test_bundle_round_trips_valid_manylinux_wheel_name_beyond_ustar_limit(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    original = next(item for item in fixture.inputs if item.role == "dependency-wheel")
+    filename = (
+        "charset_normalizer-3.5.2-cp311-cp311-manylinux2014_x86_64."
+        "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+    )
+    replacement = bundle.BundleInput(
+        source_path=original.source_path,
+        bundle_path=f"payload/offline/wheels/{filename}",
+        role=original.role,
+        sha256=original.sha256,
+        size=original.size,
+        mode=original.mode,
+        uid=original.uid,
+        gid=original.gid,
+        device=original.device,
+        inode=original.inode,
+    )
+    inputs = tuple(replacement if item is original else item for item in fixture.inputs)
+    manifest = bundle.build_manifest(
+        run_id="q1-0123456789abcdef0123456789abcdef",
+        plan_digest="sha256:" + "4" * 64,
+        source_commit="5" * 40,
+        source_tree="6" * 40,
+        members=inputs,
+        gate_b_endpoint=fixture.endpoint,
+    )
+
+    raw = bundle.build_bundle_bytes(manifest, inputs)
+    authority = bundle.validate_bundle_bytes(
+        raw,
+        expected_run_id=str(manifest["runId"]),
+        expected_plan_digest=str(manifest["planDigest"]),
+        expected_bundle_id=str(manifest["bundleId"]),
+    )
+
+    assert authority.manifest == manifest
+    assert raw == bundle.build_bundle_bytes(manifest, inputs)
+
+
 def test_bundle_source_links_modes_and_content_drift_fail_closed(tmp_path: Path) -> None:
     tmp_path.chmod(0o700)
     source = _source(tmp_path, "source.whl", b"original")

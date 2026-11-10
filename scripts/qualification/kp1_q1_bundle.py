@@ -675,7 +675,7 @@ def validate_manifest(value: object) -> dict[str, object]:
 def _tar_bytes(manifest: dict[str, object], payloads: dict[str, bytes]) -> bytes:
     manifest_raw = canonical_json_bytes(manifest)
     output = io.BytesIO()
-    with tarfile.open(fileobj=output, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+    with tarfile.open(fileobj=output, mode="w", format=tarfile.GNU_FORMAT) as archive:
         info = tarfile.TarInfo("manifest.json")
         info.size = len(manifest_raw)
         info.mode = 0o644
