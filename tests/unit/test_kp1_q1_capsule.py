@@ -717,7 +717,8 @@ def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
         assert b"q1 hard nproc 512" in user_data
         assert b"q1 hard nofile 1024" in user_data
         assert (root / "input" / "network-config").read_bytes() == (
-            b"version: 2\nethernets: {}\n"
+            b"version: 2\nethernets:\n  q1:\n    match:\n      name: \"en*\"\n"
+            b"    dhcp4: true\n    dhcp6: false\n    optional: true\n"
         )
         assert (root / "input" / "k1s-q1-input.bundle").read_bytes() == (b"sealed-q1-input-bundle")
         assert str(root / "input" / "network-config") in runner.calls[1]

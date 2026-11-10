@@ -1821,7 +1821,10 @@ def execute_plan(
     check_limits()
 
     meta_data = b"instance-id: " + run_id.encode("ascii") + b"\nlocal-hostname: k1s-q1\n"
-    network_data = b"version: 2\nethernets: {}\n"
+    network_data = (
+        b"version: 2\nethernets:\n  q1:\n    match:\n      name: \"en*\"\n"
+        b"    dhcp4: true\n    dhcp6: false\n    optional: true\n"
+    )
     ssh_key_identity = _identity_from_payload(artifacts["sshPublicKey"])
     public_key = _read_identity_bytes(
         ssh_key_identity,
