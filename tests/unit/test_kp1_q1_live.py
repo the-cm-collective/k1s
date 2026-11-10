@@ -196,14 +196,14 @@ def test_failed_runtime_evidence_retains_bounded_serial_and_stderr(tmp_path: Pat
     serial = vm / "serial.log"
     stderr = vm / "qemu-host.stderr"
     serial.write_bytes(b"guest serial\n")
-    stderr.write_bytes(b"qemu stderr\n")
+    stderr.write_bytes(b"")
     serial.chmod(0o600)
     stderr.chmod(0o600)
 
     live._retain_failed_runtime_evidence(run_root, retained)
 
     assert (retained / "failed-serial.log").read_bytes() == b"guest serial\n"
-    assert (retained / "failed-qemu-host.stderr").read_bytes() == b"qemu stderr\n"
+    assert (retained / "failed-qemu-host.stderr").read_bytes() == b""
     receipt = json.loads((retained / "failed-runtime-evidence.json").read_text())
     assert [member["name"] for member in receipt["members"]] == [
         "failed-serial.log",

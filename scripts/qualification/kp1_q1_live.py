@@ -608,7 +608,7 @@ def _retain_failed_runtime_evidence(run_root: Path, retained_evidence_root: Path
             or info.st_nlink != 1
             or info.st_uid != os.getuid()
             or info.st_dev != root_info.st_dev
-            or not 0 < info.st_size <= q1_teardown.MAX_EVIDENCE_MEMBER_BYTES
+            or not 0 <= info.st_size <= q1_teardown.MAX_EVIDENCE_MEMBER_BYTES
         ):
             _fail()
         raw = source.read_bytes()
