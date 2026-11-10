@@ -14,6 +14,7 @@ import pytest
 from scripts.check_public_markers import scan_archive
 from scripts.validate_installed_python_artifact import (
     offline_environment,
+    require_outside_checkout,
     verify_wheelhouse,
 )
 from scripts.validate_python_artifacts import (
@@ -78,6 +79,25 @@ def test_offline_environment_removes_index_proxy_and_checkout_paths(tmp_path: Pa
     assert not any("proxy" in key.lower() for key in env)
     assert "PIP_INDEX_URL" not in env
     assert "PIP_EXTRA_INDEX_URL" not in env
+
+
+def test_outside_checkout_guard_accepts_sibling_tree_and_rejects_descendants(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "payload" / "source"
+    source_root.mkdir(parents=True)
+    sibling_work = tmp_path / "runtime" / "outside-checkout"
+    sibling_work.mkdir(parents=True)
+
+    require_outside_checkout(sibling_work, source_root)
+
+    source_work = source_root / "qualification" / "outside-checkout"
+    source_work.mkdir(parents=True)
+    with pytest.raises(ValueError, match="unexpectedly ran inside the checkout"):
+        require_outside_checkout(source_work, source_root)
+
+    with pytest.raises(ValueError, match="unexpectedly ran inside the checkout"):
+        require_outside_checkout(source_root, source_root)
 
 
 def test_archive_scanner_rejects_private_markers_in_wheel_and_sdist(tmp_path: Path) -> None:

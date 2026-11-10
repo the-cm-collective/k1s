@@ -89,6 +89,15 @@ def offline_environment(*, home: Path, temporary: Path, guard: Path) -> dict[str
     return env
 
 
+def require_outside_checkout(path: Path, source_root: Path) -> None:
+    """Reject smoke work inside the source tree without conflating sibling paths."""
+
+    resolved_path = path.resolve()
+    resolved_source = source_root.resolve()
+    if resolved_path == resolved_source or resolved_path.is_relative_to(resolved_source):
+        raise ValueError("installed-artifact smoke unexpectedly ran inside the checkout")
+
+
 def _run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> None:
     rendered = list(argv)
     if "-c" in rendered:
@@ -281,6 +290,7 @@ socket.socket.connect_ex = _deny
     _run([sys.executable, "-m", "venv", str(venv)], cwd=outside, env=env)
     python = venv / "bin" / "python"
     bin_dir = venv / "bin"
+    source_root = Path(__file__).resolve().parents[1]
     _run(
         [
             str(python),
@@ -728,7 +738,7 @@ assert scripts == {'ae', 'ae-rotate-certs', 'k1s', 'ae-node', 'ae-gateway', 'ae-
             **env,
             "K1S_EXPECTED_VERSION": expected_version,
             "K1S_PROFILE_SMOKE_ROOT": str(outside / "profile-state-smoke"),
-            "K1S_SOURCE_ROOT": str(Path(__file__).resolve().parents[1]),
+            "K1S_SOURCE_ROOT": str(source_root),
             "K1S_VENV_ROOT": str(venv.resolve()),
         },
     )
@@ -1090,8 +1100,7 @@ spec:
     _run([str(bin_dir / "ae"), "plan", "-f", str(manifest), "--json"], cwd=outside, env=env)
 
     shutil.rmtree(guard)
-    if str(Path.cwd().resolve()) in str(outside.resolve()):
-        raise ValueError("installed-artifact smoke unexpectedly ran inside the checkout")
+    require_outside_checkout(outside, source_root)
 
 
 def main() -> int:
