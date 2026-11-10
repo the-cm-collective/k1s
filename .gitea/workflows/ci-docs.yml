@@ -14,16 +14,7 @@ permissions:
   contents: read
 
 jobs:
-  server-guard:
-    if: ${{ github.server_url != 'https://github.com' || env.ACT == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Confirm supported actions host
-        run: echo "Running ci-docs on ${GITHUB_SERVER_URL:-unknown}"
-
   docs-verify:
-    needs: server-guard
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

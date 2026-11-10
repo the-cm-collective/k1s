@@ -37,7 +37,7 @@ def test_public_project_metadata_is_canonical_and_supported() -> None:
     assert "CPython 3.11, 3.12, and 3.13 are blocking" in contracts
     assert "CPython 3.14 is exploratory" in contracts
 
-    ci = (ROOT / ".github" / "workflows" / "ci-core.yml").read_text(encoding="utf-8")
+    ci = (ROOT / ".gitea" / "workflows" / "ci-core.yml").read_text(encoding="utf-8")
     assert 'python-version: ["3.11", "3.12", "3.13"]' in ci
     assert "python-version: ${{ matrix.python-version }}" in ci
     assert 'python-version: ["3.11", "3.12", "3.13", "3.14"]' not in ci
@@ -78,7 +78,7 @@ def test_public_marker_scanner_rejects_private_markers(marker: str, rule: str) -
 
 def test_public_marker_scanner_allows_named_integration_and_public_lab_fixtures() -> None:
     assert not scan_text(
-        ".github/workflows/ci-core.yml",
+        ".gitea/workflows/ci-core.yml",
         "https://gitea.core.home.arpa/ integration only",
     )
     assert not scan_text("docs/reference/lab.md", "https://api.home.arpa:8443")

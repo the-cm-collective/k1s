@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
-NIGHTLY_APISHIM = ROOT / ".github" / "workflows" / "nightly-apishim.yml"
-NIGHTLY_RUNTIME = ROOT / ".github" / "workflows" / "nightly-runtime.yml"
+NIGHTLY_APISHIM = ROOT / ".gitea" / "workflows" / "nightly-apishim.yml"
+NIGHTLY_RUNTIME = ROOT / ".gitea" / "workflows" / "nightly-runtime.yml"
 K8S_CONFORMANCE = ROOT / "scripts" / "ci" / "k8s-conformance.sh"
 K3S_CONFORMANCE = ROOT / "scripts" / "ci" / "k3s-conformance.sh"
 CI_LIB = ROOT / "scripts" / "ci" / "lib.sh"
@@ -18,13 +17,13 @@ def test_nightly_runtime_cri_smoke_preserves_selected_python_under_sudo() -> Non
     assert 'sudo -E env "PATH=$PATH" "$(command -v python)" -m pytest \\' in text
 
 
-def test_nightly_workflows_do_not_gate_scheduled_jobs_behind_server_guard() -> None:
+def test_nightly_workflows_rely_on_gitea_directory_authority() -> None:
     for workflow in (NIGHTLY_APISHIM, NIGHTLY_RUNTIME):
         text = workflow.read_text(encoding="utf-8")
 
         assert "server-guard:" not in text
         assert "needs: server-guard" not in text
-        assert "github.server_url != 'https://github.com'" in text
+        assert "github.server_url != 'https://github.com'" not in text
 
 
 def test_podman_job_targets_cli_tooling_compat_not_strict_policy() -> None:
@@ -34,10 +33,14 @@ def test_podman_job_targets_cli_tooling_compat_not_strict_policy() -> None:
     assert "Podman CLI tooling compatibility checks" in podman_block
     assert "podman info >/dev/null 2>&1" in podman_block
     assert (
-        "python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy baseline --summary >/dev/null"
+        "python -m ae.cli k8s-check -f specs/examples/echo.yaml "
+        "--policy baseline --summary >/dev/null"
         in podman_block
     )
-    assert "python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict" not in podman_block
+    assert (
+        "python -m ae.cli k8s-check -f specs/examples/echo.yaml --policy strict"
+        not in podman_block
+    )
 
 
 def test_nightly_runtime_svc_portforward_disables_ingress_apply_validation() -> None:

@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   shim-smoke:
-    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'shim-smoke') }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'shim-smoke') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -105,7 +105,7 @@ jobs:
           fi
 
   helm-smoke:
-    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'helm-smoke') }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'helm-smoke') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -193,7 +193,7 @@ jobs:
           fi
 
   exec-streaming:
-    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'exec') }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'exec') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -354,7 +354,7 @@ jobs:
           fi
 
   portforward:
-    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'portforward') }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'portforward') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -486,7 +486,7 @@ jobs:
           if [ -f /tmp/echo-server.pid ]; then kill "$(cat /tmp/echo-server.pid)" 2>/dev/null || true; fi
 
   ssa-rbac:
-    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'ssa-rbac') }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'ssa-rbac') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -637,7 +637,7 @@ jobs:
           fi
 
   spdy-matrix:
-    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && ((github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'spdy') && (github.event_name != 'workflow_dispatch' || github.event.inputs.runtime == matrix.runtime)) }}
+    if: ${{ ((github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'spdy') && (github.event_name != 'workflow_dispatch' || github.event.inputs.runtime == matrix.runtime)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -705,7 +705,7 @@ jobs:
           cat /tmp/k1s-ctrl-spdy.log || true
 
   live-openapi:
-    if: ${{ (github.server_url != 'https://github.com' || env.ACT == 'true') && ((github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'live-openapi') && (github.event_name != 'workflow_dispatch' || github.event.inputs.runtime == matrix.runtime) && (github.event_name != 'workflow_dispatch' || github.event.inputs.target == matrix.target)) }}
+    if: ${{ ((github.event_name != 'workflow_dispatch' || github.event.inputs.suite == 'all' || github.event.inputs.suite == 'live-openapi') && (github.event_name != 'workflow_dispatch' || github.event.inputs.runtime == matrix.runtime) && (github.event_name != 'workflow_dispatch' || github.event.inputs.target == matrix.target)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:

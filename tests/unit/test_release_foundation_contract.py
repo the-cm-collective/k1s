@@ -6,13 +6,18 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS = ROOT / ".github" / "workflows"
+GITHUB_WORKFLOWS = ROOT / ".github" / "workflows"
+GITEA_WORKFLOWS = ROOT / ".gitea" / "workflows"
 SAFE_BUILDER_GATE = ROOT / "scripts" / "release" / "require_safe_builder.sh"
 OCI_BUILDER = ROOT / "scripts" / "release" / "build_oci_artifacts.sh"
 
 
-def _workflow(name: str) -> str:
-    return (WORKFLOWS / name).read_text(encoding="utf-8")
+def _github_workflow(name: str) -> str:
+    return (GITHUB_WORKFLOWS / name).read_text(encoding="utf-8")
+
+
+def _gitea_workflow(name: str) -> str:
+    return (GITEA_WORKFLOWS / name).read_text(encoding="utf-8")
 
 
 def _job_block(workflow: str, job: str) -> str:
@@ -37,8 +42,8 @@ def _run_builder_gate(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
 
 
 def test_public_python_publish_jobs_are_github_only() -> None:
-    testpypi = _workflow("publish-testpypi.yml")
-    pypi = _workflow("publish-pypi.yml")
+    testpypi = _github_workflow("publish-testpypi.yml")
+    pypi = _github_workflow("publish-pypi.yml")
 
     for workflow, jobs in (
         (testpypi, ("build", "publish-testpypi")),
@@ -60,27 +65,37 @@ def test_gitea_integration_workflows_have_no_python_publish_authority() -> None:
         "repository-url: https://pypi.org",
         "repository-url: https://test.pypi.org",
     )
-    integration_workflows = sorted(
-        path
-        for path in WORKFLOWS.glob("*.yml")
-        if path.name not in {"publish-pypi.yml", "publish-testpypi.yml"}
-    )
-    assert integration_workflows
+    integration_workflows = sorted(GITEA_WORKFLOWS.glob("*.yml"))
+    assert {path.name for path in integration_workflows} == {
+        "ci-core.yml",
+        "ci-docs.yml",
+        "nightly-apishim.yml",
+        "nightly-runtime.yml",
+        "release.yml",
+    }
 
     for path in integration_workflows:
         text = path.read_text(encoding="utf-8")
         for marker in publication_markers:
             assert marker not in text, f"{path.name} contains publication marker {marker!r}"
 
-    release = _workflow("release.yml")
+    release = _gitea_workflow("release.yml")
     assert release.startswith("name: gitea-release-artifacts\n")
-    assert "github.server_url != 'https://github.com'" in release
+    assert "server-guard:" not in release
     assert "permissions:\n  contents: read" in release
 
 
+def test_github_workflow_directory_contains_only_supported_github_authority() -> None:
+    assert {path.name for path in GITHUB_WORKFLOWS.glob("*.yml")} == {
+        "publish-pypi.yml",
+        "publish-testpypi.yml",
+        "python-artifact-reproducibility.yml",
+    }
+
+
 def test_release_paths_refuse_tls_bypasses() -> None:
-    release = _workflow("release.yml")
-    ci_release = _job_block(_workflow("ci-core.yml"), "release-image-smoke")
+    release = _gitea_workflow("release.yml")
+    ci_release = _job_block(_gitea_workflow("ci-core.yml"), "release-image-smoke")
     builder = OCI_BUILDER.read_text(encoding="utf-8")
 
     for text in (release, ci_release, builder):
@@ -137,7 +152,7 @@ def test_release_builder_gate_rejects_host_and_insecure_daemons(tmp_path: Path) 
 
 
 def test_release_artifact_commands_do_not_target_managed_runtimes() -> None:
-    release = _workflow("release.yml")
+    release = _gitea_workflow("release.yml")
     builder = OCI_BUILDER.read_text(encoding="utf-8")
 
     for marker in (

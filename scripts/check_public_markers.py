@@ -23,7 +23,15 @@ PROTECTED_PATHS = {
     "ops/systemd/ae.env",
 }
 SOURCE_FILES = ("CHANGELOG.md", "README.md", "VERSIONING.md", "pyproject.toml")
-SOURCE_DIRS = (".github/workflows", "docs", "scripts", "specs", "src/ae", "tests")
+SOURCE_DIRS = (
+    ".gitea/workflows",
+    ".github/workflows",
+    "docs",
+    "scripts",
+    "specs",
+    "src/ae",
+    "tests",
+)
 SKIP_DIR_NAMES = {"__pycache__", ".mypy_cache", ".pytest_cache", "site"}
 TEXT_SUFFIXES = {
     "",
@@ -59,7 +67,7 @@ SCANNER_FIXTURES = (
 )
 GITEA_FIXTURES = (
     re.compile(
-        r"\.github/workflows/(?:ci-core|ci-docs|nightly-apishim|nightly-runtime|release)\.yml"
+        r"\.gitea/workflows/(?:ci-core|ci-docs|nightly-apishim|nightly-runtime|release)\.yml"
     ),
     re.compile(r"scripts/ci/lib\.sh"),
     re.compile(r"tests/unit/test_release_foundation_contract\.py"),

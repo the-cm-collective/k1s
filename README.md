@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="media/style/web-logos/k1s-killa-bee-refresh-0526.png" alt="k1s logo" width="260" />
+  <img src="https://raw.githubusercontent.com/the-cm-collective/k1s/main/media/style/web-logos/k1s-killa-bee-refresh-0526.png" alt="k1s logo" width="260" />
 </p>
 
 # k1s Minimal Application Engine
@@ -62,10 +62,10 @@ Production guidance:
 ## Integrated Dashboard & Interactive Playground
 
 Dashboard:
-![Dashboard](media/docs.home.arpa_8443_dashboard.png)
+![Dashboard](https://raw.githubusercontent.com/the-cm-collective/k1s/main/media/docs.home.arpa_8443_dashboard.png)
 
 Playground:
-![Playground](media/docs.home.arpa_8443_playground.html.png)
+![Playground](https://raw.githubusercontent.com/the-cm-collective/k1s/main/media/docs.home.arpa_8443_playground.html.png)
 
 ## Quickstart
 
