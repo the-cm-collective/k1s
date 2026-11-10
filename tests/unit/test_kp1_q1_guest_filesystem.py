@@ -101,6 +101,15 @@ def test_shared_artifacts_ignore_lane_image_identity_but_bind_semantics() -> Non
     assert filesystem.shared_artifacts(lane_a) != filesystem.shared_artifacts(lane_b)
 
 
+def test_manifest_accepts_and_binds_special_permission_bits() -> None:
+    baseline = _manifest()
+    special = _manifest()
+    special["entries"][1]["mode"] = "2755"
+
+    assert filesystem.validate_manifest(special) == special
+    assert filesystem.manifest_digest(special) != filesystem.manifest_digest(baseline)
+
+
 def test_policy_exclusions_remain_narrow_and_explicit() -> None:
     policy = filesystem.POLICY
     excluded = set(policy["excludedMountTrees"]) | set(policy["ephemeralTrees"])

@@ -25,7 +25,7 @@ MAX_REGULAR_BYTES = 16 * 1024 * 1024 * 1024
 MAX_MANIFEST_BYTES = 48 * 1024 * 1024
 
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
-MODE_RE = re.compile(r"0[0-7]{3}")
+MODE_RE = re.compile(r"[0-7]{4}")
 XATTR_RE = re.compile(r"[A-Za-z0-9_.-]{1,255}")
 
 # All exclusions are exact paths or explicit subtrees.  Broad classes such as
