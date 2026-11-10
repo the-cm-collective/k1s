@@ -3,9 +3,12 @@
 K1s ships one experimental, metadata-safe adapter for later WorkerBee
 consumers. It adds no distribution or console. The pure Python API in
 `ae.kctl.profile_adapter` invokes no lifecycle command and opens no runtime or
-network connection. The adapter accepts an already selected successful K1s JSON result
-and returns a strict allowlist projection. Its qualification posture is always
-`source-validated/unqualified`.
+network connection. The adapter accepts an already selected successful K1s JSON
+result and returns a strict allowlist projection. Its exact v1 wire and local
+same-runtime consumer fixture are source/synthetic/local-contract qualified.
+Its public qualification posture is still always
+`source-validated/unqualified` because that evidence does not qualify a live
+provider, MCP channel, runtime, or deployment.
 
 The installed contract resource is
 `ae/resources/profiles/workerbee-adapter-v1.json`. It is canonical UTF-8 JSON
@@ -255,5 +258,10 @@ or console. Installed validation runs all six synthetic projections outside a
 checkout with indexes and sockets disabled.
 
 This contract does not inspect WorkerBee, authenticate an observation, start a
-profile, read a runtime, or qualify a live engine/transport/CRI boundary. W-P0-1
-and Q1 remain mandatory before public alpha or any live-qualified claim.
+profile, read a runtime, or qualify a live engine/transport/CRI boundary. The
+K1 compatibility lane at `c9178a5235b695784ed839f31901d476afdd6a98`
+qualifies the exact resource, canonical projection, redaction rules, and
+six-operation consumer fixture without changing the v1 wire. The remaining
+W-P0-1 and Q1 live gates—same-runtime MCP acquisition, provider-process
+identity, retained W4 evidence, and combined disposable-guest qualification—
+remain mandatory before RC promotion or any live-qualified claim.

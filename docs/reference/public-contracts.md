@@ -17,11 +17,11 @@ can detect an undocumented public-surface change.
 | Compatibility CLIs | stable | `ae`, `ae-rotate-certs`, `ae-node`, `ae-gateway`, and `ae-worker-stub` remain installed entry points. |
 | Installed profile catalog | stable | `k1s profile list`, `doctor`, and `plan` are deterministic, non-mutating installed-contract commands. |
 | Portable profile lifecycle | experimental | `k1s profile run`, `logs`, and confirmed `delete` are exact-owner contracts for `local`, `core`, `edge-gateway`, and `node`; live backend/transport qualification remains separate. |
-| Canonical role bootstrap | experimental | `k1s profile bootstrap create edge-gateway\|node` creates one immutable owner-private record and returns only a secret-free public projection. |
-| Explicit profile migration | experimental | `k1s profile migrate plan\|apply\|rollback` accepts only caller-selected stopped schema-v1 records and exact digest-bound state authority; it performs no ambient discovery or alias promotion. |
+| Canonical role bootstrap | experimental | `k1s profile bootstrap create edge-gateway` and `k1s profile bootstrap create node` create one immutable owner-private record and return only a secret-free public projection. |
+| Explicit profile migration | experimental | `k1s profile migrate plan`, `k1s profile migrate apply`, and `k1s profile migrate rollback` accept only caller-selected stopped schema-v1 records and exact digest-bound state authority; they perform no ambient discovery or alias promotion. |
 | Strict-CRI host plan | experimental | `k1s profile host plan strict-cri` consumes only two explicit canonical digest-pinned files and emits a deterministic secret-free `source-validated/unqualified` plan without target probing, state creation, socket access, or host mutation. |
 | Strict-CRI prepare/rollback and node adapter | experimental | Explicit digest-bound prepare/rollback journals exact owner-private authority and uses only a caller-supplied anonymous-pipe helper protocol; the node adapter requires the exact applied receipt. Source validation does not claim helper authentication or live CRI qualification. |
-| WorkerBee profile evidence adapter | experimental | `ae.kctl.profile_adapter` projects six already selected profile JSON results into exact metadata-safe v1 evidence. It adds no command or distribution and remains source-validated/unqualified pending W-P0-1 and Q1. |
+| WorkerBee profile evidence adapter | experimental | `ae.kctl.profile_adapter` projects six already selected profile JSON results into exact metadata-safe v1 evidence. The local K1 same-runtime fixture qualifies the v1 wire against the locked W-P0-1 consumer design. It adds no command or distribution and remains `source-validated/unqualified` pending live MCP/channel binding, retained W4 evidence, and combined Q1. |
 | Version metadata | stable | Package metadata, CLI build information, OpenAPI v2/v3, and release checks resolve `ae.__version__`. |
 | CRI protobuf resources | stable | Package-local CRI and gogoproto modules ship in wheel and source distributions. |
 
@@ -91,5 +91,9 @@ The WorkerBee adapter is likewise structural evidence, not a live channel. Its
 installed resource fixes operation/source identities, its payloads are strict
 allowlists, and its optional node observation binds only an explicit
 identity-v1 node ID and server lease generation. Raw logs and endpoint values
-are omitted. Unknown fields or versions fail closed. The complete byte and
-redaction contract is `docs/reference/workerbee-profile-adapter.md`.
+are omitted. Unknown fields or versions fail closed. The K1 compatibility lane
+qualifies these local source/synthetic semantics and the exact six-operation
+consumer fixture only; it does not authenticate a provider process, execute a
+live WorkerBee/MCP channel, retain a live W4 set, or qualify CRI/containerd,
+deployment, or publication. The complete byte and redaction contract is
+`docs/reference/workerbee-profile-adapter.md`.

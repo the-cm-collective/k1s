@@ -15,12 +15,19 @@ Project principles and non-goals: `TENETS.md`. Cognitive-substrate philosophy an
 ## Status & Production Use
 
 k1s is entering its 1.0 alpha line and remains actively evolving. The current
-candidate establishes a tested compatibility boundary for the distribution,
-imports, commands, and core installed contracts while runtime and fabric
-surfaces continue through explicit qualification gates.
+candidate establishes a locally tested source, synthetic, and installed-artifact
+compatibility boundary for the distribution, imports, commands, and metadata-safe
+WorkerBee evidence contract. It does not qualify live WorkerBee/MCP transport,
+CRI/containerd operation, provider or deployment integration, appliance behavior,
+or package publication; those remain explicit review gates.
+
+The latest stable release remains `0.1.7`. `1.0.0a3` is the current local
+non-release review candidate; pre-RC1 review branches and markers do not promote
+it to `1.0.0rc1` or grant publication authority.
 
 Production guidance:
-- Recommended now: labs, staging, and controlled production pilots with explicit operator ownership.
+- Recommended now: source review, labs, staging, and explicitly scoped pilots only
+  after environment-specific live validation and with explicit operator ownership.
 - Not yet recommended: broad multi-tenant or compliance-critical environments that require full Kubernetes semantics.
 - Always run environment-specific security review, failure drills, and rollout validation before promotion.
 
@@ -188,10 +195,12 @@ not discover ambient authority or silently change roles/backends. See
 contracts.
 
 The installed `k1s-core` package also contains a versioned, metadata-safe
-WorkerBee profile evidence adapter. It projects already selected JSON results;
-it adds no command, starts nothing, emits no raw log or connection value, and
-remains `source-validated/unqualified`. Exact WorkerBee rebind and combined
-disposable-guest qualification remain required before RC promotion. See
+WorkerBee profile evidence adapter. Its v1 wire and six-operation same-runtime
+consumer fixture are source/synthetic/local-contract qualified. The public
+posture remains `source-validated/unqualified`: it projects already selected
+JSON results, adds no command, starts nothing, and emits no raw log or connection
+value. Live WorkerBee acquisition/channel binding, retained W4 evidence, and
+combined disposable-guest qualification remain required before RC promotion. See
 `docs/reference/workerbee-profile-adapter.md`.
 
 API endpoints (when started with `--metrics-port`): see `docs/reference/http-api.md`.

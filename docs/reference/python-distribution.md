@@ -125,11 +125,15 @@ PEP 440 candidate. The alpha begins the public compatibility contract in
 `public-contracts.md`; it does not make experimental surfaces stable or claim
 broad production readiness.
 
-The accepted implementation baseline completed isolated Q1 source/runtime
-qualification before this version transition. The `1.0.0a3` artifacts are
+The accepted implementation baseline completed source and synthetic checks for
+the isolated Q1 capsule, conductor, teardown, and replay contracts before this
+version transition. It did not complete live disposable-guest CRI/containerd,
+provider, deployment, or appliance qualification. The `1.0.0a3` artifacts are
 rebuilt from their own immutable commit and must pass deterministic two-lane,
-strict installed-artifact, and publication review gates. Combined
-K1s/WorkerBee qualification remains required before RC promotion.
+strict installed-artifact, and publication review gates. The K1 review at
+`c9178a5235b695784ed839f31901d476afdd6a98` qualifies the WorkerBee v1 wire and
+pure same-runtime consumer fixture; live W4 acquisition/channel binding and
+combined K1s/WorkerBee qualification remain required before RC promotion.
 
 The canonical runtime version is the literal `ae.__version__` in
 `src/ae/__init__.py`. Setuptools reads that literal as dynamic distribution
