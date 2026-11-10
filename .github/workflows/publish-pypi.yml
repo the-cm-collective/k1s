@@ -59,11 +59,19 @@ jobs:
           run-id: ${{ inputs.source-run-id }}
           name: k1s-core-python-${{ inputs.source-sha }}
           path: bundle
-      - name: Verify exact production publication bytes
-        run: >-
-          python scripts/validate_python_artifacts.py
-          --dist bundle/dist
-          --verify-manifest bundle/SHA256SUMS
+      - name: Verify exact production publication bundle
+        env:
+          SOURCE_SHA: ${{ inputs.source-sha }}
+        run: |
+          source_tree="$(git rev-parse "${SOURCE_SHA}^{tree}")"
+          python scripts/build_python_artifacts.py verify \
+            --repository "$GITHUB_WORKSPACE" \
+            --commit "$SOURCE_SHA" \
+            --tree "$source_tree" \
+            --git "$(command -v git)" \
+            --python "$(command -v python)" \
+            --bundle-root "$GITHUB_WORKSPACE/bundle" \
+            --source-date-epoch 1793664000
       - name: Verify GitHub build provenance
         env:
           GH_TOKEN: ${{ github.token }}
