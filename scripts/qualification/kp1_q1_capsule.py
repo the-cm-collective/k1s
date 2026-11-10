@@ -724,6 +724,7 @@ def _qemu_argv(plan: dict[str, object]) -> list[str]:
         "none",
         "-nodefaults",
         "-no-reboot",
+        "-no-shutdown",
         "-sandbox",
         "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
         "-drive",

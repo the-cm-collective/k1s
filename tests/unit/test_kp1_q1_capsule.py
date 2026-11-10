@@ -315,6 +315,7 @@ def test_qemu_argv_is_one_restricted_user_network_vm_without_host_mutation(tmp_p
     assert "scsi-cd,drive=q1seed,bus=q1scsi.0" in plan["qemuArgv"]
     assert any("seed.iso,if=none,id=q1seed,readonly=on" in arg for arg in plan["qemuArgv"])
     assert "-sandbox" in plan["qemuArgv"]
+    assert "-no-shutdown" in plan["qemuArgv"]
     assert "-daemonize" not in plan["qemuArgv"]
     for forbidden in (
         "tap",
