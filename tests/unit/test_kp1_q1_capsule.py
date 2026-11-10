@@ -178,6 +178,26 @@ def test_plan_is_canonical_deterministic_digest_bound_and_nonmutating(tmp_path: 
     assert not (tmp_path / f"k1s-{first['runId']}").exists()
 
 
+def test_plan_input_revalidation_gives_only_base_image_the_image_size_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _plan(tmp_path)
+    original = capsule.file_identity
+    observed: dict[str, int] = {}
+
+    def recording_identity(raw_path, **kwargs):  # type: ignore[no-untyped-def]
+        observed[Path(str(raw_path)).name] = kwargs.get("maximum", capsule.MAX_INPUT_BYTES)
+        return original(raw_path, **kwargs)
+
+    monkeypatch.setattr(capsule, "file_identity", recording_identity)
+
+    capsule._revalidate_plan_inputs(plan)
+
+    assert observed["base.qcow2"] == capsule.MAX_BASE_IMAGE_BYTES
+    assert observed["guest-manifest.json"] == capsule.MAX_INPUT_BYTES
+    assert observed["kp1_q1_guest_stages.py"] == capsule.MAX_INPUT_BYTES
+
+
 def test_parent_is_explicit_private_local_and_symlink_free(tmp_path: Path) -> None:
     private = tmp_path / "private"
     private.mkdir(mode=0o700)

@@ -57,6 +57,7 @@ LAYOUT_NAMES = ("input", "vm", "guest", "evidence", "cleanup")
 PRIVATE_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 MAX_INPUT_BYTES = 1024 * 1024 * 1024
+MAX_BASE_IMAGE_BYTES = 64 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024 * 1024
@@ -1568,11 +1569,12 @@ def _revalidate_plan_inputs(plan: dict[str, object]) -> None:
     tools = plan["tools"]
     if type(artifacts) is not dict or type(tools) is not dict:
         raise _fail()
-    for raw in artifacts.values():
+    for name, raw in artifacts.items():
         identity = _identity_from_payload(raw)
         current = file_identity(
             identity.path,
             expected_digest=identity.sha256,
+            maximum=MAX_BASE_IMAGE_BYTES if name == "baseImage" else MAX_INPUT_BYTES,
         )
         if current != identity:
             raise _fail()
@@ -2155,12 +2157,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _plan_from_namespace(ns: argparse.Namespace) -> dict[str, object]:
-    def identity(name: str, *, executable: bool = False) -> FileIdentity:
+    def identity(
+        name: str,
+        *,
+        executable: bool = False,
+        maximum: int = MAX_INPUT_BYTES,
+    ) -> FileIdentity:
         key = name.replace("-", "_")
         return file_identity(
             str(getattr(ns, key)),
             expected_digest=getattr(ns, f"expect_{key}_sha256"),
             executable=executable,
+            maximum=maximum,
         )
 
     run_id = validate_run_id(ns.run_id)
@@ -2170,7 +2178,7 @@ def _plan_from_namespace(ns: argparse.Namespace) -> dict[str, object]:
         capsule_parent=parent,
         source_commit=ns.source_commit,
         source_tree=ns.source_tree,
-        base_image=identity("base-image"),
+        base_image=identity("base-image", maximum=MAX_BASE_IMAGE_BYTES),
         guest_manifest_identity=identity("guest-manifest"),
         wheel=identity("wheel"),
         sdist=identity("sdist"),
