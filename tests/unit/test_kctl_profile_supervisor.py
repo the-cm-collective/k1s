@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import signal
+import stat
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +14,7 @@ from ae.kctl.profile_state import ComponentState, ProcessIdentity, RunState, com
 from ae.kctl.profile_supervisor import (
     ProfileSupervisor,
     StopResult,
+    SubprocessLauncher,
     SupervisorError,
     classify_identity,
     parse_proc_stat,
@@ -212,6 +216,30 @@ def test_prepare_component_captures_exact_identity_before_gated_activation(
     assert pending is launcher.pending
     assert not launcher.pending.activated
     assert not launcher.pending.cancelled
+
+
+def test_gated_subprocess_creates_only_owner_private_content(tmp_path: Path) -> None:
+    launcher = SubprocessLauncher(owner_uid=os.geteuid())
+    script = (
+        "from pathlib import Path; "
+        "root = Path('child-output'); "
+        "root.mkdir(); "
+        "(root / 'payload').write_text('private\\n', encoding='utf-8')"
+    )
+    pending = launcher.spawn_gated(
+        (sys.executable, "-c", script),
+        cwd=tmp_path,
+        environment={},
+        log_path=tmp_path / "logs" / "component.log",
+    )
+
+    pending.activate()
+    waited_pid, wait_status = os.waitpid(pending.pid, 0)
+
+    assert waited_pid == pending.pid
+    assert os.waitstatus_to_exitcode(wait_status) == 0
+    assert stat.S_IMODE((tmp_path / "child-output").stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "child-output" / "payload").stat().st_mode) == 0o600
 
 
 def test_classify_exact_never_adopts_reused_pid() -> None:

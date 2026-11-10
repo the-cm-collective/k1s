@@ -185,6 +185,7 @@ class SubprocessLauncher:
                     stderr=subprocess.STDOUT,
                     close_fds=True,
                     start_new_session=True,
+                    umask=0o077,
                 )
         finally:
             os.close(fd)
@@ -259,6 +260,7 @@ class SubprocessLauncher:
                     close_fds=True,
                     pass_fds=pass_fds,
                     start_new_session=True,
+                    umask=0o077,
                 )
         finally:
             os.close(fd)
