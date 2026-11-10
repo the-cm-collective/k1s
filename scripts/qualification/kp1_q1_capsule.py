@@ -1821,6 +1821,7 @@ def execute_plan(
     check_limits()
 
     meta_data = b"instance-id: " + run_id.encode("ascii") + b"\nlocal-hostname: k1s-q1\n"
+    network_data = b"version: 2\nethernets: {}\n"
     ssh_key_identity = _identity_from_payload(artifacts["sshPublicKey"])
     public_key = _read_identity_bytes(
         ssh_key_identity,
@@ -1844,6 +1845,7 @@ def execute_plan(
         + b"\n"
     )
     _write_private(paths["input"] / "meta-data", meta_data)
+    _write_private(paths["input"] / "network-config", network_data)
     _write_private(paths["input"] / "user-data", user_data)
     seed_argv = [
         str(cast(dict[str, object], tools["seedBuilder"])["path"]),
@@ -1855,6 +1857,7 @@ def execute_plan(
         "-rock",
         str(paths["input"] / "user-data"),
         str(paths["input"] / "meta-data"),
+        str(paths["input"] / "network-config"),
         str(bundle_copy),
     ]
     result = runner.run(

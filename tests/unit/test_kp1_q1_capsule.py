@@ -716,7 +716,11 @@ def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
         assert b"encoding: b64" in user_data
         assert b"q1 hard nproc 512" in user_data
         assert b"q1 hard nofile 1024" in user_data
+        assert (root / "input" / "network-config").read_bytes() == (
+            b"version: 2\nethernets: {}\n"
+        )
         assert (root / "input" / "k1s-q1-input.bundle").read_bytes() == (b"sealed-q1-input-bundle")
+        assert str(root / "input" / "network-config") in runner.calls[1]
         assert str(root / "input" / "k1s-q1-input.bundle") in runner.calls[1]
         assert all(stat.S_IMODE(item.stat().st_mode) == 0o700 for item in root.iterdir())
     finally:
