@@ -207,6 +207,44 @@ IDs, runtime socket details, raw connection values, timestamps, arbitrary
 errors, summaries, warnings, and log content. Project-scoped explicit `nodeId`
 is deliberately public. The adapter creates no secret-derived pseudonym.
 
+## W-P0-1 consumer binding and W4 evidence
+
+The W-P0-1 K1 compatibility review requires no v1 wire change. A single
+same-runtime provider may acquire the selected `list`, `doctor`, `plan`,
+`status`, and `logs` source results through the WorkerBee MCP boundary and pass
+each payload and exit code directly to `adapt_workerbee_profile_evidence`.
+Source acquisition and evidence projection must use the same installed
+`k1s-core` runtime so that resource bytes, `ae.__version__`, provenance, and
+validation code cannot diverge.
+
+Bootstrap is deliberately different. The read-only provider must never invoke
+`profile bootstrap create`. It may adapt only a public bootstrap projection
+that was already selected by an independently authorized workflow. The
+descriptor's `sourceMutating=true` records the origin of that projection; it
+does not grant the adapter or WorkerBee permission to create a bootstrap.
+`adapterMutating` remains false for all six operations.
+
+WorkerBee W4 must retain, for each operation in the exact resource order, the
+canonical evidence bytes, `evidenceId`, SHA-256 of those bytes, operation name,
+and complete evidence `provenance`. It must also retain the exact installed
+adapter resource bytes and their SHA-256 once for the six-record set. The W4
+set is incomplete unless it contains exactly `list`, `doctor`, `plan`,
+`status`, `logs`, and `bootstrap`.
+
+The retained `logs` record contains only owned component metadata,
+`lineCount`, `sourceTruncated`, and pseudonymous `runRef`; raw source lines are
+not retained. The retained bootstrap record is the canonical evidence output,
+not the selected source projection or private bootstrap record. W4 must not
+retain source log text, raw run IDs, connection values, credentials, tokens,
+source/stored paths, private record digests, or bootstrap creation authority.
+Replaying each retained canonical evidence object through
+`verify_workerbee_profile_evidence` must reproduce its object exactly.
+
+This qualification proves that `k1s-core 1.0.0a3` is wire-compatible with the
+locked W-P0-1 consumer design. It does not qualify the live MCP transport,
+authenticate the provider process, authorize bootstrap creation, or replace
+the combined disposable-guest qualification gate.
+
 ## Compatibility and qualification boundary
 
 V1 rejects unknown fields and versions; consumers do not ignore additive
