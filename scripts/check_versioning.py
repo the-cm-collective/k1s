@@ -5,8 +5,12 @@ import argparse
 import os
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    from scripts.project_version import read_project_version
+except ModuleNotFoundError:  # direct execution from scripts/
+    from project_version import read_project_version
 
 try:
     from packaging.version import InvalidVersion, Version
@@ -16,16 +20,6 @@ except ImportError:  # pragma: no cover - packaging may not be installed in all 
 
 
 FALLBACK_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+((a|b|rc)\d+)?(\.dev\d+)?$")
-
-
-def read_pyproject_version(path: Path) -> str:
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
-    version = data.get("project", {}).get("version")
-    if not version:
-        raise ValueError("project.version is missing in pyproject.toml")
-    if not isinstance(version, str):
-        raise ValueError("project.version must be a string")
-    return version
 
 
 def validate_version(version: str) -> None:
@@ -79,7 +73,7 @@ def main() -> int:
 
     errors: list[str] = []
     try:
-        version = read_pyproject_version(pyproject_path)
+        version = read_project_version(pyproject_path)
         validate_version(version)
     except (OSError, ValueError) as exc:
         errors.append(str(exc))

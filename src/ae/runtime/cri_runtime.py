@@ -15,21 +15,28 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 try:
     import grpc
+
     _grpc_import_error: Exception | None = None
 except Exception as exc:  # pragma: no cover - optional dependency
     grpc = None
     _grpc_import_error = exc
 
+from ae.controller.quantities import (
+    CPU_PERIOD_MICROSECONDS,
+    cpu_to_quota,
+    cpu_to_shares,
+)
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
+    SecuritySpec,
     app_key_for_manifest,
     runtime_labels_for_manifest,
     split_app_key,
@@ -314,7 +321,10 @@ class CRIRuntime(RuntimeAdapter):
         self._ensure_clients()
         pb2 = self._pb2()
         node_id = str(
-            self._current_node_id or os.getenv("AE_NODE_ID") or socket.gethostname() or "unknown-node"
+            self._current_node_id
+            or os.getenv("AE_NODE_ID")
+            or socket.gethostname()
+            or "unknown-node"
         )
         collected_at = datetime.now(UTC)
         aggregates: dict[str, dict[str, object]] = {}
@@ -364,13 +374,13 @@ class CRIRuntime(RuntimeAdapter):
             if cpu_cores is not None:
                 aggregate["cpu_cores"] = float(aggregate["cpu_cores"]) + float(cpu_cores)
                 aggregate["cpu_seen"] = True
-            aggregate["memory_bytes"] = int(aggregate["memory_bytes"]) + self._stats_memory_bytes(item)
+            aggregate["memory_bytes"] = int(aggregate["memory_bytes"]) + self._stats_memory_bytes(
+                item
+            )
             aggregate["pod_count"] = int(aggregate["pod_count"]) + 1
         out: list[WorkloadMetricSample] = []
         for app_name, aggregate in sorted(aggregates.items()):
-            cpu_cores = (
-                float(aggregate["cpu_cores"]) if bool(aggregate.get("cpu_seen")) else None
-            )
+            cpu_cores = float(aggregate["cpu_cores"]) if bool(aggregate.get("cpu_seen")) else None
             out.append(
                 WorkloadMetricSample(
                     app_name=app_name,
@@ -662,6 +672,12 @@ class CRIRuntime(RuntimeAdapter):
                 labels=runtime_labels_for_manifest(manifest, app_name=app_name),
                 log_directory=self._pod_log_dir(ns, pod_name, pod_uid),
             )
+            linux_cfg = self._pod_sandbox_linux_config(manifest)
+            if linux_cfg is not None:
+                try:
+                    pod_config.linux.CopyFrom(linux_cfg)
+                except Exception:
+                    pod_config.linux = linux_cfg
             try:
                 resp = self._runtime_call(
                     "RunPodSandbox", pb2.RunPodSandboxRequest(config=pod_config)
@@ -1272,7 +1288,9 @@ class CRIRuntime(RuntimeAdapter):
             secrets = self._service_account_pull_secrets(manifest)
         if not secrets:
             return {}
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
         auths: dict[str, dict[str, str]] = {}
         for name, ns in secrets:
             if not name:
@@ -1322,7 +1340,9 @@ class CRIRuntime(RuntimeAdapter):
                 out[str(host)] = {"username": str(username), "password": str(password)}
         return out
 
-    def _image_pull_secret_names(self, manifest: AppManifest) -> list[tuple[str | None, str | None]]:
+    def _image_pull_secret_names(
+        self, manifest: AppManifest
+    ) -> list[tuple[str | None, str | None]]:
         secrets: list[tuple[str | None, str | None]] = []
         for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
             if isinstance(sec, dict):
@@ -1337,7 +1357,9 @@ class CRIRuntime(RuntimeAdapter):
         state = self._get_apishim_state()
         if state is None:
             return []
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
         sa_name = getattr(manifest.spec, "service_account_name", None)
         if not sa_name and not self._ha_mode_enabled():
             store = self._get_apishim_store()
@@ -1363,7 +1385,9 @@ class CRIRuntime(RuntimeAdapter):
 
     def _service_account_name_from_store(self, manifest: AppManifest, store: Any) -> str | None:
         name = getattr(getattr(manifest, "metadata", None), "name", None)
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
         if not name:
             return None
         candidates = [
@@ -1385,9 +1409,7 @@ class CRIRuntime(RuntimeAdapter):
                 continue
             template = None
             if resource == "cronjobs":
-                template = (
-                    (spec.get("jobTemplate") or {}).get("spec") or {}
-                ).get("template")
+                template = ((spec.get("jobTemplate") or {}).get("spec") or {}).get("template")
             else:
                 template = spec.get("template")
             if not isinstance(template, dict):
@@ -2066,9 +2088,7 @@ class CRIRuntime(RuntimeAdapter):
                 )
             else:
                 wait_timeout = max(5.0, float(cleanup_timeout))
-                if not self._wait_for_pod_sandbox_name_available(
-                    replica_id, timeout=wait_timeout
-                ):
+                if not self._wait_for_pod_sandbox_name_available(replica_id, timeout=wait_timeout):
                     raise RuntimeError(
                         "timed out waiting for CRI pod sandbox name release for "
                         f"replica {replica_id} during recovery"
@@ -2167,10 +2187,17 @@ class CRIRuntime(RuntimeAdapter):
         pod_name = str(getattr(pod_meta, "name", None) or replica_id)
         namespace = str(getattr(pod_meta, "namespace", None) or DEFAULT_NAMESPACE)
         uid = str(getattr(pod_meta, "uid", None) or self._pod_uid(pod_name, namespace))
-        return pb2.PodSandboxConfig(
+        pod_config = pb2.PodSandboxConfig(
             metadata=pod_meta,
             log_directory=self._pod_log_dir(namespace, pod_name, uid),
         )
+        linux_cfg = self._pod_sandbox_linux_config(manifest)
+        if linux_cfg is not None:
+            try:
+                pod_config.linux.CopyFrom(linux_cfg)
+            except Exception:
+                pod_config.linux = linux_cfg
+        return pod_config
 
     def _container_log_path(self, container_name: str, *, attempt: int = 0) -> str:
         try:
@@ -2250,7 +2277,9 @@ class CRIRuntime(RuntimeAdapter):
         seen: set[str] = set()
         with contextlib.suppress(Exception):
             for container in self._list_containers():
-                if not self._container_matches_replica(container, replica_id, container_label="main"):
+                if not self._container_matches_replica(
+                    container, replica_id, container_label="main"
+                ):
                     continue
                 container_id = getattr(container, "id", None)
                 if not container_id:
@@ -2285,7 +2314,9 @@ class CRIRuntime(RuntimeAdapter):
                 reserved_pod_present = self._pod_status(reserved_pod_id) is not None
         if reserved_container_id:
             with contextlib.suppress(Exception):
-                reserved_container_present = self._container_status(reserved_container_id) is not None
+                reserved_container_present = (
+                    self._container_status(reserved_container_id) is not None
+                )
 
         pod_entries: list[dict[str, Any]] = []
         with contextlib.suppress(Exception):
@@ -2313,7 +2344,9 @@ class CRIRuntime(RuntimeAdapter):
                 container_id_s = str(container_id or "")
                 if not container_id_s:
                     continue
-                if container_id_s != str(reserved_container_id or "") and not self._container_matches_replica(
+                if container_id_s != str(
+                    reserved_container_id or ""
+                ) and not self._container_matches_replica(
                     container, replica_id, container_label="main"
                 ):
                     continue
@@ -2367,9 +2400,7 @@ class CRIRuntime(RuntimeAdapter):
             )
             blocked_on_sandbox = bool(
                 snapshot["reserved_pod_present"]
-                or (
-                    not allow_reappeared_replica_resources and snapshot["visible_pod_ids"]
-                )
+                or (not allow_reappeared_replica_resources and snapshot["visible_pod_ids"])
             )
             blocked_on_container = bool(
                 snapshot["reserved_container_present"]
@@ -2560,8 +2591,7 @@ class CRIRuntime(RuntimeAdapter):
         wait_timeout = max(5.0, float(timeout))
         if not self._wait_for_pod_sandbox_absent(str(pod_id), timeout=wait_timeout):
             raise RuntimeError(
-                "timed out waiting for CRI pod sandbox "
-                f"{pod_id} to disappear after cleanup"
+                f"timed out waiting for CRI pod sandbox {pod_id} to disappear after cleanup"
             )
         if wait_for_name_release and not self._wait_for_pod_sandbox_name_available(
             replica_id, timeout=wait_timeout
@@ -2613,9 +2643,7 @@ class CRIRuntime(RuntimeAdapter):
         node_id: str | None,
         reserved_name_recovery_deadline: float | None = None,
     ) -> None:
-        recovery_deadline = self._reserved_name_recovery_deadline(
-            reserved_name_recovery_deadline
-        )
+        recovery_deadline = self._reserved_name_recovery_deadline(reserved_name_recovery_deadline)
         reserved_pod_id = self._reserved_pod_sandbox_id_from_error(cause)
         if not reserved_pod_id:
             reserved_pod_id = self._pod_id_for_replica(replica_id)
@@ -2671,9 +2699,7 @@ class CRIRuntime(RuntimeAdapter):
         node_id: str | None,
         reserved_name_recovery_deadline: float | None = None,
     ) -> None:
-        recovery_deadline = self._reserved_name_recovery_deadline(
-            reserved_name_recovery_deadline
-        )
+        recovery_deadline = self._reserved_name_recovery_deadline(reserved_name_recovery_deadline)
         cleanup_timeout = self._pod_cleanup_timeout(manifest)
         reserved_container_name = getattr(cause, "container_name", None)
         expected_container_name = self._expected_main_containerd_name(
@@ -3033,19 +3059,12 @@ class CRIRuntime(RuntimeAdapter):
         cpu_period = None
         mem_limit = None
         if resources and self._spec_value(resources, "cpu") is not None:
-            try:
-                cpu = float(self._spec_value(resources, "cpu"))
-                cpu_period = 100000
-                cpu_quota = int(cpu * cpu_period)
-            except Exception:
-                cpu_quota = None
+            cpu_period = CPU_PERIOD_MICROSECONDS
+            cpu_quota = cpu_to_quota(self._spec_value(resources, "cpu"), period=cpu_period)
         if resources and self._spec_value(resources, "memory") is not None:
             mem_limit = self._parse_memory_bytes(str(self._spec_value(resources, "memory")))
         if requests and self._spec_value(requests, "cpu") is not None:
-            try:
-                cpu_shares = max(2, int(float(self._spec_value(requests, "cpu")) * 1024))
-            except Exception:
-                cpu_shares = None
+            cpu_shares = cpu_to_shares(self._spec_value(requests, "cpu"))
         if not any(x is not None for x in (cpu_shares, cpu_quota, mem_limit)):
             return None
         return pb2.LinuxContainerResources(
@@ -3055,11 +3074,11 @@ class CRIRuntime(RuntimeAdapter):
             memory_limit_in_bytes=mem_limit or 0,
         )
 
-    def _build_security_context_from_spec(self, spec: Any):
+    def _build_security_context_from_spec(self, spec: Any) -> Any | None:
         pb2 = self._pb2()
-        sec = spec
-        if sec is None:
+        if spec is None:
             return None
+        sec = SecuritySpec.model_validate(spec) if isinstance(spec, dict) else spec
         ctx = pb2.LinuxContainerSecurityContext()
         run_as_user = self._spec_value(sec, "run_as_user", "runAsUser")
         if run_as_user is not None:
@@ -3079,12 +3098,124 @@ class CRIRuntime(RuntimeAdapter):
                     from google.protobuf.wrappers_pb2 import Int64Value
 
                     ctx.run_as_group.CopyFrom(Int64Value(value=int(run_as_group)))
+        privileged = self._spec_value(sec, "privileged")
+        if privileged is not None:
+            ctx.privileged = bool(privileged)
+        allow_privilege_escalation = self._spec_value(
+            sec,
+            "allow_privilege_escalation",
+            "allowPrivilegeEscalation",
+        )
+        if allow_privilege_escalation is not None:
+            ctx.no_new_privs = not bool(allow_privilege_escalation)
         if bool(self._spec_value(sec, "read_only_root", "readOnlyRootFilesystem")):
             ctx.readonly_rootfs = True
+        adds = list(self._spec_value(sec, "add_caps", "addCapabilities") or [])
+        if adds:
+            ctx.capabilities.add_capabilities.extend([str(c) for c in adds])
         drops = list(self._spec_value(sec, "drop_caps", "dropCapabilities") or [])
         if drops:
             ctx.capabilities.drop_capabilities.extend([str(c) for c in drops])
+        masked_paths = list(self._spec_value(sec, "masked_paths", "maskedPaths") or [])
+        if masked_paths:
+            ctx.masked_paths.extend([str(path) for path in masked_paths])
+        read_only_paths = list(self._spec_value(sec, "read_only_paths", "readOnlyPaths") or [])
+        if read_only_paths:
+            ctx.readonly_paths.extend([str(path) for path in read_only_paths])
+        selinux_values = {
+            "user": self._spec_value(sec, "selinux_user", "seLinuxUser"),
+            "role": self._spec_value(sec, "selinux_role", "seLinuxRole"),
+            "type": self._spec_value(sec, "selinux_type", "seLinuxType"),
+            "level": self._spec_value(sec, "selinux_level", "seLinuxLevel"),
+        }
+        if any(value is not None for value in selinux_values.values()):
+            selinux_options = pb2.SELinuxOption(
+                **{key: str(value) for key, value in selinux_values.items() if value is not None}
+            )
+            try:
+                ctx.selinux_options.CopyFrom(selinux_options)
+            except Exception:
+                ctx.selinux_options = selinux_options
+        seccomp_type = self._spec_value(sec, "seccomp_type", "seccompProfileType")
+        if seccomp_type:
+            seccomp = self._security_profile(
+                str(seccomp_type),
+                self._spec_value(
+                    sec,
+                    "seccomp_localhost_profile",
+                    "seccompLocalhostProfile",
+                ),
+            )
+            try:
+                ctx.seccomp.CopyFrom(seccomp)
+            except Exception:
+                ctx.seccomp = seccomp
+        apparmor_profile = self._spec_value(sec, "apparmor_profile", "apparmorProfile")
+        if apparmor_profile:
+            apparmor = self._apparmor_security_profile(str(apparmor_profile))
+            try:
+                ctx.apparmor.CopyFrom(apparmor)
+            except Exception:
+                ctx.apparmor = apparmor
         return ctx
+
+    def _security_profile(
+        self,
+        profile_type: str,
+        localhost_ref: Any = None,
+        *,
+        validate_localhost_path: bool = True,
+    ) -> Any:
+        pb2 = self._pb2()  # type: ignore[no-untyped-call]
+        normalized = str(profile_type)
+        enum_value = getattr(pb2.SecurityProfile, normalized, None)
+        if enum_value is None or normalized not in {
+            "RuntimeDefault",
+            "Unconfined",
+            "Localhost",
+        }:
+            raise ValueError(f"unsupported CRI security profile type: {profile_type}")
+        ref = str(localhost_ref or "")
+        if normalized == "Localhost" and not ref:
+            raise ValueError("Localhost CRI security profile requires a localhost reference")
+        if normalized == "Localhost":
+            if validate_localhost_path:
+                self._validate_localhost_profile_ref(ref)
+        elif ref:
+            raise ValueError(
+                f"{normalized} CRI security profile must not set a localhost reference"
+            )
+        return pb2.SecurityProfile(
+            profile_type=enum_value,
+            localhost_ref=ref if normalized == "Localhost" else "",
+        )
+
+    def _apparmor_security_profile(self, profile: str) -> Any:
+        normalized = str(profile)
+        if not normalized or normalized != normalized.strip() or "\x00" in normalized:
+            raise ValueError(f"unsupported AppArmor profile: {profile}")
+        if normalized == "runtime/default":
+            return self._security_profile("RuntimeDefault")
+        if normalized == "unconfined":
+            return self._security_profile("Unconfined")
+        prefix = "localhost/"
+        if normalized.startswith(prefix):
+            localhost_ref = normalized[len(prefix) :]
+            if localhost_ref:
+                return self._security_profile(
+                    "Localhost",
+                    localhost_ref,
+                    validate_localhost_path=False,
+                )
+        raise ValueError(f"unsupported AppArmor profile: {profile}")
+
+    @staticmethod
+    def _validate_localhost_profile_ref(ref: str) -> None:
+        if not ref or ref != ref.strip() or "\x00" in ref or "\\" in ref or ref.startswith("/"):
+            raise ValueError("Localhost CRI security profile requires a canonical relative path")
+        parts = ref.split("/")
+        if any(part in {"", ".", ".."} for part in parts) or str(PurePosixPath(ref)) != ref:
+            raise ValueError("Localhost CRI security profile requires a canonical relative path")
 
     def _build_states(self, manifest: AppManifest, revision: int) -> list[PodState]:
         states: list[PodState] = []
@@ -3116,9 +3247,7 @@ class CRIRuntime(RuntimeAdapter):
                 started_at = self._timestamp_dt(getattr(c_status, "started_at", None))
                 finished_at = self._timestamp_dt(getattr(c_status, "finished_at", None))
                 is_job = str(getattr(manifest.spec, "workload", "service")).lower() == "job"
-                ready = (
-                    exit_code == 0 and status == "exited" if is_job else status == "running"
-                )
+                ready = exit_code == 0 and status == "exited" if is_job else status == "running"
             endpoint = self._endpoint_for_manifest(
                 manifest,
                 pod_ip,
@@ -3344,26 +3473,88 @@ class CRIRuntime(RuntimeAdapter):
         host = os.getenv("AE_NODE_ADVERTISE_IP") or "127.0.0.1"
         return f"{host}:{int(port)}"
 
-    def _pod_sandbox_linux_config(self, manifest: AppManifest):
+    def _pod_sandbox_linux_config(self, manifest: AppManifest) -> Any | None:
         host_network = bool(getattr(manifest.spec, "host_network", False))
         host_pid = bool(getattr(manifest.spec, "host_pid", False))
         host_ipc = bool(getattr(manifest.spec, "host_ipc", False))
-        if not any((host_network, host_pid, host_ipc)):
+        pod_security = getattr(manifest.spec, "pod_security", None)
+        fs_group = self._spec_value(pod_security, "fs_group", "fsGroup")
+        supplemental_groups = list(
+            self._spec_value(pod_security, "supplemental_groups", "supplementalGroups") or []
+        )
+        seccomp_type = self._spec_value(
+            pod_security,
+            "seccomp_type",
+            "seccompProfileType",
+        )
+        selinux_values = {
+            "user": self._spec_value(pod_security, "selinux_user", "seLinuxUser"),
+            "role": self._spec_value(pod_security, "selinux_role", "seLinuxRole"),
+            "type": self._spec_value(pod_security, "selinux_type", "seLinuxType"),
+            "level": self._spec_value(pod_security, "selinux_level", "seLinuxLevel"),
+        }
+        has_pod_security = (
+            fs_group is not None
+            or bool(supplemental_groups)
+            or bool(seccomp_type)
+            or any(value is not None for value in selinux_values.values())
+        )
+        if not any((host_network, host_pid, host_ipc)) and not has_pod_security:
             return None
         pb2 = self._pb2()
-        namespace_options = pb2.NamespaceOption()
-        node_mode = pb2.NamespaceMode.NODE
-        if host_network:
-            namespace_options.network = node_mode
-        if host_pid:
-            namespace_options.pid = node_mode
-        if host_ipc:
-            namespace_options.ipc = node_mode
+        security_context = pb2.LinuxSandboxSecurityContext()
+        if any((host_network, host_pid, host_ipc)):
+            namespace_options = pb2.NamespaceOption()
+            node_mode = pb2.NamespaceMode.NODE
+            if host_network:
+                namespace_options.network = node_mode
+            if host_pid:
+                namespace_options.pid = node_mode
+            if host_ipc:
+                namespace_options.ipc = node_mode
+            try:
+                security_context.namespace_options.CopyFrom(namespace_options)
+            except Exception:
+                security_context.namespace_options = namespace_options
+        groups: list[int] = []
+        seen_groups: set[int] = set()
+        for raw_group in supplemental_groups:
+            group = int(raw_group)
+            if group not in seen_groups:
+                groups.append(group)
+                seen_groups.add(group)
+        if fs_group is not None:
+            group = int(fs_group)
+            if group not in seen_groups:
+                groups.append(group)
+        if groups:
+            security_context.supplemental_groups.extend(groups)
+        if seccomp_type:
+            seccomp = self._security_profile(
+                str(seccomp_type),
+                self._spec_value(
+                    pod_security,
+                    "seccomp_localhost_profile",
+                    "seccompLocalhostProfile",
+                ),
+            )
+            try:
+                security_context.seccomp.CopyFrom(seccomp)
+            except Exception:
+                security_context.seccomp = seccomp
+        if any(value is not None for value in selinux_values.values()):
+            selinux_options = pb2.SELinuxOption(
+                **{key: str(value) for key, value in selinux_values.items() if value is not None}
+            )
+            try:
+                security_context.selinux_options.CopyFrom(selinux_options)
+            except Exception:
+                security_context.selinux_options = selinux_options
         linux_cfg = pb2.LinuxPodSandboxConfig()
         try:
-            linux_cfg.security_context.namespace_options.CopyFrom(namespace_options)
+            linux_cfg.security_context.CopyFrom(security_context)
         except Exception:
-            linux_cfg.security_context.namespace_options = namespace_options
+            linux_cfg.security_context = security_context
         return linux_cfg
 
     def _pod_uid(self, replica_id: str, namespace: str | None) -> str:

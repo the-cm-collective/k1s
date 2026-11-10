@@ -23,7 +23,9 @@ Operational notes
   set -e
   setopt pipefail
 
-  cd /home/m4xx3d0ut/git/k1s-wt/k1s
+  : "${K1S_ROOT:?set K1S_ROOT to the K1s checkout}"
+  : "${SSH_KEY_PATH:?set SSH_KEY_PATH to the guest SSH key}"
+  cd "$K1S_ROOT"
   sudo -v
 
   : "${HOST_A_GPU_ENV_FILE:=state/host-a-gpu.env}"
@@ -115,7 +117,7 @@ PY
   ssh_opts=(
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
-    -i /home/m4xx3d0ut/.ssh/id_rsa
+    -i "$SSH_KEY_PATH"
   )
 
   ssh "${ssh_opts[@]}" "ae@${GUEST_IP}" "mkdir -p '${HOST_A_GPU_GUEST_REPO}'"
@@ -130,7 +132,7 @@ PY
     --exclude '__pycache__/' \
     --exclude '.pytest_cache/' \
     --exclude '.mypy_cache/' \
-    -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/m4xx3d0ut/.ssh/id_rsa" \
+    -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${SSH_KEY_PATH}" \
     ./ \
     "ae@${GUEST_IP}:${HOST_A_GPU_GUEST_REPO}/"
 
@@ -159,7 +161,8 @@ Success signals
 Run this in a separate terminal after `A` succeeds:
 
 ```zsh
-cd /home/m4xx3d0ut/git/k1s-wt/k1s
+: "${K1S_ROOT:?set K1S_ROOT to the K1s checkout}"
+cd "$K1S_ROOT"
 
 CONTROLLER_HOST_IP="$(
   ip route get 1.1.1.1 | awk '{
@@ -209,7 +212,9 @@ Expected
   set -e
   setopt pipefail
 
-  cd /home/m4xx3d0ut/git/k1s-wt/k1s
+  : "${K1S_ROOT:?set K1S_ROOT to the K1s checkout}"
+  : "${SSH_KEY_PATH:?set SSH_KEY_PATH to the guest SSH key}"
+  cd "$K1S_ROOT"
 
   CONTROLLER_HOST_IP="$(
     ip route get 1.1.1.1 | awk '{
@@ -244,7 +249,7 @@ PY
   ssh_opts=(
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
-    -i /home/m4xx3d0ut/.ssh/id_rsa
+    -i "$SSH_KEY_PATH"
   )
 
   print -r -- "[node] verifying controller from host and guest"
@@ -354,7 +359,7 @@ scripts/lab/vm/labctl.sh host-a-gpu ips --json
 Tail the guest node log:
 
 ```zsh
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/m4xx3d0ut/.ssh/id_rsa ae@<guest-primary-ip> 'tail -n 200 /home/ae/k1s-core-node.log'
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$SSH_KEY_PATH" ae@<guest-primary-ip> 'tail -n 200 /home/ae/k1s-core-node.log'
 ```
 
 Common causes

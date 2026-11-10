@@ -5,10 +5,106 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from ae.ha.fencing import MutationEnvelope, SQLiteFenceStore
-from ae.node.server import AgentHandler, _build_volume_manager, _json_response, _result_to_dict
+from ae.node.server import (
+    AgentHandler,
+    _build_volume_manager,
+    _json_response,
+    _resolve_node_identity,
+    _result_to_dict,
+    _start_heartbeat_loop,
+)
 from ae.runtime import PodState, RuntimeResult, WorkloadMetricSample
+
+
+def test_explicit_node_id_precedence_and_legacy_hostname_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("AE_NODE_ID", "env-node")
+    cli_node, cli_session = _resolve_node_identity("cli-node")
+    env_node, env_session = _resolve_node_identity(None)
+    monkeypatch.delenv("AE_NODE_ID")
+    fallback_node, fallback_session = _resolve_node_identity(None)
+
+    assert cli_node == "cli-node"
+    assert cli_session is not None
+    assert env_node == "env-node"
+    assert env_session is not None
+    assert fallback_node
+    assert fallback_session is None
+
+
+def test_heartbeat_tracks_lease_and_reacquires_only_after_expiry(monkeypatch) -> None:
+    requests: list[dict[str, object]] = []
+    responses = [
+        SimpleNamespace(
+            status_code=200,
+            content=b"{}",
+            json=lambda: {
+                "accepted": True,
+                "lease_id": "lease-1",
+                "renew_after_ms": 2000,
+            },
+        ),
+        SimpleNamespace(
+            status_code=409,
+            content=b"{}",
+            json=lambda: {"accepted": False, "reason": "expired"},
+        ),
+        SimpleNamespace(
+            status_code=200,
+            content=b"{}",
+            json=lambda: {
+                "accepted": True,
+                "lease_id": "lease-2",
+                "renew_after_ms": 3000,
+            },
+        ),
+    ]
+
+    def post(_url: str, **kwargs):
+        requests.append(dict(kwargs["json"]))
+        return responses.pop(0)
+
+    class _InlineThread:
+        def __init__(self, *, target, **_kwargs) -> None:
+            self._target = target
+
+        def start(self) -> None:
+            self._target()
+
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 3:
+            raise RuntimeError("stop heartbeat test loop")
+
+    monkeypatch.setattr("ae.node.server.requests.post", post)
+    monkeypatch.setattr("ae.node.server.threading.Thread", _InlineThread)
+    monkeypatch.setattr("ae.node.server.time.sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="stop heartbeat test loop"):
+        _start_heartbeat_loop(
+            controller_url="https://controller.invalid",
+            node_id="node-1",
+            name="node-1",
+            backend="cri",
+            endpoint=None,
+            labels={},
+            capabilities={},
+            taints=[],
+            token=None,
+            interval=40,
+            identity_session_id="00000000-0000-4000-8000-000000000001",
+        )
+
+    assert "lease_id" not in requests[0]
+    assert requests[1]["lease_id"] == "lease-1"
+    assert "lease_id" not in requests[2]
+    assert sleeps == [2.0, 2.0, 3.0]
 
 
 class _BrokenPipeWriter:
@@ -109,6 +205,26 @@ class _RuntimeStub:
 
     def _list_app_containers(self, _app_name: str) -> list[dict]:
         return list(self.app_containers)
+
+
+def test_healthz_is_static_and_does_not_cross_runtime_boundary() -> None:
+    class RuntimeMustNotBeUsed:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"healthz crossed runtime boundary: {name}")
+
+    output = io.BytesIO()
+    handler = _GetHandler(path="/healthz", wfile=output, runtime=RuntimeMustNotBeUsed())
+
+    AgentHandler.do_GET(handler)
+
+    assert handler.status_codes == [200]
+    payload = json.loads(output.getvalue().split(b"\r\n\r\n", 1)[-1])
+    assert payload == {
+        "apiVersion": "k1s.dev/v1alpha1",
+        "kind": "NodeAgentHealth",
+        "nodeId": "node-test",
+        "ready": True,
+    }
 
 
 class _ContainerdRuntimeStub(_RuntimeStub):

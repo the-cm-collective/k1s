@@ -3,6 +3,90 @@
 This page documents strict CRI workflows in k1s (containerd + CRI), the
 registry-first image flow, and current CRI tooling.
 
+## Installed strict-CRI host plan
+
+`k1s-core` installs one pure, non-mutating host-plan surface:
+
+```text
+k1s profile host plan strict-cri \
+  --intent /absolute/strict-cri-intent.json \
+  --expect-intent-sha256 sha256:<digest> \
+  --facts /absolute/strict-cri-host-facts.json \
+  --expect-facts-sha256 sha256:<digest> \
+  --output json
+```
+
+The command reads only the two explicitly selected, owner-private, canonical
+JSON files. It does not derive authority from HOME, XDG directories, the
+repository, environment variables, aliases, or a latest record. It does not
+inspect target paths, open a CRI socket, invoke `crictl`, containerd, a service
+manager, a helper, or `sudo`, and it writes no state or host file. The supplied
+facts are caller-attested; output is always
+`source-validated/unqualified`, never evidence of live CRI enforcement.
+
+The intent fixes the `core` or `node` role, target identity and owner, Unix CRI
+endpoint, runtime handler, containerd paths, exact CNI source/target/config
+roots and plugins, optional external TLS registry trust, socket-access posture,
+and the public identity-v1 node projection. Unknown keys, noncanonical paths,
+TCP endpoints, rootless/non-Linux targets, insecure registry trust, system
+trust, ambiguous ownership, symlink/hardlink/special-file facts, and digest
+mismatches fail closed. Public output contains no input filename, registry
+credential, raw machine identity, private bootstrap digest, or secret.
+
+Digest-bound preparation and exact rollback use the reviewed plan rather than
+an ambient host scan:
+
+```text
+k1s profile host prepare strict-cri \
+  --intent /absolute/intent.json --expect-intent-sha256 sha256:<digest> \
+  --facts /absolute/facts.json --expect-facts-sha256 sha256:<digest> \
+  --plan /absolute/plan.json --expect-plan-sha256 sha256:<file-digest> \
+  --expect-plan-digest sha256:<plan-digest> \
+  --transaction-root /absolute/owner-private/root \
+  --transaction-id ht1-<32-lowercase-hex> \
+  --confirm TARGET:sha256:<plan-digest> \
+  --helper-request-fd FD --helper-response-fd FD
+
+k1s profile host rollback strict-cri \
+  --transaction-root /absolute/owner-private/root \
+  --transaction-id ht1-<32-lowercase-hex> \
+  --expect-applied-receipt-digest sha256:<digest> \
+  --confirm TARGET:TRANSACTION:sha256:<applied-receipt-digest> \
+  --helper-request-fd FD --helper-response-fd FD
+```
+
+The coordinator never launches or discovers a helper. It writes an
+owner-private, fsynced transaction journal, exact authority copies, backups,
+and immutable applied/rolled-back receipts. Recovery accepts only the exact
+contiguous snapshot/apply prefix or rollback suffix, including the legitimate
+zero-progress write-ahead boundary immediately after a phase transition.
+Locks are never removed or taken over by age.
+
+The helper independently reconstructs the plan from canonical authority bytes
+read through a no-follow directory-fd chain anchored at the exact transaction
+root. It derives every ordered action; a caller cannot supply an arbitrary
+path, action, before/after identity, or rollback operation. Its implementation
+digest is a protocol compatibility binding, not process authentication.
+Public results omit authority paths, transaction-root paths, helper file
+descriptors, backups, pre-state bytes, ACLs, and private error detail.
+
+An installed strict-CRI node adapter revalidates the exact identity-v1
+bootstrap, plan, applied receipt, and post-state observations before producing
+a secret-safe node execution authority. It does not open the CRI endpoint.
+Live helper identity, privilege, filesystem mutation, CRI enforcement, and
+node operation remain Q1 tasks inside a disposable DNS- and egress-denied
+guest. The repository scripts documented below are legacy/manual development
+helpers; they are not called by these installed contracts.
+
+The source-validated Q1 capsule contract is documented in
+[Isolated K1s v1 qualification capsule](q1-isolated-qualification.html). Its pure
+plan, synthetic helper tests, and evidence tooling do not promote any profile
+or runtime to live-qualified. A live run requires a sealed guest identity and
+two separate paired approvals: Gate A for exact temporary access to an
+existing `/dev/kvm`, and Gate B for one exact in-guest strict-CRI helper
+transaction. The capsule never repairs host prerequisites or reuses the
+legacy bridge/tap lab lane.
+
 For current dev and docs/lab lanes, CRI is best exercised with `k1s-*` profile
 targets. Use raw env exports only when debugging or overriding defaults.
 
@@ -398,13 +482,44 @@ export AE_APISHIM_READ_TOKEN=<read-token>
 
 ## Security context (CRI)
 
-- Container security: `runAsUser`, `runAsGroup`, `readOnlyRootFilesystem`,
-  `dropCapabilities`, `seccompProfileType` (+ `seccompLocalhostProfile`), and
-  `apparmorProfile` map into CRI container security context.
-- Pod security: `podSecurity.fsGroup` maps to supplemental groups, and
+- Container security: `runAsUser`, `runAsGroup`, `runAsNonRoot`, `privileged`,
+  `allowPrivilegeEscalation`, `readOnlyRootFilesystem`, `addCapabilities`,
+  `dropCapabilities`, `maskedPaths`, `readOnlyPaths`, `seccompProfileType`
+  (+ `seccompLocalhostProfile`), `apparmorProfile`, and `seLinux*` are validated
+  before mapping into the CRI container security context. These extended fields
+  are a CRI request contract; other local backends and Kubernetes export do not
+  yet provide parity.
+- `runAsNonRoot: true` requires an explicit positive `runAsUser`; k1s does not
+  inspect image metadata to resolve an image user. `allowPrivilegeEscalation`
+  maps inversely to CRI `no_new_privs`, and cannot be false for a privileged
+  container.
+- `maskedPaths` and `readOnlyPaths` are CRI-only and require canonical absolute
+  POSIX paths. Capability strings and SELinux components are passed exactly
+  after rejecting blank, NUL-containing, or whitespace-padded values.
+- Pod security: `podSecurity.supplementalGroups` and `podSecurity.fsGroup` map
+  to sandbox supplemental groups in deterministic first-occurrence order;
+  `fsGroup` is appended only when it is not already present.
   `podSecurity.seccompProfileType`/`podSecurity.seLinux*` map into the sandbox
-  security context.
-- Host namespaces are gated by `AE_CRI_ALLOW_HOST_NS=1` as described above.
+  security context. This proves request propagation, not volume ownership or
+  relabel enforcement.
+- Seccomp accepts `RuntimeDefault`, `Unconfined`, or `Localhost`. A `Localhost`
+  profile must also set `seccompLocalhostProfile` to an exact canonical relative
+  POSIX reference. Absolute, empty, backslash, repeated-separator, dot, and
+  dot-dot paths are rejected; accepted bytes are passed without rewriting.
+  Other profile types reject a localhost reference.
+- AppArmor accepts `runtime/default`, `unconfined`, or `localhost/<profile>`.
+  The `localhost/` prefix selects the CRI `Localhost` profile type and only the
+  exact nonempty profile name is passed as its localhost reference.
+- Pod security mappings are emitted even when host namespaces are disabled.
+  When host namespaces are enabled, their existing CRI namespace options are
+  preserved alongside supplemental groups, fsGroup, seccomp, and SELinux values.
+  The same sandbox Linux security context is supplied for main, sidecar, and
+  init-container request construction.
+- The direct CRI mapper currently does not enforce the documented
+  `AE_CRI_ALLOW_HOST_NS=1` admission gate. Treat host namespace use as a known
+  host-plan authority residual until that separate checkpoint is completed.
+- These mappings are deterministic request-construction guarantees. Runtime
+  application and enforcement require a separately isolated validation lane.
 
 ## Crictl-only image (default)
 

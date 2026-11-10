@@ -100,10 +100,8 @@ SOURCE_REPO_URL = os.getenv(
     "DOCS_SOURCE_REPO_URL", "https://github.com/the-cm-collective/k1s"
 ).strip()
 SOURCE_REPO_LABEL = os.getenv("DOCS_SOURCE_REPO_LABEL", "Project Repository (GitHub)").strip()
-COLLAB_REPO_URL = os.getenv(
-    "DOCS_COLLAB_REPO_URL", "https://codeberg.org/th3_4rchit3ct/k1s"
-).strip()
-COLLAB_REPO_LABEL = os.getenv("DOCS_COLLAB_REPO_LABEL", "Mirror (Codeberg)").strip()
+COLLAB_REPO_URL = os.getenv("DOCS_COLLAB_REPO_URL", "").strip()
+COLLAB_REPO_LABEL = os.getenv("DOCS_COLLAB_REPO_LABEL", "Collaboration repository").strip()
 
 INTERACTIVE_HREF_TOKENS = (
     "/swagger",

@@ -13,6 +13,12 @@ import docker
 from docker.errors import APIError, NotFound
 from docker.models.containers import Container
 
+from ae.controller.quantities import (
+    cpu_to_millicores,
+    cpu_to_nano_cpus,
+    cpu_to_shares,
+    divide_cpu_quantity_ceil,
+)
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
@@ -51,10 +57,9 @@ class DockerRuntime(RuntimeAdapter):
                     tls_dir = os.environ.get("DOCKER_TLS_CERTDIR")
                     if tls_dir:
                         candidate = os.path.join(tls_dir, "client")
-                        cert_ok = (
-                            os.path.isfile(os.path.join(candidate, "cert.pem"))
-                            and os.path.isfile(os.path.join(candidate, "key.pem"))
-                        )
+                        cert_ok = os.path.isfile(
+                            os.path.join(candidate, "cert.pem")
+                        ) and os.path.isfile(os.path.join(candidate, "key.pem"))
                         if cert_ok:
                             os.environ["DOCKER_CERT_PATH"] = candidate
                 self._client = docker.from_env()
@@ -124,9 +129,7 @@ class DockerRuntime(RuntimeAdapter):
         created = updated = removed = 0
 
         strict_service = (
-            not keep_old
-            and getattr(manifest.spec, "service", None)
-            and manifest.spec.replicas == 1
+            not keep_old and getattr(manifest.spec, "service", None) and manifest.spec.replicas == 1
         )
         if strict_service and old_revision_containers:
             for container in list(old_revision_containers):
@@ -149,9 +152,7 @@ class DockerRuntime(RuntimeAdapter):
                 except Exception:
                     PvcNotReadyError = None  # type: ignore[assignment]
                 if PvcNotReadyError is not None and isinstance(exc, PvcNotReadyError):
-                    LOGGER.info(
-                        "Skipping %s: PVCs not ready for mount injection", replica_id
-                    )
+                    LOGGER.info("Skipping %s: PVCs not ready for mount injection", replica_id)
                     continue
                 raise
             container = containers_by_replica.get(replica_id)
@@ -426,7 +427,9 @@ class DockerRuntime(RuntimeAdapter):
                 out[str(host)] = {"username": str(username), "password": str(password)}
         return out
 
-    def _image_pull_secret_names(self, manifest: AppManifest) -> list[tuple[str | None, str | None]]:
+    def _image_pull_secret_names(
+        self, manifest: AppManifest
+    ) -> list[tuple[str | None, str | None]]:
         secrets: list[tuple[str | None, str | None]] = []
         for sec in getattr(manifest.spec, "image_pull_secrets", []) or []:
             if isinstance(sec, dict):
@@ -441,7 +444,9 @@ class DockerRuntime(RuntimeAdapter):
         store = self._get_apishim_store()
         if store is None:
             return []
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
         sa_name = (
             getattr(manifest.spec, "service_account_name", None)
             or self._service_account_name_from_store(manifest, store)
@@ -467,7 +472,9 @@ class DockerRuntime(RuntimeAdapter):
 
     def _service_account_name_from_store(self, manifest: AppManifest, store: Any) -> str | None:
         name = getattr(getattr(manifest, "metadata", None), "name", None)
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
         if not name:
             return None
         candidates = [
@@ -511,7 +518,9 @@ class DockerRuntime(RuntimeAdapter):
             secrets = self._service_account_pull_secrets(manifest)
         if not secrets:
             return {}
-        namespace = getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        namespace = (
+            getattr(getattr(manifest, "metadata", None), "namespace", None) or DEFAULT_NAMESPACE
+        )
         auths: dict[str, dict[str, str]] = {}
         for name, ns in secrets:
             if not name:
@@ -589,9 +598,7 @@ class DockerRuntime(RuntimeAdapter):
                     hosts[str(name)] = str(ip)
         return hosts
 
-    def _resolve_dns_config(
-        self, manifest: AppManifest
-    ) -> tuple[list[str], list[str], list[str]]:
+    def _resolve_dns_config(self, manifest: AppManifest) -> tuple[list[str], list[str], list[str]]:
         cfg = getattr(manifest.spec, "dns_config", None)
         if not cfg:
             return [], [], []
@@ -828,21 +835,14 @@ class DockerRuntime(RuntimeAdapter):
         if manifest.spec.resources and manifest.spec.resources.limits:
             limits = manifest.spec.resources.limits
             if limits.cpu is not None:
-                try:
-                    nano_cpus = int(float(limits.cpu) * 1_000_000_000)
-                except ValueError:
-                    nano_cpus = None
+                nano_cpus = cpu_to_nano_cpus(limits.cpu)
             if limits.memory is not None:
                 mem_limit = self._parse_memory_bytes(str(limits.memory))
         # resource requests → soft reservations
         if manifest.spec.resources and manifest.spec.resources.requests:
             reqs = manifest.spec.resources.requests
             if reqs.cpu is not None:
-                try:
-                    # Docker cpu-shares: 1024 ≈ 1 CPU share
-                    cpu_shares = max(2, int(float(reqs.cpu) * 1024))
-                except ValueError:
-                    cpu_shares = None
+                cpu_shares = cpu_to_shares(reqs.cpu)
             if reqs.memory is not None:
                 mem_reservation = self._parse_memory_bytes(str(reqs.memory))
 
@@ -893,7 +893,7 @@ class DockerRuntime(RuntimeAdapter):
             )
             if is_job:
                 labels[self.JOB_ATTEMPT_LABEL] = str(int(attempt))
-            kwargs = {
+            kwargs: dict[str, object] = {
                 "command": runtime_args,
                 "entrypoint": entrypoint,
                 "name": name,
@@ -1021,10 +1021,9 @@ class DockerRuntime(RuntimeAdapter):
                     labels = existing.labels or {}
                 except Exception:
                     labels = {}
-                if (
-                    labels.get(self.APP_LABEL) == app_name
-                    and labels.get(self.REVISION_LABEL) == str(revision)
-                ):
+                if labels.get(self.APP_LABEL) == app_name and labels.get(
+                    self.REVISION_LABEL
+                ) == str(revision):
                     return existing
                 if not labels:
                     # If we can't read labels, assume another reconcile created it.
@@ -1121,7 +1120,9 @@ class DockerRuntime(RuntimeAdapter):
             except NotFound as exc:
                 last_exc = exc
                 continue
-            except APIError as exc:  # pragma: no cover - daemon/api failures are environment-specific
+            except (
+                APIError
+            ) as exc:  # pragma: no cover - daemon/api failures are environment-specific
                 raise RuntimeError(f"Failed to list containers for {app_name}: {exc}") from exc
         if last_exc is not None:
             LOGGER.debug("Transient docker list race for app %s: %s", app_name, last_exc)
@@ -1560,9 +1561,7 @@ class DockerRuntime(RuntimeAdapter):
         # mapping; finally, if on a shared network, container IP/DNS.
 
         network_ports = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
-        shared_endpoint = self._shared_network_endpoint(
-            ports, container, preferred=preferred
-        )
+        shared_endpoint = self._shared_network_endpoint(ports, container, preferred=preferred)
         if os.getenv("AE_DOCKER_ENDPOINT_PREFER_NETWORK", "").strip().lower() in {
             "1",
             "true",
@@ -1800,28 +1799,20 @@ class DockerRuntime(RuntimeAdapter):
                 rfr = vf.get("resourceFieldRef", {}) or {}
                 res = str(rfr.get("resource", ""))
                 divisor_raw = str(rfr.get("divisor", "")) if rfr.get("divisor") is not None else ""
+                if res in {"limits.cpu", "requests.cpu"}:
+                    divisor = rfr.get("divisor")
+                    if "divisor" in rfr:
+                        cpu_to_millicores(divisor)
+                    rs = getattr(manifest.spec, "resources", None)
+                    obj = rs.limits if res == "limits.cpu" else (rs.requests if rs else None)
+                    cpuq = getattr(obj, "cpu", None) if obj else None
+                    if cpuq is not None:
+                        if "divisor" in rfr:
+                            env_map[name] = str(divide_cpu_quantity_ceil(cpuq, divisor))
+                        else:
+                            env_map[name] = str(divide_cpu_quantity_ceil(cpuq))
+                    continue
                 try:
-                    # CPU in millicores math: convert both base and divisor to mCPU and integer-divide
-                    if res in {"limits.cpu", "requests.cpu"}:
-                        rs = getattr(manifest.spec, "resources", None)
-                        obj = rs.limits if res == "limits.cpu" else (rs.requests if rs else None)
-                        cpuq = getattr(obj, "cpu", None) if obj else None
-                        if isinstance(cpuq, int | float):
-                            base_m = int(round(float(cpuq) * 1000))
-                            if divisor_raw:
-                                d = divisor_raw.strip().lower()
-                                if d.endswith("m"):
-                                    div_m = int(float(d[:-1] or 0)) or 1
-                                else:
-                                    # cores to mCPU
-                                    div_m = int(round(float(d or "1") * 1000)) or 1
-                            else:
-                                # default divisor 1 core
-                                div_m = 1000
-                            if div_m <= 0:
-                                div_m = 1
-                            env_map[name] = str(int(base_m // div_m))
-                        continue
                     # Memory bytes: convert both to bytes and integer-divide
                     if res in {"limits.memory", "requests.memory"}:
                         rs = getattr(manifest.spec, "resources", None)

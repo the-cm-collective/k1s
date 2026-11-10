@@ -149,15 +149,9 @@ class NatsControllerIngress:
         self._subs.append(
             self._client.subscribe("k1s.v1.site.*.lease.acquire", self._on_lease_acquire)
         )
-        self._subs.append(
-            self._client.subscribe("k1s.v1.site.*.lease.renew", self._on_lease_renew)
-        )
-        self._subs.append(
-            self._client.subscribe("k1s.v1.site.*.work.pull", self._on_work_pull)
-        )
-        self._subs.append(
-            self._client.subscribe("k1s.v1.site.*.work.ack", self._on_work_ack)
-        )
+        self._subs.append(self._client.subscribe("k1s.v1.site.*.lease.renew", self._on_lease_renew))
+        self._subs.append(self._client.subscribe("k1s.v1.site.*.work.pull", self._on_work_pull))
+        self._subs.append(self._client.subscribe("k1s.v1.site.*.work.ack", self._on_work_ack))
         self._subs.append(self._client.subscribe("k1s.v1.site.*.result", self._on_result))
 
     def _unsubscribe_mutating(self) -> None:
@@ -281,7 +275,12 @@ class NatsControllerIngress:
                 pod_cidr=None,
                 wg_pubkey=None,
             )
-            self._store.record_heartbeat(node_key, "Ready")
+            self._store.record_heartbeat(
+                node_key,
+                "Ready",
+                session_id=lease.session_id,
+                lease_id=lease.lease_id,
+            )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("lease acquire store update failed: %s", exc)
             resp = LeaseResponse(
@@ -386,7 +385,12 @@ class NatsControllerIngress:
             self._reply(msg, resp.as_dict())
             return
         try:
-            self._store.record_heartbeat(node_key, "Ready")
+            self._store.record_heartbeat(
+                node_key,
+                "Ready",
+                session_id=lease.session_id,
+                lease_id=lease.lease_id,
+            )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("lease renew heartbeat failed: %s", exc)
         resp = LeaseResponse(
@@ -503,9 +507,7 @@ class NatsControllerIngress:
         except Exception:
             limit = 1
         try:
-            visibility_timeout_ms = int(
-                payload.get("visibility_timeout_ms") or self._lease_ttl_ms
-            )
+            visibility_timeout_ms = int(payload.get("visibility_timeout_ms") or self._lease_ttl_ms)
         except Exception:
             visibility_timeout_ms = self._lease_ttl_ms
         try:
@@ -544,7 +546,9 @@ class NatsControllerIngress:
                 updated = self._store.ack_work_items(
                     [item for item in ack_items if isinstance(item, dict)]
                 )
-                stale_count = max(0, len([item for item in ack_items if isinstance(item, dict)]) - updated)
+                stale_count = max(
+                    0, len([item for item in ack_items if isinstance(item, dict)]) - updated
+                )
                 if stale_count:
                     record_ha_fence_event("controller_ingress.work_ack", stale=stale_count)
             else:

@@ -14,7 +14,10 @@ Project principles and non-goals: `TENETS.md`. Cognitive-substrate philosophy an
 
 ## Status & Production Use
 
-k1s is pre-1.0 and still evolving. The current release line expands HA validation, benchmark repeatability, and operator tooling, but this is still an actively changing release line.
+k1s is entering its 1.0 alpha line and remains actively evolving. The current
+candidate establishes a tested compatibility boundary for the distribution,
+imports, commands, and core installed contracts while runtime and fabric
+surfaces continue through explicit qualification gates.
 
 Production guidance:
 - Recommended now: labs, staging, and controlled production pilots with explicit operator ownership.
@@ -50,6 +53,11 @@ Production guidance:
 - Demo modes and examples: `docs/guides/demos-examples.md`
 - End-to-end walkthrough: `docs/guides/e2e.md`
 - CI examples: `docs/ops/ci-gh-actions.md`
+- Python distribution identity and release compatibility:
+  `docs/reference/python-distribution.md`
+- Stable and experimental public contracts: `docs/reference/public-contracts.md`
+- Experimental metadata-safe WorkerBee profile evidence contract:
+  `docs/reference/workerbee-profile-adapter.md`
 
 ## Integrated Dashboard & Interactive Playground
 
@@ -66,6 +74,11 @@ Playground:
 ```
 python -m pip install -e .[dev]
 ```
+
+Published Python artifacts use the distribution name `k1s-core`. The runtime
+package remains importable as `ae`, and the `k1s` and historical `ae*` command
+entry points remain available. See `docs/reference/python-distribution.md` and
+`docs/reference/public-contracts.md` for the 1.0-alpha compatibility policy.
 
 Optional: add file-watching support for instant reconciles on spec changes:
 
@@ -151,6 +164,30 @@ k1s get apps
 k1s describe app/echo
 k1s logs app/echo --follow --tail 100
 ```
+
+Installed profile inspection is deterministic and non-mutating. It lists the
+public role catalog, checks static installation facts, and produces a
+declarative plan without starting a runtime or preparing the host.
+
+```
+k1s profile list
+k1s profile doctor core
+k1s profile plan edge-gateway --output json
+```
+
+The production `edge-gateway` role never includes the development worker stub.
+Legacy `edge` and `edge-core` aliases remain development-only. Existing
+`profile start|status|stop|restart` actions retain their checkout-local
+compatibility behavior pending later stateful lifecycle work. See
+`docs/reference/profile-lifecycle.md` for the exact role, alias, schema, and
+exit-code contracts.
+
+The installed `k1s-core` package also contains a versioned, metadata-safe
+WorkerBee profile evidence adapter. It projects already selected JSON results;
+it adds no command, starts nothing, emits no raw log or connection value, and
+remains `source-validated/unqualified`. Exact WorkerBee rebind and combined
+disposable-guest qualification remain required before RC promotion. See
+`docs/reference/workerbee-profile-adapter.md`.
 
 API endpoints (when started with `--metrics-port`): see `docs/reference/http-api.md`.
 

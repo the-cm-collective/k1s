@@ -33,27 +33,24 @@ python -m grpc_tools.protoc \
   --grpc_python_out="$OUT_DIR" \
   "$PROTO_DIR/api.proto"
 
-# Generate gogo_pb2 into src/ so the module path github.com.gogo.protobuf.gogoproto resolves.
+# Generate the dependency with its canonical descriptor path into a temporary
+# tree, then package the module beside api_pb2. This preserves protobuf's
+# github.com/gogo descriptor identity without shipping a top-level `github`
+# Python namespace.
+GOGO_PY_OUT="$PROTO_DIR/python"
+mkdir -p "$GOGO_PY_OUT"
 python -m grpc_tools.protoc \
   -I"$PROTO_DIR" \
-  --python_out="$ROOT/src" \
+  --python_out="$GOGO_PY_OUT" \
   "$PROTO_DIR/github.com/gogo/protobuf/gogoproto/gogo.proto"
-
-# Ensure python packages exist for github.com.gogo.protobuf.gogoproto
-for pkg in \
-  "$ROOT/src/github" \
-  "$ROOT/src/github/com" \
-  "$ROOT/src/github/com/gogo" \
-  "$ROOT/src/github/com/gogo/protobuf" \
-  "$ROOT/src/github/com/gogo/protobuf/gogoproto"; do
-  mkdir -p "$pkg"
-  if [ ! -f "$pkg/__init__.py" ]; then
-    : > "$pkg/__init__.py"
-  fi
-done
+cp "$GOGO_PY_OUT/github/com/gogo/protobuf/gogoproto/gogo_pb2.py" "$OUT_DIR/gogo_pb2.py"
 
 # Fix imports to keep package names stable for in-repo usage
 sed -i.bak "s/^import api_pb2 as/from . import api_pb2 as/" "$OUT_DIR"/api_pb2_grpc.py
 rm -f "$OUT_DIR"/api_pb2_grpc.py.bak
+sed -i.bak \
+  "s/^from github[.]com[.]gogo[.]protobuf[.]gogoproto import gogo_pb2 as/from . import gogo_pb2 as/" \
+  "$OUT_DIR"/api_pb2.py
+rm -f "$OUT_DIR"/api_pb2.py.bak
 
 echo "CRI stubs generated in $OUT_DIR"

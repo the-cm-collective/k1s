@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS node_leases (
   site_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
   lease_id TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 1,
   controller_epoch INTEGER NOT NULL,
   lease_ttl_ms INTEGER NOT NULL,
   renew_after_ms INTEGER NOT NULL,

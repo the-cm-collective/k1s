@@ -1,6 +1,27 @@
+import sqlite3
 from datetime import UTC, datetime
 
 from ae.controller.state import SQLiteStateStore
+
+
+def test_legacy_node_lease_schema_upgrades_additively(tmp_path) -> None:
+    db_path = tmp_path / "state.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE node_leases (
+              node_id TEXT PRIMARY KEY, site_id TEXT NOT NULL, session_id TEXT NOT NULL,
+              lease_id TEXT NOT NULL, controller_epoch INTEGER NOT NULL,
+              lease_ttl_ms INTEGER NOT NULL, renew_after_ms INTEGER NOT NULL,
+              last_renew_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )
+            """
+        )
+    SQLiteStateStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1]: row for row in conn.execute("PRAGMA table_info(node_leases)")}
+    assert columns["generation"][4] == "1"
 
 
 def test_upsert_and_get_node(tmp_path):

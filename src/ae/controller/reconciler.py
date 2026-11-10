@@ -11,11 +11,17 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import socket
+import uuid
 from typing import Any
 
 from ae.controller.health import HealthManager, HealthReport, PodHealth
 from ae.controller.spec import AppManifest, VolumeSpec, app_key_for_manifest, load_manifest
 from ae.controller.spec import HostAlias, split_app_key
+from ae.controller.node_identity import (
+    NodeIdentityConflictError,
+    node_lease_timing,
+    validate_node_id,
+)
 from ae.runtime import RuntimeAdapter, RuntimeResult
 from ae.storage.config import DEFAULT_CLASS_ANNOTATIONS
 from ae.accelerators import (
@@ -165,8 +171,12 @@ class Reconciler:
         self._apishim_store_checked = False
         self._default_sc_name: str | None = None
         self._register_local_node = _truthy_env("AE_REGISTER_LOCAL_NODE")
+        self._local_identity_session_id = str(uuid.uuid4())
+        self._local_identity_lease_id: str | None = None
 
-    def _runtime_for_agent(self, agent_url: str | None, node_id: str | None = None) -> RuntimeAdapter:
+    def _runtime_for_agent(
+        self, agent_url: str | None, node_id: str | None = None
+    ) -> RuntimeAdapter:
         """Return a runtime bound to the target agent URL (cached)."""
         if not agent_url:
             return self._runtime
@@ -223,7 +233,9 @@ class Reconciler:
                 last_error = exc
                 continue
         if last_error is not None:
-            raise RuntimeError(f"port-forward failed for {pod_name}:{int(port)}: {last_error}") from last_error
+            raise RuntimeError(
+                f"port-forward failed for {pod_name}:{int(port)}: {last_error}"
+            ) from last_error
         raise RuntimeError(f"port-forward unsupported for {pod_name}:{int(port)}")
 
     def _runtime_backend_name(self) -> str:
@@ -251,23 +263,56 @@ class Reconciler:
         return labels, capabilities
 
     def _ensure_local_node(self) -> None:
+        self.heartbeat_local_node()
+
+    def heartbeat_local_node(self) -> None:
+        """Claim or renew this controller process's explicit local node identity."""
+
         if not self._register_local_node:
             return
         try:
-            node_id = os.getenv("AE_NODE_ID") or socket.gethostname()
+            configured_node_id = os.getenv("AE_NODE_ID")
+            explicit = configured_node_id is not None
+            node_id = (
+                validate_node_id(configured_node_id)
+                if configured_node_id is not None
+                else socket.gethostname()
+            )
             name = os.getenv("AE_NODE_NAME") or node_id
             labels, capabilities = self._local_node_metadata()
-            existing = None
-            try:
-                existing = self._state_store.get_node(node_id)
-            except Exception:
-                existing = None
-            if existing is None:
+            identity_lease = None
+            if explicit:
+                if self._local_identity_lease_id:
+                    identity_lease, reason = self._state_store.renew_lease(
+                        node_id,
+                        self._local_identity_session_id,
+                        self._local_identity_lease_id,
+                    )
+                    if identity_lease is None:
+                        self._local_identity_lease_id = None
+                        raise NodeIdentityConflictError(reason or "identity_fence_rejected")
+                else:
+                    ttl_ms, renew_after_ms = node_lease_timing(
+                        os.getenv("AE_NODE_NOTREADY_AFTER", "40")
+                    )
+                    identity_lease = self._state_store.acquire_lease(
+                        site_id=str(labels.get("site_id") or labels.get("site") or ""),
+                        node_id=node_id,
+                        session_id=self._local_identity_session_id,
+                        lease_ttl_ms=ttl_ms,
+                        renew_after_ms=renew_after_ms,
+                        controller_epoch=0,
+                    )
+                self._local_identity_lease_id = identity_lease.lease_id
+
+            existing = self._state_store.get_node(node_id)
+            if existing is None and not explicit:
                 try:
                     if self._state_store.list_nodes():
                         return
                 except Exception:
                     pass
+            if existing is None:
                 self._state_store.upsert_node(
                     node_id,
                     name=name,
@@ -279,14 +324,17 @@ class Reconciler:
                     pod_cidr=None,
                     wg_pubkey=None,
                 )
-                self._state_store.record_heartbeat(node_id, "Ready")
-                return
-            node, _status = existing
-            # Refresh heartbeat only for local/controller nodes (no endpoint or role label).
-            labels = getattr(node, "labels", {}) or {}
-            if getattr(node, "endpoint", None) is None or labels.get("role") == "controller":
+            else:
+                node, _status = existing
+                current_labels = getattr(node, "labels", {}) or {}
+                # Refresh only local/controller metadata. Ownership fencing still applies.
+                if (
+                    getattr(node, "endpoint", None) is not None
+                    and current_labels.get("role") != "controller"
+                ):
+                    raise NodeIdentityConflictError("node_role_conflict")
                 merged_labels, capabilities = self._local_node_metadata(
-                    labels,
+                    current_labels,
                     getattr(node, "capabilities", {}) or {},
                 )
                 self._state_store.upsert_node(
@@ -301,9 +349,22 @@ class Reconciler:
                     wg_pubkey=getattr(node, "wg_pubkey", None),
                     rp_pubkey=getattr(node, "rp_pubkey", None),
                 )
-                self._state_store.record_heartbeat(node_id, "Ready")
-        except Exception:
-            pass
+            refreshed = self._state_store.record_heartbeat(
+                node_id,
+                "Ready",
+                session_id=self._local_identity_session_id if explicit else None,
+                lease_id=self._local_identity_lease_id if explicit else None,
+            )
+            if refreshed is not None:
+                self._local_identity_lease_id = refreshed.lease_id
+        except NodeIdentityConflictError as exc:
+            logging.getLogger(__name__).warning(
+                "local node identity %s rejected: %s",
+                os.getenv("AE_NODE_ID") or socket.gethostname(),
+                exc.reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning("local node registration failed: %s", exc)
 
     def _ensure_on_runtime(
         self,
@@ -356,12 +417,15 @@ class Reconciler:
 
         merged_service_ips = dict(self._direct_containerd_refresh_service_ips)
         merged_service_ips.update(service_ips or {})
-        for _service_app, service_ns, service_name, endpoint_ip in (
-            self._direct_containerd_service_alias_sources(
-                manifest,
-                current_app,
-                service_ips=merged_service_ips,
-            )
+        for (
+            _service_app,
+            service_ns,
+            service_name,
+            endpoint_ip,
+        ) in self._direct_containerd_service_alias_sources(
+            manifest,
+            current_app,
+            service_ips=merged_service_ips,
         ):
             hostnames = [
                 service_name,
@@ -956,7 +1020,7 @@ class Reconciler:
         placements, schedule_warnings = self._scheduler.plan(manifest_for_runtime, revision)
         for w in schedule_warnings:
             try:
-                    self._state_store.record_event(app_name, revision, "ScheduleWarning", w)
+                self._state_store.record_event(app_name, revision, "ScheduleWarning", w)
             except Exception:
                 pass
         self._apply_selected_node_annotations(manifest_for_runtime, placements, revision)
@@ -1374,9 +1438,7 @@ class Reconciler:
             if str(labels.get("ae.revision")) == str(keep_revision):
                 continue
             rid = (
-                labels.get("ae.pod_name")
-                or labels.get("ae.replica_id")
-                or labels.get("ae.replica")
+                labels.get("ae.pod_name") or labels.get("ae.replica_id") or labels.get("ae.replica")
             )
             if not rid:
                 continue
@@ -1433,7 +1495,9 @@ class Reconciler:
                     target = self._endpoint_from_container_info(it, handler.tcp_socket.port)  # type: ignore[union-attr]
                     if target:
                         host, port = target
-                        with _sock.create_connection((host, int(port)), timeout=max(1, int(timeout))):
+                        with _sock.create_connection(
+                            (host, int(port)), timeout=max(1, int(timeout))
+                        ):
                             outcome = "ok"
                     else:
                         outcome = "skipped(no-endpoint)"
@@ -1509,10 +1573,7 @@ class Reconciler:
 
     def _runtime_info_matches_manifest(self, manifest: AppManifest, labels: dict[str, Any]) -> bool:
         app_label = str(
-            labels.get("ae.app")
-            or labels.get("app")
-            or labels.get("app.kubernetes.io/name")
-            or ""
+            labels.get("ae.app") or labels.get("app") or labels.get("app.kubernetes.io/name") or ""
         ).strip()
         expected = {
             str(manifest.metadata.name),
@@ -1825,9 +1886,7 @@ class Reconciler:
         # No ready endpoints yet: return empty to keep previous ingress configuration intact.
         return []
 
-    def _select_service_vip_upstreams(
-        self, app_name: str, manifest: AppManifest
-    ) -> list[str]:
+    def _select_service_vip_upstreams(self, app_name: str, manifest: AppManifest) -> list[str]:
         # Prefer Service VIP when recorded and ready backends exist
         try:
             svc = self._state_store.get_service(app_name)
@@ -2163,9 +2222,7 @@ class Reconciler:
         updated_spec = manifest.spec.model_copy(update={"env": merged_env})
         return manifest.model_copy(update={"spec": updated_spec})
 
-    def _on_probe_event(
-        self, pod_name: str, probe_type: str, success: bool, message: str
-    ) -> None:
+    def _on_probe_event(self, pod_name: str, probe_type: str, success: bool, message: str) -> None:
         """Hook from HealthManager when probe effective status changes."""
         app_name = pod_name
         try:

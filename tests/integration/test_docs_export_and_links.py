@@ -37,6 +37,8 @@ def test_docs_export_builds_expected_pages_and_resolves_relative_links(tmp_path:
         "DOCS_API_BASE": "https://api.home.arpa:8443",
         "DOCS_DASHBOARD_URL": "https://dash.home.arpa:8443/dashboard",
         "DOCS_NON_INTERACTIVE": "1",
+        "DOCS_COLLAB_REPO_URL": "",
+        "DOCS_COLLAB_REPO_LABEL": "",
     }
     build = subprocess.run(
         [sys.executable, "docs/build_docs.py"],
@@ -87,6 +89,10 @@ def test_docs_export_builds_expected_pages_and_resolves_relative_links(tmp_path:
 
     assert not failures, "\n".join(failures[:50])
 
+    rendered = "\n".join(path.read_text(encoding="utf-8") for path in html_files)
+    assert "codeberg.org" not in rendered.lower()
+    assert "Mirror (Codeberg)" not in rendered
+
     wiki = subprocess.run(
         [sys.executable, "docs/export_wiki.py"],
         cwd=ROOT,
@@ -100,7 +106,5 @@ def test_docs_export_builds_expected_pages_and_resolves_relative_links(tmp_path:
     assert (wiki_dir / "_Sidebar.md").exists()
     assert not (wiki_dir / "playground.md").exists()
 
-    markdown = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(wiki_dir.glob("*.md"))
-    )
+    markdown = "\n".join(path.read_text(encoding="utf-8") for path in sorted(wiki_dir.glob("*.md")))
     assert not re.search(r"\]\(/(?:swagger|redoc|openapi|dashboard|playground)", markdown)

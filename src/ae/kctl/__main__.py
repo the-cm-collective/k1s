@@ -7,7 +7,12 @@ that map onto the existing `ae.cli` functionality. k1s Apps are Deployment-like 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import signal
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Tuple
@@ -28,6 +33,42 @@ from ae.observability.logging import configure_logging
 from ae.controller.reconciler import Reconciler
 from ae.controller.state import RegistryConflictError, SQLiteStateStore, state_store_from_env
 from ae.ingress.service import IngressService
+from ae.kctl.lifecycle import LIFECYCLE_ACTIONS, PROFILE_NAMES, LifecycleManager, LifecycleResult
+from ae.kctl.profile_backend import (
+    PORTABLE_PROFILES,
+    PortableLifecycleResult,
+    PortableProfileManager,
+)
+from ae.kctl.profile_bootstrap import ProfileBootstrapStore
+from ae.kctl.profile_engine import SelectedEngineProbe
+from ae.kctl.profile_host_plan import (
+    ProfileHostPlanError,
+    plan_strict_cri_from_files,
+    render_strict_cri_host_plan_json,
+    render_strict_cri_host_plan_text,
+)
+from ae.kctl.profile_host_transaction import (
+    PipeHostHelperClient,
+    ProfileHostTransactionError,
+    StrictCRIHostTransactionManager,
+)
+from ae.kctl.profile_migration import (
+    MIGRATION_PROFILES,
+    ProfileMigrationManager,
+    render_migration_text,
+)
+from ae.kctl.profile_paths import ProfilePathError, ProfileRoots
+from ae.kctl.profile_node_adapter import StrictCRINodeInputs
+from ae.kctl.profile_state import ProfileStateError
+from ae.kctl.profiles import (
+    PROFILE_INPUT_NAMES,
+    ReadOnlyDoctorProbe,
+    SystemDoctorProbe,
+    profile_catalog_payload,
+    profile_doctor_payload,
+    profile_plan_payload,
+    render_profile_text,
+)
 from ae.controller.__main__ import service_controller_factory
 
 
@@ -178,6 +219,176 @@ def build_parser() -> argparse.ArgumentParser:
     sc_p = sub.add_parser("scale", help="Scale a workload/app by reconciling replicas")
     sc_p.add_argument("ref", help="Resource ref: app/NAME, deployment/NAME, or NAME")
     sc_p.add_argument("--replicas", type=int, required=True)
+
+    # Installed, non-mutating profile inspection plus legacy lifecycle actions.
+    profile_p = sub.add_parser("profile", help="Manage a supported k1s runtime profile")
+    profile_sub = profile_p.add_subparsers(dest="profile_action", required=True)
+    list_p = profile_sub.add_parser("list", help="List installed profile contracts")
+    list_p.add_argument("-o", "--output", choices=["text", "json"], default="text")
+    for action in ("doctor", "plan"):
+        action_p = profile_sub.add_parser(
+            action,
+            help=f"{action.capitalize()} a profile without mutating the host",
+        )
+        action_p.add_argument("profile", choices=PROFILE_INPUT_NAMES)
+        action_p.add_argument("-o", "--output", choices=["text", "json"], default="text")
+        if action == "doctor":
+            action_p.add_argument(
+                "--engine",
+                choices=("podman", "docker"),
+                default=None,
+                help="Explicit bounded read-only engine capability query",
+            )
+    lifecycle_names = tuple(dict.fromkeys((*PORTABLE_PROFILES, *PROFILE_NAMES)))
+    for action in LIFECYCLE_ACTIONS:
+        action_p = profile_sub.add_parser(action, help=f"{action.capitalize()} a runtime profile")
+        action_p.add_argument("profile", choices=lifecycle_names)
+        action_p.add_argument("-o", "--output", choices=["text", "json"], default="text")
+        action_p.add_argument(
+            "--legacy",
+            action="store_true",
+            help="Use the repository-local compatibility runner where supported",
+        )
+        if action in {"start", "restart"}:
+            action_p.add_argument("--backend", choices=("podman", "docker"), default=None)
+            action_p.add_argument(
+                "--bootstrap-id",
+                default=None,
+                help="Exact owner-private bootstrap identity for edge-gateway or node",
+            )
+            for option in (
+                "host-plan",
+                "expect-host-plan-sha256",
+                "expect-host-plan-digest",
+                "host-receipt",
+                "expect-host-receipt-sha256",
+            ):
+                action_p.add_argument(f"--{option}", default=None)
+
+    run_p = profile_sub.add_parser("run", help="Run a portable profile in the foreground")
+    run_p.add_argument("profile", choices=PORTABLE_PROFILES)
+    run_p.add_argument("--backend", choices=("podman", "docker"), default=None)
+    run_p.add_argument(
+        "--bootstrap-id",
+        default=None,
+        help="Exact owner-private bootstrap identity for edge-gateway or node",
+    )
+    for option in (
+        "host-plan",
+        "expect-host-plan-sha256",
+        "expect-host-plan-digest",
+        "host-receipt",
+        "expect-host-receipt-sha256",
+    ):
+        run_p.add_argument(f"--{option}", default=None)
+    run_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    logs_profile_p = profile_sub.add_parser("logs", help="Read an exact owned component log")
+    logs_profile_p.add_argument("profile", choices=PORTABLE_PROFILES)
+    logs_profile_p.add_argument("--component", required=True)
+    logs_profile_p.add_argument("--run-id", default=None)
+    logs_profile_p.add_argument("--tail", type=int, default=200)
+    logs_profile_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    delete_profile_p = profile_sub.add_parser(
+        "delete", help="Delete one exact cleaned stopped profile run"
+    )
+    delete_profile_p.add_argument("profile", choices=PORTABLE_PROFILES)
+    delete_profile_p.add_argument("--run-id", required=True)
+    delete_profile_p.add_argument("--confirm-delete", required=True)
+    delete_profile_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    bootstrap_p = profile_sub.add_parser(
+        "bootstrap",
+        help="Create one immutable owner-private canonical role bootstrap",
+    )
+    bootstrap_sub = bootstrap_p.add_subparsers(dest="bootstrap_action", required=True)
+    create_p = bootstrap_sub.add_parser("create", help="Create one exact bootstrap record")
+    create_sub = create_p.add_subparsers(dest="bootstrap_profile", required=True)
+
+    gateway_p = create_sub.add_parser("edge-gateway", help="Create a gateway-only bootstrap")
+    gateway_p.add_argument("--site-id", required=True)
+    gateway_p.add_argument("--node-id", required=True)
+    gateway_p.add_argument("--transport-url", required=True)
+    gateway_p.add_argument("--credential-file", type=Path, required=True)
+    gateway_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    node_p = create_sub.add_parser("node", help="Create an identity-v1 node bootstrap")
+    node_p.add_argument("--node-id", required=True)
+    node_p.add_argument("--controller-url", required=True)
+    node_p.add_argument(
+        "--runtime-backend", choices=("podman", "docker", "strict-cri"), required=True
+    )
+    node_p.add_argument("--listen-host", required=True)
+    node_p.add_argument("--listen-port", type=int, required=True)
+    node_p.add_argument("--advertise-endpoint", required=True)
+    node_p.add_argument("--credential-file", type=Path, required=True)
+    node_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    migrate_p = profile_sub.add_parser(
+        "migrate",
+        help="Plan or transact one exact stopped legacy profile migration",
+    )
+    migrate_sub = migrate_p.add_subparsers(dest="migration_action", required=True)
+    for migration_action in ("plan", "apply", "rollback"):
+        action_p = migrate_sub.add_parser(
+            migration_action,
+            help=f"{migration_action.capitalize()} an explicit legacy migration",
+        )
+        action_p.add_argument("legacy_profile", choices=MIGRATION_PROFILES)
+        action_p.add_argument("--legacy-root", type=Path, required=True)
+        action_p.add_argument("--destination-profile", required=True)
+        action_p.add_argument("--destination-root", type=Path, required=True)
+        action_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+        if migration_action == "apply":
+            action_p.add_argument("--expect-plan-digest", required=True)
+        elif migration_action == "rollback":
+            action_p.add_argument("--migration-id", required=True)
+            action_p.add_argument("--expect-receipt-digest", required=True)
+            action_p.add_argument("--confirm-rollback", required=True)
+
+    host_p = profile_sub.add_parser(
+        "host",
+        help="Plan an explicit host contract without probing or mutating the host",
+    )
+    host_sub = host_p.add_subparsers(dest="host_action", required=True)
+    host_plan_p = host_sub.add_parser("plan", help="Create one pure host plan")
+    host_plan_sub = host_plan_p.add_subparsers(dest="host_profile", required=True)
+    strict_cri_p = host_plan_sub.add_parser(
+        "strict-cri",
+        help="Plan explicit Linux containerd CRI-v1 preparation",
+    )
+    strict_cri_p.add_argument("--intent", required=True)
+    strict_cri_p.add_argument("--expect-intent-sha256", required=True)
+    strict_cri_p.add_argument("--facts", required=True)
+    strict_cri_p.add_argument("--expect-facts-sha256", required=True)
+    strict_cri_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+
+    for host_action in ("prepare", "rollback"):
+        action_p = host_sub.add_parser(
+            host_action,
+            help=f"{host_action.capitalize()} one digest-bound strict-CRI host transaction",
+        )
+        action_sub = action_p.add_subparsers(dest="host_profile", required=True)
+        strict_p = action_sub.add_parser("strict-cri")
+        strict_p.add_argument("--transaction-root", type=Path, required=True)
+        strict_p.add_argument("--transaction-id", required=True)
+        strict_p.add_argument("--helper-request-fd", type=int, required=True)
+        strict_p.add_argument("--helper-response-fd", type=int, required=True)
+        strict_p.add_argument("--expect-helper-identity-sha256", required=True)
+        strict_p.add_argument("-o", "--output", choices=("text", "json"), default="text")
+        if host_action == "prepare":
+            strict_p.add_argument("--intent", type=Path, required=True)
+            strict_p.add_argument("--expect-intent-sha256", required=True)
+            strict_p.add_argument("--facts", type=Path, required=True)
+            strict_p.add_argument("--expect-facts-sha256", required=True)
+            strict_p.add_argument("--plan", type=Path, required=True)
+            strict_p.add_argument("--expect-plan-sha256", required=True)
+            strict_p.add_argument("--expect-plan-digest", required=True)
+            strict_p.add_argument("--confirm-prepare", required=True)
+        else:
+            strict_p.add_argument("--expect-applied-receipt-sha256", required=True)
+            strict_p.add_argument("--confirm-rollback", required=True)
 
     return p
 
@@ -381,7 +592,9 @@ def handle_apply(ns: argparse.Namespace, reconciler: Reconciler) -> int:
 
         manifest = load_manifest(Path(ns.file))
         store = state_store_from_env()
-        existing = store.get_registered_entry(app_key(manifest.metadata.name, manifest.metadata.namespace))
+        existing = store.get_registered_entry(
+            app_key(manifest.metadata.name, manifest.metadata.namespace)
+        )
         src = existing.source if existing else "kctl"
         lbls = existing.labels if existing else getattr(manifest.metadata, "labels", None)
         try:
@@ -549,6 +762,385 @@ def handle_scale_k1s(
     return 0
 
 
+def profile_lifecycle_manager_factory() -> LifecycleManager:
+    """Return the concrete lifecycle manager behind the public CLI handler."""
+
+    return LifecycleManager.from_environment()
+
+
+def portable_profile_manager_factory() -> PortableProfileManager:
+    """Return the installed portable manager only for an explicit lifecycle action."""
+
+    return PortableProfileManager.system()
+
+
+def profile_bootstrap_store_factory(profile: str) -> ProfileBootstrapStore:
+    """Return the exact owner-private bootstrap store for a canonical role."""
+
+    return ProfileBootstrapStore(ProfileRoots.from_environment(), profile)
+
+
+def profile_engine_probe_factory() -> SelectedEngineProbe:
+    """Return the bounded read-only probe only after ``doctor --engine``."""
+
+    return SelectedEngineProbe.system()
+
+
+def profile_doctor_probe_factory() -> ReadOnlyDoctorProbe:
+    """Return the static installed-package probe used by ``profile doctor``."""
+
+    return SystemDoctorProbe()
+
+
+def profile_migration_manager_factory() -> ProfileMigrationManager:
+    """Return the explicit migration manager without deriving HOME/XDG roots."""
+
+    return ProfileMigrationManager()
+
+
+def profile_host_transaction_manager_factory(
+    request_fd: int, response_fd: int
+) -> StrictCRIHostTransactionManager:
+    """Bind only caller-inherited helper pipes; never discover or launch a helper."""
+
+    return StrictCRIHostTransactionManager(
+        PipeHostHelperClient(request_fd=request_fd, response_fd=response_fd)
+    )
+
+
+def _strict_cri_node_inputs(ns: argparse.Namespace) -> StrictCRINodeInputs | None:
+    names = (
+        "host_plan",
+        "expect_host_plan_sha256",
+        "expect_host_plan_digest",
+        "host_receipt",
+        "expect_host_receipt_sha256",
+    )
+    values = [getattr(ns, name, None) for name in names]
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ProfileStateError("strict-CRI node authority is incomplete")
+    return StrictCRINodeInputs(
+        plan_path=Path(str(values[0])),
+        expected_plan_file_digest=str(values[1]),
+        expected_plan_digest=str(values[2]),
+        receipt_path=Path(str(values[3])),
+        expected_receipt_digest=str(values[4]),
+    )
+
+
+@dataclass(slots=True)
+class _SignalRequest:
+    signal_number: int | None = None
+
+    def record(self, signal_number: int, frame: object) -> None:
+        del frame
+        if self.signal_number is None:
+            self.signal_number = signal_number
+
+
+@contextmanager
+def _foreground_signal_requests() -> Iterator[_SignalRequest]:
+    """Install handlers that only record intent; cleanup remains normal control flow."""
+
+    request = _SignalRequest()
+    previous = {
+        signal_number: signal.getsignal(signal_number)
+        for signal_number in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        for signal_number in previous:
+            signal.signal(signal_number, request.record)
+        yield request
+    finally:
+        for signal_number, handler in previous.items():
+            signal.signal(signal_number, handler)
+
+
+def handle_profile(ns: argparse.Namespace) -> int:
+    """Inspect profile contracts or execute one explicit legacy lifecycle action."""
+
+    if ns.profile_action == "host":
+        try:
+            if ns.host_action == "plan":
+                payload = plan_strict_cri_from_files(
+                    intent_path=ns.intent,
+                    expected_intent_digest=ns.expect_intent_sha256,
+                    facts_path=ns.facts,
+                    expected_facts_digest=ns.expect_facts_sha256,
+                )
+                if ns.output == "json":
+                    print(render_strict_cri_host_plan_json(payload), end="")
+                else:
+                    print(render_strict_cri_host_plan_text(payload), end="")
+                return 0
+            host_manager = profile_host_transaction_manager_factory(
+                ns.helper_request_fd, ns.helper_response_fd
+            )
+            if ns.host_action == "prepare":
+                host_result = host_manager.prepare(
+                    intent_path=ns.intent,
+                    expected_intent_digest=ns.expect_intent_sha256,
+                    facts_path=ns.facts,
+                    expected_facts_digest=ns.expect_facts_sha256,
+                    plan_path=ns.plan,
+                    expected_plan_file_digest=ns.expect_plan_sha256,
+                    expected_plan_digest=ns.expect_plan_digest,
+                    transaction_root=ns.transaction_root,
+                    transaction_id=ns.transaction_id,
+                    confirmation=ns.confirm_prepare,
+                    expected_helper_identity_digest=ns.expect_helper_identity_sha256,
+                )
+            else:
+                host_result = host_manager.rollback(
+                    transaction_root=ns.transaction_root,
+                    transaction_id=ns.transaction_id,
+                    expected_applied_receipt_digest=ns.expect_applied_receipt_sha256,
+                    confirmation=ns.confirm_rollback,
+                    expected_helper_identity_digest=ns.expect_helper_identity_sha256,
+                )
+            result_payload = host_result.public_payload()
+            if ns.output == "json":
+                print(json.dumps(result_payload, sort_keys=True))
+            else:
+                print(
+                    f"action={host_result.action} status={host_result.status} "
+                    f"target={host_result.target_id} "
+                    f"transaction={host_result.transaction_id} "
+                    f"planDigest={host_result.plan_digest} "
+                    f"receiptDigest={host_result.receipt_digest}"
+                )
+            return 0
+        except (ProfileHostPlanError, ProfileHostTransactionError):
+            operation = getattr(ns, "host_action", "plan")
+            print(f"strict CRI host {operation} failed closed", file=sys.stderr)
+            return 1
+
+    if ns.profile_action == "migrate":
+        migration_manager = profile_migration_manager_factory()
+        try:
+            if ns.migration_action == "plan":
+                payload = migration_manager.plan(
+                    ns.legacy_profile,
+                    legacy_root=ns.legacy_root,
+                    destination_profile=ns.destination_profile,
+                    destination_root=ns.destination_root,
+                ).public_payload()
+            elif ns.migration_action == "apply":
+                payload = migration_manager.apply(
+                    ns.legacy_profile,
+                    legacy_root=ns.legacy_root,
+                    destination_profile=ns.destination_profile,
+                    destination_root=ns.destination_root,
+                    expected_plan_digest=ns.expect_plan_digest,
+                ).public_payload()
+            else:
+                payload = migration_manager.rollback(
+                    ns.legacy_profile,
+                    legacy_root=ns.legacy_root,
+                    destination_profile=ns.destination_profile,
+                    destination_root=ns.destination_root,
+                    migration_id=ns.migration_id,
+                    expected_receipt_digest=ns.expect_receipt_digest,
+                    confirmation=ns.confirm_rollback,
+                ).public_payload()
+            if ns.output == "json":
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(render_migration_text(payload))
+            return 0
+        except (OSError, ProfilePathError, ProfileStateError):
+            print("profile migration failed closed", file=sys.stderr)
+            return 1
+
+    if ns.profile_action == "list":
+        payload = profile_catalog_payload()
+        if ns.output == "json":
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(render_profile_text(payload))
+        return 0
+
+    if ns.profile_action == "plan":
+        payload = profile_plan_payload(ns.profile)
+        if ns.output == "json":
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(render_profile_text(payload))
+        return 0
+
+    if ns.profile_action == "doctor":
+        payload, exit_code = profile_doctor_payload(
+            ns.profile,
+            profile_doctor_probe_factory(),
+            engine=ns.engine,
+            engine_probe=(profile_engine_probe_factory() if ns.engine is not None else None),
+        )
+        if ns.output == "json":
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(render_profile_text(payload))
+        return exit_code
+
+    if ns.profile_action == "bootstrap":
+        try:
+            store = profile_bootstrap_store_factory(ns.bootstrap_profile)
+            if ns.bootstrap_profile == "edge-gateway":
+                record = store.create_edge_gateway(
+                    site_id=ns.site_id,
+                    node_id=ns.node_id,
+                    transport_url=ns.transport_url,
+                    credential_file=ns.credential_file,
+                )
+            else:
+                record = store.create_node(
+                    node_id=ns.node_id,
+                    controller_url=ns.controller_url,
+                    runtime_backend=ns.runtime_backend,
+                    listen_host=ns.listen_host,
+                    listen_port=ns.listen_port,
+                    advertise_endpoint=ns.advertise_endpoint,
+                    credential_file=ns.credential_file,
+                )
+            payload = record.public_projection()
+            if ns.output == "json":
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(
+                    f"profile={payload['profile']} bootstrap={payload['bootstrapId']} "
+                    f"node={payload['nodeId']}"
+                )
+            return 0
+        except (OSError, ProfilePathError, ProfileStateError):
+            print("profile bootstrap failed closed", file=sys.stderr)
+            return 1
+
+    if ns.profile_action in {"run", "logs", "delete"}:
+        if (
+            ns.profile_action == "run"
+            and ns.profile in {"edge-gateway", "node"}
+            and ns.bootstrap_id is None
+        ):
+            print("profile command failed closed", file=sys.stderr)
+            return 1
+        manager = portable_profile_manager_factory()
+        try:
+            strict_cri_inputs = _strict_cri_node_inputs(ns)
+            if ns.profile_action == "run":
+                with _foreground_signal_requests() as request:
+                    if strict_cri_inputs is None:
+                        run_result = manager.run(
+                            ns.profile,
+                            backend=ns.backend,
+                            bootstrap_id=ns.bootstrap_id,
+                            stop_requested=lambda: request.signal_number,
+                        )
+                    else:
+                        run_result = manager.run(
+                            ns.profile,
+                            backend=ns.backend,
+                            bootstrap_id=ns.bootstrap_id,
+                            strict_cri_inputs=strict_cri_inputs,
+                            stop_requested=lambda: request.signal_number,
+                        )
+                payload = run_result.to_dict()
+                if ns.output == "json":
+                    print(json.dumps(payload, sort_keys=True))
+                else:
+                    print(
+                        f"profile={run_result.profile} status={run_result.status} "
+                        f"backend={run_result.backend} run={run_result.run_id}"
+                    )
+                return run_result.exit_code
+            if ns.profile_action == "logs":
+                snapshot = manager.logs(
+                    ns.profile,
+                    component=ns.component,
+                    run_id=ns.run_id,
+                    tail=ns.tail,
+                )
+                if ns.output == "json":
+                    print(json.dumps(snapshot.to_payload(), sort_keys=True))
+                else:
+                    for line in snapshot.lines:
+                        print(line)
+                return 0
+            delete_result = manager.delete(
+                ns.profile,
+                run_id=ns.run_id,
+                confirmation=ns.confirm_delete,
+            )
+            payload = delete_result.to_dict()
+            if ns.output == "json":
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(
+                    f"profile={delete_result.profile} status={delete_result.status} "
+                    f"run={delete_result.run_id}"
+                )
+            return delete_result.exit_code
+        except ProfileStateError:
+            print("profile command failed closed", file=sys.stderr)
+            return 1
+
+    legacy = bool(ns.legacy)
+    backend = getattr(ns, "backend", None)
+    bootstrap_id = getattr(ns, "bootstrap_id", None)
+    try:
+        strict_cri_inputs = _strict_cri_node_inputs(ns)
+    except ProfileStateError:
+        print("profile command failed closed", file=sys.stderr)
+        return 1
+    result: PortableLifecycleResult | LifecycleResult
+    if ns.profile in PORTABLE_PROFILES and not legacy:
+        if (
+            ns.profile_action in {"start", "restart"}
+            and ns.profile in {"edge-gateway", "node"}
+            and bootstrap_id is None
+        ):
+            print("profile command failed closed", file=sys.stderr)
+            return 1
+        if strict_cri_inputs is None:
+            result = portable_profile_manager_factory().perform(
+                ns.profile_action,
+                ns.profile,
+                backend=backend,
+                bootstrap_id=bootstrap_id,
+            )
+        else:
+            result = portable_profile_manager_factory().perform(
+                ns.profile_action,
+                ns.profile,
+                backend=backend,
+                bootstrap_id=bootstrap_id,
+                strict_cri_inputs=strict_cri_inputs,
+            )
+    else:
+        if ns.profile in PORTABLE_PROFILES:
+            raise ValueError(f"{ns.profile} has no repository-local legacy lifecycle runner")
+        if backend is not None or bootstrap_id is not None or strict_cri_inputs is not None:
+            raise ValueError("portable execution options are unavailable to legacy profiles")
+        result = profile_lifecycle_manager_factory().perform(ns.profile_action, ns.profile)
+    result_payload = result.to_dict()
+    if ns.output == "json":
+        print(json.dumps(result_payload, sort_keys=True))
+    else:
+        details = [f"profile={result.profile}", f"status={result.status}"]
+        pid = result_payload.get("pid")
+        command = result_payload.get("command")
+        if pid is not None:
+            details.append(f"pid={pid}")
+        if isinstance(command, (list, tuple)) and all(isinstance(item, str) for item in command):
+            details.append(f"command={' '.join(command)}")
+        if result_payload.get("backend"):
+            details.append(f"backend={result_payload['backend']}")
+        if result_payload.get("run_id"):
+            details.append(f"run={result_payload['run_id']}")
+        print(" ".join(details))
+    return result.exit_code
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - exercised via tests
     parser = build_parser()
     ns = parser.parse_args(argv)
@@ -560,6 +1152,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - exercised 
         configure_logging(ns.log_level.upper())
     else:
         configure_logging(None)
+
+    if ns.cmd == "profile":
+        return handle_profile(ns)
 
     store, reconciler, runtime = _setup()
 

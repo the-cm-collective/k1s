@@ -123,7 +123,12 @@ def test_nats_controller_ingress_echoes_request_id_on_lease_reply(monkeypatch) -
 
     class _Store:
         def acquire_lease(self, **kwargs):
-            return SimpleNamespace(lease_id="lease-1", lease_ttl_ms=60000, renew_after_ms=20000)
+            return SimpleNamespace(
+                lease_id="lease-1",
+                session_id="sess-1",
+                lease_ttl_ms=60000,
+                renew_after_ms=20000,
+            )
 
         def upsert_node(self, *args, **kwargs) -> None:
             return None

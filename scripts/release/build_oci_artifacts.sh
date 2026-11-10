@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ROOT_DIR
+source "$ROOT_DIR/scripts/release/require_safe_builder.sh"
+k1s_release_require_safe_builder
+
 OUT_DIR="${1:-${RELEASE_ARTIFACT_DIR:-$ROOT_DIR/dist/release-images}}"
 mkdir -p "$OUT_DIR"
 
@@ -76,10 +79,6 @@ configure_builder_context() {
     [[ -f "$cert_path/cert.pem" ]] && docker_opts+=("cert=$cert_path/cert.pem")
     [[ -f "$cert_path/key.pem" ]] && docker_opts+=("key=$cert_path/key.pem")
   fi
-  if [[ "${DOCKER_TLS_VERIFY:-}" == "0" ]]; then
-    docker_opts+=("skip-tls-verify=true")
-  fi
-
   local docker_spec
   docker_spec="$(IFS=,; printf '%s' "${docker_opts[*]}")"
   if docker context inspect "$BUILDER_CONTEXT_NAME" >/dev/null 2>&1; then

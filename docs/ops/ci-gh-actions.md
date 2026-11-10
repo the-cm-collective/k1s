@@ -1,12 +1,20 @@
 GitHub/Gitea Actions: CI layout
 
-The repository now uses five canonical workflows:
+The repository uses five Gitea/local integration workflows and two GitHub-only
+Python publication workflows:
 
 - `ci-core.yml`: blocking pull request and branch gate for unit tests, planner validation, Kubernetes export checks, OpenAPI drift validation, versioning checks, and OCI release-image smoke builds. The workflow always reports branch-protection checks, but skips the heavy jobs when a change set is docs-only.
 - `ci-docs.yml`: docs gate for `README`, `docs/**`, docs build helpers, and docs tests. The workflow always reports its check, but only runs `make docs-verify` when docs-surface files changed.
 - `nightly-apishim.yml`: manual/nightly API-shim coverage for shim smoke, Helm, RBAC/SSA, exec, port-forward, SPDY, and live OpenAPI checks.
 - `nightly-runtime.yml`: manual/nightly runtime and end-to-end coverage for Podman, CRI, kind/k3s conformance, multinode, service port-forward, `/plan`, core/edge, and HA closeout lanes.
-- `release.yml`: tag-only artifact pipeline for wheels, OCI role-image archives (`k1s-core`, `k1s-core-node`, `k1s-edge-core`, `k1s-edge-node`), OpenAPI snapshots, and the API-shim compatibility matrix.
+- `release.yml`: Gitea-only, tag-triggered artifact pipeline for wheels, OCI
+  role-image archives (`k1s-core`, `k1s-core-node`, `k1s-edge-core`,
+  `k1s-edge-node`), OpenAPI snapshots, and the API-shim compatibility matrix.
+  It has no publication permission or publisher action.
+- `publish-testpypi.yml`: manually dispatched GitHub-only exact-byte build and
+  TestPyPI OIDC publication gate.
+- `publish-pypi.yml`: manually dispatched GitHub-only promotion of the exact
+  successful TestPyPI bytes to PyPI with OIDC; it never rebuilds artifacts.
 
 Runner compatibility follows ADR 0008:
 
@@ -14,7 +22,20 @@ Runner compatibility follows ADR 0008:
 - `actions/setup-python@v4`
 - repo-local shell helpers in `scripts/ci/lib.sh`
 
-The workflow files are intended to execute on the local Gitea Actions stack and under local `act` only. They now include an explicit server guard so an accidentally enabled GitHub mirror will keep the jobs skipped instead of running them there.
+The five integration workflow files are intended to execute on the local Gitea
+Actions stack and under local `act` only. They include an explicit server guard
+so an accidentally enabled GitHub mirror keeps their jobs skipped. Conversely,
+every job in the two publication workflows requires
+`github.server_url == 'https://github.com'`. Gitea therefore has neither a
+runnable publication job nor an OIDC publication permission path.
+
+Release-path checkout is fail closed: the Gitea artifact workflow and the
+release-image CI job require `GITEA_CA_B64` and refuse to disable TLS
+verification. OCI artifact builds additionally require
+`K1S_RELEASE_BUILDER_SCOPE=isolated-ci`, a dedicated remote `tcp://` Docker
+builder, TLS verification, and complete client certificate material. The gate
+rejects the default local Docker socket and never permits a release build to
+create or bootstrap a builder against an operator's host daemon.
 
 PRs intentionally use a lean blocking gate. Heavy runtime and E2E lanes run outside the default PR path because they are slower, more environment-sensitive, and more appropriate for scheduled/manual validation.
 

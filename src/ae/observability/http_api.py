@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ae import __version__ as AE_VERSION
 from ae import build_info as AE_BUILD_INFO
 from ae.accelerators import preferred_gpu_count, preferred_gpu_models
 from ae.controller.authority import AuthorityConfig, NotLeaderError
@@ -6109,7 +6110,7 @@ class _ApiHandler(http.server.BaseHTTPRequestHandler):
         )
         doc = {
             "openapi": "3.0.0",
-            "info": {"title": "k1s Controller API", "version": "0.1.6.dev1"},
+            "info": {"title": "k1s Controller API", "version": AE_VERSION},
             "components": {
                 "securitySchemes": {
                     "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}

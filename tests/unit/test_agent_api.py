@@ -1,4 +1,5 @@
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer
 
@@ -62,6 +63,136 @@ def test_heartbeat_requires_token(tmp_path):
         thread.join(timeout=2)
 
 
+def test_explicit_heartbeat_claim_is_idempotent_and_fenced(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    server, thread = _run_server(store, token="secret")
+    session_id = str(uuid.uuid4())
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/v1/heartbeat"
+        payload = {
+            "identity_version": 1,
+            "session_id": session_id,
+            "node_id": "node-1",
+            "name": "owner-one",
+        }
+        first = requests.post(url, json=payload, headers={"X-Agent-Token": "secret"}, timeout=5)
+        retry = requests.post(url, json=payload, headers={"X-Agent-Token": "secret"}, timeout=5)
+
+        assert first.status_code == retry.status_code == 200
+        assert first.json()["lease_id"] == retry.json()["lease_id"]
+        assert first.json()["generation"] == retry.json()["generation"] == 1
+
+        conflict = requests.post(
+            url,
+            json={
+                **payload,
+                "session_id": str(uuid.uuid4()),
+                "name": "wrong-owner",
+            },
+            headers={"X-Agent-Token": "secret"},
+            timeout=5,
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["reason"] == "active_identity"
+        node = store.get_node("node-1")
+        assert node is not None
+        assert node[0].name == "owner-one"
+        assert node[1] is not None and node[1].generation == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_explicit_heartbeat_stale_replacement_fences_old_owner(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    server, thread = _run_server(store, token="secret")
+    first_session = str(uuid.uuid4())
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/v1/heartbeat"
+        first = requests.post(
+            url,
+            json={
+                "identity_version": 1,
+                "session_id": first_session,
+                "node_id": "node-1",
+            },
+            headers={"X-Agent-Token": "secret"},
+            timeout=5,
+        )
+        assert first.status_code == 200
+        with store._connect() as conn:  # type: ignore[attr-defined]
+            conn.execute(
+                "UPDATE node_leases SET expires_at = ? WHERE node_id = ?",
+                ("2000-01-01T00:00:00+00:00", "node-1"),
+            )
+            conn.commit()
+
+        replacement = requests.post(
+            url,
+            json={
+                "identity_version": 1,
+                "session_id": str(uuid.uuid4()),
+                "node_id": "node-1",
+            },
+            headers={"X-Agent-Token": "secret"},
+            timeout=5,
+        )
+        assert replacement.status_code == 200
+        assert replacement.json()["generation"] == 2
+
+        stale = requests.post(
+            url,
+            json={
+                "identity_version": 1,
+                "session_id": first_session,
+                "lease_id": first.json()["lease_id"],
+                "node_id": "node-1",
+            },
+            headers={"X-Agent-Token": "secret"},
+            timeout=5,
+        )
+        assert stale.status_code == 409
+        assert stale.json()["reason"] == "invalid_session"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_inventory_exposes_public_identity_without_claimant_secrets(tmp_path):
+    store = SQLiteStateStore(tmp_path / "state.db")
+    server, thread = _run_server(store, token="secret")
+    try:
+        heartbeat_url = f"http://127.0.0.1:{server.server_port}/v1/heartbeat"
+        response = requests.post(
+            heartbeat_url,
+            json={
+                "identity_version": 1,
+                "session_id": str(uuid.uuid4()),
+                "node_id": "site-a--node-1",
+            },
+            headers={"X-Agent-Token": "secret"},
+            timeout=5,
+        )
+        assert response.status_code == 200
+
+        inventory = requests.get(
+            f"http://127.0.0.1:{server.server_port}/v1/nodes", timeout=5
+        ).json()["nodes"][0]
+        assert inventory["identity_version"] == 1
+        assert inventory["identity_mode"] == "explicit"
+        assert inventory["generation"] == 1
+        assert inventory["site_id"] == "site-a"
+        assert inventory["local_node_id"] == "node-1"
+        assert "lease_id" not in inventory
+        assert "session_id" not in inventory
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_env_scoped_edge_admission_upserts_gateway_node(tmp_path):
     store = SQLiteStateStore(tmp_path / "state.db")
     server, thread = _run_server(store, token="secret")
@@ -116,11 +247,35 @@ def test_env_scoped_edge_admission_upserts_gateway_node(tmp_path):
 @pytest.mark.parametrize(
     ("payload_update", "expected_status", "expected_error"),
     [
-        ({"labels": {"role": "gateway", "env_id": "wrong-env", "site_id": "edge-site-strix-halo-a"}}, 403, "env_id mismatch"),
-        ({"labels": {"role": "cell-node", "env_id": "pilot-edge-west", "site_id": "edge-site-strix-halo-a"}}, 403, "gateway role required"),
         (
             {
-                "labels": {"role": "gateway", "env_id": "pilot-edge-west", "site_id": "edge-site-strix-halo-a"},
+                "labels": {
+                    "role": "gateway",
+                    "env_id": "wrong-env",
+                    "site_id": "edge-site-strix-halo-a",
+                }
+            },
+            403,
+            "env_id mismatch",
+        ),
+        (
+            {
+                "labels": {
+                    "role": "cell-node",
+                    "env_id": "pilot-edge-west",
+                    "site_id": "edge-site-strix-halo-a",
+                }
+            },
+            403,
+            "gateway role required",
+        ),
+        (
+            {
+                "labels": {
+                    "role": "gateway",
+                    "env_id": "pilot-edge-west",
+                    "site_id": "edge-site-strix-halo-a",
+                },
                 "expires_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
             },
             403,
@@ -128,7 +283,11 @@ def test_env_scoped_edge_admission_upserts_gateway_node(tmp_path):
         ),
         (
             {
-                "labels": {"role": "gateway", "env_id": "pilot-edge-west", "site_id": "edge-site-strix-halo-a"},
+                "labels": {
+                    "role": "gateway",
+                    "env_id": "pilot-edge-west",
+                    "site_id": "edge-site-strix-halo-a",
+                },
                 "token_revoked": True,
             },
             403,
@@ -136,7 +295,9 @@ def test_env_scoped_edge_admission_upserts_gateway_node(tmp_path):
         ),
     ],
 )
-def test_env_scoped_edge_admission_denies_bad_requests(tmp_path, payload_update, expected_status, expected_error):
+def test_env_scoped_edge_admission_denies_bad_requests(
+    tmp_path, payload_update, expected_status, expected_error
+):
     store = SQLiteStateStore(tmp_path / "state.db")
     server, thread = _run_server(store, token="secret")
     payload = {
@@ -176,7 +337,11 @@ def test_env_scoped_edge_admission_requires_token(tmp_path):
             url,
             json={
                 "node_id": "strix-halo-edge-gateway",
-                "labels": {"role": "gateway", "env_id": "pilot-edge-west", "site_id": "edge-site-strix-halo-a"},
+                "labels": {
+                    "role": "gateway",
+                    "env_id": "pilot-edge-west",
+                    "site_id": "edge-site-strix-halo-a",
+                },
             },
             timeout=5,
         )

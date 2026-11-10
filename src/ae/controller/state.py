@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 from ae.accelerators import link_metric_inventory, normalize_capabilities
 from ae.controller.health import HealthReport
+from ae.controller.node_identity import NodeIdentityConflictError
 from ae.controller.spec import (
     DEFAULT_NAMESPACE,
     AppManifest,
@@ -256,6 +257,7 @@ class NodeLease:
     site_id: str
     session_id: str
     lease_id: str
+    generation: int
     controller_epoch: int
     lease_ttl_ms: int
     renew_after_ms: int
@@ -404,6 +406,11 @@ class NodeStatus:
     node_id: str
     status: str
     seen_at: datetime
+    identity_version: int = 0
+    identity_mode: str = "legacy"
+    generation: int = 0
+    site_id: str | None = None
+    lease_expires_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -772,6 +779,12 @@ class SQLiteStateStore:
             self._execute_script(
                 conn,
                 resource_loader.load_text("sql", "controller", "create_node_leases.sql"),
+            )
+            self._ensure_column(
+                conn,
+                "node_leases",
+                "generation",
+                "INTEGER NOT NULL DEFAULT 1",
             )
             conn.execute(
                 resource_loader.load_text("sql", "controller", "create_volume_attachments.sql")
@@ -1302,7 +1315,9 @@ class SQLiteStateStore:
         accepted = next((row for row in columns if row[1] == "accepted"), None)
         if accepted is None or not int(accepted[3] or 0):
             return
-        conn.execute("ALTER TABLE fabric_advisory_review_events RENAME TO fabric_advisory_review_events_old")
+        conn.execute(
+            "ALTER TABLE fabric_advisory_review_events RENAME TO fabric_advisory_review_events_old"
+        )
         conn.execute(
             """
             CREATE TABLE fabric_advisory_review_events (
@@ -1870,7 +1885,9 @@ class SQLiteStateStore:
             ).fetchone()
             if row is not None:
                 current_rv = int(row[0] or 0)
-            if expected_resource_version is not None and current_rv != int(expected_resource_version):
+            if expected_resource_version is not None and current_rv != int(
+                expected_resource_version
+            ):
                 raise RegistryConflictError(
                     self._authority_object_conflict_key(group, version, resource, namespace, name),
                     expected=int(expected_resource_version),
@@ -1925,14 +1942,12 @@ class SQLiteStateStore:
         namespace: str | None = None,
     ) -> list[AuthorityObjectEntry]:
         params: list[object] = [group, version, resource]
-        query = (
-            """
+        query = """
             SELECT grp, ver, resource, namespace, name, kind,
                    metadata_json, spec_json, status_json, updated_at, resource_version
               FROM authority_objects
              WHERE grp = ? AND ver = ? AND resource = ?
             """
-        )
         if namespace is not None:
             query += " AND namespace = ?"
             params.append(str(namespace))
@@ -1993,7 +2008,9 @@ class SQLiteStateStore:
                 current_rv = int(row[0] or 0) if row is not None else 0
                 if current_rv != int(expected_resource_version):
                     raise RegistryConflictError(
-                        self._authority_object_conflict_key(group, version, resource, namespace, name),
+                        self._authority_object_conflict_key(
+                            group, version, resource, namespace, name
+                        ),
                         expected=int(expected_resource_version),
                         actual=current_rv,
                     )
@@ -2147,13 +2164,17 @@ class SQLiteStateStore:
             return None
         try:
             collected_at = (
-                datetime.fromisoformat(row[3]) if row[3] else datetime.fromtimestamp(0, timezone.utc)
+                datetime.fromisoformat(row[3])
+                if row[3]
+                else datetime.fromtimestamp(0, timezone.utc)
             )
         except Exception:
             collected_at = datetime.fromtimestamp(0, timezone.utc)
         try:
             updated_at = (
-                datetime.fromisoformat(row[9]) if row[9] else datetime.fromtimestamp(0, timezone.utc)
+                datetime.fromisoformat(row[9])
+                if row[9]
+                else datetime.fromtimestamp(0, timezone.utc)
             )
         except Exception:
             updated_at = datetime.fromtimestamp(0, timezone.utc)
@@ -3189,9 +3210,7 @@ class SQLiteStateStore:
         sql += " ORDER BY node_id, chunk_id"
         with self._connect() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
-        return [
-            item for row in rows if (item := self._fabric_residency_from_row(row)) is not None
-        ]
+        return [item for row in rows if (item := self._fabric_residency_from_row(row)) is not None]
 
     def upsert_fabric_movement(self, record: FabricMovementRecord) -> None:
         payload = movement_record_payload(record)
@@ -3369,9 +3388,7 @@ class SQLiteStateStore:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._fabric_advisory_request_from_row(row) for row in rows]
 
-    def get_fabric_advisory_request(
-        self, request_id: str
-    ) -> FabricAdvisoryRequestRecord | None:
+    def get_fabric_advisory_request(self, request_id: str) -> FabricAdvisoryRequestRecord | None:
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -3451,9 +3468,7 @@ class SQLiteStateStore:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._fabric_advisory_response_from_row(row) for row in rows]
 
-    def get_fabric_advisory_response(
-        self, request_id: str
-    ) -> FabricAdvisoryResponseRecord | None:
+    def get_fabric_advisory_response(self, request_id: str) -> FabricAdvisoryResponseRecord | None:
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -3466,9 +3481,7 @@ class SQLiteStateStore:
             ).fetchone()
         return self._fabric_advisory_response_from_row(row) if row else None
 
-    def upsert_fabric_advisory_proposal(
-        self, record: FabricAdvisoryProposalRecord
-    ) -> None:
+    def upsert_fabric_advisory_proposal(self, record: FabricAdvisoryProposalRecord) -> None:
         payload = advisory_proposal_payload(record)
         with self._connect() as conn:
             conn.execute(
@@ -3597,9 +3610,7 @@ class SQLiteStateStore:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._fabric_advisory_proposal_from_row(row) for row in rows]
 
-    def _upsert_fabric_advisory_proposal_for_trace(
-        self, trace: FabricDecisionTraceRecord
-    ) -> None:
+    def _upsert_fabric_advisory_proposal_for_trace(self, trace: FabricDecisionTraceRecord) -> None:
         request = self.get_fabric_advisory_request(trace.request_id)
         response = self.get_fabric_advisory_response(trace.request_id)
         proposal = build_fabric_advisory_proposal(
@@ -3890,9 +3901,7 @@ class SQLiteStateStore:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._fabric_advisory_review_event_from_row(row) for row in rows]
 
-    def upsert_fabric_transfer_capability(
-        self, record: FabricTransferCapabilityRecord
-    ) -> None:
+    def upsert_fabric_transfer_capability(self, record: FabricTransferCapabilityRecord) -> None:
         payload = transfer_capability_payload(record)
         with self._connect() as conn:
             conn.execute(
@@ -4708,6 +4717,21 @@ class SQLiteStateStore:
             conn.commit()
 
     # --- Node leases (lab-edge) ---
+    @staticmethod
+    def _node_lease_from_row(row) -> NodeLease:  # type: ignore[no-untyped-def]
+        return NodeLease(
+            node_id=str(row[0]),
+            site_id=str(row[1]),
+            session_id=str(row[2]),
+            lease_id=str(row[3]),
+            controller_epoch=int(row[4]),
+            lease_ttl_ms=int(row[5]),
+            renew_after_ms=int(row[6]),
+            last_renew_at=datetime.fromisoformat(str(row[7])),
+            expires_at=datetime.fromisoformat(str(row[8])),
+            generation=max(1, int(row[9])),
+        )
+
     def acquire_lease(
         self,
         site_id: str,
@@ -4716,19 +4740,84 @@ class SQLiteStateStore:
         lease_ttl_ms: int,
         renew_after_ms: int,
         controller_epoch: int,
+        *,
+        now: datetime | None = None,
     ) -> NodeLease:
-        now = datetime.now(timezone.utc)
+        if not str(node_id):
+            raise ValueError("node_id required")
+        if not str(session_id):
+            raise ValueError("session_id required")
+        if int(lease_ttl_ms) <= 0:
+            raise ValueError("lease_ttl_ms must be positive")
+        if int(renew_after_ms) <= 0 or int(renew_after_ms) >= int(lease_ttl_ms):
+            raise ValueError("renew_after_ms must be positive and less than lease_ttl_ms")
+        now = now or datetime.now(timezone.utc)
         lease_id = str(uuid.uuid4())
         expires_at = now + timedelta(milliseconds=int(lease_ttl_ms))
         now_iso = now.isoformat()
         with self._connect() as conn:
-            conn.execute("DELETE FROM node_leases WHERE node_id = ?", (node_id,))
+            if self.backend == "sqlite":
+                conn.execute("BEGIN IMMEDIATE")
+            query = """
+                SELECT node_id, site_id, session_id, lease_id, controller_epoch,
+                       lease_ttl_ms, renew_after_ms, last_renew_at, expires_at,
+                       generation
+                FROM node_leases WHERE node_id = ?
+            """
+            if self.backend != "sqlite":
+                query += " FOR UPDATE"
+            row = conn.execute(query, (node_id,)).fetchone()
+            generation = 1
+            created_at = now_iso
+            if row is not None:
+                current = self._node_lease_from_row(row)
+                if current.expires_at > now:
+                    if current.session_id == str(session_id):
+                        conn.commit()
+                        return current
+                    raise NodeIdentityConflictError("active_identity")
+                generation = current.generation + 1
+                created = conn.execute(
+                    "SELECT created_at FROM node_leases WHERE node_id = ?",
+                    (node_id,),
+                ).fetchone()
+                if created and created[0]:
+                    created_at = str(created[0])
+            else:
+                legacy = conn.execute(
+                    """
+                    SELECT hb.seen_at
+                    FROM nodes n
+                    JOIN node_heartbeats hb ON hb.node_id = n.node_id
+                    WHERE n.node_id = ?
+                    """,
+                    (node_id,),
+                ).fetchone()
+                if legacy and legacy[0]:
+                    try:
+                        legacy_seen = datetime.fromisoformat(str(legacy[0]))
+                    except Exception:
+                        legacy_seen = now - timedelta(milliseconds=int(lease_ttl_ms) + 1)
+                    if legacy_seen + timedelta(milliseconds=int(lease_ttl_ms)) > now:
+                        raise NodeIdentityConflictError("legacy_identity_active")
             conn.execute(
                 """
                 INSERT INTO node_leases
                   (node_id, site_id, session_id, lease_id, controller_epoch,
-                   lease_ttl_ms, renew_after_ms, last_renew_at, expires_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   lease_ttl_ms, renew_after_ms, last_renew_at, expires_at,
+                   created_at, updated_at, generation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(node_id) DO UPDATE SET
+                  site_id = excluded.site_id,
+                  session_id = excluded.session_id,
+                  lease_id = excluded.lease_id,
+                  controller_epoch = excluded.controller_epoch,
+                  lease_ttl_ms = excluded.lease_ttl_ms,
+                  renew_after_ms = excluded.renew_after_ms,
+                  last_renew_at = excluded.last_renew_at,
+                  expires_at = excluded.expires_at,
+                  updated_at = excluded.updated_at,
+                  generation = excluded.generation
                 """,
                 (
                     node_id,
@@ -4740,8 +4829,9 @@ class SQLiteStateStore:
                     int(renew_after_ms),
                     now_iso,
                     expires_at.isoformat(),
+                    created_at,
                     now_iso,
-                    now_iso,
+                    generation,
                 ),
             )
             conn.commit()
@@ -4750,6 +4840,7 @@ class SQLiteStateStore:
             site_id=site_id,
             session_id=session_id,
             lease_id=lease_id,
+            generation=generation,
             controller_epoch=int(controller_epoch),
             lease_ttl_ms=int(lease_ttl_ms),
             renew_after_ms=int(renew_after_ms),
@@ -4768,14 +4859,17 @@ class SQLiteStateStore:
         now_dt = now or datetime.now(timezone.utc)
         now_iso = now_dt.isoformat()
         with self._connect() as conn:
-            row = conn.execute(
-                """
+            if self.backend == "sqlite":
+                conn.execute("BEGIN IMMEDIATE")
+            query = """
                 SELECT node_id, site_id, session_id, lease_id, controller_epoch,
-                       lease_ttl_ms, renew_after_ms, last_renew_at, expires_at
+                       lease_ttl_ms, renew_after_ms, last_renew_at, expires_at,
+                       generation
                 FROM node_leases WHERE node_id = ?
-                """,
-                (node_id,),
-            ).fetchone()
+            """
+            if self.backend != "sqlite":
+                query += " FOR UPDATE"
+            row = conn.execute(query, (node_id,)).fetchone()
             if row is None:
                 return None, "unknown_lease"
             if str(row[2]) != str(session_id):
@@ -4787,7 +4881,6 @@ class SQLiteStateStore:
             except Exception:
                 expires_at = now_dt - timedelta(seconds=1)
             if expires_at <= now_dt:
-                conn.execute("DELETE FROM node_leases WHERE node_id = ?", (node_id,))
                 conn.commit()
                 return None, "expired"
             lease_ttl_ms = int(row[5])
@@ -4797,23 +4890,46 @@ class SQLiteStateStore:
                 """
                 UPDATE node_leases
                 SET last_renew_at = ?, expires_at = ?, updated_at = ?
-                WHERE node_id = ?
+                WHERE node_id = ? AND session_id = ? AND lease_id = ?
                 """,
-                (now_iso, new_expires.isoformat(), now_iso, node_id),
+                (
+                    now_iso,
+                    new_expires.isoformat(),
+                    now_iso,
+                    node_id,
+                    session_id,
+                    lease_id,
+                ),
             )
             conn.commit()
-            lease = NodeLease(
-                node_id=str(row[0]),
-                site_id=str(row[1]),
-                session_id=str(row[2]),
-                lease_id=str(row[3]),
-                controller_epoch=int(row[4]),
-                lease_ttl_ms=lease_ttl_ms,
-                renew_after_ms=renew_after_ms,
-                last_renew_at=now_dt,
-                expires_at=new_expires,
+            lease = self._node_lease_from_row(
+                (
+                    row[0],
+                    row[1],
+                    row[2],
+                    row[3],
+                    row[4],
+                    lease_ttl_ms,
+                    renew_after_ms,
+                    now_iso,
+                    new_expires.isoformat(),
+                    row[9],
+                )
             )
             return lease, None
+
+    def get_node_lease(self, node_id: str) -> NodeLease | None:
+        with self._connect() as conn:  # type: ignore[no-untyped-call]
+            row = conn.execute(
+                """
+                SELECT node_id, site_id, session_id, lease_id, controller_epoch,
+                       lease_ttl_ms, renew_after_ms, last_renew_at, expires_at,
+                       generation
+                FROM node_leases WHERE node_id = ?
+                """,
+                (node_id,),
+            ).fetchone()
+        return self._node_lease_from_row(row) if row is not None else None
 
     # --- Work queue (lab-edge) ---
     def enqueue_work(
@@ -5551,9 +5667,7 @@ class SQLiteStateStore:
                         row[5] or _outbox_publish_msg_id(str(row[0]), int(row[1]), payload)
                     ),
                     publish_attempts=int(row[6] or 0),
-                    last_publish_at=(
-                        datetime.fromisoformat(str(row[7])) if row[7] else None
-                    ),
+                    last_publish_at=(datetime.fromisoformat(str(row[7])) if row[7] else None),
                     last_publish_error=str(row[8]) if row[8] else None,
                 )
             )
@@ -5887,6 +6001,7 @@ class SQLiteStateStore:
             )
             conn.commit()
             return new_attempt
+
     # --- Canary rollout state ----------------------------------------------
 
     def get_canary_state(self, app_name: str) -> dict | None:
@@ -6059,7 +6174,25 @@ class SQLiteStateStore:
             )
             conn.commit()
 
-    def record_heartbeat(self, node_id: str, status: str) -> None:
+    def record_heartbeat(
+        self,
+        node_id: str,
+        status: str,
+        *,
+        session_id: str | None = None,
+        lease_id: str | None = None,
+    ) -> NodeLease | None:
+        lease: NodeLease | None = None
+        if session_id is not None or lease_id is not None:
+            if not session_id or not lease_id:
+                raise NodeIdentityConflictError("identity_fence_required")
+            lease, reason = self.renew_lease(node_id, session_id, lease_id)
+            if lease is None:
+                raise NodeIdentityConflictError(reason or "identity_fence_rejected")
+        elif self.get_node_lease(node_id) is not None:
+            raise NodeIdentityConflictError("identity_fence_required")
+        if self.get_node(node_id) is None:
+            raise ValueError(f"unknown node_id: {node_id}")
         seen = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
@@ -6067,6 +6200,7 @@ class SQLiteStateStore:
                 (node_id, status, seen),
             )
             conn.commit()
+        return lease
 
     def _get_node_cordoned(self, node_id: str) -> bool:
         with self._connect() as conn:
@@ -6138,7 +6272,21 @@ class SQLiteStateStore:
                     seen_at = datetime.fromisoformat(row[14])
                 except Exception:
                     seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
-                status = NodeStatus(node_id=row[0], status=row[13], seen_at=seen_at)
+                generation = max(0, int(row[15] or 0))
+                try:
+                    lease_expires_at = datetime.fromisoformat(row[17]) if row[17] else None
+                except Exception:
+                    lease_expires_at = None
+                status = NodeStatus(
+                    node_id=row[0],
+                    status=row[13],
+                    seen_at=seen_at,
+                    identity_version=1 if generation > 0 and lease_expires_at else 0,
+                    identity_mode=("explicit" if generation > 0 and lease_expires_at else "legacy"),
+                    generation=generation,
+                    site_id=str(row[16]) if row[16] else None,
+                    lease_expires_at=lease_expires_at,
+                )
             result.append((node, status))
         return result
 
@@ -6195,7 +6343,21 @@ class SQLiteStateStore:
                 seen_at = datetime.fromisoformat(row[14])
             except Exception:
                 seen_at = datetime.fromtimestamp(0, tz=timezone.utc)
-            status = NodeStatus(node_id=row[0], status=row[13], seen_at=seen_at)
+            generation = max(0, int(row[15] or 0))
+            try:
+                lease_expires_at = datetime.fromisoformat(row[17]) if row[17] else None
+            except Exception:
+                lease_expires_at = None
+            status = NodeStatus(
+                node_id=row[0],
+                status=row[13],
+                seen_at=seen_at,
+                identity_version=1 if generation > 0 and lease_expires_at else 0,
+                identity_mode="explicit" if generation > 0 and lease_expires_at else "legacy",
+                generation=generation,
+                site_id=str(row[16]) if row[16] else None,
+                lease_expires_at=lease_expires_at,
+            )
         return node, status
 
     def get_node_capabilities(self, node_id: str) -> dict:
@@ -6221,7 +6383,9 @@ class SQLiteStateStore:
             for metric in link_metric_inventory(node.capabilities):
                 item = dict(metric)
                 raw_source = str(item.get("source") or "").strip()
-                source = raw_source if raw_source and raw_source != "node-capability" else node.node_id
+                source = (
+                    raw_source if raw_source and raw_source != "node-capability" else node.node_id
+                )
                 item["source"] = source
                 key = (
                     str(item.get("from_site") or ""),

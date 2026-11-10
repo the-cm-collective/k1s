@@ -4,24 +4,18 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    from scripts.project_version import read_project_version, write_project_version
+except ModuleNotFoundError:  # direct execution from scripts/
+    from project_version import read_project_version, write_project_version
 
 VERSION_RE = re.compile(
     r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
     r"(?:(?P<pre_label>a|b|rc)(?P<pre_num>\d+))?"
     r"(?:\.dev(?P<dev_num>\d+))?$"
 )
-
-
-def read_pyproject_version(path: Path) -> str:
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
-    version = data.get("project", {}).get("version")
-    if not version:
-        raise ValueError("project.version is missing in pyproject.toml")
-    if not isinstance(version, str):
-        raise ValueError("project.version must be a string")
-    return version
 
 
 def bump_next_dev(version: str) -> str:
@@ -39,23 +33,6 @@ def bump_next_dev(version: str) -> str:
     return f"{base}{pre_label}{next_pre}.dev0"
 
 
-def write_pyproject_version(path: Path, new: str) -> None:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    in_project = False
-    updated = False
-    for idx, line in enumerate(lines):
-        if line.strip().startswith("["):
-            in_project = line.strip() == "[project]"
-        if in_project and line.strip().startswith("version"):
-            prefix = line.split("=", 1)[0].rstrip()
-            lines[idx] = f'{prefix} = "{new}"'
-            updated = True
-            break
-    if not updated:
-        raise ValueError("could not locate [project] version entry to update")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bump to the next .dev0 version.")
     parser.add_argument("--pyproject", default="pyproject.toml")
@@ -66,7 +43,7 @@ def main() -> int:
 
     path = Path(args.pyproject)
     try:
-        current = read_pyproject_version(path)
+        current = read_project_version(path)
         next_version = bump_next_dev(current)
     except (OSError, ValueError) as exc:
         print(f"bump-version: {exc}", file=sys.stderr)
@@ -77,7 +54,7 @@ def main() -> int:
         return 0
 
     try:
-        write_pyproject_version(path, next_version)
+        write_project_version(path, next_version)
     except (OSError, ValueError) as exc:
         print(f"bump-version: {exc}", file=sys.stderr)
         return 1

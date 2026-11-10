@@ -2,14 +2,75 @@
 
 ## Unreleased
 
+## 1.0.0a1 - 2026-11-10
+
 ### Added
-- No user-facing changes yet.
+- Added deterministic, non-mutating `k1s profile list`, `doctor`, and `plan`
+  contracts for the installed local, core, edge-gateway, node, edge-dev, and
+  core-ha role catalog.
+- Added deterministic `k1s profile start|status|stop|restart` lifecycle
+  contracts for the core, edge, core-edge, and edge-core runtime profiles.
+- Added an experimental, versioned WorkerBee profile evidence adapter inside
+  `k1s-core`. It projects six existing profile JSON results into deterministic
+  metadata-safe evidence without adding a package, console, or live runtime
+  boundary.
+- Added the public 1.0-alpha compatibility contract that distinguishes the
+  release-gated distribution, import, command, profile-catalog, version, and
+  protobuf surfaces from explicitly experimental runtime and fabric surfaces.
+- Added an isolated Q1 qualification capsule with digest-bound guest inputs,
+  restricted QEMU/KVM authority, exact QMP teardown, host-state comparison,
+  zero-residue checks, evidence sealing, and independent replay.
+
+### Security
+- Kept production `edge-gateway` distinct from the development-only `edge`
+  and `edge-core` compatibility aliases that include the worker stub.
+- Kept raw logs, connection authorities, credentials, private paths, runtime
+  details, and secret-derived verifiers outside WorkerBee profile evidence;
+  W-P0-1 and Q1 qualification remain mandatory before public alpha.
 
 ### Changed
-- No user-facing changes yet.
+- Separated Gitea artifact integration from GitHub-only OIDC publication and
+  made release checkout and OCI builder trust fail closed against TLS bypasses
+  and host-local Docker sockets.
+- Advanced the current candidate from the distribution-transition release
+  `0.1.8a1` to `1.0.0a1`. The alpha begins the documented 1.0 contract; it is
+  not a stable-production or unrestricted-runtime declaration.
+- Bound current Q1 artifact, bundle, guest-image, and guest-stage identities to
+  the exact `1.0.0a1` candidate while retaining prior `0.1.8a1` qualification
+  evidence as historical review authority.
 
 ### Fixed
-- No user-facing changes yet.
+- Completed CRI container seccomp/AppArmor and pod sandbox fsGroup,
+  seccomp, and SELinux security-context mappings.
+- Hardened installed-artifact checkout-boundary detection, preserved the active
+  virtual-environment interpreter for supervised portable profiles, and forced
+  owner-private child artifacts so exact deletion remains fail closed.
+
+## 0.1.8a1 - 2026-11-03
+
+### Changed
+- Renamed the Python distribution from `ae` to `k1s-core` while preserving the
+  `ae` import package and the `ae`, `k1s`, and service compatibility commands.
+- Kept the release line pre-1.0 and advanced to the next PEP 440 alpha rather
+  than implying a stable 1.0 compatibility contract.
+- Made the CRI gogo protobuf dependency package-local so wheel and source
+  archives no longer expose a top-level `github` Python namespace.
+- Added digest-verified OIDC workflows that promote the exact TestPyPI-built
+  wheel and sdist bytes to the production PyPI environment.
+
+### Fixed
+- Unified package, CLI, controller OpenAPI, and API-shim OpenAPI versions on the
+  canonical `ae.__version__` value.
+
+## 0.1.7 - 2026-08-27
+
+### Changed
+- Published k1s runtime package metadata as 0.1.7 for WorkerBee v0.1.7
+  wheelhouse alignment.
+
+### Fixed
+- Escaped the PDB percentage example in CLI help text so argparse renders
+  `50%` correctly.
 
 ## 0.1.6 - 2026-07-23
 

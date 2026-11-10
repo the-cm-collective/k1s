@@ -4,14 +4,26 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from decimal import Decimal
+from pathlib import Path, PurePosixPath
 from typing import List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from ae.controller.quantities import cpu_to_decimal_cores
 
 
 DEFAULT_NAMESPACE = "default"
+_INT64_MAX = (1 << 63) - 1
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _AI_MAX_INSTALLER_PATHS = {"gateway", "cell-node"}
 _AI_MAX_INSTALLER_ARTIFACT_DIGEST = (
@@ -217,21 +229,23 @@ class ServiceSpec(BaseModel):
 class ResourceQuantities(BaseModel):
     """CPU and memory quantities.
 
-    cpu: float in cores (e.g., 0.5 for half a core)
+    cpu: exact Kubernetes DecimalSI quantity, stored as Decimal cores
     memory: string with unit (e.g., "256Mi", "1Gi", "512M")
     """
 
-    cpu: Optional[float] = None
+    cpu: Optional[Decimal] = None
     memory: Optional[str] = None
 
-    @field_validator("cpu")
+    @field_validator("cpu", mode="before")
     @classmethod
-    def _cpu_positive(cls, v: Optional[float]):  # noqa: D401 - simple guard
+    def _cpu_quantity(cls, v: object) -> Decimal | None:  # noqa: D401 - exact quantity guard
         if v is None:
             return v
-        if v <= 0:
-            raise ValueError("cpu must be > 0 (cores)")
-        return v
+        return cpu_to_decimal_cores(v)
+
+    @field_serializer("cpu")
+    def _serialize_cpu(self, value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
 
     @field_validator("memory")
     @classmethod
@@ -263,13 +277,86 @@ class ResourcesSpec(BaseModel):
     limits: Optional[ResourceQuantities] = None
 
 
+def _reject_alias_duplicates(data: object, aliases: tuple[tuple[str, str], ...]) -> object:
+    if isinstance(data, dict):
+        for name, alias in aliases:
+            if name in data and alias in data:
+                raise ValueError(f"provide only one of {name!r} or {alias!r}")
+    return data
+
+
+def _strict_security_id(value: object, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int:
+        raise ValueError(f"{field_name} must be a strict integer")
+    if value < 0 or value > _INT64_MAX:
+        raise ValueError(f"{field_name} must be between 0 and {_INT64_MAX}")
+    return value
+
+
+def _strict_optional_bool(value: object, field_name: str) -> bool | None:
+    if value is None:
+        return None
+    if type(value) is not bool:
+        raise ValueError(f"{field_name} must be a strict boolean")
+    return value
+
+
+def _exact_security_text(value: object, field_name: str) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{field_name} must be a string")
+    if not value or value != value.strip() or "\x00" in value:
+        raise ValueError(
+            f"{field_name} must be nonblank and contain no surrounding whitespace or NUL"
+        )
+    return value
+
+
+def _security_string_list(value: object, field_name: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    return [_exact_security_text(item, field_name) for item in value]
+
+
+def _canonical_relative_security_path(value: object, field_name: str) -> str:
+    text = _exact_security_text(value, field_name)
+    if "\\" in text or text.startswith("/"):
+        raise ValueError(f"{field_name} must be a canonical relative POSIX path")
+    parts = text.split("/")
+    if any(part in {"", ".", ".."} for part in parts) or str(PurePosixPath(text)) != text:
+        raise ValueError(f"{field_name} must be a canonical relative POSIX path")
+    return text
+
+
+def _canonical_absolute_security_path(value: object, field_name: str) -> str:
+    text = _exact_security_text(value, field_name)
+    if "\\" in text or not text.startswith("/"):
+        raise ValueError(f"{field_name} must be a canonical absolute POSIX path")
+    if text != "/":
+        parts = text[1:].split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            raise ValueError(f"{field_name} must be a canonical absolute POSIX path")
+    if str(PurePosixPath(text)) != text:
+        raise ValueError(f"{field_name} must be a canonical absolute POSIX path")
+    return text
+
+
 class SecuritySpec(BaseModel):
     """Container security context (subset aligned with K8s semantics)."""
 
     run_as_user: Optional[int] = Field(default=None, alias="runAsUser")
     run_as_group: Optional[int] = Field(default=None, alias="runAsGroup")
+    run_as_non_root: Optional[bool] = Field(default=None, alias="runAsNonRoot")
+    privileged: Optional[bool] = None
+    allow_privilege_escalation: Optional[bool] = Field(
+        default=None, alias="allowPrivilegeEscalation"
+    )
     read_only_root: bool = Field(default=False, alias="readOnlyRootFilesystem")
+    add_caps: List[str] = Field(default_factory=list, alias="addCapabilities")
     drop_caps: List[str] = Field(default_factory=list, alias="dropCapabilities")
+    masked_paths: List[str] = Field(default_factory=list, alias="maskedPaths")
+    read_only_paths: List[str] = Field(default_factory=list, alias="readOnlyPaths")
     # Optional seccomp profile (maps to securityContext.seccompProfile)
     seccomp_type: Optional[Literal["RuntimeDefault", "Localhost", "Unconfined"]] = Field(
         default=None, alias="seccompProfileType"
@@ -277,8 +364,107 @@ class SecuritySpec(BaseModel):
     seccomp_localhost_profile: Optional[str] = Field(default=None, alias="seccompLocalhostProfile")
     # Optional AppArmor profile annotation value: runtime/default | unconfined | localhost/<profile>
     apparmor_profile: Optional[str] = Field(default=None, alias="apparmorProfile")
+    selinux_user: Optional[str] = Field(default=None, alias="seLinuxUser")
+    selinux_role: Optional[str] = Field(default=None, alias="seLinuxRole")
+    selinux_type: Optional[str] = Field(default=None, alias="seLinuxType")
+    selinux_level: Optional[str] = Field(default=None, alias="seLinuxLevel")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_duplicate_spellings(cls, data: object) -> object:
+        return _reject_alias_duplicates(
+            data,
+            (
+                ("run_as_user", "runAsUser"),
+                ("run_as_group", "runAsGroup"),
+                ("run_as_non_root", "runAsNonRoot"),
+                ("allow_privilege_escalation", "allowPrivilegeEscalation"),
+                ("read_only_root", "readOnlyRootFilesystem"),
+                ("add_caps", "addCapabilities"),
+                ("drop_caps", "dropCapabilities"),
+                ("masked_paths", "maskedPaths"),
+                ("read_only_paths", "readOnlyPaths"),
+                ("seccomp_type", "seccompProfileType"),
+                ("seccomp_localhost_profile", "seccompLocalhostProfile"),
+                ("apparmor_profile", "apparmorProfile"),
+                ("selinux_user", "seLinuxUser"),
+                ("selinux_role", "seLinuxRole"),
+                ("selinux_type", "seLinuxType"),
+                ("selinux_level", "seLinuxLevel"),
+            ),
+        )
+
+    @field_validator("run_as_user", "run_as_group", mode="before")
+    @classmethod
+    def _validate_ids(cls, value: object, info: ValidationInfo) -> int | None:
+        return _strict_security_id(value, info.field_name or "security id")
+
+    @field_validator("run_as_non_root", "privileged", "allow_privilege_escalation", mode="before")
+    @classmethod
+    def _validate_optional_bools(cls, value: object, info: ValidationInfo) -> bool | None:
+        return _strict_optional_bool(value, info.field_name or "security boolean")
+
+    @field_validator("read_only_root", mode="before")
+    @classmethod
+    def _validate_read_only_root(cls, value: object) -> bool:
+        result = _strict_optional_bool(value, "read_only_root")
+        if result is None:
+            raise ValueError("read_only_root must not be null")
+        return result
+
+    @field_validator("add_caps", "drop_caps", mode="before")
+    @classmethod
+    def _validate_capabilities(cls, value: object, info: ValidationInfo) -> list[str]:
+        return _security_string_list(value, info.field_name or "capabilities")
+
+    @field_validator("masked_paths", "read_only_paths", mode="before")
+    @classmethod
+    def _validate_cri_paths(cls, value: object, info: ValidationInfo) -> list[str]:
+        field_name = info.field_name or "CRI paths"
+        if not isinstance(value, list):
+            raise ValueError(f"{field_name} must be a list")
+        return [_canonical_absolute_security_path(item, field_name) for item in value]
+
+    @field_validator("seccomp_localhost_profile", mode="before")
+    @classmethod
+    def _validate_seccomp_ref(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return _canonical_relative_security_path(value, "seccomp_localhost_profile")
+
+    @field_validator("apparmor_profile", mode="before")
+    @classmethod
+    def _validate_apparmor(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        profile = _exact_security_text(value, "apparmor_profile")
+        if profile in {"runtime/default", "unconfined"}:
+            return profile
+        prefix = "localhost/"
+        if profile.startswith(prefix) and profile[len(prefix) :]:
+            return profile
+        raise ValueError("apparmor_profile has an unsupported spelling")
+
+    @field_validator("selinux_user", "selinux_role", "selinux_type", "selinux_level", mode="before")
+    @classmethod
+    def _validate_selinux(cls, value: object, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        return _exact_security_text(value, info.field_name or "SELinux option")
+
+    @model_validator(mode="after")
+    def _validate_security_relationships(self) -> "SecuritySpec":
+        if self.run_as_non_root is True and (self.run_as_user is None or self.run_as_user == 0):
+            raise ValueError("runAsNonRoot=true requires an explicit runAsUser greater than zero")
+        if self.privileged is True and self.allow_privilege_escalation is False:
+            raise ValueError("privileged=true conflicts with allowPrivilegeEscalation=false")
+        if self.seccomp_type == "Localhost" and self.seccomp_localhost_profile is None:
+            raise ValueError("Localhost seccomp requires seccompLocalhostProfile")
+        if self.seccomp_type != "Localhost" and self.seccomp_localhost_profile is not None:
+            raise ValueError("seccompLocalhostProfile requires seccompProfileType=Localhost")
+        return self
 
 
 class PodSecuritySpec(BaseModel):
@@ -290,6 +476,7 @@ class PodSecuritySpec(BaseModel):
     """
 
     fs_group: Optional[int] = Field(default=None, alias="fsGroup")
+    supplemental_groups: List[int] = Field(default_factory=list, alias="supplementalGroups")
     seccomp_type: Optional[Literal["RuntimeDefault", "Localhost", "Unconfined"]] = Field(
         default=None, alias="seccompProfileType"
     )
@@ -299,7 +486,64 @@ class PodSecuritySpec(BaseModel):
     selinux_type: Optional[str] = Field(default=None, alias="seLinuxType")
     selinux_level: Optional[str] = Field(default=None, alias="seLinuxLevel")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_duplicate_spellings(cls, data: object) -> object:
+        return _reject_alias_duplicates(
+            data,
+            (
+                ("fs_group", "fsGroup"),
+                ("supplemental_groups", "supplementalGroups"),
+                ("seccomp_type", "seccompProfileType"),
+                ("seccomp_localhost_profile", "seccompLocalhostProfile"),
+                ("selinux_user", "seLinuxUser"),
+                ("selinux_role", "seLinuxRole"),
+                ("selinux_type", "seLinuxType"),
+                ("selinux_level", "seLinuxLevel"),
+            ),
+        )
+
+    @field_validator("fs_group", mode="before")
+    @classmethod
+    def _validate_fs_group(cls, value: object) -> int | None:
+        return _strict_security_id(value, "fs_group")
+
+    @field_validator("supplemental_groups", mode="before")
+    @classmethod
+    def _validate_supplemental_groups(cls, value: object) -> list[int]:
+        if not isinstance(value, list):
+            raise ValueError("supplemental_groups must be a list")
+        groups: list[int] = []
+        for item in value:
+            group = _strict_security_id(item, "supplemental_groups")
+            if group is None:
+                raise ValueError("supplemental_groups must not contain null")
+            groups.append(group)
+        return groups
+
+    @field_validator("seccomp_localhost_profile", mode="before")
+    @classmethod
+    def _validate_seccomp_ref(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return _canonical_relative_security_path(value, "seccomp_localhost_profile")
+
+    @field_validator("selinux_user", "selinux_role", "selinux_type", "selinux_level", mode="before")
+    @classmethod
+    def _validate_selinux(cls, value: object, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        return _exact_security_text(value, info.field_name or "SELinux option")
+
+    @model_validator(mode="after")
+    def _validate_security_relationships(self) -> "PodSecuritySpec":
+        if self.seccomp_type == "Localhost" and self.seccomp_localhost_profile is None:
+            raise ValueError("Localhost seccomp requires seccompLocalhostProfile")
+        if self.seccomp_type != "Localhost" and self.seccomp_localhost_profile is not None:
+            raise ValueError("seccompLocalhostProfile requires seccompProfileType=Localhost")
+        return self
 
 
 class DNSConfigOption(BaseModel):

@@ -1,0 +1,88 @@
+{
+  "apiVersion": "k1s.dev/workerbee-profile-adapter/v1",
+  "evidenceApiVersion": "k1s.dev/workerbee-profile-evidence/v1",
+  "kind": "WorkerBeeProfileAdapterContract",
+  "operations": [
+    {
+      "acceptedExitCodes": [
+        0
+      ],
+      "adapterMutating": false,
+      "name": "list",
+      "nodeObservation": "forbidden",
+      "sourceApiVersion": "k1s.dev/v1alpha1",
+      "sourceKind": "ProfileCatalog",
+      "sourceMode": "profile-list-json",
+      "sourceMutating": false,
+      "sourceSchemaVersion": 1
+    },
+    {
+      "acceptedExitCodes": [
+        0,
+        1
+      ],
+      "adapterMutating": false,
+      "name": "doctor",
+      "nodeObservation": "forbidden",
+      "sourceApiVersion": "k1s.dev/v1alpha1",
+      "sourceKind": "ProfileDoctorReport",
+      "sourceMode": "profile-doctor-catalog-json",
+      "sourceMutating": false,
+      "sourceSchemaVersion": 1
+    },
+    {
+      "acceptedExitCodes": [
+        0
+      ],
+      "adapterMutating": false,
+      "name": "plan",
+      "nodeObservation": "forbidden",
+      "sourceApiVersion": "k1s.dev/v1alpha1",
+      "sourceKind": "ProfilePlan",
+      "sourceMode": "profile-plan-json",
+      "sourceMutating": false,
+      "sourceSchemaVersion": 1
+    },
+    {
+      "acceptedExitCodes": [
+        0
+      ],
+      "adapterMutating": false,
+      "name": "status",
+      "nodeObservation": "forbidden",
+      "sourceApiVersion": null,
+      "sourceKind": "PortableLifecycleResult",
+      "sourceMode": "profile-status-portable-json",
+      "sourceMutating": false,
+      "sourceSchemaVersion": null
+    },
+    {
+      "acceptedExitCodes": [
+        0
+      ],
+      "adapterMutating": false,
+      "name": "logs",
+      "nodeObservation": "forbidden",
+      "sourceApiVersion": "k1s.dev/v1alpha1",
+      "sourceKind": "ProfileLogSnapshot",
+      "sourceMode": "profile-logs-owned-json",
+      "sourceMutating": false,
+      "sourceSchemaVersion": null
+    },
+    {
+      "acceptedExitCodes": [
+        0
+      ],
+      "adapterMutating": false,
+      "name": "bootstrap",
+      "nodeObservation": "optional",
+      "sourceApiVersion": null,
+      "sourceKind": "ProfileBootstrapPublicProjection",
+      "sourceMode": "profile-bootstrap-create-json",
+      "sourceMutating": true,
+      "sourceSchemaVersion": null
+    }
+  ],
+  "qualificationPosture": "source-validated/unqualified",
+  "schemaVersion": 1
+}

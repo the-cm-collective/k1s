@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Callable
 
+from ae.controller.quantities import cpu_to_millicores
 from ae.controller.spec import AppManifest, app_key
 from ae.controller.state import (
     AuthorityObjectEntry,
@@ -126,7 +127,9 @@ class WorkloadMetricsCollector:
             else:
                 aggregate["cpu_total"] = float(aggregate["cpu_total"]) + float(sample.cpu_cores)
                 aggregate["cpu_seen"] = True
-            aggregate["memory_bytes"] = int(aggregate["memory_bytes"]) + int(sample.memory_bytes or 0)
+            aggregate["memory_bytes"] = int(aggregate["memory_bytes"]) + int(
+                sample.memory_bytes or 0
+            )
             aggregate["pod_count"] = int(aggregate["pod_count"]) + int(sample.pod_count or 0)
             cast_nodes = aggregate["nodes"]
             if isinstance(cast_nodes, set):
@@ -138,21 +141,21 @@ class WorkloadMetricsCollector:
             if self._stop or not self._is_leader():
                 return
             entry = self._store.get_registered_entry(app_name)
-            cpu_request, memory_request = _requested_resources_per_pod(
+            cpu_request_millicores, memory_request = _requested_resources_per_pod(
                 entry.manifest if entry is not None else None
             )
             pod_count = int(aggregate["pod_count"])
             cpu_utilization = None
             if (
-                cpu_request is not None
-                and cpu_request > 0
+                cpu_request_millicores is not None
+                and cpu_request_millicores > 0
                 and pod_count > 0
                 and bool(aggregate.get("cpu_seen"))
                 and not bool(aggregate.get("cpu_missing"))
             ):
-                cpu_utilization = (
-                    float(aggregate["cpu_total"]) / float(cpu_request * pod_count)
-                ) * 100.0
+                cpu_utilization = (float(aggregate["cpu_total"]) * 100_000.0) / float(
+                    cpu_request_millicores * pod_count
+                )
             memory_utilization = None
             if memory_request is not None and memory_request > 0 and pod_count > 0:
                 memory_utilization = (
@@ -292,15 +295,22 @@ class HPAAuthorityController:
                 conditions_message = "fresh workload metrics unavailable"
                 record_hpa_activity(metrics_stale=True)
             else:
-                desired_replicas, active, metric_entries, conditions_message = self._desired_replicas(
-                    spec,
-                    snapshot,
-                    current_replicas,
-                    registry_entry.manifest,
+                desired_replicas, active, metric_entries, conditions_message = (
+                    self._desired_replicas(
+                        spec,
+                        snapshot,
+                        current_replicas,
+                        registry_entry.manifest,
+                    )
                 )
                 current_metrics.extend(metric_entries)
-        min_replicas = int(spec.get("minReplicas", max(1, current_replicas)) or max(1, current_replicas))
-        max_replicas = int(spec.get("maxReplicas", max(min_replicas, current_replicas)) or max(min_replicas, current_replicas))
+        min_replicas = int(
+            spec.get("minReplicas", max(1, current_replicas)) or max(1, current_replicas)
+        )
+        max_replicas = int(
+            spec.get("maxReplicas", max(min_replicas, current_replicas))
+            or max(min_replicas, current_replicas)
+        )
         unclamped_desired = desired_replicas
         desired_replicas = min(max(desired_replicas, min_replicas), max_replicas)
         if desired_replicas != unclamped_desired:
@@ -308,9 +318,8 @@ class HPAAuthorityController:
         scaled = False
         if able and active and registry_entry is not None and desired_replicas != current_replicas:
             parsed_last_scale = _parse_status_time(last_scale_time)
-            if (
-                parsed_last_scale is not None
-                and now - parsed_last_scale < timedelta(seconds=self._config.cooldown_s)
+            if parsed_last_scale is not None and now - parsed_last_scale < timedelta(
+                seconds=self._config.cooldown_s
             ):
                 limited = True
             else:
@@ -389,7 +398,10 @@ class HPAAuthorityController:
             target = resource_cfg.get("target")
             if not isinstance(target, dict):
                 continue
-            metric_status = {"type": "Resource", "resource": {"name": name, "current": {}, "target": target}}
+            metric_status = {
+                "type": "Resource",
+                "resource": {"name": name, "current": {}, "target": target},
+            }
             metric_desired = current_replicas
             if name == "cpu":
                 current = snapshot.cpu_utilization
@@ -416,7 +428,9 @@ class HPAAuthorityController:
                         if int(snapshot.pod_count or 0) > 0
                         else None
                     )
-                    target_bytes = _parse_quantity_bytes(str(target.get("averageValue") or target.get("value") or ""))
+                    target_bytes = _parse_quantity_bytes(
+                        str(target.get("averageValue") or target.get("value") or "")
+                    )
                     if average_bytes is None or target_bytes is None or target_bytes <= 0:
                         message = message or "memory average value metrics unavailable"
                     else:
@@ -443,7 +457,9 @@ class HPAAuthorityController:
                             metric_desired = max(
                                 1, math.ceil(current_replicas * float(current) / float(target_pct))
                             )
-                            metric_status["resource"]["current"]["averageUtilization"] = int(current)
+                            metric_status["resource"]["current"]["averageUtilization"] = int(
+                                current
+                            )
                             active = True
                         except Exception:
                             message = message or "invalid memory target"
@@ -498,7 +514,9 @@ class HPAAuthorityController:
                 "ScalingLimited",
                 limited,
                 "DesiredWithinRange" if not limited else "Limited",
-                "desired replicas within range" if not limited else "desired replicas limited by cooldown or bounds",
+                "desired replicas within range"
+                if not limited
+                else "desired replicas limited by cooldown or bounds",
             ),
         ]
         status["conditions"] = conditions
@@ -547,27 +565,28 @@ def _manifest_has_memory_requests(manifest: AppManifest) -> bool:
     return memory is not None and memory > 0
 
 
-def _requested_resources_per_pod(manifest: AppManifest | None) -> tuple[float | None, int | None]:
+def _requested_resources_per_pod(manifest: AppManifest | None) -> tuple[int | None, int | None]:
     if manifest is None:
         return None, None
-    cpu_total = 0.0
+    cpu_total_millicores = 0
     cpu_seen = False
     memory_total = 0
     memory_seen = False
     for resources in _iter_request_specs(manifest):
         cpu_val = _spec_value(getattr(resources, "requests", None), "cpu")
         if cpu_val is not None:
-            parsed = _parse_cpu_cores(str(cpu_val))
-            if parsed is not None:
-                cpu_total += parsed
-                cpu_seen = True
+            cpu_total_millicores += cpu_to_millicores(cpu_val)
+            cpu_seen = True
         mem_val = _spec_value(getattr(resources, "requests", None), "memory")
         if mem_val is not None:
             parsed_mem = _parse_quantity_bytes(str(mem_val))
             if parsed_mem is not None:
                 memory_total += parsed_mem
                 memory_seen = True
-    return (cpu_total if cpu_seen else None, memory_total if memory_seen else None)
+    return (
+        cpu_total_millicores if cpu_seen else None,
+        memory_total if memory_seen else None,
+    )
 
 
 def _iter_request_specs(manifest: AppManifest):
@@ -582,18 +601,6 @@ def _spec_value(spec, field: str):
     if isinstance(spec, dict):
         return spec.get(field)
     return getattr(spec, field, None)
-
-
-def _parse_cpu_cores(raw: str | None) -> float | None:
-    if raw in {None, ""}:
-        return None
-    text = str(raw).strip()
-    try:
-        if text.endswith("m"):
-            return float(text[:-1]) / 1000.0
-        return float(text)
-    except Exception:
-        return None
 
 
 def _parse_quantity_bytes(raw: str | None) -> int | None:

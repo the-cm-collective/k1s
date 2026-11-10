@@ -17,7 +17,6 @@ import argparse
 import os
 import time
 import signal
-import socket
 import re
 from urllib.parse import urlparse
 from collections.abc import Iterable
@@ -62,7 +61,6 @@ from ae.observability.http_api import (
 )
 from ae.ha.dashboard import HaDashboardProbeCache
 from ae.controller.agent_api import start_agent_api
-from ae.accelerators import detect_nvidia_accelerator_capabilities, merge_projected_gpu_labels
 from ae.observability.logging import configure_logging
 from ae.config.transport import (
     TransportConfig,
@@ -151,10 +149,6 @@ def service_controller_factory(store: SQLiteStateStore):
         return None
 
 
-def _local_node_id() -> str:
-    return os.getenv("AE_NODE_ID", socket.gethostname())
-
-
 def _should_run_etcd_maintenance(
     *,
     enabled: bool,
@@ -164,53 +158,6 @@ def _should_run_etcd_maintenance(
     interval: float,
 ) -> bool:
     return bool(enabled and is_leader and (now - last_run) >= interval)
-
-
-def _parse_labels(raw: str | None) -> dict[str, str]:
-    labels: dict[str, str] = {}
-    if not raw:
-        return labels
-    for part in str(raw).split(","):
-        item = part.strip()
-        if not item or "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        labels[key] = value
-    return labels
-
-
-def _register_local_node(store: SQLiteStateStore, runtime_backend: str) -> None:
-    """Best-effort local node registration for single-controller setups."""
-    try:
-        if store.list_nodes():
-            return
-        node_id = _local_node_id()
-        name = os.getenv("AE_NODE_NAME", node_id)
-        labels = _parse_labels(os.getenv("AE_NODE_LABELS"))
-        profile = (os.getenv("AE_NODE_PROFILE") or "").strip()
-        if profile:
-            labels.setdefault("profile", profile)
-        labels.setdefault("role", "controller")
-        capabilities = detect_nvidia_accelerator_capabilities()
-        labels = merge_projected_gpu_labels(labels, capabilities)
-        store.upsert_node(
-            node_id,
-            name=name,
-            labels=labels,
-            capabilities=capabilities,
-            taints=[],
-            backend=runtime_backend,
-            endpoint=None,
-            pod_cidr=None,
-            wg_pubkey=None,
-        )
-        store.record_heartbeat(node_id, "Ready")
-    except Exception:
-        pass
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -1578,11 +1525,7 @@ def _make_reconciler(
     secrets = secret_manager_factory()
     configs = config_manager_factory()
     svc_controller = service_controller_factory(store)
-    if _truthy_env("AE_REGISTER_LOCAL_NODE") and not (
-        authority_config is not None and authority_config.enabled
-    ):
-        _register_local_node(store, runtime.__class__.__name__.lower())
-    return Reconciler(
+    reconciler = Reconciler(
         runtime,
         store,
         health_manager=health,
@@ -1592,6 +1535,9 @@ def _make_reconciler(
         service_controller=svc_controller,
         authority=authority,
     )
+    if not (authority_config is not None and authority_config.enabled):
+        reconciler.heartbeat_local_node()
+    return reconciler
 
 
 def _make_hpa_sample_reader(*, authority=None):
@@ -1762,7 +1708,13 @@ def _translated_app_ingress_has_backend(store: SQLiteStateStore, manifest: AppMa
         return True
     raw_paths = spec.get("paths") if isinstance(spec.get("paths"), list) else []
     if not raw_paths:
-        raw_paths = [{"serviceRef": spec.get("serviceRef") if isinstance(spec.get("serviceRef"), dict) else {}}]
+        raw_paths = [
+            {
+                "serviceRef": spec.get("serviceRef")
+                if isinstance(spec.get("serviceRef"), dict)
+                else {}
+            }
+        ]
     for item in raw_paths:
         if not isinstance(item, dict):
             continue
@@ -1770,7 +1722,10 @@ def _translated_app_ingress_has_backend(store: SQLiteStateStore, manifest: AppMa
         name = str(service_ref.get("name") or "").strip()
         if not name:
             continue
-        service_namespace = str(service_ref.get("namespace") or namespace or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+        service_namespace = (
+            str(service_ref.get("namespace") or namespace or DEFAULT_NAMESPACE).strip()
+            or DEFAULT_NAMESPACE
+        )
         service_app = app_key(name, service_namespace)
         try:
             if any(endpoint.ready for endpoint in store.list_service_endpoints(service_app)):
@@ -1778,7 +1733,10 @@ def _translated_app_ingress_has_backend(store: SQLiteStateStore, manifest: AppMa
         except Exception:
             pass
         try:
-            if any(pod.ready and bool(str(pod.endpoint or "").strip()) for pod in store.list_pods(service_app)):
+            if any(
+                pod.ready and bool(str(pod.endpoint or "").strip())
+                for pod in store.list_pods(service_app)
+            ):
                 return True
         except Exception:
             pass
@@ -3335,12 +3293,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover (covered via
                     record_etcd_maintenance_run(triggered=triggered)
                     last_etcd_maintenance = now
             if not authority_config.enabled and now - last_heartbeat >= heartbeat_interval:
-                try:
-                    store.record_heartbeat(_local_node_id(), "Ready")
-                except Exception:
-                    pass
-                else:
-                    last_heartbeat = now
+                reconciler.heartbeat_local_node()
+                last_heartbeat = now
             do_full = is_leader and (changed or (now - last_full) >= max(1, int(args.interval)))
             if do_full:
                 t0 = time.time()

@@ -67,8 +67,7 @@ class Scheduler:
         rwop_claims = self._rwop_claims(manifest)
         if rwop_claims and desired > 1:
             warnings.append(
-                "ReadWriteOncePod PVCs limit replicas to 1; "
-                f"claims: {', '.join(rwop_claims)}"
+                f"ReadWriteOncePod PVCs limit replicas to 1; claims: {', '.join(rwop_claims)}"
             )
             desired = 1
 
@@ -156,7 +155,9 @@ class Scheduler:
                 )
             if stale_nodes:
                 warnings.append(f"stale/not-ready nodes skipped: {', '.join(stale_nodes)}")
-            return [Placement(node=target, agent_url=target.endpoint, pod_names=pod_names)], warnings
+            return [
+                Placement(node=target, agent_url=target.endpoint, pod_names=pod_names)
+            ], warnings
 
         # Topology spread / soft anti-affinity: if topologySpreadConstraints specify a
         # topologyKey and we have >1 eligible node, distribute replicas to minimize skew
@@ -230,7 +231,10 @@ class Scheduler:
                     sc_spec = self._obj_spec(sc)
                     provisioner = str(sc_spec.get("provisioner") or "")
                     binding_mode = str(sc_spec.get("volumeBindingMode") or "")
-                    if provisioner == LOCAL_PATH_PROVISIONER and binding_mode == WAIT_FOR_FIRST_CONSUMER:
+                    if (
+                        provisioner == LOCAL_PATH_PROVISIONER
+                        and binding_mode == WAIT_FOR_FIRST_CONSUMER
+                    ):
                         needs_pinning = True
 
             pv_name = self._pvc_volume_name(pvc)
@@ -337,12 +341,12 @@ class Scheduler:
                 constrained_sets.append(allowed_nodes)
 
             topo_keys_raw = sc_spec.get("topologyKeys")
-            topo_keys = [str(k) for k in topo_keys_raw if k] if isinstance(topo_keys_raw, list) else []
+            topo_keys = (
+                [str(k) for k in topo_keys_raw if k] if isinstance(topo_keys_raw, list) else []
+            )
             if topo_keys:
                 topo_key_classes.append(sc_name)
-                topo_nodes = {
-                    n.node_id for n in nodes if self._node_has_label_keys(n, topo_keys)
-                }
+                topo_nodes = {n.node_id for n in nodes if self._node_has_label_keys(n, topo_keys)}
                 if not topo_nodes:
                     warnings.append(
                         f"storage class {sc_name} topologyKeys matches no eligible nodes"
@@ -479,6 +483,14 @@ class Scheduler:
     def _is_ready(status: NodeStatus | None, now: datetime, grace: int) -> bool:
         if status is None:
             return False
+        lease_expires_at = getattr(status, "lease_expires_at", None)
+        if int(getattr(status, "identity_version", 0) or 0) == 1 and lease_expires_at:
+            try:
+                if now >= lease_expires_at:
+                    return False
+            except Exception:
+                return False
+            return str(status.status or "").lower() == "ready"
         try:
             age = (now - status.seen_at).total_seconds()
         except Exception:

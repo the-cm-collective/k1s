@@ -33,6 +33,20 @@ Defaults and Notes
 - Only the edge NATS leader maintains the outbound leaf connection to the hub.
 - Gateways do not elect a leader; multiple gateways in the same site are peers.
 
+Profile lifecycle CLI
+- `k1s profile start core` and `k1s profile start edge` use the established
+  `k1s-core` and `k1s-edge` profile runners.
+- `k1s profile start core-edge` is the lifecycle equivalent of
+  `AE_TRANSPORT_BACKEND=nats-core make k1s-core`.
+- `k1s profile start edge-core` is the lifecycle equivalent of
+  `EDGE_PROFILE=k1s-core make k1s-edge`.
+- Use the same public name with `status`, `restart`, or `stop`. Each profile has
+  independent PID and log state under `state/k1s-lifecycle/` by default, so a
+  stop targets only the process started for that profile.
+- The lifecycle CLI does not replace the isolation requirements in this
+  runbook. Start core-edge or CRI lanes only on the intended disposable or
+  dedicated hosts.
+
 Start with clear state (recommended for repeatable tests)
 ```
 make dev-state-clean CONFIRM=1
