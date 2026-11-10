@@ -39,11 +39,10 @@ jobs:
             "setuptools==80.9.0" \
             "twine==6.2.0" \
             "wheel==0.45.1"
-          python -m pip download \
-            --only-binary=:all: \
-            --require-hashes \
-            --dest "$RUNNER_TEMP/k1s-core-wheelhouse" \
-            -r requirements-release.lock
+          python scripts/prepare_release_wheelhouse.py \
+            --requirements-lock "$GITHUB_WORKSPACE/requirements-release.lock" \
+            --source-contract "$GITHUB_WORKSPACE/requirements-release-sources.json" \
+            --wheelhouse "$RUNNER_TEMP/k1s-core-wheelhouse"
       - name: Build canonical artifacts under two umasks
         run: |
           set -euo pipefail

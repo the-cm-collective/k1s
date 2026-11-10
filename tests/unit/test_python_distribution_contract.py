@@ -240,6 +240,8 @@ def test_ci_artifact_job_is_nonpublishing_and_uses_only_the_helper() -> None:
     ci = _github_workflow("python-artifact-reproducibility.yml")
     assert "python-artifact-reproducibility:" in ci
     job = ci.split("  python-artifact-reproducibility:", 1)[1]
+    assert "scripts/prepare_release_wheelhouse.py" in job
+    assert '--source-contract "$GITHUB_WORKSPACE/requirements-release-sources.json"' in job
     assert job.count("scripts/build_python_artifacts.py build") == 2
     assert "umask 022" in job
     assert "umask 077" in job
