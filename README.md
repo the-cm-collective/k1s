@@ -14,7 +14,10 @@ Project principles and non-goals: `TENETS.md`. Cognitive-substrate philosophy an
 
 ## Status & Production Use
 
-k1s is pre-1.0 and still evolving. The current release line expands HA validation, benchmark repeatability, and operator tooling, but this is still an actively changing release line.
+k1s is entering its 1.0 alpha line and remains actively evolving. The current
+candidate establishes a tested compatibility boundary for the distribution,
+imports, commands, and core installed contracts while runtime and fabric
+surfaces continue through explicit qualification gates.
 
 Production guidance:
 - Recommended now: labs, staging, and controlled production pilots with explicit operator ownership.
@@ -74,8 +77,8 @@ python -m pip install -e .[dev]
 
 Published Python artifacts use the distribution name `k1s-core`. The runtime
 package remains importable as `ae`, and the `k1s` and historical `ae*` command
-entry points remain available. See `docs/reference/python-distribution.md` for
-the pre-1.0 compatibility policy.
+entry points remain available. See `docs/reference/python-distribution.md` and
+`docs/reference/public-contracts.md` for the 1.0-alpha compatibility policy.
 
 Optional: add file-watching support for instant reconciles on spec changes:
 
@@ -182,8 +185,8 @@ exit-code contracts.
 The installed `k1s-core` package also contains a versioned, metadata-safe
 WorkerBee profile evidence adapter. It projects already selected JSON results;
 it adds no command, starts nothing, emits no raw log or connection value, and
-remains `source-validated/unqualified`. W-P0-1 and disposable-guest Q1 live
-qualification remain required before public alpha. See
+remains `source-validated/unqualified`. Exact WorkerBee rebind and combined
+disposable-guest qualification remain required before RC promotion. See
 `docs/reference/workerbee-profile-adapter.md`.
 
 API endpoints (when started with `--metrics-port`): see `docs/reference/http-api.md`.

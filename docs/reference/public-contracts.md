@@ -1,9 +1,10 @@
 # Public Contract Inventory
 
-K1s is pre-1.0 software. This inventory distinguishes compatibility surfaces
-that release checks preserve from experimental features that may change between
-pre-releases. The status vocabulary is deliberately limited to **stable** and
-**experimental** so tests can detect an undocumented public-surface change.
+K1s is in its 1.0 alpha line. This inventory is the public compatibility
+boundary for `1.0.0a1`: it distinguishes release-gated surfaces from
+experimental features that may change between pre-releases. The status
+vocabulary is deliberately limited to **stable** and **experimental** so tests
+can detect an undocumented public-surface change.
 
 ## Stable compatibility surfaces
 
@@ -23,9 +24,16 @@ pre-releases. The status vocabulary is deliberately limited to **stable** and
 | Version metadata | stable | Package metadata, CLI build information, OpenAPI v2/v3, and release checks resolve `ae.__version__`. |
 | CRI protobuf resources | stable | Package-local CRI and gogoproto modules ship in wheel and source distributions. |
 
-Stable here means compatibility is covered by release-contract tests; it does
-not mean the project has declared a 1.0 API freeze. Runtime-starting commands
-still require an explicitly selected and prepared backend.
+Stable here means compatibility is covered by release-contract tests and is a
+1.0 compatibility target. During alpha and beta, an incompatible correction
+requires an explicit changelog entry, migration guidance, and contract-test
+updates; the final API freeze occurs only at stable `1.0.0`. Runtime-starting
+commands still require an explicitly selected and prepared backend.
+
+The contract does not turn experimental rows into stable ones, claim complete
+Kubernetes semantics, or imply production suitability. Exact artifacts,
+runtime backends, WorkerBee integration, and supported upgrade paths retain
+their independent qualification gates.
 
 The installed profile catalog has its own exact posture vocabulary. `local`,
 `core`, `edge-gateway`, and `node` are GA catalog contracts; `edge-dev` is

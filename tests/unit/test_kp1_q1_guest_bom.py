@@ -147,7 +147,7 @@ def _source() -> dict[str, object]:
         "commit": "1" * 40,
         "sourceDateEpoch": guest_bom.SOURCE_DATE_EPOCH,
         "tree": "2" * 40,
-        "version": "0.1.8a1",
+        "version": "1.0.0a1",
     }
 
 
@@ -184,9 +184,7 @@ def test_payload_is_deterministic_and_replays_to_same_bom(tmp_path: Path) -> Non
     assert result["status"] == "two-validator-match"
     assert result["schemaValidatorSha256"] == result["replayValidatorSha256"]
     with tarfile.open(payload_a, "r:") as archive:
-        wheel = next(
-            info for info in archive.getmembers() if "charset_normalizer" in info.name
-        )
+        wheel = next(info for info in archive.getmembers() if "charset_normalizer" in info.name)
         assert wheel.pax_headers == {"path": wheel.name}
 
 

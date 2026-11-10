@@ -119,12 +119,17 @@ the synthetic facts describe a live host.
 
 ## Version posture
 
-K1s remains pre-1.0. The `v0.1.7` tag and changelog establish the latest
-stable lineage, while the repository's versioning policy requires PEP 440
-pre-release identifiers for candidates. `0.1.8a1` is therefore the next
-candidate for the distribution transition. `1.0.0a1` is intentionally not
-used because the repository does not yet declare or validate a 1.0
-compatibility contract.
+The `v0.1.7` tag and changelog establish the latest stable lineage. `0.1.8a1`
+introduced the `k1s-core` distribution transition, and `1.0.0a1` is the current
+PEP 440 candidate. The alpha begins the public compatibility contract in
+`public-contracts.md`; it does not make experimental surfaces stable or claim
+broad production readiness.
+
+The accepted implementation baseline completed isolated Q1 source/runtime
+qualification before this version transition. The `1.0.0a1` artifacts are
+rebuilt from their own immutable commit and must pass deterministic two-lane,
+strict installed-artifact, and publication review gates. Combined
+K1s/WorkerBee qualification remains required before RC promotion.
 
 The canonical runtime version is the literal `ae.__version__` in
 `src/ae/__init__.py`. Setuptools reads that literal as dynamic distribution

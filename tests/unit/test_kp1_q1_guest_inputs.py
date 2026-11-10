@@ -96,7 +96,7 @@ def _fixture(tmp_path: Path):
                 "stdoutSha256": _digest(b"stdout"),
                 "stdoutSize": 0,
             },
-            "source": {"commit": "3" * 40, "tree": "4" * 40, "version": "0.1.8a1"},
+            "source": {"commit": "3" * 40, "tree": "4" * 40, "version": "1.0.0a1"},
             "startedAtUnix": 1_800_000_000,
             "status": "acquired-and-authenticated",
         },
@@ -108,8 +108,8 @@ def _fixture(tmp_path: Path):
     inputs["baseAcquisitionReceipt"]["expectedSha256"] = _digest(base_receipt_raw)
     accepted_artifacts = {}
     for name, input_name, filename in (
-        ("sdist", "acceptedSdist", "dist/k1s_core-0.1.8a1.tar.gz"),
-        ("wheel", "acceptedWheel", "dist/k1s_core-0.1.8a1-py3-none-any.whl"),
+        ("sdist", "acceptedSdist", "dist/k1s_core-1.0.0a1.tar.gz"),
+        ("wheel", "acceptedWheel", "dist/k1s_core-1.0.0a1-py3-none-any.whl"),
     ):
         identity = inputs[input_name]
         accepted_artifacts[name] = {
@@ -173,7 +173,7 @@ def _fixture(tmp_path: Path):
             "repository": str(tmp_path),
             "trackedStatus": "",
             "tree": "6" * 40,
-            "version": "0.1.8a1",
+            "version": "1.0.0a1",
         },
         "status": "completed",
         "toolchain": {},
@@ -192,10 +192,10 @@ def _fixture(tmp_path: Path):
         "apiVersion": guest_inputs.API_VERSION,
         "inputs": inputs,
         "kind": guest_inputs.SPEC_KIND,
-        "outputName": "qh5b-b2-0.1.8a1-11111111-20261109T180000Z",
+        "outputName": "qh5b-b2-1.0.0a1-11111111-20261109T180000Z",
         "outputParent": str(parent),
         "schemaVersion": guest_inputs.SCHEMA_VERSION,
-        "source": {"commit": "1" * 40, "tree": "2" * 40, "version": "0.1.8a1"},
+        "source": {"commit": "1" * 40, "tree": "2" * 40, "version": "1.0.0a1"},
         "tools": tools,
         "wheelhouseRoot": str(wheelhouse),
     }

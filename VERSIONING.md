@@ -55,11 +55,29 @@ git push origin v0.1.0
 ## Current status
 
 - `0.1.7` (2026-08-27) is the latest stable release.
-- `0.1.8a1` is the next pre-1.0 candidate. It changes the installable
-  distribution name to `k1s-core` while retaining the `ae` Python import and
-  compatibility commands. A `1.0.0a1` version remains deferred until the
-  project documents and validates a 1.0 compatibility contract.
+- `0.1.8a1` changed the distribution name to `k1s-core` while retaining the
+  `ae` Python import and compatibility commands.
+- `1.0.0a1` is the current candidate. It begins the documented 1.0-alpha
+  compatibility contract after isolated Q1 qualification of the accepted
+  implementation baseline. Stable `1.0.0` remains gated by exact-candidate
+  publication, WorkerBee integration, combined qualification, and RC review.
 - The WorkerBee profile evidence adapter is an experimental v1 wire contract
   within `k1s-core`; its `v1` schema identifier does not declare K1s 1.0 API
-  stability. Unknown fields/versions fail closed. W-P0-1 and Q1 remain release
-  holds before public alpha or live-qualified claims.
+  stability. Unknown fields/versions fail closed. Its exact public K1s rebind
+  and the combined K1s/WorkerBee qualification remain later release gates.
+
+## 1.0 alpha compatibility contract
+
+`1.0.0a1` establishes the compatibility boundary documented in
+`docs/reference/public-contracts.md`. Distribution identity, the `ae` import,
+the installed command inventory, the canonical profile catalog and pure
+inspection commands, single-source version metadata, and packaged CRI protobuf
+resources are release-gated surfaces.
+
+Alpha and beta releases may still correct a contract before final `1.0.0`, but
+an incompatible change to a stable surface requires an explicit changelog
+entry, migration guidance, and contract-test updates. Experimental surfaces
+remain outside that guarantee and must identify their posture in public output.
+The alpha version does not claim broad production readiness, complete
+Kubernetes compatibility, or implicit permission to start or prepare a host
+runtime.

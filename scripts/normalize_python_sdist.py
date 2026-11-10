@@ -204,7 +204,7 @@ def normalize(
     *,
     epoch: int,
     distribution: str = "k1s-core",
-    version: str = "0.1.8a1",
+    version: str = "1.0.0a1",
     source_members: Path | None = None,
 ) -> list[SdistMember]:
     """Normalize *input_path* into a new sdist; in-place operation is forbidden."""

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.0a1 - 2026-11-10
+
 ### Added
 - Added deterministic, non-mutating `k1s profile list`, `doctor`, and `plan`
   contracts for the installed local, core, edge-gateway, node, edge-dev, and
@@ -12,6 +14,12 @@
   `k1s-core`. It projects six existing profile JSON results into deterministic
   metadata-safe evidence without adding a package, console, or live runtime
   boundary.
+- Added the public 1.0-alpha compatibility contract that distinguishes the
+  release-gated distribution, import, command, profile-catalog, version, and
+  protobuf surfaces from explicitly experimental runtime and fabric surfaces.
+- Added an isolated Q1 qualification capsule with digest-bound guest inputs,
+  restricted QEMU/KVM authority, exact QMP teardown, host-state comparison,
+  zero-residue checks, evidence sealing, and independent replay.
 
 ### Security
 - Kept production `edge-gateway` distinct from the development-only `edge`
@@ -24,10 +32,19 @@
 - Separated Gitea artifact integration from GitHub-only OIDC publication and
   made release checkout and OCI builder trust fail closed against TLS bypasses
   and host-local Docker sockets.
+- Advanced the current candidate from the distribution-transition release
+  `0.1.8a1` to `1.0.0a1`. The alpha begins the documented 1.0 contract; it is
+  not a stable-production or unrestricted-runtime declaration.
+- Bound current Q1 artifact, bundle, guest-image, and guest-stage identities to
+  the exact `1.0.0a1` candidate while retaining prior `0.1.8a1` qualification
+  evidence as historical review authority.
 
 ### Fixed
 - Completed CRI container seccomp/AppArmor and pod sandbox fsGroup,
   seccomp, and SELinux security-context mappings.
+- Hardened installed-artifact checkout-boundary detection, preserved the active
+  virtual-environment interpreter for supervised portable profiles, and forced
+  owner-private child artifacts so exact deletion remains fail closed.
 
 ## 0.1.8a1 - 2026-11-03
 
