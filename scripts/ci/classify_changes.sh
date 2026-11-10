@@ -33,7 +33,7 @@ fi
 
 is_docs_path() {
   case "$1" in
-    README.md|docs/*|docs/build_docs.py|tests/unit/test_docs_command_alignment.py|tests/integration/test_docs_export_and_links.py|.github/workflows/ci-docs.yml)
+    README.md|docs/*|docs/build_docs.py|tests/unit/test_docs_command_alignment.py|tests/integration/test_docs_export_and_links.py|.gitea/workflows/ci-docs.yml)
       return 0
       ;;
     *)

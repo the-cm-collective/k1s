@@ -853,7 +853,7 @@
 <ul>
 <li>Discovery/OpenAPI: <code>/openapi/v2</code> now includes richer shapes (Service ports + external/loadBalancer/ipFamily fields, Deployment/DaemonSet/StatefulSet conditions, Job/CronJob/HPA status); <code>/openapi/v3</code> now mirrors <code>/openapi/v2</code> and is treated as authoritative. Blocking CI guards drift via <code>scripts/validate-openapi.sh</code> in <code>ci-core.yml</code>, and <code>release.yml</code> republishes the checked snapshots as artifacts. A lightweight fixture check (<code>scripts/validate-openapi-fixtures.py</code>) validates the schemas against the shipped sample manifests.</li>
 <li>Compatibility matrix: published at <code>docs/reference/apishim-compatibility-matrix.md</code>; <code>release.yml</code> uploads the matrix together with the OpenAPI artifacts, wheel artifact, and OCI role-image archives for tag builds.</li>
-<li>Live gate: <code>.github/workflows/nightly-apishim.yml</code> runs local stub and docker runtime lanes plus an optional external kubeconfig target, collecting <code>/openapi/v2</code> + <code>/openapi/v3</code>, fixture validation logs, and object snapshots as artifacts. The script accepts a provided kubeconfig (including kind/dev lab) via <code>APISHIM_LIVE_KUBECONFIG</code>/<code>APISHIM_LIVE_KUBECONFIG_B64</code> or a kind cluster name via <code>APISHIM_KIND_CLUSTER</code>.</li>
+<li>Live gate: <code>.gitea/workflows/nightly-apishim.yml</code> runs local stub and docker runtime lanes plus an optional external kubeconfig target, collecting <code>/openapi/v2</code> + <code>/openapi/v3</code>, fixture validation logs, and object snapshots as artifacts. The script accepts a provided kubeconfig (including kind/dev lab) via <code>APISHIM_LIVE_KUBECONFIG</code>/<code>APISHIM_LIVE_KUBECONFIG_B64</code> or a kind cluster name via <code>APISHIM_KIND_CLUSTER</code>.</li>
 <li>Current focus: expand sample coverage and conformance-lite reporting, not the basic docs/release-note wiring.</li>
 </ul>
 <h4 id="phase-7-1-openapi-validation-hardening-complete">Phase 7.1 — OpenAPI validation hardening (complete)</h4>
@@ -865,7 +865,7 @@
 </ul>
 <h4 id="phase-7-2-live-cluster-gate-doc-linkage-complete">Phase 7.2 — Live cluster gate + doc linkage (complete)</h4>
 <ul>
-<li>Live gate landed: <code>scripts/ci/apishim-live-openapi.sh</code> drives kubectl/helm dry-run plus short watch churn against local shim lanes and optional external kubeconfig targets, capturing live <code>/openapi/v2</code> + <code>/openapi/v3</code>, fixture validation logs, and object snapshots. <code>.github/workflows/nightly-apishim.yml</code> publishes these artifacts on nightly/manual runs. The gate can point at a supplied kubeconfig (kind/dev lab) via <code>APISHIM_LIVE_KUBECONFIG(_B64)</code> or pull a kind kubeconfig by name with <code>APISHIM_KIND_CLUSTER</code>.</li>
+<li>Live gate landed: <code>scripts/ci/apishim-live-openapi.sh</code> drives kubectl/helm dry-run plus short watch churn against local shim lanes and optional external kubeconfig targets, capturing live <code>/openapi/v2</code> + <code>/openapi/v3</code>, fixture validation logs, and object snapshots. <code>.gitea/workflows/nightly-apishim.yml</code> publishes these artifacts on nightly/manual runs. The gate can point at a supplied kubeconfig (including kind/dev lab) via <code>APISHIM_LIVE_KUBECONFIG(_B64)</code> or pull a kind kubeconfig by name with <code>APISHIM_KIND_CLUSTER</code>.</li>
 <li>Follow-ups promoted to Phase 7.3: release-blocking promotion, docs/release-note wiring, and expanded sample set validated by the gate.</li>
 </ul>
 <h4 id="phase-7-3-release-gate-site-wiring-complete">Phase 7.3 — Release gate + site wiring (complete)</h4>
@@ -941,7 +941,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 21:36:21</span>
+        <span>Built 2026-11-10 19:21:54</span>
       </div>
     </footer>
     <script>

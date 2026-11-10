@@ -1,7 +1,8 @@
-GitHub/Gitea Actions: CI layout
+Gitea/GitHub Actions: CI authority layout
 
-The repository uses five Gitea/local integration workflows and two GitHub-only
-Python publication workflows:
+The repository keeps workflow authority separated by host. Five Gitea/local
+integration workflows live under `.gitea/workflows/`. Three GitHub-only Python
+artifact and publication workflows live under `.github/workflows/`:
 
 - `ci-core.yml`: blocking pull request and branch gate for unit tests, planner validation, Kubernetes export checks, OpenAPI drift validation, versioning checks, and OCI release-image smoke builds. The workflow always reports branch-protection checks, but skips the heavy jobs when a change set is docs-only.
 - `ci-docs.yml`: docs gate for `README`, `docs/**`, docs build helpers, and docs tests. The workflow always reports its check, but only runs `make docs-verify` when docs-surface files changed.
@@ -11,6 +12,9 @@ Python publication workflows:
   role-image archives (`k1s-core`, `k1s-core-node`, `k1s-edge-core`,
   `k1s-edge-node`), OpenAPI snapshots, and the API-shim compatibility matrix.
   It has no publication permission or publisher action.
+- `python-artifact-reproducibility.yml`: GitHub-only, nonpublishing check that
+  builds the canonical Python bundle under two umasks and requires exact-byte
+  equality.
 - `publish-testpypi.yml`: manually dispatched GitHub-only exact-byte build and
   TestPyPI OIDC publication gate.
 - `publish-pypi.yml`: manually dispatched GitHub-only promotion of the exact
@@ -22,12 +26,19 @@ Runner compatibility follows ADR 0008:
 - `actions/setup-python@v4`
 - repo-local shell helpers in `scripts/ci/lib.sh`
 
-The five integration workflow files are intended to execute on the local Gitea
-Actions stack and under local `act` only. They include an explicit server guard
-so an accidentally enabled GitHub mirror keeps their jobs skipped. Conversely,
-every job in the two publication workflows requires
+Directory ownership is the primary host boundary. Gitea reads integration
+automation from `.gitea/workflows/`; GitHub reads artifact/publication
+automation from `.github/workflows/`. This avoids cross-host expression parsing
+and prevents Gitea integration jobs from creating failed or skipped runs in the
+GitHub Actions panel. Every job in the two publication workflows also requires
 `github.server_url == 'https://github.com'`. Gitea therefore has neither a
 runnable publication job nor an OIDC publication permission path.
+
+The integration workflows intentionally retain the action versions qualified
+for the local Gitea runner under ADR 0008. The GitHub workflows use immutable
+action commit pins. Historical failed GitHub runs from the former mixed
+directory layout remain part of the repository audit record; current workflow
+definitions do not attempt to delete or rewrite them.
 
 Release-path checkout is fail closed: the Gitea artifact workflow and the
 release-image CI job require `GITEA_CA_B64` and refuse to disable TLS

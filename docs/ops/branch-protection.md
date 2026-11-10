@@ -1,9 +1,11 @@
 # Branch Protection Checklist
 
-Use this checklist to ensure the lean blocking gates are required on `main`.
+Use this checklist to ensure the lean Gitea blocking gates are required on
+`main`. GitHub is the public artifact publication authority and does not mirror
+these integration checks.
 
 ## Required checks
-1. Open repository settings → Branch protection → `main`.
+1. Open the Gitea repository settings → Branch protection → `main`.
 2. Enable “Require status checks to pass before merging.”
 3. Add these required checks:
    - `ci-core / unit-and-lint`

@@ -66,8 +66,12 @@ def _project() -> dict:
     return tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]
 
 
-def _workflow(name: str) -> str:
+def _github_workflow(name: str) -> str:
     return (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+
+def _gitea_workflow(name: str) -> str:
+    return (ROOT / ".gitea" / "workflows" / name).read_text(encoding="utf-8")
 
 
 def test_distribution_identity_preserves_import_and_commands() -> None:
@@ -186,8 +190,8 @@ def test_obsolete_workerbee_runtime_distribution_cannot_be_built() -> None:
 
 
 def test_publish_workflows_pin_actions_and_preserve_exact_bytes() -> None:
-    testpypi = _workflow("publish-testpypi.yml")
-    pypi = _workflow("publish-pypi.yml")
+    testpypi = _github_workflow("publish-testpypi.yml")
+    pypi = _github_workflow("publish-pypi.yml")
     for workflow in (testpypi, pypi):
         uses = re.findall(r"^\s*uses:\s*([^\s#]+)", workflow, flags=re.MULTILINE)
         assert uses
@@ -233,9 +237,9 @@ def test_publish_workflows_pin_actions_and_preserve_exact_bytes() -> None:
 
 
 def test_ci_artifact_job_is_nonpublishing_and_uses_only_the_helper() -> None:
-    ci = _workflow("ci-core.yml")
+    ci = _github_workflow("python-artifact-reproducibility.yml")
     assert "python-artifact-reproducibility:" in ci
-    job = ci.split("  python-artifact-reproducibility:", 1)[1].split("  release-image-smoke:", 1)[0]
+    job = ci.split("  python-artifact-reproducibility:", 1)[1]
     assert job.count("scripts/build_python_artifacts.py build") == 2
     assert "umask 022" in job
     assert "umask 077" in job
@@ -246,6 +250,7 @@ def test_ci_artifact_job_is_nonpublishing_and_uses_only_the_helper() -> None:
     assert "python -m build" not in job
     assert "normalize_python_sdist.py" not in job
     assert "normalize_python_wheel.py" not in job
+    assert "gh-action-pypi-publish" not in _gitea_workflow("ci-core.yml")
 
 
 def test_release_documentation_records_v1_alpha_compatibility() -> None:

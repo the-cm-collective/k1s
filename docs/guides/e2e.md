@@ -153,8 +153,8 @@ Conventions
 - Stop fixtures: `docker compose -f ops/dev/docker-compose.yaml down`
 
 CI Conformance (reference)
-- Blocking CI uses `.github/workflows/ci-core.yml` for planner validation, exporter smoke checks, and OpenAPI drift validation.
-- Nightly/manual runtime coverage lives in `.github/workflows/nightly-runtime.yml`, which runs the kind and k3s conformance lanes plus the heavier multinode and end-to-end suites.
+- Blocking Gitea CI uses `.gitea/workflows/ci-core.yml` for planner validation, exporter smoke checks, and OpenAPI drift validation.
+- Nightly/manual runtime coverage lives in `.gitea/workflows/nightly-runtime.yml`, which runs the kind and k3s conformance lanes plus the heavier multinode and end-to-end suites.
 
 Where to next
 - Runbook: `docs/ops/runbook.md`
