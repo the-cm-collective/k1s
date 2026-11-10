@@ -622,7 +622,9 @@ these external authorities:
 - the exact signed deadsnakes Jammy `InRelease` needed for CPython `3.11.18`,
   with its pinned PPA signer and keyring;
 - exact primary versions for the GA KVM kernel, containerd, `runc`, Docker,
-  rootless Podman, CNI plugins, and Python, plus an isolated resolver closure;
+  rootless Podman, CNI plugins, and Python; the `acl` utilities required by the
+  digest-bound strict-CRI grant/rollback helper; plus an isolated resolver
+  closure;
 - cri-tools `1.30.1` with the vendor-published SHA-256; and
 - nine source tags used only for discovery, each paired with an expected
   `linux/amd64` manifest digest: registry, pause, busybox, etcd, NATS,
@@ -721,8 +723,9 @@ Each lane:
 2. boots QEMU TCG with a fixed machine, CPU, virtual clock, UUID, memory, and
    CPU count, with `-nic none` and no KVM dependency;
 3. exposes the retained B2 tar as one read-only raw virtio block device;
-4. installs the exact 160-package closure, `crictl`, CNI plugins, accepted K1s
-   wheel, and 24-wheel Python closure without an index or network device;
+4. installs the exact resolver-closed package set, `crictl`, CNI plugins,
+   accepted K1s wheel, and 24-wheel Python closure without an index or network
+   device;
 5. removes generated cloud identity, logs, SSH keys, random seed, Python
    bytecode, and snap device identity; normalizes Q1-owned modes independently
    of the lane umask; normalizes file timestamps; and powers off gracefully;

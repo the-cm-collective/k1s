@@ -109,6 +109,7 @@ INRELEASE_AUTHORITIES = {
 }
 
 PRIMARY_PACKAGES = (
+    ("acl", None),
     ("base-files", "12ubuntu4.7"),
     ("ca-certificates", None),
     ("containernetworking-plugins", "0.9.1+ds1-1ubuntu0.1"),

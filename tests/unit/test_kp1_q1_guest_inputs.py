@@ -344,6 +344,7 @@ def test_plan_binds_closed_sources_tools_and_authorities(tmp_path: Path) -> None
     plan, parent, _spec = _fixture(tmp_path)
 
     assert guest_inputs.verify_plan(plan, allowed_output_parent=parent) == plan
+    assert plan["apt"]["packages"][0] == {"name": "acl", "version": None}
     assert len(plan["wheelhouse"]) == 24
     assert len(plan["oci"]) == 9
     assert plan["apt"]["snapshotId"] == guest_inputs.SNAPSHOT_ID
@@ -380,19 +381,21 @@ def test_runtime_binary_paths_pin_canonical_runc_location(tmp_path: Path) -> Non
     _write(duplicate, b"runc", executable=True)
 
     assert guest_inputs.RUNTIME_BINARY_PATHS["runc"] == ("usr/bin/runc",)
-    assert guest_inputs.LiveAcquisitionAdapter._inspect_file(
-        tmp_path,
-        guest_inputs.RUNTIME_BINARY_PATHS["runc"],
-        executable=True,
-    ) == canonical
+    assert (
+        guest_inputs.LiveAcquisitionAdapter._inspect_file(
+            tmp_path,
+            guest_inputs.RUNTIME_BINARY_PATHS["runc"],
+            executable=True,
+        )
+        == canonical
+    )
 
 
 def test_apt_payload_filename_is_portable_and_digest_bound() -> None:
     digest = _digest(b"package")
 
     assert guest_inputs._apt_payload_filename("libaudit1", digest) == (
-        "libaudit1-"
-        f"{digest.removeprefix('sha256:')[:32]}.deb"
+        f"libaudit1-{digest.removeprefix('sha256:')[:32]}.deb"
     )
     assert "%" not in guest_inputs._apt_payload_filename("libaudit1", digest)
     assert "~" not in guest_inputs._apt_payload_filename("libaudit1", digest)
