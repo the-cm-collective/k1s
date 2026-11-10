@@ -5,7 +5,9 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import stat
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -310,7 +312,7 @@ def test_qemu_argv_is_one_restricted_user_network_vm_without_host_mutation(tmp_p
     assert "q35,accel=kvm" in rendered
     assert "user,id=q1net,restrict=on,hostfwd=tcp:127.0.0.1:40222-:22" in rendered
     assert "-sandbox" in plan["qemuArgv"]
-    assert "-daemonize" in plan["qemuArgv"]
+    assert "-daemonize" not in plan["qemuArgv"]
     for forbidden in (
         "tap",
         "bridge",
@@ -559,6 +561,51 @@ class _RecordingRunner:
         return capsule.CommandResult(0, b"", b"")
 
 
+def test_qemu_launcher_returns_after_exact_foreground_child_is_ready(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    helper = tmp_path / "fake-qemu"
+    helper.write_text(
+        "#!/usr/bin/python3\n"
+        "import os, pathlib, sys, time\n"
+        "pidfile = pathlib.Path(sys.argv[sys.argv.index('-pidfile') + 1])\n"
+        "qmp = pathlib.Path(sys.argv[sys.argv.index('-qmp') + 1][5:].split(',', 1)[0])\n"
+        "pidfile.write_text(str(os.getpid()), encoding='ascii')\n"
+        "qmp.touch()\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o700)
+    pidfile = tmp_path / "qemu.pid"
+    qmp = tmp_path / "qmp.sock"
+    launcher = capsule.SubprocessQemuLauncher()
+
+    result = launcher.run(
+        (
+            str(helper),
+            "-pidfile",
+            str(pidfile),
+            "-qmp",
+            f"unix:{qmp},server=on,wait=off",
+        ),
+        cwd=tmp_path,
+        timeout=10,
+        environment=capsule._clean_environment(),
+    )
+
+    pid = int(pidfile.read_text(encoding="ascii"))
+    try:
+        assert result == capsule.CommandResult(0, b"", b"")
+        assert Path(f"/proc/{pid}").exists()
+        assert qmp.exists()
+    finally:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(100):
+            if not Path(f"/proc/{pid}").exists():
+                break
+            time.sleep(0.01)
+    assert not Path(f"/proc/{pid}").exists()
+
+
 def _bundle_arguments(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -616,7 +663,7 @@ def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
         )
         assert created == root
         assert [call[1] for call in runner.calls[:2]] == ["create", "-output"]
-        assert "-daemonize" in runner.calls[2]
+        assert "-daemonize" not in runner.calls[2]
         rendered = " ".join(item for call in runner.calls for item in call)
         for forbidden in ("sudo", "ip link", "iptables", "nft", "virsh", "-netdev tap"):
             assert forbidden not in rendered

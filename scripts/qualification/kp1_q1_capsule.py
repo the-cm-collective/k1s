@@ -25,6 +25,7 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 from collections.abc import Callable, Sequence
@@ -741,7 +742,6 @@ def _qemu_argv(plan: dict[str, object]) -> list[str]:
         f"file:{layout['vm']}/serial.log",
         "-pidfile",
         f"{layout['vm']}/qemu.pid",
-        "-daemonize",
     ]
 
 
@@ -1487,6 +1487,15 @@ class CommandRunner(Protocol):
     ) -> CommandResult: ...
 
 
+def _child_limits() -> None:
+    nofile_hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+    if nofile_hard != resource.RLIM_INFINITY and nofile_hard < HOST_NOFILE_LIMIT:
+        raise _fail()
+    resource.setrlimit(resource.RLIMIT_NOFILE, (HOST_NOFILE_LIMIT, HOST_NOFILE_LIMIT))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    os.umask(0o077)
+
+
 class SubprocessCommandRunner:
     """Execute one already validated argv without a shell or ambient environment."""
 
@@ -1498,14 +1507,6 @@ class SubprocessCommandRunner:
         timeout: int,
         environment: dict[str, str],
     ) -> CommandResult:
-        def child_limits() -> None:
-            nofile_hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
-            if nofile_hard != resource.RLIM_INFINITY and nofile_hard < HOST_NOFILE_LIMIT:
-                raise _fail()
-            resource.setrlimit(resource.RLIMIT_NOFILE, (HOST_NOFILE_LIMIT, HOST_NOFILE_LIMIT))
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-            os.umask(0o077)
-
         try:
             result = subprocess.run(  # noqa: S603 - exact executable identity is plan-bound
                 list(argv),
@@ -1516,7 +1517,7 @@ class SubprocessCommandRunner:
                 check=False,
                 close_fds=True,
                 start_new_session=True,
-                preexec_fn=child_limits,
+                preexec_fn=_child_limits,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise _fail() from exc
@@ -1526,6 +1527,80 @@ class SubprocessCommandRunner:
         ):
             raise _fail()
         return CommandResult(result.returncode, result.stdout, result.stderr)
+
+
+class SubprocessQemuLauncher:
+    """Launch one foreground QEMU child and prove its PID/QMP readiness."""
+
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        timeout: int,
+        environment: dict[str, str],
+    ) -> CommandResult:
+        if "-daemonize" in argv:
+            raise _fail()
+        try:
+            pid_index = argv.index("-pidfile")
+            qmp_index = argv.index("-qmp")
+            pidfile = _canonical_absolute_path(argv[pid_index + 1])
+            qmp_value = argv[qmp_index + 1]
+        except (ValueError, IndexError) as exc:
+            raise _fail() from exc
+        if type(qmp_value) is not str or not qmp_value.startswith("unix:"):
+            raise _fail()
+        qmp_socket = _canonical_absolute_path(qmp_value[5:].split(",", 1)[0])
+        if pidfile.parent != cwd or qmp_socket.parent != cwd:
+            raise _fail()
+        stderr_path = cwd / "qemu-host.stderr"
+        try:
+            stderr_descriptor = os.open(
+                stderr_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                PRIVATE_FILE_MODE,
+            )
+            with os.fdopen(stderr_descriptor, "wb", closefd=True) as stderr_handle:
+                process = subprocess.Popen(  # noqa: S603 - exact executable is plan-bound
+                    list(argv),
+                    cwd=cwd,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_handle,
+                    close_fds=True,
+                    start_new_session=True,
+                    preexec_fn=_child_limits,
+                )
+        except OSError as exc:
+            raise _fail() from exc
+        deadline = time.monotonic() + min(timeout, 30)
+        while time.monotonic() < deadline:
+            returncode = process.poll()
+            if returncode is not None:
+                stderr = stderr_path.read_bytes()
+                if len(stderr) > MAX_COMMAND_OUTPUT_BYTES:
+                    raise _fail()
+                return CommandResult(returncode, b"", stderr)
+            try:
+                recorded_pid = int(pidfile.read_text(encoding="ascii").strip())
+            except (FileNotFoundError, ValueError, OSError):
+                recorded_pid = -1
+            if recorded_pid == process.pid and qmp_socket.exists():
+                threading.Thread(target=process.wait, daemon=True).start()
+                return CommandResult(0, b"", b"")
+            time.sleep(0.05)
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+        stderr = stderr_path.read_bytes()
+        if len(stderr) > MAX_COMMAND_OUTPUT_BYTES:
+            raise _fail()
+        return CommandResult(process.returncode or 1, b"", stderr)
 
 
 def _clean_environment() -> dict[str, str]:
@@ -1645,6 +1720,7 @@ def execute_plan(
     expected_input_bundle_digest: str,
     expected_bundle_id: str,
     runner: CommandRunner | None = None,
+    qemu_launcher: CommandRunner | None = None,
     now_unix: int | None = None,
     port_checker: Callable[[int], bool] | None = None,
 ) -> Path:
@@ -1712,7 +1788,11 @@ def execute_plan(
         raise _fail() from exc
     if copied_authority != bundle_authority:
         raise _fail()
-    runner = runner or SubprocessCommandRunner()
+    if runner is None:
+        runner = SubprocessCommandRunner()
+        qemu_launcher = qemu_launcher or SubprocessQemuLauncher()
+    else:
+        qemu_launcher = qemu_launcher or runner
     environment = _clean_environment()
     tools = plan["tools"]
     artifacts = plan["artifacts"]
@@ -1791,7 +1871,7 @@ def execute_plan(
     if not checker(cast(int, network["sshHostPort"])):
         raise _fail()
     qemu_argv = [str(item) for item in cast(list[object], plan["qemuArgv"])]
-    result = runner.run(
+    result = qemu_launcher.run(
         qemu_argv,
         cwd=paths["vm"],
         timeout=PER_COMMAND_SECONDS,
