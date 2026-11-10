@@ -311,6 +311,9 @@ def test_qemu_argv_is_one_restricted_user_network_vm_without_host_mutation(tmp_p
 
     assert "q35,accel=kvm" in rendered
     assert "user,id=q1net,restrict=on,hostfwd=tcp:127.0.0.1:40222-:22" in rendered
+    assert "virtio-scsi-pci,id=q1scsi" in plan["qemuArgv"]
+    assert "scsi-cd,drive=q1seed,bus=q1scsi.0" in plan["qemuArgv"]
+    assert any("seed.iso,if=none,id=q1seed,readonly=on" in arg for arg in plan["qemuArgv"])
     assert "-sandbox" in plan["qemuArgv"]
     assert "-daemonize" not in plan["qemuArgv"]
     for forbidden in (
