@@ -1871,13 +1871,19 @@ def execute_plan(
     if not checker(cast(int, network["sshHostPort"])):
         raise _fail()
     qemu_argv = [str(item) for item in cast(list[object], plan["qemuArgv"])]
-    result = qemu_launcher.run(
-        qemu_argv,
-        cwd=paths["vm"],
-        timeout=PER_COMMAND_SECONDS,
-        environment=environment,
-    )
-    _record_step(paths["evidence"], sequence=3, name="qemu-launch", argv=qemu_argv, result=result)
+    try:
+        result = qemu_launcher.run(
+            qemu_argv,
+            cwd=paths["vm"],
+            timeout=PER_COMMAND_SECONDS,
+            environment=environment,
+        )
+        _record_step(
+            paths["evidence"], sequence=3, name="qemu-launch", argv=qemu_argv, result=result
+        )
+    except BaseException:
+        _remove_failed_launch_layout(paths)
+        raise
     check_limits()
     run_receipt = _bind_receipt(
         {
@@ -1912,6 +1918,33 @@ def _safe_tree_bytes(root: Path) -> int:
                 if total > MAX_EVIDENCE_BYTES:
                     raise _fail()
     return total
+
+
+def _remove_failed_launch_layout(paths: dict[str, Path]) -> None:
+    root = paths["root"]
+    if (
+        any(paths[name].parent != root for name in LAYOUT_NAMES)
+        or (paths["vm"] / "qemu.pid").exists()
+        or (paths["vm"] / "qmp.sock").exists()
+    ):
+        raise _fail()
+    root_info = os.lstat(root)
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or stat.S_ISLNK(root_info.st_mode)
+        or root_info.st_uid != os.getuid()
+        or stat.S_IMODE(root_info.st_mode) != PRIVATE_MODE
+    ):
+        raise _fail()
+    _safe_tree_bytes(root)
+    for path in root.rglob("*"):
+        info = os.lstat(path)
+        expected_mode = PRIVATE_MODE if stat.S_ISDIR(info.st_mode) else PRIVATE_FILE_MODE
+        if stat.S_IMODE(info.st_mode) != expected_mode:
+            raise _fail()
+    shutil.rmtree(root)
+    if root.exists() or root.is_symlink():
+        raise _fail()
 
 
 def seal_evidence(

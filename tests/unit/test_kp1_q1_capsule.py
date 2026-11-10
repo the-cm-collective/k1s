@@ -561,6 +561,12 @@ class _RecordingRunner:
         return capsule.CommandResult(0, b"", b"")
 
 
+class _FailingQemuLauncher(_RecordingRunner):
+    def run(self, argv, *, cwd, timeout, environment):  # type: ignore[no-untyped-def]
+        super().run(argv, cwd=cwd, timeout=timeout, environment=environment)
+        return capsule.CommandResult(1, b"", b"launch failed")
+
+
 def test_qemu_launcher_returns_after_exact_foreground_child_is_ready(tmp_path: Path) -> None:
     tmp_path.chmod(0o700)
     helper = tmp_path / "fake-qemu"
@@ -604,6 +610,41 @@ def test_qemu_launcher_returns_after_exact_foreground_child_is_ready(tmp_path: P
                 break
             time.sleep(0.01)
     assert not Path(f"/proc/{pid}").exists()
+
+
+def test_failed_qemu_launch_removes_only_the_private_partial_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "q1-dddddddddddddddddddddddddddddddd"
+    plan = _plan(tmp_path, run_id=run_id)
+    runner = _RecordingRunner()
+    launcher = _FailingQemuLauncher()
+    bundle_arguments = _bundle_arguments(tmp_path, monkeypatch, plan)
+    monkeypatch.setattr(capsule, "_validate_gate_a", lambda *_args, **_kwargs: {"valid": True})
+    monkeypatch.setattr(
+        capsule.shutil,
+        "disk_usage",
+        lambda _path: shutil._ntuple_diskusage(10**12, 0, 10**12),
+    )
+
+    with pytest.raises(capsule.CapsulePolicyError):
+        capsule.execute_plan(
+            plan,
+            expected_plan_digest=str(plan["planDigest"]),
+            confirmation=f"{run_id}:{plan['planDigest']}",
+            host_preflight_path=tmp_path / "host-preflight.json",
+            expected_host_preflight_digest="sha256:" + "8" * 64,
+            gate_a_path=tmp_path / "gate-a.json",
+            expected_gate_a_digest="sha256:" + "9" * 64,
+            runner=runner,
+            qemu_launcher=launcher,
+            port_checker=lambda _port: True,
+            **bundle_arguments,
+        )
+
+    assert not (tmp_path / f"k1s-{run_id}").exists()
+    assert len(runner.calls) == 2
+    assert len(launcher.calls) == 1
 
 
 def _bundle_arguments(
