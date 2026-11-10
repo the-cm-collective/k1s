@@ -117,6 +117,13 @@ def test_policy_exclusions_remain_narrow_and_explicit() -> None:
     assert not excluded & {"/etc", "/opt", "/usr", "/var"}
     assert "/var/lib/cloud" in excluded
     assert "/var/lib/snapd/device" in excluded
+    assert "/var/lib/containerd/io.containerd.grpc.v1.introspection/uuid" in exact
+    assert "/var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db" in exact
+    assert "/var/lib/containers/storage/overlay-layers/layers.lock" in exact
+    assert "/var/lib/containers/storage/storage.lock" in exact
+    assert "/var/lib/docker/buildkit/containerd-overlayfs/workerid" in exact
+    assert "/var/lib/docker/engine-id" in exact
+    assert "/var/lib/docker/network/files/local-kv.db" in exact
     assert "/var/lib/snapd/state.json" in exact
     assert "/var/snap/lxd/common/lxd/unix.socket" in exact
     assert "/var/snap/lxd/common/lxd-user/unix.socket" in exact

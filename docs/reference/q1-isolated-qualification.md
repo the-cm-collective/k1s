@@ -740,11 +740,13 @@ persistent path by type, mode, uid/gid, content or link/device identity, and
 extended-attribute digest. The root filesystem and the explicitly persistent
 `/boot/efi` mount are included. The narrow policy excludes explicit runtime
 mounts and reviewed first-boot state. Snapshot verification boots regenerate
-the six SSH host-key files and both LXD
-Unix sockets (`lxd` and `lxd-user`), so those eight exact paths are excluded
-while the rest of `/etc/ssh` and `/var/snap/lxd` remains covered. The policy
-never excludes broad persistent roots such as `/etc`, `/opt`, `/usr`, or
-`/var`.
+the six SSH host-key files, both LXD Unix sockets (`lxd` and `lxd-user`), and
+seven exact containerd, Podman, and Docker identity/state files before the
+inventory script can quiesce those services. Those fifteen exact paths are
+excluded while the rest of `/etc/ssh`, `/var/snap/lxd`, and the container
+runtime state trees remains covered. The reusable image removes the seven
+ambient runtime identities before shutdown. The policy never excludes broad
+persistent roots such as `/etc`, `/opt`, `/usr`, or `/var`.
 
 The final stage requires exact equality of the two canonical filesystem
 manifest SHA-256 values, filesystem-policy SHA-256 values, and semantic guest

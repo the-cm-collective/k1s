@@ -126,6 +126,10 @@ def test_provision_script_is_offline_block_bound_and_contains_no_host_mount() ->
     assert "find /opt/k1s-q1 -xdev -type d -exec chmod 0755" in text
     assert "find /opt/k1s-q1 -xdev -type f ! -perm /0111 -exec chmod 0644" in text
     assert "# Deterministic Q1 image user policy" in text
+    assert "/var/lib/containerd/io.containerd.grpc.v1.introspection/uuid" in text
+    assert "/var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db" in text
+    assert "/var/lib/containers/storage/overlay-layers/layers.lock" in text
+    assert "/var/lib/docker/network/files/local-kv.db" in text
     assert "rm -rf /var/lib/snapd/cgroup /var/lib/snapd/cookie /var/lib/snapd/device" in text
     assert "K1S_Q1_PROVISION_OK" in text
     assert "/usr/bin/systemctl poweroff --no-wall" in text

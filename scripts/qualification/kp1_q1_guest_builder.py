@@ -441,6 +441,14 @@ ubuntu ALL=(ALL) NOPASSWD:ALL
 EOF
 chmod 0440 /etc/sudoers.d/90-cloud-init-users
 rm -rf /root/.cache /var/cache/apt/archives/*.deb /var/lib/apt/lists/*
+rm -f \
+  /var/lib/containerd/io.containerd.grpc.v1.introspection/uuid \
+  /var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db \
+  /var/lib/containers/storage/overlay-layers/layers.lock \
+  /var/lib/containers/storage/storage.lock \
+  /var/lib/docker/buildkit/containerd-overlayfs/workerid \
+  /var/lib/docker/engine-id \
+  /var/lib/docker/network/files/local-kv.db
 rm -rf /var/lib/snapd/cgroup /var/lib/snapd/cookie /var/lib/snapd/device \
   /var/lib/snapd/inhibit
 rm -f /etc/ssh/ssh_host_* /var/lib/systemd/random-seed /var/lib/dbus/machine-id
