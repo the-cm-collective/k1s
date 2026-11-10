@@ -48,6 +48,7 @@ POLICY: dict[str, object] = {
         "/var/lib/systemd/random-seed",
         "/var/lib/update-notifier/updates-available",
         "/var/snap/lxd/common/lxd/unix.socket",
+        "/var/snap/lxd/common/lxd-user/unix.socket",
     ],
     "ephemeralTrees": [
         "/tmp",  # noqa: S108 - guest policy path, not a host temporary file

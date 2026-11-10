@@ -110,6 +110,7 @@ def test_policy_exclusions_remain_narrow_and_explicit() -> None:
     assert "/var/lib/snapd/device" in excluded
     assert "/var/lib/snapd/state.json" in exact
     assert "/var/snap/lxd/common/lxd/unix.socket" in exact
+    assert "/var/snap/lxd/common/lxd-user/unix.socket" in exact
     assert "/etc/ssh/ssh_host_ed25519_key" in exact
     assert not exact & {"/etc/ssh", "/var/snap/lxd"}
     assert policy["includedPersistentMountTrees"] == ["/boot/efi"]
