@@ -245,13 +245,12 @@ class SubprocessRunner:
         if not argv or timeout <= 0 or any(not item or "\x00" in item for item in argv):
             raise _fail()
         try:
-            completed = subprocess.run(
+            completed = subprocess.run(  # noqa: S603 - argv paths are plan-bound
                 argv,
                 check=False,
+                capture_output=True,
                 env=SAFE_ENVIRONMENT,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 timeout=timeout,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -280,6 +279,7 @@ def _b64(raw: bytes) -> str:
 
 def render_provision_script(
     *,
+    apt_package_count: int,
     payload_sha256: str,
     payload_size: int,
     member_manifest_sha256: str,
@@ -287,7 +287,9 @@ def render_provision_script(
     umask: str,
 ) -> bytes:
     if (
-        DIGEST_RE.fullmatch(payload_sha256) is None
+        type(apt_package_count) is not int
+        or not 1 <= apt_package_count <= 512
+        or DIGEST_RE.fullmatch(payload_sha256) is None
         or DIGEST_RE.fullmatch(member_manifest_sha256) is None
         or type(payload_size) is not int
         or payload_size <= 0
@@ -385,7 +387,7 @@ install -m 0644 /dev/null /opt/k1s-q1/empty-sources.list
 mapfile -d '' packages < <(
   find "$PAYLOAD_ROOT/apt/packages" -maxdepth 1 -type f -name '*.deb' -print0 | sort -z
 )
-test "${{#packages[@]}}" = 160
+test "${{#packages[@]}}" = {apt_package_count}
 for package in "${{packages[@]}}"; do
   [[ "$package" = /* ]]
 done
@@ -1135,6 +1137,7 @@ class LiveBuildAdapter:
                 raise _fail()
         self._b2 = result
         return {
+            "aptPackageCount": result["aptPackageCount"],
             "bomSha256": result["bomSha256"],
             "payloadSha256": result["payloadSha256"],
             "sealFileSha256": result["sealFileSha256"],
@@ -1151,6 +1154,7 @@ class LiveBuildAdapter:
         b2 = self._b2_result()
         bundle = _read_identity(self.plan, "guestBundle")
         provision = render_provision_script(
+            apt_package_count=cast(int, b2["aptPackageCount"]),
             payload_sha256=cast(str, b2["payloadSha256"]),
             payload_size=cast(
                 int,

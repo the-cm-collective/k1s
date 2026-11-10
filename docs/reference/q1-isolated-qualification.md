@@ -725,7 +725,8 @@ Each lane:
 3. exposes the retained B2 tar as one read-only raw virtio block device;
 4. installs the exact resolver-closed package set, `crictl`, CNI plugins,
    accepted K1s wheel, and 24-wheel Python closure without an index or network
-   device;
+   device; the expected package count comes from the independently validated
+   B2 payload manifest rather than a duplicated fixed count;
 5. removes generated cloud identity, logs, SSH keys, random seed, Python
    bytecode, and snap device identity; normalizes Q1-owned modes independently
    of the lane umask; normalizes file timestamps; and powers off gracefully;

@@ -101,6 +101,7 @@ def _serial_value() -> dict[str, object]:
 
 def test_provision_script_is_offline_block_bound_and_contains_no_host_mount() -> None:
     raw = builder.render_provision_script(
+        apt_package_count=161,
         payload_sha256=_digest(b"payload"),
         payload_size=4096,
         member_manifest_sha256=_digest(b"manifest"),
@@ -113,6 +114,7 @@ def test_provision_script_is_offline_block_bound_and_contains_no_host_mount() ->
     assert "Dir::Etc::SourceList=/opt/k1s-q1/empty-sources.list" in text
     assert "Dir::Etc::SourceParts=/opt/k1s-q1/empty-sources.list.d" in text
     assert '[[ "$package" = /* ]]' in text
+    assert 'test "${#packages[@]}" = 161' in text
     assert "--no-download --no-install-recommends" not in text
     assert "--no-index" in text
     assert text.count("--no-compile") == 2

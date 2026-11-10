@@ -2381,6 +2381,11 @@ def verify_retained_root(
     bom_raw = _read_file(root / "B2-GUEST-BOM.json")
     manifest_raw = _read_file(root / "B2-PAYLOAD-MANIFEST.json")
     manifest = guest_bom.validate_member_manifest(guest_bom.canonical_json(manifest_raw))
+    apt_package_count = sum(
+        row["role"] == "apt-package" for row in cast(list[dict[str, object]], manifest["members"])
+    )
+    if not 1 <= apt_package_count <= 512:
+        raise _fail()
     _payload_stage_matches(root, manifest)
     gate = guest_bom.verify_two_validator_gate(
         bom_raw=bom_raw,
@@ -2422,6 +2427,7 @@ def verify_retained_root(
     ):
         raise _fail()
     return {
+        "aptPackageCount": apt_package_count,
         "bomSha256": receipt["bomSha256"],
         "memberManifestSha256": receipt["memberManifestSha256"],
         "outputRoot": str(root),

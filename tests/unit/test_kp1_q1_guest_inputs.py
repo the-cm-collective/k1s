@@ -487,6 +487,7 @@ def test_acquisition_seals_and_independently_replays_root(tmp_path: Path) -> Non
     assert receipt["status"] == "bom-closed"
     assert seal["status"] == "retained-b2-evidence"
     assert result["status"] == "retained-b2-evidence-verified"
+    assert result["aptPackageCount"] == 1
     assert result["bomSha256"] == receipt["bomSha256"]
     assert (root / "B2-OFFLINE-PAYLOAD.tar").stat().st_size == receipt["payloadSize"]
 
