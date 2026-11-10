@@ -3,8 +3,9 @@
 
 The bundle is an uncompressed canonical USTAR archive. It contains one
 canonical manifest and the exact K1s 0.1.8a1 candidate, offline dependency
-closure, and qualification guest helper. This module performs no install,
-network, privilege, service, runtime, or host action.
+closure, installed-artifact validator, and qualification guest helper. This
+module performs no install, network, privilege, service, runtime, or host
+action.
 """
 
 from __future__ import annotations
@@ -74,6 +75,7 @@ ROLE_COUNTS = {
     "bundle-validator": 1,
     "dependency-wheel": DEPENDENCY_WHEEL_COUNT,
     "guest-helper": 1,
+    "installed-validator": 1,
     "k1s-sdist": 1,
     "k1s-wheel": 1,
     "requirements-lock": 1,
@@ -515,6 +517,10 @@ def _validate_member_rows(value: object) -> list[dict[str, object]]:
     if role_rows["guest-helper"][0]["path"] != ("payload/helpers/kp1_q1_guest_helper.py"):
         raise _fail()
     if role_rows["bundle-validator"][0]["path"] != ("payload/helpers/kp1_q1_bundle.py"):
+        raise _fail()
+    if role_rows["installed-validator"][0]["path"] != (
+        "payload/helpers/validate_installed_python_artifact.py"
+    ):
         raise _fail()
     dependencies = role_rows["dependency-wheel"]
     if any(

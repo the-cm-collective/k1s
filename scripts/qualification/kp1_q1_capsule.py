@@ -13,6 +13,7 @@ boundaries before any live qualification is authorized.
 from __future__ import annotations
 
 import argparse
+import base64
 import grp
 import hashlib
 import json
@@ -755,6 +756,7 @@ def build_plan(
     sdist: FileIdentity,
     wheelhouse_manifest: FileIdentity,
     helper: FileIdentity,
+    guest_stage_runner: FileIdentity,
     ssh_public_key: FileIdentity,
     qemu: FileIdentity,
     qemu_img: FileIdentity,
@@ -780,6 +782,7 @@ def build_plan(
         "artifacts": {
             "baseImage": base_image.to_payload(),
             "guestHelper": helper.to_payload(),
+            "guestStageRunner": guest_stage_runner.to_payload(),
             "guestManifest": guest_manifest_identity.to_payload(),
             "sdist": sdist.to_payload(),
             "sshPublicKey": ssh_public_key.to_payload(),
@@ -874,6 +877,7 @@ def verify_plan(value: object) -> dict[str, object]:
         {
             "baseImage",
             "guestHelper",
+            "guestStageRunner",
             "guestManifest",
             "sdist",
             "sshPublicKey",
@@ -1731,15 +1735,22 @@ def execute_plan(
         ssh_key_identity,
         maximum=64 * 1024,
     )
+    stage_runner_identity = _identity_from_payload(artifacts["guestStageRunner"])
+    stage_runner = _read_identity_bytes(stage_runner_identity, maximum=1024 * 1024)
+    stage_runner_b64 = base64.b64encode(stage_runner)
     user_data = (
         b"#cloud-config\nusers:\n  - name: q1\n    lock_passwd: true\n"
-        b"    sudo: false\n    ssh_authorized_keys:\n      - "
+        b"    sudo: false\n    groups: [docker]\n    ssh_authorized_keys:\n      - "
         + public_key.strip()
         + b"\nwrite_files:\n  - path: /etc/k1s-q1-egress-denied\n"
         b"    permissions: '0600'\n    content: enabled\n"
         b"  - path: /etc/security/limits.d/90-k1s-q1.conf\n"
         b"    permissions: '0644'\n"
         b"    content: |\n      q1 hard nproc 512\n      q1 hard nofile 1024\n"
+        b"  - path: /opt/k1s-q1/stages/kp1_q1_guest_stages.py\n"
+        b"    owner: root:root\n    permissions: '0755'\n    encoding: b64\n    content: "
+        + stage_runner_b64
+        + b"\n"
     )
     _write_private(paths["input"] / "meta-data", meta_data)
     _write_private(paths["input"] / "user-data", user_data)
@@ -2090,6 +2101,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "sdist",
         "wheelhouse-manifest",
         "guest-helper",
+        "guest-stage-runner",
         "ssh-public-key",
         "qemu",
         "qemu-img",
@@ -2164,6 +2176,7 @@ def _plan_from_namespace(ns: argparse.Namespace) -> dict[str, object]:
         sdist=identity("sdist"),
         wheelhouse_manifest=identity("wheelhouse-manifest"),
         helper=identity("guest-helper"),
+        guest_stage_runner=identity("guest-stage-runner", executable=True),
         ssh_public_key=identity("ssh-public-key"),
         qemu=identity("qemu", executable=True),
         qemu_img=identity("qemu-img", executable=True),

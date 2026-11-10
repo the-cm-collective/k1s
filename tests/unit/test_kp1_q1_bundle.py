@@ -76,6 +76,13 @@ def _fixture(root: Path) -> _Fixture:
             0o755,
         ),
         (
+            "installed-validator",
+            "payload/helpers/validate_installed_python_artifact.py",
+            "validate_installed_python_artifact.py",
+            b"#!/usr/bin/python3.11\n# installed artifact validator\n",
+            0o755,
+        ),
+        (
             "k1s-sdist",
             "payload/k1s/k1s_core-0.1.8a1.tar.gz",
             "k1s_core-0.1.8a1.tar.gz",
@@ -172,7 +179,7 @@ def test_bundle_is_canonical_deterministic_and_exact_018a1(tmp_path: Path) -> No
         "requireHashes": True,
         "wheelCount": 24,
     }
-    assert len(first.manifest["members"]) == 30
+    assert len(first.manifest["members"]) == 31
     assert first.endpoint["service"] == {
         "gid": 0,
         "mode": "single-transaction-exec",

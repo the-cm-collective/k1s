@@ -181,7 +181,7 @@ def _resign(value: dict[str, object]) -> dict[str, object]:
 def test_closed_stage_order_matches_capsule_and_uses_fixed_non_shell_requests() -> None:
     assert conductor.ACCEPTANCE_STAGES == capsule.ACCEPTANCE_STAGES
     assert tuple(spec.name for spec in conductor.STAGE_SPECS) == conductor.ACCEPTANCE_STAGES
-    assert {spec.transport for spec in conductor.STAGE_SPECS} == {"ssh", "qmp", "process"}
+    assert {spec.transport for spec in conductor.STAGE_SPECS} == {"ssh", "qmp"}
     for spec in conductor.STAGE_SPECS:
         assert spec.target in {"q1-guest", "q1-host", "q1-vm"}
         assert isinstance(spec.argv, tuple)

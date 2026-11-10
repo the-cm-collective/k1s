@@ -33,6 +33,7 @@ def _component(version: str) -> dict[str, str]:
 def _inputs(tmp_path: Path):
     base = _write(tmp_path / "base.qcow2", b"sealed-qcow2")
     helper = _write(tmp_path / "kp1_q1_guest_helper.py", b"#!/usr/bin/python3\n", mode=0o700)
+    stage_runner = _write(tmp_path / "kp1_q1_guest_stages.py", b"#!/usr/bin/python3\n", mode=0o700)
     wheelhouse = _write(tmp_path / "wheelhouse-manifest.json", b'{"locked":true}\n')
     guest_value = {
         "apiVersion": capsule.API_VERSION,
@@ -102,6 +103,7 @@ def _inputs(tmp_path: Path):
         "sdist": sdist,
         "wheelhouse_manifest": wheelhouse,
         "helper": helper,
+        "guest_stage_runner": stage_runner,
         "ssh_public_key": public_key,
         "qemu": qemu,
         "qemu_img": qemu_img,
@@ -582,6 +584,8 @@ def test_run_boundary_orders_commands_and_never_uses_host_network_mutation(
         user_data = (root / "input" / "user-data").read_bytes()
         assert b"NOPASSWD" not in user_data
         assert b"sudo: false" in user_data
+        assert b"kp1_q1_guest_stages.py" in user_data
+        assert b"encoding: b64" in user_data
         assert b"q1 hard nproc 512" in user_data
         assert b"q1 hard nofile 1024" in user_data
         assert (root / "input" / "k1s-q1-input.bundle").read_bytes() == (b"sealed-q1-input-bundle")

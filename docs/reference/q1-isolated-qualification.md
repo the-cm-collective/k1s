@@ -214,13 +214,14 @@ candidate guest payload. The candidate is exactly `k1s-core` `0.1.8a1`; a
 different distribution or version fails closed.
 
 The uncompressed canonical USTAR bundle has one leading `manifest.json` and
-exactly 30 payload members in UTF-8 byte order:
+exactly 31 payload members in UTF-8 byte order:
 
 - the accepted `k1s_core-0.1.8a1-py3-none-any.whl` and normalized
   `k1s_core-0.1.8a1.tar.gz`;
 - `requirements-release.lock`, the canonical wheelhouse manifest, and the
   exact 24 dependency wheels;
 - `kp1_q1_guest_helper.py`; and
+- `validate_installed_python_artifact.py`; and
 - the same dependency-free `kp1_q1_bundle.py` validator used by the guest.
 
 The canonical manifest binds every member path, role, mode, size, and SHA-256;
@@ -800,6 +801,23 @@ An accepted run records these stages in order:
 
 Any skipped, reordered, ambiguous, truncated-without-classification, or
 unsupported required stage makes the result unqualified.
+
+The B4 live executor injects one digest-bound, root-owned guest stage runner
+through cloud-init and then executes it as the unprivileged `q1` account. The
+host connects only through the plan-selected loopback SSH forwarding port and
+pins the guest host key before transferring the exact authority document and
+sealed input bundle. QMP is accessed only through the exact owner-private Unix
+socket in the run layout. QMP events may interleave command responses; the
+bounded client ignores events while retaining buffered responses and rejects
+unknown commands, malformed messages, errors, and oversized lines.
+
+If a transport or stage adapter fails after launch, the live executor verifies
+the exact PID, start time, executable, and argv identity, requests `quit` on the
+bound QMP socket, proves process absence, and removes only the authority-bound
+private capsule layout. It retains a metadata-safe failed-run cleanup receipt.
+It never discovers or signals QEMU by process name or pattern. A cleanup
+failure stops the workflow and leaves the exact private run root for explicit
+recovery rather than broadening cleanup.
 
 ## Evidence and cleanup
 

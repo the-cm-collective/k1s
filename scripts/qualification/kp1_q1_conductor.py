@@ -185,24 +185,25 @@ class StageSpec:
 
 
 def _ssh_spec(name: str) -> StageSpec:
-    helper = f"/opt/k1s-q1/stages/{name.replace('-', '_')}.py"
     return StageSpec(
         name=name,
         transport="ssh",
         target="q1-guest",
-        argv=("/usr/bin/python3.11", helper, "--protocol", API_VERSION),
+        argv=(
+            "/usr/bin/python3.11",
+            "/opt/k1s-q1/stages/kp1_q1_guest_stages.py",
+            "--stage",
+            name,
+            "--protocol",
+            API_VERSION,
+        ),
     )
 
 
 STAGE_SPECS = (
     StageSpec("boot-containment", "qmp", "q1-vm", ("query-status",)),
     _ssh_spec("offline-install"),
-    StageSpec(
-        "pure-contracts",
-        "process",
-        "q1-host",
-        ("/usr/bin/python3.11", "/opt/k1s-q1/stages/pure_contracts.py", "--protocol", API_VERSION),
-    ),
+    _ssh_spec("pure-contracts"),
     _ssh_spec("strict-cri-prepare-rollback"),
     _ssh_spec("core-podman"),
     _ssh_spec("core-docker"),
@@ -213,7 +214,7 @@ STAGE_SPECS = (
     _ssh_spec("workload-lifecycle"),
     _ssh_spec("workerbee-evidence"),
     StageSpec("crash-recovery", "qmp", "q1-vm", ("query-status",)),
-    StageSpec("teardown", "qmp", "q1-vm", ("quit",)),
+    _ssh_spec("teardown"),
 )
 
 if tuple(spec.name for spec in STAGE_SPECS) != ACCEPTANCE_STAGES:
