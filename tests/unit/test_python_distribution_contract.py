@@ -221,7 +221,12 @@ def test_publish_workflows_pin_actions_and_preserve_exact_bytes() -> None:
     assert "run-id: ${{ inputs.source-run-id }}" in pypi
     assert "name: k1s-core-python-${{ inputs.source-sha }}" in pypi
     assert "python -m build" not in pypi
-    assert "--verify-manifest bundle/SHA256SUMS" in pypi
+    assert "scripts/build_python_artifacts.py verify" in pypi
+    assert '--commit "$SOURCE_SHA"' in pypi
+    assert '--tree "$source_tree"' in pypi
+    assert '--bundle-root "$GITHUB_WORKSPACE/bundle"' in pypi
+    assert "validate_python_artifacts.py" not in pypi
+    assert "--verify-manifest" not in pypi
     assert pypi.count("attestations: read") == 1
     assert pypi.count("scripts/verify_github_attestations.py") == 1
     assert "gh attestation verify" not in pypi
