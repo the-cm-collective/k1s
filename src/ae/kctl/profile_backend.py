@@ -222,6 +222,14 @@ def _executable_identity(path: Path) -> dict[str, object]:
     }
 
 
+def _active_python_executable() -> Path:
+    """Preserve the active interpreter entry path while validating its target."""
+
+    executable = Path(sys.executable)
+    _executable_identity(executable)
+    return executable
+
+
 def _child_environment(
     capability: EngineCapability,
     *,
@@ -678,7 +686,7 @@ class PortableProfileManager:
                 monotonic=time.monotonic,
                 sleep=time.sleep,
             ),
-            python_executable=Path(sys.executable).resolve(strict=True),
+            python_executable=_active_python_executable(),
         )
 
     def perform(

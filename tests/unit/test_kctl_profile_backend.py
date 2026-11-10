@@ -11,6 +11,7 @@ from ae.kctl.profile_backend import (
     ComponentPlan,
     PortableBackendError,
     PortableProfileManager,
+    _active_python_executable,
     build_execution_plan,
     validate_dependency_order,
 )
@@ -73,6 +74,20 @@ def _identity(pid: int) -> ProcessIdentity:
         executable_device=9,
         executable_inode=10,
     )
+
+
+def test_active_python_executable_preserves_virtualenv_entry_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "python3.11"
+    target.write_bytes(b"bounded-python-placeholder")
+    target.chmod(0o755)
+    virtualenv_python = tmp_path / "venv" / "bin" / "python"
+    virtualenv_python.parent.mkdir(parents=True)
+    virtualenv_python.symlink_to(target)
+    monkeypatch.setattr("sys.executable", str(virtualenv_python))
+
+    assert _active_python_executable() == virtualenv_python
 
 
 class EngineProbe:
